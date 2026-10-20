@@ -1,0 +1,138 @@
+---
+description: 実装時の共通ルール。常に適用する。
+alwaysApply: true
+---
+
+あなたはElixir、Rust、Zenohのエキスパートです。
+
+# 実装ルール
+
+## 保証の原則（プログラミングの自論）
+
+- 何を保証して、何を保証しないかを明確にする
+- 依存関係を利用するとき、何が保証され、何が保証されないかを明確に知っておく
+- プロジェクト単位で何を保証するか保証しないかを明確にする
+- フォルダ単位で何を保証するか保証しないかを明確にする
+- ファイル単位で何を保証するか保証しないかを明確にする
+- 保証の単位でフォルダやファイルを分ける
+
+## アーキテクチャ原則
+
+## 層間インターフェース設計の原則
+
+層をまたぐ関数・NIF・型を設計・レビューするとき、以下の問いを必ず確認する。
+
+| 問い | 違反の典型例 |
+|:---|:---|
+| **固有の概念を扱っていないか？** | `spawn_boss`・`set_hud_level_state` など特定コンテンツの概念がNIF名に露出している |
+| **固有知識を持ちすぎていないか？** | `render_snapshot.rs` が武器スロット・ボス・スコアポップアップを直接参照している |
+| **本質的に知りたい情報か？** | `RenderFrame` にプレイヤー座標フィールドが独立して存在し、`render_data[0]` との暗黙的な二重管理が生まれている |
+| **情報を知りすぎていないか？** | `render_bridge.rs` がウィンドウタイトル・アトラスパスをハードコードし、コンテンツ選択の知識を持っている |
+| **定義 vs 実行の分離は守られているか？** | client 側が「定義」を持ち、server が「実行」を渡している逆転。server = 定義、client = 定義に基づく実行であるべき |
+
+これらのいずれかに該当する場合、**その知識は上位層（呼び出し側）が持つべき**であり、
+下位層（呼び出される側）はより汎用的なインターフェースに留めるよう設計を見直す。
+
+## レイヤー別の責務
+
+## Rust 実装規則
+
+### データ指向設計（Data-Oriented Design）
+
+- ホットパスは「型の階層」ではなく **データの並び・アクセスパターン** を先に設計する
+- 同じ処理が触るフィールドをメモリ上で連続させ、分岐・ポインタ chase・仮想呼び出しをホットパスから排除する
+- エンティティ横断の一括更新（tick・空間クエリ・描画準備）を前提に、SoA / 並列スライス処理を選ぶ
+- 「オブジェクトに振る舞いを持たせる」より「データに対してシステム（関数）を走らせる」を優先する
+
+### SoA（Structure of Arrays）を維持する
+
+```rust
+// ✅ GOOD: SoA形式
+struct EnemyWorld {
+    positions_x: Vec<f32>,
+    positions_y: Vec<f32>,
+    hp: Vec<f32>,
+    alive: Vec<bool>,
+    free_list: Vec<usize>,
+}
+
+// ❌ BAD: AoS形式（キャッシュ効率が悪い）
+struct Enemy { x: f32, y: f32, hp: f32, alive: bool }
+struct EnemyWorld { enemies: Vec<Enemy> }
+```
+
+### Zero-copy / 準ゼロコピー
+
+ホットパス・ネットワーク境界・描画境界では、コピーと中間表現の増殖を避ける。
+
+- **バイト列はそのまま扱う**: 受信バッファ / mmap / GPU 向けバイト列を、可能な限り `&[u8]`・`bytes::Bytes`・スライスとして渡し、所有権付き `Vec` への不要な複製をしない
+- **レイアウト契約を明示する**: 共有・再解釈する型は `#[repr(C)]`（必要なら `repr(C, packed)` は慎重に）とし、`Pod` / `Zeroable`（bytemuck 等）または同等の安全な再解釈手段でキャストする
+- **デコードはビュー優先**: ワイヤ形式から「読むだけ」の経路では、所有構造体へのフルデコードより、オフセット＋スライスのビュー / zero-copy デシリアライズを検討する
+- **準ゼロコピーを許容する条件を限る**: アライメント・寿命・エンディアンの都合でコピーが不可避なときだけ、**一度だけ・境界で・必要最小バイト**をコピーし、その理由をコメントまたは型で残す
+- **フレーム間でアロケーションを回さない**: ホットパスでは毎 tick の `Vec` / `String` / 中間 `HashMap` 新規確保を避け、プール・再利用バッファ・事前確保スライスを使う
+- **境界を越えた寿命に注意**: zero-copy 参照がバッファ再利用や非同期タスクより長生きしないこと。寿命を延びられないならその時点でコピーする
+
+```rust
+// ✅ GOOD: 受信バッファをビューとして読む（概念例）
+fn positions_x(buf: &[u8], count: usize) -> Result<&[f32], LayoutError> {
+    bytemuck::try_cast_slice(&buf[..count * 4]).map_err(|_| LayoutError)
+}
+
+// ❌ BAD: ホットパスで毎回所有 Vec に積み直す
+fn positions_x_owned(buf: &[u8], count: usize) -> Vec<f32> {
+    buf.chunks_exact(4).take(count).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
+}
+```
+
+### unsafe ブロックの使用
+
+- `unsafe` を使う場合は必ずコメントで安全性の根拠を説明する
+- SIMD（SSE2等）使用時は `#[cfg(target_feature = "sse2")]` でフォールバックを用意する
+
+### エラーハンドリング
+
+```rust
+// ✅ GOOD
+fn process() -> Result<(), GameError> { ... }
+
+// ❌ BAD: unwrap/expect をホットパスで使わない
+let val = some_option.unwrap();
+```
+
+## Elixir 実装規則
+
+### GenServer の責務を分離する
+
+- 1つのGenServerに複数の責務を持たせない
+- 状態の読み取りは `handle_call`、副作用は `handle_cast` / `handle_info` を使い分ける
+
+### パターンマッチを活用する
+
+```elixir
+# ✅ GOOD
+def handle_info({:frame_events, events}, state) do
+  Enum.reduce(events, state, &process_event/2)
+end
+
+# ❌ BAD: if/case の多用
+def handle_info(msg, state) do
+  if is_tuple(msg) and elem(msg, 0) == :frame_events do ...
+```
+
+## 実装完了後のフロー
+
+### Elixir ファイルを変更した場合
+
+コミット前に必ず `mix format` を実行してフォーマットを統一する：
+
+```powershell
+mix format
+```
+
+`mix format` はフォーマットを自動修正する。実行後に差分が生じた場合はコミットに含める。
+`--check-formatted` オプションは CI で使用するもので、ローカルでは不要。
+
+### PR 作成
+
+`pr-workflow` ルールに従ってPRを作成し、
+新しいチャットで `code-review` ルールを使ってレビューを依頼する。
