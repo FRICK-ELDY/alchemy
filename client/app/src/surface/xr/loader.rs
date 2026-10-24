@@ -129,22 +129,15 @@ fn steam_roots() -> Vec<PathBuf> {
 
     #[cfg(windows)]
     {
+        use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
         for (hive, subkey, value) in [
+            (HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
             (
-                winreg::enums::HKEY_CURRENT_USER,
-                r"Software\Valve\Steam",
-                "SteamPath",
-            ),
-            (
-                winreg::enums::HKEY_LOCAL_MACHINE,
+                HKEY_LOCAL_MACHINE,
                 r"SOFTWARE\WOW6432Node\Valve\Steam",
                 "InstallPath",
             ),
-            (
-                winreg::enums::HKEY_LOCAL_MACHINE,
-                r"SOFTWARE\Valve\Steam",
-                "InstallPath",
-            ),
+            (HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath"),
         ] {
             if let Some(p) = read_reg_string(hive, subkey, value) {
                 if p.is_dir() {
@@ -190,7 +183,7 @@ fn steam_roots() -> Vec<PathBuf> {
 }
 
 #[cfg(windows)]
-fn read_reg_string(hive: winreg::enums::HKEY, subkey: &str, value: &str) -> Option<PathBuf> {
+fn read_reg_string(hive: winreg::HKEY, subkey: &str, value: &str) -> Option<PathBuf> {
     use winreg::RegKey;
     let root = RegKey::predef(hive);
     let key = root.open_subkey(subkey).ok()?;
