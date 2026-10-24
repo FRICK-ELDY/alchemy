@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package alchemy.scene;
 
-// Slice C-C: low-frequency scene ledger (what is placed).
+// Slice C-C + x0009: low-frequency scene ledger (what is placed) + locomotion profile.
 // Asset bytes are never embedded — only BLAKE3 refs (hex).
 // PROTOCOL_PIN must bump when this schema changes incompatibly.
 
@@ -12,6 +12,8 @@ message SceneManifest {
   // Bump when entries change; unchanged republish may reuse the same revision.
   uint64 revision = 2;
   repeated SceneEntry entries = 3;
+  // World-defined active locomotion profile (default Noclip when unset / UNSPECIFIED).
+  LocomotionConfig locomotion = 4;
 }
 
 message SceneEntry {
@@ -22,4 +24,18 @@ message SceneEntry {
   double x = 3;
   double y = 4;
   double z = 5;
+}
+
+// Active locomotion mode for users in this room (world content definition).
+enum LocomotionMode {
+  LOCOMOTION_MODE_UNSPECIFIED = 0;
+  LOCOMOTION_MODE_NOCLIP = 1;
+  LOCOMOTION_MODE_FLY = 2;
+  LOCOMOTION_MODE_WALK = 3;
+}
+
+message LocomotionConfig {
+  LocomotionMode mode = 1;
+  // Horizontal / free-move speed (m/s). Host may clamp. 0 = host default.
+  float move_speed = 2;
 }

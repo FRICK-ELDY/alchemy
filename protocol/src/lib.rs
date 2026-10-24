@@ -2,17 +2,27 @@
 //!
 //! # Guarantees
 //! - `PROTOCOL_PIN` identifies the schema generation expected by peers.
-//! - `RenderFrame` (delta upserts/removes), `SceneManifest`, `InputEvent` encode/decode.
+//! - `RenderFrame` (delta upserts/removes), `SceneManifest` (+ `LocomotionConfig`), `InputEvent` encode/decode.
 //!
 //! # Non-guarantees
 //! - Bit-packing / prediction coding, DrawCommand taxonomy, audio/tracking frames.
 //! - Cryptographic verification of `InputEvent.room_token` (host-server).
 //! - Signed Manifest issuance by world-server (later).
+//! - Locomotion module list UI / suppress sources.
 
 pub use prost::Message;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.3.0-slice-c-c";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.4.0-x0009";
+
+/// `InputEvent.buttons` bits (mirror of proto `InputButtons`).
+pub mod input_buttons {
+    pub const PRIMARY: u32 = 1;
+    pub const SECONDARY: u32 = 2;
+    pub const GRAB: u32 = 4;
+    pub const CONTEXT: u32 = 8;
+    pub const JUMP: u32 = 16;
+}
 
 /// Default Zenoh key for local room frames (high-frequency pose delta).
 pub const FRAME_KEY_LOCAL: &str = "alchemy/dev/room/local/frame";
@@ -94,6 +104,10 @@ mod tests {
                 y: 0.0,
                 z: 0.0,
             }],
+            locomotion: Some(LocomotionConfig {
+                mode: LocomotionMode::Noclip.into(),
+                move_speed: 4.0,
+            }),
         };
         let bytes = manifest.encode_to_vec();
         let decoded = SceneManifest::decode(bytes.as_slice()).expect("decode");
@@ -105,6 +119,9 @@ mod tests {
             decoded.entries[0].blake3,
             "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555feb66d4f82ee1e72a"
         );
+        let loco = decoded.locomotion.expect("locomotion");
+        assert_eq!(loco.mode, i32::from(LocomotionMode::Noclip));
+        assert!((loco.move_speed - 4.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -115,11 +132,16 @@ mod tests {
             move_x: 0.5,
             move_y: -0.25,
             move_z: 0.0,
+            buttons: input_buttons::PRIMARY | input_buttons::JUMP,
         };
         let bytes = event.encode_to_vec();
         let decoded = InputEvent::decode(bytes.as_slice()).expect("decode");
         assert_eq!(decoded.room_token, "dummy.jwt");
         assert!((decoded.move_x - 0.5).abs() < f32::EPSILON);
+        assert_eq!(
+            decoded.buttons,
+            input_buttons::PRIMARY | input_buttons::JUMP
+        );
     }
 
     #[test]

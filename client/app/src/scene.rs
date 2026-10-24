@@ -16,13 +16,44 @@ use wgpu::util::DeviceExt;
 use crate::mesh::CpuMesh;
 
 pub const MESH_ENTITY_ID: u32 = 1;
+/// Host-authoritative player root (x0009 Noclip camera position).
+pub const USER_ROOT_ENTITY_ID: u32 = 3;
 const FLOOR_EXTENT: f32 = 4.0;
+/// Default eye height if user_root not yet received.
+const DEFAULT_EYE_Y: f32 = 1.6;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EntityPose {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+}
+
+/// Desktop look (client-local). Position comes from host user_root.
+#[derive(Clone, Copy, Debug)]
+pub struct CameraLook {
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl Default for CameraLook {
+    fn default() -> Self {
+        Self {
+            yaw: 0.0,
+            pitch: 0.0,
+        }
+    }
+}
+
+/// Shared locomotion intent published on Zenoh (mode-agnostic).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MoveIntent {
+    pub move_x: f32,
+    pub move_y: f32,
+    pub move_z: f32,
+    pub buttons: u32,
+    /// When true (dash open), publisher forces zeros.
+    pub suppress: bool,
 }
 
 #[repr(C)]
@@ -40,6 +71,8 @@ pub struct Uniforms {
 
 pub struct SharedState {
     pub entities: Mutex<std::collections::HashMap<u32, EntityPose>>,
+    pub look: Mutex<CameraLook>,
+    pub intent: Mutex<MoveIntent>,
 }
 
 pub struct SceneGpu {
@@ -231,7 +264,7 @@ impl SceneGpu {
         })
     }
 
-    pub fn pose(&self) -> EntityPose {
+    pub fn coin_pose(&self) -> EntityPose {
         self.shared
             .entities
             .lock()
@@ -240,26 +273,53 @@ impl SceneGpu {
             .unwrap_or_default()
     }
 
+    pub fn user_root_pose(&self) -> EntityPose {
+        self.shared
+            .entities
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&USER_ROOT_ENTITY_ID).copied())
+            .unwrap_or(EntityPose {
+                x: 0.0,
+                y: DEFAULT_EYE_Y,
+                z: 6.0,
+            })
+    }
+
+    pub fn look(&self) -> CameraLook {
+        self.shared.look.lock().ok().map(|g| *g).unwrap_or_default()
+    }
+
     pub fn maybe_log_pose(&mut self) {
-        let pose = self.pose();
+        let coin = self.coin_pose();
+        let user = self.user_root_pose();
         if self.last_pose_log.elapsed() >= Duration::from_secs(1) {
             log::info!(
-                "mesh pose (from host delta): x={:.3} y={:.3} z={:.3}",
-                pose.x,
-                pose.y,
-                pose.z
+                "poses: coin=({:.3},{:.3},{:.3}) user_root=({:.3},{:.3},{:.3})",
+                coin.x,
+                coin.y,
+                coin.z,
+                user.x,
+                user.y,
+                user.z
             );
             self.last_pose_log = Instant::now();
         }
     }
 
-    /// Desktop helper: look-at camera that tracks the coin.
-    pub fn desktop_view_proj(pose: EntityPose, aspect: f32) -> (Mat4, Mat4) {
-        let focus_y = pose.y.clamp(0.3, 5.0);
-        let eye = Vec3::new(6.5, focus_y + 2.2, 7.5);
-        let target = Vec3::new(pose.x * 0.3, focus_y, pose.z * 0.3);
-        let view = Mat4::look_at_rh(eye, target, Vec3::Y);
-        let proj = Mat4::perspective_rh(50.0_f32.to_radians(), aspect, 0.05, 50.0);
+    /// Desktop FPS camera at user_root with client-local yaw/pitch.
+    pub fn desktop_view_proj(eye: EntityPose, look: CameraLook, aspect: f32) -> (Mat4, Mat4) {
+        let yaw = look.yaw;
+        let pitch = look.pitch.clamp(-1.54, 1.54);
+        let forward = Vec3::new(
+            yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            -yaw.cos() * pitch.cos(),
+        )
+        .normalize();
+        let eye_pos = Vec3::new(eye.x, eye.y, eye.z);
+        let view = Mat4::look_at_rh(eye_pos, eye_pos + forward, Vec3::Y);
+        let proj = Mat4::perspective_rh(70.0_f32.to_radians(), aspect, 0.05, 200.0);
         (view, proj)
     }
 
@@ -272,7 +332,7 @@ impl SceneGpu {
         proj: Mat4,
         load_op: wgpu::LoadOp<wgpu::Color>,
     ) {
-        let pose = self.pose();
+        let pose = self.coin_pose();
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene-pass"),

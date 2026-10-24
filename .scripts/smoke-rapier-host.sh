@@ -13,8 +13,8 @@ RUST_LOG=info timeout 8 cargo run -q -p host-server >"$LOG" 2>&1
 set -e
 
 ok=1
-if ! grep -q "host-server Slice D starting" "$LOG"; then
-  echo "smoke-rapier-host: missing Slice D banner"
+if ! grep -qE "host-server (Slice D|x0009) starting" "$LOG"; then
+  echo "smoke-rapier-host: missing host-server start banner"
   ok=0
 fi
 if ! grep -q "physics_hz=60" "$LOG" || ! grep -q "net_hz=30" "$LOG"; then

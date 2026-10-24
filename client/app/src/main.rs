@@ -1,11 +1,12 @@
-//! Alchemy client — x0008 OpenXR dash+Exit + C-C/D render path.
+//! Alchemy client — x0009 Desktop Noclip + OpenXR dash/Exit + C-C/D render path.
 //!
 //! Guarantees:
 //! - Subscribes to SceneManifest / RenderFrame; downloads blob; wgpu mesh on Desktop
-//! - Room Token InputEvent (idle)
+//! - Desktop WASD/Space/C → InputEvent Intent; dash suppresses move (mouse look deferred)
+//! - Camera follows host user_root pose (fixed default look)
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
 //!
-//! Non-guarantees: locomotion, Quest standalone, WSL HMD, settings contents
+//! Non-guarantees: VR loco, Grab/tools, Quest standalone, WSL HMD, settings contents
 
 mod host_control;
 mod mesh;
@@ -27,7 +28,7 @@ use alchemy_protocol::{
 };
 use anyhow::{Context, Result};
 use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, COIN_BLAKE3_HEX};
-use scene::{EntityPose, SharedState, MESH_ENTITY_ID};
+use scene::{EntityPose, SharedState, MESH_ENTITY_ID, USER_ROOT_ENTITY_ID};
 use serde::Deserialize;
 use zenoh::bytes::ZBytes;
 use zenoh::Config;
@@ -260,7 +261,11 @@ fn spawn_frame_subscriber(session: zenoh::Session, shared: Arc<SharedState>) -> 
     Ok(())
 }
 
-fn spawn_input_publisher(session: zenoh::Session, room_token: String) -> Result<()> {
+fn spawn_input_publisher(
+    session: zenoh::Session,
+    room_token: String,
+    shared: Arc<SharedState>,
+) -> Result<()> {
     let publisher = session
         .declare_publisher(INPUT_KEY_LOCAL)
         .wait()
@@ -270,7 +275,7 @@ fn spawn_input_publisher(session: zenoh::Session, room_token: String) -> Result<
         .name("zenoh-input-pub".into())
         .spawn(move || {
             let _session = session;
-            log::info!("publishing idle InputEvent to {INPUT_KEY_LOCAL}");
+            log::info!("publishing InputEvent intent to {INPUT_KEY_LOCAL} @ {INPUT_HZ}Hz");
             let period = Duration::from_nanos(1_000_000_000 / INPUT_HZ);
             let mut next = Instant::now();
             loop {
@@ -280,12 +285,19 @@ fn spawn_input_publisher(session: zenoh::Session, room_token: String) -> Result<
                 }
                 next += period;
 
+                let intent = shared.intent.lock().ok().map(|g| *g).unwrap_or_default();
+                let (mx, my, mz, buttons) = if intent.suppress {
+                    (0.0, 0.0, 0.0, 0)
+                } else {
+                    (intent.move_x, intent.move_y, intent.move_z, intent.buttons)
+                };
                 let event = InputEvent {
                     room_token: room_token.clone(),
                     client_time_ms: client_time_ms(),
-                    move_x: 0.0,
-                    move_y: 0.0,
-                    move_z: 0.0,
+                    move_x: mx,
+                    move_y: my,
+                    move_z: mz,
+                    buttons,
                 };
                 if let Err(err) = publisher.put(event.encode_to_vec()).wait() {
                     log::warn!("input publish failed: {err}");
@@ -307,7 +319,7 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "client x0008 starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL}"
+        "client x0009 starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} user_root={USER_ROOT_ENTITY_ID}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
@@ -317,13 +329,15 @@ fn main() -> Result<()> {
 
     let shared = Arc::new(SharedState {
         entities: Mutex::new(HashMap::new()),
+        look: Mutex::new(Default::default()),
+        intent: Mutex::new(Default::default()),
     });
     let (blake3_tx, blake3_rx) = mpsc::sync_channel::<String>(1);
 
     let session = open_zenoh().context("open zenoh session")?;
     spawn_manifest_subscriber(session.clone(), Arc::clone(&shared), blake3_tx)?;
     spawn_frame_subscriber(session.clone(), Arc::clone(&shared))?;
-    spawn_input_publisher(session.clone(), room_token)?;
+    spawn_input_publisher(session.clone(), room_token, Arc::clone(&shared))?;
 
     let blob_blake3 = match blake3_rx.recv_timeout(MANIFEST_WAIT) {
         Ok(hex) => {

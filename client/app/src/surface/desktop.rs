@@ -1,7 +1,12 @@
-//! Desktop winit + wgpu surface (ESC dash).
+//! Desktop winit + wgpu surface (ESC dash + x0009 Noclip intent).
+//!
+//! Mouse look / Pointer Lock are deferred (WSL grab unreliable).
+//! Camera uses fixed default look; WASD are world-forward relative to yaw=0.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
+use alchemy_protocol::input_buttons;
 use anyhow::{Context, Result};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -12,7 +17,7 @@ use winit::window::{Window, WindowId};
 
 use crate::host_control;
 use crate::mesh::CpuMesh;
-use crate::scene::{create_depth_view, create_wgpu_for_window, SceneGpu, SharedState};
+use crate::scene::{create_depth_view, create_wgpu_for_window, MoveIntent, SceneGpu, SharedState};
 use crate::system_ui::{SystemUi, UiAction};
 
 struct DesktopGpu {
@@ -48,9 +53,10 @@ impl DesktopGpu {
 
     fn render(&mut self, ui: &mut SystemUi) -> Result<()> {
         self.scene.maybe_log_pose();
-        let pose = self.scene.pose();
+        let eye = self.scene.user_root_pose();
+        let look = self.scene.look();
         let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
-        let (view, proj) = SceneGpu::desktop_view_proj(pose, aspect);
+        let (view, proj) = SceneGpu::desktop_view_proj(eye, look, aspect);
 
         ui.prepare_frame(&self.scene.queue);
 
@@ -115,6 +121,78 @@ struct App {
     ui: SystemUi,
     zenoh: Option<zenoh::Session>,
     cursor: (f64, f64),
+    keys_down: HashSet<KeyCode>,
+}
+
+impl App {
+    fn rebuild_intent(&self) {
+        let dash_open = self.ui.state.open;
+        // Fixed look (yaw=0): +Z forward, +X right in intent projection.
+        let yaw = 0.0_f32;
+        let forward_x = yaw.sin();
+        let forward_z = -yaw.cos();
+        let right_x = yaw.cos();
+        let right_z = yaw.sin();
+
+        let mut intent = MoveIntent {
+            suppress: dash_open,
+            ..Default::default()
+        };
+
+        if !dash_open {
+            let mut local_x = 0.0_f32;
+            let mut local_z = 0.0_f32;
+            let mut local_y = 0.0_f32;
+
+            if self.keys_down.contains(&KeyCode::KeyW) {
+                local_z += 1.0;
+            }
+            if self.keys_down.contains(&KeyCode::KeyS) {
+                local_z -= 1.0;
+            }
+            if self.keys_down.contains(&KeyCode::KeyD) {
+                local_x += 1.0;
+            }
+            if self.keys_down.contains(&KeyCode::KeyA) {
+                local_x -= 1.0;
+            }
+            if self.keys_down.contains(&KeyCode::Space) {
+                local_y += 1.0;
+            }
+            if self.keys_down.contains(&KeyCode::KeyC) {
+                local_y -= 1.0;
+            }
+
+            intent.move_x = local_x * right_x + local_z * forward_x;
+            intent.move_z = local_x * right_z + local_z * forward_z;
+            intent.move_y = local_y;
+
+            let horiz = (intent.move_x * intent.move_x + intent.move_z * intent.move_z).sqrt();
+            if horiz > 1.0 {
+                intent.move_x /= horiz;
+                intent.move_z /= horiz;
+            }
+
+            let mut buttons = 0u32;
+            if self.keys_down.contains(&KeyCode::KeyY) {
+                buttons |= input_buttons::PRIMARY;
+            }
+            if self.keys_down.contains(&KeyCode::KeyT) {
+                buttons |= input_buttons::CONTEXT;
+            }
+            if self.keys_down.contains(&KeyCode::KeyR) {
+                buttons |= input_buttons::SECONDARY;
+            }
+            if self.keys_down.contains(&KeyCode::Space) {
+                buttons |= input_buttons::JUMP;
+            }
+            intent.buttons = buttons;
+        }
+
+        if let Ok(mut guard) = self.shared.intent.lock() {
+            *guard = intent;
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -123,7 +201,7 @@ impl ApplicationHandler for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("Alchemy Client — x0008 (Desktop)")
+            .with_title("Alchemy Client — x0009 (Desktop Noclip)")
             .with_inner_size(LogicalSize::new(960.0, 540.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         let gpu = pollster::block_on(DesktopGpu::new(
@@ -143,7 +221,7 @@ impl ApplicationHandler for App {
             .expect("init system_ui gpu");
         self.window = Some(window);
         self.gpu = Some(gpu);
-        log::info!("system_ui ready — press Esc for dash");
+        log::info!("system_ui ready — Esc dash; WASD+Space+C Noclip (mouse look deferred)");
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -163,18 +241,29 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
-                let action = self.ui.on_click(self.cursor.0 as f32, self.cursor.1 as f32);
-                handle_ui_action(action, self.zenoh.as_ref(), event_loop);
+                // Dash UI hit-test only (no mouse look / grab).
+                if self.ui.state.open {
+                    let action = self.ui.on_click(self.cursor.0 as f32, self.cursor.1 as f32);
+                    handle_ui_action(action, self.zenoh.as_ref(), event_loop);
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed && !event.repeat {
-                    if let PhysicalKey::Code(KeyCode::Escape) = event.physical_key {
+                let pressed = event.state == ElementState::Pressed;
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    if pressed {
+                        self.keys_down.insert(code);
+                    } else {
+                        self.keys_down.remove(&code);
+                    }
+                    if pressed && !event.repeat && code == KeyCode::Escape {
                         self.ui.toggle();
                         log::info!("system_ui open={}", self.ui.state.open);
                     }
                 }
+                self.rebuild_intent();
             }
             WindowEvent::RedrawRequested => {
+                self.rebuild_intent();
                 if let Some(gpu) = self.gpu.as_mut() {
                     if let Err(err) = gpu.render(&mut self.ui) {
                         log::error!("render failed: {err:#}");
@@ -227,6 +316,7 @@ pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session
         ui: SystemUi::new(),
         zenoh,
         cursor: (0.0, 0.0),
+        keys_down: HashSet::new(),
     };
     event_loop.run_app(&mut app)?;
     Ok(())

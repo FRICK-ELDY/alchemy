@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package alchemy.input;
 
-// Slice B minimal input with Room Token gate.
+// Room Token gate + x0009 camera-relative locomotion intent.
 // Full action taxonomy / editor events are deferred.
 
 message InputEvent {
@@ -10,8 +10,21 @@ message InputEvent {
   string room_token = 1;
   // Client wall-clock-ish time in milliseconds (demo / debug).
   uint64 client_time_ms = 2;
-  // Requested entity offset / pose hint (host may clamp).
+  // Camera-relative normalized move intent (~-1..1). Host scales by LocomotionConfig.move_speed.
+  // +X = right, +Y = up, +Z = forward (client local axes projected by look yaw for XZ).
   float move_x = 3;
   float move_y = 4;
   float move_z = 5;
+  // Optional action bits (host may ignore unused). See InputButtons.
+  uint32 buttons = 6;
+}
+
+// Bit flags for InputEvent.buttons (Desktop x0009; VR later).
+enum InputButtons {
+  INPUT_BUTTONS_NONE = 0;
+  INPUT_BUTTONS_PRIMARY = 1;    // LMB / Y
+  INPUT_BUTTONS_SECONDARY = 2;  // R / Mouse4
+  INPUT_BUTTONS_GRAB = 4;       // RMB
+  INPUT_BUTTONS_CONTEXT = 8;    // T / MMB
+  INPUT_BUTTONS_JUMP = 16;      // Space edge (Walk); continuous up uses move_y
 }
