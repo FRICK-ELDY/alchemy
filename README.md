@@ -98,7 +98,7 @@ bash .scripts/smoke-manifest-delta.sh  # Manifest + デルタ（zenohd 必須）
 
 環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID` / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_BLOB_BLAKE3`。
 
-詳細は [`.workspace/roadmap.md`](.workspace/roadmap.md)。
+詳細は [`.workspace/roadmap/`](.workspace/roadmap/README.md)。
 
 ## ローカル CI
 
