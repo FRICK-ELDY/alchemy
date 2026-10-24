@@ -1,14 +1,18 @@
-//! Alchemy client — Slice B.
+//! Alchemy client — Slice C-B.
 //!
 //! Guarantees:
 //! - Subscribes to frame key and decodes RenderFrame
 //! - Fetches Room Token from world-server and publishes InputEvent
-//! - Shows a moving colored triangle driven by entity (x, y)
+//! - Downloads one GLB (or fixture fallback), verifies BLAKE3, draws mesh with wgpu
 //!
 //! Non-guarantees:
-//! - OSC, Dual Editor, asset LOD, auth login UI, launcher
+//! - OSC, Dual Editor, asset LOD, auth login UI, launcher, materials/skins
+
+mod mesh;
 
 use std::f32::consts::TAU;
+use std::io::Read;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -18,6 +22,8 @@ use alchemy_protocol::{
 };
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
+use glam::{Mat4, Vec3};
+use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, CpuMesh, COIN_BLAKE3_HEX};
 use serde::Deserialize;
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
@@ -32,6 +38,7 @@ use zenoh::Wait;
 const CONNECT: &str = "tcp/127.0.0.1:7447";
 const DEFAULT_WORLD_URL: &str = "http://127.0.0.1:4003";
 const DEFAULT_AUTH_URL: &str = "http://127.0.0.1:4002";
+const DEFAULT_ASSETS_URL: &str = "http://127.0.0.1:4004";
 const DEFAULT_ROOM_ID: &str = "local";
 const DEFAULT_AUTH_USER: &str = "alice";
 const DEFAULT_AUTH_PASSWORD: &str = "Password1";
@@ -48,9 +55,15 @@ struct EntityPose {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    color: [f32; 3],
+struct MeshVertex {
+    position: [f32; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Uniforms {
+    mvp: [[f32; 4]; 4],
+    color: [f32; 4],
 }
 
 struct SharedState {
@@ -128,6 +141,49 @@ fn fetch_guest_token(world_url: &str, room_id: &str, auth_token: &str) -> Result
         .into_json()
         .context("parse token response")?;
     Ok(resp.token)
+}
+
+fn fetch_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<Vec<u8>> {
+    let base = assets_url.trim_end_matches('/');
+    let url = format!("{base}/api/v1/blobs/{blake3}");
+    let authz = format!("Bearer {auth_token}");
+    let resp = ureq::get(&url)
+        .set("authorization", &authz)
+        .call()
+        .context("assets blob download failed")?;
+    let mut bytes = Vec::new();
+    resp.into_reader()
+        .read_to_end(&mut bytes)
+        .context("read blob body")?;
+    Ok(bytes)
+}
+
+fn load_coin_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<Vec<u8>> {
+    match fetch_blob_bytes(assets_url, blake3, auth_token) {
+        Ok(bytes) => {
+            log::info!(
+                "downloaded blob from assets-server ({} bytes, blake3={})",
+                bytes.len(),
+                blake3_hex(&bytes)
+            );
+            Ok(bytes)
+        }
+        Err(err) => {
+            log::warn!("assets download failed ({err:#}); falling back to fixture");
+            load_fixture_bytes()
+        }
+    }
+}
+
+fn load_fixture_bytes() -> Result<Vec<u8>> {
+    let path = fixture_path()?;
+    std::fs::read(&path).with_context(|| format!("read fixture {}", path.display()))
+}
+
+fn fixture_path() -> Result<PathBuf> {
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("../fixtures/Coin_PolygonalMind.glb");
+    Ok(path)
 }
 
 fn client_time_ms() -> u64 {
@@ -216,10 +272,17 @@ struct Gpu {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    depth_view: wgpu::TextureView,
+    mesh_radius: f32,
+    started: Instant,
 }
 
 impl Gpu {
-    async fn new(window: Arc<Window>) -> Result<Self> {
+    async fn new(window: Arc<Window>, mesh: &CpuMesh) -> Result<Self> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(window.clone())?;
@@ -264,27 +327,43 @@ impl Gpu {
         };
         surface.configure(&device, &config);
 
+        let depth_view = create_depth_view(&device, config.width, config.height);
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("triangle"),
+            label: Some("mesh"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("uniform-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipeline-layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("triangle-pipeline"),
+            label: Some("mesh-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+                    array_stride: std::mem::size_of::<MeshVertex>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3],
                 }],
                 compilation_options: Default::default(),
             },
@@ -298,17 +377,55 @@ impl Gpu {
                 })],
                 compilation_options: Default::default(),
             }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
         });
 
+        let vertices: Vec<MeshVertex> = mesh
+            .positions
+            .iter()
+            .map(|p| MeshVertex { position: *p })
+            .collect();
+
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vertices"),
-            contents: bytemuck::cast_slice(&triangle_vertices(EntityPose::default())),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            label: Some("mesh-vertices"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("mesh-indices"),
+            contents: bytemuck::cast_slice(&mesh.indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("uniforms"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("uniform-bg"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
         });
 
         Ok(Self {
@@ -318,6 +435,13 @@ impl Gpu {
             config,
             pipeline,
             vertex_buffer,
+            index_buffer,
+            index_count: mesh.indices.len() as u32,
+            uniform_buffer,
+            bind_group,
+            depth_view,
+            mesh_radius: mesh.radius,
+            started: Instant::now(),
         })
     }
 
@@ -328,12 +452,28 @@ impl Gpu {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
+        self.depth_view = create_depth_view(&self.device, width, height);
     }
 
-    fn render(&mut self, pose: EntityPose) -> Result<()> {
-        let verts = triangle_vertices(pose);
+    fn render(&mut self) -> Result<()> {
+        let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
+        let t = self.started.elapsed().as_secs_f32();
+        let eye_dist = self.mesh_radius * 3.0;
+        let view = Mat4::look_at_rh(
+            Vec3::new(eye_dist * 0.7, eye_dist * 0.45, eye_dist),
+            Vec3::ZERO,
+            Vec3::Y,
+        );
+        let proj = Mat4::perspective_rh(50.0_f32.to_radians(), aspect, 0.01, eye_dist * 20.0);
+        let model = Mat4::from_rotation_y(t * 0.8) * Mat4::from_rotation_x(0.35);
+        let mvp = proj * view * model;
+
+        let uniforms = Uniforms {
+            mvp: mvp.to_cols_array_2d(),
+            color: [0.92, 0.78, 0.28, 1.0],
+        };
         self.queue
-            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         let frame = self
             .surface
@@ -363,13 +503,22 @@ impl Gpu {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.draw(0..3, 0..1);
+            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.index_count, 0, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
@@ -377,29 +526,26 @@ impl Gpu {
     }
 }
 
-fn triangle_vertices(pose: EntityPose) -> [Vertex; 3] {
-    let cx = (pose.x / 2.0).clamp(-0.85, 0.85);
-    let cy = (pose.y / 2.0).clamp(-0.85, 0.85);
-    let s = 0.18;
-    let color = [pose.r.max(0.2), pose.g.max(0.2), pose.b.max(0.2)];
-    [
-        Vertex {
-            position: [cx, cy + s],
-            color,
+fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("depth"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
         },
-        Vertex {
-            position: [cx - s, cy - s],
-            color,
-        },
-        Vertex {
-            position: [cx + s, cy - s],
-            color,
-        },
-    ]
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 struct App {
-    shared: Arc<SharedState>,
+    mesh: CpuMesh,
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
 }
@@ -410,10 +556,10 @@ impl ApplicationHandler for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("Alchemy Client — Slice B")
+            .with_title("Alchemy Client — Slice C-B (Coin)")
             .with_inner_size(LogicalSize::new(960.0, 540.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
-        let gpu = pollster::block_on(Gpu::new(Arc::clone(&window))).expect("init gpu");
+        let gpu = pollster::block_on(Gpu::new(Arc::clone(&window), &self.mesh)).expect("init gpu");
         self.window = Some(window);
         self.gpu = Some(gpu);
     }
@@ -427,9 +573,8 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                let pose = self.shared.pose.lock().map(|p| *p).unwrap_or_default();
                 if let Some(gpu) = self.gpu.as_mut() {
-                    if let Err(err) = gpu.render(pose) {
+                    if let Err(err) = gpu.render() {
                         log::error!("render failed: {err:#}");
                     }
                 }
@@ -453,16 +598,29 @@ fn main() -> Result<()> {
 
     let world_url = std::env::var("WORLD_URL").unwrap_or_else(|_| DEFAULT_WORLD_URL.to_string());
     let auth_url = std::env::var("AUTH_URL").unwrap_or_else(|_| DEFAULT_AUTH_URL.to_string());
+    let assets_url = std::env::var("ASSETS_URL").unwrap_or_else(|_| DEFAULT_ASSETS_URL.to_string());
     let room_id = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
+    let blob_blake3 =
+        std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "client Slice B.5 starting; protocol_pin={PROTOCOL_PIN} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} auth={auth_url}"
+        "client Slice C-B starting; protocol_pin={PROTOCOL_PIN} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} auth={auth_url} assets={assets_url}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
     let room_token =
         fetch_guest_token(&world_url, &room_id, &auth_token).context("fetch guest Room Token")?;
     log::info!("auth JWT + guest Room Token acquired");
+
+    let bytes = load_coin_bytes(&assets_url, &blob_blake3, &auth_token)?;
+    verify_blake3(&bytes, &blob_blake3).context("reject blob: BLAKE3 mismatch")?;
+    let mesh = load_mesh_from_glb(&bytes).context("decode GLB")?;
+    log::info!(
+        "mesh ready: {} verts, {} indices, radius={:.3}",
+        mesh.positions.len(),
+        mesh.indices.len(),
+        mesh.radius
+    );
 
     let shared = Arc::new(SharedState {
         pose: Mutex::new(EntityPose {
@@ -478,7 +636,7 @@ fn main() -> Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
-        shared,
+        mesh,
         window: None,
         gpu: None,
     };

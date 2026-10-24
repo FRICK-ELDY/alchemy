@@ -5,10 +5,10 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（Slice C-A）
+## 現状（Slice C-B）
 
-ローカル `zenohd` → `host-server` / `client` の空間同期（Slice B.5）に加え、  
-`assets-server` で auth 必須の Blob CAS（BLAKE3）+ 固定 Quota。
+ローカル `zenohd` → `host-server` / `client` の空間同期に加え、  
+`assets-server` の Blob CAS から Coin GLB を取得して `client` が wgpu 表示。
 
 | コンポーネント | パス |
 |:---|:---|
@@ -92,9 +92,10 @@ cargo run -p client
 
 # 4) assets smoke（任意）
 bash .scripts/smoke-assets.sh
+bash .scripts/smoke-assets-glb.sh   # Coin GLB → CAS（Slice C-B）
 ```
 
-環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID` / `AUTH_USER` / `AUTH_PASSWORD`。
+環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID` / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_BLOB_BLAKE3`。
 
 詳細は [`.workspace/roadmap.md`](.workspace/roadmap.md)。
 

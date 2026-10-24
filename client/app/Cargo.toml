@@ -3,7 +3,7 @@ name = "client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Alchemy client (Slice B: Subscribe frames + Publish InputEvent with Room Token)"
+description = "Alchemy client (Slice C-B: assets GLB + wgpu mesh; Room Token input)"
 
 [[bin]]
 name = "client"
@@ -12,8 +12,11 @@ path = "src/main.rs"
 [dependencies]
 alchemy-protocol = { workspace = true }
 anyhow = { workspace = true }
+blake3 = { workspace = true }
 bytemuck = { workspace = true }
 env_logger = { workspace = true }
+glam = { workspace = true }
+gltf = { workspace = true }
 log = { workspace = true }
 pollster = { workspace = true }
 prost = { workspace = true }

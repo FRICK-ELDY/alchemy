@@ -1,7 +1,7 @@
 # assets-server
 
 > **正本コード**: [`assets-server/`](../../../assets-server/)  
-> **ステータス**: Slice C-A（ローカル CAS + Quota。GLB 描画は C-B）
+> **ステータス**: Slice C-A（ローカル CAS + Quota）。client の GLB 表示は C-B 完了
 
 ## 図上の位置
 
@@ -14,8 +14,7 @@
 | メタ（BlobRef / QuotaLedger）を SQLite に置く | GLB/KTX2 本体を DB に置く |
 | 不変バイナリをローカル CAS に BLAKE3 キーで置く | R2 / NAS 切替 |
 | Quota 超過のアップロード拒否（既定 1GiB） | Vault / Folder / Commit（Spatial VCS） |
-| auth `sub` を所有者・Quota キーとして使う | client メッシュ描画（C-B） |
-| | pgvector / Origin Cert / Ash 本格ドメイン |
+| auth `sub` を所有者・Quota キーとして使う | pgvector / Origin Cert / Ash 本格ドメイン |
 
 ## 層の境界
 
@@ -23,7 +22,7 @@
 |:---|:---|:---|
 | DB (Ecto SQLite) | owner_sub, blake3, size, mime, used_bytes | GLB/KTX2 本体 |
 | CAS (local disk) | 不変バイナリ（BLAKE3 hex ファイル名、`b3sum` で計算） | ユーザー階層・権限 |
-| client（C-B） | LOD / 描画 | サーバー側メッシュ処理 |
+| client（C-B） | download + BLAKE3 + wgpu 描画 | サーバー側メッシュ処理 / LOD |
 
 ## API（C-A）
 
@@ -56,10 +55,10 @@ flowchart LR
 cd auth-server && docker compose up -d && cd ..
 cd assets-server && docker compose up -d
 bash .scripts/smoke-assets.sh
+bash .scripts/smoke-assets-glb.sh   # Coin fixture → CAS
 ```
 
-## 後続（C-B / C+）
+## 後続（C+）
 
-- client で GLB を wgpu 表示
 - Vault / Folder / Commit
 - R2 / NAS、Ash、pgvector、Origin Cert
