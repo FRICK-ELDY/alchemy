@@ -9,7 +9,9 @@ config :world,
   room_token_private_key_path: "priv/test_room_jwt_private.pem",
   room_token_generate_key_on_startup: true,
   allow_anon_tokens: false,
-  auth_jwks_url: "http://127.0.0.1:9/.well-known/jwks.json"
+  auth_jwks_url: "http://127.0.0.1:9/.well-known/jwks.json",
+  # Tests install JWKS via World.Auth.Jwks.install_test_jwks!/2.
+  auth_jwks_fetch_on_start: false
 
 config :logger, level: :warning
 config :phoenix, :plug_init_mode, :runtime

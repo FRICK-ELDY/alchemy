@@ -38,19 +38,23 @@ defmodule World.Auth.Jwks do
 
   @impl true
   def handle_continue(:initial_fetch, state) do
-    case do_fetch() do
-      {:ok, jwks, signers} ->
-        {:noreply,
-         %{
-           state
-           | jwks: jwks,
-             signers_by_kid: signers,
-             fetched_at: System.monotonic_time(:second)
-         }}
+    if Application.get_env(:world, :auth_jwks_fetch_on_start, true) do
+      case do_fetch() do
+        {:ok, jwks, signers} ->
+          {:noreply,
+           %{
+             state
+             | jwks: jwks,
+               signers_by_kid: signers,
+               fetched_at: System.monotonic_time(:second)
+           }}
 
-      {:error, reason} ->
-        Logger.warning("auth JWKS initial fetch failed: #{inspect(reason)}")
-        {:noreply, state}
+        {:error, reason} ->
+          Logger.warning("auth JWKS initial fetch failed: #{inspect(reason)}")
+          {:noreply, state}
+      end
+    else
+      {:noreply, state}
     end
   end
 
@@ -121,7 +125,8 @@ defmodule World.Auth.Jwks do
   defp do_fetch do
     url = Application.fetch_env!(:world, :auth_jwks_url)
 
-    case Req.get(url, receive_timeout: 5_000) do
+    # Never block the GenServer on Req's default retry backoff (breaks test setup).
+    case Req.get(url, receive_timeout: 2_000, retry: false) do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
         signers = build_signers(body)
         {:ok, body, signers}

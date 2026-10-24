@@ -10,6 +10,7 @@ config :world,
   # Slice B.5: Room APIs require auth-server Bearer JWT by default.
   allow_anon_tokens: false,
   auth_jwks_url: "http://127.0.0.1:4002/.well-known/jwks.json",
+  auth_jwks_fetch_on_start: true,
   auth_jwt_issuer: "alchemy-auth",
   auth_jwt_audience: "alchemy-platform"
 
