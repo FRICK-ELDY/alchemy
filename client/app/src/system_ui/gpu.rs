@@ -242,7 +242,8 @@ impl UiGpu {
         self.dirty = true;
     }
 
-    pub fn rasterize_if_dirty(&mut self, queue: &wgpu::Queue, tree: &LayoutTree, open: bool) {
+    /// Fill CPU `pixels` from the retained tree (no GPU upload).
+    pub fn rasterize_cpu(&mut self, tree: &LayoutTree, open: bool) {
         if !self.dirty {
             return;
         }
@@ -298,6 +299,10 @@ impl UiGpu {
                 }
             }
         }
+        self.dirty = false;
+    }
+
+    pub fn upload_canvas(&self, queue: &wgpu::Queue) {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.canvas_texture,
@@ -317,7 +322,14 @@ impl UiGpu {
                 depth_or_array_layers: 1,
             },
         );
-        self.dirty = false;
+    }
+
+    pub fn rasterize_if_dirty(&mut self, queue: &wgpu::Queue, tree: &LayoutTree, open: bool) {
+        if !self.dirty {
+            return;
+        }
+        self.rasterize_cpu(tree, open);
+        self.upload_canvas(queue);
     }
 
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
@@ -325,6 +337,11 @@ impl UiGpu {
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.draw(0..6, 0..1);
+    }
+
+    /// CPU canvas bytes after `rasterize_if_dirty` (RGBA8). For XR world-quad upload.
+    pub fn canvas_rgba(&self) -> (&[u8], u32, u32) {
+        (&self.pixels, self.canvas_w, self.canvas_h)
     }
 }
 

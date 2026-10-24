@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: x0007（system_ui ダッシュ Canvas。host は x0006 Rapier 経路維持）
+> **ステータス**: x0008（OpenXR ダッシュ＋Exit。host は x0006 Rapier 経路維持）
 
 ## レイアウト
 
@@ -9,7 +9,8 @@
 |:---|:---|
 | `client/Cargo.toml` | workspace 根（将来 submodule の根） |
 | `client/app` | 画面プロセス（パッケージ名 `client`） |
-| `client/app/src/system_ui/` | retained Canvas + ダッシュ（Desktop オーバーレイ） |
+| `client/app/src/system_ui/` | retained Canvas + ダッシュ（OpenXR を知らない） |
+| `client/app/src/surface/` | boot: Desktop (winit) / OpenXR。デバイス差の吸収 |
 | `client/app/assets/icons/` | Material Icons（静的同梱） |
 | `client/host-server` | 裏プロセスの計算ホスト |
 | `client/fixtures/` | Coin_PolygonalMind GLB（CC0） |
@@ -24,7 +25,8 @@
 | ローカル entity 表への upsert/remove 適用、mesh が entity 1 pose に追従 | 署名付き Manifest / world 台帳 |
 | auth login → Bearer 付き Room Token → InputEvent | OSC / Dual Editor / launcher 本実装 |
 | host: Rapier 60Hz + `is_finite` ゲート → 30Hz デルタ（C-C 契約維持） | Formula / 予測補間 / verifier |
-| ESC ダッシュ（自前 Canvas）・client 終了・host 終了スタブ | OpenXR / 設定中身 / マイク実制御 |
+| ESC（Desktop）/ Menu（OpenXR）ダッシュ・client 終了・host 終了スタブ | ロコモーション / 設定中身 / マイク / Quest 単体 |
+| OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD・launcher 本実装 |
 
 ## チャネル分離（C-C + E）
 
@@ -42,7 +44,7 @@
 - 詳細: [`client/fixtures/README.md`](../../../client/fixtures/README.md)
 - Icons: [`client/app/assets/icons/README.md`](../../../client/app/assets/icons/README.md)
 
-環境変数: `ASSETS_URL`（既定 `:4004`）、任意 `ALCHEMY_BLOB_BLAKE3`、任意 `ALCHEMY_HOST_PID`（client+host 終了スタブ）。
+環境変数: `ASSETS_URL`（既定 `:4004`）、任意 `ALCHEMY_BLOB_BLAKE3`、任意 `ALCHEMY_HOST_PID`（client+host 終了スタブ）、任意 `ALCHEMY_FORCE_DESKTOP=1`（OpenXR を使わず Desktop）、任意 `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`（Steam が C: 以外のときの OpenXR ローダー探索）。
 
 ## 関連
 
