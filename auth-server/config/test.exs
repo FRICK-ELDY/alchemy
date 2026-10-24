@@ -8,7 +8,8 @@ import Config
 config :auth, Auth.Repo,
   username: "alchemy_auth",
   password: "alchemy_auth",
-  hostname: "localhost",
+  # PGHOST: Docker Compose 内から postgres サービスへ向けるとき用（ローカル CI）
+  hostname: System.get_env("PGHOST") || "localhost",
   port: String.to_integer(System.get_env("PGPORT") || "5433"),
   database: "alchemy_auth_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,

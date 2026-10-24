@@ -21,12 +21,20 @@ Slice A の入り口。ローカル `zenohd` が空間同期の pub/sub を仲�
 
 将来は `alchemy/tenant/{運営者ID}/room/{room_id}/**` へ拡張する。
 
-## 起動（Windows）
+## 起動
 
 前提: `zenohd` が PATH にあること（例: `cargo install zenohd`）。
 
+```bash
+# macOS / Linux / WSL / Git Bash
+zenohd -c zenoh-router/config.json5
+# または
+cd zenoh-router && zenohd -c config.json5
+```
+
 ```powershell
-cd D:\github\frick\alchemy\zenoh-router
+# Windows PowerShell
+cd zenoh-router
 zenohd -c config.json5
 ```
 

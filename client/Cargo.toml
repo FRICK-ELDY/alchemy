@@ -1,9 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/protocol",
-    "crates/host-server",
-    "crates/client",
+    "host-server",
+    "app",
 ]
 
 [workspace.package]
@@ -12,7 +11,8 @@ license = "MIT"
 version = "0.1.0"
 
 [workspace.dependencies]
-alchemy-protocol = { path = "crates/protocol" }
+# Shared wire contract lives at repo-root protocol/ (not inside this workspace).
+alchemy-protocol = { path = "../protocol" }
 prost = "0.14"
 zenoh = "1.10"
 anyhow = "1"
