@@ -1,0 +1,44 @@
+name: Protocol CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/protocol/**"
+      - ".github/workflows/protocol-ci.yml"
+  pull_request:
+    paths:
+      - "crates/protocol/**"
+      - ".github/workflows/protocol-ci.yml"
+
+concurrency:
+  group: protocol-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  proto-verify:
+    name: "Protobuf — schema compile"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compile protobuf schemas
+        run: |
+          set -eux
+          protoc --version
+          protoc -I crates/protocol/proto --include_imports \
+            --descriptor_set_out=/tmp/alchemy-descriptor.pb \
+            crates/protocol/proto/render_frame.proto
+          test -s /tmp/alchemy-descriptor.pb
+
+  rust-test:
+    name: "Rust — protocol crate tests"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p alchemy-protocol

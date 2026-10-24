@@ -301,12 +301,7 @@ impl ApplicationHandler for App {
         self.gpu = Some(gpu);
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -315,12 +310,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                let pose = self
-                    .shared
-                    .pose
-                    .lock()
-                    .map(|p| *p)
-                    .unwrap_or_default();
+                let pose = self.shared.pose.lock().map(|p| *p).unwrap_or_default();
                 if let Some(gpu) = self.gpu.as_mut() {
                     if let Err(err) = gpu.render(pose) {
                         log::error!("render failed: {err:#}");
