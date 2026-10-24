@@ -1,9 +1,11 @@
-# Slice C-C — Manifest（低頻度）＋ RenderFrame デルタ（高頻度）（完了）
+# x0005 — Manifest（低頻度）＋ RenderFrame デルタ（高頻度）（完了）
+
+> **ID:** `x0005` · **旧称:** Slice C-C · **slug:** `manifest-delta` · **status:** done · **area:** `[protocol, host, client]` · **depends_on:** `[x0004]`
 
 目標: **「何を置くか」と「どこにいるか」をチャネル分離**する。  
 低頻度の Scene Manifest で `entity_id → blake3` を共有し、高頻度の RenderFrame は **動いた Entity の pose 差分だけ**送る。GLB 本体は引き続き assets-server（host 非経由）。
 
-正本: [protocol.md](../0_doc/architecture/protocol.md) · [client.md](../0_doc/architecture/client.md) · overview ⑧
+正本: [protocol.md](../../0_doc/architecture/protocol.md) · [client.md](../../0_doc/architecture/client.md) · overview ⑧
 
 ## 設計方針
 
@@ -56,4 +58,4 @@ cargo run -p client        # Manifest → download → デルタ適用
 - frame: `alchemy/dev/room/local/frame`
 - input: `alchemy/dev/room/local/input`
 
-← [目次](README.md)
+← [目次](../README.md)

@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: Slice E（system_ui ダッシュ Canvas。host は D の Rapier 経路維持）
+> **ステータス**: x0007（system_ui ダッシュ Canvas。host は x0006 Rapier 経路維持）
 
 ## レイアウト
 

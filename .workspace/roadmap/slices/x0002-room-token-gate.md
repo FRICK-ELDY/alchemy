@@ -1,4 +1,6 @@
-# Slice B — Room Token 門番（done）
+# x0002 — Room Token 門番（done）
+
+> **ID:** `x0002` · **旧称:** Slice B · **slug:** `room-token-gate` · **status:** done · **area:** `[world, auth, host, client]` · **depends_on:** `[x0001]`
 
 目標: 既存 Zenoh 縦スライスに **短命 Room Token** を載せ、host-server が不正入力を drop する。
 
@@ -47,6 +49,6 @@ cargo run -p client
 - client の git submodule 化
 - Friendship / グループ / 公開範囲 ACL
 
-正本: [world-server.md](../0_doc/architecture/world-server.md)
+正本: [world-server.md](../../0_doc/architecture/world-server.md)
 
-← [目次](README.md)
+← [目次](../README.md)

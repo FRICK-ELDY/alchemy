@@ -5,11 +5,12 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（Slice E）
+## 現状（x0007 / 旧 Slice E）
 
 `host-server` は **Rapier 60Hz** と **`is_finite` 入力ゲート**、配信は **30Hz デルタ**（C-C 契約維持）。  
 `client` は Manifest の blake3 で Coin GLB を取得し、物理 pose に追従して wgpu 表示する。  
-**ESC** で自前 Canvas のダッシュ（終了 / 設定プレースホルダ）を開閉する。
+**ESC** で自前 Canvas のダッシュ（終了 / 設定プレースホルダ）を開閉する。  
+Slice ID は `x` + 4桁16進（次は `x0008`）。規約は [`.workspace/roadmap/README.md`](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|

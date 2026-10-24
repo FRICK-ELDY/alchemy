@@ -1,7 +1,9 @@
-# Slice C-A — assets-server 最小（完了）
+# x0003 — assets-server 最小（完了）
+
+> **ID:** `x0003` · **旧称:** Slice C-A · **slug:** `assets-cas-quota` · **status:** done · **area:** `[assets, auth]` · **depends_on:** `[x0002]`
 
 目標: auth JWT 必須でローカル CAS に Blob を put/get し、固定 Quota（1GiB）を守る。  
-正本: [assets-server.md](../0_doc/architecture/assets-server.md)
+正本: [assets-server.md](../../0_doc/architecture/assets-server.md)
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
@@ -26,4 +28,4 @@ cd assets-server && docker compose up -d && cd ..
 bash .scripts/smoke-assets.sh
 ```
 
-← [目次](README.md)
+← [目次](../README.md)

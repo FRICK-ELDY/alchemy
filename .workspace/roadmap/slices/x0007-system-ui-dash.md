@@ -1,9 +1,11 @@
-# Slice E — system_ui ダッシュ（自前 Canvas）（完了）
+# x0007 — system_ui ダッシュ（自前 Canvas）（完了）
+
+> **ID:** `x0007` · **旧称:** Slice E · **slug:** `system-ui-dash` · **status:** done · **area:** `[client, system_ui]` · **surface:** `[desktop]` · **depends_on:** `[x0006]`
 
 目標: Desktop / 将来 VR で共通の **1 Canvas** ダッシュ（Resonite 風）を最小導入する。  
 ESC で開閉、Material Icons 静的同梱、終了フロー（client 保証 / host は PID・制御スタブ）。
 
-正本: [client.md](../0_doc/architecture/client.md) · [overview.md](../0_doc/architecture/overview.md) ② `system_ui`
+正本: [client.md](../../0_doc/architecture/client.md) · [overview.md](../../0_doc/architecture/overview.md) ② `system_ui`
 
 ## 設計方針
 
@@ -16,7 +18,7 @@ ESC で開閉、Material Icons 静的同梱、終了フロー（client 保証 / 
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | `slice-e.md` + 目次 / client.md / README | done |
+| 0 | `slices/x0007-….md` + 目次 / client.md / README | done |
 | 1 | Canvas 基盤（レイアウト・ヒット・wgpu オーバーレイ） | done |
 | 2 | ESC トグル + マウス | done |
 | 3 | 上下バー＋終了/設定、Material Icons | done |
@@ -72,4 +74,4 @@ cargo run -p client
 - `client/app/src/host_control.rs` — host 終了スタブ（UI から隔離）
 - host-server は `host_control` Subscribe → `shutdown` で exit
 
-← [目次](README.md)
+← [目次](../README.md)
