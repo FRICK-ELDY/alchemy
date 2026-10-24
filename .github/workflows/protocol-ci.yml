@@ -32,7 +32,8 @@ jobs:
           protoc --version
           protoc -I protocol/proto --include_imports \
             --descriptor_set_out=/tmp/alchemy-descriptor.pb \
-            protocol/proto/render_frame.proto
+            protocol/proto/render_frame.proto \
+            protocol/proto/input_events.proto
           test -s /tmp/alchemy-descriptor.pb
 
   rust-test:

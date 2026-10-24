@@ -18,6 +18,12 @@
 auth-server/priv/jwt_private.pem
 auth-server/priv/jwt_public.pem
 
+# world-server Room Token keys (generated locally)
+world-server/priv/room_jwt_private.pem
+world-server/priv/room_jwt_public.pem
+world-server/priv/test_room_jwt_private.pem
+world-server/priv/test_room_jwt_public.pem
+
 # IDE / OS
 .idea/
 .vscode/

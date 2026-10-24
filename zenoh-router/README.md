@@ -1,6 +1,7 @@
 # zenoh-router（ローカル）
 
-Slice A の入り口。ローカル `zenohd` が空間同期の pub/sub を仲介する。
+Slice A/B の入り口。ローカル `zenohd` が空間同期の pub/sub を仲介する。  
+Room Token の検証は zenohd ではなく host-server が行う。
 
 ## 保証すること / しないこと
 
@@ -16,8 +17,9 @@ Slice A の入り口。ローカル `zenohd` が空間同期の pub/sub を仲�
 | 用途 | キー式 |
 |:---|:---|
 | RenderFrame | `alchemy/dev/room/{room_id}/frame` |
+| InputEvent | `alchemy/dev/room/{room_id}/input` |
 
-例: `alchemy/dev/room/local/frame`（host-server / client の既定）
+例: `alchemy/dev/room/local/frame` / `alchemy/dev/room/local/input`
 
 将来は `alchemy/tenant/{運営者ID}/room/{room_id}/**` へ拡張する。
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # GitHub Actions 相当のチェック（macOS / Linux / WSL / Git Bash）。
-# 使い方: ./.scripts/ci.sh [all|rust|protocol|auth]
+# 使い方: ./.scripts/ci.sh [all|rust|protocol|auth|world]
 #
-# auth は既定で Docker（OS 差分・argon2 ネイティブ依存を避ける）。
-# ホストの mix で回す場合: AUTH_CI_HOST=1 ./.scripts/ci.sh auth
+# auth / world は既定で Docker（OS 差分・ネイティブ依存を避ける）。
+# ホストの mix で auth を回す場合: AUTH_CI_HOST=1 ./.scripts/ci.sh auth
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,7 +40,7 @@ run_protocol() {
   if command -v protoc >/dev/null 2>&1; then
     out="${TMPDIR:-/tmp}/alchemy-descriptor.pb"
     step "protoc schema compile" \
-      bash -c "protoc -I protocol/proto --include_imports --descriptor_set_out='${out}' protocol/proto/render_frame.proto && test -s '${out}'"
+      bash -c "protoc -I protocol/proto --include_imports --descriptor_set_out='${out}' protocol/proto/render_frame.proto protocol/proto/input_events.proto && test -s '${out}'"
   else
     echo "[SKIP] protoc schema compile (protoc not on PATH; optional locally)"
   fi
@@ -89,6 +89,19 @@ run_auth() {
   fi
 }
 
+run_world_docker() {
+  local compose="world-server/docker-compose.yml"
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "[FAIL] docker is required for world CI" >&2
+    FAILED+=("docker required")
+    return
+  fi
+  step "docker compose build world" docker compose -f "$compose" build world
+  step "world mix checks (Docker)" docker compose -f "$compose" run --rm --entrypoint "" \
+    -e MIX_ENV=test \
+    world sh -c 'mix deps.get && mix format --check-formatted && mix compile --warnings-as-errors && mix credo --strict && mix test'
+}
+
 echo "Alchemy local CI (target=${TARGET})"
 echo "root: ${ROOT}"
 
@@ -96,13 +109,15 @@ case "$TARGET" in
   rust) run_rust ;;
   protocol) run_protocol ;;
   auth) run_auth ;;
+  world) run_world_docker ;;
   all)
     run_rust
     run_protocol
     run_auth
+    run_world_docker
     ;;
   *)
-    echo "usage: $0 [all|rust|protocol|auth]" >&2
+    echo "usage: $0 [all|rust|protocol|auth|world]" >&2
     exit 2
     ;;
 esac

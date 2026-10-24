@@ -1,0 +1,50 @@
+name: World Server CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "world-server/**"
+      - ".github/workflows/world-server-ci.yml"
+  pull_request:
+    paths:
+      - "world-server/**"
+      - ".github/workflows/world-server-ci.yml"
+
+concurrency:
+  group: world-server-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: world-server
+
+    env:
+      MIX_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            world-server/deps
+            world-server/_build
+          key: ${{ runner.os }}-world-mix-${{ hashFiles('world-server/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-world-mix-
+
+      - run: mix deps.get
+      - run: mix format --check-formatted
+      - run: mix compile --warnings-as-errors
+      - run: mix credo --strict
+      - run: mix test
