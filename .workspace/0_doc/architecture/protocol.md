@@ -1,7 +1,13 @@
 # protocol（alchemy-protocol）
 
-> **正本**: [`crates/protocol/`](../../../crates/protocol/)  
+> **正本**: [`protocol/`](../../../protocol/)  
 > **PROTOCOL_PIN**: `alchemy-protocol/0.1.0-slice-a`
+
+## 置き場の方針
+
+スーパープロジェクト直下の **独立クレート**。client submodule 化後もここ（または将来の `alchemy-protocol` リポ）に置き、client / host-server / Elixir サーバが参照する。
+
+client workspace からは `path = "../protocol"` で依存する（`client` の中には埋め込まない）。
 
 ## 保証すること / しないこと
 

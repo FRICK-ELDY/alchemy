@@ -1,6 +1,8 @@
 # Rust
-/target/
+**/target/
 **/*.rs.bk
+# protocol はライブラリのため lock はコミットしない。client workspace の lock はコミットする。
+/protocol/Cargo.lock
 
 # Elixir / Mix
 **/_build/

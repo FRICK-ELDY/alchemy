@@ -4,15 +4,13 @@ on:
   push:
     branches: ["**"]
     paths:
-      - "crates/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
+      - "client/**"
+      - "protocol/**"
       - ".github/workflows/rust-ci.yml"
   pull_request:
     paths:
-      - "crates/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
+      - "client/**"
+      - "protocol/**"
       - ".github/workflows/rust-ci.yml"
 
 concurrency:
@@ -23,12 +21,14 @@ jobs:
   rust-check:
     name: "Rust — fmt & clippy"
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      # winit / wgpu のビルドに X11・Wayland 系ヘッダが必要
       - name: Install system packages
         run: >
           sudo apt-get update && sudo apt-get install -y
@@ -41,6 +41,9 @@ jobs:
   rust-build:
     name: "Rust — build workspace"
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -52,11 +55,13 @@ jobs:
           libx11-dev libxcursor-dev libxi-dev libxrandr-dev
       - run: cargo build --workspace
 
-  # protocol のユニットテストのみ。client のウィンドウ／GPU 依存テストは現状なし。
-  # 将来デバイス必須テストを足すときは --exclude し、理由をコメントに残す。
+  # client のウィンドウ／GPU 依存テストは現状なし。
   rust-test:
     name: "Rust — test workspace"
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

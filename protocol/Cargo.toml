@@ -1,0 +1,13 @@
+[package]
+name = "alchemy-protocol"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Alchemy wire contracts (Protobuf SSoT) — shared by client, host-server, and servers"
+
+[dependencies]
+prost = "0.14"
+
+[build-dependencies]
+prost-build = "0.14"
+protoc-bin-vendored = "3"

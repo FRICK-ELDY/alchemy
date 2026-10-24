@@ -31,4 +31,7 @@ docker compose up -d
 
 シードアカウント（`priv/repo/seeds.exs`）: `alice` / `bob` / `carol` / `admin`、パスワード `Password1`。
 
-Windows ホスト上の `mix compile` は `argon2_elixir` に Visual C++ Build Tools（nmake）が必要。当面は Docker 起動を正とする。
+**推奨起動は全 OS とも Docker Compose**。  
+Windows ホスト直の `mix compile` は `argon2_elixir` に Visual C++ Build Tools（nmake）が必要。
+
+ワイヤ契約の正本は [`protocol/`](../../../protocol/)（client 外）。
