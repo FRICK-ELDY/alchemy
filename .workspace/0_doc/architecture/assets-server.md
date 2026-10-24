@@ -1,7 +1,7 @@
 # assets-server
 
 > **正本コード**: [`assets-server/`](../../../assets-server/)  
-> **ステータス**: Slice C-A（ローカル CAS + Quota）。client の GLB 表示は C-B 完了
+> **ステータス**: Slice C-A（ローカル CAS + Quota）。client は C-C で Manifest の blake3 経由で取得
 
 ## 図上の位置
 

@@ -3,7 +3,7 @@ name = "host-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Local authoritative space host (Slice B: Publish RenderFrame + Room Token gate on input)"
+description = "Local authoritative space host (Slice C-C: SceneManifest + delta RenderFrame + Room Token gate)"
 
 [[bin]]
 name = "host-server"

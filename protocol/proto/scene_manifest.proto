@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package alchemy.scene;
+
+// Slice C-C: low-frequency scene ledger (what is placed).
+// Asset bytes are never embedded — only BLAKE3 refs (hex).
+// PROTOCOL_PIN must bump when this schema changes incompatibly.
+
+message SceneManifest {
+  // Room id (ASCII, no `/`); matches Zenoh key segment.
+  string room_id = 1;
+  // Bump when entries change; unchanged republish may reuse the same revision.
+  uint64 revision = 2;
+  repeated SceneEntry entries = 3;
+}
+
+message SceneEntry {
+  uint32 entity_id = 1;
+  // BLAKE3 hex of the blob in assets-server CAS.
+  string blake3 = 2;
+  // Optional initial pose (binary64 at the render boundary).
+  double x = 3;
+  double y = 4;
+  double z = 5;
+}

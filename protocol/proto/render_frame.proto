@@ -2,8 +2,8 @@ syntax = "proto3";
 
 package alchemy.render;
 
-// Slice A minimal RenderFrame.
-// Full delta-compression / DrawCommand set is deferred.
+// Slice C-C: high-frequency pose delta (where things are).
+// Full snapshots and asset refs are deferred / live on SceneManifest.
 // PROTOCOL_PIN must bump when this schema changes incompatibly.
 
 message RenderFrame {
@@ -11,8 +11,10 @@ message RenderFrame {
   uint64 tick = 1;
   // Wall-clock-ish host time in milliseconds (demo / debug).
   uint64 host_time_ms = 2;
-  // Full entity snapshot (MVP: no delta).
-  repeated Entity entities = 3;
+  // Entities that spawned or moved since the last published frame.
+  repeated Entity upserts = 3;
+  // Entity ids removed from the scene.
+  repeated uint32 removes = 4;
 }
 
 message Entity {
@@ -21,7 +23,7 @@ message Entity {
   double x = 2;
   double y = 3;
   double z = 4;
-  // Optional RGBA 0..1 (demo coloring).
+  // Optional RGBA 0..1 (demo coloring; not an asset ref).
   float r = 5;
   float g = 6;
   float b = 7;
