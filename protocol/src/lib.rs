@@ -78,8 +78,7 @@ mod tests {
             revision: 1,
             entries: vec![SceneEntry {
                 entity_id: 1,
-                blake3: "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555feb66d4f82ee1e72a"
-                    .into(),
+                blake3: "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555feb66d4f82ee1e72a".into(),
                 x: 0.0,
                 y: 0.0,
                 z: 0.0,

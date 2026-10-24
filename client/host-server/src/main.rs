@@ -33,8 +33,7 @@ const CONNECT: &str = "tcp/127.0.0.1:7447";
 const DEFAULT_WORLD_URL: &str = "http://127.0.0.1:4003";
 const DEFAULT_ROOM_ID: &str = "local";
 /// Coin_PolygonalMind.glb (CC0) — same as client fixtures.
-const COIN_BLAKE3_HEX: &str =
-    "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555feb66d4f82ee1e72a";
+const COIN_BLAKE3_HEX: &str = "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555feb66d4f82ee1e72a";
 /// Pose change below this is treated as static (sleep / omit from upserts).
 const MOVE_EPSILON: f64 = 1e-4;
 /// Republish Manifest so late joiners still see blob refs (still ≪ frame rate).
