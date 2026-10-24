@@ -1,0 +1,27 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Elixir / Mix
+**/_build/
+**/deps/
+**/cover/
+**/doc/
+**/.fetch
+**/erl_crash.dump
+**/*.ez
+**/tmp/
+
+# auth-server JWT keys (generated locally)
+auth-server/priv/jwt_private.pem
+auth-server/priv/jwt_public.pem
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Elixir LS
+**/.elixir_ls/
