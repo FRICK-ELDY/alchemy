@@ -58,8 +58,9 @@ depends_on: [x0006]
 | x0006 | D | done | Rapier 最小＋ `is_finite`（内部 60Hz / 配信 30Hz） | [x0006-rapier-finite-tick.md](slices/x0006-rapier-finite-tick.md) |
 | x0007 | E | done | system_ui ダッシュ（自前 Canvas / ESC） | [x0007-system-ui-dash.md](slices/x0007-system-ui-dash.md) |
 | x0008 | — | done | OpenXR 最小（ダッシュ＋Exit / SteamVR） | [x0008-openxr-dash-exit.md](slices/x0008-openxr-dash-exit.md) |
+| x0009 | — | done | Desktop Noclip（Manifest loco + WASD） | [x0009-desktop-noclip-loco.md](slices/x0009-desktop-noclip-loco.md) |
 
-**現在の次:** （未定義 — x0008 完了。次は `x0009`。候補: WASD/ロコモーション）
+**現在の次:** （未定義 — x0009 完了。次は `x000a`。候補: VR ロコモーション）
 
 ## 関連
 

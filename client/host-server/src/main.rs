@@ -1,14 +1,14 @@
-//! Local host-server — Slice D (+ E host_control shutdown stub).
+//! Local host-server — x0009 Desktop Noclip (+ D/E paths).
 //!
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
 //! - Input: Room Token verify + `is_finite` (NaN/Inf dropped before physics)
-//! - Low-frequency SceneManifest (blake3 refs; no GLB bytes)
-//! - Delta RenderFrame: only moved entities (C-C contract retained)
+//! - SceneManifest with default Noclip LocomotionConfig (blake3 refs; no GLB bytes)
+//! - user_root (entity 3) integrates Intent under Manifest mode; Coin (1) stays demo physics
 //! - Slice E: `host_control` Subscribe → `shutdown` exits process
 //!
 //! Non-guarantees:
-//! - Formula / character controller / signed Manifest / verifier / launcher
+//! - Formula / polished Walk character controller / signed Manifest / verifier / launcher / VR loco
 
 mod finite;
 mod host_control;
@@ -21,13 +21,14 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alchemy_protocol::{
-    Entity, InputEvent, Message, RenderFrame, SceneEntry, SceneManifest, FRAME_KEY_LOCAL,
-    HOST_CONTROL_KEY_LOCAL, INPUT_KEY_LOCAL, MANIFEST_KEY_LOCAL, PROTOCOL_PIN,
+    Entity, InputEvent, LocomotionConfig, LocomotionMode, Message, RenderFrame, SceneEntry,
+    SceneManifest, FRAME_KEY_LOCAL, HOST_CONTROL_KEY_LOCAL, INPUT_KEY_LOCAL, MANIFEST_KEY_LOCAL,
+    PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
 use room_token::{default_auth_url, fetch_auth_token, fetch_host_token, RoomTokenVerifier};
-use sim::PhysicsWorld;
+use sim::{LocoMode, PhysicsWorld, DEFAULT_MOVE_SPEED};
 use zenoh::bytes::ZBytes;
 use zenoh::Config;
 use zenoh::Wait;
@@ -48,6 +49,7 @@ const MANIFEST_REPUBLISH: Duration = Duration::from_secs(5);
 
 const ENTITY_MOVING: u32 = 1;
 const ENTITY_STATIC: u32 = 2;
+const ENTITY_USER_ROOT: u32 = 3;
 
 #[derive(Clone, Copy, Debug)]
 struct PoseOverride {
@@ -124,6 +126,20 @@ fn moving_pose_from_sim(world: &PhysicsWorld) -> Pose {
     }
 }
 
+fn user_root_pose_from_sim(world: &PhysicsWorld) -> Pose {
+    let (x, y, z) = world.user_root_translation();
+    Pose {
+        x: f64::from(x),
+        y: f64::from(y),
+        z: f64::from(z),
+        // Distinct tint so deltas are identifiable in logs / future debug draw.
+        r: 0.4,
+        g: 0.7,
+        b: 1.0,
+        a: 1.0,
+    }
+}
+
 fn to_entity(id: u32, pose: Pose) -> Entity {
     Entity {
         id,
@@ -154,6 +170,10 @@ fn build_manifest(room_id: &str, blake3: &str) -> SceneManifest {
             y: f64::from(sim::SPAWN_Y),
             z: 0.0,
         }],
+        locomotion: Some(LocomotionConfig {
+            mode: LocomotionMode::Noclip.into(),
+            move_speed: DEFAULT_MOVE_SPEED,
+        }),
     }
 }
 
@@ -233,7 +253,7 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "host-server Slice D/E starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} host_control={HOST_CONTROL_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id}"
+        "host-server x0009 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} host_control={HOST_CONTROL_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
@@ -260,29 +280,41 @@ fn main() -> Result<()> {
         .declare_publisher(FRAME_KEY_LOCAL)
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_publisher frame failed: {e}"))?;
-    // `session` stays alive on this thread for publishers + worker clones.
 
     let manifest = build_manifest(&room_id, &blob_blake3);
+    let loco = manifest.locomotion.unwrap_or(LocomotionConfig {
+        mode: LocomotionMode::Noclip.into(),
+        move_speed: DEFAULT_MOVE_SPEED,
+    });
+    let loco_mode = LocoMode::from_proto(loco.mode);
+    let move_speed = if loco.move_speed > 0.0 {
+        loco.move_speed
+    } else {
+        DEFAULT_MOVE_SPEED
+    };
+
     let manifest_bytes = manifest.encode_to_vec();
     manifest_pub
         .put(manifest_bytes.clone())
         .wait()
         .map_err(|e| anyhow::anyhow!("manifest publish failed: {e}"))?;
     log::info!(
-        "published SceneManifest revision={} entries={} blake3={}",
+        "published SceneManifest revision={} entries={} blake3={} loco={:?} speed={move_speed}",
         manifest.revision,
         manifest.entries.len(),
-        blob_blake3
+        blob_blake3,
+        loco_mode
     );
     let mut last_manifest = Instant::now();
 
-    let mut physics = PhysicsWorld::new();
+    let mut physics = PhysicsWorld::new(loco_mode, move_speed);
     log::info!(
-        "Rapier world ready (floor + entity {ENTITY_MOVING} dropping from y={:.1})",
-        sim::SPAWN_Y
+        "Rapier world ready (floor + coin entity {ENTITY_MOVING} + user_root {ENTITY_USER_ROOT} mode={:?})",
+        physics.loco_mode()
     );
 
     let physics_period = Duration::from_nanos(1_000_000_000 / PHYSICS_HZ);
+    let dt = 1.0 / PHYSICS_HZ as f32;
     let mut next_physics = Instant::now();
     let mut physics_steps: u64 = 0;
     let mut net_tick: u64 = 0;
@@ -313,9 +345,8 @@ fn main() -> Result<()> {
         }
 
         let overlay = pose.lock().map(|p| *p).unwrap_or_default();
-        if overlay.active && (overlay.x.abs() > 1e-4 || overlay.z.abs() > 1e-4) {
-            // Y comes from gravity / bounce — horizontal input only.
-            physics.apply_input_horizontal(overlay.x, overlay.z);
+        if overlay.active {
+            physics.apply_user_intent(overlay.x, overlay.y, overlay.z, dt);
         }
         physics.step();
         physics_steps = physics_steps.wrapping_add(1);
@@ -328,6 +359,7 @@ fn main() -> Result<()> {
         let poses = [
             (ENTITY_MOVING, moving_pose_from_sim(&physics)),
             (ENTITY_STATIC, static_marker_pose()),
+            (ENTITY_USER_ROOT, user_root_pose_from_sim(&physics)),
         ];
 
         let mut upserts = Vec::new();
@@ -364,8 +396,9 @@ fn main() -> Result<()> {
 
         if last_log.elapsed() >= Duration::from_secs(1) {
             let (mx, my, mz) = physics.moving_translation();
+            let (ux, uy, uz) = physics.user_root_translation();
             log::info!(
-                "physics: steps={physics_steps_logged} pos=({mx:.3},{my:.3},{mz:.3}); delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} net_tick={net_tick}"
+                "physics: steps={physics_steps_logged} coin=({mx:.3},{my:.3},{mz:.3}) user_root=({ux:.3},{uy:.3},{uz:.3}); delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} net_tick={net_tick}"
             );
             publishes = 0;
             upsert_entities = 0;

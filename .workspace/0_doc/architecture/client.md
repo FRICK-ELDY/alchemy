@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: x0008（OpenXR ダッシュ＋Exit。host は x0006 Rapier 経路維持）
+> **ステータス**: x0009（Desktop Noclip。OpenXR ダッシュ＋Exit 維持）
 
 ## レイアウト
 
@@ -12,7 +12,7 @@
 | `client/app/src/system_ui/` | retained Canvas + ダッシュ（OpenXR を知らない） |
 | `client/app/src/surface/` | boot: Desktop (winit) / OpenXR。デバイス差の吸収 |
 | `client/app/assets/icons/` | Material Icons（静的同梱） |
-| `client/host-server` | 裏プロセスの計算ホスト |
+| `client/host-server` | 裏プロセスの計算ホスト（Rapier + user_root loco） |
 | `client/fixtures/` | Coin_PolygonalMind GLB（CC0） |
 | `../protocol` | 共有ワイヤ契約（workspace 外） |
 
@@ -22,20 +22,31 @@
 |:---|:---|
 | Zenoh: Manifest Subscribe / frame デルタ Subscribe / input Publish | ルーター機能（他人の通信の中継は禁止） |
 | Manifest の blake3 → assets download（失敗時 fixture）→ BLAKE3 → wgpu | LOD / KTX2 / マテリアル本格 / スキン |
-| ローカル entity 表への upsert/remove 適用、mesh が entity 1 pose に追従 | 署名付き Manifest / world 台帳 |
+| ローカル entity 表への upsert/remove。Coin=1、user_root=3 | 署名付き Manifest / world 台帳 |
+| Desktop: WASD/Space/C → Intent。カメラは user_root（マウスルックは後続） | VR ロコモーション / Pointer Lock |
 | auth login → Bearer 付き Room Token → InputEvent | OSC / Dual Editor / launcher 本実装 |
-| host: Rapier 60Hz + `is_finite` ゲート → 30Hz デルタ（C-C 契約維持） | Formula / 予測補間 / verifier |
-| ESC（Desktop）/ Menu（OpenXR）ダッシュ・client 終了・host 終了スタブ | ロコモーション / 設定中身 / マイク / Quest 単体 |
+| host: Rapier 60Hz + `is_finite` + Manifest Noclip → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk |
+| ESC（Desktop）/ Menu（OpenXR）ダッシュ・client 終了・host 終了スタブ | Grab / Context / Primary ツール本体 |
 | OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD・launcher 本実装 |
 
-## チャネル分離（C-C + E）
+## チャネル分離（C-C + E + x0009）
 
 | キー | 頻度 | 用途 |
 |:---|:---|:---|
-| `…/manifest` | 低（host は 5s 再送で late joiner 補助） | `entity_id → blake3` |
-| `…/frame` | 高（動いたものだけ） | pose upserts / removes |
-| `…/input` | 入力 | Room Token 付き InputEvent |
+| `…/manifest` | 低（host は 5s 再送で late joiner 補助） | `entity_id → blake3` + `locomotion` |
+| `…/frame` | 高（動いたものだけ） | pose upserts / removes（含 user_root） |
+| `…/input` | 入力 | Room Token 付き Intent（`move_*` + `buttons`） |
 | `…/host_control` | 低（スタブ） | client→host `shutdown`（launcher 前） |
+
+## Desktop バインド（x0009）
+
+| 入力 | 役割 |
+|:---|:---|
+| Esc | ダッシュ開閉（開いている間は移動 Intent = 0） |
+| WASD | 前/左/後/右（固定 look・yaw=0 相対） |
+| Space / C | 上昇 / 下降（Noclip・Fly） |
+| Y / T / R | Primary / Context / Secondary（キーのみスタブ） |
+| マウス | ダッシュ UI クリックのみ（look / Pointer Lock は後続） |
 
 ## アセット
 
@@ -52,3 +63,4 @@
 - 転送: [zenoh-router.md](zenoh-router.md)
 - Room Token: [world-server.md](world-server.md)
 - Blob CAS: [assets-server.md](assets-server.md)
+- Slice: [x0009-desktop-noclip-loco.md](../roadmap/slices/x0009-desktop-noclip-loco.md)

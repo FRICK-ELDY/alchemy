@@ -1,7 +1,7 @@
 # protocol（alchemy-protocol）
 
 > **正本**: [`protocol/`](../../../protocol/)  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.3.0-slice-c-c`
+> **PROTOCOL_PIN**: `alchemy-protocol/0.4.0-x0009`
 
 ## 置き場の方針
 
@@ -18,13 +18,16 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | f64 空間座標（描画境界） | audio / tracking |
 | `InputEvent.room_token` フィールドの存在 | Token の署名検証（host-server / world-server の責務） |
 | Manifest と frame のキー式ヘルパ | world-server 署名付き Manifest |
+| `LocomotionConfig`（World 定義の active mode） | モジュール一覧 UI / 抑制ソース |
 
 ## メッセージ
 
-### SceneManifest（`proto/scene_manifest.proto`）— Slice C-C・低頻度
+### SceneManifest（`proto/scene_manifest.proto`）— 低頻度 + x0009 loco
 
-- `SceneManifest { room_id, revision, entries[] }`
+- `SceneManifest { room_id, revision, entries[], locomotion }`
 - `SceneEntry { entity_id, blake3 (hex), x,y,z }`
+- `LocomotionConfig { mode, move_speed }` — `UNSPECIFIED` → host は **Noclip**
+- `LocomotionMode`: NOCLIP / FLY / WALK
 - **GLB バイトは載せない**（assets-server CAS 参照のみ）
 
 ### RenderFrame（`proto/render_frame.proto`）— Slice C-C・高頻度デルタ
@@ -32,10 +35,13 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - `RenderFrame { tick, host_time_ms, upserts[], removes[] }`
 - `Entity { id, x,y,z (double), r,g,b,a (float) }`
 - 静止 Entity は `upserts` に載せない（フルスナップショット廃止）
+- entity: Coin=`1`、static=`2`、**user_root=`3`**（x0009）
 
-### InputEvent（`proto/input_events.proto`）— Slice B
+### InputEvent（`proto/input_events.proto`）— Intent（x0009）
 
-- `InputEvent { room_token, client_time_ms, move_x, move_y, move_z }`
+- `InputEvent { room_token, client_time_ms, move_x, move_y, move_z, buttons }`
+- `move_*` はカメラ相対→ワールド投影済みの正規化 Intent（~-1..1）。host が `move_speed` でスケール
+- `buttons` ビット: Primary / Secondary / Grab / Context / Jump（未使用は host 無視可）
 - `room_token` は world-server 発行の短命 JWT（検証は host-server）
 
 ## キー式ヘルパ

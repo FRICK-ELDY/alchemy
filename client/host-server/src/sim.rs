@@ -1,8 +1,9 @@
-//! Minimal Rapier world for Slice D (host-local module; not a shared-sim crate yet).
+//! Rapier world + user_root locomotion (x0009).
 //!
-//! Guarantees: 60Hz-capable step; floor + one dynamic body; f32 state.
-//! Non-guarantees: character controller, joints, Formula.
+//! Guarantees: 60Hz-capable step; floor + coin dynamic body; user_root Noclip integrate.
+//! Non-guarantees: polished Walk character controller, joints, Formula.
 
+use alchemy_protocol::LocomotionMode;
 use rapier3d::prelude::*;
 
 const FLOOR_HALF_H: f32 = 0.5;
@@ -11,6 +12,28 @@ const BALL_RADIUS: f32 = 0.25;
 pub const SPAWN_Y: f32 = 5.0;
 /// Demo gravity (weaker than Earth) so the drop lasts ~2s and is easy to see.
 const DEMO_GRAVITY_Y: f32 = -2.2;
+/// Default free-move speed when Manifest `move_speed` is 0.
+pub const DEFAULT_MOVE_SPEED: f32 = 4.0;
+/// user_root spawn (eye height-ish above floor).
+pub const USER_SPAWN: (f32, f32, f32) = (0.0, 1.6, 6.0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocoMode {
+    Noclip,
+    Fly,
+    Walk,
+}
+
+impl LocoMode {
+    pub fn from_proto(mode: i32) -> Self {
+        match LocomotionMode::try_from(mode).unwrap_or(LocomotionMode::Unspecified) {
+            LocomotionMode::Fly => Self::Fly,
+            LocomotionMode::Walk => Self::Walk,
+            // UNSPECIFIED and NOCLIP → Noclip (world default).
+            LocomotionMode::Noclip | LocomotionMode::Unspecified => Self::Noclip,
+        }
+    }
+}
 
 pub struct PhysicsWorld {
     gravity: Vector<Real>,
@@ -25,10 +48,14 @@ pub struct PhysicsWorld {
     multibody_joint_set: MultibodyJointSet,
     ccd_solver: CCDSolver,
     moving: RigidBodyHandle,
+    /// Authoritative player root (kinematic; Noclip ignores collision).
+    user_root: RigidBodyHandle,
+    loco_mode: LocoMode,
+    move_speed: f32,
 }
 
 impl PhysicsWorld {
-    pub fn new() -> Self {
+    pub fn new(loco_mode: LocoMode, move_speed: f32) -> Self {
         let mut rigid_body_set = RigidBodySet::new();
         let mut collider_set = ColliderSet::new();
 
@@ -54,8 +81,31 @@ impl PhysicsWorld {
             &mut rigid_body_set,
         );
 
+        let (ux, uy, uz) = USER_SPAWN;
+        let user = RigidBodyBuilder::kinematic_position_based()
+            .translation(vector![ux, uy, uz])
+            .build();
+        let user_root = rigid_body_set.insert(user);
+        // Sensor collider so Noclip never blocks; Walk/Fly may use later.
+        collider_set.insert_with_parent(
+            ColliderBuilder::ball(0.3).sensor(true).build(),
+            user_root,
+            &mut rigid_body_set,
+        );
+
+        let speed = if move_speed > 0.0 {
+            move_speed
+        } else {
+            DEFAULT_MOVE_SPEED
+        };
+
+        let gravity_y = match loco_mode {
+            LocoMode::Walk => DEMO_GRAVITY_Y,
+            LocoMode::Noclip | LocoMode::Fly => 0.0,
+        };
+
         Self {
-            gravity: vector![0.0, DEMO_GRAVITY_Y, 0.0],
+            gravity: vector![0.0, gravity_y, 0.0],
             integration_parameters: IntegrationParameters::default(),
             physics_pipeline: PhysicsPipeline::new(),
             island_manager: IslandManager::new(),
@@ -67,7 +117,14 @@ impl PhysicsWorld {
             multibody_joint_set: MultibodyJointSet::new(),
             ccd_solver: CCDSolver::new(),
             moving,
+            user_root,
+            loco_mode,
+            move_speed: speed,
         }
+    }
+
+    pub fn loco_mode(&self) -> LocoMode {
+        self.loco_mode
     }
 
     pub fn step(&mut self) {
@@ -88,11 +145,27 @@ impl PhysicsWorld {
         );
     }
 
-    /// Apply finite horizontal input as linvel XZ; keep current Y so gravity still works.
-    pub fn apply_input_horizontal(&mut self, vx: f32, vz: f32) {
-        if let Some(body) = self.rigid_body_set.get_mut(self.moving) {
-            let vy = body.linvel().y;
-            body.set_linvel(vector![vx, vy, vz], true);
+    /// Integrate user_root from camera-relative intent (move_* in ~-1..1).
+    /// Intent axes: +X right, +Y up, +Z forward (already world-projected by client for XZ).
+    pub fn apply_user_intent(&mut self, mx: f32, my: f32, mz: f32, dt: f32) {
+        let speed = self.move_speed;
+        let Some(body) = self.rigid_body_set.get_mut(self.user_root) else {
+            return;
+        };
+        let t = *body.translation();
+        match self.loco_mode {
+            LocoMode::Noclip | LocoMode::Fly => {
+                let dx = mx * speed * dt;
+                let dy = my * speed * dt;
+                let dz = mz * speed * dt;
+                body.set_next_kinematic_translation(vector![t.x + dx, t.y + dy, t.z + dz]);
+            }
+            LocoMode::Walk => {
+                // Minimal: horizontal only; Y from gravity on coin path — user_root stays kinematic XZ.
+                let dx = mx * speed * dt;
+                let dz = mz * speed * dt;
+                body.set_next_kinematic_translation(vector![t.x + dx, t.y, t.z + dz]);
+            }
         }
     }
 
@@ -105,6 +178,16 @@ impl PhysicsWorld {
             })
             .unwrap_or((0.0, SPAWN_Y, 0.0))
     }
+
+    pub fn user_root_translation(&self) -> (f32, f32, f32) {
+        self.rigid_body_set
+            .get(self.user_root)
+            .map(|b| {
+                let t = b.translation();
+                (t.x, t.y, t.z)
+            })
+            .unwrap_or(USER_SPAWN)
+    }
 }
 
 #[cfg(test)]
@@ -113,7 +196,7 @@ mod tests {
 
     #[test]
     fn ball_falls_onto_floor() {
-        let mut world = PhysicsWorld::new();
+        let mut world = PhysicsWorld::new(LocoMode::Walk, DEFAULT_MOVE_SPEED);
         let (_, y0, _) = world.moving_translation();
         assert!(y0 > 4.5, "spawn above floor");
 
@@ -122,5 +205,24 @@ mod tests {
         }
         let (_, y, _) = world.moving_translation();
         assert!(y > 0.1 && y < 1.0, "expected resting on floor, got y={y}");
+    }
+
+    #[test]
+    fn noclip_passes_through_floor() {
+        let mut world = PhysicsWorld::new(LocoMode::Noclip, 10.0);
+        let dt = 1.0 / 60.0;
+        // Drive straight down through the floor plane.
+        for _ in 0..120 {
+            world.apply_user_intent(0.0, -1.0, 0.0, dt);
+            world.step();
+        }
+        let (_, y, _) = world.user_root_translation();
+        assert!(y < 0.0, "noclip should pass below floor, got y={y}");
+    }
+
+    #[test]
+    fn unspecified_maps_to_noclip() {
+        assert_eq!(LocoMode::from_proto(0), LocoMode::Noclip);
+        assert_eq!(LocoMode::from_proto(1), LocoMode::Noclip);
     }
 }

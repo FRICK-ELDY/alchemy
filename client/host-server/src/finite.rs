@@ -21,6 +21,7 @@ mod tests {
             move_x: x,
             move_y: y,
             move_z: z,
+            buttons: 0,
         }
     }
 
