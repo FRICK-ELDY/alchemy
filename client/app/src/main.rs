@@ -1,16 +1,19 @@
-//! Alchemy client — Slice C-C.
+//! Alchemy client — Slice E (system_ui Canvas) + C-C/D render path.
 //!
 //! Guarantees:
 //! - Subscribes to SceneManifest (blake3 refs) and RenderFrame deltas
 //! - Downloads blob by Manifest blake3 (fixture fallback), BLAKE3 verify, wgpu mesh
 //! - Applies upserts/removes to a local entity table; mesh follows entity 1 pose
 //! - Fetches Room Token and publishes InputEvent
+//! - ESC dash (retained Canvas overlay); client exit; host exit stub
 //!
 //! Non-guarantees:
 //! - OSC, Dual Editor, asset LOD, auth login UI, launcher, materials/skins
-//! - Signed Manifest / world-server ledger
+//! - Signed Manifest / world-server ledger / OpenXR / settings contents
 
+mod host_control;
 mod mesh;
+mod system_ui;
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -29,11 +32,13 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, CpuMesh, COIN_BLAKE3_HEX};
 use serde::Deserialize;
+use system_ui::{SystemUi, UiAction};
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 use zenoh::bytes::ZBytes;
 use zenoh::Config;
@@ -352,6 +357,7 @@ struct Gpu {
     mesh_radius: f32,
     shared: Arc<SharedState>,
     last_pose_log: Instant,
+    surface_format: wgpu::TextureFormat,
 }
 
 impl Gpu {
@@ -562,6 +568,7 @@ impl Gpu {
             mesh_radius: mesh.radius,
             shared,
             last_pose_log: Instant::now(),
+            surface_format: format,
         })
     }
 
@@ -575,7 +582,7 @@ impl Gpu {
         self.depth_view = create_depth_view(&self.device, width, height);
     }
 
-    fn render(&mut self) -> Result<()> {
+    fn render(&mut self, ui: &mut SystemUi) -> Result<()> {
         let pose = self
             .shared
             .entities
@@ -601,6 +608,8 @@ impl Gpu {
         let target = Vec3::new(pose.x * 0.3, focus_y, pose.z * 0.3);
         let view = Mat4::look_at_rh(eye, target, Vec3::Y);
         let proj = Mat4::perspective_rh(50.0_f32.to_radians(), aspect, 0.05, 50.0);
+
+        ui.prepare_frame(&self.queue);
 
         let frame = self
             .surface
@@ -687,6 +696,26 @@ impl Gpu {
             pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.index_count, 0, 0..1);
         }
+
+        // system_ui overlay (no depth) — same Canvas texture path for future VR quad.
+        if ui.state.open {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ui-overlay"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            ui.draw(&mut pass);
+        }
+
         self.queue.submit(Some(encoder.finish()));
         frame.present();
         Ok(())
@@ -716,6 +745,9 @@ struct App {
     shared: Arc<SharedState>,
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
+    ui: SystemUi,
+    zenoh: Option<zenoh::Session>,
+    cursor: (f64, f64),
 }
 
 impl ApplicationHandler for App {
@@ -724,7 +756,7 @@ impl ApplicationHandler for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("Alchemy Client — Slice D (Rapier)")
+            .with_title("Alchemy Client — Slice E (system_ui)")
             .with_inner_size(LogicalSize::new(960.0, 540.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         let gpu = pollster::block_on(Gpu::new(
@@ -733,8 +765,18 @@ impl ApplicationHandler for App {
             Arc::clone(&self.shared),
         ))
         .expect("init gpu");
+        self.ui
+            .init_gpu(
+                &gpu.device,
+                &gpu.queue,
+                gpu.surface_format,
+                gpu.config.width,
+                gpu.config.height,
+            )
+            .expect("init system_ui gpu");
         self.window = Some(window);
         self.gpu = Some(gpu);
+        log::info!("system_ui ready — press Esc for dash");
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -743,11 +785,44 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 if let Some(gpu) = self.gpu.as_mut() {
                     gpu.resize(size.width, size.height);
+                    self.ui.resize(&gpu.device, size.width, size.height);
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = (position.x, position.y);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let action = self.ui.on_click(self.cursor.0 as f32, self.cursor.1 as f32);
+                match action {
+                    UiAction::ExitClientOnly => {
+                        log::info!("system_ui: exit client only");
+                        event_loop.exit();
+                    }
+                    UiAction::ExitClientAndHost => {
+                        log::info!("system_ui: exit client + host stub");
+                        if let Some(session) = self.zenoh.as_ref() {
+                            host_control::request_host_shutdown(session);
+                        }
+                        event_loop.exit();
+                    }
+                    UiAction::None => {}
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed && !event.repeat {
+                    if let PhysicalKey::Code(KeyCode::Escape) = event.physical_key {
+                        self.ui.toggle();
+                        log::info!("system_ui open={}", self.ui.state.open);
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {
                 if let Some(gpu) = self.gpu.as_mut() {
-                    if let Err(err) = gpu.render() {
+                    if let Err(err) = gpu.render(&mut self.ui) {
                         log::error!("render failed: {err:#}");
                     }
                 }
@@ -777,7 +852,7 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "client Slice D starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} auth={auth_url} assets={assets_url}"
+        "client Slice E starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} auth={auth_url} assets={assets_url}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
@@ -795,8 +870,6 @@ fn main() -> Result<()> {
     spawn_manifest_subscriber(session.clone(), Arc::clone(&shared), blake3_tx)?;
     spawn_frame_subscriber(session.clone(), Arc::clone(&shared))?;
     spawn_input_publisher(session.clone(), room_token)?;
-    // Keep a session handle for the process lifetime (event loop).
-    let _zenoh_keepalive = session;
 
     let blob_blake3 = match blake3_rx.recv_timeout(MANIFEST_WAIT) {
         Ok(hex) => {
@@ -829,6 +902,9 @@ fn main() -> Result<()> {
         shared,
         window: None,
         gpu: None,
+        ui: SystemUi::new(),
+        zenoh: Some(session),
+        cursor: (0.0, 0.0),
     };
     event_loop.run_app(&mut app)?;
     Ok(())

@@ -1,0 +1,123 @@
+//! Tiny 5×7 ASCII bitmap font for Canvas labels (time / FPS / English stubs).
+
+/// Each glyph is 5 columns × 7 rows, MSB of each row unused (bits 4..0).
+const GLYPH_W: usize = 5;
+const GLYPH_H: usize = 7;
+
+fn glyph_bits(c: u8) -> Option<[u8; GLYPH_H]> {
+    // Compact subset: digits, colon, letters used by dash labels, space, + .
+    Some(match c {
+        b' ' => [0, 0, 0, 0, 0, 0, 0],
+        b':' => [0, 0x04, 0, 0x04, 0, 0, 0],
+        b'.' => [0, 0, 0, 0, 0, 0x04, 0],
+        b'+' => [0, 0x04, 0x04, 0x1F, 0x04, 0x04, 0],
+        b'-' => [0, 0, 0, 0x1F, 0, 0, 0],
+        b'0' => [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E],
+        b'1' => [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        b'2' => [0x0E, 0x11, 0x01, 0x06, 0x08, 0x10, 0x1F],
+        b'3' => [0x0E, 0x11, 0x01, 0x06, 0x01, 0x11, 0x0E],
+        b'4' => [0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02],
+        b'5' => [0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E],
+        b'6' => [0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E],
+        b'7' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
+        b'8' => [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E],
+        b'9' => [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C],
+        b'A' | b'a' => [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+        b'B' | b'b' => [0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E],
+        b'C' | b'c' => [0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E],
+        b'D' | b'd' => [0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E],
+        b'E' | b'e' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],
+        b'F' | b'f' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10],
+        b'G' | b'g' => [0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F],
+        b'H' | b'h' => [0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+        b'I' | b'i' => [0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        b'K' | b'k' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+        b'L' | b'l' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F],
+        b'M' | b'm' => [0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11],
+        b'N' | b'n' => [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
+        b'O' | b'o' => [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        b'P' | b'p' => [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10],
+        b'R' | b'r' => [0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11],
+        b'S' | b's' => [0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E],
+        b'T' | b't' => [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        b'U' | b'u' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        b'V' | b'v' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],
+        b'W' | b'w' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11],
+        b'X' | b'x' => [0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11],
+        b'Y' | b'y' => [0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04],
+        b'/' => [0x01, 0x02, 0x04, 0x04, 0x08, 0x10, 0x10],
+        _ => return None,
+    })
+}
+
+pub struct TextBlit<'a> {
+    pub buf: &'a mut [u8],
+    pub stride: usize,
+    pub height: usize,
+    pub origin_x: i32,
+    pub origin_y: i32,
+    pub text: &'a str,
+    pub scale: i32,
+    pub rgba: [u8; 4],
+}
+
+/// Blit glyphs into an RGBA buffer (`stride` = width in pixels).
+pub fn blit_text(args: TextBlit<'_>) {
+    let scale = args.scale.max(1);
+    let mut cursor_x = args.origin_x;
+    for (gi, b) in args.text.bytes().enumerate() {
+        if gi > 0 {
+            cursor_x += scale;
+        }
+        let Some(rows) = glyph_bits(b) else {
+            cursor_x += (GLYPH_W as i32) * scale;
+            continue;
+        };
+        for (row, bits) in rows.iter().enumerate() {
+            for col in 0..GLYPH_W {
+                if bits & (1 << (GLYPH_W - 1 - col)) == 0 {
+                    continue;
+                }
+                for sy in 0..scale {
+                    for sx in 0..scale {
+                        let x = cursor_x + (col as i32) * scale + sx;
+                        let y = args.origin_y + (row as i32) * scale + sy;
+                        if x < 0 || y < 0 {
+                            continue;
+                        }
+                        let (x, y) = (x as usize, y as usize);
+                        if x >= args.stride || y >= args.height {
+                            continue;
+                        }
+                        let i = (y * args.stride + x) * 4;
+                        args.buf[i..i + 4].copy_from_slice(&args.rgba);
+                    }
+                }
+            }
+        }
+        cursor_x += (GLYPH_W as i32) * scale;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blit_writes_pixels() {
+        let w = 64;
+        let h = 16;
+        let mut buf = vec![0u8; w * h * 4];
+        blit_text(TextBlit {
+            buf: &mut buf,
+            stride: w,
+            height: h,
+            origin_x: 0,
+            origin_y: 0,
+            text: "FPS",
+            scale: 2,
+            rgba: [255, 255, 255, 255],
+        });
+        assert!(buf.iter().any(|&b| b != 0));
+    }
+}
