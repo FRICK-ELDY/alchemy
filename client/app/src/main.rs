@@ -1,24 +1,29 @@
-//! Alchemy client — Slice C-B.
+//! Alchemy client — Slice C-C.
 //!
 //! Guarantees:
-//! - Subscribes to frame key and decodes RenderFrame
-//! - Fetches Room Token from world-server and publishes InputEvent
-//! - Downloads one GLB (or fixture fallback), verifies BLAKE3, draws mesh with wgpu
+//! - Subscribes to SceneManifest (blake3 refs) and RenderFrame deltas
+//! - Downloads blob by Manifest blake3 (fixture fallback), BLAKE3 verify, wgpu mesh
+//! - Applies upserts/removes to a local entity table; mesh follows entity 1 pose
+//! - Fetches Room Token and publishes InputEvent
 //!
 //! Non-guarantees:
 //! - OSC, Dual Editor, asset LOD, auth login UI, launcher, materials/skins
+//! - Signed Manifest / world-server ledger
 
 mod mesh;
 
+use std::collections::HashMap;
 use std::f32::consts::TAU;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alchemy_protocol::{
-    InputEvent, Message, RenderFrame, FRAME_KEY_LOCAL, INPUT_KEY_LOCAL, PROTOCOL_PIN,
+    InputEvent, Message, RenderFrame, SceneManifest, FRAME_KEY_LOCAL, INPUT_KEY_LOCAL,
+    MANIFEST_KEY_LOCAL, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
@@ -43,14 +48,31 @@ const DEFAULT_ROOM_ID: &str = "local";
 const DEFAULT_AUTH_USER: &str = "alice";
 const DEFAULT_AUTH_PASSWORD: &str = "Password1";
 const INPUT_HZ: u64 = 10;
+const MANIFEST_WAIT: Duration = Duration::from_secs(5);
+const MESH_ENTITY_ID: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct EntityPose {
     x: f32,
     y: f32,
+    z: f32,
     r: f32,
     g: f32,
     b: f32,
+}
+
+struct SharedState {
+    entities: Mutex<HashMap<u32, EntityPose>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenResponse {
+    token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthSession {
+    access_token: String,
 }
 
 #[repr(C)]
@@ -64,20 +86,6 @@ struct MeshVertex {
 struct Uniforms {
     mvp: [[f32; 4]; 4],
     color: [f32; 4],
-}
-
-struct SharedState {
-    pose: Mutex<EntityPose>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TokenResponse {
-    token: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct AuthSession {
-    access_token: String,
 }
 
 fn open_zenoh() -> Result<zenoh::Session> {
@@ -158,7 +166,7 @@ fn fetch_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<
     Ok(bytes)
 }
 
-fn load_coin_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<Vec<u8>> {
+fn load_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<Vec<u8>> {
     match fetch_blob_bytes(assets_url, blake3, auth_token) {
         Ok(bytes) => {
             log::info!(
@@ -193,29 +201,95 @@ fn client_time_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn spawn_zenoh_subscriber(shared: Arc<SharedState>) -> Result<()> {
-    let session = open_zenoh().context("open zenoh")?;
+/// First Manifest blake3 for `MESH_ENTITY_ID`, plus seed poses from entries.
+fn spawn_manifest_subscriber(
+    shared: Arc<SharedState>,
+    blake3_tx: mpsc::SyncSender<String>,
+) -> Result<()> {
+    let session = open_zenoh().context("open zenoh for manifest")?;
+    let subscriber = session
+        .declare_subscriber(MANIFEST_KEY_LOCAL)
+        .wait()
+        .map_err(|e| anyhow::anyhow!("declare_subscriber manifest failed: {e}"))?;
+
+    thread::Builder::new()
+        .name("zenoh-manifest".into())
+        .spawn(move || {
+            log::info!("subscribed to {MANIFEST_KEY_LOCAL}");
+            let mut sent_blake3 = false;
+            while let Ok(sample) = subscriber.recv() {
+                let bytes: ZBytes = sample.payload().clone();
+                let payload = bytes.to_bytes();
+                match SceneManifest::decode(payload.as_ref()) {
+                    Ok(manifest) => {
+                        log::info!(
+                            "SceneManifest revision={} entries={}",
+                            manifest.revision,
+                            manifest.entries.len()
+                        );
+                        if let Ok(mut map) = shared.entities.lock() {
+                            for entry in &manifest.entries {
+                                map.entry(entry.entity_id).or_insert(EntityPose {
+                                    x: entry.x as f32,
+                                    y: entry.y as f32,
+                                    z: entry.z as f32,
+                                    r: 0.92,
+                                    g: 0.78,
+                                    b: 0.28,
+                                });
+                            }
+                        }
+                        if !sent_blake3 {
+                            if let Some(entry) = manifest
+                                .entries
+                                .iter()
+                                .find(|e| e.entity_id == MESH_ENTITY_ID)
+                            {
+                                let _ = blake3_tx.send(entry.blake3.clone());
+                                sent_blake3 = true;
+                            }
+                        }
+                    }
+                    Err(err) => log::warn!("SceneManifest decode failed: {err}"),
+                }
+            }
+        })
+        .context("spawn manifest thread")?;
+    Ok(())
+}
+
+fn spawn_frame_subscriber(shared: Arc<SharedState>) -> Result<()> {
+    let session = open_zenoh().context("open zenoh for frame")?;
     let subscriber = session
         .declare_subscriber(FRAME_KEY_LOCAL)
         .wait()
-        .map_err(|e| anyhow::anyhow!("declare_subscriber failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("declare_subscriber frame failed: {e}"))?;
 
     thread::Builder::new()
         .name("zenoh-frame".into())
         .spawn(move || {
-            log::info!("subscribed to {FRAME_KEY_LOCAL}");
+            log::info!("subscribed to {FRAME_KEY_LOCAL} (delta upserts/removes)");
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = bytes.to_bytes();
                 match RenderFrame::decode(payload.as_ref()) {
                     Ok(frame) => {
-                        if let Some(e) = frame.entities.first() {
-                            if let Ok(mut pose) = shared.pose.lock() {
-                                pose.x = e.x as f32;
-                                pose.y = e.y as f32;
-                                pose.r = e.r;
-                                pose.g = e.g;
-                                pose.b = e.b;
+                        if let Ok(mut map) = shared.entities.lock() {
+                            for e in frame.upserts {
+                                map.insert(
+                                    e.id,
+                                    EntityPose {
+                                        x: e.x as f32,
+                                        y: e.y as f32,
+                                        z: e.z as f32,
+                                        r: e.r,
+                                        g: e.g,
+                                        b: e.b,
+                                    },
+                                );
+                            }
+                            for id in frame.removes {
+                                map.remove(&id);
                             }
                         }
                     }
@@ -223,7 +297,7 @@ fn spawn_zenoh_subscriber(shared: Arc<SharedState>) -> Result<()> {
                 }
             }
         })
-        .context("spawn zenoh thread")?;
+        .context("spawn frame thread")?;
     Ok(())
 }
 
@@ -278,11 +352,12 @@ struct Gpu {
     bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
     mesh_radius: f32,
+    shared: Arc<SharedState>,
     started: Instant,
 }
 
 impl Gpu {
-    async fn new(window: Arc<Window>, mesh: &CpuMesh) -> Result<Self> {
+    async fn new(window: Arc<Window>, mesh: &CpuMesh, shared: Arc<SharedState>) -> Result<Self> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(window.clone())?;
@@ -441,6 +516,7 @@ impl Gpu {
             bind_group,
             depth_view,
             mesh_radius: mesh.radius,
+            shared,
             started: Instant::now(),
         })
     }
@@ -456,21 +532,36 @@ impl Gpu {
     }
 
     fn render(&mut self) -> Result<()> {
+        let pose = self
+            .shared
+            .entities
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&MESH_ENTITY_ID).copied())
+            .unwrap_or(EntityPose {
+                r: 0.92,
+                g: 0.78,
+                b: 0.28,
+                ..Default::default()
+            });
+
         let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
         let t = self.started.elapsed().as_secs_f32();
-        let eye_dist = self.mesh_radius * 3.0;
+        let eye_dist = self.mesh_radius * 4.0 + 2.0;
         let view = Mat4::look_at_rh(
             Vec3::new(eye_dist * 0.7, eye_dist * 0.45, eye_dist),
-            Vec3::ZERO,
+            Vec3::new(pose.x, pose.y, pose.z),
             Vec3::Y,
         );
         let proj = Mat4::perspective_rh(50.0_f32.to_radians(), aspect, 0.01, eye_dist * 20.0);
-        let model = Mat4::from_rotation_y(t * 0.8) * Mat4::from_rotation_x(0.35);
+        let model = Mat4::from_translation(Vec3::new(pose.x, pose.y, pose.z))
+            * Mat4::from_rotation_y(t * 0.8)
+            * Mat4::from_rotation_x(0.35);
         let mvp = proj * view * model;
 
         let uniforms = Uniforms {
             mvp: mvp.to_cols_array_2d(),
-            color: [0.92, 0.78, 0.28, 1.0],
+            color: [pose.r, pose.g, pose.b, 1.0],
         };
         self.queue
             .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
@@ -546,6 +637,7 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
 
 struct App {
     mesh: CpuMesh,
+    shared: Arc<SharedState>,
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
 }
@@ -556,10 +648,15 @@ impl ApplicationHandler for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("Alchemy Client — Slice C-B (Coin)")
+            .with_title("Alchemy Client — Slice C-C (Manifest + Delta)")
             .with_inner_size(LogicalSize::new(960.0, 540.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
-        let gpu = pollster::block_on(Gpu::new(Arc::clone(&window), &self.mesh)).expect("init gpu");
+        let gpu = pollster::block_on(Gpu::new(
+            Arc::clone(&window),
+            &self.mesh,
+            Arc::clone(&self.shared),
+        ))
+        .expect("init gpu");
         self.window = Some(window);
         self.gpu = Some(gpu);
     }
@@ -600,11 +697,11 @@ fn main() -> Result<()> {
     let auth_url = std::env::var("AUTH_URL").unwrap_or_else(|_| DEFAULT_AUTH_URL.to_string());
     let assets_url = std::env::var("ASSETS_URL").unwrap_or_else(|_| DEFAULT_ASSETS_URL.to_string());
     let room_id = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
-    let blob_blake3 =
+    let fallback_blake3 =
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "client Slice C-B starting; protocol_pin={PROTOCOL_PIN} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} auth={auth_url} assets={assets_url}"
+        "client Slice C-C starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} auth={auth_url} assets={assets_url}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
@@ -612,7 +709,29 @@ fn main() -> Result<()> {
         fetch_guest_token(&world_url, &room_id, &auth_token).context("fetch guest Room Token")?;
     log::info!("auth JWT + guest Room Token acquired");
 
-    let bytes = load_coin_bytes(&assets_url, &blob_blake3, &auth_token)?;
+    let shared = Arc::new(SharedState {
+        entities: Mutex::new(HashMap::new()),
+    });
+    let (blake3_tx, blake3_rx) = mpsc::sync_channel::<String>(1);
+    spawn_manifest_subscriber(Arc::clone(&shared), blake3_tx)?;
+    spawn_frame_subscriber(Arc::clone(&shared))?;
+    spawn_input_publisher(room_token)?;
+
+    let blob_blake3 = match blake3_rx.recv_timeout(MANIFEST_WAIT) {
+        Ok(hex) => {
+            log::info!("Manifest blake3 for entity {MESH_ENTITY_ID}: {hex}");
+            hex
+        }
+        Err(_) => {
+            log::warn!(
+                "no SceneManifest within {:?}; using fallback blake3={fallback_blake3}",
+                MANIFEST_WAIT
+            );
+            fallback_blake3
+        }
+    };
+
+    let bytes = load_blob_bytes(&assets_url, &blob_blake3, &auth_token)?;
     verify_blake3(&bytes, &blob_blake3).context("reject blob: BLAKE3 mismatch")?;
     let mesh = load_mesh_from_glb(&bytes).context("decode GLB")?;
     log::info!(
@@ -622,21 +741,11 @@ fn main() -> Result<()> {
         mesh.radius
     );
 
-    let shared = Arc::new(SharedState {
-        pose: Mutex::new(EntityPose {
-            r: 0.2,
-            g: 0.7,
-            b: 1.0,
-            ..Default::default()
-        }),
-    });
-    spawn_zenoh_subscriber(Arc::clone(&shared))?;
-    spawn_input_publisher(room_token)?;
-
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
         mesh,
+        shared,
         window: None,
         gpu: None,
     };
