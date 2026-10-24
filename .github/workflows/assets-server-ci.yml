@@ -1,0 +1,55 @@
+name: Assets Server CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "assets-server/**"
+      - ".github/workflows/assets-server-ci.yml"
+  pull_request:
+    paths:
+      - "assets-server/**"
+      - ".github/workflows/assets-server-ci.yml"
+
+concurrency:
+  group: assets-server-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: assets-server
+
+    env:
+      MIX_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install b3sum
+        run: cargo install b3sum --locked
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            assets-server/deps
+            assets-server/_build
+          key: ${{ runner.os }}-assets-mix-${{ hashFiles('assets-server/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-assets-mix-
+
+      - run: mix deps.get
+      - run: mix format --check-formatted
+      - run: mix compile --warnings-as-errors
+      - run: mix credo --strict
+      - run: mix test

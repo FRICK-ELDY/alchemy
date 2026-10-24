@@ -1,0 +1,31 @@
+services:
+  assets:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    ports:
+      - "4004:4004"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      MIX_ENV: dev
+      PHX_SERVER: "true"
+      BIND_ALL: "true"
+      PORT: "4004"
+      DATABASE_PATH: /app/priv/assets_dev.sqlite3
+      ASSETS_CAS_PATH: /app/priv/cas
+      AUTH_JWKS_URL: http://host.docker.internal:4002/.well-known/jwks.json
+    volumes:
+      - .:/app
+      - assets_deps:/app/deps
+      - assets_build:/app/_build
+    command: >
+      sh -c "mix deps.get &&
+             mix ecto.create &&
+             mix ecto.migrate &&
+             mix phx.server"
+
+volumes:
+  assets_deps:
+  assets_build:

@@ -5,16 +5,16 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（Slice B.5）
+## 現状（Slice C-A）
 
-ローカル `zenohd` → `host-server` が RenderFrame を Publish → `client` が Subscribe して表示。  
-入力は Room Token 付き `InputEvent`。`world-server` が Token / JWKS を発行。  
-Room Token 発行には `auth-server` のユーザー JWT（Bearer）が必須。
+ローカル `zenohd` → `host-server` / `client` の空間同期（Slice B.5）に加え、  
+`assets-server` で auth 必須の Blob CAS（BLAKE3）+ 固定 Quota。
 
 | コンポーネント | パス |
 |:---|:---|
 | auth-server | [`auth-server/`](auth-server/) |
 | world-server | [`world-server/`](world-server/) |
+| assets-server | [`assets-server/`](assets-server/) |
 | zenoh-router | [`zenoh-router/`](zenoh-router/) |
 | protocol（共有ワイヤ契約） | [`protocol/`](protocol/) |
 | client workspace | [`client/`](client/)（`app` + `host-server`） |
@@ -62,7 +62,7 @@ bash .scripts/wsl-setup.sh
 | ツール | 用途 | 備考 |
 |:---|:---|:---|
 | Rust (stable) | client / host-server / protocol | [rustup](https://rustup.rs/) または `wsl-setup.sh` |
-| Docker / Docker Compose | auth-server / world-server | Desktop + WSL Integration、または Linux ネイティブ |
+| Docker / Docker Compose | auth / world / assets | Desktop + WSL Integration、または Linux ネイティブ |
 | zenohd | ローカルルーター | `cargo install zenohd` |
 
 任意: Elixir 1.19 / OTP 28（ホスト直実行したい場合のみ）。
@@ -74,30 +74,33 @@ sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev \
   libx11-dev libxcursor-dev libxi-dev libxrandr-dev
 ```
 
-## Slice B.5 起動（macOS / Linux / WSL）
+## 起動（macOS / Linux / WSL）
 
 ```bash
-# 1) auth + world（world は auth JWKS を参照）
+# 1) auth + world + assets
 cd auth-server && docker compose up -d && cd ..
 cd world-server && docker compose up -d && cd ..
+cd assets-server && docker compose up -d && cd ..
 
 # 2) zenohd
 zenohd -c zenoh-router/config.json5
 
 # 3) host + client（別ターミナル）
-# 既定で alice / Password1 で auth login → Room Token 取得
 cd client
 cargo run -p host-server
 cargo run -p client
+
+# 4) assets smoke（任意）
+bash .scripts/smoke-assets.sh
 ```
 
-環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ROOM_ID` / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN` / `ALCHEMY_ROOM_TOKEN`。
+環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID` / `AUTH_USER` / `AUTH_PASSWORD`。
 
-詳細・キー式は [`.workspace/roadmap.md`](.workspace/roadmap.md)。
+詳細は [`.workspace/roadmap.md`](.workspace/roadmap.md)。
 
 ## ローカル CI
 
-GitHub Actions と同じゲートを手元で実行します。**auth / world は全 OS で Docker 既定**。
+GitHub Actions と同じゲートを手元で実行します。**Elixir 系は全 OS で Docker 既定**。
 
 ```bash
 chmod +x .scripts/ci.sh   # 初回のみ
@@ -106,6 +109,7 @@ make ci-rust
 make ci-protocol
 make ci-auth
 make ci-world
+make ci-assets
 ```
 
 ホストの `mix` で auth を回す場合のみ:
@@ -120,3 +124,4 @@ AUTH_CI_HOST=1 ./.scripts/ci.sh auth
 | `protocol` | `protocol/` で `cargo test`（`protoc` があれば schema も） |
 | `auth` | Docker で format / compile / credo / ecto / `mix test` |
 | `world` | Docker で format / compile / credo / `mix test` |
+| `assets` | Docker で format / compile / credo / ecto / `mix test` |
