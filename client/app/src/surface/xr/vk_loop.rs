@@ -13,14 +13,18 @@ use anyhow::{bail, Context, Result};
 use ash::vk::{self, Handle};
 use openxr as xr;
 
+use alchemy_protocol::DEFAULT_MOVE_SPEED;
+
 use super::input::{
     dash_quad_model, openxr_pose_to_isometry, pose_to_ray, ray_hit_dash_quad, QUAD_HEIGHT,
     QUAD_WIDTH,
 };
+use super::loco::{intent_from_sticks, STICK_DEADZONE};
 use crate::host_control;
 use crate::mesh::CpuMesh;
-use crate::scene::{SharedState, MESH_ENTITY_ID};
+use crate::scene::{MoveIntent, SharedState, MESH_ENTITY_ID};
 use crate::system_ui::{SystemUi, UiAction};
+use glam::Quat;
 
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 const VIEW_COUNT: u32 = 2;
@@ -153,15 +157,18 @@ pub fn run_openxr(
                 },
             )?;
 
-        let action_set = xr_instance.create_action_set("alchemy_ui", "Alchemy UI", 0)?;
-        let menu_action = action_set.create_action::<bool>("menu", "Menu toggle", &[])?;
-        let select_action = action_set.create_action::<bool>("select", "Select / click", &[])?;
-        let aim_action = action_set.create_action::<xr::Posef>("aim", "Aim pose", &[])?;
-
+        let action_set = xr_instance.create_action_set("alchemy_input", "Alchemy input", 0)?;
         let hands = [
             xr_instance.string_to_path("/user/hand/left")?,
             xr_instance.string_to_path("/user/hand/right")?,
         ];
+        let menu_action = action_set.create_action::<bool>("menu", "Menu toggle", &[])?;
+        let select_action = action_set.create_action::<bool>("select", "Select / click", &[])?;
+        let aim_action = action_set.create_action::<xr::Posef>("aim", "Aim pose", &hands)?;
+        let thumbstick_action =
+            action_set.create_action::<xr::Vector2f>("thumbstick", "Locomotion stick", &hands)?;
+
+        // simple_controller: menu / select / aim (no thumbstick).
         xr_instance.suggest_interaction_profile_bindings(
             xr_instance.string_to_path("/interaction_profiles/khr/simple_controller")?,
             &[
@@ -183,20 +190,97 @@ pub fn run_openxr(
                 ),
                 xr::Binding::new(
                     &aim_action,
+                    xr_instance.string_to_path("/user/hand/left/input/aim/pose")?,
+                ),
+                xr::Binding::new(
+                    &aim_action,
                     xr_instance.string_to_path("/user/hand/right/input/aim/pose")?,
+                ),
+            ],
+        )?;
+
+        // Oculus Touch / Quest-style (SteamVR OpenXR).
+        let _ = xr_instance.suggest_interaction_profile_bindings(
+            xr_instance.string_to_path("/interaction_profiles/oculus/touch_controller")?,
+            &[
+                xr::Binding::new(
+                    &menu_action,
+                    xr_instance.string_to_path("/user/hand/left/input/menu/click")?,
+                ),
+                xr::Binding::new(
+                    &menu_action,
+                    xr_instance.string_to_path("/user/hand/left/input/y/click")?,
+                ),
+                xr::Binding::new(
+                    &select_action,
+                    xr_instance.string_to_path("/user/hand/left/input/x/click")?,
+                ),
+                xr::Binding::new(
+                    &select_action,
+                    xr_instance.string_to_path("/user/hand/right/input/a/click")?,
                 ),
                 xr::Binding::new(
                     &aim_action,
                     xr_instance.string_to_path("/user/hand/left/input/aim/pose")?,
                 ),
+                xr::Binding::new(
+                    &aim_action,
+                    xr_instance.string_to_path("/user/hand/right/input/aim/pose")?,
+                ),
+                xr::Binding::new(
+                    &thumbstick_action,
+                    xr_instance.string_to_path("/user/hand/left/input/thumbstick")?,
+                ),
+                xr::Binding::new(
+                    &thumbstick_action,
+                    xr_instance.string_to_path("/user/hand/right/input/thumbstick")?,
+                ),
             ],
-        )?;
-        // Also try Valve Index / Oculus touch style menu paths via simple_controller is enough for SteamVR.
-        let _ = hands;
+        );
+
+        // Valve Index.
+        let _ = xr_instance.suggest_interaction_profile_bindings(
+            xr_instance.string_to_path("/interaction_profiles/valve/index_controller")?,
+            &[
+                xr::Binding::new(
+                    &menu_action,
+                    xr_instance.string_to_path("/user/hand/left/input/b/click")?,
+                ),
+                xr::Binding::new(
+                    &menu_action,
+                    xr_instance.string_to_path("/user/hand/right/input/b/click")?,
+                ),
+                xr::Binding::new(
+                    &select_action,
+                    xr_instance.string_to_path("/user/hand/left/input/trigger/click")?,
+                ),
+                xr::Binding::new(
+                    &select_action,
+                    xr_instance.string_to_path("/user/hand/right/input/trigger/click")?,
+                ),
+                xr::Binding::new(
+                    &aim_action,
+                    xr_instance.string_to_path("/user/hand/left/input/aim/pose")?,
+                ),
+                xr::Binding::new(
+                    &aim_action,
+                    xr_instance.string_to_path("/user/hand/right/input/aim/pose")?,
+                ),
+                xr::Binding::new(
+                    &thumbstick_action,
+                    xr_instance.string_to_path("/user/hand/left/input/thumbstick")?,
+                ),
+                xr::Binding::new(
+                    &thumbstick_action,
+                    xr_instance.string_to_path("/user/hand/right/input/thumbstick")?,
+                ),
+            ],
+        );
+
         session.attach_action_sets(&[&action_set])?;
 
-        let aim_space =
-            aim_action.create_space(session.clone(), xr::Path::NULL, xr::Posef::IDENTITY)?;
+        let aim_left = aim_action.create_space(session.clone(), hands[0], xr::Posef::IDENTITY)?;
+        let aim_right = aim_action.create_space(session.clone(), hands[1], xr::Posef::IDENTITY)?;
         let stage =
             session.create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)?;
         let view_ref =
@@ -270,7 +354,7 @@ pub fn run_openxr(
         let mut ui = SystemUi::new();
         ui.init_cpu_canvas(UI_CANVAS_W, UI_CANVAS_H)?;
         ui.rebuild();
-        log::info!("OpenXR system_ui ready — Menu toggles dash, Select clicks");
+        log::info!("OpenXR ready — Menu toggles dash, Select clicks, thumbstick Noclip (x000a)");
 
         let mut swapchain: Option<Swapchain> = None;
         let mut ui_swapchain: Option<UiSwapchain> = None;
@@ -474,8 +558,23 @@ pub fn run_openxr(
 
             let select_down = select_action.state(&session, xr::Path::NULL)?.current_state;
             if select_down && !select_was_down && ui.state.open {
-                if let Ok(aim_loc) = aim_space.locate(&stage, xr_frame_state.predicted_display_time)
-                {
+                let aim_for_ui = aim_right
+                    .locate(&stage, xr_frame_state.predicted_display_time)
+                    .ok()
+                    .filter(|l| {
+                        l.location_flags
+                            .contains(xr::SpaceLocationFlags::POSITION_VALID)
+                    })
+                    .or_else(|| {
+                        aim_left
+                            .locate(&stage, xr_frame_state.predicted_display_time)
+                            .ok()
+                            .filter(|l| {
+                                l.location_flags
+                                    .contains(xr::SpaceLocationFlags::POSITION_VALID)
+                            })
+                    });
+                if let Some(aim_loc) = aim_for_ui {
                     let (aim_pos, aim_orient) = openxr_pose_to_isometry(aim_loc.pose);
                     let ray = pose_to_ray(aim_pos, aim_orient);
                     if let Some((px, py)) = ray_hit_dash_quad(
@@ -503,6 +602,55 @@ pub fn run_openxr(
                 }
             }
             select_was_down = select_down;
+
+            // ---- VR thumbstick Noclip Intent (x000a) ----
+            {
+                let left_stick = thumbstick_action.state(&session, hands[0])?.current_state;
+                let right_stick = thumbstick_action.state(&session, hands[1])?.current_state;
+                let left_ori = aim_left
+                    .locate(&stage, xr_frame_state.predicted_display_time)
+                    .ok()
+                    .filter(|l| {
+                        l.location_flags
+                            .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+                    })
+                    .map(|l| openxr_pose_to_isometry(l.pose).1)
+                    .unwrap_or(Quat::IDENTITY);
+                let right_ori = aim_right
+                    .locate(&stage, xr_frame_state.predicted_display_time)
+                    .ok()
+                    .filter(|l| {
+                        l.location_flags
+                            .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+                    })
+                    .map(|l| openxr_pose_to_isometry(l.pose).1)
+                    .unwrap_or(Quat::IDENTITY);
+
+                let dash_open = ui.state.open;
+                let max_speed = ui.state.max_speed;
+                let mut intent = MoveIntent {
+                    suppress: dash_open,
+                    ..Default::default()
+                };
+                if !dash_open {
+                    let v = intent_from_sticks(
+                        left_ori,
+                        (left_stick.x, left_stick.y),
+                        right_ori,
+                        (right_stick.x, right_stick.y),
+                        max_speed,
+                        DEFAULT_MOVE_SPEED,
+                        STICK_DEADZONE,
+                    );
+                    intent.move_x = v.x;
+                    intent.move_y = v.y;
+                    intent.move_z = v.z;
+                }
+                if let Ok(mut slot) = shared.intent.lock() {
+                    *slot = intent;
+                }
+            }
+
             ui.prepare_cpu_canvas();
 
             let _ = (&mesh, dash_quad_model(head_pos, head_orient));
@@ -619,7 +767,8 @@ pub fn run_openxr(
         }
 
         // Drop XR session before destroying Vulkan objects.
-        drop(aim_space);
+        drop(aim_left);
+        drop(aim_right);
         drop(view_ref);
         drop(stage);
         drop(ui_swapchain);

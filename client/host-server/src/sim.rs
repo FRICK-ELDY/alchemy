@@ -6,14 +6,14 @@
 use alchemy_protocol::LocomotionMode;
 use rapier3d::prelude::*;
 
+pub use alchemy_protocol::DEFAULT_MOVE_SPEED;
+
 const FLOOR_HALF_H: f32 = 0.5;
 const BALL_RADIUS: f32 = 0.25;
 /// High enough that free-fall is obvious on screen.
 pub const SPAWN_Y: f32 = 5.0;
 /// Demo gravity (weaker than Earth) so the drop lasts ~2s and is easy to see.
 const DEMO_GRAVITY_Y: f32 = -2.2;
-/// Default free-move speed when Manifest `move_speed` is 0.
-pub const DEFAULT_MOVE_SPEED: f32 = 4.0;
 /// user_root spawn (eye height-ish above floor).
 pub const USER_SPAWN: (f32, f32, f32) = (0.0, 1.6, 6.0);
 

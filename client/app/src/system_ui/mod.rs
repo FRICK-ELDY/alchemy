@@ -1,7 +1,8 @@
 //! system_ui — retained Canvas dash (Desktop overlay; VR quad later).
 //!
-//! Guarantees: ESC toggle, hit-tested chrome, client exit action plumbing.
-//! Non-guarantees: OpenXR menu button, settings contents, mic/sync real control.
+//! Guarantees: ESC toggle, hit-tested chrome, client exit action plumbing,
+//! Settings shows default max speed (read-only).
+//! Non-guarantees: OpenXR menu button, virtual keyboard edit, mic/sync real control.
 
 mod dash;
 mod font;

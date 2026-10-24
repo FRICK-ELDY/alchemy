@@ -16,10 +16,14 @@ pub struct DashState {
     pub fps_label: String,
     pub canvas_w: f32,
     pub canvas_h: f32,
+    /// Personal max move speed (m/s). Displayed in Settings; edit via virtual keyboard later.
+    pub max_speed: f32,
+    pub max_speed_label: String,
 }
 
 impl Default for DashState {
     fn default() -> Self {
+        let max_speed = alchemy_protocol::DEFAULT_MOVE_SPEED;
         Self {
             open: false,
             tab: DashTab::Exit,
@@ -27,6 +31,8 @@ impl Default for DashState {
             fps_label: "0 FPS".into(),
             canvas_w: 960.0,
             canvas_h: 540.0,
+            max_speed,
+            max_speed_label: format!("Max speed: {max_speed:.1} m/s"),
         }
     }
 }
@@ -233,13 +239,25 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
             );
         }
         DashTab::Settings => {
-            let panel = Rect::new(cx, cy0, cw, ch.min(200.0));
+            let panel = Rect::new(cx, cy0, cw, ch.min(220.0));
             tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
             tree.push_label(
-                Rect::new(cx + 24.0, cy0 + 40.0, cw - 48.0, 28.0),
-                "Settings — coming later",
-                MUTED,
+                Rect::new(cx + 24.0, cy0 + 36.0, cw - 48.0, 28.0),
+                "Locomotion",
+                TEXT,
                 2.0,
+            );
+            tree.push_label(
+                Rect::new(cx + 24.0, cy0 + 80.0, cw - 48.0, 28.0),
+                &state.max_speed_label,
+                TEXT,
+                2.0,
+            );
+            tree.push_label(
+                Rect::new(cx + 24.0, cy0 + 120.0, cw - 48.0, 24.0),
+                "edit later (virtual keyboard)",
+                MUTED,
+                1.0,
             );
             tree.register_hit(WidgetId::SettingsPlaceholder, panel);
         }
@@ -278,5 +296,27 @@ mod tests {
         rebuild(&mut tree, &DashState::default());
         assert!(tree.hits.is_empty());
         assert!(tree.draws.is_empty());
+    }
+
+    #[test]
+    fn settings_tab_shows_max_speed() {
+        let state = DashState {
+            open: true,
+            tab: DashTab::Settings,
+            ..Default::default()
+        };
+        assert!(
+            state.max_speed_label.contains("Max speed"),
+            "label={}",
+            state.max_speed_label
+        );
+        assert!((state.max_speed - alchemy_protocol::DEFAULT_MOVE_SPEED).abs() < f32::EPSILON);
+        let mut tree = LayoutTree::default();
+        rebuild(&mut tree, &state);
+        assert!(tree.draws.len() > 5);
+        assert!(tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::SettingsPlaceholder));
     }
 }
