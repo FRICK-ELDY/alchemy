@@ -105,7 +105,6 @@ impl PhysicsWorld {
             })
             .unwrap_or((0.0, SPAWN_Y, 0.0))
     }
-
 }
 
 #[cfg(test)]
