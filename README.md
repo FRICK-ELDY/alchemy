@@ -102,9 +102,10 @@ bash .scripts/smoke-system-ui.sh       # system_ui unit + host_control コンパ
 bash .scripts/smoke-openxr.sh          # OpenXR モジュール unit + Desktop フォールバック compile
 # ESC ダッシュ: client 起動後 Esc。XR: SteamVR + Menu。client+host 終了は ALCHEMY_HOST_PID か host_control
 # Desktop 強制: ALCHEMY_FORCE_DESKTOP=1
+# OpenXR ローダー明示（Steam が特殊パスのとき）: ALCHEMY_OPENXR_LOADER=D:\...\openxr_loader.dll
 ```
 
-環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID` / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_PID` / `ALCHEMY_FORCE_DESKTOP`。
+環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID` / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_PID` / `ALCHEMY_FORCE_DESKTOP` / `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。
 
 詳細は [`.workspace/roadmap/`](.workspace/roadmap/README.md)。
 

@@ -4,6 +4,7 @@
 //! Non-guarantees: WSL HMD, Quest standalone, locomotion.
 
 mod input;
+mod loader;
 mod vk_loop;
 
 use anyhow::{bail, Context, Result};
@@ -15,7 +16,7 @@ use std::sync::Arc;
 /// Returns Ok(true) if an HMD form-factor system is available.
 pub fn probe() -> Result<bool> {
     // Safety: OpenXR loader is process-global; probe is best-effort.
-    let entry = unsafe { openxr::Entry::load() }.context("load OpenXR loader")?;
+    let entry = unsafe { loader::load_entry() }.context("load OpenXR loader")?;
     let exts = entry
         .enumerate_extensions()
         .context("enumerate OpenXR extensions")?;

@@ -44,7 +44,7 @@
 - 詳細: [`client/fixtures/README.md`](../../../client/fixtures/README.md)
 - Icons: [`client/app/assets/icons/README.md`](../../../client/app/assets/icons/README.md)
 
-環境変数: `ASSETS_URL`（既定 `:4004`）、任意 `ALCHEMY_BLOB_BLAKE3`、任意 `ALCHEMY_HOST_PID`（client+host 終了スタブ）、任意 `ALCHEMY_FORCE_DESKTOP=1`（OpenXR を使わず Desktop）。
+環境変数: `ASSETS_URL`（既定 `:4004`）、任意 `ALCHEMY_BLOB_BLAKE3`、任意 `ALCHEMY_HOST_PID`（client+host 終了スタブ）、任意 `ALCHEMY_FORCE_DESKTOP=1`（OpenXR を使わず Desktop）、任意 `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`（Steam が C: 以外のときの OpenXR ローダー探索）。
 
 ## 関連
 

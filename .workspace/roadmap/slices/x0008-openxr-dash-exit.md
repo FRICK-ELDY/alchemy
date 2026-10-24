@@ -76,7 +76,8 @@ WSL / CI はコンパイル＋Desktop フォールバックのみ保証（`bash 
 - `client/app/src/surface/xr/` — セッション・Menu/Select・レイヒット・UI quad アップロード
 - `client/app/src/scene.rs` — Desktop 共有シーン GPU
 - `client/app/src/system_ui/` — Canvas 据え置き（OpenXR を知らない）
-- 環境変数: `ALCHEMY_FORCE_DESKTOP=1`
+- 環境変数: `ALCHEMY_FORCE_DESKTOP=1`、任意 `ALCHEMY_OPENXR_LOADER`（`openxr_loader.dll` のフルパス）、任意 `STEAM_PATH`
+- Steam が D: 等でもレジストリ / `libraryfolders.vdf` / ドライブレター走査でローダーを探索（`surface/xr/loader.rs`）
 - smoke: `bash .scripts/smoke-openxr.sh`
 
 ← [目次](../README.md)

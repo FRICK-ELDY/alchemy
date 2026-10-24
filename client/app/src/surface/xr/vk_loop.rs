@@ -40,8 +40,8 @@ pub fn run_openxr(
         let _ = ctrlc_set(r);
     }
 
-    // Safety: dynamic OpenXR loader.
-    let entry = unsafe { xr::Entry::load() }.context("OpenXR Entry::load")?;
+    // Safety: dynamic OpenXR loader (Steam off-C: discovery in loader.rs).
+    let entry = unsafe { super::loader::load_entry() }.context("OpenXR Entry::load")?;
     let available = entry.enumerate_extensions()?;
     if !available.khr_vulkan_enable2 {
         bail!("XR_KHR_vulkan_enable2 required (SteamVR OpenXR)");
