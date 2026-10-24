@@ -1,0 +1,18 @@
+[package]
+name = "host-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local authoritative space host (Slice A: Publish RenderFrame only)"
+
+[[bin]]
+name = "host-server"
+path = "src/main.rs"
+
+[dependencies]
+alchemy-protocol = { workspace = true }
+anyhow = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
+prost = { workspace = true }
+zenoh = { workspace = true }

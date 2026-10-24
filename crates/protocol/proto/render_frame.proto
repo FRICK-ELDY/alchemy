@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package alchemy.render;
+
+// Slice A minimal RenderFrame.
+// Full delta-compression / DrawCommand set is deferred.
+// PROTOCOL_PIN must bump when this schema changes incompatibly.
+
+message RenderFrame {
+  // Monotonic tick from the publishing host.
+  uint64 tick = 1;
+  // Wall-clock-ish host time in milliseconds (demo / debug).
+  uint64 host_time_ms = 2;
+  // Full entity snapshot (MVP: no delta).
+  repeated Entity entities = 3;
+}
+
+message Entity {
+  uint32 id = 1;
+  // Spatial position at the render boundary (binary64 / f64).
+  double x = 2;
+  double y = 3;
+  double z = 4;
+  // Optional RGBA 0..1 (demo coloring).
+  float r = 5;
+  float g = 6;
+  float b = 7;
+  float a = 8;
+}

@@ -1,0 +1,22 @@
+// Alchemy local zenoh-router (zenohd) — Slice A
+// Guarantees: same-machine / LAN pub-sub on declared listeners.
+// Does NOT guarantee: JWT/JWKS ACL, CCU QoS, VPS bridge, multi-tenant isolation.
+{
+  mode: "router",
+  metadata: {
+    name: "alchemy-local-router",
+  },
+  listen: {
+    endpoints: [
+      "tcp/127.0.0.1:7447",
+      // Uncomment for same-LAN peers (bind all interfaces):
+      // "tcp/0.0.0.0:7447",
+    ],
+  },
+  scouting: {
+    multicast: {
+      // Keep on so local clients can discover; disable if you only use explicit connect.
+      enabled: true,
+    },
+  },
+}
