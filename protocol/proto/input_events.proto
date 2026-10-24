@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package alchemy.input;
+
+// Slice B minimal input with Room Token gate.
+// Full action taxonomy / editor events are deferred.
+
+message InputEvent {
+  // Short-lived Room Token (JWT) issued by world-server.
+  string room_token = 1;
+  // Client wall-clock-ish time in milliseconds (demo / debug).
+  uint64 client_time_ms = 2;
+  // Requested entity offset / pose hint (host may clamp).
+  float move_x = 3;
+  float move_y = 4;
+  float move_z = 5;
+}

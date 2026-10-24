@@ -1,0 +1,41 @@
+import Config
+
+if System.get_env("PHX_SERVER") do
+  config :world, WorldWeb.Endpoint, server: true
+end
+
+port = String.to_integer(System.get_env("PORT", "4003"))
+
+config :world, WorldWeb.Endpoint, http: [port: port]
+
+if key_path = System.get_env("ROOM_TOKEN_PRIVATE_KEY_PATH") do
+  config :world, room_token_private_key_path: key_path
+end
+
+if System.get_env("ROOM_TOKEN_GENERATE_KEY") in ~w(true 1) do
+  config :world, room_token_generate_key_on_startup: true
+end
+
+if System.get_env("WORLD_ALLOW_ANON_TOKENS") in ~w(false 0) do
+  config :world, allow_anon_tokens: false
+end
+
+if System.get_env("BIND_ALL") in ~w(true 1) do
+  config :world, WorldWeb.Endpoint,
+    http: [ip: {0, 0, 0, 0}, port: port],
+    server: true
+end
+
+if config_env() == :prod do
+  secret_key_base =
+    System.get_env("SECRET_KEY_BASE") ||
+      raise "environment variable SECRET_KEY_BASE is missing."
+
+  config :world, WorldWeb.Endpoint,
+    http: [ip: {0, 0, 0, 0}, port: port],
+    secret_key_base: secret_key_base
+
+  config :world,
+    room_token_generate_key_on_startup:
+      System.get_env("ROOM_TOKEN_GENERATE_KEY", "false") in ~w(true 1)
+end

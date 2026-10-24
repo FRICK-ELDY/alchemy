@@ -1,0 +1,28 @@
+services:
+  world:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    ports:
+      - "4003:4003"
+    environment:
+      MIX_ENV: dev
+      PHX_SERVER: "true"
+      BIND_ALL: "true"
+      PORT: "4003"
+      ROOM_TOKEN_PRIVATE_KEY_PATH: /app/priv/room_jwt_private.pem
+      ROOM_TOKEN_GENERATE_KEY: "true"
+      WORLD_ALLOW_ANON_TOKENS: "true"
+    volumes:
+      - .:/app
+      - world_deps:/app/deps
+      - world_build:/app/_build
+    command: >
+      sh -c "mix deps.get &&
+             mix compile &&
+             mix phx.server"
+
+volumes:
+  world_deps:
+  world_build:

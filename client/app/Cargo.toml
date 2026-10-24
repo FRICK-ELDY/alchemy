@@ -3,7 +3,7 @@ name = "client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Alchemy client — Slice A: Zenoh Subscribe + minimal wgpu cube"
+description = "Alchemy client (Slice B: Subscribe frames + Publish InputEvent with Room Token)"
 
 [[bin]]
 name = "client"
@@ -20,3 +20,6 @@ prost = { workspace = true }
 wgpu = { workspace = true }
 winit = { workspace = true }
 zenoh = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }

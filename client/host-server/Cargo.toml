@@ -3,7 +3,7 @@ name = "host-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Local authoritative space host (Slice A: Publish RenderFrame only)"
+description = "Local authoritative space host (Slice B: Publish RenderFrame + Room Token gate on input)"
 
 [[bin]]
 name = "host-server"
@@ -16,3 +16,7 @@ env_logger = { workspace = true }
 log = { workspace = true }
 prost = { workspace = true }
 zenoh = { workspace = true }
+jsonwebtoken = "9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
