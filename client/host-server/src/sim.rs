@@ -106,14 +106,6 @@ impl PhysicsWorld {
             .unwrap_or((0.0, SPAWN_Y, 0.0))
     }
 
-    /// Teleport the dynamic body above the floor so free-fall is visible again.
-    pub fn respawn_drop(&mut self) {
-        if let Some(body) = self.rigid_body_set.get_mut(self.moving) {
-            body.set_translation(vector![0.0, SPAWN_Y, 0.0], true);
-            body.set_linvel(vector![0.1, 0.0, 0.05], true);
-            body.set_angvel(vector![0.0, 0.0, 0.0], true);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -131,16 +123,5 @@ mod tests {
         }
         let (_, y, _) = world.moving_translation();
         assert!(y > 0.1 && y < 1.0, "expected resting on floor, got y={y}");
-    }
-
-    #[test]
-    fn respawn_lifts_ball_again() {
-        let mut world = PhysicsWorld::new();
-        for _ in 0..600 {
-            world.step();
-        }
-        world.respawn_drop();
-        let (_, y, _) = world.moving_translation();
-        assert!(y > 4.5, "respawn should lift to SPAWN_Y, got y={y}");
     }
 }

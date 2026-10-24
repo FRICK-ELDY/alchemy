@@ -318,7 +318,7 @@ fn main() -> Result<()> {
         physics_steps = physics_steps.wrapping_add(1);
         physics_steps_logged += 1;
 
-        if physics_steps % PHYSICS_PER_NET != 0 {
+        if !physics_steps.is_multiple_of(PHYSICS_PER_NET) {
             continue;
         }
 

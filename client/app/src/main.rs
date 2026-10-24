@@ -57,9 +57,6 @@ struct EntityPose {
     x: f32,
     y: f32,
     z: f32,
-    r: f32,
-    g: f32,
-    b: f32,
 }
 
 struct SharedState {
@@ -236,9 +233,6 @@ fn spawn_manifest_subscriber(
                                     x: entry.x as f32,
                                     y: entry.y as f32,
                                     z: entry.z as f32,
-                                    r: 0.92,
-                                    g: 0.78,
-                                    b: 0.28,
                                 });
                             }
                         }
@@ -285,9 +279,6 @@ fn spawn_frame_subscriber(session: zenoh::Session, shared: Arc<SharedState>) -> 
                                         x: e.x as f32,
                                         y: e.y as f32,
                                         z: e.z as f32,
-                                        r: e.r,
-                                        g: e.g,
-                                        b: e.b,
                                     },
                                 );
                             }
@@ -591,12 +582,7 @@ impl Gpu {
             .lock()
             .ok()
             .and_then(|m| m.get(&MESH_ENTITY_ID).copied())
-            .unwrap_or(EntityPose {
-                r: 0.92,
-                g: 0.78,
-                b: 0.28,
-                ..Default::default()
-            });
+            .unwrap_or_default();
 
         if self.last_pose_log.elapsed() >= Duration::from_secs(1) {
             log::info!(
