@@ -26,3 +26,6 @@ gltf = "1"
 blake3 = "1"
 glam = "0.29"
 rapier3d = "0.22"
+openxr = "0.19"
+ash = "0.38"
+naga = { version = "24", features = ["wgsl-in", "spv-out"] }

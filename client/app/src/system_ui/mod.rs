@@ -20,6 +20,8 @@ pub struct SystemUi {
     pub state: DashState,
     pub tree: LayoutTree,
     pub gpu: Option<UiGpu>,
+    /// Keeps wgpu device alive when canvas is used CPU-only (OpenXR path).
+    _gpu_keepalive: Option<(wgpu::Device, wgpu::Queue)>,
     last_fps_instant: std::time::Instant,
     frames_in_window: u32,
     fps: f32,
@@ -31,6 +33,7 @@ impl SystemUi {
             state: DashState::default(),
             tree: LayoutTree::default(),
             gpu: None,
+            _gpu_keepalive: None,
             last_fps_instant: std::time::Instant::now(),
             frames_in_window: 0,
             fps: 0.0,
@@ -136,6 +139,48 @@ impl SystemUi {
         if let Some(gpu) = self.gpu.as_mut() {
             gpu.rasterize_if_dirty(queue, &self.tree, self.state.open);
         }
+    }
+
+    /// Update labels and rasterize CPU canvas (no GPU upload). Used by OpenXR.
+    pub fn prepare_cpu_canvas(&mut self) {
+        self.set_time_now();
+        self.tick_fps();
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.rasterize_cpu(&self.tree, self.state.open);
+        }
+    }
+
+    pub fn canvas_rgba(&self) -> Option<(&[u8], u32, u32)> {
+        self.gpu.as_ref().map(|g| g.canvas_rgba())
+    }
+
+    /// Init canvas resources without a window surface (OpenXR uses CPU pixels only).
+    pub fn init_cpu_canvas(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
+        let instance = wgpu::Instance::default();
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: true,
+        }))
+        .ok_or_else(|| anyhow::anyhow!("no wgpu adapter for system_ui CPU canvas"))?;
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("system_ui-cpu"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::downlevel_webgl2_defaults(),
+                memory_hints: Default::default(),
+            },
+            None,
+        ))?;
+        self.init_gpu(
+            &device,
+            &queue,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            width,
+            height,
+        )?;
+        self._gpu_keepalive = Some((device, queue));
+        Ok(())
     }
 
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {

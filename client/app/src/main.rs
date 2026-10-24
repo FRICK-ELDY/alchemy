@@ -1,18 +1,16 @@
-//! Alchemy client — Slice E (system_ui Canvas) + C-C/D render path.
+//! Alchemy client — x0008 OpenXR dash+Exit + C-C/D render path.
 //!
 //! Guarantees:
-//! - Subscribes to SceneManifest (blake3 refs) and RenderFrame deltas
-//! - Downloads blob by Manifest blake3 (fixture fallback), BLAKE3 verify, wgpu mesh
-//! - Applies upserts/removes to a local entity table; mesh follows entity 1 pose
-//! - Fetches Room Token and publishes InputEvent
-//! - ESC dash (retained Canvas overlay); client exit; host exit stub
+//! - Subscribes to SceneManifest / RenderFrame; downloads blob; wgpu mesh on Desktop
+//! - Room Token InputEvent (idle)
+//! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
 //!
-//! Non-guarantees:
-//! - OSC, Dual Editor, asset LOD, auth login UI, launcher, materials/skins
-//! - Signed Manifest / world-server ledger / OpenXR / settings contents
+//! Non-guarantees: locomotion, Quest standalone, WSL HMD, settings contents
 
 mod host_control;
 mod mesh;
+mod scene;
+mod surface;
 mod system_ui;
 
 use std::collections::HashMap;
@@ -28,18 +26,9 @@ use alchemy_protocol::{
     MANIFEST_KEY_LOCAL, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
-use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec3};
-use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, CpuMesh, COIN_BLAKE3_HEX};
+use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, COIN_BLAKE3_HEX};
+use scene::{EntityPose, SharedState, MESH_ENTITY_ID};
 use serde::Deserialize;
-use system_ui::{SystemUi, UiAction};
-use wgpu::util::DeviceExt;
-use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
-use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Window, WindowId};
 use zenoh::bytes::ZBytes;
 use zenoh::Config;
 use zenoh::Wait;
@@ -52,21 +41,7 @@ const DEFAULT_ROOM_ID: &str = "local";
 const DEFAULT_AUTH_USER: &str = "alice";
 const DEFAULT_AUTH_PASSWORD: &str = "Password1";
 const INPUT_HZ: u64 = 10;
-/// Prefer a quick start so the window opens before the first drop finishes.
 const MANIFEST_WAIT: Duration = Duration::from_millis(400);
-const MESH_ENTITY_ID: u32 = 1;
-const FLOOR_EXTENT: f32 = 4.0;
-
-#[derive(Clone, Copy, Debug, Default)]
-struct EntityPose {
-    x: f32,
-    y: f32,
-    z: f32,
-}
-
-struct SharedState {
-    entities: Mutex<HashMap<u32, EntityPose>>,
-}
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
@@ -76,19 +51,6 @@ struct TokenResponse {
 #[derive(Debug, Deserialize)]
 struct AuthSession {
     access_token: String,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct MeshVertex {
-    position: [f32; 3],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct Uniforms {
-    mvp: [[f32; 4]; 4],
-    color: [f32; 4],
 }
 
 fn open_zenoh() -> Result<zenoh::Session> {
@@ -204,7 +166,6 @@ fn client_time_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// First Manifest blake3 for `MESH_ENTITY_ID`, plus seed poses from entries.
 fn spawn_manifest_subscriber(
     session: zenoh::Session,
     shared: Arc<SharedState>,
@@ -218,7 +179,6 @@ fn spawn_manifest_subscriber(
     thread::Builder::new()
         .name("zenoh-manifest".into())
         .spawn(move || {
-            // Keep Session alive for this subscriber (dropping it closes the link).
             let _session = session;
             log::info!("subscribed to {MANIFEST_KEY_LOCAL}");
             let mut sent_blake3 = false;
@@ -306,7 +266,6 @@ fn spawn_input_publisher(session: zenoh::Session, room_token: String) -> Result<
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_publisher input failed: {e}"))?;
 
-    // Keep Room Token path warm (idle zeros). Keyboard / movement input comes later.
     thread::Builder::new()
         .name("zenoh-input-pub".into())
         .spawn(move || {
@@ -337,510 +296,6 @@ fn spawn_input_publisher(session: zenoh::Session, room_token: String) -> Result<
     Ok(())
 }
 
-struct Gpu {
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    index_count: u32,
-    floor_vertex_buffer: wgpu::Buffer,
-    floor_index_buffer: wgpu::Buffer,
-    floor_index_count: u32,
-    floor_uniform_buffer: wgpu::Buffer,
-    floor_bind_group: wgpu::BindGroup,
-    coin_uniform_buffer: wgpu::Buffer,
-    coin_bind_group: wgpu::BindGroup,
-    depth_view: wgpu::TextureView,
-    mesh_radius: f32,
-    shared: Arc<SharedState>,
-    last_pose_log: Instant,
-    surface_format: wgpu::TextureFormat,
-}
-
-impl Gpu {
-    async fn new(window: Arc<Window>, mesh: &CpuMesh, shared: Arc<SharedState>) -> Result<Self> {
-        let size = window.inner_size();
-        let instance = wgpu::Instance::default();
-        let surface = instance.create_surface(window.clone())?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .context("no wgpu adapter")?;
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("alchemy-client"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
-                    memory_hints: Default::default(),
-                },
-                None,
-            )
-            .await
-            .context("request_device")?;
-
-        let caps = surface.get_capabilities(&adapter);
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(caps.formats[0]);
-
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: caps.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &config);
-
-        let depth_view = create_depth_view(&device, config.width, config.height);
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("mesh"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
-        });
-
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("uniform-bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("pipeline-layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("mesh-pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<MeshVertex>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x3],
-                }],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-
-        let vertices: Vec<MeshVertex> = mesh
-            .positions
-            .iter()
-            .map(|p| MeshVertex { position: *p })
-            .collect();
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("mesh-vertices"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("mesh-indices"),
-            contents: bytemuck::cast_slice(&mesh.indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        let e = FLOOR_EXTENT;
-        let floor_verts = [
-            MeshVertex {
-                position: [-e, 0.0, -e],
-            },
-            MeshVertex {
-                position: [e, 0.0, -e],
-            },
-            MeshVertex {
-                position: [e, 0.0, e],
-            },
-            MeshVertex {
-                position: [-e, 0.0, e],
-            },
-        ];
-        let floor_indices: [u32; 6] = [0, 1, 2, 0, 2, 3];
-        let floor_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("floor-vertices"),
-            contents: bytemuck::cast_slice(&floor_verts),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let floor_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("floor-indices"),
-            contents: bytemuck::cast_slice(&floor_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        let floor_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("floor-uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let coin_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("coin-uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let floor_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("floor-bg"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: floor_uniform_buffer.as_entire_binding(),
-            }],
-        });
-        let coin_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("coin-bg"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: coin_uniform_buffer.as_entire_binding(),
-            }],
-        });
-
-        Ok(Self {
-            surface,
-            device,
-            queue,
-            config,
-            pipeline,
-            vertex_buffer,
-            index_buffer,
-            index_count: mesh.indices.len() as u32,
-            floor_vertex_buffer,
-            floor_index_buffer,
-            floor_index_count: floor_indices.len() as u32,
-            floor_uniform_buffer,
-            floor_bind_group,
-            coin_uniform_buffer,
-            coin_bind_group,
-            depth_view,
-            mesh_radius: mesh.radius,
-            shared,
-            last_pose_log: Instant::now(),
-            surface_format: format,
-        })
-    }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
-            return;
-        }
-        self.config.width = width;
-        self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
-        self.depth_view = create_depth_view(&self.device, width, height);
-    }
-
-    fn render(&mut self, ui: &mut SystemUi) -> Result<()> {
-        let pose = self
-            .shared
-            .entities
-            .lock()
-            .ok()
-            .and_then(|m| m.get(&MESH_ENTITY_ID).copied())
-            .unwrap_or_default();
-
-        if self.last_pose_log.elapsed() >= Duration::from_secs(1) {
-            log::info!(
-                "mesh pose (from host delta): x={:.3} y={:.3} z={:.3}  ← y drops toward floor=0",
-                pose.x,
-                pose.y,
-                pose.z
-            );
-            self.last_pose_log = Instant::now();
-        }
-
-        let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
-        // Camera tracks coin height so the multi-second fall stays framed.
-        let focus_y = pose.y.clamp(0.3, 5.0);
-        let eye = Vec3::new(6.5, focus_y + 2.2, 7.5);
-        let target = Vec3::new(pose.x * 0.3, focus_y, pose.z * 0.3);
-        let view = Mat4::look_at_rh(eye, target, Vec3::Y);
-        let proj = Mat4::perspective_rh(50.0_f32.to_radians(), aspect, 0.05, 50.0);
-
-        ui.prepare_frame(&self.queue);
-
-        let frame = self
-            .surface
-            .get_current_texture()
-            .context("get_current_texture")?;
-        let frame_view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("encoder"),
-            });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.05,
-                            g: 0.06,
-                            b: 0.09,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-
-            // Floor (reference plane at y=0).
-            let floor_uniforms = Uniforms {
-                mvp: (proj * view).to_cols_array_2d(),
-                color: [0.22, 0.24, 0.28, 1.0],
-            };
-            self.queue.write_buffer(
-                &self.floor_uniform_buffer,
-                0,
-                bytemuck::bytes_of(&floor_uniforms),
-            );
-            pass.set_bind_group(0, &self.floor_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.floor_vertex_buffer.slice(..));
-            pass.set_index_buffer(self.floor_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.floor_index_count, 0, 0..1);
-
-            // Coin follows host physics pose (ball center). Scale half-extent to
-            // Rapier ball radius (0.25) so the mesh rests on the floor, not through it.
-            const PHYS_BALL_RADIUS: f32 = 0.25;
-            let visual_scale =
-                (PHYS_BALL_RADIUS * 0.95 / self.mesh_radius.max(1e-3)).clamp(0.02, 4.0);
-            let model = Mat4::from_translation(Vec3::new(pose.x, pose.y, pose.z))
-                * Mat4::from_rotation_x(0.25)
-                * Mat4::from_scale(Vec3::splat(visual_scale));
-            let height_t = (pose.y / 5.0).clamp(0.0, 1.0);
-            let coin_color = [
-                0.95 * height_t + 0.15,
-                0.75 * (1.0 - height_t) + 0.25,
-                0.2,
-                1.0,
-            ];
-            let coin_uniforms = Uniforms {
-                mvp: (proj * view * model).to_cols_array_2d(),
-                color: coin_color,
-            };
-            self.queue.write_buffer(
-                &self.coin_uniform_buffer,
-                0,
-                bytemuck::bytes_of(&coin_uniforms),
-            );
-            pass.set_bind_group(0, &self.coin_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.index_count, 0, 0..1);
-        }
-
-        // system_ui overlay (no depth) — same Canvas texture path for future VR quad.
-        if ui.state.open {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("ui-overlay"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            ui.draw(&mut pass);
-        }
-
-        self.queue.submit(Some(encoder.finish()));
-        frame.present();
-        Ok(())
-    }
-}
-
-fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("depth"),
-        size: wgpu::Extent3d {
-            width: width.max(1),
-            height: height.max(1),
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Depth32Float,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    });
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
-}
-
-struct App {
-    mesh: CpuMesh,
-    shared: Arc<SharedState>,
-    window: Option<Arc<Window>>,
-    gpu: Option<Gpu>,
-    ui: SystemUi,
-    zenoh: Option<zenoh::Session>,
-    cursor: (f64, f64),
-}
-
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
-        }
-        let attrs = Window::default_attributes()
-            .with_title("Alchemy Client — Slice E (system_ui)")
-            .with_inner_size(LogicalSize::new(960.0, 540.0));
-        let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
-        let gpu = pollster::block_on(Gpu::new(
-            Arc::clone(&window),
-            &self.mesh,
-            Arc::clone(&self.shared),
-        ))
-        .expect("init gpu");
-        self.ui
-            .init_gpu(
-                &gpu.device,
-                &gpu.queue,
-                gpu.surface_format,
-                gpu.config.width,
-                gpu.config.height,
-            )
-            .expect("init system_ui gpu");
-        self.window = Some(window);
-        self.gpu = Some(gpu);
-        log::info!("system_ui ready — press Esc for dash");
-    }
-
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => {
-                if let Some(gpu) = self.gpu.as_mut() {
-                    gpu.resize(size.width, size.height);
-                    self.ui.resize(&gpu.device, size.width, size.height);
-                }
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = (position.x, position.y);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                let action = self.ui.on_click(self.cursor.0 as f32, self.cursor.1 as f32);
-                match action {
-                    UiAction::ExitClientOnly => {
-                        log::info!("system_ui: exit client only");
-                        event_loop.exit();
-                    }
-                    UiAction::ExitClientAndHost => {
-                        log::info!("system_ui: exit client + host stub");
-                        if let Some(session) = self.zenoh.as_ref() {
-                            host_control::request_host_shutdown(session);
-                        }
-                        event_loop.exit();
-                    }
-                    UiAction::None => {}
-                }
-            }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed && !event.repeat {
-                    if let PhysicalKey::Code(KeyCode::Escape) = event.physical_key {
-                        self.ui.toggle();
-                        log::info!("system_ui open={}", self.ui.state.open);
-                    }
-                }
-            }
-            WindowEvent::RedrawRequested => {
-                if let Some(gpu) = self.gpu.as_mut() {
-                    if let Err(err) = gpu.render(&mut self.ui) {
-                        log::error!("render failed: {err:#}");
-                    }
-                }
-                if let Some(window) = self.window.as_ref() {
-                    window.request_redraw();
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
-        }
-    }
-}
-
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -852,7 +307,7 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "client Slice E starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} auth={auth_url} assets={assets_url}"
+        "client x0008 starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
@@ -865,7 +320,6 @@ fn main() -> Result<()> {
     });
     let (blake3_tx, blake3_rx) = mpsc::sync_channel::<String>(1);
 
-    // One Zenoh session, cloned into worker threads (each thread must retain its clone).
     let session = open_zenoh().context("open zenoh session")?;
     spawn_manifest_subscriber(session.clone(), Arc::clone(&shared), blake3_tx)?;
     spawn_frame_subscriber(session.clone(), Arc::clone(&shared))?;
@@ -895,17 +349,7 @@ fn main() -> Result<()> {
         mesh.radius
     );
 
-    let event_loop = EventLoop::new()?;
-    event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App {
-        mesh,
-        shared,
-        window: None,
-        gpu: None,
-        ui: SystemUi::new(),
-        zenoh: Some(session),
-        cursor: (0.0, 0.0),
-    };
-    event_loop.run_app(&mut app)?;
+    let kind = surface::choose();
+    surface::run(kind, mesh, shared, Some(session))?;
     Ok(())
 }

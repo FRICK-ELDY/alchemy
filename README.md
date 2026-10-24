@@ -5,12 +5,13 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（x0007 / 旧 Slice E）
+## 現状（x0008 / OpenXR ダッシュ＋Exit）
 
 `host-server` は **Rapier 60Hz** と **`is_finite` 入力ゲート**、配信は **30Hz デルタ**（C-C 契約維持）。  
 `client` は Manifest の blake3 で Coin GLB を取得し、物理 pose に追従して wgpu 表示する。  
-**ESC** で自前 Canvas のダッシュ（終了 / 設定プレースホルダ）を開閉する。  
-Slice ID は `x` + 4桁16進（次は `x0008`）。規約は [`.workspace/roadmap/README.md`](.workspace/roadmap/README.md)。
+**ESC**（Desktop）または **Menu**（OpenXR / SteamVR）で自前 Canvas ダッシュを開閉し Exit できる。  
+移動（WASD / ロコモーション）は未実装。実機確認正本は **Windows + SteamVR**（WSL は HMD 非保証）。  
+Slice ID は `x` + 4桁16進（次は `x0009`）。規約は [`.workspace/roadmap/README.md`](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|
@@ -98,10 +99,12 @@ bash .scripts/smoke-assets-glb.sh      # Coin GLB → CAS
 bash .scripts/smoke-manifest-delta.sh  # Manifest + デルタ（zenohd 必須）
 bash .scripts/smoke-rapier-host.sh     # Rapier 60Hz / net 30Hz（zenohd 必須）
 bash .scripts/smoke-system-ui.sh       # system_ui unit + host_control コンパイル
-# ESC ダッシュ: client 起動後 Esc。client+host 終了は ALCHEMY_HOST_PID か host_control
+bash .scripts/smoke-openxr.sh          # OpenXR モジュール unit + Desktop フォールバック compile
+# ESC ダッシュ: client 起動後 Esc。XR: SteamVR + Menu。client+host 終了は ALCHEMY_HOST_PID か host_control
+# Desktop 強制: ALCHEMY_FORCE_DESKTOP=1
 ```
 
-環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID` / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_PID`。
+環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID` / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_PID` / `ALCHEMY_FORCE_DESKTOP`。
 
 詳細は [`.workspace/roadmap/`](.workspace/roadmap/README.md)。
 
