@@ -1,26 +1,44 @@
 #!/usr/bin/env bash
+# Slice B.5: auth login → Room create/token with Bearer.
 set -euo pipefail
-BASE="${WORLD_URL:-http://127.0.0.1:4003}"
+AUTH="${AUTH_URL:-http://127.0.0.1:4002}"
+WORLD="${WORLD_URL:-http://127.0.0.1:4003}"
+USER_NAME="${AUTH_USER:-alice}"
+PASSWORD="${AUTH_PASSWORD:-Password1}"
 
-echo "health:"
-curl -sf "$BASE/health"
+echo "auth health:"
+curl -sf "$AUTH/health"
 echo
 
+echo "login:"
+ACCESS=$(curl -sf -X POST "$AUTH/api/v1/auth/login" \
+  -H 'content-type: application/json' \
+  -d "{\"identifier\":\"${USER_NAME}\",\"password\":\"${PASSWORD}\"}" \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+echo "access_token acquired (${#ACCESS} chars)"
+
 echo "create room:"
-curl -sf -X POST "$BASE/api/v1/rooms" \
+curl -sf -X POST "$WORLD/api/v1/rooms" \
   -H 'content-type: application/json' \
-  -d '{"room_id":"local"}' || curl -s -X POST "$BASE/api/v1/rooms" \
+  -H "authorization: Bearer ${ACCESS}" \
+  -d '{"room_id":"local"}' || curl -s -X POST "$WORLD/api/v1/rooms" \
   -H 'content-type: application/json' \
+  -H "authorization: Bearer ${ACCESS}" \
   -d '{"room_id":"local"}'
 echo
 
 echo "token:"
-curl -sf -X POST "$BASE/api/v1/rooms/local/tokens" \
+curl -sf -X POST "$WORLD/api/v1/rooms/local/tokens" \
   -H 'content-type: application/json' \
-  -d '{"role":"host","sub":"dev"}' | head -c 200
+  -H "authorization: Bearer ${ACCESS}" \
+  -d '{"role":"host"}' | head -c 200
 echo
 
-echo "jwks:"
-curl -sf "$BASE/.well-known/jwks.json" | head -c 120
-echo
+echo "reject without auth:"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$WORLD/api/v1/rooms" \
+  -H 'content-type: application/json' \
+  -d '{"room_id":"noauth"}')
+test "$CODE" = "401"
+echo "got HTTP $CODE (expected 401)"
+
 echo "smoke-world: ok"

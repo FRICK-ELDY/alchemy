@@ -5,8 +5,12 @@ defmodule WorldWeb.Router do
     plug :accepts, ["json"]
   end
 
+  pipeline :user_auth do
+    plug WorldWeb.Plugs.AuthenticateUser
+  end
+
   scope "/api/v1", WorldWeb do
-    pipe_through :api
+    pipe_through [:api, :user_auth]
 
     post "/rooms", RoomController, :create
     post "/rooms/:room_id/tokens", RoomController, :create_token

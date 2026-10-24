@@ -7,7 +7,11 @@ config :world,
   room_token_audience: "alchemy-room",
   room_token_private_key_path: "priv/room_jwt_private.pem",
   room_token_generate_key_on_startup: true,
-  allow_anon_tokens: true
+  # Slice B.5: Room APIs require auth-server Bearer JWT by default.
+  allow_anon_tokens: false,
+  auth_jwks_url: "http://127.0.0.1:4002/.well-known/jwks.json",
+  auth_jwt_issuer: "alchemy-auth",
+  auth_jwt_audience: "alchemy-platform"
 
 config :world, WorldWeb.Endpoint,
   url: [host: "localhost"],

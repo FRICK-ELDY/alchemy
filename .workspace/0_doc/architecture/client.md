@@ -17,7 +17,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | Zenoh client として frame Subscribe / input Publish | ルーター機能（他人の通信の中継は禁止） |
-| world-server から Room Token を取得して InputEvent に添付 | auth ログイン UI（Slice B は匿名 Token 可） |
+| auth login → Bearer 付きで Room Token 取得し InputEvent に添付 | 本格ログイン UI（Slice B.5 はシードアカウント） |
 | RenderFrame decode → 画面上の移動表示 | OSC / Dual Editor / アセット LOD |
 | | launcher 本実装 |
 

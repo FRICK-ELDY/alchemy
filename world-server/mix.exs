@@ -31,6 +31,7 @@ defmodule World.MixProject do
       {:jason, "~> 1.2"},
       {:joken, "~> 2.6"},
       {:jose, "~> 1.11"},
+      {:req, "~> 0.5"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}

@@ -21,7 +21,7 @@ use alchemy_protocol::{
     Entity, InputEvent, Message, RenderFrame, FRAME_KEY_LOCAL, INPUT_KEY_LOCAL, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
-use room_token::{fetch_host_token, RoomTokenVerifier};
+use room_token::{default_auth_url, fetch_auth_token, fetch_host_token, RoomTokenVerifier};
 use zenoh::bytes::ZBytes;
 use zenoh::Config;
 use zenoh::Wait;
@@ -155,20 +155,21 @@ fn main() -> Result<()> {
 
     let world_url = std::env::var("WORLD_URL").unwrap_or_else(|_| DEFAULT_WORLD_URL.to_string());
     let room_id = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
+    let auth_url = default_auth_url();
 
     log::info!(
-        "host-server Slice B starting; protocol_pin={PROTOCOL_PIN} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} room={room_id}"
+        "host-server Slice B.5 starting; protocol_pin={PROTOCOL_PIN} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id}"
     );
 
-    let host_token = fetch_host_token(&world_url, &room_id)
-        .context("fetch host Room Token (is world-server up?)")?;
+    let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
+    let host_token = fetch_host_token(&world_url, &room_id, &auth_token)
+        .context("fetch host Room Token (is world-server up? auth Bearer required)")?;
     let verifier = Arc::new(RoomTokenVerifier::new(&world_url, &room_id));
     verifier.refresh_jwks().context("initial JWKS fetch")?;
-    // Prove the host token itself verifies (fail fast if misconfigured).
     verifier
         .verify(&host_token)
         .context("host Room Token self-check")?;
-    log::info!("host Room Token acquired and verified");
+    log::info!("auth JWT + host Room Token acquired and verified");
 
     let pose = Arc::new(Mutex::new(PoseOverride::default()));
     spawn_input_gate(Arc::clone(&verifier), Arc::clone(&pose))?;
