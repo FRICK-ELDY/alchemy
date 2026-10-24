@@ -13,7 +13,6 @@
 mod mesh;
 
 use std::collections::HashMap;
-use std::f32::consts::TAU;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -48,8 +47,10 @@ const DEFAULT_ROOM_ID: &str = "local";
 const DEFAULT_AUTH_USER: &str = "alice";
 const DEFAULT_AUTH_PASSWORD: &str = "Password1";
 const INPUT_HZ: u64 = 10;
-const MANIFEST_WAIT: Duration = Duration::from_secs(5);
+/// Prefer a quick start so the window opens before the first drop finishes.
+const MANIFEST_WAIT: Duration = Duration::from_millis(400);
 const MESH_ENTITY_ID: u32 = 1;
+const FLOOR_EXTENT: f32 = 4.0;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct EntityPose {
@@ -203,10 +204,10 @@ fn client_time_ms() -> u64 {
 
 /// First Manifest blake3 for `MESH_ENTITY_ID`, plus seed poses from entries.
 fn spawn_manifest_subscriber(
+    session: zenoh::Session,
     shared: Arc<SharedState>,
     blake3_tx: mpsc::SyncSender<String>,
 ) -> Result<()> {
-    let session = open_zenoh().context("open zenoh for manifest")?;
     let subscriber = session
         .declare_subscriber(MANIFEST_KEY_LOCAL)
         .wait()
@@ -215,6 +216,8 @@ fn spawn_manifest_subscriber(
     thread::Builder::new()
         .name("zenoh-manifest".into())
         .spawn(move || {
+            // Keep Session alive for this subscriber (dropping it closes the link).
+            let _session = session;
             log::info!("subscribed to {MANIFEST_KEY_LOCAL}");
             let mut sent_blake3 = false;
             while let Ok(sample) = subscriber.recv() {
@@ -258,8 +261,7 @@ fn spawn_manifest_subscriber(
     Ok(())
 }
 
-fn spawn_frame_subscriber(shared: Arc<SharedState>) -> Result<()> {
-    let session = open_zenoh().context("open zenoh for frame")?;
+fn spawn_frame_subscriber(session: zenoh::Session, shared: Arc<SharedState>) -> Result<()> {
     let subscriber = session
         .declare_subscriber(FRAME_KEY_LOCAL)
         .wait()
@@ -268,6 +270,7 @@ fn spawn_frame_subscriber(shared: Arc<SharedState>) -> Result<()> {
     thread::Builder::new()
         .name("zenoh-frame".into())
         .spawn(move || {
+            let _session = session;
             log::info!("subscribed to {FRAME_KEY_LOCAL} (delta upserts/removes)");
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
@@ -301,19 +304,19 @@ fn spawn_frame_subscriber(shared: Arc<SharedState>) -> Result<()> {
     Ok(())
 }
 
-fn spawn_input_publisher(room_token: String) -> Result<()> {
-    let session = open_zenoh().context("open zenoh for input")?;
+fn spawn_input_publisher(session: zenoh::Session, room_token: String) -> Result<()> {
     let publisher = session
         .declare_publisher(INPUT_KEY_LOCAL)
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_publisher input failed: {e}"))?;
 
+    // Keep Room Token path warm (idle zeros). Keyboard / movement input comes later.
     thread::Builder::new()
         .name("zenoh-input-pub".into())
         .spawn(move || {
-            log::info!("publishing InputEvent to {INPUT_KEY_LOCAL}");
+            let _session = session;
+            log::info!("publishing idle InputEvent to {INPUT_KEY_LOCAL}");
             let period = Duration::from_nanos(1_000_000_000 / INPUT_HZ);
-            let start = Instant::now();
             let mut next = Instant::now();
             loop {
                 let now = Instant::now();
@@ -322,12 +325,11 @@ fn spawn_input_publisher(room_token: String) -> Result<()> {
                 }
                 next += period;
 
-                let t = start.elapsed().as_secs_f32();
                 let event = InputEvent {
                     room_token: room_token.clone(),
                     client_time_ms: client_time_ms(),
-                    move_x: (t * TAU / 6.0).cos() * 1.2,
-                    move_y: (t * TAU / 6.0).sin() * 0.6,
+                    move_x: 0.0,
+                    move_y: 0.0,
                     move_z: 0.0,
                 };
                 if let Err(err) = publisher.put(event.encode_to_vec()).wait() {
@@ -348,12 +350,17 @@ struct Gpu {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
-    uniform_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    floor_vertex_buffer: wgpu::Buffer,
+    floor_index_buffer: wgpu::Buffer,
+    floor_index_count: u32,
+    floor_uniform_buffer: wgpu::Buffer,
+    floor_bind_group: wgpu::BindGroup,
+    coin_uniform_buffer: wgpu::Buffer,
+    coin_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
     mesh_radius: f32,
     shared: Arc<SharedState>,
-    started: Instant,
+    last_pose_log: Instant,
 }
 
 impl Gpu {
@@ -487,19 +494,60 @@ impl Gpu {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("uniforms"),
+        let e = FLOOR_EXTENT;
+        let floor_verts = [
+            MeshVertex {
+                position: [-e, 0.0, -e],
+            },
+            MeshVertex {
+                position: [e, 0.0, -e],
+            },
+            MeshVertex {
+                position: [e, 0.0, e],
+            },
+            MeshVertex {
+                position: [-e, 0.0, e],
+            },
+        ];
+        let floor_indices: [u32; 6] = [0, 1, 2, 0, 2, 3];
+        let floor_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("floor-vertices"),
+            contents: bytemuck::cast_slice(&floor_verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let floor_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("floor-indices"),
+            contents: bytemuck::cast_slice(&floor_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let floor_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("floor-uniforms"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let coin_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("coin-uniforms"),
             size: std::mem::size_of::<Uniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("uniform-bg"),
+        let floor_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("floor-bg"),
             layout: &bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
+                resource: floor_uniform_buffer.as_entire_binding(),
+            }],
+        });
+        let coin_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("coin-bg"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: coin_uniform_buffer.as_entire_binding(),
             }],
         });
 
@@ -512,12 +560,17 @@ impl Gpu {
             vertex_buffer,
             index_buffer,
             index_count: mesh.indices.len() as u32,
-            uniform_buffer,
-            bind_group,
+            floor_vertex_buffer,
+            floor_index_buffer,
+            floor_index_count: floor_indices.len() as u32,
+            floor_uniform_buffer,
+            floor_bind_group,
+            coin_uniform_buffer,
+            coin_bind_group,
             depth_view,
             mesh_radius: mesh.radius,
             shared,
-            started: Instant::now(),
+            last_pose_log: Instant::now(),
         })
     }
 
@@ -545,32 +598,29 @@ impl Gpu {
                 ..Default::default()
             });
 
-        let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
-        let t = self.started.elapsed().as_secs_f32();
-        let eye_dist = self.mesh_radius * 4.0 + 2.0;
-        let view = Mat4::look_at_rh(
-            Vec3::new(eye_dist * 0.7, eye_dist * 0.45, eye_dist),
-            Vec3::new(pose.x, pose.y, pose.z),
-            Vec3::Y,
-        );
-        let proj = Mat4::perspective_rh(50.0_f32.to_radians(), aspect, 0.01, eye_dist * 20.0);
-        let model = Mat4::from_translation(Vec3::new(pose.x, pose.y, pose.z))
-            * Mat4::from_rotation_y(t * 0.8)
-            * Mat4::from_rotation_x(0.35);
-        let mvp = proj * view * model;
+        if self.last_pose_log.elapsed() >= Duration::from_secs(1) {
+            log::info!(
+                "mesh pose (from host delta): x={:.3} y={:.3} z={:.3}  ← y drops toward floor=0",
+                pose.x,
+                pose.y,
+                pose.z
+            );
+            self.last_pose_log = Instant::now();
+        }
 
-        let uniforms = Uniforms {
-            mvp: mvp.to_cols_array_2d(),
-            color: [pose.r, pose.g, pose.b, 1.0],
-        };
-        self.queue
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
+        // Camera tracks coin height so the multi-second fall stays framed.
+        let focus_y = pose.y.clamp(0.3, 5.0);
+        let eye = Vec3::new(6.5, focus_y + 2.2, 7.5);
+        let target = Vec3::new(pose.x * 0.3, focus_y, pose.z * 0.3);
+        let view = Mat4::look_at_rh(eye, target, Vec3::Y);
+        let proj = Mat4::perspective_rh(50.0_f32.to_radians(), aspect, 0.05, 50.0);
 
         let frame = self
             .surface
             .get_current_texture()
             .context("get_current_texture")?;
-        let view = frame
+        let frame_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
@@ -582,7 +632,7 @@ impl Gpu {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &frame_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -606,7 +656,47 @@ impl Gpu {
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind_group, &[]);
+
+            // Floor (reference plane at y=0).
+            let floor_uniforms = Uniforms {
+                mvp: (proj * view).to_cols_array_2d(),
+                color: [0.22, 0.24, 0.28, 1.0],
+            };
+            self.queue.write_buffer(
+                &self.floor_uniform_buffer,
+                0,
+                bytemuck::bytes_of(&floor_uniforms),
+            );
+            pass.set_bind_group(0, &self.floor_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.floor_vertex_buffer.slice(..));
+            pass.set_index_buffer(self.floor_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.floor_index_count, 0, 0..1);
+
+            // Coin follows host physics pose (ball center). Scale half-extent to
+            // Rapier ball radius (0.25) so the mesh rests on the floor, not through it.
+            const PHYS_BALL_RADIUS: f32 = 0.25;
+            let visual_scale =
+                (PHYS_BALL_RADIUS * 0.95 / self.mesh_radius.max(1e-3)).clamp(0.02, 4.0);
+            let model = Mat4::from_translation(Vec3::new(pose.x, pose.y, pose.z))
+                * Mat4::from_rotation_x(0.25)
+                * Mat4::from_scale(Vec3::splat(visual_scale));
+            let height_t = (pose.y / 5.0).clamp(0.0, 1.0);
+            let coin_color = [
+                0.95 * height_t + 0.15,
+                0.75 * (1.0 - height_t) + 0.25,
+                0.2,
+                1.0,
+            ];
+            let coin_uniforms = Uniforms {
+                mvp: (proj * view * model).to_cols_array_2d(),
+                color: coin_color,
+            };
+            self.queue.write_buffer(
+                &self.coin_uniform_buffer,
+                0,
+                bytemuck::bytes_of(&coin_uniforms),
+            );
+            pass.set_bind_group(0, &self.coin_bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.index_count, 0, 0..1);
@@ -648,7 +738,7 @@ impl ApplicationHandler for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("Alchemy Client — Slice C-C (Manifest + Delta)")
+            .with_title("Alchemy Client — Slice D (Rapier)")
             .with_inner_size(LogicalSize::new(960.0, 540.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         let gpu = pollster::block_on(Gpu::new(
@@ -701,7 +791,7 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "client Slice C-C starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} auth={auth_url} assets={assets_url}"
+        "client Slice D starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} auth={auth_url} assets={assets_url}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
@@ -713,9 +803,14 @@ fn main() -> Result<()> {
         entities: Mutex::new(HashMap::new()),
     });
     let (blake3_tx, blake3_rx) = mpsc::sync_channel::<String>(1);
-    spawn_manifest_subscriber(Arc::clone(&shared), blake3_tx)?;
-    spawn_frame_subscriber(Arc::clone(&shared))?;
-    spawn_input_publisher(room_token)?;
+
+    // One Zenoh session, cloned into worker threads (each thread must retain its clone).
+    let session = open_zenoh().context("open zenoh session")?;
+    spawn_manifest_subscriber(session.clone(), Arc::clone(&shared), blake3_tx)?;
+    spawn_frame_subscriber(session.clone(), Arc::clone(&shared))?;
+    spawn_input_publisher(session.clone(), room_token)?;
+    // Keep a session handle for the process lifetime (event loop).
+    let _zenoh_keepalive = session;
 
     let blob_blake3 = match blake3_rx.recv_timeout(MANIFEST_WAIT) {
         Ok(hex) => {

@@ -11,9 +11,9 @@
 | C-A | done | assets-server 最小（CAS + Quota） | [slice-c-a.md](slice-c-a.md) |
 | C-B | done | Coin GLB を wgpu 表示 | [slice-c-b.md](slice-c-b.md) |
 | C-C | done | Manifest（低頻度）＋ RenderFrame デルタ（高頻度） | [slice-c-c.md](slice-c-c.md) |
-| D | pending | Rapier 最小＋ `is_finite`（内部 60Hz / 配信 30Hz） | [slice-d.md](slice-d.md) |
+| D | done | Rapier 最小＋ `is_finite`（内部 60Hz / 配信 30Hz） | [slice-d.md](slice-d.md) |
 
-**現在の次:** [Slice D](slice-d.md)
+**現在の次:** （未定義 — Slice D 完了。次スライスを切ってから更新）
 
 ## 関連
 

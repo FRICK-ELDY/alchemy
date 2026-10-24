@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: Slice C-C（SceneManifest + delta RenderFrame + Coin mesh）
+> **ステータス**: Slice D（host: Rapier 60Hz + `is_finite` → 30Hz デルタ。client 描画は C-C 経路）
 
 ## レイアウト
 
@@ -21,6 +21,7 @@
 | Manifest の blake3 → assets download（失敗時 fixture）→ BLAKE3 → wgpu | LOD / KTX2 / マテリアル本格 / スキン |
 | ローカル entity 表への upsert/remove 適用、mesh が entity 1 pose に追従 | 署名付き Manifest / world 台帳 |
 | auth login → Bearer 付き Room Token → InputEvent | OSC / Dual Editor / launcher 本実装 |
+| host: Rapier 60Hz + `is_finite` ゲート → 30Hz デルタ（C-C 契約維持） | Formula / 予測補間 / verifier |
 
 ## チャネル分離（C-C）
 

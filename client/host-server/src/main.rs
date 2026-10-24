@@ -1,19 +1,19 @@
-//! Local host-server — Slice C-C.
+//! Local host-server — Slice D.
 //!
 //! Guarantees:
-//! - Low-frequency SceneManifest publish (entity_id → blake3; no GLB bytes)
-//! - 30 Hz RenderFrame delta: only moved / spawned entities in `upserts`
-//! - Subscribe InputEvent; verify Room Token; valid input overrides entity 1 pose
+//! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
+//! - Input: Room Token verify + `is_finite` (NaN/Inf dropped before physics)
+//! - Low-frequency SceneManifest (blake3 refs; no GLB bytes)
+//! - Delta RenderFrame: only moved entities (C-C contract retained)
 //!
 //! Non-guarantees:
-//! - Rapier / Formula tick
-//! - Signed Manifest (world-server)
-//! - Visibility ACL / verifier
+//! - Formula / character controller / signed Manifest / verifier
 
+mod finite;
 mod room_token;
+mod sim;
 
 use std::collections::HashMap;
-use std::f64::consts::TAU;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -23,12 +23,17 @@ use alchemy_protocol::{
     INPUT_KEY_LOCAL, MANIFEST_KEY_LOCAL, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
+use finite::input_event_is_finite;
 use room_token::{default_auth_url, fetch_auth_token, fetch_host_token, RoomTokenVerifier};
+use sim::PhysicsWorld;
 use zenoh::bytes::ZBytes;
 use zenoh::Config;
 use zenoh::Wait;
 
-const TICK_HZ: u64 = 30;
+const PHYSICS_HZ: u64 = 60;
+const NET_HZ: u64 = 30;
+/// Publish a network frame every N physics steps (60/30 = 2).
+const PHYSICS_PER_NET: u64 = PHYSICS_HZ / NET_HZ;
 const CONNECT: &str = "tcp/127.0.0.1:7447";
 const DEFAULT_WORLD_URL: &str = "http://127.0.0.1:4003";
 const DEFAULT_ROOM_ID: &str = "local";
@@ -44,9 +49,9 @@ const ENTITY_STATIC: u32 = 2;
 
 #[derive(Clone, Copy, Debug)]
 struct PoseOverride {
-    x: f64,
-    y: f64,
-    z: f64,
+    x: f32,
+    y: f32,
+    z: f32,
     active: bool,
 }
 
@@ -92,39 +97,27 @@ fn host_time_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn moving_pose(tick: u64, overlay: PoseOverride) -> Pose {
-    if overlay.active {
-        return Pose {
-            x: overlay.x,
-            y: overlay.y,
-            z: overlay.z,
-            r: 0.2,
-            g: 0.9,
-            b: 0.4,
-            a: 1.0,
-        };
-    }
-    let t = tick as f64 / TICK_HZ as f64;
-    let angle = t * TAU / 4.0;
-    Pose {
-        x: angle.cos() * 1.5,
-        y: angle.sin() * 0.5,
-        z: angle.sin() * 1.5,
-        r: 0.2,
-        g: 0.7,
-        b: 1.0,
-        a: 1.0,
-    }
-}
-
-fn static_pose() -> Pose {
+fn static_marker_pose() -> Pose {
     Pose {
         x: 3.0,
-        y: 0.0,
+        y: 0.5,
         z: 0.0,
         r: 0.9,
         g: 0.3,
         b: 0.2,
+        a: 1.0,
+    }
+}
+
+fn moving_pose_from_sim(world: &PhysicsWorld) -> Pose {
+    let (x, y, z) = world.moving_translation();
+    Pose {
+        x: f64::from(x),
+        y: f64::from(y),
+        z: f64::from(z),
+        r: 0.2,
+        g: 0.9,
+        b: 0.4,
         a: 1.0,
     }
 }
@@ -156,17 +149,17 @@ fn build_manifest(room_id: &str, blake3: &str) -> SceneManifest {
             entity_id: ENTITY_MOVING,
             blake3: blake3.to_string(),
             x: 0.0,
-            y: 0.0,
+            y: f64::from(sim::SPAWN_Y),
             z: 0.0,
         }],
     }
 }
 
 fn spawn_input_gate(
+    session: zenoh::Session,
     verifier: Arc<RoomTokenVerifier>,
     pose: Arc<Mutex<PoseOverride>>,
 ) -> Result<()> {
-    let session = open_zenoh().context("open zenoh for input")?;
     let subscriber = session
         .declare_subscriber(INPUT_KEY_LOCAL)
         .wait()
@@ -175,9 +168,11 @@ fn spawn_input_gate(
     thread::Builder::new()
         .name("zenoh-input".into())
         .spawn(move || {
-            log::info!("subscribed to {INPUT_KEY_LOCAL} (Room Token gate)");
+            let _session = session;
+            log::info!("subscribed to {INPUT_KEY_LOCAL} (Room Token + is_finite gate)");
             let mut accepted: u64 = 0;
-            let mut dropped: u64 = 0;
+            let mut dropped_token: u64 = 0;
+            let mut dropped_finite: u64 = 0;
             let mut last_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
@@ -185,28 +180,39 @@ fn spawn_input_gate(
                 match InputEvent::decode(payload.as_ref()) {
                     Ok(event) => match verifier.verify(&event.room_token) {
                         Ok(_claims) => {
-                            if let Ok(mut guard) = pose.lock() {
-                                guard.x = event.move_x as f64;
-                                guard.y = event.move_y as f64;
-                                guard.z = event.move_z as f64;
+                            if !input_event_is_finite(&event) {
+                                dropped_finite += 1;
+                                log::warn!(
+                                    "drop InputEvent: non-finite move_*=({:.3},{:.3},{:.3})",
+                                    event.move_x,
+                                    event.move_y,
+                                    event.move_z
+                                );
+                            } else if let Ok(mut guard) = pose.lock() {
+                                guard.x = event.move_x;
+                                guard.y = event.move_y;
+                                guard.z = event.move_z;
                                 guard.active = true;
+                                accepted += 1;
                             }
-                            accepted += 1;
                         }
                         Err(err) => {
-                            dropped += 1;
+                            dropped_token += 1;
                             log::warn!("drop InputEvent: Room Token invalid: {err:#}");
                         }
                     },
                     Err(err) => {
-                        dropped += 1;
+                        dropped_token += 1;
                         log::warn!("drop InputEvent: decode failed: {err}");
                     }
                 }
                 if last_log.elapsed() >= Duration::from_secs(5) {
-                    log::info!("input gate: accepted={accepted} dropped={dropped} (last ~5s)");
+                    log::info!(
+                        "input gate: accepted={accepted} dropped_token={dropped_token} dropped_non_finite={dropped_finite} (last ~5s)"
+                    );
                     accepted = 0;
-                    dropped = 0;
+                    dropped_token = 0;
+                    dropped_finite = 0;
                     last_log = Instant::now();
                 }
             }
@@ -225,7 +231,7 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "host-server Slice C-C starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id}"
+        "host-server Slice D starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
@@ -239,9 +245,10 @@ fn main() -> Result<()> {
     log::info!("auth JWT + host Room Token acquired and verified");
 
     let pose = Arc::new(Mutex::new(PoseOverride::default()));
-    spawn_input_gate(Arc::clone(&verifier), Arc::clone(&pose))?;
 
     let session = open_zenoh().context("open zenoh session")?;
+    spawn_input_gate(session.clone(), Arc::clone(&verifier), Arc::clone(&pose))?;
+
     let manifest_pub = session
         .declare_publisher(MANIFEST_KEY_LOCAL)
         .wait()
@@ -250,6 +257,7 @@ fn main() -> Result<()> {
         .declare_publisher(FRAME_KEY_LOCAL)
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_publisher frame failed: {e}"))?;
+    // `session` stays alive on this thread for publishers + worker clones.
 
     let manifest = build_manifest(&room_id, &blob_blake3);
     let manifest_bytes = manifest.encode_to_vec();
@@ -265,21 +273,29 @@ fn main() -> Result<()> {
     );
     let mut last_manifest = Instant::now();
 
-    let tick_period = Duration::from_nanos(1_000_000_000 / TICK_HZ);
-    let mut tick: u64 = 0;
-    let mut next = Instant::now();
+    let mut physics = PhysicsWorld::new();
+    log::info!(
+        "Rapier world ready (floor + entity {ENTITY_MOVING} dropping from y={:.1})",
+        sim::SPAWN_Y
+    );
+
+    let physics_period = Duration::from_nanos(1_000_000_000 / PHYSICS_HZ);
+    let mut next_physics = Instant::now();
+    let mut physics_steps: u64 = 0;
+    let mut net_tick: u64 = 0;
     let mut last_log = Instant::now();
     let mut publishes: u64 = 0;
     let mut upsert_entities: u64 = 0;
     let mut empty_delta_frames: u64 = 0;
+    let mut physics_steps_logged: u64 = 0;
     let mut last_sent: HashMap<u32, Pose> = HashMap::new();
 
     loop {
         let now = Instant::now();
-        if now < next {
-            std::thread::sleep(next - now);
+        if now < next_physics {
+            std::thread::sleep(next_physics - now);
         }
-        next += tick_period;
+        next_physics += physics_period;
 
         if last_manifest.elapsed() >= MANIFEST_REPUBLISH {
             manifest_pub
@@ -294,9 +310,21 @@ fn main() -> Result<()> {
         }
 
         let overlay = pose.lock().map(|p| *p).unwrap_or_default();
+        if overlay.active && (overlay.x.abs() > 1e-4 || overlay.z.abs() > 1e-4) {
+            // Y comes from gravity / bounce — horizontal input only.
+            physics.apply_input_horizontal(overlay.x, overlay.z);
+        }
+        physics.step();
+        physics_steps = physics_steps.wrapping_add(1);
+        physics_steps_logged += 1;
+
+        if physics_steps % PHYSICS_PER_NET != 0 {
+            continue;
+        }
+
         let poses = [
-            (ENTITY_MOVING, moving_pose(tick, overlay)),
-            (ENTITY_STATIC, static_pose()),
+            (ENTITY_MOVING, moving_pose_from_sim(&physics)),
+            (ENTITY_STATIC, static_marker_pose()),
         ];
 
         let mut upserts = Vec::new();
@@ -313,13 +341,12 @@ fn main() -> Result<()> {
 
         let upsert_len = upserts.len() as u64;
         if upserts.is_empty() {
-            // Static sleep: nothing moved — do not publish an empty high-frequency frame.
             empty_delta_frames += 1;
-            tick = tick.wrapping_add(1);
+            net_tick = net_tick.wrapping_add(1);
         } else {
             upsert_entities += upsert_len;
             let frame = RenderFrame {
-                tick,
+                tick: net_tick,
                 host_time_ms: host_time_ms(),
                 upserts,
                 removes: vec![],
@@ -328,17 +355,19 @@ fn main() -> Result<()> {
                 .put(frame.encode_to_vec())
                 .wait()
                 .map_err(|e| anyhow::anyhow!("frame publish failed: {e}"))?;
-            tick = tick.wrapping_add(1);
+            net_tick = net_tick.wrapping_add(1);
             publishes += 1;
         }
 
         if last_log.elapsed() >= Duration::from_secs(1) {
+            let (mx, my, mz) = physics.moving_translation();
             log::info!(
-                "delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} tick={tick}"
+                "physics: steps={physics_steps_logged} pos=({mx:.3},{my:.3},{mz:.3}); delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} net_tick={net_tick}"
             );
             publishes = 0;
             upsert_entities = 0;
             empty_delta_frames = 0;
+            physics_steps_logged = 0;
             last_log = Instant::now();
         }
     }
