@@ -48,6 +48,7 @@ cargo run -p client        # 別ターミナル
 | 1 | `protocol/` `InputEvent` + `room_token` + PROTOCOL_PIN bump | done |
 | 2 | `host-server` 入力 Subscribe + Token 検証失敗は drop | done |
 | 3 | `client` Token 取得 + InputEvent Publish | done |
+| 4 | auth JWT 必須化（匿名 Token 既定 OFF）— Slice B.5 | done |
 
 ### Slice B で保証する / しない
 
@@ -57,6 +58,7 @@ cargo run -p client        # 別ターミナル
 | `/.well-known/jwks.json` による Room Token 検証用鍵配信 | verifier / Spot-Check / ホスト移譲 |
 | 入力ワイヤに `room_token` を載せ、host が検証 | S2S 連合・World カタログ永続化 |
 | 検証失敗入力の drop | assets / billing / market / P2P |
+| Room API は auth-server Bearer JWT 必須（`sub` 転写） | 匿名 Token（`WORLD_ALLOW_ANON_TOKENS` 明示時のみ） |
 
 ### Slice B 起動手順
 
@@ -65,7 +67,7 @@ cd auth-server && docker compose up -d && cd ..
 cd world-server && docker compose up -d && cd ..
 zenohd -c zenoh-router/config.json5
 cd client
-cargo run -p host-server   # 別ターミナル（WORLD_URL 既定 http://127.0.0.1:4003）
+cargo run -p host-server   # auth login (alice) → Room Token
 cargo run -p client
 ```
 
@@ -73,6 +75,8 @@ cargo run -p client
 
 - frame: `alchemy/dev/room/local/frame`
 - input: `alchemy/dev/room/local/input`
+
+環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN` / `ALCHEMY_ROOM_TOKEN`
 
 ### Slice B でやらない（後続 / Slice C+）
 

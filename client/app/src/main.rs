@@ -31,7 +31,10 @@ use zenoh::Wait;
 
 const CONNECT: &str = "tcp/127.0.0.1:7447";
 const DEFAULT_WORLD_URL: &str = "http://127.0.0.1:4003";
+const DEFAULT_AUTH_URL: &str = "http://127.0.0.1:4002";
 const DEFAULT_ROOM_ID: &str = "local";
+const DEFAULT_AUTH_USER: &str = "alice";
+const DEFAULT_AUTH_PASSWORD: &str = "Password1";
 const INPUT_HZ: u64 = 10;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -59,6 +62,11 @@ struct TokenResponse {
     token: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct AuthSession {
+    access_token: String,
+}
+
 fn open_zenoh() -> Result<zenoh::Session> {
     let mut config = Config::default();
     config
@@ -72,7 +80,31 @@ fn open_zenoh() -> Result<zenoh::Session> {
         .map_err(|e| anyhow::anyhow!("zenoh open failed: {e}"))
 }
 
-fn fetch_guest_token(world_url: &str, room_id: &str) -> Result<String> {
+fn fetch_auth_token(auth_url: &str) -> Result<String> {
+    if let Ok(token) = std::env::var("ALCHEMY_AUTH_TOKEN") {
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+
+    let user = std::env::var("AUTH_USER").unwrap_or_else(|_| DEFAULT_AUTH_USER.to_string());
+    let password =
+        std::env::var("AUTH_PASSWORD").unwrap_or_else(|_| DEFAULT_AUTH_PASSWORD.to_string());
+    let base = auth_url.trim_end_matches('/');
+    let login_url = format!("{base}/api/v1/auth/login");
+    let resp: AuthSession = ureq::post(&login_url)
+        .set("content-type", "application/json")
+        .send_json(serde_json::json!({
+            "identifier": user,
+            "password": password
+        }))
+        .context("auth login failed (is auth-server up?)")?
+        .into_json()
+        .context("parse auth session")?;
+    Ok(resp.access_token)
+}
+
+fn fetch_guest_token(world_url: &str, room_id: &str, auth_token: &str) -> Result<String> {
     if let Ok(token) = std::env::var("ALCHEMY_ROOM_TOKEN") {
         if !token.is_empty() {
             return Ok(token);
@@ -80,15 +112,18 @@ fn fetch_guest_token(world_url: &str, room_id: &str) -> Result<String> {
     }
 
     let base = world_url.trim_end_matches('/');
+    let authz = format!("Bearer {auth_token}");
     let create_url = format!("{base}/api/v1/rooms");
     let _ = ureq::post(&create_url)
         .set("content-type", "application/json")
+        .set("authorization", &authz)
         .send_json(serde_json::json!({ "room_id": room_id }));
 
     let token_url = format!("{base}/api/v1/rooms/{room_id}/tokens");
     let resp: TokenResponse = ureq::post(&token_url)
         .set("content-type", "application/json")
-        .send_json(serde_json::json!({ "role": "guest", "sub": "client" }))
+        .set("authorization", &authz)
+        .send_json(serde_json::json!({ "role": "guest" }))
         .context("issue guest Room Token")?
         .into_json()
         .context("parse token response")?;
@@ -417,14 +452,17 @@ fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let world_url = std::env::var("WORLD_URL").unwrap_or_else(|_| DEFAULT_WORLD_URL.to_string());
+    let auth_url = std::env::var("AUTH_URL").unwrap_or_else(|_| DEFAULT_AUTH_URL.to_string());
     let room_id = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
 
     log::info!(
-        "client Slice B starting; protocol_pin={PROTOCOL_PIN} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url}"
+        "client Slice B.5 starting; protocol_pin={PROTOCOL_PIN} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} auth={auth_url}"
     );
 
-    let room_token = fetch_guest_token(&world_url, &room_id).context("fetch guest Room Token")?;
-    log::info!("guest Room Token acquired");
+    let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
+    let room_token =
+        fetch_guest_token(&world_url, &room_id, &auth_token).context("fetch guest Room Token")?;
+    log::info!("auth JWT + guest Room Token acquired");
 
     let shared = Arc::new(SharedState {
         pose: Mutex::new(EntityPose {

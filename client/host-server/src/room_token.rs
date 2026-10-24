@@ -1,7 +1,7 @@
-//! Room Token verification against world-server JWKS.
+//! Room Token verification against world-server JWKS + auth-gated token fetch.
 //!
-//! Guarantees: RS256 verify + iss/aud/exp/room_id checks.
-//! Non-guarantees: auth-server user JWT, revocation lists.
+//! Guarantees: RS256 verify + iss/aud/exp/room_id checks; Room Token issued only with auth JWT.
+//! Non-guarantees: auth UI, refresh-token rotation.
 
 use anyhow::{anyhow, Context, Result};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 
 const ISSUER: &str = "alchemy-world";
 const AUDIENCE: &str = "alchemy-room";
+const DEFAULT_AUTH_URL: &str = "http://127.0.0.1:4002";
+const DEFAULT_AUTH_USER: &str = "alice";
+const DEFAULT_AUTH_PASSWORD: &str = "Password1";
 
 #[derive(Debug, Deserialize)]
 struct Jwks {
@@ -152,8 +155,39 @@ struct TokenResponse {
     token: String,
 }
 
-/// Ensure room exists and return a host Room Token from world-server.
-pub fn fetch_host_token(world_url: &str, room_id: &str) -> Result<String> {
+#[derive(Debug, Deserialize)]
+struct AuthSession {
+    access_token: String,
+}
+
+/// Login to auth-server (or use `ALCHEMY_AUTH_TOKEN`).
+pub fn fetch_auth_token(auth_url: &str) -> Result<String> {
+    if let Ok(token) = std::env::var("ALCHEMY_AUTH_TOKEN") {
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+
+    let user = std::env::var("AUTH_USER").unwrap_or_else(|_| DEFAULT_AUTH_USER.to_string());
+    let password =
+        std::env::var("AUTH_PASSWORD").unwrap_or_else(|_| DEFAULT_AUTH_PASSWORD.to_string());
+    let base = auth_url.trim_end_matches('/');
+    let login_url = format!("{base}/api/v1/auth/login");
+
+    let resp: AuthSession = ureq::post(&login_url)
+        .set("content-type", "application/json")
+        .send_json(serde_json::json!({
+            "identifier": user,
+            "password": password
+        }))
+        .context("auth login failed (is auth-server up?)")?
+        .into_json()
+        .context("parse auth session")?;
+    Ok(resp.access_token)
+}
+
+/// Ensure room exists and return a host Room Token (requires auth Bearer).
+pub fn fetch_host_token(world_url: &str, room_id: &str, auth_token: &str) -> Result<String> {
     if let Ok(token) = std::env::var("ALCHEMY_ROOM_TOKEN") {
         if !token.is_empty() {
             return Ok(token);
@@ -161,19 +195,26 @@ pub fn fetch_host_token(world_url: &str, room_id: &str) -> Result<String> {
     }
 
     let base = world_url.trim_end_matches('/');
+    let authz = format!("Bearer {auth_token}");
     let create_url = format!("{base}/api/v1/rooms");
     let _ = ureq::post(&create_url)
         .set("content-type", "application/json")
+        .set("authorization", &authz)
         .send_json(serde_json::json!({ "room_id": room_id }));
 
     let token_url = format!("{base}/api/v1/rooms/{room_id}/tokens");
     let resp: TokenResponse = ureq::post(&token_url)
         .set("content-type", "application/json")
-        .send_json(serde_json::json!({ "role": "host", "sub": "host-server" }))
+        .set("authorization", &authz)
+        .send_json(serde_json::json!({ "role": "host" }))
         .context("issue host Room Token")?
         .into_json()
         .context("parse token response")?;
     Ok(resp.token)
+}
+
+pub fn default_auth_url() -> String {
+    std::env::var("AUTH_URL").unwrap_or_else(|_| DEFAULT_AUTH_URL.to_string())
 }
 
 #[cfg(test)]

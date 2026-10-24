@@ -5,10 +5,11 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（Slice B）
+## 現状（Slice B.5）
 
 ローカル `zenohd` → `host-server` が RenderFrame を Publish → `client` が Subscribe して表示。  
-入力は Room Token 付き `InputEvent`。`world-server` が Token / JWKS を発行。認証ユーザー JWT は `auth-server`。
+入力は Room Token 付き `InputEvent`。`world-server` が Token / JWKS を発行。  
+Room Token 発行には `auth-server` のユーザー JWT（Bearer）が必須。
 
 | コンポーネント | パス |
 |:---|:---|
@@ -73,10 +74,10 @@ sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev \
   libx11-dev libxcursor-dev libxi-dev libxrandr-dev
 ```
 
-## Slice B 起動（macOS / Linux / WSL）
+## Slice B.5 起動（macOS / Linux / WSL）
 
 ```bash
-# 1) auth + world
+# 1) auth + world（world は auth JWKS を参照）
 cd auth-server && docker compose up -d && cd ..
 cd world-server && docker compose up -d && cd ..
 
@@ -84,12 +85,13 @@ cd world-server && docker compose up -d && cd ..
 zenohd -c zenoh-router/config.json5
 
 # 3) host + client（別ターミナル）
+# 既定で alice / Password1 で auth login → Room Token 取得
 cd client
 cargo run -p host-server
 cargo run -p client
 ```
 
-環境変数（任意）: `WORLD_URL`（既定 `http://127.0.0.1:4003`）、`ROOM_ID`（既定 `local`）、`ALCHEMY_ROOM_TOKEN`（指定時は発行 API をスキップ）。
+環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ROOM_ID` / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN` / `ALCHEMY_ROOM_TOKEN`。
 
 詳細・キー式は [`.workspace/roadmap.md`](.workspace/roadmap.md)。
 

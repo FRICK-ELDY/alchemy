@@ -6,6 +6,8 @@ services:
       target: dev
     ports:
       - "4003:4003"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       MIX_ENV: dev
       PHX_SERVER: "true"
@@ -13,7 +15,8 @@ services:
       PORT: "4003"
       ROOM_TOKEN_PRIVATE_KEY_PATH: /app/priv/room_jwt_private.pem
       ROOM_TOKEN_GENERATE_KEY: "true"
-      WORLD_ALLOW_ANON_TOKENS: "true"
+      WORLD_ALLOW_ANON_TOKENS: "false"
+      AUTH_JWKS_URL: http://host.docker.internal:4002/.well-known/jwks.json
     volumes:
       - .:/app
       - world_deps:/app/deps

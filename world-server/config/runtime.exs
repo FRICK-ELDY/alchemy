@@ -16,8 +16,25 @@ if System.get_env("ROOM_TOKEN_GENERATE_KEY") in ~w(true 1) do
   config :world, room_token_generate_key_on_startup: true
 end
 
+# Explicit true enables anon escape hatch; otherwise keep config default (false).
+if System.get_env("WORLD_ALLOW_ANON_TOKENS") in ~w(true 1) do
+  config :world, allow_anon_tokens: true
+end
+
 if System.get_env("WORLD_ALLOW_ANON_TOKENS") in ~w(false 0) do
   config :world, allow_anon_tokens: false
+end
+
+if url = System.get_env("AUTH_JWKS_URL") do
+  config :world, auth_jwks_url: url
+end
+
+if issuer = System.get_env("AUTH_JWT_ISSUER") do
+  config :world, auth_jwt_issuer: issuer
+end
+
+if audience = System.get_env("AUTH_JWT_AUDIENCE") do
+  config :world, auth_jwt_audience: audience
 end
 
 if System.get_env("BIND_ALL") in ~w(true 1) do
@@ -37,5 +54,6 @@ if config_env() == :prod do
 
   config :world,
     room_token_generate_key_on_startup:
-      System.get_env("ROOM_TOKEN_GENERATE_KEY", "false") in ~w(true 1)
+      System.get_env("ROOM_TOKEN_GENERATE_KEY", "false") in ~w(true 1),
+    allow_anon_tokens: System.get_env("WORLD_ALLOW_ANON_TOKENS", "false") in ~w(true 1)
 end
