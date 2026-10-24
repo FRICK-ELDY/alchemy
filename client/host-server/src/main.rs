@@ -1,15 +1,17 @@
-//! Local host-server — Slice D.
+//! Local host-server — Slice D (+ E host_control shutdown stub).
 //!
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
 //! - Input: Room Token verify + `is_finite` (NaN/Inf dropped before physics)
 //! - Low-frequency SceneManifest (blake3 refs; no GLB bytes)
 //! - Delta RenderFrame: only moved entities (C-C contract retained)
+//! - Slice E: `host_control` Subscribe → `shutdown` exits process
 //!
 //! Non-guarantees:
-//! - Formula / character controller / signed Manifest / verifier
+//! - Formula / character controller / signed Manifest / verifier / launcher
 
 mod finite;
+mod host_control;
 mod room_token;
 mod sim;
 
@@ -20,7 +22,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alchemy_protocol::{
     Entity, InputEvent, Message, RenderFrame, SceneEntry, SceneManifest, FRAME_KEY_LOCAL,
-    INPUT_KEY_LOCAL, MANIFEST_KEY_LOCAL, PROTOCOL_PIN,
+    HOST_CONTROL_KEY_LOCAL, INPUT_KEY_LOCAL, MANIFEST_KEY_LOCAL, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
@@ -231,7 +233,7 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "host-server Slice D starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id}"
+        "host-server Slice D/E starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} host_control={HOST_CONTROL_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
@@ -248,6 +250,7 @@ fn main() -> Result<()> {
 
     let session = open_zenoh().context("open zenoh session")?;
     spawn_input_gate(session.clone(), Arc::clone(&verifier), Arc::clone(&pose))?;
+    host_control::spawn_listener(session.clone())?;
 
     let manifest_pub = session
         .declare_publisher(MANIFEST_KEY_LOCAL)

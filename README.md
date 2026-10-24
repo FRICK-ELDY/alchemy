@@ -5,10 +5,11 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（Slice D）
+## 現状（Slice E）
 
 `host-server` は **Rapier 60Hz** と **`is_finite` 入力ゲート**、配信は **30Hz デルタ**（C-C 契約維持）。  
-`client` は Manifest の blake3 で Coin GLB を取得し、物理 pose に追従して wgpu 表示する。
+`client` は Manifest の blake3 で Coin GLB を取得し、物理 pose に追従して wgpu 表示する。  
+**ESC** で自前 Canvas のダッシュ（終了 / 設定プレースホルダ）を開閉する。
 
 | コンポーネント | パス |
 |:---|:---|
@@ -95,9 +96,11 @@ bash .scripts/smoke-assets.sh
 bash .scripts/smoke-assets-glb.sh      # Coin GLB → CAS
 bash .scripts/smoke-manifest-delta.sh  # Manifest + デルタ（zenohd 必須）
 bash .scripts/smoke-rapier-host.sh     # Rapier 60Hz / net 30Hz（zenohd 必須）
+bash .scripts/smoke-system-ui.sh       # system_ui unit + host_control コンパイル
+# ESC ダッシュ: client 起動後 Esc。client+host 終了は ALCHEMY_HOST_PID か host_control
 ```
 
-環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID` / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_BLOB_BLAKE3`。
+環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID` / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_PID`。
 
 詳細は [`.workspace/roadmap/`](.workspace/roadmap/README.md)。
 

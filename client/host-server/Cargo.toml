@@ -3,7 +3,7 @@ name = "host-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Local authoritative space host (Slice D: Rapier 60Hz + delta 30Hz + is_finite + Manifest)"
+description = "Local authoritative space host (Slice D Rapier + Slice E host_control stub)"
 
 [[bin]]
 name = "host-server"

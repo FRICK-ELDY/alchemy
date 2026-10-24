@@ -12,8 +12,9 @@
 | C-B | done | Coin GLB を wgpu 表示 | [slice-c-b.md](slice-c-b.md) |
 | C-C | done | Manifest（低頻度）＋ RenderFrame デルタ（高頻度） | [slice-c-c.md](slice-c-c.md) |
 | D | done | Rapier 最小＋ `is_finite`（内部 60Hz / 配信 30Hz） | [slice-d.md](slice-d.md) |
+| E | done | system_ui ダッシュ（自前 Canvas / ESC） | [slice-e.md](slice-e.md) |
 
-**現在の次:** （未定義 — Slice D 完了。次スライスを切ってから更新）
+**現在の次:** （未定義 — Slice E 完了。次スライスを切ってから更新）
 
 ## 関連
 

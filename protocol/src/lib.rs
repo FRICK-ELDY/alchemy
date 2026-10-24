@@ -23,6 +23,12 @@ pub const INPUT_KEY_LOCAL: &str = "alchemy/dev/room/local/input";
 /// Default Zenoh key for local room scene manifest (low-frequency blob refs).
 pub const MANIFEST_KEY_LOCAL: &str = "alchemy/dev/room/local/manifest";
 
+/// Default Zenoh key for local host control (Slice E stub: shutdown).
+pub const HOST_CONTROL_KEY_LOCAL: &str = "alchemy/dev/room/local/host_control";
+
+/// Payload accepted by host-server on `HOST_CONTROL_KEY_LOCAL` (Slice E stub).
+pub const HOST_CONTROL_SHUTDOWN: &[u8] = b"shutdown";
+
 /// Build a frame key for an arbitrary room id (ASCII, no `/`).
 pub fn frame_key(room_id: &str) -> String {
     format!("alchemy/dev/room/{room_id}/frame")
@@ -36,6 +42,11 @@ pub fn input_key(room_id: &str) -> String {
 /// Build a manifest key for an arbitrary room id (ASCII, no `/`).
 pub fn manifest_key(room_id: &str) -> String {
     format!("alchemy/dev/room/{room_id}/manifest")
+}
+
+/// Build a host-control key for an arbitrary room id (ASCII, no `/`).
+pub fn host_control_key(room_id: &str) -> String {
+    format!("alchemy/dev/room/{room_id}/host_control")
 }
 
 include!(concat!(env!("OUT_DIR"), "/alchemy.render.rs"));
@@ -116,5 +127,6 @@ mod tests {
         assert_eq!(frame_key("local"), FRAME_KEY_LOCAL);
         assert_eq!(input_key("local"), INPUT_KEY_LOCAL);
         assert_eq!(manifest_key("local"), MANIFEST_KEY_LOCAL);
+        assert_eq!(host_control_key("local"), HOST_CONTROL_KEY_LOCAL);
     }
 }
