@@ -2,19 +2,63 @@
 
 縦スライス単位の進捗目次。各 Slice の詳細（保証・Phase・起動）は個別ファイルへ。
 
+## ID 規約（`x` + 16進）
+
+1000 件超を見据え、Slice の正本 ID は次で固定する。
+
+| 項目 | 形式 | 例 |
+|:---|:---|:---|
+| **ID** | `x` + **4桁ゼロ埋め・小文字** 16進 | `x0001` … `x03e8`（=1000₁₀）… `xffff` |
+| **slug** | kebab-case | `system-ui-dash` |
+| **ファイル** | `slices/xNNNN-slug.md` | [`slices/x0007-system-ui-dash.md`](slices/x0007-system-ui-dash.md) |
+| **ブランチ** | `feat/xNNNN-slug` | `feat/x0007-system-ui-dash` |
+| **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
+
+- ID は **発行後に変えない**（並べ替え・参照の安定性）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0008`**）
+- 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
+
+### タグ（front matter / ファイル先頭メタ）
+
+| キー | 値 | 説明 |
+|:---|:---|:---|
+| `id` | `xNNNN` | 必須 |
+| `slug` | kebab | 必須 |
+| `status` | `planned` / `active` / `done` / `deferred` | 必須 |
+| `area` | 複数可 | `auth` `world` `assets` `protocol` `zenoh` `host` `client` `system_ui` `sim` `relay` `launcher` `docs` `ci` |
+| `surface` | 任意・複数可 | `desktop` `vr` など |
+| `depends_on` | `xNNNN` のリスト | 任意 |
+
+例:
+
+```yaml
+id: x0007
+slug: system-ui-dash
+status: done
+area: [client, system_ui]
+surface: [desktop]
+depends_on: [x0006]
+```
+
+### 目次の持ち方
+
+- この README は **直近・現行** を載せる（全件巨大表にしない）
+- 詳細はすべて [`slices/`](slices/) 配下
+- 件数が増えたら area 別インデックスを追加してよい
+
 ## 目次
 
-| Slice | 状態 | 要約 | 詳細 |
-|:---|:---|:---|:---|
-| A | done | ローカル Zenoh 縦スライス（Publish → Subscribe → 描画） | [slice-a.md](slice-a.md) |
-| B | done | Room Token 門番（auth JWT 必須） | [slice-b.md](slice-b.md) |
-| C-A | done | assets-server 最小（CAS + Quota） | [slice-c-a.md](slice-c-a.md) |
-| C-B | done | Coin GLB を wgpu 表示 | [slice-c-b.md](slice-c-b.md) |
-| C-C | done | Manifest（低頻度）＋ RenderFrame デルタ（高頻度） | [slice-c-c.md](slice-c-c.md) |
-| D | done | Rapier 最小＋ `is_finite`（内部 60Hz / 配信 30Hz） | [slice-d.md](slice-d.md) |
-| E | done | system_ui ダッシュ（自前 Canvas / ESC） | [slice-e.md](slice-e.md) |
+| ID | 旧称 | 状態 | 要約 | 詳細 |
+|:---|:---|:---|:---|:---|
+| x0001 | A | done | ローカル Zenoh 縦スライス（Publish → Subscribe → 描画） | [x0001-zenoh-local-frame.md](slices/x0001-zenoh-local-frame.md) |
+| x0002 | B | done | Room Token 門番（auth JWT 必須） | [x0002-room-token-gate.md](slices/x0002-room-token-gate.md) |
+| x0003 | C-A | done | assets-server 最小（CAS + Quota） | [x0003-assets-cas-quota.md](slices/x0003-assets-cas-quota.md) |
+| x0004 | C-B | done | Coin GLB を wgpu 表示 | [x0004-coin-glb-wgpu.md](slices/x0004-coin-glb-wgpu.md) |
+| x0005 | C-C | done | Manifest（低頻度）＋ RenderFrame デルタ（高頻度） | [x0005-manifest-delta.md](slices/x0005-manifest-delta.md) |
+| x0006 | D | done | Rapier 最小＋ `is_finite`（内部 60Hz / 配信 30Hz） | [x0006-rapier-finite-tick.md](slices/x0006-rapier-finite-tick.md) |
+| x0007 | E | done | system_ui ダッシュ（自前 Canvas / ESC） | [x0007-system-ui-dash.md](slices/x0007-system-ui-dash.md) |
 
-**現在の次:** （未定義 — Slice E 完了。次スライスを切ってから更新）
+**現在の次:** （未定義 — x0007 完了。次は `x0008` から切る）
 
 ## 関連
 
@@ -26,7 +70,8 @@
 
 ## 管理ルール
 
-- **1 Slice = 1 ファイル**（保証する／しない・Phase・起動をそのファイルに閉じる）
+- **1 Slice = 1 ファイル**（`slices/xNNNN-slug.md`。保証する／しない・Phase・起動をそのファイルに閉じる）
 - 状態が変わったら **この目次の表** と当該 Slice ファイルの両方を更新する
-- 新 Slice を切るときは `slice-*.md` を追加し、目次行を足す
-- アーキテクチャ正本へのリンクは `../0_doc/architecture/` を使う
+- 新 Slice は **`xNNNN` を採番**し `slices/xNNNN-slug.md` を追加、目次行を足す
+- ブランチ名は `feat/xNNNN-slug`
+- アーキテクチャ正本へのリンクは `../../0_doc/architecture/`（slices 内から）を使う

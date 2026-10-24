@@ -1,10 +1,12 @@
-# Slice D — Rapier 最小＋ `is_finite`（内部 60Hz / 配信 30Hz）（完了）
+# x0006 — Rapier 最小＋ `is_finite`（内部 60Hz / 配信 30Hz）（完了）
+
+> **ID:** `x0006` · **旧称:** Slice D · **slug:** `rapier-finite-tick` · **status:** done · **area:** `[host, sim]` · **depends_on:** `[x0005]`
 
 目標: host-server を「デモ軌道」から **空間計算ホスト** に引き上げる。  
 内部物理 Tick（60Hz 固定）とネットワーク配信 Tick（30Hz・C-C デルタ維持）を分離し、入力は `is_finite` 強制サニタイズ後にだけ物理へ渡す。  
 SceneManifest / assets 経路は C-C のまま（GLB は host 非経由）。
 
-正本: [client.md](../0_doc/architecture/client.md) · [overview.md](../0_doc/architecture/overview.md) ⑧（3 層 Tick の ①②）
+正本: [client.md](../../0_doc/architecture/client.md) · [overview.md](../../0_doc/architecture/overview.md) ⑧（3 層 Tick の ①②）
 
 ## 設計方針
 
@@ -61,4 +63,4 @@ cargo run -p client        # C-C 経路のまま pose 追従
 - 有限入力は水平 `linvel`（XZ）のみ適用し、Y は重力に任せる（キーボード操作は後続）
 - 時間回転描画はしない（物理 pose を隠さない）。床平面＋高さで色変化
 
-← [目次](README.md)
+← [目次](../README.md)

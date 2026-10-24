@@ -1,4 +1,6 @@
-# Slice A — Local Zenoh 縦スライス（done）
+# x0001 — Local Zenoh 縦スライス（done）
+
+> **ID:** `x0001` · **旧称:** Slice A · **slug:** `zenoh-local-frame` · **status:** done · **area:** `[zenoh, client, host, auth, protocol]`
 
 目標: ローカル `zenohd` + `host-server` Publish + `client` Subscribe 描画 + `auth-server` JWT/JWKS。  
 **OS:** macOS / Linux / Windows は **WSL2（Ubuntu 26.04 LTS）**（Docker + Rust）
@@ -34,4 +36,4 @@ cargo run -p client        # 別ターミナル
 
 キー式: `alchemy/dev/room/local/frame`
 
-← [目次](README.md)
+← [目次](../README.md)

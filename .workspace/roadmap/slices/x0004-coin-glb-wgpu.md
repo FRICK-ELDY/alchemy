@@ -1,7 +1,9 @@
-# Slice C-B — Coin GLB を wgpu 表示（完了）
+# x0004 — Coin GLB を wgpu 表示（完了）
+
+> **ID:** `x0004` · **旧称:** Slice C-B · **slug:** `coin-glb-wgpu` · **status:** done · **area:** `[client, assets]` · **depends_on:** `[x0003]`
 
 目標: assets-server から Coin_PolygonalMind（CC0）を取得し、BLAKE3 照合後に client で wgpu 表示する。  
-正本: [client.md](../0_doc/architecture/client.md) · fixture: [`client/fixtures/`](../../client/fixtures/)
+正本: [client.md](../../0_doc/architecture/client.md) · fixture: [`client/fixtures/`](../../../client/fixtures/)
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
@@ -27,4 +29,4 @@ bash .scripts/smoke-assets-glb.sh
 cd client && cargo run -p client
 ```
 
-← [目次](README.md)
+← [目次](../README.md)
