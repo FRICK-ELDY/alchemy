@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # GitHub Actions 相当のチェック（macOS / Linux / WSL / Git Bash）。
-# 使い方: ./.scripts/ci.sh [all|rust|protocol|auth|world]
+# 使い方: ./.scripts/ci.sh [all|rust|protocol|auth|world|assets]
 #
-# auth / world は既定で Docker（OS 差分・ネイティブ依存を避ける）。
+# Elixir 系は既定で Docker（OS 差分・ネイティブ依存を避ける）。
 # ホストの mix で auth を回す場合: AUTH_CI_HOST=1 ./.scripts/ci.sh auth
 set -euo pipefail
 
@@ -102,6 +102,19 @@ run_world_docker() {
     world sh -c 'mix deps.get && mix format --check-formatted && mix compile --warnings-as-errors && mix credo --strict && mix test'
 }
 
+run_assets_docker() {
+  local compose="assets-server/docker-compose.yml"
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "[FAIL] docker is required for assets CI" >&2
+    FAILED+=("docker required")
+    return
+  fi
+  step "docker compose build assets" docker compose -f "$compose" build assets
+  step "assets mix checks (Docker)" docker compose -f "$compose" run --rm --entrypoint "" \
+    -e MIX_ENV=test \
+    assets sh -c 'mix deps.get && mix format --check-formatted && mix compile --warnings-as-errors && mix credo --strict && mix test'
+}
+
 echo "Alchemy local CI (target=${TARGET})"
 echo "root: ${ROOT}"
 
@@ -110,14 +123,16 @@ case "$TARGET" in
   protocol) run_protocol ;;
   auth) run_auth ;;
   world) run_world_docker ;;
+  assets) run_assets_docker ;;
   all)
     run_rust
     run_protocol
     run_auth
     run_world_docker
+    run_assets_docker
     ;;
   *)
-    echo "usage: $0 [all|rust|protocol|auth|world]" >&2
+    echo "usage: $0 [all|rust|protocol|auth|world|assets]" >&2
     exit 2
     ;;
 esac

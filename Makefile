@@ -1,15 +1,16 @@
 # Entry points (macOS / Linux / WSL).
-.PHONY: ci ci-rust ci-protocol ci-auth ci-world help
+.PHONY: ci ci-rust ci-protocol ci-auth ci-world ci-assets help
 
 help:
 	@echo "Targets:"
-	@echo "  make ci            # rust + protocol + auth + world (GHA equivalent)"
+	@echo "  make ci            # rust + protocol + auth + world + assets"
 	@echo "  make ci-rust"
 	@echo "  make ci-protocol"
-	@echo "  make ci-auth       # Docker Compose (same on Win/Mac/Linux)"
-	@echo "  make ci-world      # Docker Compose"
+	@echo "  make ci-auth"
+	@echo "  make ci-world"
+	@echo "  make ci-assets"
 	@echo ""
-	@echo "Dev (Slice B): see README.md"
+	@echo "Dev: see README.md"
 
 ci:
 	./.scripts/ci.sh all
@@ -25,3 +26,6 @@ ci-auth:
 
 ci-world:
 	./.scripts/ci.sh world
+
+ci-assets:
+	./.scripts/ci.sh assets

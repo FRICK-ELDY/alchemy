@@ -24,6 +24,12 @@ world-server/priv/room_jwt_public.pem
 world-server/priv/test_room_jwt_private.pem
 world-server/priv/test_room_jwt_public.pem
 
+# assets-server local CAS + SQLite
+assets-server/priv/cas/
+assets-server/priv/cas_test/
+assets-server/priv/*.sqlite3
+assets-server/priv/*.sqlite3-*
+
 # IDE / OS
 .idea/
 .vscode/

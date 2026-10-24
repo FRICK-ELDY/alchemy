@@ -89,9 +89,37 @@ cargo run -p client
 
 ---
 
-## Slice C — assets 最小（未着手）
+## Slice C-A — assets-server 最小（完了）
 
-描画に実アセットが必要になったら着手。フル ER は書かず、先に保証境界とオブジェクトモデル（[assets-server.md](0_doc/architecture/assets-server.md)）を正本とする。
+目標: auth JWT 必須でローカル CAS に Blob を put/get し、固定 Quota（1GiB）を守る。  
+正本: [assets-server.md](0_doc/architecture/assets-server.md)
+
+| Phase | 内容 | 状態 |
+|:---|:---|:---|
+| 0 | `assets-server` scaffold（Phoenix / Ecto SQLite / Docker） | done |
+| 1 | BLAKE3 CAS + BlobRef / QuotaLedger + auth Bearer | done |
+| 2 | smoke + CI | done |
+
+### Slice C-A で保証する / しない
+
+| 保証する | 保証しない |
+|:---|:---|
+| auth Bearer 必須の upload / download | client の GLB wgpu 描画（C-B） |
+| BLAKE3 キーのローカル CAS | R2 / NAS 切替 |
+| SQLite メタ（BlobRef / QuotaLedger） | Vault / Folder / Commit VCS |
+| 固定 Quota 1GiB（超過は 413） | Ash 本格ドメイン / pgvector / Origin Cert |
+
+### Slice C-A 起動
+
+```bash
+cd auth-server && docker compose up -d && cd ..
+cd assets-server && docker compose up -d && cd ..
+bash .scripts/smoke-assets.sh
+```
+
+### Slice C-B（後続）
+
+- client で 1 個の GLB を取得して wgpu 表示
 
 ---
 
@@ -103,6 +131,7 @@ make ci-rust
 make ci-protocol
 make ci-auth
 make ci-world
+make ci-assets
 ```
 
 詳細は [README.md](../README.md)。
