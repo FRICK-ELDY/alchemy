@@ -572,7 +572,12 @@ impl ApplicationHandler for App {
                     );
                     if self.primary_down {
                         let action = self.ui.on_click(self.cursor.0 as f32, self.cursor.1 as f32);
-                        handle_ui_action(action, self.zenoh.as_ref(), event_loop);
+                        handle_ui_action(
+                            action,
+                            self.zenoh.as_ref(),
+                            self.shared.room_id.as_ref(),
+                            event_loop,
+                        );
                     }
                 } else if pressed && !self.look_captured {
                     self.set_look_capture(true);
@@ -638,6 +643,7 @@ impl ApplicationHandler for App {
 fn handle_ui_action(
     action: UiAction,
     zenoh: Option<&zenoh::Session>,
+    room_id: &str,
     event_loop: &ActiveEventLoop,
 ) {
     match action {
@@ -648,7 +654,7 @@ fn handle_ui_action(
         UiAction::ExitClientAndHost => {
             log::info!("system_ui: exit client + host stub");
             if let Some(session) = zenoh {
-                host_control::request_host_shutdown(session);
+                host_control::request_host_shutdown(session, room_id);
             }
             event_loop.exit();
         }

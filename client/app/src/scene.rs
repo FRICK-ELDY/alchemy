@@ -133,6 +133,8 @@ pub struct Uniforms {
 pub struct SharedState {
     /// Local camera / aim follows this host entity (`LOCAL_USER_ROOT_UNSET` until Presence).
     pub local_user_root: AtomicU32,
+    /// `ROOM_ID` used for Zenoh keys (x0017); shared with host_control shutdown publish.
+    pub room_id: Arc<str>,
     pub entities: Mutex<std::collections::HashMap<u32, EntityPose>>,
     pub look: Mutex<CameraLook>,
     pub intent: Mutex<MoveIntent>,

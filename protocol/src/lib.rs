@@ -11,11 +11,12 @@
 //! - Signed Manifest issuance by world-server (later).
 //! - Locomotion module list UI / suppress sources.
 //! - Explicit Leave / liveliness (host Intent TTL reclaim is x0016 host policy).
+//! - Tenant namespace `alchemy/tenant/...` (dev keys only: `alchemy/dev/room/{room_id}/…`).
 
 pub use prost::Message;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.7.0-x0016";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.8.0-x0017";
 
 /// Default free-move speed (m/s) when Manifest `move_speed` is 0.
 /// Shared by host Noclip and client Settings display (x000a).
@@ -45,30 +46,69 @@ pub const HOST_CONTROL_KEY_LOCAL: &str = "alchemy/dev/room/local/host_control";
 /// Default Zenoh key for local room presence (low-frequency sub→entity; x0015).
 pub const PRESENCE_KEY_LOCAL: &str = "alchemy/dev/room/local/presence";
 
-/// Payload accepted by host-server on `HOST_CONTROL_KEY_LOCAL` (Slice E stub).
+/// Payload accepted by host-server on `host_control_key(room_id)` (Slice E stub).
 pub const HOST_CONTROL_SHUTDOWN: &[u8] = b"shutdown";
 
-/// Build a frame key for an arbitrary room id (ASCII, no `/`).
+/// Why [`validate_room_id`] rejected a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomIdError {
+    Empty,
+    ContainsSlash,
+    NonAsciiPrintable,
+}
+
+impl std::fmt::Display for RoomIdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "room_id must not be empty"),
+            Self::ContainsSlash => write!(f, "room_id must not contain '/'"),
+            Self::NonAsciiPrintable => {
+                write!(f, "room_id must be non-empty ASCII printable (0x20..=0x7E)")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RoomIdError {}
+
+/// Validate `ROOM_ID` for Zenoh key segments (x0017).
+///
+/// Guarantees: non-empty, no `/`, every byte in `0x20..=0x7E`.
+/// Non-guarantees: URL encoding, Unicode, max length.
+pub fn validate_room_id(room_id: &str) -> Result<&str, RoomIdError> {
+    if room_id.is_empty() {
+        return Err(RoomIdError::Empty);
+    }
+    if room_id.contains('/') {
+        return Err(RoomIdError::ContainsSlash);
+    }
+    if !room_id.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
+        return Err(RoomIdError::NonAsciiPrintable);
+    }
+    Ok(room_id)
+}
+
+/// Build a frame key for an arbitrary room id (caller should [`validate_room_id`]).
 pub fn frame_key(room_id: &str) -> String {
     format!("alchemy/dev/room/{room_id}/frame")
 }
 
-/// Build an input key for an arbitrary room id (ASCII, no `/`).
+/// Build an input key for an arbitrary room id (caller should [`validate_room_id`]).
 pub fn input_key(room_id: &str) -> String {
     format!("alchemy/dev/room/{room_id}/input")
 }
 
-/// Build a manifest key for an arbitrary room id (ASCII, no `/`).
+/// Build a manifest key for an arbitrary room id (caller should [`validate_room_id`]).
 pub fn manifest_key(room_id: &str) -> String {
     format!("alchemy/dev/room/{room_id}/manifest")
 }
 
-/// Build a host-control key for an arbitrary room id (ASCII, no `/`).
+/// Build a host-control key for an arbitrary room id (caller should [`validate_room_id`]).
 pub fn host_control_key(room_id: &str) -> String {
     format!("alchemy/dev/room/{room_id}/host_control")
 }
 
-/// Build a presence key for an arbitrary room id (ASCII, no `/`).
+/// Build a presence key for an arbitrary room id (caller should [`validate_room_id`]).
 pub fn presence_key(room_id: &str) -> String {
     format!("alchemy/dev/room/{room_id}/presence")
 }
@@ -195,5 +235,22 @@ mod tests {
         assert_eq!(manifest_key("local"), MANIFEST_KEY_LOCAL);
         assert_eq!(host_control_key("local"), HOST_CONTROL_KEY_LOCAL);
         assert_eq!(presence_key("local"), PRESENCE_KEY_LOCAL);
+        assert_eq!(presence_key("alpha"), "alchemy/dev/room/alpha/presence");
+        assert_ne!(presence_key("alpha"), presence_key("beta"));
+    }
+
+    #[test]
+    fn validate_room_id_accepts_local_and_rejects_bad() {
+        assert_eq!(validate_room_id("local").unwrap(), "local");
+        assert_eq!(validate_room_id("alpha").unwrap(), "alpha");
+        assert_eq!(validate_room_id("").unwrap_err(), RoomIdError::Empty);
+        assert_eq!(
+            validate_room_id("a/b").unwrap_err(),
+            RoomIdError::ContainsSlash
+        );
+        assert_eq!(
+            validate_room_id("部屋").unwrap_err(),
+            RoomIdError::NonAsciiPrintable
+        );
     }
 }

@@ -1,8 +1,8 @@
 # x0017 — ROOM_ID → Zenoh キー本配線
 
-> **ID:** `x0017` · **slug:** `room-id-zenoh-keys` · **status:** `planned` · **area:** `[host, client, protocol, docs]` · **surface:** `[desktop, vr]` · **depends_on:** `[x0016]`
+> **ID:** `x0017` · **slug:** `room-id-zenoh-keys` · **status:** `done` · **area:** `[host, client, protocol, docs]` · **surface:** `[desktop, vr]` · **depends_on:** `[x0016]`
 
-目標: host / client が既に読む **`ROOM_ID`（既定 `local`）を、実際の Zenoh pub/sub キーに反映**する。`*_KEY_LOCAL` 定数への直結をやめ、protocol の `*_key(room_id)` ヘルパ経由に統一。異なる `ROOM_ID` のセッションはキー空間で隔離されることまで smoke する。
+目標: host / client が既に読む **`ROOM_ID`（既定 `local`）を、実際の Zenoh pub/sub キーに反映**する。`*_KEY_LOCAL` 定数への直結をやめ、protocol の `*_key(room_id)` ヘルパ経由に統一。異なる `ROOM_ID` のセッションはキー空間で隔離されることまで smoke する。（完了）
 
 正本: [protocol.md](../../0_doc/architecture/protocol.md) · [client.md](../../0_doc/architecture/client.md) · [zenoh-router.md](../../0_doc/architecture/zenoh-router.md)
 
@@ -10,7 +10,7 @@
 
 | 層 | 役割 |
 |:---|:---|
-| protocol | 既存 `frame_key` / `input_key` / `manifest_key` / `presence_key` / `host_control_key` を正とする。`*_KEY_LOCAL` は `room_id=local` の別名として残す。`PROTOCOL_PIN` を `0.8.0-x0017` に。任意で `room_id` 検証ヘルパ（ASCII・`/` なし） |
+| protocol | 既存 `frame_key` / `input_key` / `manifest_key` / `presence_key` / `host_control_key` を正とする。`*_KEY_LOCAL` は `room_id=local` の別名として残す。`PROTOCOL_PIN` を `0.8.0-x0017` に。`validate_room_id`（ASCII・`/` なし） |
 | host | `ROOM_ID` から 5 キーを構築して declare。ログ・smoke banner も動的キーを出す。Room Token の `room_id` 検証は現状どおり（env と一致） |
 | client | 同上。Manifest / Presence / frame / input / host_control すべて同一 `ROOM_ID` |
 | Identity | 変更なし（Token `sub`） |
@@ -18,9 +18,9 @@
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
 | 0 | Slice 文書 + 目次 | done |
-| 1 | protocol pin + `room_id` 検証（任意）+ 正本 docs | planned |
-| 2 | host / client を `*_key(room_id)` に切替 | planned |
-| 3 | smoke（別 `ROOM_ID` 非交差）+ README | planned |
+| 1 | protocol pin + `room_id` 検証 + 正本 docs | done |
+| 2 | host / client を `*_key(room_id)` に切替 | done |
+| 3 | smoke（別 `ROOM_ID` 非交差）+ README | done |
 
 ## キー契約
 
@@ -64,8 +64,8 @@ ROOM_ID=beta ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=bob cargo run -p client
 
 ## 実装メモ
 
-- 置換対象: `client/app` / `client/host-server` の `declare_*(*_KEY_LOCAL)` と起動ログ
-- smoke: `.scripts/smoke-presence-slots.sh` を pin / キー表示更新。任意で 2-room 非交差チェックを追加
-- Dash Exit の `host_control` publish も `host_control_key(room_id)` に合わせる
+- host/client: `validate_room_id` → `*_key(room_id)` で declare；起動ログに動的キー
+- client Dash Exit: `host_control_key(room_id)`（`SharedState.room_id`）
+- smoke: `.scripts/smoke-presence-slots.sh`（`local` + `alpha` banner / pin `0.8.0-x0017`）
 
 ← [目次](../README.md)

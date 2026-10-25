@@ -1,4 +1,4 @@
-//! Local host-server — x0016 presence reclaim + Grab hold / boxes / loco.
+//! Local host-server — x0017 ROOM_ID Zenoh keys + presence reclaim / Grab / loco.
 //!
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
@@ -6,6 +6,7 @@
 //! - SceneManifest with default Noclip LocomotionConfig (blake3 refs; no GLB bytes)
 //! - Per-`sub` Intent/Grab → up to 4 user_roots (entity 3..6); first-come slot assign
 //! - PresenceState publish (`sub`→entity); Intent silence TTL reclaim (x0016)
+//! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
 //! - Grabbable cuboids entity 10..18; Grab hold kinematic follow; no Steal
 //! - Slice E: `host_control` Subscribe → `shutdown` exits process
 //!
@@ -23,9 +24,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alchemy_protocol::{
-    input_buttons, Entity, InputEvent, LocomotionConfig, LocomotionMode, Message,
-    PresenceAssignment, PresenceState, RenderFrame, SceneEntry, SceneManifest, FRAME_KEY_LOCAL,
-    HOST_CONTROL_KEY_LOCAL, INPUT_KEY_LOCAL, MANIFEST_KEY_LOCAL, PRESENCE_KEY_LOCAL, PROTOCOL_PIN,
+    frame_key, host_control_key, input_buttons, input_key, manifest_key, presence_key,
+    validate_room_id, Entity, InputEvent, LocomotionConfig, LocomotionMode, Message,
+    PresenceAssignment, PresenceState, RenderFrame, SceneEntry, SceneManifest, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
@@ -296,11 +297,12 @@ fn build_manifest(room_id: &str, blake3: &str) -> SceneManifest {
 
 fn spawn_input_gate(
     session: zenoh::Session,
+    input_key_expr: String,
     verifier: Arc<RoomTokenVerifier>,
     presence: Arc<Mutex<PresenceIntents>>,
 ) -> Result<()> {
     let subscriber = session
-        .declare_subscriber(INPUT_KEY_LOCAL)
+        .declare_subscriber(input_key_expr.clone())
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_subscriber input failed: {e}"))?;
 
@@ -308,7 +310,9 @@ fn spawn_input_gate(
         .name("zenoh-input".into())
         .spawn(move || {
             let _session = session;
-            log::info!("subscribed to {INPUT_KEY_LOCAL} (Room Token + is_finite + per-sub gate)");
+            log::info!(
+                "subscribed to {input_key_expr} (Room Token + is_finite + per-sub gate)"
+            );
             let mut accepted: u64 = 0;
             let mut dropped_token: u64 = 0;
             let mut dropped_finite: u64 = 0;
@@ -385,13 +389,22 @@ fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let world_url = std::env::var("WORLD_URL").unwrap_or_else(|_| DEFAULT_WORLD_URL.to_string());
-    let room_id = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
+    let room_id_raw = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
+    let room_id = validate_room_id(&room_id_raw)
+        .map_err(|e| anyhow::anyhow!("invalid ROOM_ID={room_id_raw:?}: {e}"))?
+        .to_string();
     let auth_url = default_auth_url();
     let blob_blake3 =
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
+    let manifest_key_expr = manifest_key(&room_id);
+    let frame_key_expr = frame_key(&room_id);
+    let input_key_expr = input_key(&room_id);
+    let presence_key_expr = presence_key(&room_id);
+    let host_control_key_expr = host_control_key(&room_id);
+
     log::info!(
-        "host-server x0016 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} presence={PRESENCE_KEY_LOCAL} host_control={HOST_CONTROL_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        "host-server x0017 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr} host_control={host_control_key_expr} world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
     );
@@ -411,21 +424,22 @@ fn main() -> Result<()> {
     let session = open_zenoh().context("open zenoh session")?;
     spawn_input_gate(
         session.clone(),
+        input_key_expr,
         Arc::clone(&verifier),
         Arc::clone(&presence),
     )?;
-    host_control::spawn_listener(session.clone())?;
+    host_control::spawn_listener(session.clone(), &room_id)?;
 
     let manifest_pub = session
-        .declare_publisher(MANIFEST_KEY_LOCAL)
+        .declare_publisher(manifest_key_expr)
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_publisher manifest failed: {e}"))?;
     let presence_pub = session
-        .declare_publisher(PRESENCE_KEY_LOCAL)
+        .declare_publisher(presence_key_expr)
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_publisher presence failed: {e}"))?;
     let frame_pub = session
-        .declare_publisher(FRAME_KEY_LOCAL)
+        .declare_publisher(frame_key_expr)
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_publisher frame failed: {e}"))?;
 
