@@ -477,7 +477,10 @@ mod tests {
         }
         xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         for w in xs.windows(2) {
-            assert!((w[1] - w[0]).abs() > 0.5, "spawns should differ on X: {xs:?}");
+            assert!(
+                (w[1] - w[0]).abs() > 0.5,
+                "spawns should differ on X: {xs:?}"
+            );
         }
     }
 

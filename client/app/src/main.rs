@@ -414,8 +414,8 @@ fn main() -> Result<()> {
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
     let room_token =
         fetch_guest_token(&world_url, &room_id, &auth_token).context("fetch guest Room Token")?;
-    let local_sub = jwt_sub::sub_unverified(&room_token)
-        .context("read Room Token sub (unverified payload)")?;
+    let local_sub =
+        jwt_sub::sub_unverified(&room_token).context("read Room Token sub (unverified payload)")?;
     log::info!("auth JWT + guest Room Token acquired; sub={local_sub}");
 
     let shared = Arc::new(SharedState {

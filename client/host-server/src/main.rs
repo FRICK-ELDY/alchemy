@@ -462,7 +462,14 @@ fn main() -> Result<()> {
 
         let snapshot = presence
             .lock()
-            .map(|g| (g.by_slot, g.occupied_sub.clone(), g.revision, g.to_presence_state()))
+            .map(|g| {
+                (
+                    g.by_slot,
+                    g.occupied_sub.clone(),
+                    g.revision,
+                    g.to_presence_state(),
+                )
+            })
             .unwrap_or_default();
         let (by_slot, occupied, presence_rev, presence_state) = snapshot;
 
