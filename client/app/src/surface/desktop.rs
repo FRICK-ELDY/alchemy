@@ -21,13 +21,15 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Cursor, CursorGrabMode, CustomCursor, Window, WindowId};
 
+use crate::auth;
 use crate::host_control;
+use crate::join_room_with_access;
 use crate::mesh::CpuMesh;
 use crate::scene::{
     create_depth_view, create_wgpu_for_window, CameraLook, EntityPose, MoveIntent, SceneGpu,
     SharedState,
 };
-use crate::system_ui::{SystemUi, UiAction};
+use crate::system_ui::{DashTab, SystemUi, UiAction};
 use crate::world_hit::{desktop_look_ray, pick_grabbable_desktop};
 
 /// Radians per pixel (fixed; Settings Facet deferred).
@@ -574,8 +576,9 @@ impl ApplicationHandler for App {
                         let action = self.ui.on_click(self.cursor.0 as f32, self.cursor.1 as f32);
                         handle_ui_action(
                             action,
+                            &mut self.ui,
+                            &self.shared,
                             self.zenoh.as_ref(),
-                            self.shared.room_id.as_ref(),
                             event_loop,
                         );
                     }
@@ -613,6 +616,37 @@ impl ApplicationHandler for App {
                         }
                         log::info!("system_ui open={}", self.ui.state.open);
                     }
+                    if pressed && self.ui.state.open && self.ui.state.tab == DashTab::Home {
+                        match code {
+                            KeyCode::Backspace => {
+                                self.ui.on_home_backspace();
+                            }
+                            KeyCode::Tab => {
+                                self.ui.on_home_tab_key();
+                            }
+                            KeyCode::Enter | KeyCode::NumpadEnter if !event.repeat => {
+                                let action = self.ui.on_home_enter();
+                                handle_ui_action(
+                                    action,
+                                    &mut self.ui,
+                                    &self.shared,
+                                    self.zenoh.as_ref(),
+                                    event_loop,
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if pressed {
+                    if let Some(text) = event.text.as_ref() {
+                        if self.ui.state.open && self.ui.state.tab == DashTab::Home {
+                            // Skip control-ish single chars already handled as keys.
+                            if text != "\u{8}" && text != "\t" && text != "\r" && text != "\n" {
+                                self.ui.on_text_input(text);
+                            }
+                        }
+                    }
                 }
                 self.rebuild_intent();
             }
@@ -642,8 +676,9 @@ impl ApplicationHandler for App {
 
 fn handle_ui_action(
     action: UiAction,
+    ui: &mut SystemUi,
+    shared: &SharedState,
     zenoh: Option<&zenoh::Session>,
-    room_id: &str,
     event_loop: &ActiveEventLoop,
 ) {
     match action {
@@ -654,9 +689,120 @@ fn handle_ui_action(
         UiAction::ExitClientAndHost => {
             log::info!("system_ui: exit client + host stub");
             if let Some(session) = zenoh {
-                host_control::request_host_shutdown(session, room_id);
+                host_control::request_host_shutdown(session, shared.room_id.as_ref());
             }
             event_loop.exit();
+        }
+        UiAction::AuthLogin => {
+            let identifier = ui.state.home_identifier.clone();
+            let password = ui.state.home_password.clone();
+            let remember = ui.state.home_remember_me;
+            ui.state.home_status = "Signing in…".into();
+            ui.rebuild();
+            match auth::login(&shared.auth_url, &identifier, &password, remember) {
+                Ok(session) => {
+                    let name = session.user.username.clone();
+                    if let Ok(mut gate) = shared.auth.lock() {
+                        gate.apply_auth_session(session);
+                    }
+                    match join_room_with_access(
+                        shared,
+                        &shared
+                            .auth
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.access_token.clone())
+                            .unwrap_or_default(),
+                    ) {
+                        Ok(()) => {
+                            ui.state.home_logged_in_as = Some(name);
+                            ui.state.home_password.clear();
+                            ui.state.home_status = "Joined room".into();
+                            ui.state.open = false;
+                            log::info!("auth login + join ok");
+                        }
+                        Err(err) => {
+                            ui.state.home_status = format!("Join failed: {err:#}");
+                            log::warn!("join after login failed: {err:#}");
+                        }
+                    }
+                }
+                Err(err) => {
+                    ui.state.home_status = format!("Login failed: {err:#}");
+                    log::warn!("login failed: {err:#}");
+                }
+            }
+            ui.rebuild();
+        }
+        UiAction::AuthRegister => {
+            let username = ui.state.home_username.clone();
+            let email = ui.state.home_email.clone();
+            let password = ui.state.home_password.clone();
+            let birthday = ui.state.home_birthday.clone();
+            let remember = ui.state.home_remember_me;
+            ui.state.home_status = "Creating account…".into();
+            ui.rebuild();
+            match auth::register(
+                &shared.auth_url,
+                &username,
+                &email,
+                &password,
+                &birthday,
+                remember,
+            ) {
+                Ok(session) => {
+                    let name = session.user.username.clone();
+                    if let Ok(mut gate) = shared.auth.lock() {
+                        gate.apply_auth_session(session);
+                    }
+                    match join_room_with_access(
+                        shared,
+                        &shared
+                            .auth
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.access_token.clone())
+                            .unwrap_or_default(),
+                    ) {
+                        Ok(()) => {
+                            ui.state.home_logged_in_as = Some(name);
+                            ui.state.home_password.clear();
+                            ui.state.home_status = "Account created — joined room".into();
+                            ui.state.open = false;
+                            log::info!("auth register + join ok");
+                        }
+                        Err(err) => {
+                            ui.state.home_status = format!("Join failed: {err:#}");
+                            log::warn!("join after register failed: {err:#}");
+                        }
+                    }
+                }
+                Err(err) => {
+                    ui.state.home_status = format!("Register failed: {err:#}");
+                    log::warn!("register failed: {err:#}");
+                }
+            }
+            ui.rebuild();
+        }
+        UiAction::AuthLogout => {
+            let (access, refresh) = shared
+                .auth
+                .lock()
+                .ok()
+                .map(|g| (g.access_token.clone(), g.refresh_token.clone()))
+                .unwrap_or((None, None));
+            if let Some(access) = access.as_deref() {
+                let _ = auth::logout(&shared.auth_url, access, refresh.as_deref());
+            }
+            if let Ok(mut gate) = shared.auth.lock() {
+                gate.clear_session();
+            }
+            shared.leave_room_local();
+            ui.state.home_logged_in_as = None;
+            ui.state.home_status = "Signed out — Intent stopped (slot TTL reclaim on host)".into();
+            ui.state.tab = DashTab::Home;
+            ui.rebuild();
+            log::info!("auth logout — local session cleared");
         }
         UiAction::None => {}
     }
@@ -665,12 +811,29 @@ fn handle_ui_action(
 pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session>) -> Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
+    let mut ui = SystemUi::new();
+    let joined = shared
+        .auth
+        .lock()
+        .ok()
+        .map(|g| g.is_joined())
+        .unwrap_or(false);
+    if joined {
+        if let Ok(gate) = shared.auth.lock() {
+            ui.state.home_logged_in_as = gate.username.clone();
+            ui.state.home_status = "Signed in (silent / CI)".into();
+        }
+    } else {
+        // Prompt for Home login before joining.
+        ui.state.open = true;
+        ui.state.tab = DashTab::Home;
+    }
     let mut app = App {
         mesh,
         shared,
         window: None,
         gpu: None,
-        ui: SystemUi::new(),
+        ui,
         zenoh,
         cursor: (0.0, 0.0),
         primary_down: false,

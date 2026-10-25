@@ -1,17 +1,17 @@
-//! Alchemy client — x0017 ROOM_ID Zenoh keys + Presence / Grab / Noclip / OpenXR dash.
+//! Alchemy client — x0018 auth session shell + ROOM_ID keys / Presence / Grab / dash.
 //!
 //! Guarantees:
+//! - Home tab login / register / logout; Room Token only after auth (x0018)
+//! - CI fallback: `AUTH_USER` or `ALCHEMY_AUTH_TOKEN` skips UI and joins
 //! - Subscribes to SceneManifest / PresenceState / RenderFrame; downloads blob; wgpu mesh
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
-//! - Desktop WASD/Space/C → Intent (mouse-look yaw); Confined look; RMB Grab (look ray)
-//! - OpenXR thumbstick (aim-relative, L+R add) → same Intent path
+//! - Desktop WASD/Space/C → Intent; Grab / OpenXR paths unchanged when joined
 //! - Camera follows Presence-assigned local user_root; remotes as colored boxes
-//! - Grabbable boxes 10..18; XR world laser / Desktop look ray; Grab → host kinematic follow
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
-//! - `ZENOH_CONNECT` for LAN
 //!
-//! Non-guarantees: Steal, rotation follow, throw, Quest standalone, WSL HMD
+//! Non-guarantees: Steal, XR login keyboard, email verify UI, Quest standalone, WSL HMD
 
+mod auth;
 mod host_control;
 mod jwt_sub;
 mod mesh;
@@ -35,6 +35,7 @@ use alchemy_protocol::{
     PresenceState, RenderFrame, SceneManifest, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
+use auth::AuthGate;
 use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, COIN_BLAKE3_HEX};
 use scene::{EntityPose, SharedState, LOCAL_USER_ROOT_UNSET, MESH_ENTITY_ID};
 use serde::Deserialize;
@@ -47,8 +48,6 @@ const DEFAULT_WORLD_URL: &str = "http://127.0.0.1:4003";
 const DEFAULT_AUTH_URL: &str = "http://127.0.0.1:4002";
 const DEFAULT_ASSETS_URL: &str = "http://127.0.0.1:4004";
 const DEFAULT_ROOM_ID: &str = "local";
-const DEFAULT_AUTH_USER: &str = "alice";
-const DEFAULT_AUTH_PASSWORD: &str = "Password1";
 /// Match net frame rate so Grab hold aim stays smooth enough (x0011).
 const INPUT_HZ: u64 = 30;
 const MANIFEST_WAIT: Duration = Duration::from_millis(400);
@@ -56,11 +55,6 @@ const MANIFEST_WAIT: Duration = Duration::from_millis(400);
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     token: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct AuthSession {
-    access_token: String,
 }
 
 fn zenoh_connect_endpoint() -> String {
@@ -82,31 +76,7 @@ fn open_zenoh() -> Result<zenoh::Session> {
         .map_err(|e| anyhow::anyhow!("zenoh open failed: {e}"))
 }
 
-fn fetch_auth_token(auth_url: &str) -> Result<String> {
-    if let Ok(token) = std::env::var("ALCHEMY_AUTH_TOKEN") {
-        if !token.is_empty() {
-            return Ok(token);
-        }
-    }
-
-    let user = std::env::var("AUTH_USER").unwrap_or_else(|_| DEFAULT_AUTH_USER.to_string());
-    let password =
-        std::env::var("AUTH_PASSWORD").unwrap_or_else(|_| DEFAULT_AUTH_PASSWORD.to_string());
-    let base = auth_url.trim_end_matches('/');
-    let login_url = format!("{base}/api/v1/auth/login");
-    let resp: AuthSession = ureq::post(&login_url)
-        .set("content-type", "application/json")
-        .send_json(serde_json::json!({
-            "identifier": user,
-            "password": password
-        }))
-        .context("auth login failed (is auth-server up?)")?
-        .into_json()
-        .context("parse auth session")?;
-    Ok(resp.access_token)
-}
-
-fn fetch_guest_token(world_url: &str, room_id: &str, auth_token: &str) -> Result<String> {
+pub fn fetch_guest_token(world_url: &str, room_id: &str, auth_token: &str) -> Result<String> {
     if let Ok(token) = std::env::var("ALCHEMY_ROOM_TOKEN") {
         if !token.is_empty() {
             return Ok(token);
@@ -290,7 +260,6 @@ fn spawn_presence_subscriber(
     session: zenoh::Session,
     key: String,
     shared: Arc<SharedState>,
-    local_sub: String,
 ) -> Result<()> {
     let subscriber = session
         .declare_subscriber(key.clone())
@@ -301,12 +270,24 @@ fn spawn_presence_subscriber(
         .name("zenoh-presence".into())
         .spawn(move || {
             let _session = session;
-            log::info!("subscribed to {key} (sub={local_sub})");
+            log::info!("subscribed to {key} (Presence; local_sub from AuthGate)");
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = bytes.to_bytes();
                 match PresenceState::decode(payload.as_ref()) {
                     Ok(state) => {
+                        let local_sub = shared
+                            .auth
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.local_sub.clone())
+                            .unwrap_or_default();
+                        if local_sub.is_empty() {
+                            if shared.local_user_root() != LOCAL_USER_ROOT_UNSET {
+                                shared.set_local_user_root(LOCAL_USER_ROOT_UNSET);
+                            }
+                            continue;
+                        }
                         let mine = state
                             .assignments
                             .iter()
@@ -345,7 +326,6 @@ fn spawn_presence_subscriber(
 fn spawn_input_publisher(
     session: zenoh::Session,
     key: String,
-    room_token: String,
     shared: Arc<SharedState>,
 ) -> Result<()> {
     let publisher = session
@@ -357,7 +337,9 @@ fn spawn_input_publisher(
         .name("zenoh-input-pub".into())
         .spawn(move || {
             let _session = session;
-            log::info!("publishing InputEvent intent to {key} @ {INPUT_HZ}Hz");
+            log::info!(
+                "publishing InputEvent intent to {key} @ {INPUT_HZ}Hz (gated by room_token)"
+            );
             let period = Duration::from_nanos(1_000_000_000 / INPUT_HZ);
             let mut next = Instant::now();
             loop {
@@ -366,6 +348,11 @@ fn spawn_input_publisher(
                     thread::sleep(next - now);
                 }
                 next += period;
+
+                let room_token = shared.auth.lock().ok().and_then(|g| g.room_token.clone());
+                let Some(room_token) = room_token else {
+                    continue;
+                };
 
                 let intent = shared.intent.lock().ok().map(|g| *g).unwrap_or_default();
                 let (mx, my, mz, buttons, grab_entity_id, aim_x, aim_y, aim_z) = if intent.suppress
@@ -384,7 +371,7 @@ fn spawn_input_publisher(
                     )
                 };
                 let event = InputEvent {
-                    room_token: room_token.clone(),
+                    room_token,
                     client_time_ms: client_time_ms(),
                     move_x: mx,
                     move_y: my,
@@ -404,6 +391,20 @@ fn spawn_input_publisher(
     Ok(())
 }
 
+/// Apply auth session + guest Room Token into SharedState (x0018 join).
+pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result<()> {
+    let room_token = fetch_guest_token(&shared.world_url, &shared.room_id, access_token)
+        .context("fetch guest Room Token")?;
+    let local_sub =
+        jwt_sub::sub_unverified(&room_token).context("read Room Token sub (unverified payload)")?;
+    if let Ok(mut gate) = shared.auth.lock() {
+        gate.room_token = Some(room_token);
+        gate.local_sub = Some(local_sub.clone());
+    }
+    log::info!("joined room={} sub={local_sub}", shared.room_id);
+    Ok(())
+}
+
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -414,7 +415,6 @@ fn main() -> Result<()> {
     let room_id = validate_room_id(&room_id_raw)
         .map_err(|e| anyhow::anyhow!("invalid ROOM_ID={room_id_raw:?}: {e}"))?
         .to_string();
-    let auth_user = std::env::var("AUTH_USER").unwrap_or_else(|_| DEFAULT_AUTH_USER.to_string());
     let fallback_blake3 =
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
@@ -423,24 +423,45 @@ fn main() -> Result<()> {
     let input_key_expr = input_key(&room_id);
     let presence_key_expr = presence_key(&room_id);
 
+    let silent = auth::try_silent_session(&auth_url).context("silent auth")?;
+    let auth_mode = if silent.is_some() { "silent" } else { "ui" };
     log::info!(
-        "client x0017 starting; protocol_pin={PROTOCOL_PIN} room={room_id} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr} auth_user={auth_user}"
+        "client x0018 starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
     );
 
-    let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
-    let room_token =
-        fetch_guest_token(&world_url, &room_id, &auth_token).context("fetch guest Room Token")?;
-    let local_sub =
-        jwt_sub::sub_unverified(&room_token).context("read Room Token sub (unverified payload)")?;
-    log::info!("auth JWT + guest Room Token acquired; sub={local_sub}");
+    let mut gate = AuthGate::default();
+    if let Some(session) = silent {
+        gate.apply_auth_session(session);
+    }
 
     let shared = Arc::new(SharedState {
         local_user_root: AtomicU32::new(LOCAL_USER_ROOT_UNSET),
         room_id: Arc::<str>::from(room_id),
+        auth_url: Arc::<str>::from(auth_url),
+        world_url: Arc::<str>::from(world_url),
+        assets_url: Arc::<str>::from(assets_url.clone()),
+        auth: Mutex::new(gate),
         entities: Mutex::new(HashMap::new()),
         look: Mutex::new(Default::default()),
         intent: Mutex::new(Default::default()),
     });
+
+    if shared
+        .auth
+        .lock()
+        .ok()
+        .and_then(|g| g.access_token.clone())
+        .is_some()
+    {
+        let access = shared
+            .auth
+            .lock()
+            .ok()
+            .and_then(|g| g.access_token.clone())
+            .expect("access just checked");
+        join_room_with_access(&shared, &access).context("silent join room")?;
+    }
+
     let (blake3_tx, blake3_rx) = mpsc::sync_channel::<String>(1);
 
     let session = open_zenoh().context("open zenoh session")?;
@@ -450,19 +471,9 @@ fn main() -> Result<()> {
         Arc::clone(&shared),
         blake3_tx,
     )?;
-    spawn_presence_subscriber(
-        session.clone(),
-        presence_key_expr,
-        Arc::clone(&shared),
-        local_sub,
-    )?;
+    spawn_presence_subscriber(session.clone(), presence_key_expr, Arc::clone(&shared))?;
     spawn_frame_subscriber(session.clone(), frame_key_expr, Arc::clone(&shared))?;
-    spawn_input_publisher(
-        session.clone(),
-        input_key_expr,
-        room_token,
-        Arc::clone(&shared),
-    )?;
+    spawn_input_publisher(session.clone(), input_key_expr, Arc::clone(&shared))?;
 
     let blob_blake3 = match blake3_rx.recv_timeout(MANIFEST_WAIT) {
         Ok(hex) => {
@@ -478,8 +489,28 @@ fn main() -> Result<()> {
         }
     };
 
-    let bytes = load_blob_bytes(&assets_url, &blob_blake3, &auth_token)?;
-    verify_blake3(&bytes, &blob_blake3).context("reject blob: BLAKE3 mismatch")?;
+    let access_for_blob = shared
+        .auth
+        .lock()
+        .ok()
+        .and_then(|g| g.access_token.clone())
+        .unwrap_or_default();
+    let bytes = {
+        let primary = if access_for_blob.is_empty() {
+            log::info!("no auth yet — loading fixture mesh (login via Home tab)");
+            load_fixture_bytes()?
+        } else {
+            load_blob_bytes(&assets_url, &blob_blake3, &access_for_blob)?
+        };
+        match verify_blake3(&primary, &blob_blake3) {
+            Ok(()) => primary,
+            Err(_) => {
+                let fixture = load_fixture_bytes()?;
+                verify_blake3(&fixture, COIN_BLAKE3_HEX).context("fixture blake3")?;
+                fixture
+            }
+        }
+    };
     let mesh = load_mesh_from_glb(&bytes).context("decode GLB")?;
     log::info!(
         "mesh ready: {} verts, {} indices, radius={:.3}",

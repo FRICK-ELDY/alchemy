@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0019`**；x0017 done / x0018 planned）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0019`**；x0018 done）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -73,9 +73,9 @@ depends_on: [x0006]
 | x0015 | — | done | Presence 動的スロット割当（最大4・固定マップ廃止） | [x0015-presence-slot-assign.md](slices/x0015-presence-slot-assign.md) |
 | x0016 | — | done | Presence スロット解放（Intent 無音 TTL 3s） | [x0016-presence-slot-reclaim.md](slices/x0016-presence-slot-reclaim.md) |
 | x0017 | — | done | ROOM_ID → Zenoh キー本配線 | [x0017-room-id-zenoh-keys.md](slices/x0017-room-id-zenoh-keys.md) |
-| x0018 | — | planned | client アカウント殻（login / logout / 最小 register） | [x0018-client-auth-session.md](slices/x0018-client-auth-session.md) |
+| x0018 | — | done | client アカウント殻（login / logout / 最小 register） | [x0018-client-auth-session.md](slices/x0018-client-auth-session.md) |
 
-**現在の次:** [x0018](slices/x0018-client-auth-session.md)（次の空き ID = **`x0019`**）
+**現在の次:** （未定義 — x0018 完了。次の空き ID = **`x0019`**）
 
 ## 関連
 

@@ -1,6 +1,7 @@
-//! Official default Facet set layout (x000f). Personal DashRoot only — no host / Room knowledge.
+//! Official default Facet set layout (x000f + x0018 Home). Personal DashRoot only.
 //!
-//! Facets: Chrome (top) · Settings · Exit (Pinned). Button colors react to hover/press.
+//! Facets: Chrome (top) · Home · Settings · Exit (Pinned). Button colors react to hover/press.
+//! Home holds account form strings only — no auth-server HTTP here.
 
 use super::facet::{facet_of, DashRoot, FacetId};
 use super::layout::{Color, LayoutTree, Rect, WidgetId};
@@ -8,10 +9,27 @@ use crate::turn::{TurnSettings, DEFAULT_SMOOTH_TURN_DEG_PER_SEC, DEFAULT_SNAP_DE
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DashTab {
+    /// Account shell (login / register / logout).
+    Home,
     /// Pinned Exit Facet body.
     Exit,
     /// Official Settings Facet body.
     Settings,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HomeMode {
+    Login,
+    Register,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HomeField {
+    Identifier,
+    Password,
+    Username,
+    Email,
+    Birthday,
 }
 
 #[derive(Clone, Debug)]
@@ -33,6 +51,17 @@ pub struct DashState {
     pub hover: Option<WidgetId>,
     /// Hit while primary is down (Button press).
     pub pressed: Option<WidgetId>,
+    /// Home / account shell (x0018).
+    pub home_mode: HomeMode,
+    pub home_focus: Option<HomeField>,
+    pub home_identifier: String,
+    pub home_password: String,
+    pub home_username: String,
+    pub home_email: String,
+    pub home_birthday: String,
+    pub home_remember_me: bool,
+    pub home_status: String,
+    pub home_logged_in_as: Option<String>,
 }
 
 impl Default for DashState {
@@ -41,7 +70,7 @@ impl Default for DashState {
         let turn = TurnSettings::default();
         Self {
             open: false,
-            tab: DashTab::Exit,
+            tab: DashTab::Home,
             time_label: "00:00:00".into(),
             fps_label: "0 FPS".into(),
             canvas_w: 960.0,
@@ -54,6 +83,16 @@ impl Default for DashState {
             smooth_turn_label: format!("Smooth rate: {DEFAULT_SMOOTH_TURN_DEG_PER_SEC:.0}°/s"),
             hover: None,
             pressed: None,
+            home_mode: HomeMode::Login,
+            home_focus: Some(HomeField::Identifier),
+            home_identifier: String::new(),
+            home_password: String::new(),
+            home_username: String::new(),
+            home_email: String::new(),
+            home_birthday: "2000-01-01".into(),
+            home_remember_me: true,
+            home_status: "Sign in to join the room".into(),
+            home_logged_in_as: None,
         }
     }
 }
@@ -94,6 +133,58 @@ impl DashState {
         self.turn.mode = self.turn.mode.toggle();
         self.refresh_turn_labels();
     }
+
+    pub fn append_home_text(&mut self, text: &str) {
+        let Some(field) = self.home_focus else {
+            return;
+        };
+        let target = match field {
+            HomeField::Identifier => &mut self.home_identifier,
+            HomeField::Password => &mut self.home_password,
+            HomeField::Username => &mut self.home_username,
+            HomeField::Email => &mut self.home_email,
+            HomeField::Birthday => &mut self.home_birthday,
+        };
+        for ch in text.chars() {
+            if !ch.is_control() && target.len() < 64 {
+                target.push(ch);
+            }
+        }
+    }
+
+    pub fn home_backspace(&mut self) {
+        let Some(field) = self.home_focus else {
+            return;
+        };
+        let target = match field {
+            HomeField::Identifier => &mut self.home_identifier,
+            HomeField::Password => &mut self.home_password,
+            HomeField::Username => &mut self.home_username,
+            HomeField::Email => &mut self.home_email,
+            HomeField::Birthday => &mut self.home_birthday,
+        };
+        target.pop();
+    }
+
+    pub fn cycle_home_focus(&mut self) {
+        let fields: &[HomeField] = match self.home_mode {
+            HomeMode::Login => &[HomeField::Identifier, HomeField::Password],
+            HomeMode::Register => &[
+                HomeField::Username,
+                HomeField::Email,
+                HomeField::Password,
+                HomeField::Birthday,
+            ],
+        };
+        let next = match self.home_focus {
+            None => fields.first().copied(),
+            Some(cur) => {
+                let i = fields.iter().position(|f| *f == cur).unwrap_or(0);
+                Some(fields[(i + 1) % fields.len()])
+            }
+        };
+        self.home_focus = next;
+    }
 }
 
 const TOP_H: f32 = 44.0;
@@ -109,6 +200,229 @@ const BTN: Color = Color::rgba(0.14, 0.16, 0.20, 1.0);
 const BTN_DANGER: Color = Color::rgba(0.22, 0.12, 0.12, 1.0);
 const CLOSE_BTN: Color = Color::rgba(0.18, 0.19, 0.22, 1.0);
 const ICON_HOT: Color = Color::rgba(0.22, 0.24, 0.30, 0.95);
+const FIELD: Color = Color::rgba(0.10, 0.11, 0.14, 1.0);
+const FIELD_FOCUS: Color = Color::rgba(0.16, 0.22, 0.34, 1.0);
+
+fn field_value(state: &DashState, field: HomeField) -> String {
+    match field {
+        HomeField::Identifier => state.home_identifier.clone(),
+        HomeField::Password => "*".repeat(state.home_password.chars().count()),
+        HomeField::Username => state.home_username.clone(),
+        HomeField::Email => state.home_email.clone(),
+        HomeField::Birthday => state.home_birthday.clone(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_field(
+    tree: &mut LayoutTree,
+    state: &DashState,
+    x: f32,
+    y: f32,
+    w: f32,
+    label: &str,
+    field: HomeField,
+    id: WidgetId,
+) -> f32 {
+    let h = 40.0;
+    tree.push_label(Rect::new(x, y, w, 16.0), label, MUTED, 1.0);
+    let r = Rect::new(x, y + 16.0, w, h);
+    let focused = state.home_focus == Some(field);
+    let base = if focused { FIELD_FOCUS } else { FIELD };
+    tree.push_rect(r, state.interact(id, base));
+    let mut shown = field_value(state, field);
+    if shown.is_empty() {
+        shown = if focused { "_".into() } else { String::new() };
+    } else if focused {
+        shown.push('_');
+    }
+    tree.push_label(
+        Rect::new(x + 10.0, y + 26.0, w - 20.0, 20.0),
+        &shown,
+        TEXT,
+        1.5,
+    );
+    tree.register_hit(id, r);
+    y + 16.0 + h + 10.0
+}
+
+fn rebuild_home(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
+    let panel = Rect::new(cx, cy0, cw, ch.min(380.0));
+    tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
+    tree.push_label(
+        Rect::new(cx + 24.0, cy0 + 16.0, cw - 48.0, 24.0),
+        "Home",
+        TEXT,
+        2.5,
+    );
+    tree.push_label(
+        Rect::new(cx + 24.0, cy0 + 44.0, cw - 48.0, 18.0),
+        &state.home_status,
+        MUTED,
+        1.0,
+    );
+
+    let x = cx + 24.0;
+    let mut y = cy0 + 72.0;
+    let fw = (cw - 48.0).min(520.0);
+
+    if let Some(name) = state.home_logged_in_as.as_ref() {
+        tree.push_label(
+            Rect::new(x, y, fw, 22.0),
+            format!("Signed in as {name}"),
+            TEXT,
+            1.5,
+        );
+        y += 36.0;
+        let logout = Rect::new(x, y, 200.0, 44.0);
+        tree.push_rect(logout, state.interact(WidgetId::HomeLogout, BTN_DANGER));
+        tree.push_icon(Rect::new(x + 12.0, y + 8.0, 28.0, 28.0), "logout");
+        tree.push_label(
+            Rect::new(x + 48.0, y + 12.0, 140.0, 22.0),
+            "Log out",
+            TEXT,
+            1.5,
+        );
+        tree.register_hit(WidgetId::HomeLogout, logout);
+        return;
+    }
+
+    // Mode tabs
+    let mode_w = 120.0;
+    let login_r = Rect::new(x, y, mode_w, 32.0);
+    let reg_r = Rect::new(x + mode_w + 8.0, y, mode_w, 32.0);
+    let login_base = if state.home_mode == HomeMode::Login {
+        ACCENT
+    } else {
+        BTN
+    };
+    let reg_base = if state.home_mode == HomeMode::Register {
+        ACCENT
+    } else {
+        BTN
+    };
+    tree.push_rect(login_r, state.interact(WidgetId::HomeModeLogin, login_base));
+    tree.push_label(
+        Rect::new(login_r.x + 16.0, login_r.y + 8.0, mode_w - 32.0, 18.0),
+        "Login",
+        TEXT,
+        1.2,
+    );
+    tree.register_hit(WidgetId::HomeModeLogin, login_r);
+    tree.push_rect(reg_r, state.interact(WidgetId::HomeModeRegister, reg_base));
+    tree.push_label(
+        Rect::new(reg_r.x + 8.0, reg_r.y + 8.0, mode_w - 16.0, 18.0),
+        "Register",
+        TEXT,
+        1.2,
+    );
+    tree.register_hit(WidgetId::HomeModeRegister, reg_r);
+    y += 44.0;
+
+    match state.home_mode {
+        HomeMode::Login => {
+            y = push_field(
+                tree,
+                state,
+                x,
+                y,
+                fw,
+                "Username or email",
+                HomeField::Identifier,
+                WidgetId::HomeFieldIdentifier,
+            );
+            y = push_field(
+                tree,
+                state,
+                x,
+                y,
+                fw,
+                "Password",
+                HomeField::Password,
+                WidgetId::HomeFieldPassword,
+            );
+        }
+        HomeMode::Register => {
+            y = push_field(
+                tree,
+                state,
+                x,
+                y,
+                fw,
+                "Username",
+                HomeField::Username,
+                WidgetId::HomeFieldUsername,
+            );
+            y = push_field(
+                tree,
+                state,
+                x,
+                y,
+                fw,
+                "Email",
+                HomeField::Email,
+                WidgetId::HomeFieldEmail,
+            );
+            y = push_field(
+                tree,
+                state,
+                x,
+                y,
+                fw,
+                "Password",
+                HomeField::Password,
+                WidgetId::HomeFieldPassword,
+            );
+            y = push_field(
+                tree,
+                state,
+                x,
+                y,
+                fw,
+                "Birthday (YYYY-MM-DD)",
+                HomeField::Birthday,
+                WidgetId::HomeFieldBirthday,
+            );
+        }
+    }
+
+    let remember = Rect::new(x, y, 220.0, 28.0);
+    let rem_label = if state.home_remember_me {
+        "[x] Remember me"
+    } else {
+        "[ ] Remember me"
+    };
+    tree.push_rect(remember, state.interact(WidgetId::HomeRememberMe, BTN));
+    tree.push_label(
+        Rect::new(x + 8.0, y + 6.0, 200.0, 18.0),
+        rem_label,
+        TEXT,
+        1.0,
+    );
+    tree.register_hit(WidgetId::HomeRememberMe, remember);
+    y += 40.0;
+
+    let submit = Rect::new(x, y, 200.0, 44.0);
+    let submit_label = match state.home_mode {
+        HomeMode::Login => "Sign in",
+        HomeMode::Register => "Create account",
+    };
+    tree.push_rect(submit, state.interact(WidgetId::HomeSubmit, ACCENT));
+    tree.push_label(
+        Rect::new(x + 16.0, y + 12.0, 168.0, 22.0),
+        submit_label,
+        TEXT,
+        1.5,
+    );
+    tree.register_hit(WidgetId::HomeSubmit, submit);
+
+    tree.push_label(
+        Rect::new(x + 220.0, y + 14.0, fw - 220.0, 18.0),
+        "Type while field focused (Tab cycles)",
+        MUTED,
+        1.0,
+    );
+}
 
 pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
     tree.clear();
@@ -205,62 +519,76 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
     tree.push_icon(Rect::new(w - 32.0, iy, icon * 0.7, icon * 0.7), "close");
     tree.register_hit(WidgetId::CloseSession, x_r);
 
-    // --- Bottom bar ---
+    // --- Bottom bar: Home · Settings · Exit ---
     let by = h - BOTTOM_H;
     tree.push_rect(Rect::new(0.0, by, w, BOTTOM_H), BAR);
 
     let tab_w = 88.0;
-    let gap = 24.0;
-    let tabs_total = tab_w * 2.0 + gap;
+    let gap = 16.0;
+    let tabs_total = tab_w * 3.0 + gap * 2.0;
     let tab0_x = (w - tabs_total) * 0.5;
 
-    // Left: Settings Facet, Right: Pinned Exit Facet (Resonite-like).
-    let set_r = Rect::new(tab0_x, by + 8.0, tab_w, BOTTOM_H - 16.0);
-    let set_hot =
-        state.hover == Some(WidgetId::TabSettings) || state.pressed == Some(WidgetId::TabSettings);
-    if state.tab == DashTab::Settings || set_hot {
-        let base = if state.tab == DashTab::Settings {
-            Color::rgba(0.20, 0.22, 0.28, 0.95)
-        } else {
-            ICON_HOT
-        };
-        tree.push_rect(set_r, state.interact(WidgetId::TabSettings, base));
-    }
-    tree.push_icon(
-        Rect::new(tab0_x + (tab_w - 32.0) * 0.5, by + 12.0, 32.0, 32.0),
-        "settings",
-    );
-    tree.push_label(
-        Rect::new(tab0_x + 4.0, by + 46.0, tab_w - 8.0, 14.0),
-        FacetId::Settings.label(),
-        TEXT,
-        1.0,
-    );
-    tree.register_hit(WidgetId::TabSettings, set_r);
+    let draw_tab = |tree: &mut LayoutTree,
+                    state: &DashState,
+                    x: f32,
+                    tab: DashTab,
+                    id: WidgetId,
+                    icon: &'static str,
+                    label: &str,
+                    active_color: Color| {
+        let r = Rect::new(x, by + 8.0, tab_w, BOTTOM_H - 16.0);
+        let hot = state.hover == Some(id) || state.pressed == Some(id);
+        if state.tab == tab || hot {
+            let base = if state.tab == tab {
+                active_color
+            } else {
+                ICON_HOT
+            };
+            tree.push_rect(r, state.interact(id, base));
+        }
+        tree.push_icon(
+            Rect::new(x + (tab_w - 32.0) * 0.5, by + 12.0, 32.0, 32.0),
+            icon,
+        );
+        tree.push_label(
+            Rect::new(x + 4.0, by + 46.0, tab_w - 8.0, 14.0),
+            label,
+            TEXT,
+            1.0,
+        );
+        tree.register_hit(id, r);
+    };
 
-    let exit_x = tab0_x + tab_w + gap;
-    let exit_r = Rect::new(exit_x, by + 8.0, tab_w, BOTTOM_H - 16.0);
-    let exit_hot =
-        state.hover == Some(WidgetId::TabExit) || state.pressed == Some(WidgetId::TabExit);
-    if state.tab == DashTab::Exit || exit_hot {
-        let base = if state.tab == DashTab::Exit {
-            TAB_ON
-        } else {
-            ICON_HOT
-        };
-        tree.push_rect(exit_r, state.interact(WidgetId::TabExit, base));
-    }
-    tree.push_icon(
-        Rect::new(exit_x + (tab_w - 32.0) * 0.5, by + 12.0, 32.0, 32.0),
+    draw_tab(
+        tree,
+        state,
+        tab0_x,
+        DashTab::Home,
+        WidgetId::TabHome,
+        "home",
+        FacetId::Home.label(),
+        Color::rgba(0.18, 0.28, 0.42, 0.95),
+    );
+    draw_tab(
+        tree,
+        state,
+        tab0_x + tab_w + gap,
+        DashTab::Settings,
+        WidgetId::TabSettings,
+        "settings",
+        FacetId::Settings.label(),
+        Color::rgba(0.20, 0.22, 0.28, 0.95),
+    );
+    draw_tab(
+        tree,
+        state,
+        tab0_x + (tab_w + gap) * 2.0,
+        DashTab::Exit,
+        WidgetId::TabExit,
         "power",
-    );
-    tree.push_label(
-        Rect::new(exit_x + 8.0, by + 46.0, tab_w - 16.0, 14.0),
         FacetId::Exit.label(),
-        TEXT,
-        2.0,
+        TAB_ON,
     );
-    tree.register_hit(WidgetId::TabExit, exit_r);
 
     // --- Center ---
     let cy0 = TOP_H + 24.0;
@@ -270,6 +598,9 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
     let cw = w * 0.76;
 
     match state.tab {
+        DashTab::Home => {
+            rebuild_home(tree, state, cx, cy0, cw, ch);
+        }
         // Pinned Exit Facet body
         DashTab::Exit => {
             tree.push_label(
@@ -411,7 +742,23 @@ mod tests {
             .hits
             .iter()
             .any(|(id, _)| *id == WidgetId::ExitClientAndHost));
+        assert!(tree.hits.iter().any(|(id, _)| *id == WidgetId::TabHome));
         assert!(tree.hit_test(100.0, 100.0).is_some() || tree.draws.len() > 5);
+    }
+
+    #[test]
+    fn open_home_tab_has_submit() {
+        let mut tree = LayoutTree::default();
+        let state = DashState {
+            open: true,
+            tab: DashTab::Home,
+            canvas_w: 960.0,
+            canvas_h: 540.0,
+            ..Default::default()
+        };
+        rebuild(&mut tree, &state);
+        assert!(tree.hits.iter().any(|(id, _)| *id == WidgetId::HomeSubmit));
+        assert!(tree.hits.iter().any(|(id, _)| *id == WidgetId::TabHome));
     }
 
     #[test]

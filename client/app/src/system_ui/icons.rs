@@ -47,6 +47,10 @@ pub fn load_bundled() -> Result<HashMap<&'static str, RgbaImage>> {
             include_bytes!("../../assets/icons/settings.png").as_slice(),
         ),
         (
+            "home",
+            include_bytes!("../../assets/icons/home.png").as_slice(),
+        ),
+        (
             "logout",
             include_bytes!("../../assets/icons/logout.png").as_slice(),
         ),
