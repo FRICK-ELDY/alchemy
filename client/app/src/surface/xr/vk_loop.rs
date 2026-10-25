@@ -24,9 +24,7 @@ use super::loco::{combine_turn_axes, intent_from_sticks, stage_move_to_world, ST
 use super::render_model::{enable_if_available, RenderModelCache};
 use crate::host_control;
 use crate::mesh::{CpuMesh, CpuSubmesh};
-use crate::scene::{
-    EntityPose, MoveIntent, SharedState, BOX_HALF_EXTENT, MESH_ENTITY_ID, USER_ROOT_ENTITY_ID,
-};
+use crate::scene::{EntityPose, MoveIntent, SharedState, BOX_HALF_EXTENT, MESH_ENTITY_ID};
 use crate::system_ui::{SystemUi, UiAction};
 use crate::turn::{update_turn_yaw, TURN_DEADZONE};
 use crate::world_hit::ray_hit_grabbable_boxes;
@@ -734,7 +732,7 @@ pub fn run_openxr(
                 .entities
                 .lock()
                 .ok()
-                .and_then(|m| m.get(&USER_ROOT_ENTITY_ID).copied())
+                .and_then(|m| m.get(&shared.local_user_root).copied())
                 .unwrap_or(EntityPose {
                     x: 0.0,
                     y: DEFAULT_EYE_Y,

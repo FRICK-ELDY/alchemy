@@ -36,7 +36,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - `RenderFrame { tick, host_time_ms, upserts[], removes[] }`
 - `Entity { id, x,y,z (double), r,g,b,a (float) }`
 - 静止 Entity は `upserts` に載せない（フルスナップショット廃止）
-- entity: Coin=`1`、static=`2`、**user_root=`3`**（x0009）、**grabbable boxes=`10..18`**（x0010・手続き立方体、Manifest blake3 なし）
+- entity: Coin=`1`、static=`2`、**user_root=`3` / `4`**（x0014・最大2・Token `sub` 割当）、**grabbable boxes=`10..18`**（x0010・手続き立方体、Manifest blake3 なし）
 
 ### InputEvent（`proto/input_events.proto`）— Intent（x0009）+ Grab（x0011 / x0013）
 

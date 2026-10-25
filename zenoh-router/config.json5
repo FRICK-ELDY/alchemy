@@ -8,9 +8,9 @@
   },
   listen: {
     endpoints: [
-      "tcp/127.0.0.1:7447",
-      // Uncomment for same-LAN peers (bind all interfaces):
-      // "tcp/0.0.0.0:7447",
+      // All interfaces (includes localhost + LAN). Do not also bind 127.0.0.1:7447 —
+      // on Linux that conflicts with 0.0.0.0:7447 (Address already in use).
+      "tcp/0.0.0.0:7447",
     ],
   },
   scouting: {

@@ -1,16 +1,15 @@
-//! Local host-server — x0011 Grab hold (+ x0010 boxes / x0009 loco / D/E paths).
+//! Local host-server — x0014 dual user_root + Grab hold / boxes / loco.
 //!
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
 //! - Input: Room Token verify + `is_finite` (NaN/Inf dropped before physics)
 //! - SceneManifest with default Noclip LocomotionConfig (blake3 refs; no GLB bytes)
-//! - user_root (entity 3) integrates Intent under Manifest mode; Coin (1) stays demo physics
-//! - Grabbable cuboids entity 10..18 (3×3) published on frame deltas (x0010)
-//! - Grab hold: GRAB + grab_entity_id + aim_* → kinematic follow; release → dynamic (x0011)
+//! - Per-`sub` Intent/Grab → up to 2 user_roots (entity 3/4); first-come slot assign
+//! - Grabbable cuboids entity 10..18; Grab hold kinematic follow; no Steal
 //! - Slice E: `host_control` Subscribe → `shutdown` exits process
 //!
 //! Non-guarantees:
-//! - Steal / rotation follow / Desktop Grab / Formula / polished Walk / signed Manifest / verifier / launcher
+//! - Steal / rotation follow / 3+ players / Formula / polished Walk / signed Manifest / verifier
 
 mod finite;
 mod host_control;
@@ -30,7 +29,10 @@ use alchemy_protocol::{
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
 use room_token::{default_auth_url, fetch_auth_token, fetch_host_token, RoomTokenVerifier};
-use sim::{box_color, LocoMode, PhysicsWorld, BOX_COUNT, BOX_ENTITY_FIRST, DEFAULT_MOVE_SPEED};
+use sim::{
+    box_color, user_root_color, LocoMode, PhysicsWorld, BOX_COUNT, BOX_ENTITY_FIRST,
+    DEFAULT_MOVE_SPEED, USER_ROOT_ENTITY_FIRST, USER_ROOT_SLOTS,
+};
 use zenoh::bytes::ZBytes;
 use zenoh::Config;
 use zenoh::Wait;
@@ -39,7 +41,7 @@ const PHYSICS_HZ: u64 = 60;
 const NET_HZ: u64 = 30;
 /// Publish a network frame every N physics steps (60/30 = 2).
 const PHYSICS_PER_NET: u64 = PHYSICS_HZ / NET_HZ;
-const CONNECT: &str = "tcp/127.0.0.1:7447";
+const DEFAULT_ZENOH_CONNECT: &str = "tcp/127.0.0.1:7447";
 const DEFAULT_WORLD_URL: &str = "http://127.0.0.1:4003";
 const DEFAULT_ROOM_ID: &str = "local";
 /// Coin_PolygonalMind.glb (CC0) — same as client fixtures.
@@ -51,7 +53,6 @@ const MANIFEST_REPUBLISH: Duration = Duration::from_secs(5);
 
 const ENTITY_MOVING: u32 = 1;
 const ENTITY_STATIC: u32 = 2;
-const ENTITY_USER_ROOT: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct PoseOverride {
@@ -66,6 +67,36 @@ struct PoseOverride {
     aim_z: f32,
 }
 
+/// Per-sub input slots (x0014). `slot_of_sub` maps JWT `sub` → 0..USER_ROOT_SLOTS.
+#[derive(Debug, Default)]
+struct PresenceIntents {
+    by_slot: [PoseOverride; USER_ROOT_SLOTS],
+    /// Occupied slots: Some(sub) when assigned.
+    occupied_sub: [Option<String>; USER_ROOT_SLOTS],
+    dropped_full: u64,
+}
+
+impl PresenceIntents {
+    fn assign_or_lookup(&mut self, sub: &str) -> Option<usize> {
+        for (i, occupied) in self.occupied_sub.iter().enumerate() {
+            if occupied.as_deref() == Some(sub) {
+                return Some(i);
+            }
+        }
+        for (i, occupied) in self.occupied_sub.iter_mut().enumerate() {
+            if occupied.is_none() {
+                *occupied = Some(sub.to_string());
+                log::info!(
+                    "presence: assigned sub={sub} → user_root entity {}",
+                    PhysicsWorld::user_root_entity_id(i)
+                );
+                return Some(i);
+            }
+        }
+        None
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Pose {
     x: f64,
@@ -77,14 +108,20 @@ struct Pose {
     a: f32,
 }
 
+fn zenoh_connect_endpoint() -> String {
+    std::env::var("ZENOH_CONNECT").unwrap_or_else(|_| DEFAULT_ZENOH_CONNECT.to_string())
+}
+
 fn open_zenoh() -> Result<zenoh::Session> {
+    let endpoint = zenoh_connect_endpoint();
     let mut config = Config::default();
     config
         .insert_json5("mode", r#""client""#)
         .map_err(|e| anyhow::anyhow!("zenoh mode: {e}"))?;
     config
-        .insert_json5("connect/endpoints", &format!(r#"["{CONNECT}"]"#))
+        .insert_json5("connect/endpoints", &format!(r#"["{endpoint}"]"#))
         .map_err(|e| anyhow::anyhow!("zenoh connect: {e}"))?;
+    log::info!("zenoh connect={endpoint}");
     zenoh::open(config)
         .wait()
         .map_err(|e| anyhow::anyhow!("zenoh open failed: {e}"))
@@ -122,17 +159,17 @@ fn moving_pose_from_sim(world: &PhysicsWorld) -> Pose {
     }
 }
 
-fn user_root_pose_from_sim(world: &PhysicsWorld) -> Pose {
-    let (x, y, z) = world.user_root_translation();
+fn user_root_pose_from_sim(world: &PhysicsWorld, slot: usize) -> Pose {
+    let (x, y, z) = world.user_root_translation(slot);
+    let (r, g, b, a) = user_root_color(slot);
     Pose {
         x: f64::from(x),
         y: f64::from(y),
         z: f64::from(z),
-        // Distinct tint so deltas are identifiable in logs / future debug draw.
-        r: 0.4,
-        g: 0.7,
-        b: 1.0,
-        a: 1.0,
+        r,
+        g,
+        b,
+        a,
     }
 }
 
@@ -190,7 +227,7 @@ fn build_manifest(room_id: &str, blake3: &str) -> SceneManifest {
 fn spawn_input_gate(
     session: zenoh::Session,
     verifier: Arc<RoomTokenVerifier>,
-    pose: Arc<Mutex<PoseOverride>>,
+    presence: Arc<Mutex<PresenceIntents>>,
 ) -> Result<()> {
     let subscriber = session
         .declare_subscriber(INPUT_KEY_LOCAL)
@@ -201,7 +238,7 @@ fn spawn_input_gate(
         .name("zenoh-input".into())
         .spawn(move || {
             let _session = session;
-            log::info!("subscribed to {INPUT_KEY_LOCAL} (Room Token + is_finite gate)");
+            log::info!("subscribed to {INPUT_KEY_LOCAL} (Room Token + is_finite + per-sub gate)");
             let mut accepted: u64 = 0;
             let mut dropped_token: u64 = 0;
             let mut dropped_finite: u64 = 0;
@@ -211,7 +248,7 @@ fn spawn_input_gate(
                 let payload = bytes.to_bytes();
                 match InputEvent::decode(payload.as_ref()) {
                     Ok(event) => match verifier.verify(&event.room_token) {
-                        Ok(_claims) => {
+                        Ok(claims) => {
                             if !input_event_is_finite(&event) {
                                 dropped_finite += 1;
                                 log::warn!(
@@ -220,17 +257,29 @@ fn spawn_input_gate(
                                     event.move_y,
                                     event.move_z
                                 );
-                            } else if let Ok(mut guard) = pose.lock() {
-                                guard.x = event.move_x;
-                                guard.y = event.move_y;
-                                guard.z = event.move_z;
-                                guard.active = true;
-                                guard.grab = (event.buttons & input_buttons::GRAB) != 0;
-                                guard.grab_entity_id = event.grab_entity_id;
-                                guard.aim_x = event.aim_x;
-                                guard.aim_y = event.aim_y;
-                                guard.aim_z = event.aim_z;
-                                accepted += 1;
+                            } else if let Ok(mut guard) = presence.lock() {
+                                match guard.assign_or_lookup(&claims.sub) {
+                                    Some(slot) => {
+                                        let overlay = &mut guard.by_slot[slot];
+                                        overlay.x = event.move_x;
+                                        overlay.y = event.move_y;
+                                        overlay.z = event.move_z;
+                                        overlay.active = true;
+                                        overlay.grab = (event.buttons & input_buttons::GRAB) != 0;
+                                        overlay.grab_entity_id = event.grab_entity_id;
+                                        overlay.aim_x = event.aim_x;
+                                        overlay.aim_y = event.aim_y;
+                                        overlay.aim_z = event.aim_z;
+                                        accepted += 1;
+                                    }
+                                    None => {
+                                        guard.dropped_full += 1;
+                                        log::warn!(
+                                            "drop InputEvent: presence full (max {USER_ROOT_SLOTS}); sub={}",
+                                            claims.sub
+                                        );
+                                    }
+                                }
                             }
                         }
                         Err(err) => {
@@ -244,8 +293,12 @@ fn spawn_input_gate(
                     }
                 }
                 if last_log.elapsed() >= Duration::from_secs(5) {
+                    let dropped_full = presence
+                        .lock()
+                        .map(|g| g.dropped_full)
+                        .unwrap_or(0);
                     log::info!(
-                        "input gate: accepted={accepted} dropped_token={dropped_token} dropped_non_finite={dropped_finite} (last ~5s)"
+                        "input gate: accepted={accepted} dropped_token={dropped_token} dropped_non_finite={dropped_finite} dropped_full={dropped_full} (last ~5s)"
                     );
                     accepted = 0;
                     dropped_token = 0;
@@ -268,7 +321,8 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "host-server x0011 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} host_control={HOST_CONTROL_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id}"
+        "host-server x0014 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} host_control={HOST_CONTROL_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{}",
+        USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
@@ -281,10 +335,14 @@ fn main() -> Result<()> {
         .context("host Room Token self-check")?;
     log::info!("auth JWT + host Room Token acquired and verified");
 
-    let pose = Arc::new(Mutex::new(PoseOverride::default()));
+    let presence = Arc::new(Mutex::new(PresenceIntents::default()));
 
     let session = open_zenoh().context("open zenoh session")?;
-    spawn_input_gate(session.clone(), Arc::clone(&verifier), Arc::clone(&pose))?;
+    spawn_input_gate(
+        session.clone(),
+        Arc::clone(&verifier),
+        Arc::clone(&presence),
+    )?;
     host_control::spawn_listener(session.clone())?;
 
     let manifest_pub = session
@@ -325,7 +383,8 @@ fn main() -> Result<()> {
     let mut physics = PhysicsWorld::new(loco_mode, move_speed);
     let grabbable_n = physics.boxes.grabbable.iter().filter(|&&g| g).count();
     log::info!(
-        "Rapier world ready (floor + coin entity {ENTITY_MOVING} + user_root {ENTITY_USER_ROOT} + grabbable boxes {BOX_ENTITY_FIRST}..{} count={BOX_COUNT} grabbable={grabbable_n} half_extent={:.2} mode={:?})",
+        "Rapier world ready (floor + coin entity {ENTITY_MOVING} + user_roots {USER_ROOT_ENTITY_FIRST}..{} + grabbable boxes {BOX_ENTITY_FIRST}..{} count={BOX_COUNT} grabbable={grabbable_n} half_extent={:.2} mode={:?})",
+        USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         BOX_ENTITY_FIRST + BOX_COUNT as u32 - 1,
         physics.boxes.half_extent,
         physics.loco_mode()
@@ -362,16 +421,27 @@ fn main() -> Result<()> {
             );
         }
 
-        let overlay = pose.lock().map(|p| *p).unwrap_or_default();
-        if overlay.active {
-            physics.apply_user_intent(overlay.x, overlay.y, overlay.z, dt);
+        let snapshot = presence
+            .lock()
+            .map(|g| (g.by_slot, g.occupied_sub.clone()))
+            .unwrap_or_default();
+        let (by_slot, occupied) = snapshot;
+
+        for (slot, occupied_sub) in occupied.iter().enumerate() {
+            if occupied_sub.is_none() {
+                continue;
+            }
+            let overlay = by_slot[slot];
+            if overlay.active {
+                physics.apply_user_intent(slot, overlay.x, overlay.y, overlay.z, dt);
+            }
+            physics.apply_grab(
+                slot,
+                overlay.grab,
+                overlay.grab_entity_id,
+                (overlay.aim_x, overlay.aim_y, overlay.aim_z),
+            );
         }
-        // Always apply grab state (release when GRAB bit clears / no recent grab).
-        physics.apply_grab(
-            overlay.grab,
-            overlay.grab_entity_id,
-            (overlay.aim_x, overlay.aim_y, overlay.aim_z),
-        );
         physics.step();
         physics_steps = physics_steps.wrapping_add(1);
         physics_steps_logged += 1;
@@ -380,10 +450,17 @@ fn main() -> Result<()> {
             continue;
         }
 
-        let mut poses: Vec<(u32, Pose)> = Vec::with_capacity(3 + BOX_COUNT);
+        let mut poses: Vec<(u32, Pose)> = Vec::with_capacity(2 + USER_ROOT_SLOTS + BOX_COUNT);
         poses.push((ENTITY_MOVING, moving_pose_from_sim(&physics)));
         poses.push((ENTITY_STATIC, static_marker_pose()));
-        poses.push((ENTITY_USER_ROOT, user_root_pose_from_sim(&physics)));
+        for (slot, occupied_sub) in occupied.iter().enumerate() {
+            if occupied_sub.is_some() {
+                poses.push((
+                    PhysicsWorld::user_root_entity_id(slot),
+                    user_root_pose_from_sim(&physics, slot),
+                ));
+            }
+        }
         for i in 0..BOX_COUNT {
             poses.push((physics.boxes.entity_ids[i], box_pose_from_sim(&physics, i)));
         }
@@ -426,13 +503,27 @@ fn main() -> Result<()> {
 
         if last_log.elapsed() >= Duration::from_secs(1) {
             let (mx, my, mz) = physics.moving_translation();
-            let (ux, uy, uz) = physics.user_root_translation();
-            let grab = physics
-                .grab_entity_id()
-                .map(|id| format!("grab={id}"))
-                .unwrap_or_else(|| "grab=-".into());
+            let mut roots = String::new();
+            for (slot, occupied_sub) in occupied.iter().enumerate() {
+                if occupied_sub.is_none() {
+                    continue;
+                }
+                let (ux, uy, uz) = physics.user_root_translation(slot);
+                let eid = PhysicsWorld::user_root_entity_id(slot);
+                let grab = physics
+                    .grab_entity_id(slot)
+                    .map(|id| format!("grab={id}"))
+                    .unwrap_or_else(|| "grab=-".into());
+                if !roots.is_empty() {
+                    roots.push(' ');
+                }
+                roots.push_str(&format!("root{eid}=({ux:.3},{uy:.3},{uz:.3}) {grab}"));
+            }
+            if roots.is_empty() {
+                roots.push_str("user_roots=-");
+            }
             log::info!(
-                "physics: steps={physics_steps_logged} coin=({mx:.3},{my:.3},{mz:.3}) user_root=({ux:.3},{uy:.3},{uz:.3}) {grab}; delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} net_tick={net_tick}"
+                "physics: steps={physics_steps_logged} coin=({mx:.3},{my:.3},{mz:.3}) {roots}; delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} net_tick={net_tick}"
             );
             publishes = 0;
             upsert_entities = 0;

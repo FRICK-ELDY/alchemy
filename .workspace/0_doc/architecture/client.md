@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: x0013（Desktop Grab — RMB look 前方レイ）
+> **ステータス**: x0014（LAN 2-client presence — sub 別 user_root 3/4）
 
 ## レイアウト
 
@@ -22,13 +22,14 @@
 |:---|:---|
 | Zenoh: Manifest Subscribe / frame デルタ Subscribe / input Publish | ルーター機能（他人の通信の中継は禁止） |
 | Manifest の blake3 → assets download（失敗時 fixture）→ BLAKE3 → wgpu | LOD / KTX2 / マテリアル本格 / スキン |
-| ローカル entity 表への upsert/remove。Coin=1、user_root=3、boxes=10..18 | 署名付き Manifest / world 台帳 |
+| ローカル entity 表への upsert/remove。Coin=1、user_root=3/4、boxes=10..18 | 署名付き Manifest / world 台帳 |
 | Desktop: WASD/Space/C → Intent（look yaw 相対）。クリックで Confined（失敗時 Locked）→ マウスルック。look 中 RMB → Grab（x0013） | 感度 UI / クロスヘア必須 |
+| `AUTH_USER=alice\|bob` → 自 entity 3\|4 カメラ；他 root は色付きボックス（x0014）。`ZENOH_CONNECT` LAN | 3人以上・動的 entity 発見・アバター GLB |
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
 | OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose + 埋め込み baseColor + animatable node） | SteamVR パス直読み／PBR（MR/normal 等）／手トラ |
 | OpenXR: ダッシュ開→UI レーザー；閉→ワールドレーザー＋ Grab hold（squeeze／Select）（x0011） | Steal／回転追従／Facet 並べ替え／WorldRoot／CompositionLayerQuad |
 | auth login → Bearer 付き Room Token → InputEvent（含 grab_entity_id + aim_*） | OSC / Dual Editor / launcher 本実装 |
-| host: Rapier 60Hz + `is_finite` + Manifest Noclip + cuboid×9 + Grab kinematic → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk / Steal |
+| host: Rapier 60Hz + `is_finite` + per-`sub` Intent（最大2）+ user_root 3/4 + cuboid×9 + Grab → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk / Steal |
 | ESC（Desktop）/ Menu（OpenXR）ダッシュ・Pinned Exit・Button hover・client 終了・host 終了スタブ。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 |
 | OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD・launcher 本実装 |
 
@@ -70,7 +71,7 @@
 - 詳細: [`client/fixtures/README.md`](../../../client/fixtures/README.md)
 - Icons: [`client/app/assets/icons/README.md`](../../../client/app/assets/icons/README.md)
 
-環境変数: `ASSETS_URL`（既定 `:4004`）、任意 `ALCHEMY_BLOB_BLAKE3`、任意 `ALCHEMY_HOST_PID`（client+host 終了スタブ）、任意 `ALCHEMY_FORCE_DESKTOP=1`（OpenXR を使わず Desktop）、任意 `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`（Steam が C: 以外のときの OpenXR ローダー探索）。
+環境変数: `ASSETS_URL`（既定 `:4004`）、任意 `ZENOH_CONNECT`（既定 `tcp/127.0.0.1:7447`）、任意 `AUTH_USER`（`alice`→entity 3 / `bob`→4）、任意 `ALCHEMY_BLOB_BLAKE3`、任意 `ALCHEMY_HOST_PID`、任意 `ALCHEMY_FORCE_DESKTOP=1`、任意 `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。
 
 ## 関連
 
@@ -78,4 +79,4 @@
 - 転送: [zenoh-router.md](zenoh-router.md)
 - Room Token: [world-server.md](world-server.md)
 - Blob CAS: [assets-server.md](assets-server.md)
-- Slice: [x0011](../roadmap/slices/x0011-grab-hold.md) · [x0010](../roadmap/slices/x0010-grabbable-boxes.md) · [x000f](../roadmap/slices/x000f-dash-facet-minimal.md) · [x000e](../roadmap/slices/x000e-vr-ui-laser-pointer.md) · [x000d](../roadmap/slices/x000d-vr-controller-animatable-nodes.md) · [x000c](../roadmap/slices/x000c-vr-controller-glb-textures.md) · [x000b](../roadmap/slices/x000b-vr-controller-render-models.md) · [x000a](../roadmap/slices/x000a-vr-thumbstick-noclip.md) · [x0009](../roadmap/slices/x0009-desktop-noclip-loco.md)
+- Slice: [x0014](../roadmap/slices/x0014-lan-two-client.md) · [x0013](../roadmap/slices/x0013-desktop-grab.md) · [x0011](../roadmap/slices/x0011-grab-hold.md) · [x0010](../roadmap/slices/x0010-grabbable-boxes.md)

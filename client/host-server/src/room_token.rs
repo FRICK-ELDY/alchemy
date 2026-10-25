@@ -31,7 +31,7 @@ struct Jwk {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RoomClaims {
-    #[allow(dead_code)]
+    /// Auth user id (UUID). Host routes Intent/Grab per `sub` (x0014).
     pub sub: String,
     pub room_id: String,
     pub role: String,

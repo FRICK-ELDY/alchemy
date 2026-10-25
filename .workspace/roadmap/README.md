@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0013`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0015`**）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -69,8 +69,9 @@ depends_on: [x0006]
 | x0011 | — | done | Grab hold（XR kinematic 追従・放下） | [x0011-grab-hold.md](slices/x0011-grab-hold.md) |
 | x0012 | — | done | Desktop マウスルック（Pointer Lock） | [x0012-desktop-mouse-look.md](slices/x0012-desktop-mouse-look.md) |
 | x0013 | — | done | Desktop Grab（RMB・look 前方レイ） | [x0013-desktop-grab.md](slices/x0013-desktop-grab.md) |
+| x0014 | — | done | LAN 2-client presence（sub 別 user_root） | [x0014-lan-two-client.md](slices/x0014-lan-two-client.md) |
 
-**現在の次:** （未定義 — x0013 完了。次の空き ID = **`x0014`**）
+**現在の次:** （未定義 — x0014 完了。次の空き ID = **`x0015`**）
 
 ## 関連
 

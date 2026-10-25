@@ -1,15 +1,15 @@
-//! Alchemy client — x0013 Desktop Grab + x0011 XR Grab + Noclip + OpenXR dash/Exit.
+//! Alchemy client — x0014 presence + Grab / Noclip / OpenXR dash/Exit.
 //!
 //! Guarantees:
 //! - Subscribes to SceneManifest / RenderFrame; downloads blob; wgpu mesh on Desktop
 //! - Desktop WASD/Space/C → Intent (mouse-look yaw); Confined look; RMB Grab (look ray)
 //! - OpenXR thumbstick (aim-relative, L+R add) → same Intent path
-//! - Camera follows host user_root pose (+ Desktop look / XR HMD)
+//! - Camera follows local user_root (alice→3 / bob→4); remote roots as colored boxes
 //! - Grabbable boxes 10..18; XR world laser / Desktop look ray; Grab → host kinematic follow
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
-//! - Settings shows default max speed (read-only)
+//! - `ZENOH_CONNECT` for LAN (x0014)
 //!
-//! Non-guarantees: Steal, rotation follow, throw, Quest standalone, WSL HMD
+//! Non-guarantees: Steal, rotation follow, throw, 3+ players, Quest standalone, WSL HMD
 
 mod host_control;
 mod mesh;
@@ -33,13 +33,13 @@ use alchemy_protocol::{
 };
 use anyhow::{Context, Result};
 use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, COIN_BLAKE3_HEX};
-use scene::{EntityPose, SharedState, MESH_ENTITY_ID, USER_ROOT_ENTITY_ID};
+use scene::{local_user_root_entity, EntityPose, SharedState, MESH_ENTITY_ID};
 use serde::Deserialize;
 use zenoh::bytes::ZBytes;
 use zenoh::Config;
 use zenoh::Wait;
 
-const CONNECT: &str = "tcp/127.0.0.1:7447";
+const DEFAULT_ZENOH_CONNECT: &str = "tcp/127.0.0.1:7447";
 const DEFAULT_WORLD_URL: &str = "http://127.0.0.1:4003";
 const DEFAULT_AUTH_URL: &str = "http://127.0.0.1:4002";
 const DEFAULT_ASSETS_URL: &str = "http://127.0.0.1:4004";
@@ -60,14 +60,20 @@ struct AuthSession {
     access_token: String,
 }
 
+fn zenoh_connect_endpoint() -> String {
+    std::env::var("ZENOH_CONNECT").unwrap_or_else(|_| DEFAULT_ZENOH_CONNECT.to_string())
+}
+
 fn open_zenoh() -> Result<zenoh::Session> {
+    let endpoint = zenoh_connect_endpoint();
     let mut config = Config::default();
     config
         .insert_json5("mode", r#""client""#)
         .map_err(|e| anyhow::anyhow!("zenoh mode: {e}"))?;
     config
-        .insert_json5("connect/endpoints", &format!(r#"["{CONNECT}"]"#))
+        .insert_json5("connect/endpoints", &format!(r#"["{endpoint}"]"#))
         .map_err(|e| anyhow::anyhow!("zenoh connect: {e}"))?;
+    log::info!("zenoh connect={endpoint}");
     zenoh::open(config)
         .wait()
         .map_err(|e| anyhow::anyhow!("zenoh open failed: {e}"))
@@ -340,11 +346,13 @@ fn main() -> Result<()> {
     let auth_url = std::env::var("AUTH_URL").unwrap_or_else(|_| DEFAULT_AUTH_URL.to_string());
     let assets_url = std::env::var("ASSETS_URL").unwrap_or_else(|_| DEFAULT_ASSETS_URL.to_string());
     let room_id = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
+    let auth_user = std::env::var("AUTH_USER").unwrap_or_else(|_| DEFAULT_AUTH_USER.to_string());
+    let local_root = local_user_root_entity(&auth_user);
     let fallback_blake3 =
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "client x0011 starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} user_root={USER_ROOT_ENTITY_ID}"
+        "client x0014 starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} auth_user={auth_user} local_user_root={local_root}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
@@ -353,6 +361,7 @@ fn main() -> Result<()> {
     log::info!("auth JWT + guest Room Token acquired");
 
     let shared = Arc::new(SharedState {
+        local_user_root: local_root,
         entities: Mutex::new(HashMap::new()),
         look: Mutex::new(Default::default()),
         intent: Mutex::new(Default::default()),
