@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: x0012（Desktop マウスルック — Pointer Lock）
+> **ステータス**: x0013（Desktop Grab — RMB look 前方レイ）
 
 ## レイアウト
 
@@ -23,13 +23,13 @@
 | Zenoh: Manifest Subscribe / frame デルタ Subscribe / input Publish | ルーター機能（他人の通信の中継は禁止） |
 | Manifest の blake3 → assets download（失敗時 fixture）→ BLAKE3 → wgpu | LOD / KTX2 / マテリアル本格 / スキン |
 | ローカル entity 表への upsert/remove。Coin=1、user_root=3、boxes=10..18 | 署名付き Manifest / world 台帳 |
-| Desktop: WASD/Space/C → Intent（look yaw 相対）。クリックで Confined（失敗時 Locked）→ マウスルック | Desktop Grab / 感度 UI |
+| Desktop: WASD/Space/C → Intent（look yaw 相対）。クリックで Confined（失敗時 Locked）→ マウスルック。look 中 RMB → Grab（x0013） | 感度 UI / クロスヘア必須 |
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
 | OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose + 埋め込み baseColor + animatable node） | SteamVR パス直読み／PBR（MR/normal 等）／手トラ |
-| OpenXR: ダッシュ開→UI レーザー；閉→ワールドレーザー＋ Grab hold（squeeze／Select）（x0011） | Steal／回転追従／Desktop Grab／Facet 並べ替え／WorldRoot／CompositionLayerQuad |
+| OpenXR: ダッシュ開→UI レーザー；閉→ワールドレーザー＋ Grab hold（squeeze／Select）（x0011） | Steal／回転追従／Facet 並べ替え／WorldRoot／CompositionLayerQuad |
 | auth login → Bearer 付き Room Token → InputEvent（含 grab_entity_id + aim_*） | OSC / Dual Editor / launcher 本実装 |
 | host: Rapier 60Hz + `is_finite` + Manifest Noclip + cuboid×9 + Grab kinematic → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk / Steal |
-| ESC（Desktop）/ Menu（OpenXR）ダッシュ・Pinned Exit・Button hover・client 終了・host 終了スタブ。Esc でダッシュ開時は look grab 解放 | Facet 並べ替え / Desktop Grab / Context / Primary ツール本体 |
+| ESC（Desktop）/ Menu（OpenXR）ダッシュ・Pinned Exit・Button hover・client 終了・host 終了スタブ。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 |
 | OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD・launcher 本実装 |
 
 ## チャネル分離（C-C + E + x0009）
@@ -49,7 +49,7 @@
 | WASD | 前/左/後/右（固定 look・yaw=0 相対） |
 | Space / C | 上昇 / 下降（Noclip・Fly） |
 | Y / T / R | Primary / Context / Secondary（キーのみスタブ） |
-| マウス | ダッシュ開: UI。閉: LMB で look capture、移動で yaw/pitch（x0012） |
+| マウス | ダッシュ開: UI。閉: LMB で look capture、移動で yaw/pitch（x0012）；look 中は箱を下向き照準（明るい）＋ LMB/RMB/E 長押しで Grab（x0013） |
 
 ## OpenXR バインド（x000a / x000b / x000c / x000d / x000e）
 

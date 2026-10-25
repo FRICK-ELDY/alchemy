@@ -68,8 +68,9 @@ depends_on: [x0006]
 | x0010 | — | done | Grabbable ボックス最小（3×3・コライダー・レイヒット） | [x0010-grabbable-boxes.md](slices/x0010-grabbable-boxes.md) |
 | x0011 | — | done | Grab hold（XR kinematic 追従・放下） | [x0011-grab-hold.md](slices/x0011-grab-hold.md) |
 | x0012 | — | done | Desktop マウスルック（Pointer Lock） | [x0012-desktop-mouse-look.md](slices/x0012-desktop-mouse-look.md) |
+| x0013 | — | done | Desktop Grab（RMB・look 前方レイ） | [x0013-desktop-grab.md](slices/x0013-desktop-grab.md) |
 
-**現在の次:** （未定義 — x0012 完了。次の空き ID = **`x0013`**）
+**現在の次:** （未定義 — x0013 完了。次の空き ID = **`x0014`**）
 
 ## 関連
 

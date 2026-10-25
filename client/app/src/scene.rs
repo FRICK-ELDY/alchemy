@@ -95,9 +95,9 @@ pub struct MoveIntent {
     pub buttons: u32,
     /// When true (dash open), publisher forces move zeros (Grab also cleared).
     pub suppress: bool,
-    /// Grabbable entity while GRAB held (`0` = none). XR only for x0011.
+    /// Grabbable entity while GRAB held (`0` = none). XR grip or Desktop RMB (x0013).
     pub grab_entity_id: u32,
-    /// World-space controller aim origin (meters).
+    /// World-space aim origin (meters): XR controller aim / Desktop eye (user_root).
     pub aim_x: f32,
     pub aim_y: f32,
     pub aim_z: f32,
@@ -414,6 +414,7 @@ impl SceneGpu {
         (view, proj)
     }
 
+    #[allow(clippy::too_many_arguments)] // render pass bundling; highlight is Desktop-only pad
     pub fn draw_world(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -422,6 +423,8 @@ impl SceneGpu {
         view: Mat4,
         proj: Mat4,
         load_op: wgpu::LoadOp<wgpu::Color>,
+        // Desktop aim / held Grab highlight (entity id), if any.
+        highlight_entity: Option<u32>,
     ) {
         let pose = self.coin_pose();
         {
@@ -512,9 +515,19 @@ impl SceneGpu {
                     glam::Quat::IDENTITY,
                     pose.position(),
                 );
+                let mut color = pose.color();
+                if highlight_entity == Some(id) {
+                    // Brighten so look-aim / Grab target is obvious without a crosshair.
+                    color = [
+                        (color[0] * 0.35 + 0.65).min(1.0),
+                        (color[1] * 0.35 + 0.65).min(1.0),
+                        (color[2] * 0.35 + 0.65).min(1.0),
+                        1.0,
+                    ];
+                }
                 let box_uniforms = Uniforms {
                     mvp: (proj * view * model).to_cols_array_2d(),
-                    color: pose.color(),
+                    color,
                 };
                 self.queue.write_buffer(
                     &self.box_uniform_buffers[slot],

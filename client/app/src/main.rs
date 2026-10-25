@@ -1,15 +1,15 @@
-//! Alchemy client — x0011 Grab hold + x000a Noclip + OpenXR dash/Exit.
+//! Alchemy client — x0013 Desktop Grab + x0011 XR Grab + Noclip + OpenXR dash/Exit.
 //!
 //! Guarantees:
 //! - Subscribes to SceneManifest / RenderFrame; downloads blob; wgpu mesh on Desktop
-//! - Desktop WASD/Space/C → InputEvent Intent; dash suppresses move (mouse look deferred)
+//! - Desktop WASD/Space/C → Intent (mouse-look yaw); Confined look; RMB Grab (look ray)
 //! - OpenXR thumbstick (aim-relative, L+R add) → same Intent path
-//! - Camera follows host user_root pose (fixed default look)
-//! - Grabbable boxes 10..18; XR world laser hit; Grab hold (grip/Select) → host kinematic follow
+//! - Camera follows host user_root pose (+ Desktop look / XR HMD)
+//! - Grabbable boxes 10..18; XR world laser / Desktop look ray; Grab → host kinematic follow
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
 //! - Settings shows default max speed (read-only)
 //!
-//! Non-guarantees: Desktop Grab, Steal, Quest standalone, WSL HMD, virtual keyboard edit
+//! Non-guarantees: Steal, rotation follow, throw, Quest standalone, WSL HMD
 
 mod host_control;
 mod mesh;
@@ -17,6 +17,7 @@ mod scene;
 mod surface;
 mod system_ui;
 mod turn;
+mod world_hit;
 
 use std::collections::HashMap;
 use std::io::Read;

@@ -38,12 +38,12 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - 静止 Entity は `upserts` に載せない（フルスナップショット廃止）
 - entity: Coin=`1`、static=`2`、**user_root=`3`**（x0009）、**grabbable boxes=`10..18`**（x0010・手続き立方体、Manifest blake3 なし）
 
-### InputEvent（`proto/input_events.proto`）— Intent（x0009）+ Grab（x0011）
+### InputEvent（`proto/input_events.proto`）— Intent（x0009）+ Grab（x0011 / x0013）
 
 - `InputEvent { room_token, client_time_ms, move_x, move_y, move_z, buttons, grab_entity_id, aim_x, aim_y, aim_z }`
 - `move_*` はワールド投影済みの正規化 Intent（~-1..1）。Desktop=マウスルック yaw 相対（x0012）、VR=コントローラー aim 相対。host が `move_speed` でスケール
 - `buttons` ビット: Primary / Secondary / Grab / Context / Jump（未使用は host 無視可）
-- `grab_entity_id` + `aim_*`（ワールド aim 原点）: GRAB 中の kinematic 追従（x0011）。`0` / GRAB 無しは無視
+- `grab_entity_id` + `aim_*`（ワールド aim 原点: XR コントローラ / Desktop 眼）: GRAB 中の kinematic 追従。`0` / GRAB 無しは無視
 - `room_token` は world-server 発行の短命 JWT（検証は host-server）
 - `DEFAULT_MOVE_SPEED = 4.0`（Rust 定数。Manifest `move_speed` が 0 のときの host 既定 / Settings 表示）
 
