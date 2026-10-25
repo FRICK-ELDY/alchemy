@@ -41,9 +41,10 @@
 
 ## やらない（後続）
 
+- `ROOM_ID` → Zenoh キー本配線 → **[x0017](x0017-room-id-zenoh-keys.md)**
+- client アカウント殻 → **[x0018](x0018-client-auth-session.md)**
 - 明示 Leave / Zenoh liveliness
 - Steal / 投げ / アバター GLB
-- `ROOM_ID` → Zenoh キー本配線
 - launcher / verifier / 予測補間
 
 ## 起動（同一マシン smoke）
