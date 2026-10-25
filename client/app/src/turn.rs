@@ -1,15 +1,13 @@
 //! Comfort turn settings + yaw integration (client-local; x000a).
 //!
 //! Guarantees: snap / smooth yaw from a 1D stick axis; defaults for Settings display.
-//! Snap repeats while held (cooldown), without requiring a full stick release.
+//! Snap fires once per flick; stick must return below deadzone before the next snap.
 //! Non-guarantees: host-authoritative facing, persistence, virtual keyboard edit.
 //!
 //! Comfort yaw rotates the *viewed world* only. Move Intent stays controller-aim relative.
 
-/// Stick |X| must reach this to fire / keep repeating snap.
+/// Stick |X| must reach this to fire a snap (when armed).
 pub const SNAP_THRESHOLD: f32 = 0.65;
-/// Delay between snap steps while the stick is held past threshold.
-pub const SNAP_REPEAT_SEC: f32 = 0.22;
 /// Default snap turn step (degrees).
 pub const DEFAULT_SNAP_DEGREES: f32 = 30.0;
 /// Default smooth turn rate (degrees / second).
@@ -58,15 +56,14 @@ impl Default for TurnSettings {
 
 /// Update comfort-turn yaw (radians).
 ///
-/// `snap_cooldown` is seconds until the next snap is allowed (`0` = ready).
-/// Holding past [`SNAP_THRESHOLD`] repeats every [`SNAP_REPEAT_SEC`].
-/// Releasing below `deadzone` clears the cooldown so the next flick is immediate.
+/// `snap_armed` is set when the stick returns below `deadzone`. A snap fires only while
+/// armed and `|stick_x| >= SNAP_THRESHOLD`, then disarms until the next release.
 pub fn update_turn_yaw(
     yaw_rad: f32,
     stick_x: f32,
     settings: TurnSettings,
     dt: f32,
-    snap_cooldown: &mut f32,
+    snap_armed: &mut bool,
     deadzone: f32,
 ) -> f32 {
     if !stick_x.is_finite() || !dt.is_finite() || dt <= 0.0 {
@@ -75,12 +72,11 @@ pub fn update_turn_yaw(
     match settings.mode {
         TurnMode::Snap => {
             if stick_x.abs() < deadzone {
-                *snap_cooldown = 0.0;
+                *snap_armed = true;
                 return yaw_rad;
             }
-            *snap_cooldown = (*snap_cooldown - dt).max(0.0);
-            if stick_x.abs() >= SNAP_THRESHOLD && *snap_cooldown <= 0.0 {
-                *snap_cooldown = SNAP_REPEAT_SEC;
+            if *snap_armed && stick_x.abs() >= SNAP_THRESHOLD {
+                *snap_armed = false;
                 let step = settings.snap_degrees.to_radians().abs();
                 return yaw_rad + stick_x.signum() * step;
             }
@@ -102,40 +98,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snap_fires_immediately_then_repeats_after_cooldown() {
+    fn snap_once_per_flick_no_hold_repeat() {
         let settings = TurnSettings {
             mode: TurnMode::Snap,
             snap_degrees: 30.0,
             ..Default::default()
         };
-        let mut cd = 0.0_f32;
-        let y1 = update_turn_yaw(0.0, 0.9, settings, 0.016, &mut cd, TURN_DEADZONE);
+        let mut armed = true;
+        let y1 = update_turn_yaw(0.0, 0.9, settings, 0.016, &mut armed, TURN_DEADZONE);
         assert!((y1 - 30f32.to_radians()).abs() < 1e-4);
-        assert!(cd > 0.0);
+        assert!(!armed);
 
-        // Still held, cooldown not elapsed → no second snap.
-        let y2 = update_turn_yaw(y1, 0.9, settings, 0.016, &mut cd, TURN_DEADZONE);
-        assert!((y2 - y1).abs() < 1e-6);
+        let y2 = update_turn_yaw(y1, 0.9, settings, 1.0, &mut armed, TURN_DEADZONE);
+        assert!((y2 - y1).abs() < 1e-6, "holding must not repeat snap");
 
-        // Advance past repeat interval while held → second snap.
-        let y3 = update_turn_yaw(y2, 0.9, settings, SNAP_REPEAT_SEC, &mut cd, TURN_DEADZONE);
-        assert!((y3 - (y2 + 30f32.to_radians())).abs() < 1e-4);
-    }
-
-    #[test]
-    fn snap_release_clears_cooldown_for_immediate_flick() {
-        let settings = TurnSettings {
-            mode: TurnMode::Snap,
-            snap_degrees: 30.0,
-            ..Default::default()
-        };
-        let mut cd = 0.0;
-        let y1 = update_turn_yaw(0.0, 0.9, settings, 0.016, &mut cd, TURN_DEADZONE);
-        assert!(cd > 0.0);
-        let _ = update_turn_yaw(y1, 0.0, settings, 0.016, &mut cd, TURN_DEADZONE);
-        assert_eq!(cd, 0.0);
-        let y2 = update_turn_yaw(y1, -0.9, settings, 0.016, &mut cd, TURN_DEADZONE);
-        assert!((y2 - (y1 - 30f32.to_radians())).abs() < 1e-4);
+        let _ = update_turn_yaw(y2, 0.0, settings, 0.016, &mut armed, TURN_DEADZONE);
+        assert!(armed);
+        let y3 = update_turn_yaw(y2, -0.9, settings, 0.016, &mut armed, TURN_DEADZONE);
+        assert!((y3 - (y2 - 30f32.to_radians())).abs() < 1e-4);
     }
 
     #[test]
@@ -145,8 +125,8 @@ mod tests {
             smooth_deg_per_sec: 90.0,
             ..Default::default()
         };
-        let mut cd = 0.0;
-        let y = update_turn_yaw(0.0, 1.0, settings, 1.0, &mut cd, 0.0);
+        let mut armed = true;
+        let y = update_turn_yaw(0.0, 1.0, settings, 1.0, &mut armed, 0.0);
         assert!((y - 90f32.to_radians()).abs() < 1e-3);
     }
 

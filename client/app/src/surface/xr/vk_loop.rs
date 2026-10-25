@@ -407,7 +407,7 @@ pub fn run_openxr(
         let mut exit_requested = false;
         // Comfort yaw rotates viewed world (floor) only — move stays controller-aim relative.
         let mut view_yaw = 0.0_f32;
-        let mut snap_cooldown = 0.0_f32;
+        let mut snap_armed = true;
 
         'main_loop: loop {
             if !running.load(Ordering::Relaxed) || exit_requested {
@@ -683,7 +683,7 @@ pub fn run_openxr(
                         turn_axis,
                         turn_settings,
                         dt,
-                        &mut snap_cooldown,
+                        &mut snap_armed,
                         TURN_DEADZONE,
                     );
 
@@ -972,7 +972,7 @@ fn make_checkerboard_rgba(width: u32, height: u32, cells: u32) -> Vec<u8> {
         for x in 0..width {
             let cx = (x as f32 / cell_w) as u32;
             let cy = (y as f32 / cell_h) as u32;
-            let light = (cx + cy) % 2 == 0;
+            let light = (cx + cy).is_multiple_of(2);
             let (r, g, b) = if light {
                 (210u8, 215, 220)
             } else {
