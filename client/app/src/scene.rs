@@ -95,9 +95,9 @@ pub struct MoveIntent {
     pub buttons: u32,
     /// When true (dash open), publisher forces move zeros (Grab also cleared).
     pub suppress: bool,
-    /// Grabbable entity while GRAB held (`0` = none). XR only for x0011.
+    /// Grabbable entity while GRAB held (`0` = none). XR grip or Desktop RMB (x0013).
     pub grab_entity_id: u32,
-    /// World-space controller aim origin (meters).
+    /// World-space aim origin (meters): XR controller aim / Desktop eye (user_root).
     pub aim_x: f32,
     pub aim_y: f32,
     pub aim_z: f32,

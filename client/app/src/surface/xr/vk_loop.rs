@@ -18,7 +18,7 @@ use alchemy_protocol::{input_buttons, DEFAULT_MOVE_SPEED};
 
 use super::input::{
     dash_quad_model, laser_length, laser_length_world, laser_model, openxr_pose_to_isometry,
-    pose_to_ray, ray_hit_dash_quad, ray_hit_grabbable_boxes, Ray,
+    pose_to_ray, ray_hit_dash_quad, Ray,
 };
 use super::loco::{combine_turn_axes, intent_from_sticks, stage_move_to_world, STICK_DEADZONE};
 use super::render_model::{enable_if_available, RenderModelCache};
@@ -29,6 +29,7 @@ use crate::scene::{
 };
 use crate::system_ui::{SystemUi, UiAction};
 use crate::turn::{update_turn_yaw, TURN_DEADZONE};
+use crate::world_hit::ray_hit_grabbable_boxes;
 use glam::{Mat4, Quat, Vec3};
 
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;

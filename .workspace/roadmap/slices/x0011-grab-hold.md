@@ -35,7 +35,7 @@
 
 ## やらない（後続）
 
-- Desktop Grab / Pointer Lock
+- Desktop Grab / Pointer Lock → **x0012**（look）・**x0013**（Grab）
 - Steal / Receivable / Scalable（Resonite 互換フィールド）
 - 掴み中の角速度／投げ（release impulse）
 - 汎用 Slot 親子付け

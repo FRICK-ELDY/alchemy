@@ -45,7 +45,7 @@
 
 ## やらない（後続）
 
-- Desktop Grab / ワールドクリック選択
+- Desktop Grab / ワールドクリック選択 → **x0013**
 - 感度・反転の Settings Facet
 - 予測補間・host 側向き同期
 - VR 回転追従 / 投げ

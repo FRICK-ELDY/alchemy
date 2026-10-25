@@ -2,7 +2,7 @@
 //!
 //! Guarantees: 60Hz-capable step; floor + coin + 3×3 cuboids (SoA grabbable); user_root Noclip;
 //! Grab hold kinematic follow (`aim + offset`) and release → dynamic.
-//! Non-guarantees: Steal, rotation follow, throw impulse, Desktop Grab, Slot/Component, polished Walk.
+//! Non-guarantees: Steal, rotation follow, throw impulse, Slot/Component, polished Walk.
 
 use alchemy_protocol::LocomotionMode;
 use rapier3d::prelude::*;

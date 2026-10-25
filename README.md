@@ -5,12 +5,12 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（x0012 / Desktop マウスルック）
+## 現状（x0013 / Desktop Grab）
 
 `host-server` は **Rapier 60Hz**・**`is_finite` 入力ゲート**・配信 **30Hz デルタ**に加え、`SceneManifest.locomotion` 既定 **Noclip** で **user_root** を積分し、**コライダー付き立方体 ×9（entity 10..18）** を SoA `grabbable` 付きで置く。Grab 中は **kinematic 追従**、離すと dynamic に戻す。  
-`client`（Desktop）は **WASD / Space / C** → Intent（**マウスルック yaw 相対**）。ダッシュ閉でクリックすると **Confined**（失敗時 Locked；Linux/WSL は CursorMoved 経路）。OpenXR は **左右 thumbstick（aim 相対）** → 同じ Intent。カメラ位置は user_root。  
-**Menu**／ESC ダッシュは個人 **DashRoot**（Esc で look grab 解放）。ダッシュ閉時 XR は aim **ワールドレーザー**＋ **Grab hold**。実機 XR 正本は **Windows + SteamVR**（WSL は HMD 非保証）。  
-Slice ID は `x` + 4桁16進（次は `x0013`）。規約は [`.workspace/roadmap/README.md`](.workspace/roadmap/README.md)。
+`client`（Desktop）は **WASD / Space / C** → Intent（**マウスルック yaw 相対**）。ダッシュ閉でクリックすると **Confined**（失敗時 Locked）。look 中 **RMB** で前方レイの箱を **Grab**。OpenXR は **左右 thumbstick（aim 相対）** → 同じ Intent。カメラ位置は user_root。  
+**Menu**／ESC ダッシュは個人 **DashRoot**（Esc で look／Grab 解放）。ダッシュ閉時 XR は aim **ワールドレーザー**＋ **Grab hold**。実機 XR 正本は **Windows + SteamVR**（WSL は HMD 非保証）。  
+Slice ID は `x` + 4桁16進（次は `x0014`）。規約は [`.workspace/roadmap/README.md`](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|

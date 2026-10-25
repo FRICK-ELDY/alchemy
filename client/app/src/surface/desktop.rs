@@ -1,8 +1,9 @@
-//! Desktop winit + wgpu surface (ESC dash + Noclip intent + x0012 mouse look).
+//! Desktop winit + wgpu surface (ESC dash + Noclip + mouse look + Grab).
 //!
 //! Guarantees: canvas-pixel pointer → system_ui `on_pointer` (hover/press) + click;
 //! dash-closed LMB → cursor grab (`Confined` then `Locked`); mouse Δ → client-local
-//! `CameraLook`; WASD projected from current yaw. Look is never published on Zenoh.
+//! `CameraLook`; WASD projected from current yaw; look-capture RMB → Grab hold via
+//! look-forward ray (x0013; host kinematic path from x0011). Look is never on Zenoh.
 //!
 //! Linux/WSL: prefer Confined + `CursorMoved` (recenter). `Locked` often succeeds but
 //! yields no `DeviceEvent::MouseMotion`, so look appears dead.
@@ -22,9 +23,11 @@ use winit::window::{Cursor, CursorGrabMode, CustomCursor, Window, WindowId};
 use crate::host_control;
 use crate::mesh::CpuMesh;
 use crate::scene::{
-    create_depth_view, create_wgpu_for_window, CameraLook, MoveIntent, SceneGpu, SharedState,
+    create_depth_view, create_wgpu_for_window, CameraLook, EntityPose, MoveIntent, SceneGpu,
+    SharedState, USER_ROOT_ENTITY_ID,
 };
 use crate::system_ui::{SystemUi, UiAction};
+use crate::world_hit::{desktop_look_ray, pick_grabbable};
 
 /// Radians per pixel (fixed; Settings Facet deferred).
 const LOOK_SENSITIVITY: f32 = 0.0025;
@@ -143,6 +146,9 @@ struct App {
     last_cursor: Option<(f64, f64)>,
     /// 1×1 transparent cursor (WSL often ignores `set_cursor_visible(false)` alone).
     blank_cursor: Option<CustomCursor>,
+    /// Entity held by Desktop Grab (cleared on RMB release or dash open).
+    held_grab: Option<u32>,
+    grab_down: bool,
 }
 
 impl App {
@@ -273,9 +279,66 @@ impl App {
         self.warp_cursor_center(true);
     }
 
-    fn rebuild_intent(&self) {
+    fn eye_and_look(&self) -> (EntityPose, CameraLook) {
+        let eye = self
+            .shared
+            .entities
+            .lock()
+            .ok()
+            .and_then(|g| g.get(&USER_ROOT_ENTITY_ID).copied())
+            .unwrap_or(EntityPose {
+                x: 0.0,
+                y: 1.6,
+                z: 6.0,
+                ..Default::default()
+            });
+        let look = self.shared.look.lock().ok().map(|g| *g).unwrap_or_default();
+        (eye, look)
+    }
+
+    fn grabbable_boxes(&self) -> Vec<(u32, EntityPose)> {
+        self.shared
+            .entities
+            .lock()
+            .ok()
+            .map(|g| {
+                g.iter()
+                    .filter(|(id, _)| EntityPose::is_grabbable_box(**id))
+                    .map(|(id, p)| (*id, *p))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Update held Grab from RMB + look-forward pick (x0013).
+    fn update_grab_hold(&mut self) {
+        if self.ui.state.open || !self.look_captured {
+            if self.held_grab.take().is_some() {
+                log::info!("desktop grab released (dash/look)");
+            }
+            return;
+        }
+        if self.grab_down {
+            if self.held_grab.is_none() {
+                let (eye, look) = self.eye_and_look();
+                let ray = desktop_look_ray(eye, look);
+                let boxes = self.grabbable_boxes();
+                if let Some(hit) = pick_grabbable(ray, &boxes) {
+                    self.held_grab = Some(hit.entity_id);
+                    log::info!("desktop grab begin entity={}", hit.entity_id);
+                }
+            }
+        } else if self.held_grab.take().is_some() {
+            log::info!("desktop grab released");
+        }
+    }
+
+    fn rebuild_intent(&mut self) {
+        self.update_grab_hold();
+
         let dash_open = self.ui.state.open;
-        let yaw = self.shared.look.lock().ok().map(|g| g.yaw).unwrap_or(0.0);
+        let (eye, look) = self.eye_and_look();
+        let yaw = look.yaw;
         let forward_x = yaw.sin();
         let forward_z = -yaw.cos();
         let right_x = yaw.cos();
@@ -333,6 +396,13 @@ impl App {
             if self.keys_down.contains(&KeyCode::Space) {
                 buttons |= input_buttons::JUMP;
             }
+            if let Some(id) = self.held_grab {
+                buttons |= input_buttons::GRAB;
+                intent.grab_entity_id = id;
+                intent.aim_x = eye.x;
+                intent.aim_y = eye.y;
+                intent.aim_z = eye.z;
+            }
             intent.buttons = buttons;
         }
 
@@ -371,7 +441,7 @@ impl ApplicationHandler for App {
             }
         }
         let attrs = Window::default_attributes()
-            .with_title("Alchemy Client — x0012 (Desktop mouse look)")
+            .with_title("Alchemy Client — x0013 (Desktop Grab)")
             .with_inner_size(LogicalSize::new(960.0, 540.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         let gpu = pollster::block_on(DesktopGpu::new(
@@ -391,7 +461,7 @@ impl ApplicationHandler for App {
             .expect("init system_ui gpu");
         self.window = Some(window);
         self.gpu = Some(gpu);
-        log::info!("system_ui ready — Esc dash; click to look; WASD+Space+C Noclip");
+        log::info!("system_ui ready — Esc dash; click to look; RMB Grab; WASD+Space+C Noclip");
     }
 
     fn device_event(
@@ -453,6 +523,15 @@ impl ApplicationHandler for App {
                 } else if self.primary_down && !self.look_captured {
                     self.set_look_capture(true);
                 }
+                self.rebuild_intent();
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Right,
+                ..
+            } => {
+                self.grab_down = state == ElementState::Pressed;
+                self.rebuild_intent();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
@@ -466,6 +545,8 @@ impl ApplicationHandler for App {
                         self.ui.toggle();
                         if self.ui.state.open {
                             self.set_look_capture(false);
+                            self.held_grab = None;
+                            self.grab_down = false;
                             self.ui.clear_pointer();
                         }
                         log::info!("system_ui open={}", self.ui.state.open);
@@ -535,6 +616,8 @@ pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session
         skip_cursor_warp: false,
         last_cursor: None,
         blank_cursor: None,
+        held_grab: None,
+        grab_down: false,
     };
     event_loop.run_app(&mut app)?;
     Ok(())

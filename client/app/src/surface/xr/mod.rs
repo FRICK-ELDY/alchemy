@@ -9,7 +9,7 @@
 //! animatable node pose/visibility (x000d).
 //! Grab hold: squeeze (or Select when dash closed) → InputEvent GRAB + aim (x0011).
 //! Non-guarantees: WSL HMD, Quest standalone, Vive trackpad-only, Coin mesh in XR,
-//! Facet rearrange / WorldRoot, Desktop Grab, Steal, CompositionLayerQuad dash,
+//! Facet rearrange / WorldRoot, Steal, CompositionLayerQuad dash,
 //! PBR maps, SteamVR rendermodels path loading.
 
 mod input;
