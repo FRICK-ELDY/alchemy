@@ -131,8 +131,9 @@ pub struct SceneGpu {
     box_vertex_buffer: wgpu::Buffer,
     box_index_buffer: wgpu::Buffer,
     box_index_count: u32,
-    box_uniform_buffer: wgpu::Buffer,
-    box_bind_group: wgpu::BindGroup,
+    /// One uniform+bind group per box slot — wgpu cannot safely rewrite one UBO mid-pass.
+    box_uniform_buffers: Vec<wgpu::Buffer>,
+    box_bind_groups: Vec<wgpu::BindGroup>,
     mesh_radius: f32,
     shared: Arc<SharedState>,
     last_pose_log: Instant,
@@ -280,12 +281,26 @@ impl SceneGpu {
             contents: bytemuck::cast_slice(&box_indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        let box_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("box-uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let mut box_uniform_buffers = Vec::with_capacity(BOX_COUNT);
+        let mut box_bind_groups = Vec::with_capacity(BOX_COUNT);
+        for i in 0..BOX_COUNT {
+            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("box-uniforms-{i}")),
+                size: std::mem::size_of::<Uniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(&format!("box-bg-{i}")),
+                layout: &bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf.as_entire_binding(),
+                }],
+            });
+            box_uniform_buffers.push(buf);
+            box_bind_groups.push(bg);
+        }
 
         let floor_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("floor-bg"),
@@ -301,14 +316,6 @@ impl SceneGpu {
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: coin_uniform_buffer.as_entire_binding(),
-            }],
-        });
-        let box_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("box-bg"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: box_uniform_buffer.as_entire_binding(),
             }],
         });
 
@@ -330,8 +337,8 @@ impl SceneGpu {
             box_vertex_buffer,
             box_index_buffer,
             box_index_count: box_indices.len() as u32,
-            box_uniform_buffer,
-            box_bind_group,
+            box_uniform_buffers,
+            box_bind_groups,
             mesh_radius: mesh.radius,
             shared,
             last_pose_log: Instant::now(),
@@ -474,6 +481,7 @@ impl SceneGpu {
             pass.draw_indexed(0..self.index_count, 0, 0..1);
 
             // Grabbable boxes (x0010): unit cube scaled to 2*BOX_HALF_EXTENT.
+            // Per-slot UBOs — rewriting one buffer inside the pass would show only the last cube.
             let boxes: Vec<(u32, EntityPose)> = self
                 .shared
                 .entities
@@ -488,7 +496,8 @@ impl SceneGpu {
                 .unwrap_or_default();
             pass.set_vertex_buffer(0, self.box_vertex_buffer.slice(..));
             pass.set_index_buffer(self.box_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            for (_id, pose) in boxes {
+            for (id, pose) in boxes {
+                let slot = (id.saturating_sub(BOX_ENTITY_FIRST) as usize).min(BOX_COUNT - 1);
                 let model = Mat4::from_scale_rotation_translation(
                     Vec3::splat(BOX_HALF_EXTENT * 2.0),
                     glam::Quat::IDENTITY,
@@ -499,11 +508,11 @@ impl SceneGpu {
                     color: pose.color(),
                 };
                 self.queue.write_buffer(
-                    &self.box_uniform_buffer,
+                    &self.box_uniform_buffers[slot],
                     0,
                     bytemuck::bytes_of(&box_uniforms),
                 );
-                pass.set_bind_group(0, &self.box_bind_group, &[]);
+                pass.set_bind_group(0, &self.box_bind_groups[slot], &[]);
                 pass.draw_indexed(0..self.box_index_count, 0, 0..1);
             }
         }
