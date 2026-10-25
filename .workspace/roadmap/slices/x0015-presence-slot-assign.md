@@ -53,7 +53,7 @@
 
 ## やらない（後続）
 
-- 切断・トークン失効時のスロット解放
+- 切断・トークン失効時のスロット解放 → **[x0016](x0016-presence-slot-reclaim.md)**
 - Steal / 投げ / アバター GLB
 - `ROOM_ID` → Zenoh キー本配線
 - launcher / verifier / 予測補間

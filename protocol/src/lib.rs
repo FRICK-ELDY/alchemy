@@ -10,12 +10,12 @@
 //! - Cryptographic verification of `InputEvent.room_token` (host-server).
 //! - Signed Manifest issuance by world-server (later).
 //! - Locomotion module list UI / suppress sources.
-//! - Presence slot reclaim on disconnect (x0015).
+//! - Explicit Leave / liveliness (host Intent TTL reclaim is x0016 host policy).
 
 pub use prost::Message;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.6.0-x0015";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.7.0-x0016";
 
 /// Default free-move speed (m/s) when Manifest `move_speed` is 0.
 /// Shared by host Noclip and client Settings display (x000a).

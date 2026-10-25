@@ -1,7 +1,7 @@
 # protocol（alchemy-protocol）
 
 > **正本**: [`protocol/`](../../../protocol/)  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.6.0-x0015`
+> **PROTOCOL_PIN**: `alchemy-protocol/0.7.0-x0016`
 
 ## 置き場の方針
 
@@ -20,7 +20,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | Manifest / frame / presence のキー式ヘルパ | world-server 署名付き Manifest |
 | `LocomotionConfig`（World 定義の active mode） | モジュール一覧 UI / 抑制ソース |
 | `DEFAULT_MOVE_SPEED`（host / Settings 表示の共有既定） | client 永続設定・仮想キーボード編集 |
-| `PresenceState`（`sub`→user_root entity） | 切断時スロット解放・5 人以上の動的スケール |
+| `PresenceState`（`sub`→user_root entity） | 明示 Leave / 5 人以上の動的スケール（解放は host Intent TTL・x0016） |
 
 ## メッセージ
 
@@ -48,11 +48,12 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - `room_token` は world-server 発行の短命 JWT（検証は host-server）
 - `DEFAULT_MOVE_SPEED = 4.0`（Rust 定数。Manifest `move_speed` が 0 のときの host 既定 / Settings 表示）
 
-### PresenceState（`proto/presence.proto`）— x0015・低頻度
+### PresenceState（`proto/presence.proto`）— x0015・低頻度（解放は x0016）
 
 - `PresenceState { revision, assignments[] }`
 - `PresenceAssignment { sub, entity_id }` — occupied のみ。host が first-come 割当を公開
 - client は自 Room Token の `sub`（payload 読み取りのみ）で `entity_id` を解決
+- host は Intent 無音 TTL（3s）でスロット解放し `revision` を bump（ワイヤ追加なし・x0016）
 
 ## キー式ヘルパ
 

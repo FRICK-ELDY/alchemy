@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: x0015（Presence 動的スロット — user_root 3..6・最大4）
+> **ステータス**: x0016（Presence スロット解放 — Intent TTL 3s・user_root 3..6）
 
 ## レイアウト
 
@@ -24,12 +24,12 @@
 | Manifest の blake3 → assets download（失敗時 fixture）→ BLAKE3 → wgpu | LOD / KTX2 / マテリアル本格 / スキン |
 | ローカル entity 表への upsert/remove。Coin=1、user_root=3..6、boxes=10..18 | 署名付き Manifest / world 台帳 |
 | Desktop: WASD/Space/C → Intent（look yaw 相対）。クリックで Confined（失敗時 Locked）→ マウスルック。look 中 RMB → Grab（x0013） | 感度 UI / クロスヘア必須 |
-| Presence で自 entity 解決→カメラ；他 root は色付きボックス（x0015）。`AUTH_USER` はログインのみ。`ZENOH_CONNECT` LAN | 切断解放・5人以上・アバター GLB |
+| Presence で自 entity 解決→カメラ；他 root は色付きボックス（x0015）。欠落で unset（x0016）。`AUTH_USER` はログインのみ。`ZENOH_CONNECT` LAN | 明示 Leave・5人以上・アバター GLB |
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
 | OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose + 埋め込み baseColor + animatable node） | SteamVR パス直読み／PBR（MR/normal 等）／手トラ |
 | OpenXR: ダッシュ開→UI レーザー；閉→ワールドレーザー＋ Grab hold（squeeze／Select）（x0011） | Steal／回転追従／Facet 並べ替え／WorldRoot／CompositionLayerQuad |
 | auth login → Bearer 付き Room Token → InputEvent（含 grab_entity_id + aim_*） | OSC / Dual Editor / launcher 本実装 |
-| host: Rapier 60Hz + `is_finite` + per-`sub` Intent（最大4）+ Presence + user_root 3..6 + cuboid×9 + Grab → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk / Steal |
+| host: Rapier 60Hz + `is_finite` + per-`sub` Intent（最大4）+ Presence + Intent TTL 解放（x0016）+ user_root 3..6 + cuboid×9 + Grab → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk / Steal |
 | ESC（Desktop）/ Menu（OpenXR）ダッシュ・Pinned Exit・Button hover・client 終了・host 終了スタブ。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 |
 | OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD・launcher 本実装 |
 
@@ -38,7 +38,7 @@
 | キー | 頻度 | 用途 |
 |:---|:---|:---|
 | `…/manifest` | 低（host は 5s 再送で late joiner 補助） | `entity_id → blake3` + `locomotion` |
-| `…/presence` | 低（割当変更 + 5s 再送） | `sub → user_root entity`（x0015） |
+| `…/presence` | 低（割当・解放変更 + 5s 再送） | `sub → user_root entity`（x0015 / 解放 x0016） |
 | `…/frame` | 高（動いたものだけ） | pose upserts / removes（含 user_root） |
 | `…/input` | 入力 | Room Token 付き Intent（`move_*` + `buttons`） |
 | `…/host_control` | 低（スタブ） | client→host `shutdown`（launcher 前） |
@@ -80,4 +80,4 @@
 - 転送: [zenoh-router.md](zenoh-router.md)
 - Room Token: [world-server.md](world-server.md)
 - Blob CAS: [assets-server.md](assets-server.md)
-- Slice: [x0015](../roadmap/slices/x0015-presence-slot-assign.md) · [x0014](../roadmap/slices/x0014-lan-two-client.md) · [x0013](../roadmap/slices/x0013-desktop-grab.md)
+- Slice: [x0016](../roadmap/slices/x0016-presence-slot-reclaim.md) · [x0015](../roadmap/slices/x0015-presence-slot-assign.md) · [x0014](../roadmap/slices/x0014-lan-two-client.md) · [x0013](../roadmap/slices/x0013-desktop-grab.md)

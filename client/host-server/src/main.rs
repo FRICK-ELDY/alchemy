@@ -1,16 +1,16 @@
-//! Local host-server — x0015 presence slots + Grab hold / boxes / loco.
+//! Local host-server — x0016 presence reclaim + Grab hold / boxes / loco.
 //!
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
 //! - Input: Room Token verify + `is_finite` (NaN/Inf dropped before physics)
 //! - SceneManifest with default Noclip LocomotionConfig (blake3 refs; no GLB bytes)
 //! - Per-`sub` Intent/Grab → up to 4 user_roots (entity 3..6); first-come slot assign
-//! - PresenceState publish (`sub`→entity) for client discovery
+//! - PresenceState publish (`sub`→entity); Intent silence TTL reclaim (x0016)
 //! - Grabbable cuboids entity 10..18; Grab hold kinematic follow; no Steal
 //! - Slice E: `host_control` Subscribe → `shutdown` exits process
 //!
 //! Non-guarantees:
-//! - Steal / rotation follow / slot reclaim / Formula / polished Walk / signed Manifest / verifier
+//! - Steal / rotation follow / explicit Leave / Formula / polished Walk / signed Manifest / verifier
 
 mod finite;
 mod host_control;
@@ -53,6 +53,8 @@ const MOVE_EPSILON: f64 = 1e-4;
 const MANIFEST_REPUBLISH: Duration = Duration::from_secs(5);
 /// Republish Presence for late joiners (same cadence as Manifest).
 const PRESENCE_REPUBLISH: Duration = Duration::from_secs(5);
+/// Intent silence before reclaiming a Presence slot (client INPUT_HZ=30).
+const PRESENCE_SLOT_TTL: Duration = Duration::from_secs(3);
 
 const ENTITY_MOVING: u32 = 1;
 const ENTITY_STATIC: u32 = 2;
@@ -70,27 +72,43 @@ struct PoseOverride {
     aim_z: f32,
 }
 
-/// Per-sub input slots (x0015). Maps JWT `sub` → 0..USER_ROOT_SLOTS.
-#[derive(Debug, Default)]
+/// Per-sub input slots (x0015) + Intent TTL reclaim (x0016).
+#[derive(Debug)]
 struct PresenceIntents {
     by_slot: [PoseOverride; USER_ROOT_SLOTS],
     /// Occupied slots: Some(sub) when assigned.
     occupied_sub: [Option<String>; USER_ROOT_SLOTS],
+    /// Last accepted Intent time per slot (None when free).
+    last_input: [Option<Instant>; USER_ROOT_SLOTS],
     dropped_full: u64,
-    /// Bumped on new assignment (PresenceState.revision).
+    /// Bumped on assignment or reclaim (PresenceState.revision).
     revision: u64,
 }
 
+impl Default for PresenceIntents {
+    fn default() -> Self {
+        Self {
+            by_slot: [PoseOverride::default(); USER_ROOT_SLOTS],
+            occupied_sub: std::array::from_fn(|_| None),
+            last_input: [None; USER_ROOT_SLOTS],
+            dropped_full: 0,
+            revision: 0,
+        }
+    }
+}
+
 impl PresenceIntents {
-    fn assign_or_lookup(&mut self, sub: &str) -> Option<usize> {
+    fn assign_or_lookup(&mut self, sub: &str, now: Instant) -> Option<usize> {
         for (i, occupied) in self.occupied_sub.iter().enumerate() {
             if occupied.as_deref() == Some(sub) {
+                self.last_input[i] = Some(now);
                 return Some(i);
             }
         }
         for (i, occupied) in self.occupied_sub.iter_mut().enumerate() {
             if occupied.is_none() {
                 *occupied = Some(sub.to_string());
+                self.last_input[i] = Some(now);
                 self.revision = self.revision.saturating_add(1);
                 log::info!(
                     "presence: assigned sub={sub} → user_root entity {} (revision={})",
@@ -101,6 +119,35 @@ impl PresenceIntents {
             }
         }
         None
+    }
+
+    /// Drop slots with no Intent for `ttl`. Returns freed user_root entity ids.
+    fn reclaim_stale(&mut self, now: Instant, ttl: Duration) -> Vec<u32> {
+        let mut freed = Vec::new();
+        for i in 0..USER_ROOT_SLOTS {
+            if self.occupied_sub[i].is_none() {
+                continue;
+            }
+            let stale = match self.last_input[i] {
+                Some(t) => now.saturating_duration_since(t) >= ttl,
+                None => true,
+            };
+            if !stale {
+                continue;
+            }
+            let sub = self.occupied_sub[i].take();
+            self.last_input[i] = None;
+            self.by_slot[i] = PoseOverride::default();
+            self.revision = self.revision.saturating_add(1);
+            let entity_id = PhysicsWorld::user_root_entity_id(i);
+            freed.push(entity_id);
+            log::info!(
+                "presence: reclaimed slot={i} entity={entity_id} sub={} (revision={})",
+                sub.as_deref().unwrap_or("?"),
+                self.revision
+            );
+        }
+        freed
     }
 
     fn to_presence_state(&self) -> PresenceState {
@@ -281,7 +328,7 @@ fn spawn_input_gate(
                                     event.move_z
                                 );
                             } else if let Ok(mut guard) = presence.lock() {
-                                match guard.assign_or_lookup(&claims.sub) {
+                                match guard.assign_or_lookup(&claims.sub, Instant::now()) {
                                     Some(slot) => {
                                         let overlay = &mut guard.by_slot[slot];
                                         overlay.x = event.move_x;
@@ -344,8 +391,9 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "host-server x0015 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} presence={PRESENCE_KEY_LOCAL} host_control={HOST_CONTROL_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{}",
-        USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1
+        "host-server x0016 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} presence={PRESENCE_KEY_LOCAL} host_control={HOST_CONTROL_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
+        PRESENCE_SLOT_TTL.as_secs()
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
@@ -460,18 +508,37 @@ fn main() -> Result<()> {
             );
         }
 
-        let snapshot = presence
+        let tick_now = Instant::now();
+        let (by_slot, occupied, presence_rev, presence_state, reclaimed) = presence
             .lock()
-            .map(|g| {
+            .map(|mut g| {
+                let freed = g.reclaim_stale(tick_now, PRESENCE_SLOT_TTL);
                 (
                     g.by_slot,
                     g.occupied_sub.clone(),
                     g.revision,
                     g.to_presence_state(),
+                    freed,
                 )
             })
-            .unwrap_or_default();
-        let (by_slot, occupied, presence_rev, presence_state) = snapshot;
+            .unwrap_or_else(|_| {
+                (
+                    [PoseOverride::default(); USER_ROOT_SLOTS],
+                    std::array::from_fn(|_| None),
+                    0,
+                    PresenceState {
+                        revision: 0,
+                        assignments: vec![],
+                    },
+                    Vec::new(),
+                )
+            });
+
+        for &entity_id in &reclaimed {
+            let slot = (entity_id - USER_ROOT_ENTITY_FIRST) as usize;
+            physics.release_slot(slot);
+            last_sent.remove(&entity_id);
+        }
 
         if presence_rev != last_presence_rev || last_presence.elapsed() >= PRESENCE_REPUBLISH {
             let n = presence_state.assignments.len();
@@ -511,6 +578,21 @@ fn main() -> Result<()> {
         physics_steps_logged += 1;
 
         if !physics_steps.is_multiple_of(PHYSICS_PER_NET) {
+            // Still flush removes promptly when reclaim happens between net ticks.
+            if !reclaimed.is_empty() {
+                let frame = RenderFrame {
+                    tick: net_tick,
+                    host_time_ms: host_time_ms(),
+                    upserts: vec![],
+                    removes: reclaimed.clone(),
+                };
+                frame_pub
+                    .put(frame.encode_to_vec())
+                    .wait()
+                    .map_err(|e| anyhow::anyhow!("frame publish failed: {e}"))?;
+                net_tick = net_tick.wrapping_add(1);
+                publishes += 1;
+            }
             continue;
         }
 
@@ -546,7 +628,8 @@ fn main() -> Result<()> {
         }
 
         let upsert_len = upserts.len() as u64;
-        if upserts.is_empty() {
+        let removes = reclaimed;
+        if upserts.is_empty() && removes.is_empty() {
             empty_delta_frames += 1;
             net_tick = net_tick.wrapping_add(1);
         } else {
@@ -555,7 +638,7 @@ fn main() -> Result<()> {
                 tick: net_tick,
                 host_time_ms: host_time_ms(),
                 upserts,
-                removes: vec![],
+                removes,
             };
             frame_pub
                 .put(frame.encode_to_vec())
@@ -595,5 +678,53 @@ fn main() -> Result<()> {
             physics_steps_logged = 0;
             last_log = Instant::now();
         }
+    }
+}
+
+#[cfg(test)]
+mod presence_reclaim_tests {
+    use super::*;
+
+    #[test]
+    fn reclaim_stale_frees_slot_for_reuse() {
+        let mut p = PresenceIntents::default();
+        let t0 = Instant::now();
+        let slot = p.assign_or_lookup("alice", t0).expect("assign");
+        assert_eq!(slot, 0);
+        assert_eq!(p.to_presence_state().assignments.len(), 1);
+
+        // Still within TTL: no reclaim.
+        let freed = p.reclaim_stale(t0 + Duration::from_secs(2), PRESENCE_SLOT_TTL);
+        assert!(freed.is_empty());
+        assert!(p.occupied_sub[0].is_some());
+
+        let freed = p.reclaim_stale(t0 + PRESENCE_SLOT_TTL, PRESENCE_SLOT_TTL);
+        assert_eq!(freed, vec![PhysicsWorld::user_root_entity_id(0)]);
+        assert!(p.occupied_sub[0].is_none());
+        assert_eq!(p.to_presence_state().assignments.len(), 0);
+        assert!(p.revision >= 2);
+
+        let slot2 = p
+            .assign_or_lookup("bob", t0 + PRESENCE_SLOT_TTL + Duration::from_millis(1))
+            .expect("reuse");
+        assert_eq!(slot2, 0);
+        assert_eq!(p.to_presence_state().assignments[0].sub, "bob".to_string());
+    }
+
+    #[test]
+    fn same_sub_before_ttl_keeps_slot() {
+        let mut p = PresenceIntents::default();
+        let t0 = Instant::now();
+        assert_eq!(p.assign_or_lookup("alice", t0), Some(0));
+        assert_eq!(
+            p.assign_or_lookup("alice", t0 + Duration::from_secs(2)),
+            Some(0)
+        );
+        let freed = p.reclaim_stale(
+            t0 + Duration::from_secs(2) + Duration::from_secs(2),
+            PRESENCE_SLOT_TTL,
+        );
+        // last_input refreshed at +2s; at +4s still within 3s TTL from last touch.
+        assert!(freed.is_empty());
     }
 }
