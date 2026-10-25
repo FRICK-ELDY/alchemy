@@ -126,7 +126,10 @@ pub fn logout(auth_url: &str, access_token: &str, refresh_token: Option<&str>) -
     }
 }
 
-#[expect(dead_code, reason = "x0018: optional access refresh when remember_me expires")]
+#[expect(
+    dead_code,
+    reason = "x0018: optional access refresh when remember_me expires"
+)]
 pub fn refresh(auth_url: &str, refresh_token: &str) -> Result<AuthSession> {
     let base = auth_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/auth/refresh");
