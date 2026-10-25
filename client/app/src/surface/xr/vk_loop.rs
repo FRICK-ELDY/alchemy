@@ -19,7 +19,7 @@ use super::input::{
     dash_quad_model, openxr_pose_to_isometry, pose_to_ray, ray_hit_dash_quad, QUAD_HEIGHT,
     QUAD_WIDTH,
 };
-use super::loco::{intent_from_sticks, STICK_DEADZONE};
+use super::loco::{intent_from_sticks, stage_move_to_world, STICK_DEADZONE};
 use crate::host_control;
 use crate::mesh::CpuMesh;
 use crate::scene::{MoveIntent, SharedState, MESH_ENTITY_ID, USER_ROOT_ENTITY_ID};
@@ -687,8 +687,9 @@ pub fn run_openxr(
                     ..Default::default()
                 };
                 if !dash_open {
-                    // Must stay aim-relative: never bake comfort yaw into move Intent.
-                    let v = intent_from_sticks(
+                    // Stick × controller aim in stage, then R(-view_yaw) → world Intent
+                    // (floor is drawn with R(+view_yaw); signs must stay inverse).
+                    let stage = intent_from_sticks(
                         left_ori,
                         (left_stick.x, left_stick.y),
                         right_ori,
@@ -696,7 +697,9 @@ pub fn run_openxr(
                         max_speed,
                         DEFAULT_MOVE_SPEED,
                         STICK_DEADZONE,
+                        TURN_DEADZONE,
                     );
+                    let v = stage_move_to_world(stage, view_yaw);
                     intent.move_x = v.x;
                     intent.move_y = v.y;
                     intent.move_z = v.z;

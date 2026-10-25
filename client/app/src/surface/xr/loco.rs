@@ -2,6 +2,7 @@
 //!
 //! Guarantees: aim-relative stick projection, deadzone, L+R add+clamp, max-speed scale.
 //! Right stick X is reserved for comfort turn (see `crate::turn`); only Y adds to move.
+//! Comfort yaw: stage aim → world Intent via `R(-yaw)` so it matches the yawed floor.
 //! Non-guarantees: OpenXR action binding (see vk_loop), host speed override protocol.
 
 use glam::{Quat, Vec3};
@@ -49,6 +50,7 @@ pub fn apply_max_speed_scale(v: Vec3, max_speed: f32, default_speed: f32) -> Vec
 }
 
 /// Left stick = full 2D move; right stick Y = forward/back only (X reserved for turn).
+/// When `|right_x| >= turn_deadzone`, right stick is turn-only (no move add).
 pub fn intent_from_sticks(
     left_ori: Quat,
     left_stick: (f32, f32),
@@ -57,10 +59,21 @@ pub fn intent_from_sticks(
     max_speed: f32,
     default_speed: f32,
     deadzone: f32,
+    turn_deadzone: f32,
 ) -> Vec3 {
     let l = stick_to_world(left_ori, left_stick.0, left_stick.1, deadzone);
-    let r = stick_to_world(right_ori, 0.0, right_stick.1, deadzone);
+    let r = if right_stick.0.abs() >= turn_deadzone {
+        Vec3::ZERO
+    } else {
+        stick_to_world(right_ori, 0.0, right_stick.1, deadzone)
+    };
     apply_max_speed_scale(combine_hands(l, r), max_speed, default_speed)
+}
+
+/// Floor is drawn as `R(yaw) * (world - user_root)`. Intent must use the inverse so that
+/// pushing the stick along the controller in the headset moves that way on the floor.
+pub fn stage_move_to_world(stage_move: Vec3, view_yaw_rad: f32) -> Vec3 {
+    Quat::from_rotation_y(-view_yaw_rad) * stage_move
 }
 
 #[cfg(test)]
@@ -131,7 +144,44 @@ mod tests {
             4.0,
             4.0,
             0.0,
+            0.15,
         );
         assert!(v.length() < 1e-5, "right X must not strafe, got {v:?}");
+    }
+
+    #[test]
+    fn turn_deadzone_suppresses_right_move() {
+        let v = intent_from_sticks(
+            Quat::IDENTITY,
+            (0.0, 0.0),
+            Quat::IDENTITY,
+            (0.5, 1.0),
+            4.0,
+            4.0,
+            0.0,
+            0.15,
+        );
+        assert!(
+            v.length() < 1e-5,
+            "turning right stick must not add move, got {v:?}"
+        );
+    }
+
+    #[test]
+    fn stage_to_world_inverse_matches_floor_yaw() {
+        // Floor uses R(+yaw). After 180° yaw, stage forward (−Z) must become world +Z
+        // so visual slide matches controller-forward on the rotated floor.
+        let stage = Vec3::NEG_Z;
+        let world = stage_move_to_world(stage, std::f32::consts::PI);
+        assert!(
+            (world.z - 1.0).abs() < 1e-4 && world.x.abs() < 1e-4,
+            "expected +Z after 180°, got {world:?}"
+        );
+        let world90 = stage_move_to_world(stage, std::f32::consts::FRAC_PI_2);
+        // R_y(-90°) * (0,0,-1) = (+1, 0, 0)
+        assert!(
+            (world90.x - 1.0).abs() < 1e-4 && world90.z.abs() < 1e-4,
+            "expected +X after +90° yaw, got {world90:?}"
+        );
     }
 }
