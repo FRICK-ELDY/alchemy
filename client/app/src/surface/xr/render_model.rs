@@ -2,8 +2,13 @@
 //!
 //! Guarantees: optional enable; enumerate after sync_actions; GLB bytes + Space per model.
 //! Non-guarantees: animatable nodes, textures, SteamVR disk paths, every runtime.
+//!
+//! Refresh is throttled and incremental so SteamVR change events cannot rebuild
+//! controllers / GPU meshes every frame (that froze the app).
 
+use std::collections::HashSet;
 use std::ptr;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use openxr as xr;
@@ -11,6 +16,9 @@ use openxr::sys;
 use openxr::sys::Handle as _;
 
 use crate::mesh::{load_flattened_mesh_from_glb, CpuMesh};
+
+/// Min gap between refresh attempts while assets/ids are still settling.
+const RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Whether the instance was created with both render-model extensions.
 #[derive(Clone, Copy, Debug, Default)]
@@ -43,7 +51,6 @@ pub fn enable_if_available(
 }
 
 pub struct ControllerModel {
-    #[allow(dead_code)] // retained for re-enumerate / debug
     pub id: sys::RenderModelIdEXT,
     handle: sys::RenderModelEXT,
     /// Destroyed with Space Drop.
@@ -64,11 +71,12 @@ impl ControllerModel {
 
 pub struct RenderModelCache {
     support: RenderModelExtSupport,
-    /// Re-enumerate after FOCUSED sync or InteractionRenderModelsChanged.
-    pub dirty: bool,
-    /// Bumped whenever `models` is rebuilt (GPU upload key).
+    /// Re-enumerate after FOCUSED / InteractionRenderModelsChanged / pending assets.
+    dirty: bool,
+    /// Bumped only when the set of GPU-visible meshes changes.
     pub generation: u64,
     models: Vec<ControllerModel>,
+    last_attempt: Option<Instant>,
 }
 
 impl RenderModelCache {
@@ -78,6 +86,7 @@ impl RenderModelCache {
             dirty: support.enabled,
             generation: 0,
             models: Vec::new(),
+            last_attempt: None,
         }
     }
 
@@ -91,43 +100,71 @@ impl RenderModelCache {
         }
     }
 
-    /// Drop previous models and re-enumerate. Safe no-op when EXTs disabled.
-    /// Bumps `generation` when a refresh attempt runs (even if asset not ready).
-    pub fn refresh_if_dirty<G>(
-        &mut self,
-        session: &xr::Session<G>,
-    ) -> Result<()> {
+    /// Incremental, throttled refresh. Does not tear down working models every frame.
+    pub fn refresh_if_dirty<G>(&mut self, session: &xr::Session<G>) -> Result<()> {
         if !self.support.enabled || !self.dirty {
             return Ok(());
         }
-        self.dirty = false;
+        if let Some(t) = self.last_attempt {
+            if t.elapsed() < RETRY_INTERVAL {
+                return Ok(());
+            }
+        }
+        self.last_attempt = Some(Instant::now());
 
         let instance = session.instance();
         let Some(rm) = instance.exts().ext_render_model.as_ref() else {
+            self.dirty = false;
             return Ok(());
         };
         let Some(irm) = instance.exts().ext_interaction_render_model.as_ref() else {
+            self.dirty = false;
             return Ok(());
         };
 
         let ids = unsafe { enumerate_ids(session, irm)? };
         if ids.is_empty() {
-            log::debug!("XR render models: enumerate returned 0 ids");
-            // Keep polling until the runtime associates devices with actions.
-            self.dirty = true;
+            log::debug!("XR render models: enumerate returned 0 ids (will retry)");
+            // Stay dirty; throttle prevents a spin.
             return Ok(());
         }
 
-        let mut loaded = Vec::new();
+        let want: HashSet<u64> = ids.iter().map(|id| id.into_raw()).collect();
+        let have: HashSet<u64> = self.models.iter().map(|m| m.id.into_raw()).collect();
+
+        if have == want {
+            self.dirty = false;
+            return Ok(());
+        }
+
+        // Drop models the runtime no longer lists.
+        let mut kept = Vec::with_capacity(self.models.len());
+        let mut removed = false;
+        for m in self.models.drain(..) {
+            if want.contains(&m.id.into_raw()) {
+                kept.push(m);
+            } else {
+                m.destroy_handle(instance);
+                removed = true;
+            }
+        }
+        self.models = kept;
+
+        let have_now: HashSet<u64> = self.models.iter().map(|m| m.id.into_raw()).collect();
+        let mut added = false;
         let mut pending = false;
         for id in ids {
+            if have_now.contains(&id.into_raw()) {
+                continue;
+            }
             match unsafe { load_one(session, rm, id) } {
                 Ok(Some(model)) => {
                     log::info!(
                         "XR render model loaded ({} verts)",
                         model.mesh.positions.len()
                     );
-                    loaded.push(model);
+                    self.models.push(model);
+                    added = true;
                 }
                 Ok(None) => {
                     pending = true;
@@ -138,19 +175,15 @@ impl RenderModelCache {
             }
         }
 
-        if pending && loaded.is_empty() {
-            // Nothing ready yet — retry without tearing down GPU meshes.
-            self.dirty = true;
-            return Ok(());
+        if added || removed {
+            self.generation = self.generation.wrapping_add(1);
         }
 
-        self.clear(instance);
-        self.models = loaded;
-        self.generation = self.generation.wrapping_add(1);
         if pending {
-            // Partial load: show what we have, keep refreshing for the rest.
+            // Keep retrying for unavailable assets; do not rebuild what we already have.
             self.dirty = true;
         } else {
+            self.dirty = false;
             log::info!("XR render models: {} ready", self.models.len());
         }
         Ok(())
@@ -159,15 +192,14 @@ impl RenderModelCache {
     pub fn clear(&mut self, instance: &xr::Instance) {
         for m in self.models.drain(..) {
             m.destroy_handle(instance);
-            // space dropped here
             drop(m.space);
         }
+        self.generation = self.generation.wrapping_add(1);
     }
 }
 
 impl Drop for RenderModelCache {
     fn drop(&mut self) {
-        // Handles may already be invalid if session/instance are gone; best-effort skip.
         // Callers should `clear` before destroying the session when possible.
         self.models.clear();
     }
@@ -283,7 +315,8 @@ unsafe fn load_one<G>(
         render_model: handle,
     };
     let mut space_handle = sys::Space::NULL;
-    let r = unsafe { (rm.create_render_model_space)(session.as_raw(), &space_info, &mut space_handle) };
+    let r =
+        unsafe { (rm.create_render_model_space)(session.as_raw(), &space_info, &mut space_handle) };
     if r.into_raw() < 0 {
         unsafe {
             let _ = (rm.destroy_render_model)(handle);
