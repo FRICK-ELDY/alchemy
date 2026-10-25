@@ -1,10 +1,13 @@
-//! system_ui — retained Canvas dash (Desktop overlay; VR quad later).
+//! system_ui — personal DashRoot + retained Canvas (x000f Facet vocabulary).
 //!
-//! Guarantees: ESC toggle, hit-tested chrome, client exit action plumbing,
-//! Settings shows default max speed (read-only).
-//! Non-guarantees: OpenXR menu button, virtual keyboard edit, mic/sync real control.
+//! Guarantees: ESC/Menu toggle (via surface), hit-tested chrome, Exit Pinned Facet,
+//! Button hover/press color, client exit action plumbing, Settings defaults (read-only).
+//! Dash is personal — never published on Room `frame`.
+//! Non-guarantees: OpenXR types inside this module, user Facet rearrange, Vault layout
+//! persist, WorldRoot, virtual keyboard edit, mic/sync real control.
 
 mod dash;
+pub mod facet;
 mod font;
 mod gpu;
 mod icons;
@@ -67,7 +70,41 @@ impl SystemUi {
 
     pub fn toggle(&mut self) {
         self.state.open = !self.state.open;
+        if !self.state.open {
+            self.state.hover = None;
+            self.state.pressed = None;
+        }
         self.rebuild();
+    }
+
+    /// Pointer / laser UV in canvas pixels. `primary_down` = mouse LMB or XR Select.
+    /// Surfaces pass coordinates only — this module does not know OpenXR / winit.
+    pub fn on_pointer(&mut self, px: f32, py: f32, primary_down: bool) {
+        if !self.state.open {
+            if self.state.hover.is_some() || self.state.pressed.is_some() {
+                self.state.hover = None;
+                self.state.pressed = None;
+                self.rebuild();
+            }
+            return;
+        }
+        let hit = self.tree.hit_test(px, py);
+        let pressed = if primary_down { hit } else { None };
+        if hit != self.state.hover || pressed != self.state.pressed {
+            self.state.hover = hit;
+            self.state.pressed = pressed;
+            self.rebuild();
+        }
+    }
+
+    pub fn clear_pointer(&mut self) {
+        if self.state.hover.is_some() || self.state.pressed.is_some() {
+            self.state.hover = None;
+            self.state.pressed = None;
+            if self.state.open {
+                self.rebuild();
+            }
+        }
     }
 
     pub fn set_time_now(&mut self) {
@@ -108,6 +145,7 @@ impl SystemUi {
         if !self.state.open {
             return UiAction::None;
         }
+        // Hit against current tree (hover rebuild already applied this frame when wired).
         match self.tree.hit_test(px, py) {
             Some(WidgetId::TabExit) | Some(WidgetId::CloseSession) => {
                 self.state.tab = DashTab::Exit;
@@ -219,4 +257,32 @@ fn chrono_lite_now() -> String {
     let m = (s % 3600) / 60;
     let sec = s % 60;
     format!("{h:02}:{m:02}:{sec:02}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn on_pointer_sets_hover_on_open_dash() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        let (id, rect) = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(w, _)| *w == WidgetId::ExitClientOnly)
+            .copied()
+            .expect("exit hit");
+        ui.on_pointer(rect.x + 1.0, rect.y + 1.0, false);
+        assert_eq!(ui.state.hover, Some(id));
+        ui.on_pointer(rect.x + 1.0, rect.y + 1.0, true);
+        assert_eq!(ui.state.pressed, Some(id));
+        ui.clear_pointer();
+        assert_eq!(ui.state.hover, None);
+        assert_eq!(ui.state.pressed, None);
+    }
 }

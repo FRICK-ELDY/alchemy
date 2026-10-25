@@ -35,13 +35,13 @@
 | 保証する | 保証しない |
 |:---|:---|
 | ダッシュ open 時、右→左 aim の 1 本レーザーを投影に描画 | 両ハンド同時・ダッシュ閉時のワールドポインタ |
-| ダッシュ UI も同一投影（αブレンド）。ビームは平面手前で停止 | CompositionLayerQuad ダッシュ・ホバーハイライト |
+| ダッシュ UI も同一投影（αブレンド）。ビームは平面手前で停止 | CompositionLayerQuad ダッシュ・ホバーハイライト（→ [x000f](x000f-dash-facet-minimal.md)） |
 | 既存 Select→Exit 経路を壊さない | UI 解像度／シャープネスの Composition 層並み保証 |
 | WSL CI / Desktop 回帰（smoke） | WSL 実 HMD |
 
 ## やらない（後続）
 
-- UI ホバーハイライト
+- UI ホバーハイライト / Dash Facet → [x000f](x000f-dash-facet-minimal.md)
 - ダッシュ閉時のワールドレーザー / Grab
 - system_ui への XR 知識流入
 

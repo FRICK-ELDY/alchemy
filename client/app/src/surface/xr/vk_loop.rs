@@ -744,6 +744,27 @@ pub fn run_openxr(
                 laser_model(aim_pos, aim_orient, len)
             });
 
+            // Hover/press before rasterize so Button colors land on this frame's canvas.
+            let select_down_for_ui = select_action.state(&session, xr::Path::NULL)?.current_state;
+            if ui.state.open {
+                if let Some((aim_pos, aim_orient)) = aim_for_ui {
+                    let ray = pose_to_ray(aim_pos, aim_orient);
+                    if let Some((px, py)) = ray_hit_dash_quad(
+                        head_pos,
+                        head_orient,
+                        ray,
+                        UI_CANVAS_W as f32,
+                        UI_CANVAS_H as f32,
+                    ) {
+                        ui.on_pointer(px, py, select_down_for_ui);
+                    } else {
+                        ui.clear_pointer();
+                    }
+                } else {
+                    ui.clear_pointer();
+                }
+            }
+
             let dash_ui_model = if ui.state.open {
                 ui.prepare_cpu_canvas();
                 if let Some((pixels, cw, ch)) = ui.canvas_rgba() {
@@ -931,8 +952,7 @@ pub fn run_openxr(
             sc.handle.release_image()?;
 
             // ---- select UI (CPU); menu + canvas already applied above ----
-            let select_down = select_action.state(&session, xr::Path::NULL)?.current_state;
-            if select_down && !select_was_down {
+            if select_down_for_ui && !select_was_down {
                 if let Some((aim_pos, aim_orient)) = aim_for_ui {
                     let ray = pose_to_ray(aim_pos, aim_orient);
                     if let Some((px, py)) = ray_hit_dash_quad(
@@ -959,7 +979,7 @@ pub fn run_openxr(
                     }
                 }
             }
-            select_was_down = select_down;
+            select_was_down = select_down_for_ui;
 
             let _ = &mesh;
             if frame_i == 0 {

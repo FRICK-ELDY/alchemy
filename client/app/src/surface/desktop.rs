@@ -1,5 +1,6 @@
 //! Desktop winit + wgpu surface (ESC dash + x0009 Noclip intent).
 //!
+//! Guarantees: canvas-pixel pointer → system_ui `on_pointer` (hover/press) + click.
 //! Mouse look / Pointer Lock are deferred (WSL grab unreliable).
 //! Camera uses fixed default look; WASD are world-forward relative to yaw=0.
 
@@ -121,6 +122,7 @@ struct App {
     ui: SystemUi,
     zenoh: Option<zenoh::Session>,
     cursor: (f64, f64),
+    primary_down: bool,
     keys_down: HashSet<KeyCode>,
 }
 
@@ -235,16 +237,31 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x, position.y);
+                if self.ui.state.open {
+                    self.ui.on_pointer(
+                        self.cursor.0 as f32,
+                        self.cursor.1 as f32,
+                        self.primary_down,
+                    );
+                }
             }
             WindowEvent::MouseInput {
-                state: ElementState::Pressed,
+                state,
                 button: MouseButton::Left,
                 ..
             } => {
+                self.primary_down = state == ElementState::Pressed;
                 // Dash UI hit-test only (no mouse look / grab).
                 if self.ui.state.open {
-                    let action = self.ui.on_click(self.cursor.0 as f32, self.cursor.1 as f32);
-                    handle_ui_action(action, self.zenoh.as_ref(), event_loop);
+                    self.ui.on_pointer(
+                        self.cursor.0 as f32,
+                        self.cursor.1 as f32,
+                        self.primary_down,
+                    );
+                    if self.primary_down {
+                        let action = self.ui.on_click(self.cursor.0 as f32, self.cursor.1 as f32);
+                        handle_ui_action(action, self.zenoh.as_ref(), event_loop);
+                    }
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -316,6 +333,7 @@ pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session
         ui: SystemUi::new(),
         zenoh,
         cursor: (0.0, 0.0),
+        primary_down: false,
         keys_down: HashSet::new(),
     };
     event_loop.run_app(&mut app)?;

@@ -14,5 +14,5 @@ echo "== protocol host_control key =="
 cd "$ROOT/protocol"
 cargo test key_helpers -- --nocapture
 
-echo "OK: Slice E compile/smoke gate passed."
-echo "Manual: Esc opens dash; Exit client only / Exit client + host (ALCHEMY_HOST_PID or host_control)."
+echo "OK: system_ui / Dash Facet (x000f) compile/smoke gate passed."
+echo "Manual: Esc opens dash; hover lightens buttons; Exit client only / Exit client + host (ALCHEMY_HOST_PID or host_control)."
