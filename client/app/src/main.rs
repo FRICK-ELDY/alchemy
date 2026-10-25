@@ -1,7 +1,8 @@
-//! Alchemy client — x0015 Presence slots + Grab / Noclip / OpenXR dash/Exit.
+//! Alchemy client — x0017 ROOM_ID Zenoh keys + Presence / Grab / Noclip / OpenXR dash.
 //!
 //! Guarantees:
 //! - Subscribes to SceneManifest / PresenceState / RenderFrame; downloads blob; wgpu mesh
+//! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
 //! - Desktop WASD/Space/C → Intent (mouse-look yaw); Confined look; RMB Grab (look ray)
 //! - OpenXR thumbstick (aim-relative, L+R add) → same Intent path
 //! - Camera follows Presence-assigned local user_root; remotes as colored boxes
@@ -9,7 +10,7 @@
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
 //! - `ZENOH_CONNECT` for LAN
 //!
-//! Non-guarantees: Steal, rotation follow, throw, slot reclaim, Quest standalone, WSL HMD
+//! Non-guarantees: Steal, rotation follow, throw, Quest standalone, WSL HMD
 
 mod host_control;
 mod jwt_sub;
@@ -30,8 +31,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alchemy_protocol::{
-    InputEvent, Message, PresenceState, RenderFrame, SceneManifest, FRAME_KEY_LOCAL,
-    INPUT_KEY_LOCAL, MANIFEST_KEY_LOCAL, PRESENCE_KEY_LOCAL, PROTOCOL_PIN,
+    frame_key, input_key, manifest_key, presence_key, validate_room_id, InputEvent, Message,
+    PresenceState, RenderFrame, SceneManifest, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, COIN_BLAKE3_HEX};
@@ -183,11 +184,12 @@ fn client_time_ms() -> u64 {
 
 fn spawn_manifest_subscriber(
     session: zenoh::Session,
+    key: String,
     shared: Arc<SharedState>,
     blake3_tx: mpsc::SyncSender<String>,
 ) -> Result<()> {
     let subscriber = session
-        .declare_subscriber(MANIFEST_KEY_LOCAL)
+        .declare_subscriber(key.clone())
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_subscriber manifest failed: {e}"))?;
 
@@ -195,7 +197,7 @@ fn spawn_manifest_subscriber(
         .name("zenoh-manifest".into())
         .spawn(move || {
             let _session = session;
-            log::info!("subscribed to {MANIFEST_KEY_LOCAL}");
+            log::info!("subscribed to {key}");
             let mut sent_blake3 = false;
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
@@ -236,9 +238,13 @@ fn spawn_manifest_subscriber(
     Ok(())
 }
 
-fn spawn_frame_subscriber(session: zenoh::Session, shared: Arc<SharedState>) -> Result<()> {
+fn spawn_frame_subscriber(
+    session: zenoh::Session,
+    key: String,
+    shared: Arc<SharedState>,
+) -> Result<()> {
     let subscriber = session
-        .declare_subscriber(FRAME_KEY_LOCAL)
+        .declare_subscriber(key.clone())
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_subscriber frame failed: {e}"))?;
 
@@ -246,7 +252,7 @@ fn spawn_frame_subscriber(session: zenoh::Session, shared: Arc<SharedState>) -> 
         .name("zenoh-frame".into())
         .spawn(move || {
             let _session = session;
-            log::info!("subscribed to {FRAME_KEY_LOCAL} (delta upserts/removes)");
+            log::info!("subscribed to {key} (delta upserts/removes)");
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = bytes.to_bytes();
@@ -282,11 +288,12 @@ fn spawn_frame_subscriber(session: zenoh::Session, shared: Arc<SharedState>) -> 
 
 fn spawn_presence_subscriber(
     session: zenoh::Session,
+    key: String,
     shared: Arc<SharedState>,
     local_sub: String,
 ) -> Result<()> {
     let subscriber = session
-        .declare_subscriber(PRESENCE_KEY_LOCAL)
+        .declare_subscriber(key.clone())
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_subscriber presence failed: {e}"))?;
 
@@ -294,7 +301,7 @@ fn spawn_presence_subscriber(
         .name("zenoh-presence".into())
         .spawn(move || {
             let _session = session;
-            log::info!("subscribed to {PRESENCE_KEY_LOCAL} (sub={local_sub})");
+            log::info!("subscribed to {key} (sub={local_sub})");
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = bytes.to_bytes();
@@ -337,11 +344,12 @@ fn spawn_presence_subscriber(
 
 fn spawn_input_publisher(
     session: zenoh::Session,
+    key: String,
     room_token: String,
     shared: Arc<SharedState>,
 ) -> Result<()> {
     let publisher = session
-        .declare_publisher(INPUT_KEY_LOCAL)
+        .declare_publisher(key.clone())
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_publisher input failed: {e}"))?;
 
@@ -349,7 +357,7 @@ fn spawn_input_publisher(
         .name("zenoh-input-pub".into())
         .spawn(move || {
             let _session = session;
-            log::info!("publishing InputEvent intent to {INPUT_KEY_LOCAL} @ {INPUT_HZ}Hz");
+            log::info!("publishing InputEvent intent to {key} @ {INPUT_HZ}Hz");
             let period = Duration::from_nanos(1_000_000_000 / INPUT_HZ);
             let mut next = Instant::now();
             loop {
@@ -402,13 +410,21 @@ fn main() -> Result<()> {
     let world_url = std::env::var("WORLD_URL").unwrap_or_else(|_| DEFAULT_WORLD_URL.to_string());
     let auth_url = std::env::var("AUTH_URL").unwrap_or_else(|_| DEFAULT_AUTH_URL.to_string());
     let assets_url = std::env::var("ASSETS_URL").unwrap_or_else(|_| DEFAULT_ASSETS_URL.to_string());
-    let room_id = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
+    let room_id_raw = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
+    let room_id = validate_room_id(&room_id_raw)
+        .map_err(|e| anyhow::anyhow!("invalid ROOM_ID={room_id_raw:?}: {e}"))?
+        .to_string();
     let auth_user = std::env::var("AUTH_USER").unwrap_or_else(|_| DEFAULT_AUTH_USER.to_string());
     let fallback_blake3 =
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
+    let manifest_key_expr = manifest_key(&room_id);
+    let frame_key_expr = frame_key(&room_id);
+    let input_key_expr = input_key(&room_id);
+    let presence_key_expr = presence_key(&room_id);
+
     log::info!(
-        "client x0016 starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} presence={PRESENCE_KEY_LOCAL} auth_user={auth_user}"
+        "client x0017 starting; protocol_pin={PROTOCOL_PIN} room={room_id} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr} auth_user={auth_user}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
@@ -420,6 +436,7 @@ fn main() -> Result<()> {
 
     let shared = Arc::new(SharedState {
         local_user_root: AtomicU32::new(LOCAL_USER_ROOT_UNSET),
+        room_id: Arc::<str>::from(room_id),
         entities: Mutex::new(HashMap::new()),
         look: Mutex::new(Default::default()),
         intent: Mutex::new(Default::default()),
@@ -427,10 +444,25 @@ fn main() -> Result<()> {
     let (blake3_tx, blake3_rx) = mpsc::sync_channel::<String>(1);
 
     let session = open_zenoh().context("open zenoh session")?;
-    spawn_manifest_subscriber(session.clone(), Arc::clone(&shared), blake3_tx)?;
-    spawn_presence_subscriber(session.clone(), Arc::clone(&shared), local_sub)?;
-    spawn_frame_subscriber(session.clone(), Arc::clone(&shared))?;
-    spawn_input_publisher(session.clone(), room_token, Arc::clone(&shared))?;
+    spawn_manifest_subscriber(
+        session.clone(),
+        manifest_key_expr,
+        Arc::clone(&shared),
+        blake3_tx,
+    )?;
+    spawn_presence_subscriber(
+        session.clone(),
+        presence_key_expr,
+        Arc::clone(&shared),
+        local_sub,
+    )?;
+    spawn_frame_subscriber(session.clone(), frame_key_expr, Arc::clone(&shared))?;
+    spawn_input_publisher(
+        session.clone(),
+        input_key_expr,
+        room_token,
+        Arc::clone(&shared),
+    )?;
 
     let blob_blake3 = match blake3_rx.recv_timeout(MANIFEST_WAIT) {
         Ok(hex) => {

@@ -1,18 +1,18 @@
 //! Host shutdown stub (Slice E). Isolated from system_ui layout knowledge.
 //!
-//! Guarantees: best-effort stop of local host via PID or Zenoh control key.
+//! Guarantees: best-effort stop of local host via PID or Zenoh control key (room-scoped; x0017).
 //! Non-guarantees: remote hosts, multi-host, launcher-managed lifecycle.
 
-use alchemy_protocol::{HOST_CONTROL_KEY_LOCAL, HOST_CONTROL_SHUTDOWN};
+use alchemy_protocol::{host_control_key, HOST_CONTROL_SHUTDOWN};
 use anyhow::Result;
 use zenoh::Wait;
 
 /// Try `ALCHEMY_HOST_PID` SIGTERM (Unix), else publish `shutdown` on host_control.
-pub fn request_host_shutdown(session: &zenoh::Session) {
+pub fn request_host_shutdown(session: &zenoh::Session, room_id: &str) {
     if try_kill_host_pid() {
         return;
     }
-    if let Err(err) = publish_shutdown(session) {
+    if let Err(err) = publish_shutdown(session, room_id) {
         log::warn!("host_control publish failed: {err:#}");
     }
 }
@@ -49,15 +49,16 @@ fn try_kill_host_pid() -> bool {
     }
 }
 
-fn publish_shutdown(session: &zenoh::Session) -> Result<()> {
+fn publish_shutdown(session: &zenoh::Session, room_id: &str) -> Result<()> {
+    let key = host_control_key(room_id);
     let publisher = session
-        .declare_publisher(HOST_CONTROL_KEY_LOCAL)
+        .declare_publisher(key.as_str())
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_publisher host_control: {e}"))?;
     publisher
         .put(HOST_CONTROL_SHUTDOWN)
         .wait()
         .map_err(|e| anyhow::anyhow!("host_control put: {e}"))?;
-    log::info!("published shutdown on {HOST_CONTROL_KEY_LOCAL}");
+    log::info!("published shutdown on {key}");
     Ok(())
 }

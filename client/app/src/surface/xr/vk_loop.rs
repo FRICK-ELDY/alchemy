@@ -1114,7 +1114,7 @@ pub fn run_openxr(
                             UiAction::ExitClientAndHost => {
                                 log::info!("XR UI: exit client + host stub");
                                 if let Some(ref z) = zenoh {
-                                    host_control::request_host_shutdown(z);
+                                    host_control::request_host_shutdown(z, shared.room_id.as_ref());
                                 }
                                 exit_requested = true;
                             }

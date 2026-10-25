@@ -1,7 +1,7 @@
 # protocol（alchemy-protocol）
 
 > **正本**: [`protocol/`](../../../protocol/)  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.7.0-x0016`
+> **PROTOCOL_PIN**: `alchemy-protocol/0.8.0-x0017`
 
 ## 置き場の方針
 
@@ -17,7 +17,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | `PROTOCOL_PIN` による世代識別 | フル DrawCommand 体系 |
 | f64 空間座標（描画境界） | audio / tracking |
 | `InputEvent.room_token` フィールドの存在 | Token の署名検証（host-server / world-server の責務） |
-| Manifest / frame / presence のキー式ヘルパ | world-server 署名付き Manifest |
+| Manifest / frame / presence / host_control のキー式ヘルパ + `validate_room_id`（x0017） | world-server 署名付き Manifest・テナント名前空間 |
 | `LocomotionConfig`（World 定義の active mode） | モジュール一覧 UI / 抑制ソース |
 | `DEFAULT_MOVE_SPEED`（host / Settings 表示の共有既定） | client 永続設定・仮想キーボード編集 |
 | `PresenceState`（`sub`→user_root entity） | 明示 Leave / 5 人以上の動的スケール（解放は host Intent TTL・x0016） |
@@ -55,7 +55,10 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - client は自 Room Token の `sub`（payload 読み取りのみ）で `entity_id` を解決
 - host は Intent 無音 TTL（3s）でスロット解放し `revision` を bump（ワイヤ追加なし・x0016）
 
-## キー式ヘルパ
+## キー式ヘルパ（x0017: `ROOM_ID` 本配線）
+
+式: `alchemy/dev/room/{room_id}/{manifest|frame|input|presence|host_control}`。  
+`*_KEY_LOCAL` は `room_id=local` の別名。host/client は env `ROOM_ID`（既定 `local`）を `validate_room_id` してから `*_key` で declare する。
 
 | 定数 / 関数 | 既定 |
 |:---|:---|
@@ -63,3 +66,5 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | `FRAME_KEY_LOCAL` / `frame_key(room_id)` | `alchemy/dev/room/local/frame` |
 | `INPUT_KEY_LOCAL` / `input_key(room_id)` | `alchemy/dev/room/local/input` |
 | `PRESENCE_KEY_LOCAL` / `presence_key(room_id)` | `alchemy/dev/room/local/presence` |
+| `HOST_CONTROL_KEY_LOCAL` / `host_control_key(room_id)` | `alchemy/dev/room/local/host_control` |
+| `validate_room_id` | 非空・`/` なし・ASCII 印刷可能 |
