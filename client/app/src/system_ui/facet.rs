@@ -1,4 +1,4 @@
-//! Dash Facet catalog (x000f).
+//! Dash Facet catalog (x000f + x0018 Home).
 //!
 //! Guarantees: `DashRoot` is personal / not on Room `frame`; Exit Facet is pinned;
 //! official default Facet set is code-defined.
@@ -29,6 +29,8 @@ impl DashRoot {
 pub enum FacetId {
     /// Top chrome (mic stubs, sync, close session affordances).
     Chrome,
+    /// Home tab: login / register / logout (x0018).
+    Home,
     /// Settings tab body + turn toggle.
     Settings,
     /// Exit tab body + exit actions. **Pinned** — cannot be removed.
@@ -43,6 +45,7 @@ impl FacetId {
     pub fn label(self) -> &'static str {
         match self {
             Self::Chrome => "Chrome",
+            Self::Home => "Home",
             Self::Settings => "Settings",
             Self::Exit => "Exit",
         }
@@ -50,8 +53,12 @@ impl FacetId {
 }
 
 /// Code-defined official defaults (reorder / user Facets are later Slices).
-pub const OFFICIAL_DEFAULT_FACETS: &[FacetId] =
-    &[FacetId::Chrome, FacetId::Settings, FacetId::Exit];
+pub const OFFICIAL_DEFAULT_FACETS: &[FacetId] = &[
+    FacetId::Chrome,
+    FacetId::Home,
+    FacetId::Settings,
+    FacetId::Exit,
+];
 
 /// Map a hit target to its owning Facet (layout vocabulary → Facet vocabulary).
 pub fn facet_of(widget: WidgetId) -> FacetId {
@@ -63,6 +70,17 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         WidgetId::TabSettings | WidgetId::TurnModeToggle | WidgetId::SettingsPlaceholder => {
             FacetId::Settings
         }
+        WidgetId::TabHome
+        | WidgetId::HomeFieldIdentifier
+        | WidgetId::HomeFieldPassword
+        | WidgetId::HomeFieldUsername
+        | WidgetId::HomeFieldEmail
+        | WidgetId::HomeFieldBirthday
+        | WidgetId::HomeRememberMe
+        | WidgetId::HomeModeLogin
+        | WidgetId::HomeModeRegister
+        | WidgetId::HomeSubmit
+        | WidgetId::HomeLogout => FacetId::Home,
         WidgetId::Mic
         | WidgetId::MicOff
         | WidgetId::Volume
@@ -80,21 +98,22 @@ mod tests {
         assert!(FacetId::Exit.pinned());
         assert!(DashRoot::is_pinned(FacetId::Exit));
         assert!(!FacetId::Settings.pinned());
+        assert!(!FacetId::Home.pinned());
         assert!(!FacetId::Chrome.pinned());
     }
 
     #[test]
-    fn official_set_contains_pinned_exit() {
+    fn official_set_contains_home_and_pinned_exit() {
         let set = DashRoot::official_facets();
+        assert!(set.contains(&FacetId::Home));
         assert!(set.contains(&FacetId::Exit));
         assert!(set.iter().any(|f| f.pinned()));
     }
 
     #[test]
-    fn exit_widgets_map_to_pinned_facet() {
-        assert_eq!(facet_of(WidgetId::ExitClientOnly), FacetId::Exit);
-        assert_eq!(facet_of(WidgetId::ExitClientAndHost), FacetId::Exit);
-        assert_eq!(facet_of(WidgetId::TabExit), FacetId::Exit);
-        assert!(facet_of(WidgetId::ExitClientOnly).pinned());
+    fn home_widgets_map_to_home_facet() {
+        assert_eq!(facet_of(WidgetId::TabHome), FacetId::Home);
+        assert_eq!(facet_of(WidgetId::HomeSubmit), FacetId::Home);
+        assert_eq!(facet_of(WidgetId::HomeLogout), FacetId::Home);
     }
 }

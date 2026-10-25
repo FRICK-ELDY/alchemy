@@ -1,10 +1,11 @@
-//! system_ui — personal DashRoot + retained Canvas (x000f Facet vocabulary).
+//! system_ui — personal DashRoot + retained Canvas (x000f + x0018 Home).
 //!
 //! Guarantees: ESC/Menu toggle (via surface), hit-tested chrome, Exit Pinned Facet,
-//! Button hover/press color, client exit action plumbing, Settings defaults (read-only).
+//! Home tab account form (Desktop text input), Button hover/press color,
+//! client exit / auth action plumbing, Settings defaults (read-only).
 //! Dash is personal — never published on Room `frame`.
 //! Non-guarantees: OpenXR types inside this module, user Facet rearrange, Vault layout
-//! persist, WorldRoot, virtual keyboard edit, mic/sync real control.
+//! persist, WorldRoot, XR virtual keyboard, auth HTTP (surface / auth module).
 
 mod dash;
 pub mod facet;
@@ -13,7 +14,7 @@ mod gpu;
 mod icons;
 mod layout;
 
-pub use dash::{DashState, DashTab};
+pub use dash::{DashState, DashTab, HomeField, HomeMode};
 pub use gpu::UiGpu;
 pub use layout::{LayoutTree, WidgetId};
 
@@ -157,6 +158,11 @@ impl SystemUi {
                 self.rebuild();
                 UiAction::None
             }
+            Some(WidgetId::TabHome) => {
+                self.state.tab = DashTab::Home;
+                self.rebuild();
+                UiAction::None
+            }
             Some(WidgetId::ExitClientOnly) => UiAction::ExitClientOnly,
             Some(WidgetId::ExitClientAndHost) => UiAction::ExitClientAndHost,
             Some(WidgetId::TurnModeToggle) => {
@@ -165,6 +171,53 @@ impl SystemUi {
                 log::info!("turn mode → {}", self.state.turn.mode.label());
                 UiAction::None
             }
+            Some(WidgetId::HomeFieldIdentifier) => {
+                self.state.home_focus = Some(HomeField::Identifier);
+                self.rebuild();
+                UiAction::None
+            }
+            Some(WidgetId::HomeFieldPassword) => {
+                self.state.home_focus = Some(HomeField::Password);
+                self.rebuild();
+                UiAction::None
+            }
+            Some(WidgetId::HomeFieldUsername) => {
+                self.state.home_focus = Some(HomeField::Username);
+                self.rebuild();
+                UiAction::None
+            }
+            Some(WidgetId::HomeFieldEmail) => {
+                self.state.home_focus = Some(HomeField::Email);
+                self.rebuild();
+                UiAction::None
+            }
+            Some(WidgetId::HomeFieldBirthday) => {
+                self.state.home_focus = Some(HomeField::Birthday);
+                self.rebuild();
+                UiAction::None
+            }
+            Some(WidgetId::HomeRememberMe) => {
+                self.state.home_remember_me = !self.state.home_remember_me;
+                self.rebuild();
+                UiAction::None
+            }
+            Some(WidgetId::HomeModeLogin) => {
+                self.state.home_mode = HomeMode::Login;
+                self.state.home_focus = Some(HomeField::Identifier);
+                self.rebuild();
+                UiAction::None
+            }
+            Some(WidgetId::HomeModeRegister) => {
+                self.state.home_mode = HomeMode::Register;
+                self.state.home_focus = Some(HomeField::Username);
+                self.rebuild();
+                UiAction::None
+            }
+            Some(WidgetId::HomeSubmit) => match self.state.home_mode {
+                HomeMode::Login => UiAction::AuthLogin,
+                HomeMode::Register => UiAction::AuthRegister,
+            },
+            Some(WidgetId::HomeLogout) => UiAction::AuthLogout,
             Some(WidgetId::Mic)
             | Some(WidgetId::MicOff)
             | Some(WidgetId::Volume)
@@ -175,6 +228,48 @@ impl SystemUi {
                 UiAction::None
             }
             None => UiAction::None,
+        }
+    }
+
+    /// Desktop text into focused Home field (ignored when dash closed / not Home).
+    pub fn on_text_input(&mut self, text: &str) {
+        if !self.state.open
+            || self.state.tab != DashTab::Home
+            || self.state.home_logged_in_as.is_some()
+        {
+            return;
+        }
+        self.state.append_home_text(text);
+        self.rebuild();
+    }
+
+    pub fn on_home_backspace(&mut self) {
+        if !self.state.open || self.state.tab != DashTab::Home {
+            return;
+        }
+        self.state.home_backspace();
+        self.rebuild();
+    }
+
+    pub fn on_home_tab_key(&mut self) {
+        if !self.state.open || self.state.tab != DashTab::Home {
+            return;
+        }
+        self.state.cycle_home_focus();
+        self.rebuild();
+    }
+
+    /// Enter on Home submits login/register when not signed in.
+    pub fn on_home_enter(&mut self) -> UiAction {
+        if !self.state.open
+            || self.state.tab != DashTab::Home
+            || self.state.home_logged_in_as.is_some()
+        {
+            return UiAction::None;
+        }
+        match self.state.home_mode {
+            HomeMode::Login => UiAction::AuthLogin,
+            HomeMode::Register => UiAction::AuthRegister,
         }
     }
 
@@ -243,6 +338,12 @@ pub enum UiAction {
     None,
     ExitClientOnly,
     ExitClientAndHost,
+    /// Home tab: POST login then join room (x0018).
+    AuthLogin,
+    /// Home tab: POST register then join room (x0018).
+    AuthRegister,
+    /// Home tab: logout + leave room locally (x0018).
+    AuthLogout,
 }
 
 fn chrono_lite_now() -> String {
@@ -267,6 +368,7 @@ mod tests {
     fn on_pointer_sets_hover_on_open_dash() {
         let mut ui = SystemUi::new();
         ui.state.open = true;
+        ui.state.tab = DashTab::Exit;
         ui.state.canvas_w = 960.0;
         ui.state.canvas_h = 540.0;
         ui.rebuild();
@@ -284,5 +386,23 @@ mod tests {
         ui.clear_pointer();
         assert_eq!(ui.state.hover, None);
         assert_eq!(ui.state.pressed, None);
+    }
+
+    #[test]
+    fn home_tab_has_submit_and_bottom_tab() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.tab = DashTab::Home;
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        assert!(ui.tree.hits.iter().any(|(id, _)| *id == WidgetId::TabHome));
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::HomeSubmit));
+        ui.state.append_home_text("alice");
+        assert_eq!(ui.state.home_identifier, "alice");
     }
 }

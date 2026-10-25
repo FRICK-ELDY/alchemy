@@ -1118,6 +1118,20 @@ pub fn run_openxr(
                                 }
                                 exit_requested = true;
                             }
+                            UiAction::AuthLogin | UiAction::AuthRegister => {
+                                ui.state.home_status =
+                                    "Login/register text entry is Desktop-only (x0018)".into();
+                                ui.rebuild();
+                            }
+                            UiAction::AuthLogout => {
+                                if let Ok(mut gate) = shared.auth.lock() {
+                                    gate.clear_session();
+                                }
+                                shared.leave_room_local();
+                                ui.state.home_logged_in_as = None;
+                                ui.state.home_status = "Signed out".into();
+                                ui.rebuild();
+                            }
                             UiAction::None => {}
                         }
                     }

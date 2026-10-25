@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: x0017（`ROOM_ID` → Zenoh キー本配線・Presence TTL 解放は x0016）
+> **ステータス**: x0018（Home タブ login / logout / 最小 register・`ROOM_ID` キーは x0017）
 
 ## レイアウト
 
@@ -24,13 +24,13 @@
 | Manifest の blake3 → assets download（失敗時 fixture）→ BLAKE3 → wgpu | LOD / KTX2 / マテリアル本格 / スキン |
 | ローカル entity 表への upsert/remove。Coin=1、user_root=3..6、boxes=10..18 | 署名付き Manifest / world 台帳 |
 | Desktop: WASD/Space/C → Intent（look yaw 相対）。クリックで Confined（失敗時 Locked）→ マウスルック。look 中 RMB → Grab（x0013） | 感度 UI / クロスヘア必須 |
-| Presence で自 entity 解決→カメラ；他 root は色付きボックス（x0015）。欠落で unset（x0016）。`AUTH_USER` はログインのみ。`ZENOH_CONNECT` LAN | 明示 Leave・5人以上・アバター GLB |
+| Presence で自 entity 解決→カメラ；他 root は色付きボックス（x0015）。欠落で unset（x0016）。Home タブ login/register/logout（x0018）。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` は CI サイレント login。`ZENOH_CONNECT` LAN | 明示 Leave・5人以上・アバター GLB・XR 文字入力 |
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
 | OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose + 埋め込み baseColor + animatable node） | SteamVR パス直読み／PBR（MR/normal 等）／手トラ |
 | OpenXR: ダッシュ開→UI レーザー；閉→ワールドレーザー＋ Grab hold（squeeze／Select）（x0011） | Steal／回転追従／Facet 並べ替え／WorldRoot／CompositionLayerQuad |
 | auth login → Bearer 付き Room Token → InputEvent（含 grab_entity_id + aim_*） | OSC / Dual Editor / launcher 本実装 |
 | host: Rapier 60Hz + `is_finite` + per-`sub` Intent（最大4）+ Presence + Intent TTL 解放（x0016）+ `ROOM_ID` キー（x0017）+ user_root 3..6 + cuboid×9 + Grab → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk / Steal |
-| ESC（Desktop）/ Menu（OpenXR）ダッシュ・Pinned Exit・Button hover・client 終了・host 終了スタブ。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 |
+| ESC（Desktop）/ Menu（OpenXR）ダッシュ・下タブ Home/Settings/Exit・Pinned Exit・Home アカウント殻（x0018）・Button hover・client 終了・host 終了スタブ。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 / XR 仮想キーボード |
 | OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD・launcher 本実装 |
 
 ## チャネル分離（C-C + E + x0009）
@@ -72,7 +72,8 @@
 - 詳細: [`client/fixtures/README.md`](../../../client/fixtures/README.md)
 - Icons: [`client/app/assets/icons/README.md`](../../../client/app/assets/icons/README.md)
 
-環境変数: `ASSETS_URL`（既定 `:4004`）、任意 `ROOM_ID`（既定 `local`・Zenoh キーと Room Token に反映・x0017）、任意 `ZENOH_CONNECT`（既定 `tcp/127.0.0.1:7447`）、任意 `AUTH_USER` / `AUTH_PASSWORD`（ログインのみ・entity とは無関係）、任意 `ALCHEMY_BLOB_BLAKE3`、任意 `ALCHEMY_HOST_PID`、任意 `ALCHEMY_FORCE_DESKTOP=1`、任意 `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。
+環境変数: `ASSETS_URL`（既定 `:4004`）、任意 `ROOM_ID`（既定 `local`・Zenoh キーと Room Token に反映・x0017）、任意 `ZENOH_CONNECT`（既定 `tcp/127.0.0.1:7447`）、任意 `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（設定時は Home UI をスキップしてサイレント login・x0018）、任意 `ALCHEMY_BLOB_BLAKE3`、任意 `ALCHEMY_HOST_PID`、任意 `ALCHEMY_FORCE_DESKTOP=1`、任意 `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。  
+未設定時は Desktop で Home タブが開き、login/register 後に入室する。
 
 ## 関連
 

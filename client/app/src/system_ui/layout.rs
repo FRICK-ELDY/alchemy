@@ -15,6 +15,7 @@ pub enum WidgetId {
     Hearing,
     SyncBadge,
     CloseSession,
+    TabHome,
     TabExit,
     TabSettings,
     ExitClientOnly,
@@ -22,6 +23,17 @@ pub enum WidgetId {
     SettingsPlaceholder,
     /// Toggle Snap ↔ Smooth comfort turn.
     TurnModeToggle,
+    /// Home / account shell (x0018).
+    HomeFieldIdentifier,
+    HomeFieldPassword,
+    HomeFieldUsername,
+    HomeFieldEmail,
+    HomeFieldBirthday,
+    HomeRememberMe,
+    HomeModeLogin,
+    HomeModeRegister,
+    HomeSubmit,
+    HomeLogout,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -17,6 +17,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
 
+use crate::auth::AuthGate;
 use crate::mesh::CpuMesh;
 
 pub const MESH_ENTITY_ID: u32 = 1;
@@ -135,6 +136,11 @@ pub struct SharedState {
     pub local_user_root: AtomicU32,
     /// `ROOM_ID` used for Zenoh keys (x0017); shared with host_control shutdown publish.
     pub room_id: Arc<str>,
+    pub auth_url: Arc<str>,
+    pub world_url: Arc<str>,
+    pub assets_url: Arc<str>,
+    /// Auth + Room Token gate (x0018). Intent publishes only when `room_token` is set.
+    pub auth: Mutex<AuthGate>,
     pub entities: Mutex<std::collections::HashMap<u32, EntityPose>>,
     pub look: Mutex<CameraLook>,
     pub intent: Mutex<MoveIntent>,
@@ -146,7 +152,21 @@ impl SharedState {
     }
 
     pub fn set_local_user_root(&self, entity_id: u32) {
-        self.local_user_root.store(entity_id, Ordering::Relaxed);
+        self.local_user_root.store(entity_id, Ordering::Relaxed)
+    }
+
+    pub fn leave_room_local(&self) {
+        self.set_local_user_root(LOCAL_USER_ROOT_UNSET);
+        if let Ok(mut intent) = self.intent.lock() {
+            *intent = MoveIntent {
+                suppress: intent.suppress,
+                ..Default::default()
+            };
+        }
+        if let Ok(mut auth) = self.auth.lock() {
+            auth.room_token = None;
+            auth.local_sub = None;
+        }
     }
 }
 
