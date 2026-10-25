@@ -101,7 +101,7 @@ bash .scripts/smoke-system-ui.sh       # system_ui unit + host_control コンパ
 bash .scripts/smoke-openxr.sh          # OpenXR モジュール unit + Desktop フォールバック compile
 bash .scripts/smoke-desktop-noclip.sh  # Manifest Noclip + user_root（zenohd + auth/world 必須）
 # ESC ダッシュ: client 起動後 Esc。WASD+Space+C で Noclip（マウスルックは後続）。
-# XR: SteamVR + Menu。親指スティックで Noclip（aim 相対）。Settings に既定 max speed 表示。
+# XR: SteamVR 2.12+ + Menu。親指スティック Noclip。コントローラは XR_EXT_render_model（ランタイム GLB）。
 # client+host 終了は ALCHEMY_HOST_PID か host_control。Desktop 強制: ALCHEMY_FORCE_DESKTOP=1
 # OpenXR ローダー明示（Steam が特殊パスのとき）: ALCHEMY_OPENXR_LOADER=D:\...\openxr_loader.dll
 ```

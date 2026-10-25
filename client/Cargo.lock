@@ -210,7 +210,7 @@ version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -923,7 +923,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -1965,7 +1965,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
 dependencies = [
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "pkg-config",
 ]
 
@@ -2010,6 +2010,16 @@ name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
 dependencies = [
  "cfg-if",
  "windows-link",
@@ -2706,21 +2716,20 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "openxr"
-version = "0.19.0"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a2d6934d2508f94fd4cbda6c2a326f111f60ce59fd9136df6d478564397dd40"
+checksum = "53770c8f7d3f185bcb577b78f2ed8e33bbf7cdf5cd57fb68b5ec0b4117b79de6"
 dependencies = [
  "libc",
- "libloading",
- "ndk-context",
+ "libloading 0.9.0",
  "openxr-sys",
 ]
 
 [[package]]
 name = "openxr-sys"
-version = "0.11.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f10e7e38c47f2175fc39363713b656db899fa0b4a14341029702cbdfa6f44d05"
+checksum = "febb5d50cee7b964b69d5b7a810ed9620fc64f41382ffefe05434754c7a48877"
 dependencies = [
  "libc",
 ]
@@ -5288,7 +5297,7 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "log",
  "metal",
  "naga",
@@ -5747,7 +5756,7 @@ dependencies = [
  "as-raw-xcb-connection",
  "gethostname",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "once_cell",
  "rustix 1.1.5",
  "x11rb-protocol",
@@ -6210,7 +6219,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d57f491f63afa7413d68ee68e4de2bc9ce361c4ac89a76d5a0a0e3ca0624e21"
 dependencies = [
  "git-version",
- "libloading",
+ "libloading 0.8.9",
  "serde",
  "stabby",
  "tracing",
@@ -6338,7 +6347,7 @@ dependencies = [
  "humantime",
  "lazy_static",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "pnet_datalink",
  "schemars 1.2.3",
  "serde",

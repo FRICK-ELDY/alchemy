@@ -37,6 +37,11 @@ alwaysApply: true
 
 ## Rust 実装規則
 
+汎用のイディオム・API 設計・エラー方針はプロジェクトスキル
+[`.cursor/skills/rust-best-practices/`](../skills/rust-best-practices/SKILL.md)
+（[BeautifulRust](https://github.com/morganlinton/BeautifulRust) 由来）に従う。
+**本ファイルの Alchemy 固有規則（SoA / zero-copy / 層間インターフェース等）が優先**する。
+
 ### データ指向設計（Data-Oriented Design）
 
 - ホットパスは「型の階層」ではなく **データの並び・アクセスパターン** を先に設計する

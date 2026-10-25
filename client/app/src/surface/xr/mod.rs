@@ -1,12 +1,15 @@
 //! OpenXR surface (SteamVR). Falls back to Desktop on probe/session failure.
 //!
 //! Guarantees: menu toggle, ray click → system_ui UiAction, Exit ends session,
-//! thumbstick Noclip Intent (aim-relative), comfort turn (snap/smooth), checker floor.
-//! Non-guarantees: WSL HMD, Quest standalone, Vive trackpad-only, Coin mesh in XR.
+//! thumbstick Noclip Intent (aim-relative), comfort turn (snap/smooth), checker floor,
+//! XR_EXT_render_model controllers when runtime supports them (SteamVR 2.12+).
+//! Non-guarantees: WSL HMD, Quest standalone, Vive trackpad-only, Coin mesh in XR,
+//! controller textures / animatable nodes, SteamVR rendermodels path loading.
 
 mod input;
 mod loader;
 mod loco;
+mod render_model;
 mod vk_loop;
 
 use anyhow::{bail, Context, Result};
@@ -38,6 +41,7 @@ pub fn probe() -> Result<bool> {
             },
             &enabled,
             &[],
+            &(),
         )
         .context("create OpenXR instance (probe)")?;
     match instance.system(openxr::FormFactor::HEAD_MOUNTED_DISPLAY) {
