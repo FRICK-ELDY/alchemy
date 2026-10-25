@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# x000b–x000e: OpenXR render models + laser + loco tests + compile.
+# x000b–x0010: OpenXR render models + laser + grabbable box hit + loco tests + compile.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/client"
@@ -10,9 +10,10 @@ ALCHEMY_FORCE_DESKTOP=1 cargo test -p client -- --nocapture
 echo "== cargo check -p client =="
 ALCHEMY_FORCE_DESKTOP=1 cargo check -p client
 
-echo "OK: OpenXR compile/smoke gate passed (HMD not required; x000e/x000f)."
+echo "OK: OpenXR compile/smoke gate passed (HMD not required; x000e–x0010)."
 echo "Manual (Windows + SteamVR 2.12+): cargo run -p client"
 echo "  Controllers: XR_EXT_render_model GLB; baseColor + animatable nodes (trigger/stick)"
 echo "  Menu toggles dash + cyan aim laser (hover lightens buttons); Select clicks Exit"
+echo "  Dash closed: world laser hits 3x3 grabbable boxes (highlight); Grab hold = x0011"
 echo "  sticks Y=move X=turn; floor"
 echo "Force Desktop: ALCHEMY_FORCE_DESKTOP=1 cargo run -p client"

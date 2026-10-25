@@ -1,7 +1,7 @@
-//! Shared scene GPU (Coin + floor). Surface-agnostic: render into any color+depth views.
+//! Shared scene GPU (Coin + floor + grabbable boxes). Surface-agnostic: render into any color+depth views.
 //!
-//! Guarantees: draw with caller-supplied view/proj.
-//! Non-guarantees: XR swapchain ownership, system_ui layout.
+//! Guarantees: draw with caller-supplied view/proj; boxes 10..18 as unit cubes (x0010).
+//! Non-guarantees: XR swapchain ownership, system_ui layout, Grab hold (x0011).
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -18,16 +18,53 @@ use crate::mesh::CpuMesh;
 pub const MESH_ENTITY_ID: u32 = 1;
 /// Host-authoritative player root (x0009 Noclip camera position).
 pub const USER_ROOT_ENTITY_ID: u32 = 3;
+/// First entity id for the 3×3 grabbable grid (matches host x0010).
+pub const BOX_ENTITY_FIRST: u32 = 10;
+pub const BOX_COUNT: usize = 9;
+/// Half-extent of each cuboid (meters). Matches host `BOX_HALF_EXTENT`.
+pub const BOX_HALF_EXTENT: f32 = 0.25;
 /// Half-extent of Desktop floor (meters). Larger so loco is obvious.
 const FLOOR_EXTENT: f32 = 20.0;
 /// Default eye height if user_root not yet received.
 const DEFAULT_EYE_Y: f32 = 1.6;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct EntityPose {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
+impl Default for EntityPose {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        }
+    }
+}
+
+impl EntityPose {
+    pub fn position(self) -> Vec3 {
+        Vec3::new(self.x, self.y, self.z)
+    }
+
+    pub fn color(self) -> [f32; 4] {
+        [self.r, self.g, self.b, self.a]
+    }
+
+    pub fn is_grabbable_box(id: u32) -> bool {
+        (BOX_ENTITY_FIRST..BOX_ENTITY_FIRST + BOX_COUNT as u32).contains(&id)
+    }
 }
 
 /// Desktop look (client-local). Position comes from host user_root.
@@ -91,6 +128,11 @@ pub struct SceneGpu {
     floor_bind_group: wgpu::BindGroup,
     coin_uniform_buffer: wgpu::Buffer,
     coin_bind_group: wgpu::BindGroup,
+    box_vertex_buffer: wgpu::Buffer,
+    box_index_buffer: wgpu::Buffer,
+    box_index_count: u32,
+    box_uniform_buffer: wgpu::Buffer,
+    box_bind_group: wgpu::BindGroup,
     mesh_radius: f32,
     shared: Arc<SharedState>,
     last_pose_log: Instant,
@@ -227,6 +269,24 @@ impl SceneGpu {
             mapped_at_creation: false,
         });
 
+        let (box_verts, box_indices) = unit_cube_mesh();
+        let box_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("box-vertices"),
+            contents: bytemuck::cast_slice(&box_verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let box_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("box-indices"),
+            contents: bytemuck::cast_slice(&box_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let box_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("box-uniforms"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let floor_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("floor-bg"),
             layout: &bind_group_layout,
@@ -241,6 +301,14 @@ impl SceneGpu {
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: coin_uniform_buffer.as_entire_binding(),
+            }],
+        });
+        let box_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("box-bg"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: box_uniform_buffer.as_entire_binding(),
             }],
         });
 
@@ -259,6 +327,11 @@ impl SceneGpu {
             floor_bind_group,
             coin_uniform_buffer,
             coin_bind_group,
+            box_vertex_buffer,
+            box_index_buffer,
+            box_index_count: box_indices.len() as u32,
+            box_uniform_buffer,
+            box_bind_group,
             mesh_radius: mesh.radius,
             shared,
             last_pose_log: Instant::now(),
@@ -284,6 +357,7 @@ impl SceneGpu {
                 x: 0.0,
                 y: DEFAULT_EYE_Y,
                 z: 6.0,
+                ..Default::default()
             })
     }
 
@@ -398,8 +472,71 @@ impl SceneGpu {
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.index_count, 0, 0..1);
+
+            // Grabbable boxes (x0010): unit cube scaled to 2*BOX_HALF_EXTENT.
+            let boxes: Vec<(u32, EntityPose)> = self
+                .shared
+                .entities
+                .lock()
+                .ok()
+                .map(|m| {
+                    m.iter()
+                        .filter(|(id, _)| EntityPose::is_grabbable_box(**id))
+                        .map(|(id, p)| (*id, *p))
+                        .collect()
+                })
+                .unwrap_or_default();
+            pass.set_vertex_buffer(0, self.box_vertex_buffer.slice(..));
+            pass.set_index_buffer(self.box_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            for (_id, pose) in boxes {
+                let model = Mat4::from_scale_rotation_translation(
+                    Vec3::splat(BOX_HALF_EXTENT * 2.0),
+                    glam::Quat::IDENTITY,
+                    pose.position(),
+                );
+                let box_uniforms = Uniforms {
+                    mvp: (proj * view * model).to_cols_array_2d(),
+                    color: pose.color(),
+                };
+                self.queue.write_buffer(
+                    &self.box_uniform_buffer,
+                    0,
+                    bytemuck::bytes_of(&box_uniforms),
+                );
+                pass.set_bind_group(0, &self.box_bind_group, &[]);
+                pass.draw_indexed(0..self.box_index_count, 0, 0..1);
+            }
         }
     }
+}
+
+/// Axis-aligned unit cube centered at origin (half-extent 0.5 → scale by 2*half).
+fn unit_cube_mesh() -> (Vec<MeshVertex>, Vec<u32>) {
+    let positions = [
+        [-0.5, -0.5, -0.5],
+        [0.5, -0.5, -0.5],
+        [0.5, 0.5, -0.5],
+        [-0.5, 0.5, -0.5],
+        [-0.5, -0.5, 0.5],
+        [0.5, -0.5, 0.5],
+        [0.5, 0.5, 0.5],
+        [-0.5, 0.5, 0.5],
+    ];
+    let indices = [
+        0, 1, 2, 0, 2, 3, // -Z
+        4, 6, 5, 4, 7, 6, // +Z
+        0, 4, 5, 0, 5, 1, // -Y
+        3, 2, 6, 3, 6, 7, // +Y
+        0, 3, 7, 0, 7, 4, // -X
+        1, 5, 6, 1, 6, 2, // +X
+    ];
+    (
+        positions
+            .iter()
+            .map(|p| MeshVertex { position: *p })
+            .collect(),
+        indices.to_vec(),
+    )
 }
 
 pub fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {

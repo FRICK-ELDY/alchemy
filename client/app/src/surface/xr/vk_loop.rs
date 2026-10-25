@@ -17,14 +17,16 @@ use openxr as xr;
 use alchemy_protocol::DEFAULT_MOVE_SPEED;
 
 use super::input::{
-    dash_quad_model, laser_length, laser_model, openxr_pose_to_isometry, pose_to_ray,
-    ray_hit_dash_quad,
+    dash_quad_model, laser_length, laser_length_world, laser_model, openxr_pose_to_isometry,
+    pose_to_ray, ray_hit_dash_quad, ray_hit_grabbable_boxes, Ray,
 };
 use super::loco::{combine_turn_axes, intent_from_sticks, stage_move_to_world, STICK_DEADZONE};
 use super::render_model::{enable_if_available, RenderModelCache};
 use crate::host_control;
 use crate::mesh::{CpuMesh, CpuSubmesh};
-use crate::scene::{MoveIntent, SharedState, MESH_ENTITY_ID, USER_ROOT_ENTITY_ID};
+use crate::scene::{
+    EntityPose, MoveIntent, SharedState, BOX_HALF_EXTENT, MESH_ENTITY_ID, USER_ROOT_ENTITY_ID,
+};
 use crate::system_ui::{SystemUi, UiAction};
 use crate::turn::{update_turn_yaw, TURN_DEADZONE};
 use glam::{Mat4, Quat, Vec3};
@@ -396,7 +398,7 @@ pub fn run_openxr(
         ui.init_cpu_canvas(UI_CANVAS_W, UI_CANVAS_H)?;
         ui.rebuild();
         log::info!(
-            "OpenXR ready — Menu toggles dash, Select+aim laser clicks Exit, thumbstick Noclip, checker floor, render models (x000e laser)"
+            "OpenXR ready — Menu toggles dash, Select+aim laser clicks Exit, thumbstick Noclip, checker floor, grabbable boxes + world laser when dash closed (x0010)"
         );
 
         let mut swapchain: Option<Swapchain> = None;
@@ -457,7 +459,18 @@ pub fn run_openxr(
             &mesh_pipe,
             &laser_beam_submesh(),
         )?;
-        log::info!("XR UI laser mesh ready (dash-open aim beam)");
+        log::info!("XR UI laser mesh ready (dash + world aim beam)");
+
+        let box_gpu = upload_gpu_submesh(
+            &vk_instance,
+            vk_physical_device,
+            &vk_device,
+            queue,
+            cmd_pool,
+            &mesh_pipe,
+            &unit_cube_submesh(),
+        )?;
+        log::info!("XR grabbable box mesh ready (entity 10..18)");
 
         let mut event_storage = xr::EventDataBuffer::new();
         let mut session_running = false;
@@ -700,16 +713,29 @@ pub fn run_openxr(
                 .lock()
                 .ok()
                 .and_then(|m| m.get(&USER_ROOT_ENTITY_ID).copied())
-                .unwrap_or(crate::scene::EntityPose {
+                .unwrap_or(EntityPose {
                     x: 0.0,
                     y: DEFAULT_EYE_Y,
                     z: 6.0,
+                    ..Default::default()
                 });
             let yaw_q = Quat::from_rotation_y(view_yaw);
             let floor_model = Mat4::from_rotation_translation(
                 yaw_q,
                 yaw_q * Vec3::new(-user_root.x, -user_root.y, -user_root.z),
             );
+
+            let grabbable_boxes: Vec<(u32, EntityPose)> = shared
+                .entities
+                .lock()
+                .ok()
+                .map(|m| {
+                    m.iter()
+                        .filter(|(id, _)| EntityPose::is_grabbable_box(**id))
+                        .map(|(id, p)| (*id, *p))
+                        .collect()
+                })
+                .unwrap_or_default();
 
             // Menu before canvas upload so open/close applies this frame.
             let menu_down = menu_action.state(&session, xr::Path::NULL)?.current_state;
@@ -719,35 +745,46 @@ pub fn run_openxr(
             }
             menu_was_down = menu_down;
 
-            // Head + UI aim before projection so laser draws with the same pose as Select.
+            // Head + aim before projection so laser draws with the same pose as Select / world hit.
             let head_located = view_ref.locate(&stage, xr_frame_state.predicted_display_time)?;
             let (head_pos, head_orient) = openxr_pose_to_isometry(head_located.pose);
-            let aim_for_ui = if ui.state.open {
-                locate_ui_aim(
-                    &aim_right,
-                    &aim_left,
-                    &stage,
-                    xr_frame_state.predicted_display_time,
-                )
+            let aim_pose = locate_ui_aim(
+                &aim_right,
+                &aim_left,
+                &stage,
+                xr_frame_state.predicted_display_time,
+            );
+            let world_hit_id = if !ui.state.open {
+                aim_pose.and_then(|(aim_pos, aim_orient)| {
+                    let stage_ray = pose_to_ray(aim_pos, aim_orient);
+                    let world_ray = ray_to_world(stage_ray, floor_model);
+                    ray_hit_grabbable_boxes(world_ray, &grabbable_boxes, BOX_HALF_EXTENT)
+                        .map(|h| h.entity_id)
+                })
             } else {
                 None
             };
-            let laser_draw = aim_for_ui.map(|(aim_pos, aim_orient)| {
-                let ray = pose_to_ray(aim_pos, aim_orient);
-                let len = laser_length(
-                    head_pos,
-                    head_orient,
-                    ray,
-                    UI_CANVAS_W as f32,
-                    UI_CANVAS_H as f32,
-                );
+            let laser_draw = aim_pose.map(|(aim_pos, aim_orient)| {
+                let stage_ray = pose_to_ray(aim_pos, aim_orient);
+                let len = if ui.state.open {
+                    laser_length(
+                        head_pos,
+                        head_orient,
+                        stage_ray,
+                        UI_CANVAS_W as f32,
+                        UI_CANVAS_H as f32,
+                    )
+                } else {
+                    let world_ray = ray_to_world(stage_ray, floor_model);
+                    laser_length_world(world_ray, &grabbable_boxes)
+                };
                 laser_model(aim_pos, aim_orient, len)
             });
 
             // Hover/press before rasterize so Button colors land on this frame's canvas.
             let select_down_for_ui = select_action.state(&session, xr::Path::NULL)?.current_state;
             if ui.state.open {
-                if let Some((aim_pos, aim_orient)) = aim_for_ui {
+                if let Some((aim_pos, aim_orient)) = aim_pose {
                     let ray = pose_to_ray(aim_pos, aim_orient);
                     if let Some((px, py)) = ray_hit_dash_quad(
                         head_pos,
@@ -763,6 +800,8 @@ pub fn run_openxr(
                 } else {
                     ui.clear_pointer();
                 }
+            } else {
+                ui.clear_pointer();
             }
 
             let dash_ui_model = if ui.state.open {
@@ -855,6 +894,36 @@ pub fn run_openxr(
             vk_device.cmd_bind_vertex_buffers(cmd, 0, &[floor_gpu.vbo], &[0]);
             vk_device.cmd_bind_index_buffer(cmd, floor_gpu.ibo, 0, vk::IndexType::UINT32);
             vk_device.cmd_draw_indexed(cmd, floor_gpu.index_count, 1, 0, 0, 0);
+
+            // Grabbable boxes (world space → same floor_model as checker floor).
+            bind_mesh_texture(&vk_device, cmd, &mesh_pipe, mesh_pipe.white_set);
+            vk_device.cmd_bind_vertex_buffers(cmd, 0, &[box_gpu.vbo], &[0]);
+            vk_device.cmd_bind_index_buffer(cmd, box_gpu.ibo, 0, vk::IndexType::UINT32);
+            for &(id, pose) in &grabbable_boxes {
+                let mut color = pose.color();
+                if world_hit_id == Some(id) {
+                    color = [
+                        (color[0] * 0.4 + 0.6).min(1.0),
+                        (color[1] * 0.4 + 0.6).min(1.0),
+                        (color[2] * 0.4 + 0.6).min(1.0),
+                        1.0,
+                    ];
+                }
+                let local = Mat4::from_scale_rotation_translation(
+                    Vec3::splat(BOX_HALF_EXTENT * 2.0),
+                    Quat::IDENTITY,
+                    pose.position(),
+                );
+                push_mesh_consts(
+                    &vk_device,
+                    cmd,
+                    mesh_pipe.layout,
+                    floor_model * local,
+                    MESH_MODE_FLAT,
+                    color,
+                );
+                vk_device.cmd_draw_indexed(cmd, box_gpu.index_count, 1, 0, 0, 0);
+            }
 
             let xr_inst = session.instance();
             for (i, gpu) in controller_gpu.iter().enumerate() {
@@ -953,7 +1022,7 @@ pub fn run_openxr(
 
             // ---- select UI (CPU); menu + canvas already applied above ----
             if select_down_for_ui && !select_was_down {
-                if let Some((aim_pos, aim_orient)) = aim_for_ui {
+                if let Some((aim_pos, aim_orient)) = aim_pose {
                     let ray = pose_to_ray(aim_pos, aim_orient);
                     if let Some((px, py)) = ray_hit_dash_quad(
                         head_pos,
@@ -1045,6 +1114,7 @@ pub fn run_openxr(
         drop(stage);
         drop(session);
         destroy_gpu_submesh(&vk_device, laser_gpu);
+        destroy_gpu_submesh(&vk_device, box_gpu);
         destroy_gpu_texture(&vk_device, ui_canvas_tex);
         destroy_gpu_submesh(&vk_device, ui_plane_gpu);
         destroy_gpu_submesh(&vk_device, floor_gpu);
@@ -1175,6 +1245,44 @@ fn ui_plane_submesh() -> CpuSubmesh {
         ],
         uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
         indices: vec![0, 1, 2, 0, 2, 3],
+        base_color: None,
+        base_color_factor: [1.0, 1.0, 1.0, 1.0],
+        node_index: 0,
+    }
+}
+
+/// Transform a stage-space aim ray into world space (inverse of floor_model).
+fn ray_to_world(stage_ray: Ray, floor_model: Mat4) -> Ray {
+    let inv = floor_model.inverse();
+    let origin = inv.transform_point3(stage_ray.origin);
+    let dir = inv.transform_vector3(stage_ray.dir).normalize_or_zero();
+    Ray { origin, dir }
+}
+
+/// Unit cube centered at origin (half-extent 0.5); scaled by 2*BOX_HALF_EXTENT when drawn.
+fn unit_cube_submesh() -> CpuSubmesh {
+    let positions = vec![
+        [-0.5, -0.5, -0.5],
+        [0.5, -0.5, -0.5],
+        [0.5, 0.5, -0.5],
+        [-0.5, 0.5, -0.5],
+        [-0.5, -0.5, 0.5],
+        [0.5, -0.5, 0.5],
+        [0.5, 0.5, 0.5],
+        [-0.5, 0.5, 0.5],
+    ];
+    let indices = vec![
+        0, 1, 2, 0, 2, 3, // -Z
+        4, 6, 5, 4, 7, 6, // +Z
+        0, 4, 5, 0, 5, 1, // -Y
+        3, 2, 6, 3, 6, 7, // +Y
+        0, 3, 7, 0, 7, 4, // -X
+        1, 5, 6, 1, 6, 2, // +X
+    ];
+    CpuSubmesh {
+        positions,
+        uvs: vec![[0.0, 0.0]; 8],
+        indices,
         base_color: None,
         base_color_factor: [1.0, 1.0, 1.0, 1.0],
         node_index: 0,

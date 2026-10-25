@@ -5,12 +5,12 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（x000f / Dash Facet 最小）
+## 現状（x0010 / Grabbable ボックス最小）
 
-`host-server` は **Rapier 60Hz**・**`is_finite` 入力ゲート**・配信 **30Hz デルタ**に加え、`SceneManifest.locomotion` 既定 **Noclip** で **user_root** を積分する。  
+`host-server` は **Rapier 60Hz**・**`is_finite` 入力ゲート**・配信 **30Hz デルタ**に加え、`SceneManifest.locomotion` 既定 **Noclip** で **user_root** を積分し、**コライダー付き立方体 ×9（entity 10..18）** を SoA `grabbable` 付きで置く。  
 `client`（Desktop）は **WASD / Space / C** → Intent。OpenXR は **左右 thumbstick（aim 相対）** → 同じ Intent。カメラは user_root を追従（マウスルックは後続）。  
-**Menu**／ESC ダッシュは個人 **DashRoot**（Room 非同期）。公式 Facet＋**Pinned Exit**＋Button **hover/press**（Desktop ポインタ / XR レーザー UV）。コントローラは `XR_EXT_render_model`。実機 XR 正本は **Windows + SteamVR**（WSL は HMD 非保証）。  
-Slice ID は `x` + 4桁16進（次は `x0010`）。規約は [`.workspace/roadmap/README.md`](.workspace/roadmap/README.md)。
+**Menu**／ESC ダッシュは個人 **DashRoot**。ダッシュ閉時は aim **ワールドレーザー**がボックス AABB にヒット（ハイライト）。Grab hold は **x0011**。実機 XR 正本は **Windows + SteamVR**（WSL は HMD 非保証）。  
+Slice ID は `x` + 4桁16進（次は `x0011`）。規約は [`.workspace/roadmap/README.md`](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|
