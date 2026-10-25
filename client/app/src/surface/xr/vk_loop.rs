@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use ash::vk::{self, Handle};
+use bytemuck::{Pod, Zeroable};
 use openxr as xr;
 
 use alchemy_protocol::DEFAULT_MOVE_SPEED;
@@ -20,17 +21,21 @@ use super::input::{
     QUAD_WIDTH,
 };
 use super::loco::{combine_turn_axes, intent_from_sticks, stage_move_to_world, STICK_DEADZONE};
+use super::render_model::{enable_if_available, RenderModelCache};
 use crate::host_control;
 use crate::mesh::CpuMesh;
 use crate::scene::{MoveIntent, SharedState, MESH_ENTITY_ID, USER_ROOT_ENTITY_ID};
 use crate::system_ui::{SystemUi, UiAction};
 use crate::turn::{update_turn_yaw, TURN_DEADZONE};
-use glam::{Quat, Vec3};
+use glam::{Mat4, Quat, Vec3};
 
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 const VIEW_COUNT: u32 = 2;
 const COLOR_FORMAT: vk::Format = vk::Format::R8G8B8A8_SRGB;
+const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 const PIPELINE_DEPTH: usize = 2;
+const NEAR_Z: f32 = 0.05;
+const FAR_Z: f32 = 100.0;
 const UI_CANVAS_W: u32 = 960;
 const UI_CANVAS_H: u32 = 540;
 /// Checker floor texture (CompositionLayerQuad). Large enough to see loco slide.
@@ -60,6 +65,7 @@ pub fn run_openxr(
     }
     let mut enabled = xr::ExtensionSet::default();
     enabled.khr_vulkan_enable2 = true;
+    let rm_support = enable_if_available(&available, &mut enabled);
     let xr_instance = entry.create_instance(
         &xr::ApplicationInfo {
             application_name: "Alchemy",
@@ -70,6 +76,7 @@ pub fn run_openxr(
         },
         &enabled,
         &[],
+        &(),
     )?;
     let props = xr_instance.properties()?;
     log::info!(
@@ -287,37 +294,59 @@ pub fn run_openxr(
 
         session.attach_action_sets(&[&action_set])?;
 
-        let aim_left = aim_action.create_space(session.clone(), hands[0], xr::Posef::IDENTITY)?;
-        let aim_right = aim_action.create_space(session.clone(), hands[1], xr::Posef::IDENTITY)?;
+        let aim_left = aim_action.create_space(&session, hands[0], xr::Posef::IDENTITY)?;
+        let aim_right = aim_action.create_space(&session, hands[1], xr::Posef::IDENTITY)?;
         let stage =
             session.create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)?;
         let view_ref =
             session.create_reference_space(xr::ReferenceSpaceType::VIEW, xr::Posef::IDENTITY)?;
 
+        let mut render_models = RenderModelCache::new(rm_support);
+
         let view_mask = !(!0 << VIEW_COUNT);
         let render_pass = vk_device.create_render_pass(
             &vk::RenderPassCreateInfo::default()
-                .attachments(&[vk::AttachmentDescription {
-                    format: COLOR_FORMAT,
-                    samples: vk::SampleCountFlags::TYPE_1,
-                    load_op: vk::AttachmentLoadOp::CLEAR,
-                    store_op: vk::AttachmentStoreOp::STORE,
-                    initial_layout: vk::ImageLayout::UNDEFINED,
-                    final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    ..Default::default()
-                }])
+                .attachments(&[
+                    vk::AttachmentDescription {
+                        format: COLOR_FORMAT,
+                        samples: vk::SampleCountFlags::TYPE_1,
+                        load_op: vk::AttachmentLoadOp::CLEAR,
+                        store_op: vk::AttachmentStoreOp::STORE,
+                        initial_layout: vk::ImageLayout::UNDEFINED,
+                        final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                        ..Default::default()
+                    },
+                    vk::AttachmentDescription {
+                        format: DEPTH_FORMAT,
+                        samples: vk::SampleCountFlags::TYPE_1,
+                        load_op: vk::AttachmentLoadOp::CLEAR,
+                        store_op: vk::AttachmentStoreOp::DONT_CARE,
+                        stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+                        stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+                        initial_layout: vk::ImageLayout::UNDEFINED,
+                        final_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                        ..Default::default()
+                    },
+                ])
                 .subpasses(&[vk::SubpassDescription::default()
                     .color_attachments(&[vk::AttachmentReference {
                         attachment: 0,
                         layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                     }])
+                    .depth_stencil_attachment(&vk::AttachmentReference {
+                        attachment: 1,
+                        layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    })
                     .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)])
                 .dependencies(&[vk::SubpassDependency {
                     src_subpass: vk::SUBPASS_EXTERNAL,
                     dst_subpass: 0,
-                    src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                    dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                    dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                        | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                    dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                        | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                    dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
                     ..Default::default()
                 }])
                 .push_next(
@@ -333,8 +362,15 @@ pub fn run_openxr(
             .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&spv), None)?;
         let pipeline_layout =
             vk_device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default(), None)?;
-        let pipeline = create_graphics_pipeline(&vk_device, render_pass, pipeline_layout, module)?;
+        let pipeline = create_clear_pipeline(&vk_device, render_pass, pipeline_layout, module)?;
         vk_device.destroy_shader_module(module, None);
+
+        let mesh_pipe = create_mesh_pipeline(
+            &vk_instance,
+            vk_physical_device,
+            &vk_device,
+            render_pass,
+        )?;
 
         let cmd_pool = vk_device.create_command_pool(
             &vk::CommandPoolCreateInfo::default()
@@ -363,10 +399,13 @@ pub fn run_openxr(
         ui.init_cpu_canvas(UI_CANVAS_W, UI_CANVAS_H)?;
         ui.rebuild();
         log::info!(
-            "OpenXR ready — Menu toggles dash, Select clicks, thumbstick Noclip, checker floor (x000a)"
+            "OpenXR ready — Menu toggles dash, Select clicks, thumbstick Noclip, checker floor, render models (x000b)"
         );
 
         let mut swapchain: Option<Swapchain> = None;
+        let mut depth_res: Option<DepthResources> = None;
+        let mut controller_gpu: Vec<GpuMesh> = Vec::new();
+        let mut controller_gpu_gen: u64 = 0;
         let mut ui_swapchain: Option<UiSwapchain> = None;
         let staging_bytes = (UI_CANVAS_W * UI_CANVAS_H * 4).max(FLOOR_TEX_W * FLOOR_TEX_H * 4);
         let staging = create_staging_buffer(
@@ -427,6 +466,9 @@ pub fn run_openxr(
                             session_running = true;
                             log::info!("OpenXR session READY");
                         }
+                        xr::SessionState::FOCUSED => {
+                            render_models.mark_dirty();
+                        }
                         xr::SessionState::STOPPING => {
                             session.end()?;
                             session_running = false;
@@ -436,6 +478,10 @@ pub fn run_openxr(
                         }
                         _ => {}
                     },
+                    InteractionRenderModelsChangedEXT => {
+                        log::info!("XR InteractionRenderModelsChanged");
+                        render_models.mark_dirty();
+                    }
                     InstanceLossPending(_) => break 'main_loop,
                     _ => {}
                 }
@@ -458,15 +504,50 @@ pub fn run_openxr(
                 continue;
             }
 
-            let sc = swapchain.get_or_insert_with(|| {
-                let views = xr_instance
+            // Actions first so render-model enumeration (SteamVR) and input share one sync.
+            session.sync_actions(&[(&action_set).into()])?;
+            if let Err(err) = render_models.refresh_if_dirty(&session) {
+                log::warn!("XR render model refresh: {err:#}");
+            }
+            if controller_gpu_gen != render_models.generation {
+                for g in controller_gpu.drain(..) {
+                    destroy_gpu_mesh(&vk_device, g);
+                }
+                for m in render_models.models() {
+                    match upload_gpu_mesh(
+                        &vk_instance,
+                        vk_physical_device,
+                        &vk_device,
+                        queue,
+                        cmd_pool,
+                        &m.mesh,
+                    ) {
+                        Ok(g) => controller_gpu.push(g),
+                        Err(err) => log::warn!("controller GPU upload: {err:#}"),
+                    }
+                }
+                controller_gpu_gen = render_models.generation;
+            }
+
+            let (_, views) =
+                session.locate_views(VIEW_TYPE, xr_frame_state.predicted_display_time, &stage)?;
+
+            if swapchain.is_none() {
+                let cfg = xr_instance
                     .enumerate_view_configuration_views(system, VIEW_TYPE)
                     .expect("view config");
-                assert_eq!(views.len(), VIEW_COUNT as usize);
+                assert_eq!(cfg.len(), VIEW_COUNT as usize);
                 let resolution = vk::Extent2D {
-                    width: views[0].recommended_image_rect_width,
-                    height: views[0].recommended_image_rect_height,
+                    width: cfg[0].recommended_image_rect_width,
+                    height: cfg[0].recommended_image_rect_height,
                 };
+                let depth = create_depth_resources(
+                    &vk_instance,
+                    vk_physical_device,
+                    &vk_device,
+                    resolution,
+                )
+                .expect("depth resources");
                 let handle = session
                     .create_swapchain(&xr::SwapchainCreateInfo {
                         create_flags: xr::SwapchainCreateFlags::EMPTY,
@@ -508,7 +589,7 @@ pub fn run_openxr(
                                     .render_pass(render_pass)
                                     .width(resolution.width)
                                     .height(resolution.height)
-                                    .attachments(&[color])
+                                    .attachments(&[color, depth.view])
                                     .layers(1),
                                 None,
                             )
@@ -516,19 +597,23 @@ pub fn run_openxr(
                         Framebuffer { framebuffer, color }
                     })
                     .collect();
-                Swapchain {
+                depth_res = Some(depth);
+                swapchain = Some(Swapchain {
                     handle,
                     resolution,
                     buffers,
-                }
-            });
+                });
+            }
+            let sc = swapchain.as_mut().unwrap();
 
             let image_index = sc.handle.acquire_image()?;
-            // Wait until the image is ready to render into.
             sc.handle.wait_image(xr::Duration::INFINITE)?;
 
             vk_device.wait_for_fences(&[fences[frame_i]], true, u64::MAX)?;
             vk_device.reset_fences(&[fences[frame_i]])?;
+
+            // Upload stereo view-proj before recording draws.
+            update_view_proj_ubo(&vk_device, &mesh_pipe, &views)?;
 
             let cmd = cmds[frame_i];
             vk_device.begin_command_buffer(
@@ -545,12 +630,19 @@ pub fn run_openxr(
                         offset: vk::Offset2D::default(),
                         extent: sc.resolution,
                     })
-                    .clear_values(&[vk::ClearValue {
-                        color: vk::ClearColorValue {
-                            // Distinct teal so HMD clearly shows Alchemy XR path (Coin pose logged).
-                            float32: [0.05, 0.12, 0.16, 1.0],
+                    .clear_values(&[
+                        vk::ClearValue {
+                            color: vk::ClearColorValue {
+                                float32: [0.05, 0.12, 0.16, 1.0],
+                            },
                         },
-                    }]),
+                        vk::ClearValue {
+                            depth_stencil: vk::ClearDepthStencilValue {
+                                depth: 1.0,
+                                stencil: 0,
+                            },
+                        },
+                    ]),
                 vk::SubpassContents::INLINE,
             );
             let viewports = [vk::Viewport {
@@ -568,8 +660,55 @@ pub fn run_openxr(
             vk_device.cmd_set_viewport(cmd, 0, &viewports);
             vk_device.cmd_set_scissor(cmd, 0, &scissors);
             vk_device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
-            // Fullscreen triangle — world backdrop (mesh/floor follow-up; pose still tracked).
             vk_device.cmd_draw(cmd, 3, 1, 0, 0);
+
+            // Controllers (x000b): root pose from render model space.
+            if !controller_gpu.is_empty() {
+                vk_device.cmd_bind_pipeline(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    mesh_pipe.pipeline,
+                );
+                vk_device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    mesh_pipe.layout,
+                    0,
+                    &[mesh_pipe.descriptor_set],
+                    &[],
+                );
+                for (model, gpu) in render_models.models().iter().zip(controller_gpu.iter()) {
+                    let Ok(loc) = model
+                        .space
+                        .locate(&stage, xr_frame_state.predicted_display_time)
+                    else {
+                        continue;
+                    };
+                    if !loc
+                        .location_flags
+                        .contains(xr::SpaceLocationFlags::POSITION_VALID)
+                        || !loc
+                            .location_flags
+                            .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+                    {
+                        continue;
+                    }
+                    let (pos, ori) = openxr_pose_to_isometry(loc.pose);
+                    let model_mat = Mat4::from_rotation_translation(ori, pos);
+                    let model_cols = model_mat.to_cols_array();
+                    vk_device.cmd_push_constants(
+                        cmd,
+                        mesh_pipe.layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        bytemuck::cast_slice(&model_cols),
+                    );
+                    vk_device.cmd_bind_vertex_buffers(cmd, 0, &[gpu.vbo], &[0]);
+                    vk_device.cmd_bind_index_buffer(cmd, gpu.ibo, 0, vk::IndexType::UINT32);
+                    vk_device.cmd_draw_indexed(cmd, gpu.index_count, 1, 0, 0, 0);
+                }
+            }
+
             vk_device.cmd_end_render_pass(cmd);
             vk_device.end_command_buffer(cmd)?;
             vk_device.queue_submit(
@@ -579,11 +718,7 @@ pub fn run_openxr(
             )?;
             sc.handle.release_image()?;
 
-            let (_, views) =
-                session.locate_views(VIEW_TYPE, xr_frame_state.predicted_display_time, &stage)?;
-
-            // ---- input / UI (CPU) ----
-            session.sync_actions(&[(&action_set).into()])?;
+            // ---- input / UI (CPU); actions already synced above ----
             let menu_down = menu_action.state(&session, xr::Path::NULL)?.current_state;
             if menu_down && !menu_was_down {
                 ui.toggle();
@@ -881,6 +1016,10 @@ pub fn run_openxr(
         }
 
         // Drop XR session before destroying Vulkan objects.
+        render_models.clear(&xr_instance);
+        for g in controller_gpu.drain(..) {
+            destroy_gpu_mesh(&vk_device, g);
+        }
         drop(aim_left);
         drop(aim_right);
         drop(view_ref);
@@ -894,6 +1033,10 @@ pub fn run_openxr(
                 vk_device.destroy_image_view(b.color, None);
             }
         }
+        if let Some(d) = depth_res.take() {
+            destroy_depth_resources(&vk_device, d);
+        }
+        destroy_mesh_pipeline(&vk_device, mesh_pipe);
         destroy_staging(&vk_device, &staging);
         for f in fences {
             vk_device.destroy_fence(f, None);
@@ -918,6 +1061,37 @@ struct Swapchain {
 struct Framebuffer {
     framebuffer: vk::Framebuffer,
     color: vk::ImageView,
+}
+
+struct DepthResources {
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    view: vk::ImageView,
+}
+
+struct GpuMesh {
+    vbo: vk::Buffer,
+    vmem: vk::DeviceMemory,
+    ibo: vk::Buffer,
+    imem: vk::DeviceMemory,
+    index_count: u32,
+}
+
+struct MeshPipeline {
+    pipeline: vk::Pipeline,
+    layout: vk::PipelineLayout,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
+    descriptor_set: vk::DescriptorSet,
+    ubo: vk::Buffer,
+    ubo_mem: vk::DeviceMemory,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ViewProjUbo {
+    /// Two view-projection matrices (left, right), column-major.
+    mats: [[f32; 16]; 2],
 }
 
 struct UiSwapchain {
@@ -1218,7 +1392,7 @@ fn compile_wgsl_spv(src: &str) -> Result<Vec<u32>> {
     Ok(spv)
 }
 
-fn create_graphics_pipeline(
+fn create_clear_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
     layout: vk::PipelineLayout,
@@ -1267,6 +1441,8 @@ fn create_graphics_pipeline(
                 )
                 .depth_stencil_state(
                     &vk::PipelineDepthStencilStateCreateInfo::default()
+                        .depth_test_enable(false)
+                        .depth_write_enable(false)
                         .front(noop)
                         .back(noop),
                 )
@@ -1292,8 +1468,495 @@ fn create_graphics_pipeline(
     Ok(pipes[0])
 }
 
+const MESH_WGSL: &str = r#"
+struct Views {
+    view_proj: array<mat4x4<f32>, 2>,
+}
+@group(0) @binding(0) var<uniform> views: Views;
+
+struct Push {
+    model: mat4x4<f32>,
+}
+var<push_constant> push: Push;
+
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+}
+
+@vertex
+fn vs_main(
+    @location(0) position: vec3<f32>,
+    @builtin(view_index) view_index: i32,
+) -> VsOut {
+    var o: VsOut;
+    let vp = views.view_proj[u32(view_index)];
+    o.pos = vp * push.model * vec4<f32>(position, 1.0);
+    return o;
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    // Flat controller color (textures non-goal for x000b).
+    return vec4<f32>(0.75, 0.78, 0.82, 1.0);
+}
+"#;
+
+fn create_mesh_pipeline(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    device: &ash::Device,
+    render_pass: vk::RenderPass,
+) -> Result<MeshPipeline> {
+    let spv = compile_wgsl_spv_multiview(MESH_WGSL).context("compile mesh shader")?;
+    let module =
+        unsafe { device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&spv), None)? };
+
+    let bindings = [vk::DescriptorSetLayoutBinding {
+        binding: 0,
+        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+        descriptor_count: 1,
+        stage_flags: vk::ShaderStageFlags::VERTEX,
+        ..Default::default()
+    }];
+    let descriptor_set_layout = unsafe {
+        device.create_descriptor_set_layout(
+            &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+            None,
+        )?
+    };
+    let push_ranges = [vk::PushConstantRange {
+        stage_flags: vk::ShaderStageFlags::VERTEX,
+        offset: 0,
+        size: 64,
+    }];
+    let layout = unsafe {
+        device.create_pipeline_layout(
+            &vk::PipelineLayoutCreateInfo::default()
+                .set_layouts(&[descriptor_set_layout])
+                .push_constant_ranges(&push_ranges),
+            None,
+        )?
+    };
+
+    let ubo_size = std::mem::size_of::<ViewProjUbo>() as vk::DeviceSize;
+    let (ubo, ubo_mem) = create_buffer(
+        instance,
+        physical,
+        device,
+        ubo_size,
+        vk::BufferUsageFlags::UNIFORM_BUFFER,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+    )?;
+
+    let pool_sizes = [vk::DescriptorPoolSize {
+        ty: vk::DescriptorType::UNIFORM_BUFFER,
+        descriptor_count: 1,
+    }];
+    let descriptor_pool = unsafe {
+        device.create_descriptor_pool(
+            &vk::DescriptorPoolCreateInfo::default()
+                .max_sets(1)
+                .pool_sizes(&pool_sizes),
+            None,
+        )?
+    };
+    let descriptor_set = unsafe {
+        device.allocate_descriptor_sets(
+            &vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(descriptor_pool)
+                .set_layouts(&[descriptor_set_layout]),
+        )?[0]
+    };
+    let ubo_info = [vk::DescriptorBufferInfo {
+        buffer: ubo,
+        offset: 0,
+        range: ubo_size,
+    }];
+    unsafe {
+        device.update_descriptor_sets(
+            &[vk::WriteDescriptorSet {
+                dst_set: descriptor_set,
+                dst_binding: 0,
+                descriptor_count: 1,
+                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                p_buffer_info: ubo_info.as_ptr(),
+                ..Default::default()
+            }],
+            &[],
+        );
+    }
+
+    let entry = c"vs_main";
+    let entry_fs = c"fs_main";
+    let stages = [
+        vk::PipelineShaderStageCreateInfo {
+            stage: vk::ShaderStageFlags::VERTEX,
+            module,
+            p_name: entry.as_ptr(),
+            ..Default::default()
+        },
+        vk::PipelineShaderStageCreateInfo {
+            stage: vk::ShaderStageFlags::FRAGMENT,
+            module,
+            p_name: entry_fs.as_ptr(),
+            ..Default::default()
+        },
+    ];
+    let binding_desc = [vk::VertexInputBindingDescription {
+        binding: 0,
+        stride: 12,
+        input_rate: vk::VertexInputRate::VERTEX,
+    }];
+    let attr_desc = [vk::VertexInputAttributeDescription {
+        location: 0,
+        binding: 0,
+        format: vk::Format::R32G32B32_SFLOAT,
+        offset: 0,
+    }];
+    let noop = vk::StencilOpState::default();
+    let pipes = unsafe {
+        device.create_graphics_pipelines(
+            vk::PipelineCache::null(),
+            &[vk::GraphicsPipelineCreateInfo::default()
+                .stages(&stages)
+                .vertex_input_state(
+                    &vk::PipelineVertexInputStateCreateInfo::default()
+                        .vertex_binding_descriptions(&binding_desc)
+                        .vertex_attribute_descriptions(&attr_desc),
+                )
+                .input_assembly_state(
+                    &vk::PipelineInputAssemblyStateCreateInfo::default()
+                        .topology(vk::PrimitiveTopology::TRIANGLE_LIST),
+                )
+                .viewport_state(
+                    &vk::PipelineViewportStateCreateInfo::default()
+                        .viewport_count(1)
+                        .scissor_count(1),
+                )
+                .rasterization_state(
+                    &vk::PipelineRasterizationStateCreateInfo::default()
+                        .cull_mode(vk::CullModeFlags::NONE)
+                        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                        .line_width(1.0),
+                )
+                .multisample_state(
+                    &vk::PipelineMultisampleStateCreateInfo::default()
+                        .rasterization_samples(vk::SampleCountFlags::TYPE_1),
+                )
+                .depth_stencil_state(
+                    &vk::PipelineDepthStencilStateCreateInfo::default()
+                        .depth_test_enable(true)
+                        .depth_write_enable(true)
+                        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+                        .front(noop)
+                        .back(noop),
+                )
+                .color_blend_state(
+                    &vk::PipelineColorBlendStateCreateInfo::default().attachments(&[
+                        vk::PipelineColorBlendAttachmentState {
+                            color_write_mask: vk::ColorComponentFlags::RGBA,
+                            ..Default::default()
+                        },
+                    ]),
+                )
+                .dynamic_state(
+                    &vk::PipelineDynamicStateCreateInfo::default()
+                        .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]),
+                )
+                .layout(layout)
+                .render_pass(render_pass)
+                .subpass(0)],
+            None,
+        )
+    }
+    .map_err(|(_, e)| e)?;
+    unsafe { device.destroy_shader_module(module, None) };
+
+    Ok(MeshPipeline {
+        pipeline: pipes[0],
+        layout,
+        descriptor_set_layout,
+        descriptor_pool,
+        descriptor_set,
+        ubo,
+        ubo_mem,
+    })
+}
+
+fn destroy_mesh_pipeline(device: &ash::Device, p: MeshPipeline) {
+    unsafe {
+        device.destroy_pipeline(p.pipeline, None);
+        device.destroy_pipeline_layout(p.layout, None);
+        device.destroy_descriptor_pool(p.descriptor_pool, None);
+        device.destroy_descriptor_set_layout(p.descriptor_set_layout, None);
+        device.destroy_buffer(p.ubo, None);
+        device.free_memory(p.ubo_mem, None);
+    }
+}
+
+fn update_view_proj_ubo(
+    device: &ash::Device,
+    mesh_pipe: &MeshPipeline,
+    views: &[xr::View],
+) -> Result<()> {
+    if views.len() < 2 {
+        bail!("expected stereo views");
+    }
+    let mut ubo = ViewProjUbo {
+        mats: [[0.0; 16]; 2],
+    };
+    for (i, view) in views.iter().take(2).enumerate() {
+        let (pos, ori) = openxr_pose_to_isometry(view.pose);
+        let view_mat = Mat4::from_rotation_translation(ori, pos).inverse();
+        let proj = projection_from_fov(view.fov, NEAR_Z, FAR_Z);
+        ubo.mats[i] = (proj * view_mat).to_cols_array();
+    }
+    unsafe {
+        let ptr = device.map_memory(
+            mesh_pipe.ubo_mem,
+            0,
+            std::mem::size_of::<ViewProjUbo>() as u64,
+            vk::MemoryMapFlags::empty(),
+        )?;
+        std::ptr::copy_nonoverlapping(
+            &ubo as *const ViewProjUbo as *const u8,
+            ptr as *mut u8,
+            std::mem::size_of::<ViewProjUbo>(),
+        );
+        device.unmap_memory(mesh_pipe.ubo_mem);
+    }
+    Ok(())
+}
+
+fn projection_from_fov(fov: xr::Fovf, near: f32, far: f32) -> Mat4 {
+    let tan_left = fov.angle_left.tan();
+    let tan_right = fov.angle_right.tan();
+    let tan_up = fov.angle_up.tan();
+    let tan_down = fov.angle_down.tan();
+    let tan_width = tan_right - tan_left;
+    let tan_height = tan_up - tan_down;
+    // OpenXR / Vulkan clip space (Y down in NDC for Vulkan — OpenXR FOV already matches).
+    Mat4::from_cols(
+        glam::Vec4::new(2.0 / tan_width, 0.0, 0.0, 0.0),
+        glam::Vec4::new(0.0, 2.0 / tan_height, 0.0, 0.0),
+        glam::Vec4::new(
+            (tan_right + tan_left) / tan_width,
+            (tan_up + tan_down) / tan_height,
+            -far / (far - near),
+            -1.0,
+        ),
+        glam::Vec4::new(0.0, 0.0, -(far * near) / (far - near), 0.0),
+    )
+}
+
+fn create_depth_resources(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    device: &ash::Device,
+    extent: vk::Extent2D,
+) -> Result<DepthResources> {
+    let image_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(DEPTH_FORMAT)
+        .extent(vk::Extent3D {
+            width: extent.width,
+            height: extent.height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(VIEW_COUNT)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    let image = unsafe { device.create_image(&image_info, None)? };
+    let reqs = unsafe { device.get_image_memory_requirements(image) };
+    let memory_type = find_memory_type(
+        instance,
+        physical,
+        reqs.memory_type_bits,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    )?;
+    let memory = unsafe {
+        device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(reqs.size)
+                .memory_type_index(memory_type),
+            None,
+        )?
+    };
+    unsafe { device.bind_image_memory(image, memory, 0)? };
+    let view = unsafe {
+        device.create_image_view(
+            &vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D_ARRAY)
+                .format(DEPTH_FORMAT)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::DEPTH,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: VIEW_COUNT,
+                }),
+            None,
+        )?
+    };
+    Ok(DepthResources {
+        image,
+        memory,
+        view,
+    })
+}
+
+fn destroy_depth_resources(device: &ash::Device, d: DepthResources) {
+    unsafe {
+        device.destroy_image_view(d.view, None);
+        device.destroy_image(d.image, None);
+        device.free_memory(d.memory, None);
+    }
+}
+
+fn create_buffer(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    device: &ash::Device,
+    size: vk::DeviceSize,
+    usage: vk::BufferUsageFlags,
+    props: vk::MemoryPropertyFlags,
+) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+    let buffer = unsafe {
+        device.create_buffer(
+            &vk::BufferCreateInfo::default()
+                .size(size)
+                .usage(usage)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE),
+            None,
+        )?
+    };
+    let reqs = unsafe { device.get_buffer_memory_requirements(buffer) };
+    let memory_type = find_memory_type(instance, physical, reqs.memory_type_bits, props)?;
+    let memory = unsafe {
+        device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(reqs.size)
+                .memory_type_index(memory_type),
+            None,
+        )?
+    };
+    unsafe { device.bind_buffer_memory(buffer, memory, 0)? };
+    Ok((buffer, memory))
+}
+
+fn upload_gpu_mesh(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    device: &ash::Device,
+    _queue: vk::Queue,
+    _cmd_pool: vk::CommandPool,
+    mesh: &CpuMesh,
+) -> Result<GpuMesh> {
+    let vbytes = bytemuck::cast_slice::<[f32; 3], u8>(&mesh.positions);
+    let ibytes = bytemuck::cast_slice::<u32, u8>(&mesh.indices);
+    let (vbo, vmem) = create_buffer(
+        instance,
+        physical,
+        device,
+        vbytes.len() as u64,
+        vk::BufferUsageFlags::VERTEX_BUFFER,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+    )?;
+    let (ibo, imem) = create_buffer(
+        instance,
+        physical,
+        device,
+        ibytes.len() as u64,
+        vk::BufferUsageFlags::INDEX_BUFFER,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+    )?;
+    unsafe {
+        let ptr = device.map_memory(vmem, 0, vbytes.len() as u64, vk::MemoryMapFlags::empty())?;
+        std::ptr::copy_nonoverlapping(vbytes.as_ptr(), ptr as *mut u8, vbytes.len());
+        device.unmap_memory(vmem);
+        let ptr = device.map_memory(imem, 0, ibytes.len() as u64, vk::MemoryMapFlags::empty())?;
+        std::ptr::copy_nonoverlapping(ibytes.as_ptr(), ptr as *mut u8, ibytes.len());
+        device.unmap_memory(imem);
+    }
+    Ok(GpuMesh {
+        vbo,
+        vmem,
+        ibo,
+        imem,
+        index_count: mesh.indices.len() as u32,
+    })
+}
+
+fn destroy_gpu_mesh(device: &ash::Device, g: GpuMesh) {
+    unsafe {
+        device.destroy_buffer(g.vbo, None);
+        device.free_memory(g.vmem, None);
+        device.destroy_buffer(g.ibo, None);
+        device.free_memory(g.imem, None);
+    }
+}
+
+fn compile_wgsl_spv_multiview(src: &str) -> Result<Vec<u32>> {
+    let module = naga::front::wgsl::parse_str(src).map_err(|e| anyhow::anyhow!("wgsl parse: {e}"))?;
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .map_err(|e| {
+        // naga::WithSpan prints inner causes when Display'd via Debug.
+        anyhow::anyhow!("wgsl validate: {e:?}")
+    })?;
+    let spv = naga::back::spv::write_vec(
+        &module,
+        &info,
+        &naga::back::spv::Options {
+            lang_version: (1, 3),
+            flags: naga::back::spv::WriterFlags::empty(),
+            binding_map: Default::default(),
+            capabilities: Some(
+                [
+                    naga::back::spv::Capability::Shader,
+                    naga::back::spv::Capability::MultiView,
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            ..Default::default()
+        },
+        None,
+    )
+    .map_err(|e| anyhow::anyhow!("spv write: {e}"))?;
+    Ok(spv)
+}
+
 fn ctrlc_set(running: Arc<AtomicBool>) -> Result<()> {
     // Optional: without ctrlc crate, ignore. Use env / Exit UI instead.
     let _ = running;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mesh_wgsl_compiles_with_multiview() {
+        let spv = match compile_wgsl_spv_multiview(MESH_WGSL) {
+            Ok(s) => s,
+            Err(e) => panic!("MESH_WGSL: {e:#}"),
+        };
+        assert!(!spv.is_empty());
+    }
+
+    #[test]
+    fn clear_wgsl_compiles() {
+        let spv = compile_wgsl_spv(CLEAR_WGSL).expect("CLEAR_WGSL");
+        assert!(!spv.is_empty());
+    }
 }

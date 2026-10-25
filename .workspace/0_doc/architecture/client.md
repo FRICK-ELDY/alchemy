@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: x000a（VR 親指スティック Noclip。Desktop WASD / OpenXR ダッシュ維持）
+> **ステータス**: x000b（OpenXR Render Model コントローラ表示。Desktop WASD / XR ロコ維持）
 
 ## レイアウト
 
@@ -25,6 +25,7 @@
 | ローカル entity 表への upsert/remove。Coin=1、user_root=3 | 署名付き Manifest / world 台帳 |
 | Desktop: WASD/Space/C → Intent。カメラは user_root（マウスルックは後続） | Pointer Lock / マウスルック |
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
+| OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose） | テクスチャ／animatable node／SteamVR パス直読み |
 | auth login → Bearer 付き Room Token → InputEvent | OSC / Dual Editor / launcher 本実装 |
 | host: Rapier 60Hz + `is_finite` + Manifest Noclip → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk |
 | ESC（Desktop）/ Menu（OpenXR）ダッシュ・client 終了・host 終了スタブ | Grab / Context / Primary ツール本体 |
@@ -49,7 +50,7 @@
 | Y / T / R | Primary / Context / Secondary（キーのみスタブ） |
 | マウス | ダッシュ UI クリックのみ（look / Pointer Lock は後続） |
 
-## OpenXR バインド（x000a）
+## OpenXR バインド（x000a / x000b）
 
 | 入力 | 役割 |
 |:---|:---|
@@ -58,6 +59,7 @@
 | 左右 thumbstick Y | その手の aim 相対で前後移動（L+R 加算） |
 | 左右 thumbstick X | コンフォートターン（L+R 加算。既定 Snap 30° / Smooth 切替可） |
 | Settings タブ | max speed・snap 角・smooth 速度の既定表示。Turn モードはタップで切替 |
+| コントローラ見た目 | ランタイム `XR_EXT_render_model` GLB（SteamVR 2.12+）。拡張欠如時は非表示のみ |
 
 ## アセット
 
@@ -74,4 +76,4 @@
 - 転送: [zenoh-router.md](zenoh-router.md)
 - Room Token: [world-server.md](world-server.md)
 - Blob CAS: [assets-server.md](assets-server.md)
-- Slice: [x000a-vr-thumbstick-noclip.md](../roadmap/slices/x000a-vr-thumbstick-noclip.md) · [x0009](../roadmap/slices/x0009-desktop-noclip-loco.md)
+- Slice: [x000b-vr-controller-render-models.md](../roadmap/slices/x000b-vr-controller-render-models.md) · [x000a](../roadmap/slices/x000a-vr-thumbstick-noclip.md) · [x0009](../roadmap/slices/x0009-desktop-noclip-loco.md)

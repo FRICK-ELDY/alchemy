@@ -1,9 +1,11 @@
-//! GLB → CPU mesh (Slice C-B).
+//! GLB → CPU mesh (Slice C-B / x000b flatten).
 //!
-//! Guarantees: BLAKE3 verify before decode; first mesh positions (+ indices if present).
-//! Non-guarantees: materials, skins, animations, multi-mesh scenes.
+//! Guarantees: BLAKE3 verify before decode; first mesh positions (+ indices if present);
+//! `load_flattened_mesh_from_glb` bakes node transforms across primitives.
+//! Non-guarantees: materials, skins, animations, textured draw.
 
 use anyhow::{bail, Context, Result};
+use glam::{Mat4, Quat, Vec3};
 
 /// Expected BLAKE3 of `client/fixtures/Coin_PolygonalMind.glb`.
 pub const COIN_BLAKE3_HEX: &str =
@@ -82,6 +84,82 @@ fn framing_radius(positions: &[[f32; 3]]) -> f32 {
     max_sq.sqrt().max(0.1)
 }
 
+/// Flatten every mesh primitive under the default scene, baking node local transforms.
+/// Used for OpenXR controller GLBs (x000b). Skins / morphs are ignored.
+pub fn load_flattened_mesh_from_glb(bytes: &[u8]) -> Result<CpuMesh> {
+    let (doc, buffers, _images) = gltf::import_slice(bytes).context("gltf import_slice")?;
+
+    let mut positions = Vec::new();
+    let mut indices = Vec::new();
+
+    let Some(scene) = doc.default_scene().or_else(|| doc.scenes().next()) else {
+        // No scene graph — fall back to first primitive.
+        return load_mesh_from_glb(bytes);
+    };
+
+    for node in scene.nodes() {
+        flatten_node(node, Mat4::IDENTITY, &buffers, &mut positions, &mut indices)?;
+    }
+
+    if positions.is_empty() {
+        return load_mesh_from_glb(bytes);
+    }
+
+    let radius = framing_radius(&positions);
+    Ok(CpuMesh {
+        positions,
+        indices,
+        radius,
+    })
+}
+
+fn flatten_node(
+    node: gltf::Node<'_>,
+    parent: Mat4,
+    buffers: &[gltf::buffer::Data],
+    positions: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) -> Result<()> {
+    let local = {
+        let (t, r, s) = node.transform().decomposed();
+        Mat4::from_scale_rotation_translation(
+            Vec3::from(s),
+            Quat::from_xyzw(r[0], r[1], r[2], r[3]),
+            Vec3::from(t),
+        )
+    };
+    let world = parent * local;
+
+    if let Some(mesh) = node.mesh() {
+        for prim in mesh.primitives() {
+            let reader = prim.reader(|buffer| Some(&buffers[buffer.index()].0));
+            let Some(pos_iter) = reader.read_positions() else {
+                continue;
+            };
+            let base = positions.len() as u32;
+            for p in pos_iter {
+                let v = world.transform_point3(Vec3::from(p));
+                positions.push([v.x, v.y, v.z]);
+            }
+            if let Some(idx) = reader.read_indices() {
+                for i in idx.into_u32() {
+                    indices.push(base + i);
+                }
+            } else {
+                let n = positions.len() as u32 - base;
+                for i in 0..n {
+                    indices.push(base + i);
+                }
+            }
+        }
+    }
+
+    for child in node.children() {
+        flatten_node(child, world, buffers, positions, indices)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +178,12 @@ mod tests {
         assert!(!mesh.positions.is_empty());
         assert!(!mesh.indices.is_empty());
         assert!(mesh.radius > 0.0);
+    }
+
+    #[test]
+    fn coin_flatten_loads_vertices() {
+        let mesh = load_flattened_mesh_from_glb(FIXTURE).unwrap();
+        assert!(!mesh.positions.is_empty());
+        assert!(!mesh.indices.is_empty());
     }
 }

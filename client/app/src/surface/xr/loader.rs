@@ -23,11 +23,11 @@ pub unsafe fn load_entry() -> Result<openxr::Entry> {
     if let Ok(path) = std::env::var("ALCHEMY_OPENXR_LOADER") {
         let p = PathBuf::from(path);
         log::info!("OpenXR loader: ALCHEMY_OPENXR_LOADER={}", p.display());
-        return unsafe { openxr::Entry::load_from(&p) }
+        return unsafe { openxr::Entry::load_from(&p, &()) }
             .with_context(|| format!("load OpenXR loader from {}", p.display()));
     }
 
-    match unsafe { openxr::Entry::load() } {
+    match unsafe { openxr::Entry::load(&()) } {
         Ok(entry) => {
             log::info!("OpenXR loader: default search path ({LOADER_NAME})");
             return Ok(entry);
@@ -43,7 +43,7 @@ pub unsafe fn load_entry() -> Result<openxr::Entry> {
         if !path.is_file() {
             continue;
         }
-        match unsafe { openxr::Entry::load_from(path) } {
+        match unsafe { openxr::Entry::load_from(path, &()) } {
             Ok(entry) => {
                 log::info!("OpenXR loader: loaded from {}", path.display());
                 maybe_hint_runtime_json(path);
