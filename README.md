@@ -5,12 +5,12 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（x0014 / LAN 2-client presence）
+## 現状（x0015 active / Presence 動的スロット）
 
-`host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（最大 2）・**user_root entity 3/4**・**コライダー付き立方体 ×9（10..18）**・配信 **30Hz デルタ**。Grab は kinematic 追従（他 sub の箱は Steal しない）。  
-`client` は `AUTH_USER=alice|bob` → 自 entity **3|4** をカメラ追従。他 user_root は色付きボックス。Desktop Grab / XR Grab / Noclip は従来どおり。  
-**LAN:** zenohd が `0.0.0.0:7447` も listen。client/host は **`ZENOH_CONNECT`**（既定 `tcp/127.0.0.1:7447`）。ノートPC は PC の LAN IP へ。**alice を先に接続**（host first-come 割当とデモマップ一致）。  
-Slice ID は `x` + 4桁16進（次は `x0015`）。規約は [`.workspace/roadmap/README.md`](.workspace/roadmap/README.md)。
+**実装中:** [x0015](.workspace/roadmap/slices/x0015-presence-slot-assign.md) — `AUTH_USER`→entity 固定マップをやめ、host が Token **`sub` → user_root（最大 4・entity 3..6）** を Presence で公開。直近完了は **x0014**（LAN 2-client・entity 3/4・alice/bob 固定）。  
+`host-server` は **Rapier 60Hz**・**sub 別** Intent/Grab・**立方体 ×9（10..18）**・配信 **30Hz デルタ**。Grab は kinematic 追従（Steal なし）。  
+**LAN:** zenohd が `0.0.0.0:7447` も listen。client/host は **`ZENOH_CONNECT`**（既定 `tcp/127.0.0.1:7447`）。  
+Slice ID は `x` + 4桁16進（次の空きは `x0016`）。規約は [`.workspace/roadmap/README.md`](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|
