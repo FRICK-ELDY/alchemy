@@ -5,10 +5,11 @@
 //! - Desktop WASD/Space/C → InputEvent Intent; dash suppresses move (mouse look deferred)
 //! - OpenXR thumbstick (aim-relative, L+R add) → same Intent path
 //! - Camera follows host user_root pose (fixed default look)
+//! - Grabbable boxes 10..18 drawn; XR world laser hit when dash closed (x0010; Grab hold → x0011)
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
 //! - Settings shows default max speed (read-only)
 //!
-//! Non-guarantees: Grab/tools, Quest standalone, WSL HMD, virtual keyboard edit
+//! Non-guarantees: Grab hold (x0011), Quest standalone, WSL HMD, virtual keyboard edit
 
 mod host_control;
 mod mesh;
@@ -202,6 +203,7 @@ fn spawn_manifest_subscriber(
                                     x: entry.x as f32,
                                     y: entry.y as f32,
                                     z: entry.z as f32,
+                                    ..Default::default()
                                 });
                             }
                         }
@@ -248,6 +250,10 @@ fn spawn_frame_subscriber(session: zenoh::Session, shared: Arc<SharedState>) -> 
                                         x: e.x as f32,
                                         y: e.y as f32,
                                         z: e.z as f32,
+                                        r: e.r,
+                                        g: e.g,
+                                        b: e.b,
+                                        a: e.a,
                                     },
                                 );
                             }

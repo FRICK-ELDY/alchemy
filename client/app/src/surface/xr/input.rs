@@ -1,9 +1,12 @@
-//! XR UI intent: menu toggle + controller ray vs head-locked dash quad.
+//! XR UI intent: menu toggle + controller ray vs head-locked dash quad / world boxes.
 //!
 //! system_ui stays device-agnostic; this module maps XR poses → canvas pixels.
-//! Laser beam model matrices are also pure here (vk_loop only draws).
+//! Laser beam model matrices and AABB hits are pure here (vk_loop only draws).
+//! Grab hold (transform follow) is deferred to x0011.
 
 use glam::{Mat4, Quat, Vec3};
+
+use crate::scene::{EntityPose, BOX_HALF_EXTENT};
 
 /// Head-locked dash quad in view/local space (meters). Centered, facing -Z of head.
 pub const QUAD_WIDTH: f32 = 1.2;
@@ -97,6 +100,87 @@ pub fn laser_length(
         .map(|h| (h.t - LASER_TIP_GAP).max(0.01))
         .unwrap_or(LASER_MAX_LENGTH)
         .clamp(0.01, LASER_MAX_LENGTH)
+}
+
+/// Beam length against grabbable box AABBs (dash closed / world pointer, x0010).
+pub fn laser_length_world(ray: Ray, boxes: &[(u32, EntityPose)]) -> f32 {
+    ray_hit_grabbable_boxes(ray, boxes, BOX_HALF_EXTENT)
+        .map(|h| (h.t - LASER_TIP_GAP).max(0.01))
+        .unwrap_or(LASER_MAX_LENGTH)
+        .clamp(0.01, LASER_MAX_LENGTH)
+}
+
+/// Closest AABB hit among grabbable boxes.
+#[derive(Clone, Copy, Debug)]
+pub struct BoxHit {
+    pub entity_id: u32,
+    pub t: f32,
+}
+
+/// Ray vs axis-aligned box (center + uniform half-extent). Returns entry `t` or None.
+pub fn ray_hit_aabb(ray: Ray, center: Vec3, half: f32) -> Option<f32> {
+    let dir = ray.dir;
+    if dir.length_squared() < 1e-12 {
+        return None;
+    }
+    let inv = Vec3::new(
+        if dir.x.abs() > 1e-8 {
+            1.0 / dir.x
+        } else {
+            f32::INFINITY.copysign(dir.x)
+        },
+        if dir.y.abs() > 1e-8 {
+            1.0 / dir.y
+        } else {
+            f32::INFINITY.copysign(dir.y)
+        },
+        if dir.z.abs() > 1e-8 {
+            1.0 / dir.z
+        } else {
+            f32::INFINITY.copysign(dir.z)
+        },
+    );
+    let min = center - Vec3::splat(half);
+    let max = center + Vec3::splat(half);
+    let t0 = (min - ray.origin) * inv;
+    let t1 = (max - ray.origin) * inv;
+    let tmin = t0.min(t1);
+    let tmax = t0.max(t1);
+    let t_enter = tmin.x.max(tmin.y).max(tmin.z);
+    let t_exit = tmax.x.min(tmax.y).min(tmax.z);
+    if t_exit < 0.0 || t_enter > t_exit {
+        return None;
+    }
+    let t = if t_enter >= 0.0 { t_enter } else { t_exit };
+    if t < 0.0 {
+        None
+    } else {
+        Some(t)
+    }
+}
+
+/// Nearest grabbable box along `ray` (client-local pose table, x0010).
+pub fn ray_hit_grabbable_boxes(
+    ray: Ray,
+    boxes: &[(u32, EntityPose)],
+    half_extent: f32,
+) -> Option<BoxHit> {
+    let mut best: Option<BoxHit> = None;
+    for &(id, pose) in boxes {
+        if !EntityPose::is_grabbable_box(id) {
+            continue;
+        }
+        let Some(t) = ray_hit_aabb(ray, pose.position(), half_extent) else {
+            continue;
+        };
+        if t > LASER_MAX_LENGTH {
+            continue;
+        }
+        if best.map(|b| t < b.t).unwrap_or(true) {
+            best = Some(BoxHit { entity_id: id, t });
+        }
+    }
+    best
 }
 
 pub fn pose_to_ray(pos: Vec3, orient: Quat) -> Ray {
@@ -207,5 +291,46 @@ mod tests {
             (tip - Vec3::new(1.0, 2.0, 1.0)).length() < 1e-4,
             "tip={tip:?}"
         );
+    }
+
+    #[test]
+    fn aabb_hit_from_front() {
+        let ray = Ray {
+            origin: Vec3::new(0.0, 0.25, 2.0),
+            dir: Vec3::NEG_Z,
+        };
+        let t = ray_hit_aabb(ray, Vec3::new(0.0, 0.25, 0.0), 0.25).unwrap();
+        assert!((t - 1.75).abs() < 0.01, "t={t}");
+    }
+
+    #[test]
+    fn grabbable_boxes_picks_nearest() {
+        let ray = Ray {
+            origin: Vec3::new(0.0, 0.25, 3.0),
+            dir: Vec3::NEG_Z,
+        };
+        let boxes = [
+            (
+                10,
+                EntityPose {
+                    x: 0.0,
+                    y: 0.25,
+                    z: 0.0,
+                    ..Default::default()
+                },
+            ),
+            (
+                11,
+                EntityPose {
+                    x: 0.0,
+                    y: 0.25,
+                    z: 1.0,
+                    ..Default::default()
+                },
+            ),
+        ];
+        let hit = ray_hit_grabbable_boxes(ray, &boxes, 0.25).unwrap();
+        assert_eq!(hit.entity_id, 11);
+        assert!((hit.t - 1.75).abs() < 0.05, "t={}", hit.t);
     }
 }

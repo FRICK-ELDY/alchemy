@@ -1,14 +1,15 @@
-//! Local host-server — x0009 Desktop Noclip (+ D/E paths).
+//! Local host-server — x0010 grabbable boxes (+ x0009 loco / D/E paths).
 //!
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
 //! - Input: Room Token verify + `is_finite` (NaN/Inf dropped before physics)
 //! - SceneManifest with default Noclip LocomotionConfig (blake3 refs; no GLB bytes)
 //! - user_root (entity 3) integrates Intent under Manifest mode; Coin (1) stays demo physics
+//! - Grabbable cuboids entity 10..18 (3×3) published on frame deltas (x0010)
 //! - Slice E: `host_control` Subscribe → `shutdown` exits process
 //!
 //! Non-guarantees:
-//! - Formula / polished Walk character controller / signed Manifest / verifier / launcher / VR loco
+//! - Grab hold (x0011) / Formula / polished Walk / signed Manifest / verifier / launcher
 
 mod finite;
 mod host_control;
@@ -28,7 +29,7 @@ use alchemy_protocol::{
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
 use room_token::{default_auth_url, fetch_auth_token, fetch_host_token, RoomTokenVerifier};
-use sim::{LocoMode, PhysicsWorld, DEFAULT_MOVE_SPEED};
+use sim::{box_color, LocoMode, PhysicsWorld, BOX_COUNT, BOX_ENTITY_FIRST, DEFAULT_MOVE_SPEED};
 use zenoh::bytes::ZBytes;
 use zenoh::Config;
 use zenoh::Wait;
@@ -137,6 +138,20 @@ fn user_root_pose_from_sim(world: &PhysicsWorld) -> Pose {
         g: 0.7,
         b: 1.0,
         a: 1.0,
+    }
+}
+
+fn box_pose_from_sim(world: &PhysicsWorld, index: usize) -> Pose {
+    let (x, y, z) = world.box_translation(index);
+    let (r, g, b, a) = box_color(index);
+    Pose {
+        x: f64::from(x),
+        y: f64::from(y),
+        z: f64::from(z),
+        r,
+        g,
+        b,
+        a,
     }
 }
 
@@ -253,7 +268,7 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "host-server x0009 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} host_control={HOST_CONTROL_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id}"
+        "host-server x0010 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} host_control={HOST_CONTROL_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
@@ -308,8 +323,11 @@ fn main() -> Result<()> {
     let mut last_manifest = Instant::now();
 
     let mut physics = PhysicsWorld::new(loco_mode, move_speed);
+    let grabbable_n = physics.boxes.grabbable.iter().filter(|&&g| g).count();
     log::info!(
-        "Rapier world ready (floor + coin entity {ENTITY_MOVING} + user_root {ENTITY_USER_ROOT} mode={:?})",
+        "Rapier world ready (floor + coin entity {ENTITY_MOVING} + user_root {ENTITY_USER_ROOT} + grabbable boxes {BOX_ENTITY_FIRST}..{} count={BOX_COUNT} grabbable={grabbable_n} half_extent={:.2} mode={:?})",
+        BOX_ENTITY_FIRST + BOX_COUNT as u32 - 1,
+        physics.boxes.half_extent,
         physics.loco_mode()
     );
 
@@ -356,18 +374,24 @@ fn main() -> Result<()> {
             continue;
         }
 
-        let poses = [
-            (ENTITY_MOVING, moving_pose_from_sim(&physics)),
-            (ENTITY_STATIC, static_marker_pose()),
-            (ENTITY_USER_ROOT, user_root_pose_from_sim(&physics)),
-        ];
+        let mut poses: Vec<(u32, Pose)> = Vec::with_capacity(3 + BOX_COUNT);
+        poses.push((ENTITY_MOVING, moving_pose_from_sim(&physics)));
+        poses.push((ENTITY_STATIC, static_marker_pose()));
+        poses.push((ENTITY_USER_ROOT, user_root_pose_from_sim(&physics)));
+        for i in 0..BOX_COUNT {
+            poses.push((physics.boxes.entity_ids[i], box_pose_from_sim(&physics, i)));
+        }
 
         let mut upserts = Vec::new();
         for (id, next_pose) in poses {
-            let should_send = match last_sent.get(&id) {
-                None => true,
-                Some(prev) => pose_changed(*prev, next_pose),
-            };
+            // Boxes always upsert: they sleep after settle, and frame is delta-only —
+            // late joiners would otherwise never see entity 10..18 (x0010).
+            let is_box = (BOX_ENTITY_FIRST..BOX_ENTITY_FIRST + BOX_COUNT as u32).contains(&id);
+            let should_send = is_box
+                || match last_sent.get(&id) {
+                    None => true,
+                    Some(prev) => pose_changed(*prev, next_pose),
+                };
             if should_send {
                 upserts.push(to_entity(id, next_pose));
                 last_sent.insert(id, next_pose);

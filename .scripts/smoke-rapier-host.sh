@@ -13,7 +13,7 @@ RUST_LOG=info timeout 8 cargo run -q -p host-server >"$LOG" 2>&1
 set -e
 
 ok=1
-if ! grep -qE "host-server (Slice D|x0009) starting" "$LOG"; then
+if ! grep -qE "host-server (Slice D|x0009|x0010) starting" "$LOG"; then
   echo "smoke-rapier-host: missing host-server start banner"
   ok=0
 fi
@@ -23,6 +23,10 @@ if ! grep -q "physics_hz=60" "$LOG" || ! grep -q "net_hz=30" "$LOG"; then
 fi
 if ! grep -q "Rapier world ready" "$LOG"; then
   echo "smoke-rapier-host: missing Rapier ready log"
+  ok=0
+fi
+if ! grep -qE "grabbable boxes 10\.\.(18|.*) count=9" "$LOG"; then
+  echo "smoke-rapier-host: missing grabbable boxes banner (x0010)"
   ok=0
 fi
 if ! grep -q "published SceneManifest revision=" "$LOG"; then
