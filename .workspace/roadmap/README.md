@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0016`**；x0015 done）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0017`**；x0016 done）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -71,8 +71,9 @@ depends_on: [x0006]
 | x0013 | — | done | Desktop Grab（RMB・look 前方レイ） | [x0013-desktop-grab.md](slices/x0013-desktop-grab.md) |
 | x0014 | — | done | LAN 2-client presence（sub 別 user_root） | [x0014-lan-two-client.md](slices/x0014-lan-two-client.md) |
 | x0015 | — | done | Presence 動的スロット割当（最大4・固定マップ廃止） | [x0015-presence-slot-assign.md](slices/x0015-presence-slot-assign.md) |
+| x0016 | — | done | Presence スロット解放（Intent 無音 TTL 3s） | [x0016-presence-slot-reclaim.md](slices/x0016-presence-slot-reclaim.md) |
 
-**現在の次:** （未定義 — x0015 完了。次の空き ID = **`x0016`**）
+**現在の次:** （未定義 — x0016 完了。次の空き ID = **`x0017`**）
 
 ## 関連
 

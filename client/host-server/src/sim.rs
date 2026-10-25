@@ -1,8 +1,9 @@
-//! Rapier world + user_roots (x0015) + grabbable boxes + Grab hold.
+//! Rapier world + user_roots (x0015) + grabbable boxes + Grab hold + slot reset (x0016).
 //!
 //! Guarantees: 60Hz-capable step; floor + coin + 3×3 cuboids (SoA grabbable);
-//! up to 4 kinematic user_roots (entity 3..6); per-slot Grab; no Steal.
-//! Non-guarantees: rotation follow, throw impulse, slot reclaim, Slot/Component, polished Walk.
+//! up to 4 kinematic user_roots (entity 3..6); per-slot Grab; no Steal;
+//! `release_slot` clears Grab and resets root to spawn (Presence TTL reclaim).
+//! Non-guarantees: rotation follow, throw impulse, Slot/Component, polished Walk.
 
 use alchemy_protocol::LocomotionMode;
 use rapier3d::prelude::*;
@@ -300,6 +301,21 @@ impl PhysicsWorld {
         body.wake_up(true);
     }
 
+    /// Presence reclaim (x0016): drop Grab and snap user_root back to spawn.
+    pub fn release_slot(&mut self, slot: usize) {
+        if slot >= USER_ROOT_SLOTS {
+            return;
+        }
+        self.release_grab(slot);
+        let (sx, sy, sz) = USER_SPAWN[slot];
+        let Some(body) = self.rigid_body_set.get_mut(self.user_roots[slot]) else {
+            return;
+        };
+        body.set_next_kinematic_translation(vector![sx, sy, sz]);
+        // Also set translation so the next read (before step) sees spawn.
+        body.set_translation(vector![sx, sy, sz], true);
+    }
+
     pub fn grab_entity_id(&self, slot: usize) -> Option<u32> {
         self.grabs
             .get(slot)
@@ -566,6 +582,33 @@ mod tests {
         let mut world = PhysicsWorld::new(LocoMode::Noclip, DEFAULT_MOVE_SPEED);
         world.apply_grab(0, true, 1, (0.0, 1.0, 0.0));
         assert!(world.grab_entity_id(0).is_none());
+    }
+
+    #[test]
+    fn release_slot_clears_grab_and_resets_spawn() {
+        let mut world = PhysicsWorld::new(LocoMode::Noclip, 10.0);
+        let dt = 1.0 / 60.0;
+        for _ in 0..60 {
+            world.apply_user_intent(0, 1.0, 0.0, 0.0, dt);
+            world.step();
+        }
+        let (x_moved, _, _) = world.user_root_translation(0);
+        assert!(x_moved > 0.5, "precondition: moved, got {x_moved}");
+        for _ in 0..30 {
+            world.step();
+        }
+        let id = BOX_ENTITY_FIRST + 4;
+        let (bx, by, bz) = world.box_translation(4);
+        world.apply_grab(0, true, id, (bx, by, bz));
+        assert_eq!(world.grab_entity_id(0), Some(id));
+        world.release_slot(0);
+        assert!(world.grab_entity_id(0).is_none());
+        let (x, y, z) = world.user_root_translation(0);
+        let (sx, sy, sz) = USER_SPAWN[0];
+        assert!(
+            (x - sx).abs() < 0.01 && (y - sy).abs() < 0.01 && (z - sz).abs() < 0.01,
+            "expected spawn ({sx},{sy},{sz}), got ({x},{y},{z})"
+        );
     }
 
     #[test]

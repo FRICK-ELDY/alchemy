@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# x0015: four user_root slots + Presence unit/banner when auth/world/zenohd are up.
+# x0016: Presence Intent TTL reclaim + four user_root slots (banner / pin).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT/client"
@@ -14,6 +14,9 @@ cargo test -q -p host-server -- \
   sim::tests::two_slots_move_independently \
   sim::tests::four_slots_have_distinct_spawns \
   sim::tests::grab_no_steal_from_other_slot \
+  sim::tests::release_slot_clears_grab_and_resets_spawn \
+  presence_reclaim_tests::reclaim_stale_frees_slot_for_reuse \
+  presence_reclaim_tests::same_sub_before_ttl_keeps_slot \
   --exact
 
 cargo test -q -p client -- \
@@ -39,20 +42,24 @@ if grep -qE "Unable to connect|zenoh open failed|Connection refused" "$LOG"; the
 fi
 
 ok=1
-if ! grep -qE "host-server x0015 starting" "$LOG"; then
-  echo "smoke-presence-slots: missing host-server x0015 start banner"
+if ! grep -qE "host-server x0016 starting" "$LOG"; then
+  echo "smoke-presence-slots: missing host-server x0016 start banner"
   ok=0
 fi
 if ! grep -q "user_roots=3..6" "$LOG"; then
   echo "smoke-presence-slots: missing user_roots=3..6 in banner"
   ok=0
 fi
+if ! grep -q "presence_ttl_secs=3" "$LOG"; then
+  echo "smoke-presence-slots: missing presence_ttl_secs=3 in banner"
+  ok=0
+fi
 if ! grep -q "presence=alchemy/dev/room/local/presence" "$LOG"; then
   echo "smoke-presence-slots: missing presence key in banner"
   ok=0
 fi
-if ! grep -q "protocol_pin=alchemy-protocol/0.6.0-x0015" "$LOG"; then
-  echo "smoke-presence-slots: missing PROTOCOL_PIN 0.6.0-x0015"
+if ! grep -q "protocol_pin=alchemy-protocol/0.7.0-x0016" "$LOG"; then
+  echo "smoke-presence-slots: missing PROTOCOL_PIN 0.7.0-x0016"
   ok=0
 fi
 if ! grep -q "published PresenceState revision=0" "$LOG"; then
@@ -76,4 +83,4 @@ if [[ "$ok" -ne 1 ]]; then
 fi
 
 rm -f "$LOG"
-echo "smoke-presence-slots: ok (manual: alice/bob/carol clients — see x0015 slice)"
+echo "smoke-presence-slots: ok (manual: stop a client ~3s → slot reclaim — see x0016 slice)"

@@ -3,6 +3,7 @@ syntax = "proto3";
 package alchemy.presence;
 
 // x0015: low-frequency host presence (Token `sub` → user_root entity).
+// x0016: host may shrink assignments on Intent TTL reclaim (same schema).
 // Occupied slots only. PROTOCOL_PIN must bump when this schema changes incompatibly.
 
 message PresenceState {

@@ -408,7 +408,7 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "client x0015 starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} presence={PRESENCE_KEY_LOCAL} auth_user={auth_user}"
+        "client x0016 starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} presence={PRESENCE_KEY_LOCAL} auth_user={auth_user}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
