@@ -1,10 +1,10 @@
-//! Shared scene GPU (Coin + floor + grabbable boxes). Surface-agnostic: render into any color+depth views.
+//! Shared scene GPU (Coin + floor + grabbable boxes + remote user_roots).
 //!
 //! MoveIntent carries Grab hold fields for x0011 (host kinematic follow).
 //! `CameraLook` is Desktop-local (x0012); not published on Zenoh.
 //!
-//! Guarantees: draw with caller-supplied view/proj; boxes 10..18 as unit cubes (x0010).
-//! Non-guarantees: XR swapchain ownership, system_ui layout, Desktop Grab.
+//! Guarantees: draw with caller-supplied view/proj; boxes 10..18; remote roots 3/4 (x0014).
+//! Non-guarantees: XR swapchain ownership, system_ui layout, avatar GLB.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -19,13 +19,29 @@ use wgpu::util::DeviceExt;
 use crate::mesh::CpuMesh;
 
 pub const MESH_ENTITY_ID: u32 = 1;
-/// Host-authoritative player root (x0009 Noclip camera position).
+/// Host-authoritative player roots (x0014: alice→3, bob→4). Prefer [`local_user_root_entity`].
 pub const USER_ROOT_ENTITY_ID: u32 = 3;
+pub const USER_ROOT_ENTITY_SECOND: u32 = 4;
+pub const USER_ROOT_SLOTS: u32 = 2;
 /// First entity id for the 3×3 grabbable grid (matches host x0010).
 pub const BOX_ENTITY_FIRST: u32 = 10;
 pub const BOX_COUNT: usize = 9;
 /// Half-extent of each cuboid (meters). Matches host `BOX_HALF_EXTENT`.
 pub const BOX_HALF_EXTENT: f32 = 0.25;
+/// Placeholder size for remote player (meters half-extent).
+pub const REMOTE_ROOT_HALF_EXTENT: f32 = 0.25;
+
+/// Demo map (x0014): `AUTH_USER=alice` → entity 3, `bob` → 4. Start alice before bob.
+pub fn local_user_root_entity(auth_user: &str) -> u32 {
+    match auth_user {
+        "bob" => USER_ROOT_ENTITY_SECOND,
+        _ => USER_ROOT_ENTITY_ID,
+    }
+}
+
+pub fn is_user_root_entity(id: u32) -> bool {
+    (USER_ROOT_ENTITY_ID..USER_ROOT_ENTITY_ID + USER_ROOT_SLOTS).contains(&id)
+}
 /// Half-extent of Desktop floor (meters). Larger so loco is obvious.
 const FLOOR_EXTENT: f32 = 20.0;
 /// Default eye height if user_root not yet received.
@@ -67,6 +83,10 @@ impl EntityPose {
 
     pub fn is_grabbable_box(id: u32) -> bool {
         (BOX_ENTITY_FIRST..BOX_ENTITY_FIRST + BOX_COUNT as u32).contains(&id)
+    }
+
+    pub fn is_user_root(id: u32) -> bool {
+        is_user_root_entity(id)
     }
 }
 
@@ -117,6 +137,8 @@ pub struct Uniforms {
 }
 
 pub struct SharedState {
+    /// Local camera / aim follows this host entity (x0014 alice=3, bob=4).
+    pub local_user_root: u32,
     pub entities: Mutex<std::collections::HashMap<u32, EntityPose>>,
     pub look: Mutex<CameraLook>,
     pub intent: Mutex<MoveIntent>,
@@ -364,13 +386,19 @@ impl SceneGpu {
     }
 
     pub fn user_root_pose(&self) -> EntityPose {
+        let id = self.shared.local_user_root;
+        let spawn_x = if id == USER_ROOT_ENTITY_SECOND {
+            1.5
+        } else {
+            0.0
+        };
         self.shared
             .entities
             .lock()
             .ok()
-            .and_then(|m| m.get(&USER_ROOT_ENTITY_ID).copied())
+            .and_then(|m| m.get(&id).copied())
             .unwrap_or(EntityPose {
-                x: 0.0,
+                x: spawn_x,
                 y: DEFAULT_EYE_Y,
                 z: 6.0,
                 ..Default::default()
@@ -492,18 +520,27 @@ impl SceneGpu {
             pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.index_count, 0, 0..1);
 
-            // Grabbable boxes (x0010): unit cube scaled to 2*BOX_HALF_EXTENT.
+            // Grabbable boxes (x0010) + remote user_roots (x0014): unit cube mesh.
             // Per-slot UBOs — rewriting one buffer inside the pass would show only the last cube.
-            let boxes: Vec<(u32, EntityPose)> = self
+            let local_root = self.shared.local_user_root;
+            type PoseList = Vec<(u32, EntityPose)>;
+            let (boxes, remotes): (PoseList, PoseList) = self
                 .shared
                 .entities
                 .lock()
                 .ok()
                 .map(|m| {
-                    m.iter()
+                    let boxes: PoseList = m
+                        .iter()
                         .filter(|(id, _)| EntityPose::is_grabbable_box(**id))
                         .map(|(id, p)| (*id, *p))
-                        .collect()
+                        .collect();
+                    let remotes: PoseList = m
+                        .iter()
+                        .filter(|(id, _)| EntityPose::is_user_root(**id) && **id != local_root)
+                        .map(|(id, p)| (*id, *p))
+                        .collect();
+                    (boxes, remotes)
                 })
                 .unwrap_or_default();
             pass.set_vertex_buffer(0, self.box_vertex_buffer.slice(..));
@@ -528,6 +565,26 @@ impl SceneGpu {
                 let box_uniforms = Uniforms {
                     mvp: (proj * view * model).to_cols_array_2d(),
                     color,
+                };
+                self.queue.write_buffer(
+                    &self.box_uniform_buffers[slot],
+                    0,
+                    bytemuck::bytes_of(&box_uniforms),
+                );
+                pass.set_bind_group(0, &self.box_bind_groups[slot], &[]);
+                pass.draw_indexed(0..self.box_index_count, 0, 0..1);
+            }
+            // Remote players: reuse box mesh + last UBO slots (BOX_COUNT-2 / BOX_COUNT-1).
+            for (i, (_id, pose)) in remotes.iter().enumerate() {
+                let slot = (BOX_COUNT - 1 - i).min(BOX_COUNT - 1);
+                let model = Mat4::from_scale_rotation_translation(
+                    Vec3::splat(REMOTE_ROOT_HALF_EXTENT * 2.0),
+                    glam::Quat::IDENTITY,
+                    pose.position(),
+                );
+                let box_uniforms = Uniforms {
+                    mvp: (proj * view * model).to_cols_array_2d(),
+                    color: pose.color(),
                 };
                 self.queue.write_buffer(
                     &self.box_uniform_buffers[slot],

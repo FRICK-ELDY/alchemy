@@ -40,9 +40,9 @@ cd zenoh-router
 zenohd -c config.json5
 ```
 
-既定リスナ: `tcp/127.0.0.1:7447`
+既定リスナ: `tcp/127.0.0.1:7447` と **`tcp/0.0.0.0:7447`**（x0014 LAN）。
 
-host-server / client は **client モード**でこのエンドポイントへ接続する。
+host-server / client は **client モード**で接続する。エンドポイントは環境変数 **`ZENOH_CONNECT`**（既定 `tcp/127.0.0.1:7447`）。LAN 上の他マシンからは `ZENOH_CONNECT=tcp/<PC_IP>:7447`。
 
 ## トークン検証
 

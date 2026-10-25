@@ -8,8 +8,8 @@
 | 保証する | 保証しない |
 |:---|:---|
 | 同一マシン / LAN の pub-sub | JWKS / Room Token ACL（検証は host-server） |
-| TCP リスナ `127.0.0.1:7447` | CCU・帯域 QoS |
-| | VPS ブリッジ・マルチテナント隔離 |
+| TCP リスナ `127.0.0.1:7447` + `0.0.0.0:7447`（x0014） | CCU・帯域 QoS |
+| client/host の `ZENOH_CONNECT`（既定 localhost） | VPS ブリッジ・マルチテナント隔離 |
 
 ## MVP キー式
 

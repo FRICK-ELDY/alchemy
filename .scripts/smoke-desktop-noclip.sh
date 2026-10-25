@@ -14,7 +14,7 @@ RUST_LOG=info timeout 8 cargo run -q -p host-server >"$LOG" 2>&1
 set -e
 
 ok=1
-if ! grep -qE "host-server (x0009|x0010|x0011) starting" "$LOG"; then
+if ! grep -qE "host-server (x0009|x0010|x0011|x0014) starting" "$LOG"; then
   echo "smoke-desktop-noclip: missing host-server start banner"
   ok=0
 fi

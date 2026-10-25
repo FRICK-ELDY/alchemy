@@ -1,8 +1,8 @@
-//! Rapier world + user_root locomotion + grabbable boxes + Grab hold (x0011).
+//! Rapier world + dual user_root (x0014) + grabbable boxes + Grab hold.
 //!
-//! Guarantees: 60Hz-capable step; floor + coin + 3×3 cuboids (SoA grabbable); user_root Noclip;
-//! Grab hold kinematic follow (`aim + offset`) and release → dynamic.
-//! Non-guarantees: Steal, rotation follow, throw impulse, Slot/Component, polished Walk.
+//! Guarantees: 60Hz-capable step; floor + coin + 3×3 cuboids (SoA grabbable);
+//! up to 2 kinematic user_roots (entity 3/4); per-slot Grab; no Steal.
+//! Non-guarantees: rotation follow, throw impulse, Slot/Component, polished Walk.
 
 use alchemy_protocol::LocomotionMode;
 use rapier3d::prelude::*;
@@ -15,8 +15,8 @@ const BALL_RADIUS: f32 = 0.25;
 pub const SPAWN_Y: f32 = 5.0;
 /// Demo gravity (weaker than Earth) so the drop lasts ~2s and is easy to see.
 const DEMO_GRAVITY_Y: f32 = -2.2;
-/// user_root spawn (eye height-ish above floor).
-pub const USER_SPAWN: (f32, f32, f32) = (0.0, 1.6, 6.0);
+/// user_root spawn (eye height-ish above floor). Slot 1 is offset on +X.
+pub const USER_SPAWN: [(f32, f32, f32); USER_ROOT_SLOTS] = [(0.0, 1.6, 6.0), (1.5, 1.6, 6.0)];
 
 /// First entity id for the 3×3 grabbable grid (10..18).
 pub const BOX_ENTITY_FIRST: u32 = 10;
@@ -27,6 +27,10 @@ pub const BOX_HALF_EXTENT: f32 = 0.25;
 const BOX_SPACING: f32 = 0.8;
 /// Grid center on XZ — ~2.5 m in front of [`USER_SPAWN`] (z=6 → z=3.5) so XR facing -Z sees them.
 const BOX_GRID_CENTER: (f32, f32) = (0.0, 3.5);
+
+/// Max simultaneous players (x0014). Entity ids = [`USER_ROOT_ENTITY_FIRST`] .. +SLOTS-1.
+pub const USER_ROOT_SLOTS: usize = 2;
+pub const USER_ROOT_ENTITY_FIRST: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LocoMode {
@@ -92,7 +96,7 @@ impl GrabbableBoxes {
     }
 }
 
-/// Active Grab hold (one hand / one entity for x0011).
+/// Active Grab hold for one user_root slot (x0011 / x0014).
 #[derive(Clone, Copy, Debug)]
 struct ActiveGrab {
     index: usize,
@@ -113,12 +117,12 @@ pub struct PhysicsWorld {
     multibody_joint_set: MultibodyJointSet,
     ccd_solver: CCDSolver,
     moving: RigidBodyHandle,
-    /// Authoritative player root (kinematic; Noclip ignores collision).
-    user_root: RigidBodyHandle,
+    /// Authoritative player roots (kinematic; Noclip ignores collision).
+    user_roots: [RigidBodyHandle; USER_ROOT_SLOTS],
     pub boxes: GrabbableBoxes,
     loco_mode: LocoMode,
     move_speed: f32,
-    grab: Option<ActiveGrab>,
+    grabs: [Option<ActiveGrab>; USER_ROOT_SLOTS],
 }
 
 impl PhysicsWorld {
@@ -150,17 +154,24 @@ impl PhysicsWorld {
 
         let boxes = GrabbableBoxes::spawn(&mut rigid_body_set, &mut collider_set);
 
-        let (ux, uy, uz) = USER_SPAWN;
-        let user = RigidBodyBuilder::kinematic_position_based()
-            .translation(vector![ux, uy, uz])
-            .build();
-        let user_root = rigid_body_set.insert(user);
-        // Sensor collider so Noclip never blocks; Walk/Fly may use later.
-        collider_set.insert_with_parent(
-            ColliderBuilder::ball(0.3).sensor(true).build(),
-            user_root,
-            &mut rigid_body_set,
-        );
+        let mut user_root_handles = Vec::with_capacity(USER_ROOT_SLOTS);
+        for spawn in USER_SPAWN {
+            let (ux, uy, uz) = spawn;
+            let user = RigidBodyBuilder::kinematic_position_based()
+                .translation(vector![ux, uy, uz])
+                .build();
+            let handle = rigid_body_set.insert(user);
+            // Sensor collider so Noclip never blocks; Walk/Fly may use later.
+            collider_set.insert_with_parent(
+                ColliderBuilder::ball(0.3).sensor(true).build(),
+                handle,
+                &mut rigid_body_set,
+            );
+            user_root_handles.push(handle);
+        }
+        let user_roots: [RigidBodyHandle; USER_ROOT_SLOTS] = user_root_handles
+            .try_into()
+            .expect("USER_ROOT_SLOTS handles");
 
         let speed = if move_speed > 0.0 {
             move_speed
@@ -184,12 +195,16 @@ impl PhysicsWorld {
             multibody_joint_set: MultibodyJointSet::new(),
             ccd_solver: CCDSolver::new(),
             moving,
-            user_root,
+            user_roots,
             boxes,
             loco_mode,
             move_speed: speed,
-            grab: None,
+            grabs: [None; USER_ROOT_SLOTS],
         }
+    }
+
+    pub fn user_root_entity_id(slot: usize) -> u32 {
+        USER_ROOT_ENTITY_FIRST + slot as u32
     }
 
     fn entity_index(&self, entity_id: u32) -> Option<usize> {
@@ -206,15 +221,30 @@ impl PhysicsWorld {
         }
     }
 
-    /// Begin / hold / release Grab. `want_grab` is GRAB button; `entity_id==0` means none.
-    /// Aim is world-space controller origin (meters).
-    pub fn apply_grab(&mut self, want_grab: bool, entity_id: u32, aim: (f32, f32, f32)) {
-        let aim_v = vector![aim.0, aim.1, aim.2];
-        if !want_grab {
-            self.release_grab();
+    fn box_held_by_other(&self, slot: usize, box_index: usize) -> bool {
+        self.grabs
+            .iter()
+            .enumerate()
+            .any(|(s, g)| s != slot && g.map(|ag| ag.index == box_index).unwrap_or(false))
+    }
+
+    /// Begin / hold / release Grab for one user_root slot. Steal is ignored (x0014).
+    pub fn apply_grab(
+        &mut self,
+        slot: usize,
+        want_grab: bool,
+        entity_id: u32,
+        aim: (f32, f32, f32),
+    ) {
+        if slot >= USER_ROOT_SLOTS {
             return;
         }
-        if let Some(g) = self.grab {
+        let aim_v = vector![aim.0, aim.1, aim.2];
+        if !want_grab {
+            self.release_grab(slot);
+            return;
+        }
+        if let Some(g) = self.grabs[slot] {
             // Hold: keep following even if client stops sending id (defensive).
             self.follow_grab(g, aim_v);
             return;
@@ -222,6 +252,9 @@ impl PhysicsWorld {
         let Some(index) = self.entity_index(entity_id) else {
             return;
         };
+        if self.box_held_by_other(slot, index) {
+            return;
+        }
         let handle = self.boxes.handles[index];
         let Some(body) = self.rigid_body_set.get_mut(handle) else {
             return;
@@ -233,7 +266,7 @@ impl PhysicsWorld {
         body.set_angvel(vector![0.0, 0.0, 0.0], true);
         body.set_next_kinematic_translation(t);
         let g = ActiveGrab { index, offset };
-        self.grab = Some(g);
+        self.grabs[slot] = Some(g);
         self.follow_grab(g, aim_v);
     }
 
@@ -245,8 +278,8 @@ impl PhysicsWorld {
         body.set_next_kinematic_translation(aim + g.offset);
     }
 
-    fn release_grab(&mut self) {
-        let Some(g) = self.grab.take() else {
+    fn release_grab(&mut self, slot: usize) {
+        let Some(g) = self.grabs[slot].take() else {
             return;
         };
         let handle = self.boxes.handles[g.index];
@@ -262,8 +295,10 @@ impl PhysicsWorld {
         body.wake_up(true);
     }
 
-    pub fn grab_entity_id(&self) -> Option<u32> {
-        self.grab.map(|g| self.boxes.entity_ids[g.index])
+    pub fn grab_entity_id(&self, slot: usize) -> Option<u32> {
+        self.grabs
+            .get(slot)
+            .and_then(|g| g.map(|ag| self.boxes.entity_ids[ag.index]))
     }
 
     pub fn loco_mode(&self) -> LocoMode {
@@ -288,11 +323,13 @@ impl PhysicsWorld {
         );
     }
 
-    /// Integrate user_root from camera-relative intent (move_* in ~-1..1).
-    /// Intent axes: +X right, +Y up, +Z forward (already world-projected by client for XZ).
-    pub fn apply_user_intent(&mut self, mx: f32, my: f32, mz: f32, dt: f32) {
+    /// Integrate one user_root from camera-relative intent (move_* in ~-1..1).
+    pub fn apply_user_intent(&mut self, slot: usize, mx: f32, my: f32, mz: f32, dt: f32) {
+        if slot >= USER_ROOT_SLOTS {
+            return;
+        }
         let speed = self.move_speed;
-        let Some(body) = self.rigid_body_set.get_mut(self.user_root) else {
+        let Some(body) = self.rigid_body_set.get_mut(self.user_roots[slot]) else {
             return;
         };
         let t = *body.translation();
@@ -322,14 +359,18 @@ impl PhysicsWorld {
             .unwrap_or((0.0, SPAWN_Y, 0.0))
     }
 
-    pub fn user_root_translation(&self) -> (f32, f32, f32) {
+    pub fn user_root_translation(&self, slot: usize) -> (f32, f32, f32) {
+        let fallback = USER_SPAWN.get(slot).copied().unwrap_or(USER_SPAWN[0]);
+        if slot >= USER_ROOT_SLOTS {
+            return fallback;
+        }
         self.rigid_body_set
-            .get(self.user_root)
+            .get(self.user_roots[slot])
             .map(|b| {
                 let t = b.translation();
                 (t.x, t.y, t.z)
             })
-            .unwrap_or(USER_SPAWN)
+            .unwrap_or(fallback)
     }
 
     pub fn box_translation(&self, index: usize) -> (f32, f32, f32) {
@@ -360,6 +401,14 @@ pub fn box_color(index: usize) -> (f32, f32, f32, f32) {
     (r, g, b, 1.0)
 }
 
+/// Distinct tint per user_root slot (remote avatar placeholder).
+pub fn user_root_color(slot: usize) -> (f32, f32, f32, f32) {
+    match slot {
+        0 => (0.4, 0.7, 1.0, 1.0),
+        _ => (1.0, 0.55, 0.25, 1.0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,11 +432,27 @@ mod tests {
         let dt = 1.0 / 60.0;
         // Drive straight down through the floor plane.
         for _ in 0..120 {
-            world.apply_user_intent(0.0, -1.0, 0.0, dt);
+            world.apply_user_intent(0, 0.0, -1.0, 0.0, dt);
             world.step();
         }
-        let (_, y, _) = world.user_root_translation();
+        let (_, y, _) = world.user_root_translation(0);
         assert!(y < 0.0, "noclip should pass below floor, got y={y}");
+    }
+
+    #[test]
+    fn two_slots_move_independently() {
+        let mut world = PhysicsWorld::new(LocoMode::Noclip, 10.0);
+        let dt = 1.0 / 60.0;
+        for _ in 0..60 {
+            world.apply_user_intent(0, 1.0, 0.0, 0.0, dt);
+            world.apply_user_intent(1, -1.0, 0.0, 0.0, dt);
+            world.step();
+        }
+        let (x0, _, _) = world.user_root_translation(0);
+        let (x1, _, _) = world.user_root_translation(1);
+        assert!(x0 > 0.5, "slot0 should move +X, got {x0}");
+        assert!(x1 < 1.0, "slot1 should move -X from 1.5, got {x1}");
+        assert!(x0 > x1, "slot0 ahead of slot1 on X");
     }
 
     #[test]
@@ -439,12 +504,12 @@ mod tests {
         let id = BOX_ENTITY_FIRST + 4; // center
         let (bx, by, bz) = world.box_translation(4);
         let aim0 = (bx - 0.1, by, bz - 0.2);
-        world.apply_grab(true, id, aim0);
-        assert_eq!(world.grab_entity_id(), Some(id));
+        world.apply_grab(0, true, id, aim0);
+        assert_eq!(world.grab_entity_id(0), Some(id));
         // Lift high and clear of the 3×3 grid so release falls to the floor.
         let aim1 = (aim0.0 + 3.0, aim0.1 + 2.5, aim0.2);
         for _ in 0..10 {
-            world.apply_grab(true, id, aim1);
+            world.apply_grab(0, true, id, aim1);
             world.step();
         }
         let (x, y, z) = world.box_translation(4);
@@ -455,8 +520,8 @@ mod tests {
             by + 2.5,
             bz
         );
-        world.apply_grab(false, 0, aim1);
-        assert!(world.grab_entity_id().is_none());
+        world.apply_grab(0, false, 0, aim1);
+        assert!(world.grab_entity_id(0).is_none());
         for _ in 0..300 {
             world.step();
         }
@@ -470,7 +535,22 @@ mod tests {
     #[test]
     fn grab_ignores_non_box_entity() {
         let mut world = PhysicsWorld::new(LocoMode::Noclip, DEFAULT_MOVE_SPEED);
-        world.apply_grab(true, 1, (0.0, 1.0, 0.0));
-        assert!(world.grab_entity_id().is_none());
+        world.apply_grab(0, true, 1, (0.0, 1.0, 0.0));
+        assert!(world.grab_entity_id(0).is_none());
+    }
+
+    #[test]
+    fn grab_no_steal_from_other_slot() {
+        let mut world = PhysicsWorld::new(LocoMode::Noclip, DEFAULT_MOVE_SPEED);
+        for _ in 0..60 {
+            world.step();
+        }
+        let id = BOX_ENTITY_FIRST + 4;
+        let (bx, by, bz) = world.box_translation(4);
+        world.apply_grab(0, true, id, (bx, by, bz));
+        assert_eq!(world.grab_entity_id(0), Some(id));
+        world.apply_grab(1, true, id, (bx + 1.0, by, bz));
+        assert!(world.grab_entity_id(1).is_none());
+        assert_eq!(world.grab_entity_id(0), Some(id));
     }
 }

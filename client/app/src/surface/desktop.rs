@@ -25,7 +25,7 @@ use crate::host_control;
 use crate::mesh::CpuMesh;
 use crate::scene::{
     create_depth_view, create_wgpu_for_window, CameraLook, EntityPose, MoveIntent, SceneGpu,
-    SharedState, USER_ROOT_ENTITY_ID,
+    SharedState,
 };
 use crate::system_ui::{SystemUi, UiAction};
 use crate::world_hit::{desktop_look_ray, pick_grabbable_desktop};
@@ -310,14 +310,20 @@ impl App {
     }
 
     fn eye_and_look(&self) -> (EntityPose, CameraLook) {
+        let id = self.shared.local_user_root;
+        let spawn_x = if id == crate::scene::USER_ROOT_ENTITY_SECOND {
+            1.5
+        } else {
+            0.0
+        };
         let eye = self
             .shared
             .entities
             .lock()
             .ok()
-            .and_then(|g| g.get(&USER_ROOT_ENTITY_ID).copied())
+            .and_then(|g| g.get(&id).copied())
             .unwrap_or(EntityPose {
-                x: 0.0,
+                x: spawn_x,
                 y: 1.6,
                 z: 6.0,
                 ..Default::default()
