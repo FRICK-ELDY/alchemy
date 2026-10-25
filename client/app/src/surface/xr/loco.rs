@@ -11,11 +11,13 @@ use glam::{Quat, Vec3};
 
 /// Default stick deadzone (per-axis for Y move / used by turn module for X).
 pub const STICK_DEADZONE: f32 = 0.15;
+/// Two hands can stack move Intent up to this length (same direction adds).
+pub const MAX_MOVE_FROM_HANDS: f32 = 2.0;
 
-fn clamp_unit(v: Vec3) -> Vec3 {
+fn clamp_len(v: Vec3, max: f32) -> Vec3 {
     let l = v.length();
-    if l > 1.0 {
-        v / l
+    if l > max && l > 1e-6 {
+        v * (max / l)
     } else {
         v
     }
@@ -42,9 +44,10 @@ pub fn stick_y_to_world(orientation: Quat, stick_y: f32, deadzone: f32) -> Vec3 
     stick_to_world(orientation, 0.0, stick_y, deadzone)
 }
 
-/// Add left and right hand world vectors; clamp length to ≤ 1.
+/// Add left and right hand world vectors.
+/// Same direction stacks (up to [`MAX_MOVE_FROM_HANDS`]); opposite directions cancel.
 pub fn combine_hands(left: Vec3, right: Vec3) -> Vec3 {
-    clamp_unit(left + right)
+    clamp_len(left + right, MAX_MOVE_FROM_HANDS)
 }
 
 /// Sum both sticks' X for turn, clamp to [-1, 1].
@@ -52,13 +55,13 @@ pub fn combine_turn_axes(left_x: f32, right_x: f32) -> f32 {
     (left_x + right_x).clamp(-1.0, 1.0)
 }
 
-/// Scale by `max_speed / default_speed` then re-clamp to unit length.
+/// Scale by `max_speed / default_speed`; keep two-hand stack up to [`MAX_MOVE_FROM_HANDS`].
 pub fn apply_max_speed_scale(v: Vec3, max_speed: f32, default_speed: f32) -> Vec3 {
     if !max_speed.is_finite() || !default_speed.is_finite() || default_speed <= 0.0 {
         return Vec3::ZERO;
     }
     let factor = (max_speed / default_speed).clamp(0.0, 1.0);
-    clamp_unit(v * factor)
+    clamp_len(v * factor, MAX_MOVE_FROM_HANDS)
 }
 
 /// Both hands: Y → aim-relative move (additive); X is ignored here (turn is separate).
@@ -109,22 +112,45 @@ mod tests {
     }
 
     #[test]
-    fn combine_hands_adds_then_clamps() {
-        let c = combine_hands(Vec3::X, Vec3::X);
-        assert!((c.length() - 1.0).abs() < 1e-5);
-        assert!((c.x - 1.0).abs() < 1e-5);
+    fn combine_hands_same_direction_stacks() {
+        let c = combine_hands(Vec3::NEG_Z, Vec3::NEG_Z);
+        assert!((c.length() - 2.0).abs() < 1e-5, "got {c:?}");
+        assert!((c.z + 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn combine_hands_opposite_cancels() {
+        let c = combine_hands(Vec3::NEG_Z, Vec3::Z);
+        assert!(c.length() < 1e-5, "got {c:?}");
     }
 
     #[test]
     fn combine_hands_orthogonal_diagonal() {
         let c = combine_hands(Vec3::X, Vec3::NEG_Z);
-        assert!((c.length() - 1.0).abs() < 1e-5);
+        assert!((c.length() - std::f32::consts::SQRT_2).abs() < 1e-4);
     }
 
     #[test]
     fn max_speed_half_scales() {
         let v = apply_max_speed_scale(Vec3::NEG_Z, 2.0, 4.0);
         assert!((v.z + 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn both_full_forward_reaches_two() {
+        let v = intent_from_sticks(
+            Quat::IDENTITY,
+            (0.0, 1.0),
+            Quat::IDENTITY,
+            (0.0, 1.0),
+            4.0,
+            4.0,
+            0.0,
+        );
+        assert!(
+            (v.z + 2.0).abs() < 1e-4,
+            "two hands same way should stack to 2, got {v:?}"
+        );
     }
 
     #[test]
@@ -166,7 +192,10 @@ mod tests {
             0.0,
         );
         // 0.5+0.5 = 1.0 forward (−Z)
-        assert!((v.z + 1.0).abs() < 1e-4, "expected full forward, got {v:?}");
+        assert!(
+            (v.z + 1.0).abs() < 1e-4,
+            "expected stacked 1.0 forward, got {v:?}"
+        );
     }
 
     #[test]
