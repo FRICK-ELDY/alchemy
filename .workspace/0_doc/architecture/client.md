@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: x000d（コントローラ animatable node）。Desktop WASD / XR ロコ維持
+> **ステータス**: x000e（VR UI レーザーポインタ）。Desktop WASD / XR ロコ維持
 
 ## レイアウト
 
@@ -26,6 +26,7 @@
 | Desktop: WASD/Space/C → Intent。カメラは user_root（マウスルックは後続） | Pointer Lock / マウスルック |
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
 | OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose + 埋め込み baseColor + animatable node） | SteamVR パス直読み／PBR（MR/normal 等）／手トラ |
+| OpenXR: ダッシュ開中の aim レーザー可視化（Select で Exit 等） | ホバーハイライト・ダッシュ閉時ワールドレーザー |
 | auth login → Bearer 付き Room Token → InputEvent | OSC / Dual Editor / launcher 本実装 |
 | host: Rapier 60Hz + `is_finite` + Manifest Noclip → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk |
 | ESC（Desktop）/ Menu（OpenXR）ダッシュ・client 終了・host 終了スタブ | Grab / Context / Primary ツール本体 |
@@ -50,12 +51,12 @@
 | Y / T / R | Primary / Context / Secondary（キーのみスタブ） |
 | マウス | ダッシュ UI クリックのみ（look / Pointer Lock は後続） |
 
-## OpenXR バインド（x000a / x000b / x000c / x000d）
+## OpenXR バインド（x000a / x000b / x000c / x000d / x000e）
 
 | 入力 | 役割 |
 |:---|:---|
 | Menu | ダッシュ開閉（開いている間は移動 Intent = 0） |
-| Select + aim | ダッシュ UI クリック |
+| Select + aim | ダッシュ UI クリック（開中は aim レーザー可視化） |
 | 左右 thumbstick Y | その手の aim 相対で前後移動（L+R 加算） |
 | 左右 thumbstick X | コンフォートターン（L+R 加算。既定 Snap 30° / Smooth 切替可） |
 | Settings タブ | max speed・snap 角・smooth 速度の既定表示。Turn モードはタップで切替 |
@@ -76,4 +77,4 @@
 - 転送: [zenoh-router.md](zenoh-router.md)
 - Room Token: [world-server.md](world-server.md)
 - Blob CAS: [assets-server.md](assets-server.md)
-- Slice: [x000d-vr-controller-animatable-nodes.md](../roadmap/slices/x000d-vr-controller-animatable-nodes.md) · [x000c](../roadmap/slices/x000c-vr-controller-glb-textures.md) · [x000b](../roadmap/slices/x000b-vr-controller-render-models.md) · [x000a](../roadmap/slices/x000a-vr-thumbstick-noclip.md) · [x0009](../roadmap/slices/x0009-desktop-noclip-loco.md)
+- Slice: [x000e-vr-ui-laser-pointer.md](../roadmap/slices/x000e-vr-ui-laser-pointer.md) · [x000d](../roadmap/slices/x000d-vr-controller-animatable-nodes.md) · [x000c](../roadmap/slices/x000c-vr-controller-glb-textures.md) · [x000b](../roadmap/slices/x000b-vr-controller-render-models.md) · [x000a](../roadmap/slices/x000a-vr-thumbstick-noclip.md) · [x0009](../roadmap/slices/x0009-desktop-noclip-loco.md)
