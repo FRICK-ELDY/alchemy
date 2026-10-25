@@ -1,9 +1,12 @@
-//! GLB → CPU mesh (Slice C-B / x000b flatten / x000c baseColor).
+//! GLB → CPU mesh (Slice C-B / x000b flatten / x000c baseColor / x000d rig).
 //!
 //! Guarantees: BLAKE3 verify before decode; first mesh positions (+ indices if present);
 //! `load_flattened_mesh_from_glb` bakes node transforms across primitives;
-//! `load_flattened_textured_from_glb` adds TEXCOORD_0 + optional baseColor RGBA + factor.
-//! Non-guarantees: PBR maps, skins, animations, external URI textures, Coin textured draw.
+//! `load_flattened_textured_from_glb` adds TEXCOORD_0 + optional baseColor RGBA + factor;
+//! `load_textured_rigged_from_glb` keeps a node hierarchy for runtime-replaced locals.
+//! Non-guarantees: PBR maps, skins, morphs, external URI textures, Coin textured draw.
+
+use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
 use glam::{Mat4, Quat, Vec3};
@@ -28,7 +31,17 @@ pub struct CpuRgbaImage {
     pub pixels: Vec<u8>,
 }
 
-/// One glTF primitive after node-transform bake (x000c).
+/// One node in a textured rig (x000d). World = parent_world * local.
+#[derive(Clone, Copy, Debug)]
+pub struct RigNode {
+    pub parent: Option<usize>,
+    /// Index into the runtime animatable-state array. `None` → use [`Self::asset_local`].
+    pub anim_index: Option<u32>,
+    /// glTF local transform. Replaced by runtime pose when `anim_index` is `Some`.
+    pub asset_local: Mat4,
+}
+
+/// One glTF primitive (x000c / x000d).
 #[derive(Clone, Debug)]
 pub struct CpuSubmesh {
     pub positions: Vec<[f32; 3]>,
@@ -37,11 +50,14 @@ pub struct CpuSubmesh {
     /// Present only when baseColorTexture + TEXCOORD_0 were both available.
     pub base_color: Option<CpuRgbaImage>,
     pub base_color_factor: [f32; 4],
+    /// Index into [`CpuTexturedMesh::nodes`] (mesh-local verts).
+    pub node_index: usize,
 }
 
-/// Flattened GLB as per-primitive submeshes (OpenXR controller path, x000c).
+/// Textured GLB as per-primitive submeshes + optional rig (OpenXR controller path).
 #[derive(Clone, Debug)]
 pub struct CpuTexturedMesh {
+    pub nodes: Vec<RigNode>,
     pub submeshes: Vec<CpuSubmesh>,
     /// Framing radius (parity with [`CpuMesh`]; XR draws at root pose).
     #[allow(dead_code)]
@@ -119,11 +135,14 @@ fn framing_radius(positions: &[[f32; 3]]) -> f32 {
     max_sq.sqrt().max(0.1)
 }
 
-fn framing_radius_submeshes(submeshes: &[CpuSubmesh]) -> f32 {
+fn framing_radius_rigged(nodes: &[RigNode], submeshes: &[CpuSubmesh]) -> f32 {
+    let worlds = rest_pose_worlds(nodes);
     let mut max_sq = 0.0_f32;
     for s in submeshes {
+        let world = worlds.get(s.node_index).copied().unwrap_or(Mat4::IDENTITY);
         for p in &s.positions {
-            let sq = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
+            let v = world.transform_point3(Vec3::from(*p));
+            let sq = v.length_squared();
             if sq > max_sq {
                 max_sq = sq;
             }
@@ -132,9 +151,39 @@ fn framing_radius_submeshes(submeshes: &[CpuSubmesh]) -> f32 {
     max_sq.sqrt().max(0.1)
 }
 
+/// Rest-pose worlds using each node's `asset_local` (including animatable nodes).
+pub fn rest_pose_worlds(nodes: &[RigNode]) -> Vec<Mat4> {
+    let mut worlds = vec![Mat4::IDENTITY; nodes.len()];
+    for (i, n) in nodes.iter().enumerate() {
+        let local = n.asset_local;
+        worlds[i] = match n.parent {
+            Some(p) => worlds[p] * local,
+            None => local,
+        };
+    }
+    worlds
+}
+
+fn node_asset_local(node: &gltf::Node<'_>) -> Mat4 {
+    let (t, r, s) = node.transform().decomposed();
+    Mat4::from_scale_rotation_translation(
+        Vec3::from(s),
+        Quat::from_xyzw(r[0], r[1], r[2], r[3]),
+        Vec3::from(t),
+    )
+}
+
+fn root_only_nodes() -> Vec<RigNode> {
+    vec![RigNode {
+        parent: None,
+        anim_index: None,
+        asset_local: Mat4::IDENTITY,
+    }]
+}
+
 /// Flatten every mesh primitive under the default scene, baking node local transforms.
 /// Retained for Coin / x000b callers and tests; XR controllers use
-/// [`load_flattened_textured_from_glb`]. Skins / morphs are ignored.
+/// [`load_textured_rigged_from_glb`]. Skins / morphs are ignored.
 #[allow(dead_code)]
 pub fn load_flattened_mesh_from_glb(bytes: &[u8]) -> Result<CpuMesh> {
     let textured = load_flattened_textured_from_glb(bytes)?;
@@ -156,6 +205,7 @@ pub fn load_flattened_mesh_from_glb(bytes: &[u8]) -> Result<CpuMesh> {
 }
 
 /// Flatten with per-primitive UVs and optional embedded baseColor (x000c).
+/// Produces a single identity rig node; verts are already in root space.
 pub fn load_flattened_textured_from_glb(bytes: &[u8]) -> Result<CpuTexturedMesh> {
     let (doc, buffers, images) = gltf::import_slice(bytes).context("gltf import_slice")?;
 
@@ -173,8 +223,60 @@ pub fn load_flattened_textured_from_glb(bytes: &[u8]) -> Result<CpuTexturedMesh>
         return textured_from_first_primitive(&doc, &buffers, &images);
     }
 
-    let radius = framing_radius_submeshes(&submeshes);
-    Ok(CpuTexturedMesh { submeshes, radius })
+    let radius = framing_radius_rigged(&root_only_nodes(), &submeshes);
+    Ok(CpuTexturedMesh {
+        nodes: root_only_nodes(),
+        submeshes,
+        radius,
+    })
+}
+
+/// Keep glTF node hierarchy; verts stay mesh-local. Names in `animatable_names` map to
+/// `RigNode::anim_index` (runtime replaces `asset_local`). Empty names → static hierarchy.
+pub fn load_textured_rigged_from_glb(
+    bytes: &[u8],
+    animatable_names: &[&str],
+) -> Result<CpuTexturedMesh> {
+    if animatable_names.is_empty() {
+        return load_flattened_textured_from_glb(bytes);
+    }
+
+    let (doc, buffers, images) = gltf::import_slice(bytes).context("gltf import_slice")?;
+    let name_to_anim: HashMap<&str, u32> = animatable_names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (*n, i as u32))
+        .collect();
+
+    let mut nodes = Vec::new();
+    let mut submeshes = Vec::new();
+
+    let Some(scene) = doc.default_scene().or_else(|| doc.scenes().next()) else {
+        return textured_from_first_primitive(&doc, &buffers, &images);
+    };
+
+    for node in scene.nodes() {
+        walk_rigged_node(
+            node,
+            None,
+            &name_to_anim,
+            &buffers,
+            &images,
+            &mut nodes,
+            &mut submeshes,
+        )?;
+    }
+
+    if submeshes.is_empty() {
+        return textured_from_first_primitive(&doc, &buffers, &images);
+    }
+
+    let radius = framing_radius_rigged(&nodes, &submeshes);
+    Ok(CpuTexturedMesh {
+        nodes,
+        submeshes,
+        radius,
+    })
 }
 
 fn textured_from_first_primitive(
@@ -187,11 +289,13 @@ fn textured_from_first_primitive(
         .primitives()
         .next()
         .context("mesh contained no primitives")?;
-    let Some(sub) = primitive_to_submesh(&prim, Mat4::IDENTITY, buffers, images)? else {
+    let Some(mut sub) = primitive_to_submesh(&prim, Mat4::IDENTITY, buffers, images)? else {
         bail!("GLB contained no mesh positions");
     };
+    sub.node_index = 0;
     let radius = framing_radius(&sub.positions);
     Ok(CpuTexturedMesh {
+        nodes: root_only_nodes(),
         submeshes: vec![sub],
         radius,
     })
@@ -204,19 +308,13 @@ fn flatten_textured_node(
     images: &[gltf::image::Data],
     out: &mut Vec<CpuSubmesh>,
 ) -> Result<()> {
-    let local = {
-        let (t, r, s) = node.transform().decomposed();
-        Mat4::from_scale_rotation_translation(
-            Vec3::from(s),
-            Quat::from_xyzw(r[0], r[1], r[2], r[3]),
-            Vec3::from(t),
-        )
-    };
+    let local = node_asset_local(&node);
     let world = parent * local;
 
     if let Some(mesh) = node.mesh() {
         for prim in mesh.primitives() {
-            if let Some(sub) = primitive_to_submesh(&prim, world, buffers, images)? {
+            if let Some(mut sub) = primitive_to_submesh(&prim, world, buffers, images)? {
+                sub.node_index = 0;
                 out.push(sub);
             }
         }
@@ -224,6 +322,40 @@ fn flatten_textured_node(
 
     for child in node.children() {
         flatten_textured_node(child, world, buffers, images, out)?;
+    }
+    Ok(())
+}
+
+fn walk_rigged_node(
+    node: gltf::Node<'_>,
+    parent: Option<usize>,
+    name_to_anim: &HashMap<&str, u32>,
+    buffers: &[gltf::buffer::Data],
+    images: &[gltf::image::Data],
+    nodes: &mut Vec<RigNode>,
+    out: &mut Vec<CpuSubmesh>,
+) -> Result<()> {
+    let asset_local = node_asset_local(&node);
+    let anim_index = node.name().and_then(|n| name_to_anim.get(n).copied());
+    let idx = nodes.len();
+    nodes.push(RigNode {
+        parent,
+        anim_index,
+        asset_local,
+    });
+
+    if let Some(mesh) = node.mesh() {
+        for prim in mesh.primitives() {
+            // Mesh-local verts; node world is applied at draw time.
+            if let Some(mut sub) = primitive_to_submesh(&prim, Mat4::IDENTITY, buffers, images)? {
+                sub.node_index = idx;
+                out.push(sub);
+            }
+        }
+    }
+
+    for child in node.children() {
+        walk_rigged_node(child, Some(idx), name_to_anim, buffers, images, nodes, out)?;
     }
     Ok(())
 }
@@ -292,6 +424,7 @@ fn primitive_to_submesh(
         indices,
         base_color,
         base_color_factor,
+        node_index: 0,
     }))
 }
 
@@ -376,10 +509,20 @@ mod tests {
     fn coin_textured_flatten_has_submeshes() {
         let mesh = load_flattened_textured_from_glb(FIXTURE).unwrap();
         assert!(!mesh.submeshes.is_empty());
+        assert_eq!(mesh.nodes.len(), 1);
         assert!(mesh.vertex_count() > 0);
         for s in &mesh.submeshes {
             assert_eq!(s.positions.len(), s.uvs.len());
             assert!(!s.indices.is_empty());
+            assert_eq!(s.node_index, 0);
         }
+    }
+
+    #[test]
+    fn coin_rigged_empty_names_matches_flatten() {
+        let flat = load_flattened_textured_from_glb(FIXTURE).unwrap();
+        let rigged = load_textured_rigged_from_glb(FIXTURE, &[]).unwrap();
+        assert_eq!(flat.submeshes.len(), rigged.submeshes.len());
+        assert_eq!(flat.vertex_count(), rigged.vertex_count());
     }
 }

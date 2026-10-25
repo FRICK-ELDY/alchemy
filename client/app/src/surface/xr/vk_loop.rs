@@ -748,7 +748,14 @@ pub fn run_openxr(
             vk_device.cmd_bind_index_buffer(cmd, floor_gpu.ibo, 0, vk::IndexType::UINT32);
             vk_device.cmd_draw_indexed(cmd, floor_gpu.index_count, 1, 0, 0, 0);
 
-            for (model, gpu) in render_models.models().iter().zip(controller_gpu.iter()) {
+            let xr_inst = session.instance();
+            for (i, gpu) in controller_gpu.iter().enumerate() {
+                let Some(model) = render_models.models_mut().get_mut(i) else {
+                    break;
+                };
+                if let Err(err) = model.poll_state(xr_inst, xr_frame_state.predicted_display_time) {
+                    log::warn!("XR render model state: {err:#}");
+                }
                 let Ok(loc) = model
                     .space
                     .locate(&stage, xr_frame_state.predicted_display_time)
@@ -765,8 +772,17 @@ pub fn run_openxr(
                     continue;
                 }
                 let (pos, ori) = openxr_pose_to_isometry(loc.pose);
-                let model_mat = Mat4::from_rotation_translation(ori, pos);
+                let root = Mat4::from_rotation_translation(ori, pos);
+                let (worlds, visible) = model.compose_node_worlds();
                 for sub in &gpu.submeshes {
+                    if !visible.get(sub.node_index).copied().unwrap_or(false) {
+                        continue;
+                    }
+                    let node_world = worlds
+                        .get(sub.node_index)
+                        .copied()
+                        .unwrap_or(Mat4::IDENTITY);
+                    let model_mat = root * node_world;
                     let (mode, tex_set) = if let Some(tex) = sub.texture.as_ref() {
                         (MESH_MODE_TEXTURED, tex.set)
                     } else {
@@ -1054,6 +1070,8 @@ struct GpuSubmesh {
     index_count: u32,
     texture: Option<GpuTexture>,
     factor: [f32; 4],
+    /// Index into the controller's rig nodes (x000d).
+    node_index: usize,
 }
 
 struct GpuController {
@@ -1134,6 +1152,7 @@ fn floor_plane_submesh() -> CpuSubmesh {
         indices: vec![0, 1, 2, 0, 2, 3],
         base_color: None,
         base_color_factor: [1.0, 1.0, 1.0, 1.0],
+        node_index: 0,
     }
 }
 
@@ -2042,6 +2061,7 @@ fn upload_gpu_submesh(
         index_count: sub.indices.len() as u32,
         texture,
         factor: sub.base_color_factor,
+        node_index: sub.node_index,
     })
 }
 

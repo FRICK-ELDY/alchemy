@@ -33,7 +33,7 @@
 
 ## やらない（後続）
 
-- animatable node（トリガー／スティック可動部）
+- animatable node（トリガー／スティック可動部）→ [x000d](x000d-vr-controller-animatable-nodes.md)
 - コントローラテクスチャ／マテリアル忠実度 → [x000c](x000c-vr-controller-glb-textures.md)
 - `XR_EXT_hand_tracking`
 - SteamVR `drivers/.../rendermodels` のローカル読み込み
