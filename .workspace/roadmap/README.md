@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x000d`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x000e`**）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -62,8 +62,9 @@ depends_on: [x0006]
 | x000a | — | done | VR 親指スティック Noclip（aim 相対） | [x000a-vr-thumbstick-noclip.md](slices/x000a-vr-thumbstick-noclip.md) |
 | x000b | — | done | OpenXR Render Model でコントローラ表示 | [x000b-vr-controller-render-models.md](slices/x000b-vr-controller-render-models.md) |
 | x000c | — | done | コントローラ GLB baseColor テクスチャ | [x000c-vr-controller-glb-textures.md](slices/x000c-vr-controller-glb-textures.md) |
+| x000d | — | done | コントローラ animatable node（トリガー／スティック） | [x000d-vr-controller-animatable-nodes.md](slices/x000d-vr-controller-animatable-nodes.md) |
 
-**現在の次:** （未定義 — x000c 完了。次は `x000d`）
+**現在の次:** （未定義 — x000d 完了。次は `x000e`）
 
 ## 関連
 

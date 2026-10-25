@@ -28,14 +28,14 @@
 | 保証する | 保証しない |
 |:---|:---|
 | GLB 内に `baseColorTexture` + `TEXCOORD_0` がある primitive は RGBA を Vulkan に上げてサンプル | metallic-roughness / normal / occlusion / emissive |
-| テクスチャ欠如・読取失敗時は現行フラット色（x000b）へフォールバック | animatable node、SteamVR ディスク直読み |
+| テクスチャ欠如・読取失敗時は現行フラット色（x000b）へフォールバック | SteamVR ディスク直読み（animatable → [x000d](x000d-vr-controller-animatable-nodes.md)） |
 | `baseColorFactor` をテクスチャに乗算 | 外部 URI テクスチャ、KTX2、mip 品質保証 |
 | マルチマテリアルは primitive = 1 サブメッシュ（各 baseColor を別描画） | Coin / Desktop wgpu 経路のマテリアル本格化 |
 
 ## やらない（後続）
 
 - PBR（MR / normal / AO / emissive）
-- animatable node（トリガー／スティック可動部）
+- animatable node（トリガー／スティック可動部）→ [x000d](x000d-vr-controller-animatable-nodes.md)
 - `XR_EXT_hand_tracking`
 - SteamVR `drivers/.../rendermodels` のローカル読み込み
 - Coin / Desktop wgpu のテクスチャ本格化

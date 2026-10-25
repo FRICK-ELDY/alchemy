@@ -1,8 +1,8 @@
-//! XR_EXT_render_model + XR_EXT_interaction_render_model (x000b / x000c).
+//! XR_EXT_render_model + XR_EXT_interaction_render_model (x000b / x000c / x000d).
 //!
 //! Guarantees: optional enable; enumerate after sync_actions; GLB bytes + Space per model;
-//! textured flatten (baseColor when present) handed to the Vulkan layer.
-//! Non-guarantees: animatable nodes, PBR maps, SteamVR disk paths, every runtime.
+//! textured rig (baseColor when present); per-frame animatable node pose/visibility.
+//! Non-guarantees: PBR maps, SteamVR disk paths, every runtime, skins/morphs.
 //!
 //! Refresh is throttled and incremental so SteamVR change events cannot rebuild
 //! controllers / GPU meshes every frame (that froze the app).
@@ -12,11 +12,12 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use glam::{Mat4, Quat, Vec3};
 use openxr as xr;
 use openxr::sys;
 use openxr::sys::Handle as _;
 
-use crate::mesh::{load_flattened_textured_from_glb, CpuTexturedMesh};
+use crate::mesh::{load_textured_rigged_from_glb, CpuTexturedMesh, RigNode};
 
 /// Min gap between refresh attempts while assets/ids are still settling.
 const RETRY_INTERVAL: Duration = Duration::from_millis(500);
@@ -57,6 +58,11 @@ pub struct ControllerModel {
     /// Destroyed with Space Drop.
     pub space: xr::Space,
     pub mesh: CpuTexturedMesh,
+    /// Reused buffer for `xrGetRenderModelStateEXT` (length = animatable count).
+    node_states: Vec<sys::RenderModelNodeStateEXT>,
+    /// Scratch worlds/visibility filled by [`ControllerModel::compose_node_worlds`].
+    worlds: Vec<Mat4>,
+    visible: Vec<bool>,
 }
 
 impl ControllerModel {
@@ -67,6 +73,79 @@ impl ControllerModel {
                 let _ = (fp.destroy_render_model)(self.handle);
             }
         }
+    }
+
+    /// Poll animatable node poses for `display_time`. No-op when count is 0.
+    pub fn poll_state(&mut self, instance: &xr::Instance, display_time: xr::Time) -> Result<()> {
+        if self.node_states.is_empty() {
+            return Ok(());
+        }
+        let Some(rm) = instance.exts().ext_render_model.as_ref() else {
+            return Ok(());
+        };
+        let get_info = sys::RenderModelStateGetInfoEXT {
+            ty: sys::RenderModelStateGetInfoEXT::TYPE,
+            next: ptr::null(),
+            display_time,
+        };
+        let mut state = sys::RenderModelStateEXT {
+            ty: sys::RenderModelStateEXT::TYPE,
+            next: ptr::null_mut(),
+            node_state_count: self.node_states.len() as u32,
+            node_states: self.node_states.as_mut_ptr(),
+        };
+        // Safety: handle valid; buffer sized to animatableNodeCount.
+        let r = unsafe { (rm.get_render_model_state)(self.handle, &get_info, &mut state) };
+        if r.into_raw() < 0 {
+            bail!("xrGetRenderModelStateEXT: {r:?}");
+        }
+        Ok(())
+    }
+
+    /// Compose node worlds and visibility from asset locals + last polled states.
+    /// Returns slices into internal scratch (valid until next compose/poll that grows).
+    pub fn compose_node_worlds(&mut self) -> (&[Mat4], &[bool]) {
+        let n = self.mesh.nodes.len();
+        self.worlds.resize(n, Mat4::IDENTITY);
+        self.visible.resize(n, true);
+
+        for (i, node) in self.mesh.nodes.iter().enumerate() {
+            let (local, self_vis) = local_and_visibility(node, &self.node_states);
+            let parent_vis = node.parent.map(|p| self.visible[p]).unwrap_or(true);
+            self.visible[i] = parent_vis && self_vis;
+            let parent_world = node
+                .parent
+                .map(|p| self.worlds[p])
+                .unwrap_or(Mat4::IDENTITY);
+            self.worlds[i] = parent_world * local;
+        }
+
+        (&self.worlds, &self.visible)
+    }
+}
+
+fn local_and_visibility(node: &RigNode, states: &[sys::RenderModelNodeStateEXT]) -> (Mat4, bool) {
+    match node.anim_index {
+        Some(ai) => {
+            let Some(st) = states.get(ai as usize) else {
+                return (node.asset_local, true);
+            };
+            let pose = st.node_pose;
+            let (pos, ori) = (
+                Vec3::new(pose.position.x, pose.position.y, pose.position.z),
+                Quat::from_xyzw(
+                    pose.orientation.x,
+                    pose.orientation.y,
+                    pose.orientation.z,
+                    pose.orientation.w,
+                ),
+            );
+            (
+                Mat4::from_rotation_translation(ori, pos),
+                st.is_visible.into(),
+            )
+        }
+        None => (node.asset_local, true),
     }
 }
 
@@ -93,6 +172,10 @@ impl RenderModelCache {
 
     pub fn models(&self) -> &[ControllerModel] {
         &self.models
+    }
+
+    pub fn models_mut(&mut self) -> &mut [ControllerModel] {
+        &mut self.models
     }
 
     pub fn mark_dirty(&mut self) {
@@ -167,10 +250,12 @@ impl RenderModelCache {
                         .filter(|s| s.base_color.is_some())
                         .count();
                     log::info!(
-                        "XR render model loaded ({} verts, {} submeshes, {} textured)",
+                        "XR render model loaded ({} verts, {} submeshes, {} textured, {} anim nodes, {} rig nodes)",
                         model.mesh.vertex_count(),
                         model.mesh.submeshes.len(),
-                        textured
+                        textured,
+                        model.node_states.len(),
+                        model.mesh.nodes.len()
                     );
                     self.models.push(model);
                     added = true;
@@ -298,23 +383,26 @@ unsafe fn load_one<G>(
         bail!("xrGetRenderModelPropertiesEXT: {r:?}");
     }
 
-    let glb = match unsafe { fetch_glb(session, rm, props.cache_id) } {
-        Ok(b) => b,
-        Err(err) => {
-            unsafe {
-                let _ = (rm.destroy_render_model)(handle);
+    let anim_count = props.animatable_node_count as usize;
+    let (glb, anim_names) =
+        match unsafe { fetch_glb_and_names(session, rm, props.cache_id, anim_count) } {
+            Ok(v) => v,
+            Err(err) => {
+                unsafe {
+                    let _ = (rm.destroy_render_model)(handle);
+                }
+                return Err(err);
             }
-            return Err(err);
-        }
-    };
+        };
 
-    let mesh = match load_flattened_textured_from_glb(&glb) {
+    let name_refs: Vec<&str> = anim_names.iter().map(String::as_str).collect();
+    let mesh = match load_textured_rigged_from_glb(&glb, &name_refs) {
         Ok(m) => m,
         Err(err) => {
             unsafe {
                 let _ = (rm.destroy_render_model)(handle);
             }
-            return Err(err).context("flatten controller GLB");
+            return Err(err).context("rig controller GLB");
         }
     };
 
@@ -336,19 +424,32 @@ unsafe fn load_one<G>(
     // Safety: space created for this session.
     let space = unsafe { xr::Space::reference_from_raw(session.clone(), space_handle) };
 
+    let node_states = vec![
+        sys::RenderModelNodeStateEXT {
+            node_pose: sys::Posef::IDENTITY,
+            is_visible: sys::TRUE,
+        };
+        anim_count
+    ];
+    let node_len = mesh.nodes.len();
+
     Ok(Some(ControllerModel {
         id,
         handle,
         space,
         mesh,
+        node_states,
+        worlds: vec![Mat4::IDENTITY; node_len],
+        visible: vec![true; node_len],
     }))
 }
 
-unsafe fn fetch_glb<G>(
+unsafe fn fetch_glb_and_names<G>(
     session: &xr::Session<G>,
     rm: &xr::raw::RenderModelEXT,
     cache_id: sys::UuidEXT,
-) -> Result<Vec<u8>> {
+    anim_count: usize,
+) -> Result<(Vec<u8>, Vec<String>)> {
     let create_info = sys::RenderModelAssetCreateInfoEXT {
         ty: sys::RenderModelAssetCreateInfoEXT::TYPE,
         next: ptr::null(),
@@ -392,12 +493,70 @@ unsafe fn fetch_glb<G>(
     data.buffer_capacity_input = size as u32;
     data.buffer = buf.as_mut_ptr();
     let r = unsafe { (rm.get_render_model_asset_data)(asset, &get_info, &mut data) };
-    unsafe {
-        let _ = (rm.destroy_render_model_asset)(asset);
-    }
     if r.into_raw() < 0 {
+        unsafe {
+            let _ = (rm.destroy_render_model_asset)(asset);
+        }
         bail!("xrGetRenderModelAssetDataEXT: {r:?}");
     }
     buf.truncate(data.buffer_count_output as usize);
-    Ok(buf)
+
+    let names = if anim_count == 0 {
+        Vec::new()
+    } else {
+        match unsafe { read_animatable_names(rm, asset, anim_count) } {
+            Ok(n) => n,
+            Err(err) => {
+                unsafe {
+                    let _ = (rm.destroy_render_model_asset)(asset);
+                }
+                return Err(err);
+            }
+        }
+    };
+
+    unsafe {
+        let _ = (rm.destroy_render_model_asset)(asset);
+    }
+    Ok((buf, names))
+}
+
+unsafe fn read_animatable_names(
+    rm: &xr::raw::RenderModelEXT,
+    asset: sys::RenderModelAssetEXT,
+    anim_count: usize,
+) -> Result<Vec<String>> {
+    let mut node_props = vec![
+        sys::RenderModelAssetNodePropertiesEXT {
+            unique_name: [0; 64]
+        };
+        anim_count
+    ];
+    let props_info = sys::RenderModelAssetPropertiesGetInfoEXT {
+        ty: sys::RenderModelAssetPropertiesGetInfoEXT::TYPE,
+        next: ptr::null(),
+    };
+    let mut properties = sys::RenderModelAssetPropertiesEXT {
+        ty: sys::RenderModelAssetPropertiesEXT::TYPE,
+        next: ptr::null_mut(),
+        node_property_count: anim_count as u32,
+        node_properties: node_props.as_mut_ptr(),
+    };
+    // Safety: asset valid; node_property_count == animatableNodeCount.
+    let r = unsafe { (rm.get_render_model_asset_properties)(asset, &props_info, &mut properties) };
+    if r.into_raw() < 0 {
+        bail!("xrGetRenderModelAssetPropertiesEXT: {r:?}");
+    }
+
+    let mut names = Vec::with_capacity(anim_count);
+    for p in &node_props {
+        let bytes: Vec<u8> = p
+            .unique_name
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| c as u8)
+            .collect();
+        names.push(String::from_utf8(bytes).context("animatable node name is not UTF-8")?);
+    }
+    Ok(names)
 }
