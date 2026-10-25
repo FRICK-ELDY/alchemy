@@ -53,9 +53,10 @@
 
 ## やらない（後続）
 
-- 切断・トークン失効時のスロット解放 → **[x0016](x0016-presence-slot-reclaim.md)**
+- 切断・トークン失効時のスロット解放 → **[x0016](x0016-presence-slot-reclaim.md)**（done）
+- `ROOM_ID` → Zenoh キー本配線 → **[x0017](x0017-room-id-zenoh-keys.md)**
+- client アカウント殻 → **[x0018](x0018-client-auth-session.md)**
 - Steal / 投げ / アバター GLB
-- `ROOM_ID` → Zenoh キー本配線
 - launcher / verifier / 予測補間
 
 ## 起動（同一マシン smoke・3 client）
