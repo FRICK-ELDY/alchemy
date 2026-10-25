@@ -22,7 +22,7 @@ use super::input::{
 use super::loco::{intent_from_sticks, STICK_DEADZONE};
 use crate::host_control;
 use crate::mesh::CpuMesh;
-use crate::scene::{MoveIntent, SharedState, MESH_ENTITY_ID};
+use crate::scene::{MoveIntent, SharedState, MESH_ENTITY_ID, USER_ROOT_ENTITY_ID};
 use crate::system_ui::{SystemUi, UiAction};
 use glam::Quat;
 
@@ -32,6 +32,13 @@ const COLOR_FORMAT: vk::Format = vk::Format::R8G8B8A8_SRGB;
 const PIPELINE_DEPTH: usize = 2;
 const UI_CANVAS_W: u32 = 960;
 const UI_CANVAS_H: u32 = 540;
+/// Checker floor texture (CompositionLayerQuad). Large enough to see loco slide.
+const FLOOR_TEX_W: u32 = 256;
+const FLOOR_TEX_H: u32 = 256;
+const FLOOR_CELLS: u32 = 16;
+/// World-space floor quad size (meters). Matches host Rapier floor half-extent ~20.
+const FLOOR_METERS: f32 = 40.0;
+const DEFAULT_EYE_Y: f32 = 1.6;
 
 pub fn run_openxr(
     mesh: CpuMesh,
@@ -354,16 +361,43 @@ pub fn run_openxr(
         let mut ui = SystemUi::new();
         ui.init_cpu_canvas(UI_CANVAS_W, UI_CANVAS_H)?;
         ui.rebuild();
-        log::info!("OpenXR ready — Menu toggles dash, Select clicks, thumbstick Noclip (x000a)");
+        log::info!(
+            "OpenXR ready — Menu toggles dash, Select clicks, thumbstick Noclip, checker floor (x000a)"
+        );
 
         let mut swapchain: Option<Swapchain> = None;
         let mut ui_swapchain: Option<UiSwapchain> = None;
+        let staging_bytes = (UI_CANVAS_W * UI_CANVAS_H * 4).max(FLOOR_TEX_W * FLOOR_TEX_H * 4);
         let staging = create_staging_buffer(
             &vk_instance,
             vk_physical_device,
             &vk_device,
-            (UI_CANVAS_W * UI_CANVAS_H * 4) as vk::DeviceSize,
+            staging_bytes as vk::DeviceSize,
         )?;
+
+        // World floor: checkerboard quad in stage space, offset by −user_root (Desktop metaphor).
+        let mut floor_swapchain = create_sized_swapchain(&session, FLOOR_TEX_W, FLOOR_TEX_H)?;
+        {
+            let pixels = make_checkerboard_rgba(FLOOR_TEX_W, FLOOR_TEX_H, FLOOR_CELLS);
+            let n = floor_swapchain.images.len();
+            for _ in 0..n {
+                let index = floor_swapchain.handle.acquire_image()?;
+                floor_swapchain.handle.wait_image(xr::Duration::INFINITE)?;
+                upload_rgba_to_image(
+                    &vk_device,
+                    queue,
+                    cmd_pool,
+                    &staging,
+                    floor_swapchain.images[index as usize],
+                    &pixels,
+                    FLOOR_TEX_W,
+                    FLOOR_TEX_H,
+                )?;
+                floor_swapchain.handle.release_image()?;
+            }
+        }
+        log::info!("XR checker floor ready ({FLOOR_METERS}m, offset by user_root)");
+
         let mut event_storage = xr::EventDataBuffer::new();
         let mut session_running = false;
         let mut frame_i = 0usize;
@@ -654,12 +688,28 @@ pub fn run_openxr(
             ui.prepare_cpu_canvas();
 
             let _ = (&mesh, dash_quad_model(head_pos, head_orient));
+            let user_root = shared
+                .entities
+                .lock()
+                .ok()
+                .and_then(|m| m.get(&USER_ROOT_ENTITY_ID).copied())
+                .unwrap_or(crate::scene::EntityPose {
+                    x: 0.0,
+                    y: DEFAULT_EYE_Y,
+                    z: 6.0,
+                });
             if frame_i == 0 {
                 if let Ok(map) = shared.entities.lock() {
                     if let Some(p) = map.get(&MESH_ENTITY_ID) {
                         log::debug!("XR coin pose {:.2},{:.2},{:.2}", p.x, p.y, p.z);
                     }
                 }
+                log::debug!(
+                    "XR user_root {:.2},{:.2},{:.2}",
+                    user_root.x,
+                    user_root.y,
+                    user_root.z
+                );
             }
 
             let ui_sc = ui_swapchain.get_or_insert_with(|| {
@@ -693,6 +743,46 @@ pub fn run_openxr(
             let proj = xr::CompositionLayerProjection::new()
                 .space(&stage)
                 .views(&proj_views);
+
+            // Horizontal floor: rotate −90° about X so quad XY → world XZ; offset −user_root.
+            // Acquire each frame (content already uploaded); same release-before-end pattern as UI.
+            let _floor_index = floor_swapchain.handle.acquire_image()?;
+            floor_swapchain.handle.wait_image(xr::Duration::INFINITE)?;
+            floor_swapchain.handle.release_image()?;
+            let s = std::f32::consts::FRAC_1_SQRT_2;
+            let floor_rect = xr::Rect2Di {
+                offset: xr::Offset2Di { x: 0, y: 0 },
+                extent: xr::Extent2Di {
+                    width: FLOOR_TEX_W as i32,
+                    height: FLOOR_TEX_H as i32,
+                },
+            };
+            let floor_quad = xr::CompositionLayerQuad::new()
+                .space(&stage)
+                .eye_visibility(xr::EyeVisibility::BOTH)
+                .sub_image(
+                    xr::SwapchainSubImage::new()
+                        .swapchain(&floor_swapchain.handle)
+                        .image_array_index(0)
+                        .image_rect(floor_rect),
+                )
+                .pose(xr::Posef {
+                    orientation: xr::Quaternionf {
+                        x: -s,
+                        y: 0.0,
+                        z: 0.0,
+                        w: s,
+                    },
+                    position: xr::Vector3f {
+                        x: -user_root.x,
+                        y: -user_root.y,
+                        z: -user_root.z,
+                    },
+                })
+                .size(xr::Extent2Df {
+                    width: FLOOR_METERS,
+                    height: FLOOR_METERS,
+                });
 
             if ui.state.open {
                 if let Some((pixels, cw, ch)) = ui.canvas_rgba() {
@@ -746,20 +836,20 @@ pub fn run_openxr(
                     frame_stream.end(
                         xr_frame_state.predicted_display_time,
                         environment_blend_mode,
-                        &[&proj, &quad],
+                        &[&proj, &floor_quad, &quad],
                     )?;
                 } else {
                     frame_stream.end(
                         xr_frame_state.predicted_display_time,
                         environment_blend_mode,
-                        &[&proj],
+                        &[&proj, &floor_quad],
                     )?;
                 }
             } else {
                 frame_stream.end(
                     xr_frame_state.predicted_display_time,
                     environment_blend_mode,
-                    &[&proj],
+                    &[&proj, &floor_quad],
                 )?;
             }
 
@@ -772,6 +862,7 @@ pub fn run_openxr(
         drop(view_ref);
         drop(stage);
         drop(ui_swapchain);
+        drop(floor_swapchain);
         drop(session);
         if let Some(sc) = swapchain.take() {
             for b in sc.buffers {
@@ -820,13 +911,21 @@ fn create_ui_swapchain(
     session: &xr::Session<xr::Vulkan>,
     _vk_device: &ash::Device,
 ) -> Result<UiSwapchain> {
+    create_sized_swapchain(session, UI_CANVAS_W, UI_CANVAS_H)
+}
+
+fn create_sized_swapchain(
+    session: &xr::Session<xr::Vulkan>,
+    width: u32,
+    height: u32,
+) -> Result<UiSwapchain> {
     let handle = session.create_swapchain(&xr::SwapchainCreateInfo {
         create_flags: xr::SwapchainCreateFlags::EMPTY,
         usage_flags: xr::SwapchainUsageFlags::TRANSFER_DST | xr::SwapchainUsageFlags::SAMPLED,
         format: COLOR_FORMAT.as_raw() as _,
         sample_count: 1,
-        width: UI_CANVAS_W,
-        height: UI_CANVAS_H,
+        width,
+        height,
         face_count: 1,
         array_size: 1,
         mip_count: 1,
@@ -837,6 +936,32 @@ fn create_ui_swapchain(
         .map(vk::Image::from_raw)
         .collect();
     Ok(UiSwapchain { handle, images })
+}
+
+/// High-contrast checker so thumbstick loco is visible without mesh world draw.
+fn make_checkerboard_rgba(width: u32, height: u32, cells: u32) -> Vec<u8> {
+    let cells = cells.max(2);
+    let mut out = vec![0u8; (width * height * 4) as usize];
+    let cell_w = width as f32 / cells as f32;
+    let cell_h = height as f32 / cells as f32;
+    for y in 0..height {
+        for x in 0..width {
+            let cx = (x as f32 / cell_w) as u32;
+            let cy = (y as f32 / cell_h) as u32;
+            let light = (cx + cy) % 2 == 0;
+            let (r, g, b) = if light {
+                (210u8, 215, 220)
+            } else {
+                (45u8, 50, 58)
+            };
+            let i = ((y * width + x) * 4) as usize;
+            out[i] = r;
+            out[i + 1] = g;
+            out[i + 2] = b;
+            out[i + 3] = 255;
+        }
+    }
+    out
 }
 
 fn create_staging_buffer(

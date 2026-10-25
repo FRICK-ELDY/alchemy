@@ -12,5 +12,5 @@ ALCHEMY_FORCE_DESKTOP=1 cargo check -p client
 
 echo "OK: x000a OpenXR compile/smoke gate passed (HMD not required)."
 echo "Manual (Windows + SteamVR): cargo run -p client"
-echo "  Menu toggles dash; Select clicks; thumbstick Noclip (aim-relative); Settings shows max speed"
+echo "  Menu toggles dash; Select clicks; thumbstick Noclip; checker floor slides with user_root"
 echo "Force Desktop: ALCHEMY_FORCE_DESKTOP=1 cargo run -p client"
