@@ -1,15 +1,16 @@
-//! Local host-server — x0014 dual user_root + Grab hold / boxes / loco.
+//! Local host-server — x0015 presence slots + Grab hold / boxes / loco.
 //!
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
 //! - Input: Room Token verify + `is_finite` (NaN/Inf dropped before physics)
 //! - SceneManifest with default Noclip LocomotionConfig (blake3 refs; no GLB bytes)
-//! - Per-`sub` Intent/Grab → up to 2 user_roots (entity 3/4); first-come slot assign
+//! - Per-`sub` Intent/Grab → up to 4 user_roots (entity 3..6); first-come slot assign
+//! - PresenceState publish (`sub`→entity) for client discovery
 //! - Grabbable cuboids entity 10..18; Grab hold kinematic follow; no Steal
 //! - Slice E: `host_control` Subscribe → `shutdown` exits process
 //!
 //! Non-guarantees:
-//! - Steal / rotation follow / 3+ players / Formula / polished Walk / signed Manifest / verifier
+//! - Steal / rotation follow / slot reclaim / Formula / polished Walk / signed Manifest / verifier
 
 mod finite;
 mod host_control;
@@ -22,9 +23,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alchemy_protocol::{
-    input_buttons, Entity, InputEvent, LocomotionConfig, LocomotionMode, Message, RenderFrame,
-    SceneEntry, SceneManifest, FRAME_KEY_LOCAL, HOST_CONTROL_KEY_LOCAL, INPUT_KEY_LOCAL,
-    MANIFEST_KEY_LOCAL, PROTOCOL_PIN,
+    input_buttons, Entity, InputEvent, LocomotionConfig, LocomotionMode, Message,
+    PresenceAssignment, PresenceState, RenderFrame, SceneEntry, SceneManifest, FRAME_KEY_LOCAL,
+    HOST_CONTROL_KEY_LOCAL, INPUT_KEY_LOCAL, MANIFEST_KEY_LOCAL, PRESENCE_KEY_LOCAL, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
@@ -50,6 +51,8 @@ const COIN_BLAKE3_HEX: &str = "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555fe
 const MOVE_EPSILON: f64 = 1e-4;
 /// Republish Manifest so late joiners still see blob refs (still ≪ frame rate).
 const MANIFEST_REPUBLISH: Duration = Duration::from_secs(5);
+/// Republish Presence for late joiners (same cadence as Manifest).
+const PRESENCE_REPUBLISH: Duration = Duration::from_secs(5);
 
 const ENTITY_MOVING: u32 = 1;
 const ENTITY_STATIC: u32 = 2;
@@ -67,13 +70,15 @@ struct PoseOverride {
     aim_z: f32,
 }
 
-/// Per-sub input slots (x0014). `slot_of_sub` maps JWT `sub` → 0..USER_ROOT_SLOTS.
+/// Per-sub input slots (x0015). Maps JWT `sub` → 0..USER_ROOT_SLOTS.
 #[derive(Debug, Default)]
 struct PresenceIntents {
     by_slot: [PoseOverride; USER_ROOT_SLOTS],
     /// Occupied slots: Some(sub) when assigned.
     occupied_sub: [Option<String>; USER_ROOT_SLOTS],
     dropped_full: u64,
+    /// Bumped on new assignment (PresenceState.revision).
+    revision: u64,
 }
 
 impl PresenceIntents {
@@ -86,14 +91,32 @@ impl PresenceIntents {
         for (i, occupied) in self.occupied_sub.iter_mut().enumerate() {
             if occupied.is_none() {
                 *occupied = Some(sub.to_string());
+                self.revision = self.revision.saturating_add(1);
                 log::info!(
-                    "presence: assigned sub={sub} → user_root entity {}",
-                    PhysicsWorld::user_root_entity_id(i)
+                    "presence: assigned sub={sub} → user_root entity {} (revision={})",
+                    PhysicsWorld::user_root_entity_id(i),
+                    self.revision
                 );
                 return Some(i);
             }
         }
         None
+    }
+
+    fn to_presence_state(&self) -> PresenceState {
+        let mut assignments = Vec::with_capacity(USER_ROOT_SLOTS);
+        for (i, occupied) in self.occupied_sub.iter().enumerate() {
+            if let Some(sub) = occupied {
+                assignments.push(PresenceAssignment {
+                    sub: sub.clone(),
+                    entity_id: PhysicsWorld::user_root_entity_id(i),
+                });
+            }
+        }
+        PresenceState {
+            revision: self.revision,
+            assignments,
+        }
     }
 }
 
@@ -321,7 +344,7 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "host-server x0014 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} host_control={HOST_CONTROL_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{}",
+        "host-server x0015 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} presence={PRESENCE_KEY_LOCAL} host_control={HOST_CONTROL_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{}",
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1
     );
 
@@ -349,10 +372,26 @@ fn main() -> Result<()> {
         .declare_publisher(MANIFEST_KEY_LOCAL)
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_publisher manifest failed: {e}"))?;
+    let presence_pub = session
+        .declare_publisher(PRESENCE_KEY_LOCAL)
+        .wait()
+        .map_err(|e| anyhow::anyhow!("declare_publisher presence failed: {e}"))?;
     let frame_pub = session
         .declare_publisher(FRAME_KEY_LOCAL)
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_publisher frame failed: {e}"))?;
+
+    let empty_presence = PresenceState {
+        revision: 0,
+        assignments: vec![],
+    };
+    presence_pub
+        .put(empty_presence.encode_to_vec())
+        .wait()
+        .map_err(|e| anyhow::anyhow!("presence publish failed: {e}"))?;
+    log::info!("published PresenceState revision=0 assignments=0");
+    let mut last_presence_rev = 0u64;
+    let mut last_presence = Instant::now();
 
     let manifest = build_manifest(&room_id, &blob_blake3);
     let loco = manifest.locomotion.unwrap_or(LocomotionConfig {
@@ -423,9 +462,34 @@ fn main() -> Result<()> {
 
         let snapshot = presence
             .lock()
-            .map(|g| (g.by_slot, g.occupied_sub.clone()))
+            .map(|g| {
+                (
+                    g.by_slot,
+                    g.occupied_sub.clone(),
+                    g.revision,
+                    g.to_presence_state(),
+                )
+            })
             .unwrap_or_default();
-        let (by_slot, occupied) = snapshot;
+        let (by_slot, occupied, presence_rev, presence_state) = snapshot;
+
+        if presence_rev != last_presence_rev || last_presence.elapsed() >= PRESENCE_REPUBLISH {
+            let n = presence_state.assignments.len();
+            let rev = presence_state.revision;
+            presence_pub
+                .put(presence_state.encode_to_vec())
+                .wait()
+                .map_err(|e| anyhow::anyhow!("presence publish failed: {e}"))?;
+            if presence_rev != last_presence_rev {
+                log::info!("published PresenceState revision={rev} assignments={n}");
+            } else {
+                log::info!(
+                    "republished PresenceState revision={rev} assignments={n} (late-joiner assist)"
+                );
+            }
+            last_presence_rev = presence_rev;
+            last_presence = Instant::now();
+        }
 
         for (slot, occupied_sub) in occupied.iter().enumerate() {
             if occupied_sub.is_none() {
