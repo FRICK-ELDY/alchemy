@@ -1,6 +1,7 @@
 //! Shared scene GPU (Coin + floor + grabbable boxes). Surface-agnostic: render into any color+depth views.
 //!
 //! MoveIntent carries Grab hold fields for x0011 (host kinematic follow).
+//! `CameraLook` is Desktop-local (x0012); not published on Zenoh.
 //!
 //! Guarantees: draw with caller-supplied view/proj; boxes 10..18 as unit cubes (x0010).
 //! Non-guarantees: XR swapchain ownership, system_ui layout, Desktop Grab.

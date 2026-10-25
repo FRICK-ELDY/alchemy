@@ -12,7 +12,7 @@ message InputEvent {
   uint64 client_time_ms = 2;
   // World-projected normalized move intent (~-1..1). Host scales by LocomotionConfig.move_speed.
   // +X = right, +Y = up, +Z = forward.
-  // Desktop: fixed look yaw; OpenXR: controller aim-relative thumbstick (x000a).
+  // Desktop: client projects WASD from local mouse-look yaw (x0012); OpenXR: aim-relative thumbstick (x000a).
   float move_x = 3;
   float move_y = 4;
   float move_z = 5;
