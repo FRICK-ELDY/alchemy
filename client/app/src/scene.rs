@@ -1,7 +1,9 @@
 //! Shared scene GPU (Coin + floor + grabbable boxes). Surface-agnostic: render into any color+depth views.
 //!
+//! MoveIntent carries Grab hold fields for x0011 (host kinematic follow).
+//!
 //! Guarantees: draw with caller-supplied view/proj; boxes 10..18 as unit cubes (x0010).
-//! Non-guarantees: XR swapchain ownership, system_ui layout, Grab hold (x0011).
+//! Non-guarantees: XR swapchain ownership, system_ui layout, Desktop Grab.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -83,15 +85,21 @@ impl Default for CameraLook {
     }
 }
 
-/// Shared locomotion intent published on Zenoh (mode-agnostic).
+/// Shared locomotion + Grab hold intent published on Zenoh (mode-agnostic).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MoveIntent {
     pub move_x: f32,
     pub move_y: f32,
     pub move_z: f32,
     pub buttons: u32,
-    /// When true (dash open), publisher forces zeros.
+    /// When true (dash open), publisher forces move zeros (Grab also cleared).
     pub suppress: bool,
+    /// Grabbable entity while GRAB held (`0` = none). XR only for x0011.
+    pub grab_entity_id: u32,
+    /// World-space controller aim origin (meters).
+    pub aim_x: f32,
+    pub aim_y: f32,
+    pub aim_z: f32,
 }
 
 #[repr(C)]

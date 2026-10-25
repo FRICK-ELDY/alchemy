@@ -10,7 +10,7 @@ ALCHEMY_FORCE_DESKTOP=1 cargo test -p client -- --nocapture
 echo "== cargo check -p client =="
 ALCHEMY_FORCE_DESKTOP=1 cargo check -p client
 
-echo "OK: OpenXR compile/smoke gate passed (HMD not required; x000e–x0010)."
+echo "OK: OpenXR compile/smoke gate passed (HMD not required; x000e–x0011)."
 echo "Manual (Windows + SteamVR 2.12+): cargo run -p client"
 echo "  Controllers: XR_EXT_render_model GLB; baseColor + animatable nodes (trigger/stick)"
 echo "  Menu toggles dash + cyan aim laser (hover lightens buttons); Select clicks Exit"

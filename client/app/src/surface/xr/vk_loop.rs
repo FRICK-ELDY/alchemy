@@ -14,7 +14,7 @@ use ash::vk::{self, Handle};
 use bytemuck::{Pod, Zeroable};
 use openxr as xr;
 
-use alchemy_protocol::DEFAULT_MOVE_SPEED;
+use alchemy_protocol::{input_buttons, DEFAULT_MOVE_SPEED};
 
 use super::input::{
     dash_quad_model, laser_length, laser_length_world, laser_model, openxr_pose_to_isometry,
@@ -177,11 +177,12 @@ pub fn run_openxr(
         ];
         let menu_action = action_set.create_action::<bool>("menu", "Menu toggle", &[])?;
         let select_action = action_set.create_action::<bool>("select", "Select / click", &[])?;
+        let grab_action = action_set.create_action::<f32>("grab", "Grab / squeeze", &hands)?;
         let aim_action = action_set.create_action::<xr::Posef>("aim", "Aim pose", &hands)?;
         let thumbstick_action =
             action_set.create_action::<xr::Vector2f>("thumbstick", "Locomotion stick", &hands)?;
 
-        // simple_controller: menu / select / aim (no thumbstick).
+        // simple_controller: menu / select / aim (no squeeze — Select grabs when dash closed).
         xr_instance.suggest_interaction_profile_bindings(
             xr_instance.string_to_path("/interaction_profiles/khr/simple_controller")?,
             &[
@@ -233,6 +234,14 @@ pub fn run_openxr(
                     xr_instance.string_to_path("/user/hand/right/input/a/click")?,
                 ),
                 xr::Binding::new(
+                    &grab_action,
+                    xr_instance.string_to_path("/user/hand/left/input/squeeze/value")?,
+                ),
+                xr::Binding::new(
+                    &grab_action,
+                    xr_instance.string_to_path("/user/hand/right/input/squeeze/value")?,
+                ),
+                xr::Binding::new(
                     &aim_action,
                     xr_instance.string_to_path("/user/hand/left/input/aim/pose")?,
                 ),
@@ -270,6 +279,14 @@ pub fn run_openxr(
                 xr::Binding::new(
                     &select_action,
                     xr_instance.string_to_path("/user/hand/right/input/trigger/click")?,
+                ),
+                xr::Binding::new(
+                    &grab_action,
+                    xr_instance.string_to_path("/user/hand/left/input/squeeze/value")?,
+                ),
+                xr::Binding::new(
+                    &grab_action,
+                    xr_instance.string_to_path("/user/hand/right/input/squeeze/value")?,
                 ),
                 xr::Binding::new(
                     &aim_action,
@@ -398,7 +415,7 @@ pub fn run_openxr(
         ui.init_cpu_canvas(UI_CANVAS_W, UI_CANVAS_H)?;
         ui.rebuild();
         log::info!(
-            "OpenXR ready — Menu toggles dash, Select+aim laser clicks Exit, thumbstick Noclip, checker floor, grabbable boxes + world laser when dash closed (x0010)"
+            "OpenXR ready — Menu toggles dash, Select+aim laser clicks Exit, thumbstick Noclip, Grab hold (squeeze / Select when dash closed) on boxes (x0011)"
         );
 
         let mut swapchain: Option<Swapchain> = None;
@@ -477,6 +494,9 @@ pub fn run_openxr(
         let mut frame_i = 0usize;
         let mut menu_was_down = false;
         let mut select_was_down = false;
+        // Entity held by Grab (cleared on release or dash open).
+        let mut held_grab: Option<u32> = None;
+        const GRAB_SQUEEZE_THRESHOLD: f32 = 0.7;
         let mut exit_requested = false;
         let mut logged_box_count: Option<usize> = None;
         // Comfort yaw rotates viewed world (floor) only — move stays controller-aim relative.
@@ -780,6 +800,47 @@ pub fn run_openxr(
             } else {
                 None
             };
+
+            // Grab hold (x0011): squeeze preferred; Select fallback when dash closed (simple_controller).
+            let select_down_for_ui = select_action.state(&session, xr::Path::NULL)?.current_state;
+            let squeeze_l = grab_action.state(&session, hands[0])?.current_state;
+            let squeeze_r = grab_action.state(&session, hands[1])?.current_state;
+            let grip_down =
+                squeeze_l >= GRAB_SQUEEZE_THRESHOLD || squeeze_r >= GRAB_SQUEEZE_THRESHOLD;
+            if ui.state.open {
+                held_grab = None;
+            } else {
+                let grab_down = grip_down || select_down_for_ui;
+                if grab_down {
+                    if held_grab.is_none() {
+                        held_grab = world_hit_id;
+                        if let Some(id) = held_grab {
+                            log::info!("XR Grab hold begin entity={id}");
+                        }
+                    }
+                } else if held_grab.take().is_some() {
+                    log::info!("XR Grab hold release");
+                }
+            }
+            // Merge Grab fields into Intent (loco wrote move earlier this frame).
+            if let Ok(mut slot) = shared.intent.lock() {
+                if let (Some(id), Some((aim_pos, aim_orient))) = (held_grab, aim_pose) {
+                    let world_origin =
+                        ray_to_world(pose_to_ray(aim_pos, aim_orient), floor_model).origin;
+                    slot.buttons |= input_buttons::GRAB;
+                    slot.grab_entity_id = id;
+                    slot.aim_x = world_origin.x;
+                    slot.aim_y = world_origin.y;
+                    slot.aim_z = world_origin.z;
+                } else {
+                    slot.buttons &= !input_buttons::GRAB;
+                    slot.grab_entity_id = 0;
+                    slot.aim_x = 0.0;
+                    slot.aim_y = 0.0;
+                    slot.aim_z = 0.0;
+                }
+            }
+
             let laser_draw = aim_pose.map(|(aim_pos, aim_orient)| {
                 let stage_ray = pose_to_ray(aim_pos, aim_orient);
                 let len = if ui.state.open {
@@ -798,7 +859,6 @@ pub fn run_openxr(
             });
 
             // Hover/press before rasterize so Button colors land on this frame's canvas.
-            let select_down_for_ui = select_action.state(&session, xr::Path::NULL)?.current_state;
             if ui.state.open {
                 if let Some((aim_pos, aim_orient)) = aim_pose {
                     let ray = pose_to_ray(aim_pos, aim_orient);
@@ -917,7 +977,7 @@ pub fn run_openxr(
             vk_device.cmd_bind_index_buffer(cmd, box_gpu.ibo, 0, vk::IndexType::UINT32);
             for &(id, pose) in &grabbable_boxes {
                 let mut color = pose.color();
-                if world_hit_id == Some(id) {
+                if world_hit_id == Some(id) || held_grab == Some(id) {
                     color = [
                         (color[0] * 0.4 + 0.6).min(1.0),
                         (color[1] * 0.4 + 0.6).min(1.0),

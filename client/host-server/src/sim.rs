@@ -1,7 +1,8 @@
-//! Rapier world + user_root locomotion + grabbable boxes (x0010).
+//! Rapier world + user_root locomotion + grabbable boxes + Grab hold (x0011).
 //!
-//! Guarantees: 60Hz-capable step; floor + coin + 3×3 cuboids (SoA grabbable); user_root Noclip.
-//! Non-guarantees: Grab hold (x0011), Slot/Component runtime, polished Walk.
+//! Guarantees: 60Hz-capable step; floor + coin + 3×3 cuboids (SoA grabbable); user_root Noclip;
+//! Grab hold kinematic follow (`aim + offset`) and release → dynamic.
+//! Non-guarantees: Steal, rotation follow, throw impulse, Desktop Grab, Slot/Component, polished Walk.
 
 use alchemy_protocol::LocomotionMode;
 use rapier3d::prelude::*;
@@ -91,6 +92,14 @@ impl GrabbableBoxes {
     }
 }
 
+/// Active Grab hold (one hand / one entity for x0011).
+#[derive(Clone, Copy, Debug)]
+struct ActiveGrab {
+    index: usize,
+    /// World offset frozen at grab start: `box_translation - aim`.
+    offset: Vector<Real>,
+}
+
 pub struct PhysicsWorld {
     gravity: Vector<Real>,
     integration_parameters: IntegrationParameters,
@@ -109,6 +118,7 @@ pub struct PhysicsWorld {
     pub boxes: GrabbableBoxes,
     loco_mode: LocoMode,
     move_speed: f32,
+    grab: Option<ActiveGrab>,
 }
 
 impl PhysicsWorld {
@@ -178,7 +188,82 @@ impl PhysicsWorld {
             boxes,
             loco_mode,
             move_speed: speed,
+            grab: None,
         }
+    }
+
+    fn entity_index(&self, entity_id: u32) -> Option<usize> {
+        let first = BOX_ENTITY_FIRST;
+        let last = first + BOX_COUNT as u32 - 1;
+        if !(first..=last).contains(&entity_id) {
+            return None;
+        }
+        let i = (entity_id - first) as usize;
+        if self.boxes.grabbable[i] {
+            Some(i)
+        } else {
+            None
+        }
+    }
+
+    /// Begin / hold / release Grab. `want_grab` is GRAB button; `entity_id==0` means none.
+    /// Aim is world-space controller origin (meters).
+    pub fn apply_grab(&mut self, want_grab: bool, entity_id: u32, aim: (f32, f32, f32)) {
+        let aim_v = vector![aim.0, aim.1, aim.2];
+        if !want_grab {
+            self.release_grab();
+            return;
+        }
+        if let Some(g) = self.grab {
+            // Hold: keep following even if client stops sending id (defensive).
+            self.follow_grab(g, aim_v);
+            return;
+        }
+        let Some(index) = self.entity_index(entity_id) else {
+            return;
+        };
+        let handle = self.boxes.handles[index];
+        let Some(body) = self.rigid_body_set.get_mut(handle) else {
+            return;
+        };
+        let t = *body.translation();
+        let offset = t - aim_v;
+        body.set_body_type(RigidBodyType::KinematicPositionBased, true);
+        body.set_linvel(vector![0.0, 0.0, 0.0], true);
+        body.set_angvel(vector![0.0, 0.0, 0.0], true);
+        body.set_next_kinematic_translation(t);
+        let g = ActiveGrab { index, offset };
+        self.grab = Some(g);
+        self.follow_grab(g, aim_v);
+    }
+
+    fn follow_grab(&mut self, g: ActiveGrab, aim: Vector<Real>) {
+        let handle = self.boxes.handles[g.index];
+        let Some(body) = self.rigid_body_set.get_mut(handle) else {
+            return;
+        };
+        body.set_next_kinematic_translation(aim + g.offset);
+    }
+
+    fn release_grab(&mut self) {
+        let Some(g) = self.grab.take() else {
+            return;
+        };
+        let handle = self.boxes.handles[g.index];
+        let Some(body) = self.rigid_body_set.get_mut(handle) else {
+            return;
+        };
+        // Snapshot pose before type change so dynamic starts at the held position.
+        let pos = *body.position();
+        body.set_body_type(RigidBodyType::Dynamic, true);
+        body.set_position(pos, true);
+        body.set_linvel(vector![0.0, 0.0, 0.0], true);
+        body.set_angvel(vector![0.0, 0.0, 0.0], true);
+        body.wake_up(true);
+    }
+
+    pub fn grab_entity_id(&self) -> Option<u32> {
+        self.grab.map(|g| self.boxes.entity_ids[g.index])
     }
 
     pub fn loco_mode(&self) -> LocoMode {
@@ -343,5 +428,49 @@ mod tests {
             let (_, y, _) = world.box_translation(i);
             assert!(y > 0.15 && y < 0.6, "box {i} expected on floor, y={y}");
         }
+    }
+
+    #[test]
+    fn grab_hold_follows_aim_then_drops() {
+        let mut world = PhysicsWorld::new(LocoMode::Noclip, DEFAULT_MOVE_SPEED);
+        for _ in 0..120 {
+            world.step();
+        }
+        let id = BOX_ENTITY_FIRST + 4; // center
+        let (bx, by, bz) = world.box_translation(4);
+        let aim0 = (bx - 0.1, by, bz - 0.2);
+        world.apply_grab(true, id, aim0);
+        assert_eq!(world.grab_entity_id(), Some(id));
+        // Lift high and clear of the 3×3 grid so release falls to the floor.
+        let aim1 = (aim0.0 + 3.0, aim0.1 + 2.5, aim0.2);
+        for _ in 0..10 {
+            world.apply_grab(true, id, aim1);
+            world.step();
+        }
+        let (x, y, z) = world.box_translation(4);
+        assert!(
+            (x - (bx + 3.0)).abs() < 0.05 && (y - (by + 2.5)).abs() < 0.05 && (z - bz).abs() < 0.05,
+            "expected follow to ({},{},{}), got ({x},{y},{z})",
+            bx + 3.0,
+            by + 2.5,
+            bz
+        );
+        world.apply_grab(false, 0, aim1);
+        assert!(world.grab_entity_id().is_none());
+        for _ in 0..300 {
+            world.step();
+        }
+        let (_, y_after, _) = world.box_translation(4);
+        assert!(
+            y_after < 1.0 && y_after < y - 1.0,
+            "released box should fall toward floor, y_hold={y} y_after={y_after}"
+        );
+    }
+
+    #[test]
+    fn grab_ignores_non_box_entity() {
+        let mut world = PhysicsWorld::new(LocoMode::Noclip, DEFAULT_MOVE_SPEED);
+        world.apply_grab(true, 1, (0.0, 1.0, 0.0));
+        assert!(world.grab_entity_id().is_none());
     }
 }

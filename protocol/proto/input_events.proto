@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package alchemy.input;
 
-// Room Token gate + x0009 camera-relative locomotion intent.
+// Room Token gate + x0009 loco + x0011 Grab hold aim.
 // Full action taxonomy / editor events are deferred.
 
 message InputEvent {
@@ -18,14 +18,20 @@ message InputEvent {
   float move_z = 5;
   // Optional action bits (host may ignore unused). See InputButtons.
   uint32 buttons = 6;
+  // Grabbable entity to hold while GRAB is set (0 = none). Host ignores non-grabbable ids.
+  uint32 grab_entity_id = 7;
+  // World-space controller aim origin (meters). Meaningful when GRAB + grab_entity_id != 0.
+  float aim_x = 8;
+  float aim_y = 9;
+  float aim_z = 10;
 }
 
-// Bit flags for InputEvent.buttons (Desktop x0009; VR action bits later).
+// Bit flags for InputEvent.buttons (Desktop x0009; VR Grab = grip / Select when dash closed).
 enum InputButtons {
   INPUT_BUTTONS_NONE = 0;
   INPUT_BUTTONS_PRIMARY = 1;    // LMB / Y
   INPUT_BUTTONS_SECONDARY = 2;  // R / Mouse4
-  INPUT_BUTTONS_GRAB = 4;       // RMB
+  INPUT_BUTTONS_GRAB = 4;       // RMB / XR grip (Select fallback when dash closed)
   INPUT_BUTTONS_CONTEXT = 8;    // T / MMB
   INPUT_BUTTONS_JUMP = 16;      // Space edge (Walk); continuous up uses move_y
 }

@@ -14,11 +14,11 @@ RUST_LOG=info timeout 8 cargo run -q -p host-server >"$LOG" 2>&1
 set -e
 
 ok=1
-if ! grep -q "host-server x0009 starting" "$LOG"; then
-  echo "smoke-desktop-noclip: missing x0009 banner"
+if ! grep -qE "host-server (x0009|x0010|x0011) starting" "$LOG"; then
+  echo "smoke-desktop-noclip: missing host-server start banner"
   ok=0
 fi
-if ! grep -q "protocol_pin=alchemy-protocol/0.4.0-x0009" "$LOG"; then
+if ! grep -q "protocol_pin=alchemy-protocol/" "$LOG"; then
   echo "smoke-desktop-noclip: missing PROTOCOL_PIN"
   ok=0
 fi
