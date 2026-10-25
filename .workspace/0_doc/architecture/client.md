@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: x000e（VR UI レーザーポインタ）。Desktop WASD / XR ロコ維持
+> **ステータス**: x000e（VR UI レーザーポインタ）完了。次は [x000f Dash Facet 最小](../roadmap/slices/x000f-dash-facet-minimal.md)
 
 ## レイアウト
 
@@ -26,7 +26,7 @@
 | Desktop: WASD/Space/C → Intent。カメラは user_root（マウスルックは後続） | Pointer Lock / マウスルック |
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
 | OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose + 埋め込み baseColor + animatable node） | SteamVR パス直読み／PBR（MR/normal 等）／手トラ |
-| OpenXR: ダッシュ UI＋aim レーザーを同一投影で描画（Select で Exit 等） | ホバーハイライト・ダッシュ閉時ワールドレーザー・CompositionLayerQuad ダッシュ |
+| OpenXR: ダッシュ UI＋aim レーザーを同一投影で描画（Select で Exit 等） | ホバー／Facet 編集（→ x000f）・ダッシュ閉時ワールドレーザー・CompositionLayerQuad ダッシュ |
 | auth login → Bearer 付き Room Token → InputEvent | OSC / Dual Editor / launcher 本実装 |
 | host: Rapier 60Hz + `is_finite` + Manifest Noclip → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk |
 | ESC（Desktop）/ Menu（OpenXR）ダッシュ・client 終了・host 終了スタブ | Grab / Context / Primary ツール本体 |
@@ -77,4 +77,4 @@
 - 転送: [zenoh-router.md](zenoh-router.md)
 - Room Token: [world-server.md](world-server.md)
 - Blob CAS: [assets-server.md](assets-server.md)
-- Slice: [x000e-vr-ui-laser-pointer.md](../roadmap/slices/x000e-vr-ui-laser-pointer.md) · [x000d](../roadmap/slices/x000d-vr-controller-animatable-nodes.md) · [x000c](../roadmap/slices/x000c-vr-controller-glb-textures.md) · [x000b](../roadmap/slices/x000b-vr-controller-render-models.md) · [x000a](../roadmap/slices/x000a-vr-thumbstick-noclip.md) · [x0009](../roadmap/slices/x0009-desktop-noclip-loco.md)
+- Slice: [x000f](../roadmap/slices/x000f-dash-facet-minimal.md) · [x000e](../roadmap/slices/x000e-vr-ui-laser-pointer.md) · [x000d](../roadmap/slices/x000d-vr-controller-animatable-nodes.md) · [x000c](../roadmap/slices/x000c-vr-controller-glb-textures.md) · [x000b](../roadmap/slices/x000b-vr-controller-render-models.md) · [x000a](../roadmap/slices/x000a-vr-thumbstick-noclip.md) · [x0009](../roadmap/slices/x0009-desktop-noclip-loco.md)
