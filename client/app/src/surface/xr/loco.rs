@@ -1,6 +1,7 @@
 //! VR thumbstick → world MoveIntent helpers (x000a).
 //!
 //! Guarantees: aim-relative stick projection, deadzone, L+R add+clamp, max-speed scale.
+//! Right stick X is reserved for comfort turn (see `crate::turn`); only Y adds to move.
 //! Non-guarantees: OpenXR action binding (see vk_loop), host speed override protocol.
 
 use glam::{Quat, Vec3};
@@ -21,10 +22,9 @@ fn clamp_unit(v: Vec3) -> Vec3 {
 /// Stick: +X = right, +Y = forward (−local Z in OpenXR). Pitch included (Noclip up/down).
 pub fn stick_to_world(orientation: Quat, stick_x: f32, stick_y: f32, deadzone: f32) -> Vec3 {
     let mag = (stick_x * stick_x + stick_y * stick_y).sqrt();
-    if !mag.is_finite() || mag < deadzone {
+    if !mag.is_finite() || mag <= deadzone.max(0.0) || mag < 1e-6 {
         return Vec3::ZERO;
     }
-    // Remap deadzone → full throw so small tilts still reach 1.0 at edge.
     let t = ((mag - deadzone) / (1.0 - deadzone).max(1e-6)).clamp(0.0, 1.0);
     let nx = stick_x / mag * t;
     let ny = stick_y / mag * t;
@@ -40,7 +40,6 @@ pub fn combine_hands(left: Vec3, right: Vec3) -> Vec3 {
 }
 
 /// Scale by `max_speed / default_speed` then re-clamp to unit length.
-/// When max == default, this is identity on an already-unit vector.
 pub fn apply_max_speed_scale(v: Vec3, max_speed: f32, default_speed: f32) -> Vec3 {
     if !max_speed.is_finite() || !default_speed.is_finite() || default_speed <= 0.0 {
         return Vec3::ZERO;
@@ -49,7 +48,7 @@ pub fn apply_max_speed_scale(v: Vec3, max_speed: f32, default_speed: f32) -> Vec
     clamp_unit(v * factor)
 }
 
-/// Full pipeline: two sticks → scaled Intent axes.
+/// Left stick = full 2D move; right stick Y = forward/back only (X reserved for turn).
 pub fn intent_from_sticks(
     left_ori: Quat,
     left_stick: (f32, f32),
@@ -60,7 +59,7 @@ pub fn intent_from_sticks(
     deadzone: f32,
 ) -> Vec3 {
     let l = stick_to_world(left_ori, left_stick.0, left_stick.1, deadzone);
-    let r = stick_to_world(right_ori, right_stick.0, right_stick.1, deadzone);
+    let r = stick_to_world(right_ori, 0.0, right_stick.1, deadzone);
     apply_max_speed_scale(combine_hands(l, r), max_speed, default_speed)
 }
 
@@ -117,9 +116,22 @@ mod tests {
 
     #[test]
     fn pitched_controller_moves_up() {
-        // 90° pitch up about X: -Z → +Y
         let q = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
         let v = stick_to_world(q, 0.0, 1.0, 0.0);
         assert!(v.y > 0.9, "expected +Y, got {v:?}");
+    }
+
+    #[test]
+    fn intent_ignores_right_stick_x() {
+        let v = intent_from_sticks(
+            Quat::IDENTITY,
+            (0.0, 0.0),
+            Quat::IDENTITY,
+            (1.0, 0.0),
+            4.0,
+            4.0,
+            0.0,
+        );
+        assert!(v.length() < 1e-5, "right X must not strafe, got {v:?}");
     }
 }

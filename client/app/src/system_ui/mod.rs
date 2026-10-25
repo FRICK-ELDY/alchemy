@@ -121,6 +121,12 @@ impl SystemUi {
             }
             Some(WidgetId::ExitClientOnly) => UiAction::ExitClientOnly,
             Some(WidgetId::ExitClientAndHost) => UiAction::ExitClientAndHost,
+            Some(WidgetId::TurnModeToggle) => {
+                self.state.toggle_turn_mode();
+                self.rebuild();
+                log::info!("turn mode → {}", self.state.turn.mode.label());
+                UiAction::None
+            }
             Some(WidgetId::Mic)
             | Some(WidgetId::MicOff)
             | Some(WidgetId::Volume)

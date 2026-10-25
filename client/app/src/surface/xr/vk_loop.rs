@@ -24,7 +24,8 @@ use crate::host_control;
 use crate::mesh::CpuMesh;
 use crate::scene::{MoveIntent, SharedState, MESH_ENTITY_ID, USER_ROOT_ENTITY_ID};
 use crate::system_ui::{SystemUi, UiAction};
-use glam::Quat;
+use crate::turn::{update_turn_yaw, TURN_DEADZONE};
+use glam::{Quat, Vec3};
 
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 const VIEW_COUNT: u32 = 2;
@@ -404,6 +405,8 @@ pub fn run_openxr(
         let mut menu_was_down = false;
         let mut select_was_down = false;
         let mut exit_requested = false;
+        let mut view_yaw = 0.0_f32;
+        let mut snap_ready = true;
 
         'main_loop: loop {
             if !running.load(Ordering::Relaxed) || exit_requested {
@@ -662,6 +665,22 @@ pub fn run_openxr(
 
                 let dash_open = ui.state.open;
                 let max_speed = ui.state.max_speed;
+                let turn_settings = ui.state.turn;
+                let dt = {
+                    let ns = xr_frame_state.predicted_display_period.as_nanos();
+                    ((ns as f64) / 1_000_000_000.0).clamp(0.001, 0.1) as f32
+                };
+                if !dash_open {
+                    view_yaw = update_turn_yaw(
+                        view_yaw,
+                        right_stick.x,
+                        turn_settings,
+                        dt,
+                        &mut snap_ready,
+                        TURN_DEADZONE,
+                    );
+                }
+
                 let mut intent = MoveIntent {
                     suppress: dash_open,
                     ..Default::default()
@@ -676,9 +695,12 @@ pub fn run_openxr(
                         DEFAULT_MOVE_SPEED,
                         STICK_DEADZONE,
                     );
-                    intent.move_x = v.x;
-                    intent.move_y = v.y;
-                    intent.move_z = v.z;
+                    // Apply comfort yaw so move aligns with the rotated world floor.
+                    let yaw_q = Quat::from_rotation_y(view_yaw);
+                    let rotated = yaw_q * Vec3::new(v.x, v.y, v.z);
+                    intent.move_x = rotated.x;
+                    intent.move_y = rotated.y;
+                    intent.move_z = rotated.z;
                 }
                 if let Ok(mut slot) = shared.intent.lock() {
                     *slot = intent;
@@ -749,7 +771,10 @@ pub fn run_openxr(
             let _floor_index = floor_swapchain.handle.acquire_image()?;
             floor_swapchain.handle.wait_image(xr::Duration::INFINITE)?;
             floor_swapchain.handle.release_image()?;
-            let s = std::f32::consts::FRAC_1_SQRT_2;
+            // Floor: yaw (comfort turn) * pitch −90°; position = yaw * (−user_root).
+            let yaw_q = Quat::from_rotation_y(view_yaw);
+            let floor_ori = yaw_q * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+            let floor_pos = yaw_q * Vec3::new(-user_root.x, -user_root.y, -user_root.z);
             let floor_rect = xr::Rect2Di {
                 offset: xr::Offset2Di { x: 0, y: 0 },
                 extent: xr::Extent2Di {
@@ -768,15 +793,15 @@ pub fn run_openxr(
                 )
                 .pose(xr::Posef {
                     orientation: xr::Quaternionf {
-                        x: -s,
-                        y: 0.0,
-                        z: 0.0,
-                        w: s,
+                        x: floor_ori.x,
+                        y: floor_ori.y,
+                        z: floor_ori.z,
+                        w: floor_ori.w,
                     },
                     position: xr::Vector3f {
-                        x: -user_root.x,
-                        y: -user_root.y,
-                        z: -user_root.z,
+                        x: floor_pos.x,
+                        y: floor_pos.y,
+                        z: floor_pos.z,
                     },
                 })
                 .size(xr::Extent2Df {

@@ -1,7 +1,7 @@
 //! OpenXR surface (SteamVR). Falls back to Desktop on probe/session failure.
 //!
 //! Guarantees: menu toggle, ray click → system_ui UiAction, Exit ends session,
-//! thumbstick Noclip Intent (aim-relative, L+R add), checker floor quad (−user_root).
+//! thumbstick Noclip Intent (aim-relative), comfort turn (snap/smooth), checker floor.
 //! Non-guarantees: WSL HMD, Quest standalone, Vive trackpad-only, Coin mesh in XR.
 
 mod input;
