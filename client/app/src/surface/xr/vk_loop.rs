@@ -361,12 +361,8 @@ pub fn run_openxr(
         let pipeline = create_clear_pipeline(&vk_device, render_pass, pipeline_layout, module)?;
         vk_device.destroy_shader_module(module, None);
 
-        let mesh_pipe = create_mesh_pipeline(
-            &vk_instance,
-            vk_physical_device,
-            &vk_device,
-            render_pass,
-        )?;
+        let mesh_pipe =
+            create_mesh_pipeline(&vk_instance, vk_physical_device, &vk_device, render_pass)?;
 
         let cmd_pool = vk_device.create_command_pool(
             &vk::CommandPoolCreateInfo::default()
@@ -723,11 +719,7 @@ pub fn run_openxr(
             vk_device.cmd_draw(cmd, 3, 1, 0, 0);
 
             // Floor then controllers in one projection (depth-tested).
-            vk_device.cmd_bind_pipeline(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                mesh_pipe.pipeline,
-            );
+            vk_device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, mesh_pipe.pipeline);
             vk_device.cmd_bind_descriptor_sets(
                 cmd,
                 vk::PipelineBindPoint::GRAPHICS,
@@ -736,7 +728,13 @@ pub fn run_openxr(
                 &[mesh_pipe.descriptor_set],
                 &[],
             );
-            push_mesh_consts(&vk_device, cmd, mesh_pipe.layout, floor_model, MESH_MODE_FLOOR);
+            push_mesh_consts(
+                &vk_device,
+                cmd,
+                mesh_pipe.layout,
+                floor_model,
+                MESH_MODE_FLOOR,
+            );
             vk_device.cmd_bind_vertex_buffers(cmd, 0, &[floor_gpu.vbo], &[0]);
             vk_device.cmd_bind_index_buffer(cmd, floor_gpu.ibo, 0, vk::IndexType::UINT32);
             vk_device.cmd_draw_indexed(cmd, floor_gpu.index_count, 1, 0, 0, 0);
@@ -1084,12 +1082,7 @@ fn create_sized_swapchain(
 fn floor_plane_mesh() -> CpuMesh {
     let h = FLOOR_METERS * 0.5;
     CpuMesh {
-        positions: vec![
-            [-h, 0.0, -h],
-            [h, 0.0, -h],
-            [h, 0.0, h],
-            [-h, 0.0, h],
-        ],
+        positions: vec![[-h, 0.0, -h], [h, 0.0, -h], [h, 0.0, h], [-h, 0.0, h]],
         indices: vec![0, 1, 2, 0, 2, 3],
         radius: h * std::f32::consts::SQRT_2,
     }
@@ -1486,8 +1479,9 @@ fn create_mesh_pipeline(
     render_pass: vk::RenderPass,
 ) -> Result<MeshPipeline> {
     let spv = compile_wgsl_spv_multiview(MESH_WGSL).context("compile mesh shader")?;
-    let module =
-        unsafe { device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&spv), None)? };
+    let module = unsafe {
+        device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&spv), None)?
+    };
 
     let bindings = [vk::DescriptorSetLayoutBinding {
         binding: 0,
@@ -1880,7 +1874,8 @@ fn destroy_gpu_mesh(device: &ash::Device, g: GpuMesh) {
 }
 
 fn compile_wgsl_spv_multiview(src: &str) -> Result<Vec<u32>> {
-    let module = naga::front::wgsl::parse_str(src).map_err(|e| anyhow::anyhow!("wgsl parse: {e}"))?;
+    let module =
+        naga::front::wgsl::parse_str(src).map_err(|e| anyhow::anyhow!("wgsl parse: {e}"))?;
     let info = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::all(),
