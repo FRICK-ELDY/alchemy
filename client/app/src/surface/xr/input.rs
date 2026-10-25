@@ -41,8 +41,7 @@ pub fn ray_hit_dash_quad(
     canvas_w: f32,
     canvas_h: f32,
 ) -> Option<(f32, f32)> {
-    ray_hit_dash_quad_full(head_pos, head_orient, ray, canvas_w, canvas_h)
-        .map(|h| (h.px, h.py))
+    ray_hit_dash_quad_full(head_pos, head_orient, ray, canvas_w, canvas_h).map(|h| (h.px, h.py))
 }
 
 /// Same as [`ray_hit_dash_quad`] but also returns ray distance `t`.
@@ -192,7 +191,10 @@ mod tests {
             origin: head_pos,
             dir: Vec3::X,
         };
-        assert!((laser_length(head_pos, head_orient, ray, 100.0, 100.0) - LASER_MAX_LENGTH).abs() < 1e-5);
+        assert!(
+            (laser_length(head_pos, head_orient, ray, 100.0, 100.0) - LASER_MAX_LENGTH).abs()
+                < 1e-5
+        );
     }
 
     #[test]
@@ -201,6 +203,9 @@ mod tests {
         let m = laser_model(origin, Quat::IDENTITY, 2.0);
         let tip_local = Vec3::new(0.0, 0.0, -1.0);
         let tip = m.transform_point3(tip_local);
-        assert!((tip - Vec3::new(1.0, 2.0, 1.0)).length() < 1e-4, "tip={tip:?}");
+        assert!(
+            (tip - Vec3::new(1.0, 2.0, 1.0)).length() < 1e-4,
+            "tip={tip:?}"
+        );
     }
 }
