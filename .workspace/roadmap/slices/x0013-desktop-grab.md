@@ -11,7 +11,7 @@
 | 層 | 役割 |
 |:---|:---|
 | `world_hit` | Desktop / XR 共通の AABB レイヒット（surface 非依存） |
-| surface Desktop | look capture 中の RMB → ヒット開始／保持／解放。aim = eye |
+| surface Desktop | look capture 中の LMB / RMB / E → ヒット開始／保持／解放。aim = eye。床箱は俯瞰が必要 |
 | `MoveIntent` | 既存 `GRAB` + `grab_entity_id` + `aim_*`（XR と同契約） |
 | host | 変更なし（x0011 の Grab hold をそのまま使う） |
 
@@ -26,10 +26,11 @@
 
 | 入力 | 役割 |
 |:---|:---|
-| RMB（look capture 中・ダッシュ閉） | 前方レイヒットの箱を Grab 開始／保持。離すと放下 |
+| LMB（look 開始後・再押し長押し） | 画面中央レイヒットの箱を Grab。capture 直後の1クリックでは掴まない |
+| RMB / E（look capture 中） | 同上 Grab |
 | Esc（ダッシュ開） | Grab もクリア（XR と同様） |
 
-LMB は look capture のまま（掴みには使わない）。
+箱は床上。水平視線では当たらないので **下を向いて箱が明るくなる**まで合わせてから掴む。
 
 ## 保証する / しない
 
@@ -63,7 +64,7 @@ ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 確認:
 
 1. ダッシュ閉でクリック → look capture  
-2. 箱の中央を向き RMB 押しっぱなし → 箱が視点（移動）に追従  
+2. マウスで **下を向き**、箱が明るくなったら LMB/RMB/E 長押し → 箱が眼位置に追従（WASD で動かすと分かりやすい）  
 3. 離すと箱が落ちる。Esc でダッシュを開くと Grab も解除  
 
 ## 実装メモ

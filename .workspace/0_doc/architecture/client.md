@@ -49,7 +49,7 @@
 | WASD | 前/左/後/右（固定 look・yaw=0 相対） |
 | Space / C | 上昇 / 下降（Noclip・Fly） |
 | Y / T / R | Primary / Context / Secondary（キーのみスタブ） |
-| マウス | ダッシュ開: UI。閉: LMB で look capture、移動で yaw/pitch（x0012）；look 中 RMB で Grab（x0013） |
+| マウス | ダッシュ開: UI。閉: LMB で look capture、移動で yaw/pitch（x0012）；look 中は箱を下向き照準（明るい）＋ LMB/RMB/E 長押しで Grab（x0013） |
 
 ## OpenXR バインド（x000a / x000b / x000c / x000d / x000e）
 

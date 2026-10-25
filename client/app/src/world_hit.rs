@@ -109,6 +109,13 @@ pub fn pick_grabbable(ray: Ray, boxes: &[(u32, EntityPose)]) -> Option<BoxHit> {
     ray_hit_grabbable_boxes(ray, boxes, BOX_HALF_EXTENT)
 }
 
+/// Desktop pick pad: floor boxes sit below eye height; slight AABB inflate helps look-aim.
+pub const DESKTOP_PICK_HALF_PAD: f32 = 0.12;
+
+pub fn pick_grabbable_desktop(ray: Ray, boxes: &[(u32, EntityPose)]) -> Option<BoxHit> {
+    ray_hit_grabbable_boxes(ray, boxes, BOX_HALF_EXTENT + DESKTOP_PICK_HALF_PAD)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +172,53 @@ mod tests {
         let ray = desktop_look_ray(eye, crate::scene::CameraLook::default());
         assert!((ray.origin - Vec3::new(0.0, 1.6, 6.0)).length() < 1e-5);
         assert!((ray.dir - Vec3::NEG_Z).length() < 1e-5);
+    }
+
+    #[test]
+    fn eye_height_horizontal_misses_floor_box_exact_half() {
+        let eye = EntityPose {
+            x: 0.0,
+            y: 1.6,
+            z: 6.0,
+            ..Default::default()
+        };
+        let ray = desktop_look_ray(eye, crate::scene::CameraLook::default());
+        let boxes = [(
+            14,
+            EntityPose {
+                x: 0.0,
+                y: 0.25,
+                z: 3.5,
+                ..Default::default()
+            },
+        )];
+        assert!(pick_grabbable(ray, &boxes).is_none());
+    }
+
+    #[test]
+    fn looking_down_hits_floor_box() {
+        let eye = EntityPose {
+            x: 0.0,
+            y: 1.6,
+            z: 6.0,
+            ..Default::default()
+        };
+        // ~atan(1.35/2.5) down toward (0, 0.25, 3.5).
+        let look = crate::scene::CameraLook {
+            yaw: 0.0,
+            pitch: -0.5,
+        };
+        let ray = desktop_look_ray(eye, look);
+        let boxes = [(
+            14,
+            EntityPose {
+                x: 0.0,
+                y: 0.25,
+                z: 3.5,
+                ..Default::default()
+            },
+        )];
+        let hit = pick_grabbable_desktop(ray, &boxes).expect("look-down should hit");
+        assert_eq!(hit.entity_id, 14);
     }
 }
