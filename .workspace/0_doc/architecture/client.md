@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: x0010（Grabbable ボックス 3×3 + ダッシュ閉時ワールドレーザーヒット）。Grab hold は x0011
+> **ステータス**: x0011（Grab hold — XR kinematic 追従・放下）
 
 ## レイアウト
 
@@ -26,10 +26,10 @@
 | Desktop: WASD/Space/C → Intent。カメラは user_root（マウスルックは後続） | Pointer Lock / マウスルック |
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
 | OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose + 埋め込み baseColor + animatable node） | SteamVR パス直読み／PBR（MR/normal 等）／手トラ |
-| OpenXR: ダッシュ開→UI レーザー；閉→ワールドレーザーが Grabbable ボックス AABB にヒット（x0010） | Grab hold（x0011）／Facet 並べ替え／WorldRoot／CompositionLayerQuad |
-| auth login → Bearer 付き Room Token → InputEvent | OSC / Dual Editor / launcher 本実装 |
-| host: Rapier 60Hz + `is_finite` + Manifest Noclip + cuboid×9 SoA grabbable → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk / Grab 追従 |
-| ESC（Desktop）/ Menu（OpenXR）ダッシュ・Pinned Exit・Button hover・client 終了・host 終了スタブ | Facet 並べ替え / Grab hold / Context / Primary ツール本体 |
+| OpenXR: ダッシュ開→UI レーザー；閉→ワールドレーザー＋ Grab hold（squeeze／Select）（x0011） | Steal／回転追従／Desktop Grab／Facet 並べ替え／WorldRoot／CompositionLayerQuad |
+| auth login → Bearer 付き Room Token → InputEvent（含 grab_entity_id + aim_*） | OSC / Dual Editor / launcher 本実装 |
+| host: Rapier 60Hz + `is_finite` + Manifest Noclip + cuboid×9 + Grab kinematic → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk / Steal |
+| ESC（Desktop）/ Menu（OpenXR）ダッシュ・Pinned Exit・Button hover・client 終了・host 終了スタブ | Facet 並べ替え / Desktop Grab / Context / Primary ツール本体 |
 | OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD・launcher 本実装 |
 
 ## チャネル分離（C-C + E + x0009）
@@ -56,7 +56,8 @@
 | 入力 | 役割 |
 |:---|:---|
 | Menu | ダッシュ開閉（開いている間は移動 Intent = 0） |
-| Select + aim | ダッシュ UI クリック（開中は UI レーザー）。閉時はワールドレーザー＋ボックスヒット |
+| Select + aim | ダッシュ UI クリック（開中）。閉時はワールドレーザー；squeeze 無し時は Grab も兼ねる |
+| squeeze（Grip） | ダッシュ閉・ヒット中に Grab hold 開始／保持（x0011） |
 | 左右 thumbstick Y | その手の aim 相対で前後移動（L+R 加算） |
 | 左右 thumbstick X | コンフォートターン（L+R 加算。既定 Snap 30° / Smooth 切替可） |
 | Settings タブ | max speed・snap 角・smooth 速度の既定表示。Turn モードはタップで切替 |
@@ -77,4 +78,4 @@
 - 転送: [zenoh-router.md](zenoh-router.md)
 - Room Token: [world-server.md](world-server.md)
 - Blob CAS: [assets-server.md](assets-server.md)
-- Slice: [x0010](../roadmap/slices/x0010-grabbable-boxes.md) · [x000f](../roadmap/slices/x000f-dash-facet-minimal.md) · [x000e](../roadmap/slices/x000e-vr-ui-laser-pointer.md) · [x000d](../roadmap/slices/x000d-vr-controller-animatable-nodes.md) · [x000c](../roadmap/slices/x000c-vr-controller-glb-textures.md) · [x000b](../roadmap/slices/x000b-vr-controller-render-models.md) · [x000a](../roadmap/slices/x000a-vr-thumbstick-noclip.md) · [x0009](../roadmap/slices/x0009-desktop-noclip-loco.md)
+- Slice: [x0011](../roadmap/slices/x0011-grab-hold.md) · [x0010](../roadmap/slices/x0010-grabbable-boxes.md) · [x000f](../roadmap/slices/x000f-dash-facet-minimal.md) · [x000e](../roadmap/slices/x000e-vr-ui-laser-pointer.md) · [x000d](../roadmap/slices/x000d-vr-controller-animatable-nodes.md) · [x000c](../roadmap/slices/x000c-vr-controller-glb-textures.md) · [x000b](../roadmap/slices/x000b-vr-controller-render-models.md) · [x000a](../roadmap/slices/x000a-vr-thumbstick-noclip.md) · [x0009](../roadmap/slices/x0009-desktop-noclip-loco.md)

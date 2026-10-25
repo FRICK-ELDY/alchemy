@@ -2,7 +2,7 @@
 //!
 //! system_ui stays device-agnostic; this module maps XR poses → canvas pixels.
 //! Laser beam model matrices and AABB hits are pure here (vk_loop only draws).
-//! Grab hold (transform follow) is deferred to x0011.
+//! Grab hold Intent (entity + world aim) is written in vk_loop (x0011).
 
 use glam::{Mat4, Quat, Vec3};
 

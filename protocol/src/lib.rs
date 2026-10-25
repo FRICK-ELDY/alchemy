@@ -13,7 +13,7 @@
 pub use prost::Message;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.4.0-x0009";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.5.0-x0011";
 
 /// Default free-move speed (m/s) when Manifest `move_speed` is 0.
 /// Shared by host Noclip and client Settings display (x000a).
@@ -136,7 +136,11 @@ mod tests {
             move_x: 0.5,
             move_y: -0.25,
             move_z: 0.0,
-            buttons: input_buttons::PRIMARY | input_buttons::JUMP,
+            buttons: input_buttons::PRIMARY | input_buttons::JUMP | input_buttons::GRAB,
+            grab_entity_id: 14,
+            aim_x: 1.0,
+            aim_y: 1.5,
+            aim_z: 3.0,
         };
         let bytes = event.encode_to_vec();
         let decoded = InputEvent::decode(bytes.as_slice()).expect("decode");
@@ -144,8 +148,10 @@ mod tests {
         assert!((decoded.move_x - 0.5).abs() < f32::EPSILON);
         assert_eq!(
             decoded.buttons,
-            input_buttons::PRIMARY | input_buttons::JUMP
+            input_buttons::PRIMARY | input_buttons::JUMP | input_buttons::GRAB
         );
+        assert_eq!(decoded.grab_entity_id, 14);
+        assert!((decoded.aim_y - 1.5).abs() < f32::EPSILON);
     }
 
     #[test]

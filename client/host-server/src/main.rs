@@ -1,4 +1,4 @@
-//! Local host-server — x0010 grabbable boxes (+ x0009 loco / D/E paths).
+//! Local host-server — x0011 Grab hold (+ x0010 boxes / x0009 loco / D/E paths).
 //!
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
@@ -6,10 +6,11 @@
 //! - SceneManifest with default Noclip LocomotionConfig (blake3 refs; no GLB bytes)
 //! - user_root (entity 3) integrates Intent under Manifest mode; Coin (1) stays demo physics
 //! - Grabbable cuboids entity 10..18 (3×3) published on frame deltas (x0010)
+//! - Grab hold: GRAB + grab_entity_id + aim_* → kinematic follow; release → dynamic (x0011)
 //! - Slice E: `host_control` Subscribe → `shutdown` exits process
 //!
 //! Non-guarantees:
-//! - Grab hold (x0011) / Formula / polished Walk / signed Manifest / verifier / launcher
+//! - Steal / rotation follow / Desktop Grab / Formula / polished Walk / signed Manifest / verifier / launcher
 
 mod finite;
 mod host_control;
@@ -22,9 +23,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alchemy_protocol::{
-    Entity, InputEvent, LocomotionConfig, LocomotionMode, Message, RenderFrame, SceneEntry,
-    SceneManifest, FRAME_KEY_LOCAL, HOST_CONTROL_KEY_LOCAL, INPUT_KEY_LOCAL, MANIFEST_KEY_LOCAL,
-    PROTOCOL_PIN,
+    input_buttons, Entity, InputEvent, LocomotionConfig, LocomotionMode, Message, RenderFrame,
+    SceneEntry, SceneManifest, FRAME_KEY_LOCAL, HOST_CONTROL_KEY_LOCAL, INPUT_KEY_LOCAL,
+    MANIFEST_KEY_LOCAL, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
@@ -52,23 +53,17 @@ const ENTITY_MOVING: u32 = 1;
 const ENTITY_STATIC: u32 = 2;
 const ENTITY_USER_ROOT: u32 = 3;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct PoseOverride {
     x: f32,
     y: f32,
     z: f32,
     active: bool,
-}
-
-impl Default for PoseOverride {
-    fn default() -> Self {
-        Self {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-            active: false,
-        }
-    }
+    grab: bool,
+    grab_entity_id: u32,
+    aim_x: f32,
+    aim_y: f32,
+    aim_z: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -230,6 +225,11 @@ fn spawn_input_gate(
                                 guard.y = event.move_y;
                                 guard.z = event.move_z;
                                 guard.active = true;
+                                guard.grab = (event.buttons & input_buttons::GRAB) != 0;
+                                guard.grab_entity_id = event.grab_entity_id;
+                                guard.aim_x = event.aim_x;
+                                guard.aim_y = event.aim_y;
+                                guard.aim_z = event.aim_z;
                                 accepted += 1;
                             }
                         }
@@ -268,7 +268,7 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "host-server x0010 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} host_control={HOST_CONTROL_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id}"
+        "host-server x0011 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} host_control={HOST_CONTROL_KEY_LOCAL} world={world_url} auth={auth_url} room={room_id}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
@@ -366,6 +366,12 @@ fn main() -> Result<()> {
         if overlay.active {
             physics.apply_user_intent(overlay.x, overlay.y, overlay.z, dt);
         }
+        // Always apply grab state (release when GRAB bit clears / no recent grab).
+        physics.apply_grab(
+            overlay.grab,
+            overlay.grab_entity_id,
+            (overlay.aim_x, overlay.aim_y, overlay.aim_z),
+        );
         physics.step();
         physics_steps = physics_steps.wrapping_add(1);
         physics_steps_logged += 1;
@@ -421,8 +427,12 @@ fn main() -> Result<()> {
         if last_log.elapsed() >= Duration::from_secs(1) {
             let (mx, my, mz) = physics.moving_translation();
             let (ux, uy, uz) = physics.user_root_translation();
+            let grab = physics
+                .grab_entity_id()
+                .map(|id| format!("grab={id}"))
+                .unwrap_or_else(|| "grab=-".into());
             log::info!(
-                "physics: steps={physics_steps_logged} coin=({mx:.3},{my:.3},{mz:.3}) user_root=({ux:.3},{uy:.3},{uz:.3}); delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} net_tick={net_tick}"
+                "physics: steps={physics_steps_logged} coin=({mx:.3},{my:.3},{mz:.3}) user_root=({ux:.3},{uy:.3},{uz:.3}) {grab}; delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} net_tick={net_tick}"
             );
             publishes = 0;
             upsert_entities = 0;

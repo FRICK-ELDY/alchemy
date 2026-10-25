@@ -1,15 +1,15 @@
-//! Alchemy client — x000a VR thumbstick Noclip + Desktop WASD + OpenXR dash/Exit.
+//! Alchemy client — x0011 Grab hold + x000a Noclip + OpenXR dash/Exit.
 //!
 //! Guarantees:
 //! - Subscribes to SceneManifest / RenderFrame; downloads blob; wgpu mesh on Desktop
 //! - Desktop WASD/Space/C → InputEvent Intent; dash suppresses move (mouse look deferred)
 //! - OpenXR thumbstick (aim-relative, L+R add) → same Intent path
 //! - Camera follows host user_root pose (fixed default look)
-//! - Grabbable boxes 10..18 drawn; XR world laser hit when dash closed (x0010; Grab hold → x0011)
+//! - Grabbable boxes 10..18; XR world laser hit; Grab hold (grip/Select) → host kinematic follow
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
 //! - Settings shows default max speed (read-only)
 //!
-//! Non-guarantees: Grab hold (x0011), Quest standalone, WSL HMD, virtual keyboard edit
+//! Non-guarantees: Desktop Grab, Steal, Quest standalone, WSL HMD, virtual keyboard edit
 
 mod host_control;
 mod mesh;
@@ -45,7 +45,8 @@ const DEFAULT_ASSETS_URL: &str = "http://127.0.0.1:4004";
 const DEFAULT_ROOM_ID: &str = "local";
 const DEFAULT_AUTH_USER: &str = "alice";
 const DEFAULT_AUTH_PASSWORD: &str = "Password1";
-const INPUT_HZ: u64 = 10;
+/// Match net frame rate so Grab hold aim stays smooth enough (x0011).
+const INPUT_HZ: u64 = 30;
 const MANIFEST_WAIT: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Deserialize)]
@@ -295,10 +296,20 @@ fn spawn_input_publisher(
                 next += period;
 
                 let intent = shared.intent.lock().ok().map(|g| *g).unwrap_or_default();
-                let (mx, my, mz, buttons) = if intent.suppress {
-                    (0.0, 0.0, 0.0, 0)
+                let (mx, my, mz, buttons, grab_entity_id, aim_x, aim_y, aim_z) = if intent.suppress
+                {
+                    (0.0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0.0)
                 } else {
-                    (intent.move_x, intent.move_y, intent.move_z, intent.buttons)
+                    (
+                        intent.move_x,
+                        intent.move_y,
+                        intent.move_z,
+                        intent.buttons,
+                        intent.grab_entity_id,
+                        intent.aim_x,
+                        intent.aim_y,
+                        intent.aim_z,
+                    )
                 };
                 let event = InputEvent {
                     room_token: room_token.clone(),
@@ -307,6 +318,10 @@ fn spawn_input_publisher(
                     move_y: my,
                     move_z: mz,
                     buttons,
+                    grab_entity_id,
+                    aim_x,
+                    aim_y,
+                    aim_z,
                 };
                 if let Err(err) = publisher.put(event.encode_to_vec()).wait() {
                     log::warn!("input publish failed: {err}");
@@ -328,7 +343,7 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "client x000a starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} user_root={USER_ROOT_ENTITY_ID}"
+        "client x0011 starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} user_root={USER_ROOT_ENTITY_ID}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
