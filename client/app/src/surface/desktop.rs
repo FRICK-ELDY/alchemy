@@ -275,13 +275,7 @@ impl App {
 
     fn rebuild_intent(&self) {
         let dash_open = self.ui.state.open;
-        let yaw = self
-            .shared
-            .look
-            .lock()
-            .ok()
-            .map(|g| g.yaw)
-            .unwrap_or(0.0);
+        let yaw = self.shared.look.lock().ok().map(|g| g.yaw).unwrap_or(0.0);
         let forward_x = yaw.sin();
         let forward_z = -yaw.cos();
         let right_x = yaw.cos();
