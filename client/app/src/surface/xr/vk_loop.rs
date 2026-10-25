@@ -38,10 +38,6 @@ const NEAR_Z: f32 = 0.05;
 const FAR_Z: f32 = 100.0;
 const UI_CANVAS_W: u32 = 960;
 const UI_CANVAS_H: u32 = 540;
-/// Checker floor texture (CompositionLayerQuad). Large enough to see loco slide.
-const FLOOR_TEX_W: u32 = 256;
-const FLOOR_TEX_H: u32 = 256;
-const FLOOR_CELLS: u32 = 16;
 /// World-space floor quad size (meters). Matches host Rapier floor half-extent ~20.
 const FLOOR_METERS: f32 = 40.0;
 const DEFAULT_EYE_Y: f32 = 1.6;
@@ -407,7 +403,7 @@ pub fn run_openxr(
         let mut controller_gpu: Vec<GpuMesh> = Vec::new();
         let mut controller_gpu_gen: u64 = 0;
         let mut ui_swapchain: Option<UiSwapchain> = None;
-        let staging_bytes = (UI_CANVAS_W * UI_CANVAS_H * 4).max(FLOOR_TEX_W * FLOOR_TEX_H * 4);
+        let staging_bytes = UI_CANVAS_W * UI_CANVAS_H * 4;
         let staging = create_staging_buffer(
             &vk_instance,
             vk_physical_device,
@@ -415,28 +411,16 @@ pub fn run_openxr(
             staging_bytes as vk::DeviceSize,
         )?;
 
-        // World floor: checkerboard quad in stage space, offset by −user_root (Desktop metaphor).
-        let mut floor_swapchain = create_sized_swapchain(&session, FLOOR_TEX_W, FLOOR_TEX_H)?;
-        {
-            let pixels = make_checkerboard_rgba(FLOOR_TEX_W, FLOOR_TEX_H, FLOOR_CELLS);
-            let n = floor_swapchain.images.len();
-            for _ in 0..n {
-                let index = floor_swapchain.handle.acquire_image()?;
-                floor_swapchain.handle.wait_image(xr::Duration::INFINITE)?;
-                upload_rgba_to_image(
-                    &vk_device,
-                    queue,
-                    cmd_pool,
-                    &staging,
-                    floor_swapchain.images[index as usize],
-                    &pixels,
-                    FLOOR_TEX_W,
-                    FLOOR_TEX_H,
-                )?;
-                floor_swapchain.handle.release_image()?;
-            }
-        }
-        log::info!("XR checker floor ready ({FLOOR_METERS}m, offset by user_root)");
+        // Floor mesh in projection (depth-tested with controllers). Not a CompositionLayerQuad.
+        let floor_gpu = upload_gpu_mesh(
+            &vk_instance,
+            vk_physical_device,
+            &vk_device,
+            queue,
+            cmd_pool,
+            &floor_plane_mesh(),
+        )?;
+        log::info!("XR checker floor mesh ready ({FLOOR_METERS}m, depth-tested)");
 
         let mut event_storage = xr::EventDataBuffer::new();
         let mut session_running = false;
@@ -612,7 +596,83 @@ pub fn run_openxr(
             vk_device.wait_for_fences(&[fences[frame_i]], true, u64::MAX)?;
             vk_device.reset_fences(&[fences[frame_i]])?;
 
-            // Upload stereo view-proj before recording draws.
+            // Comfort turn + user_root before projection so floor depth-tests with controllers.
+            {
+                let left_stick = thumbstick_action.state(&session, hands[0])?.current_state;
+                let right_stick = thumbstick_action.state(&session, hands[1])?.current_state;
+                let left_ori = aim_left
+                    .locate(&stage, xr_frame_state.predicted_display_time)
+                    .ok()
+                    .filter(|l| {
+                        l.location_flags
+                            .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+                    })
+                    .map(|l| openxr_pose_to_isometry(l.pose).1)
+                    .unwrap_or(Quat::IDENTITY);
+                let right_ori = aim_right
+                    .locate(&stage, xr_frame_state.predicted_display_time)
+                    .ok()
+                    .filter(|l| {
+                        l.location_flags
+                            .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+                    })
+                    .map(|l| openxr_pose_to_isometry(l.pose).1)
+                    .unwrap_or(Quat::IDENTITY);
+                let dash_open = ui.state.open;
+                let max_speed = ui.state.max_speed;
+                let turn_settings = ui.state.turn;
+                let dt = {
+                    let ns = xr_frame_state.predicted_display_period.as_nanos();
+                    ((ns as f64) / 1_000_000_000.0).clamp(0.001, 0.1) as f32
+                };
+                let mut intent = MoveIntent {
+                    suppress: dash_open,
+                    ..Default::default()
+                };
+                if !dash_open {
+                    let turn_axis = combine_turn_axes(left_stick.x, right_stick.x);
+                    view_yaw = update_turn_yaw(
+                        view_yaw,
+                        turn_axis,
+                        turn_settings,
+                        dt,
+                        &mut snap_armed,
+                        TURN_DEADZONE,
+                    );
+                    let stage_move = intent_from_sticks(
+                        left_ori,
+                        (left_stick.x, left_stick.y),
+                        right_ori,
+                        (right_stick.x, right_stick.y),
+                        max_speed,
+                        DEFAULT_MOVE_SPEED,
+                        STICK_DEADZONE,
+                    );
+                    let v = stage_move_to_world(stage_move, view_yaw);
+                    intent.move_x = v.x;
+                    intent.move_y = v.y;
+                    intent.move_z = v.z;
+                }
+                if let Ok(mut slot) = shared.intent.lock() {
+                    *slot = intent;
+                }
+            }
+            let user_root = shared
+                .entities
+                .lock()
+                .ok()
+                .and_then(|m| m.get(&USER_ROOT_ENTITY_ID).copied())
+                .unwrap_or(crate::scene::EntityPose {
+                    x: 0.0,
+                    y: DEFAULT_EYE_Y,
+                    z: 6.0,
+                });
+            let yaw_q = Quat::from_rotation_y(view_yaw);
+            let floor_model = Mat4::from_rotation_translation(
+                yaw_q,
+                yaw_q * Vec3::new(-user_root.x, -user_root.y, -user_root.z),
+            );
+
             update_view_proj_ubo(&vk_device, &mesh_pipe, &views)?;
 
             let cmd = cmds[frame_i];
@@ -662,51 +722,53 @@ pub fn run_openxr(
             vk_device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
             vk_device.cmd_draw(cmd, 3, 1, 0, 0);
 
-            // Controllers (x000b): root pose from render model space.
-            if !controller_gpu.is_empty() {
-                vk_device.cmd_bind_pipeline(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    mesh_pipe.pipeline,
-                );
-                vk_device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    mesh_pipe.layout,
-                    0,
-                    &[mesh_pipe.descriptor_set],
-                    &[],
-                );
-                for (model, gpu) in render_models.models().iter().zip(controller_gpu.iter()) {
-                    let Ok(loc) = model
-                        .space
-                        .locate(&stage, xr_frame_state.predicted_display_time)
-                    else {
-                        continue;
-                    };
-                    if !loc
+            // Floor then controllers in one projection (depth-tested).
+            vk_device.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                mesh_pipe.pipeline,
+            );
+            vk_device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                mesh_pipe.layout,
+                0,
+                &[mesh_pipe.descriptor_set],
+                &[],
+            );
+            push_mesh_consts(&vk_device, cmd, mesh_pipe.layout, floor_model, MESH_MODE_FLOOR);
+            vk_device.cmd_bind_vertex_buffers(cmd, 0, &[floor_gpu.vbo], &[0]);
+            vk_device.cmd_bind_index_buffer(cmd, floor_gpu.ibo, 0, vk::IndexType::UINT32);
+            vk_device.cmd_draw_indexed(cmd, floor_gpu.index_count, 1, 0, 0, 0);
+
+            for (model, gpu) in render_models.models().iter().zip(controller_gpu.iter()) {
+                let Ok(loc) = model
+                    .space
+                    .locate(&stage, xr_frame_state.predicted_display_time)
+                else {
+                    continue;
+                };
+                if !loc
+                    .location_flags
+                    .contains(xr::SpaceLocationFlags::POSITION_VALID)
+                    || !loc
                         .location_flags
-                        .contains(xr::SpaceLocationFlags::POSITION_VALID)
-                        || !loc
-                            .location_flags
-                            .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
-                    {
-                        continue;
-                    }
-                    let (pos, ori) = openxr_pose_to_isometry(loc.pose);
-                    let model_mat = Mat4::from_rotation_translation(ori, pos);
-                    let model_cols = model_mat.to_cols_array();
-                    vk_device.cmd_push_constants(
-                        cmd,
-                        mesh_pipe.layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        bytemuck::cast_slice(&model_cols),
-                    );
-                    vk_device.cmd_bind_vertex_buffers(cmd, 0, &[gpu.vbo], &[0]);
-                    vk_device.cmd_bind_index_buffer(cmd, gpu.ibo, 0, vk::IndexType::UINT32);
-                    vk_device.cmd_draw_indexed(cmd, gpu.index_count, 1, 0, 0, 0);
+                        .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+                {
+                    continue;
                 }
+                let (pos, ori) = openxr_pose_to_isometry(loc.pose);
+                let model_mat = Mat4::from_rotation_translation(ori, pos);
+                push_mesh_consts(
+                    &vk_device,
+                    cmd,
+                    mesh_pipe.layout,
+                    model_mat,
+                    MESH_MODE_CONTROLLER,
+                );
+                vk_device.cmd_bind_vertex_buffers(cmd, 0, &[gpu.vbo], &[0]);
+                vk_device.cmd_bind_index_buffer(cmd, gpu.ibo, 0, vk::IndexType::UINT32);
+                vk_device.cmd_draw_indexed(cmd, gpu.index_count, 1, 0, 0, 0);
             }
 
             vk_device.cmd_end_render_pass(cmd);
@@ -718,7 +780,7 @@ pub fn run_openxr(
             )?;
             sc.handle.release_image()?;
 
-            // ---- input / UI (CPU); actions already synced above ----
+            // ---- menu / select UI (CPU); loco already applied above ----
             let menu_down = menu_action.state(&session, xr::Path::NULL)?.current_state;
             if menu_down && !menu_was_down {
                 ui.toggle();
@@ -776,84 +838,9 @@ pub fn run_openxr(
             }
             select_was_down = select_down;
 
-            // ---- VR thumbstick Noclip Intent (x000a) ----
-            {
-                let left_stick = thumbstick_action.state(&session, hands[0])?.current_state;
-                let right_stick = thumbstick_action.state(&session, hands[1])?.current_state;
-                let left_ori = aim_left
-                    .locate(&stage, xr_frame_state.predicted_display_time)
-                    .ok()
-                    .filter(|l| {
-                        l.location_flags
-                            .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
-                    })
-                    .map(|l| openxr_pose_to_isometry(l.pose).1)
-                    .unwrap_or(Quat::IDENTITY);
-                let right_ori = aim_right
-                    .locate(&stage, xr_frame_state.predicted_display_time)
-                    .ok()
-                    .filter(|l| {
-                        l.location_flags
-                            .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
-                    })
-                    .map(|l| openxr_pose_to_isometry(l.pose).1)
-                    .unwrap_or(Quat::IDENTITY);
-
-                let dash_open = ui.state.open;
-                let max_speed = ui.state.max_speed;
-                let turn_settings = ui.state.turn;
-                let dt = {
-                    let ns = xr_frame_state.predicted_display_period.as_nanos();
-                    ((ns as f64) / 1_000_000_000.0).clamp(0.001, 0.1) as f32
-                };
-                let mut intent = MoveIntent {
-                    suppress: dash_open,
-                    ..Default::default()
-                };
-                if !dash_open {
-                    // Both hands identical: X = turn (additive), Y = aim-relative move (additive).
-                    let turn_axis = combine_turn_axes(left_stick.x, right_stick.x);
-                    view_yaw = update_turn_yaw(
-                        view_yaw,
-                        turn_axis,
-                        turn_settings,
-                        dt,
-                        &mut snap_armed,
-                        TURN_DEADZONE,
-                    );
-
-                    let stage = intent_from_sticks(
-                        left_ori,
-                        (left_stick.x, left_stick.y),
-                        right_ori,
-                        (right_stick.x, right_stick.y),
-                        max_speed,
-                        DEFAULT_MOVE_SPEED,
-                        STICK_DEADZONE,
-                    );
-                    let v = stage_move_to_world(stage, view_yaw);
-                    intent.move_x = v.x;
-                    intent.move_y = v.y;
-                    intent.move_z = v.z;
-                }
-                if let Ok(mut slot) = shared.intent.lock() {
-                    *slot = intent;
-                }
-            }
-
             ui.prepare_cpu_canvas();
 
             let _ = (&mesh, dash_quad_model(head_pos, head_orient));
-            let user_root = shared
-                .entities
-                .lock()
-                .ok()
-                .and_then(|m| m.get(&USER_ROOT_ENTITY_ID).copied())
-                .unwrap_or(crate::scene::EntityPose {
-                    x: 0.0,
-                    y: DEFAULT_EYE_Y,
-                    z: 6.0,
-                });
             if frame_i == 0 {
                 if let Ok(map) = shared.entities.lock() {
                     if let Some(p) = map.get(&MESH_ENTITY_ID) {
@@ -900,49 +887,7 @@ pub fn run_openxr(
                 .space(&stage)
                 .views(&proj_views);
 
-            // Horizontal floor: rotate −90° about X so quad XY → world XZ; offset −user_root.
-            // Acquire each frame (content already uploaded); same release-before-end pattern as UI.
-            let _floor_index = floor_swapchain.handle.acquire_image()?;
-            floor_swapchain.handle.wait_image(xr::Duration::INFINITE)?;
-            floor_swapchain.handle.release_image()?;
-            // Floor: yaw (comfort turn) * pitch −90°; position = yaw * (−user_root).
-            let yaw_q = Quat::from_rotation_y(view_yaw);
-            let floor_ori = yaw_q * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
-            let floor_pos = yaw_q * Vec3::new(-user_root.x, -user_root.y, -user_root.z);
-            let floor_rect = xr::Rect2Di {
-                offset: xr::Offset2Di { x: 0, y: 0 },
-                extent: xr::Extent2Di {
-                    width: FLOOR_TEX_W as i32,
-                    height: FLOOR_TEX_H as i32,
-                },
-            };
-            let floor_quad = xr::CompositionLayerQuad::new()
-                .space(&stage)
-                .eye_visibility(xr::EyeVisibility::BOTH)
-                .sub_image(
-                    xr::SwapchainSubImage::new()
-                        .swapchain(&floor_swapchain.handle)
-                        .image_array_index(0)
-                        .image_rect(floor_rect),
-                )
-                .pose(xr::Posef {
-                    orientation: xr::Quaternionf {
-                        x: floor_ori.x,
-                        y: floor_ori.y,
-                        z: floor_ori.z,
-                        w: floor_ori.w,
-                    },
-                    position: xr::Vector3f {
-                        x: floor_pos.x,
-                        y: floor_pos.y,
-                        z: floor_pos.z,
-                    },
-                })
-                .size(xr::Extent2Df {
-                    width: FLOOR_METERS,
-                    height: FLOOR_METERS,
-                });
-
+            // Floor is drawn inside projection (depth-tested). UI remains a composition quad.
             if ui.state.open {
                 if let Some((pixels, cw, ch)) = ui.canvas_rgba() {
                     let ui_index = ui_sc.handle.acquire_image()?;
@@ -995,20 +940,20 @@ pub fn run_openxr(
                     frame_stream.end(
                         xr_frame_state.predicted_display_time,
                         environment_blend_mode,
-                        &[&proj, &floor_quad, &quad],
+                        &[&proj, &quad],
                     )?;
                 } else {
                     frame_stream.end(
                         xr_frame_state.predicted_display_time,
                         environment_blend_mode,
-                        &[&proj, &floor_quad],
+                        &[&proj],
                     )?;
                 }
             } else {
                 frame_stream.end(
                     xr_frame_state.predicted_display_time,
                     environment_blend_mode,
-                    &[&proj, &floor_quad],
+                    &[&proj],
                 )?;
             }
 
@@ -1025,8 +970,8 @@ pub fn run_openxr(
         drop(view_ref);
         drop(stage);
         drop(ui_swapchain);
-        drop(floor_swapchain);
         drop(session);
+        destroy_gpu_mesh(&vk_device, floor_gpu);
         if let Some(sc) = swapchain.take() {
             for b in sc.buffers {
                 vk_device.destroy_framebuffer(b.framebuffer, None);
@@ -1136,30 +1081,40 @@ fn create_sized_swapchain(
     Ok(UiSwapchain { handle, images })
 }
 
-/// High-contrast checker so thumbstick loco is visible without mesh world draw.
-fn make_checkerboard_rgba(width: u32, height: u32, cells: u32) -> Vec<u8> {
-    let cells = cells.max(2);
-    let mut out = vec![0u8; (width * height * 4) as usize];
-    let cell_w = width as f32 / cells as f32;
-    let cell_h = height as f32 / cells as f32;
-    for y in 0..height {
-        for x in 0..width {
-            let cx = (x as f32 / cell_w) as u32;
-            let cy = (y as f32 / cell_h) as u32;
-            let light = (cx + cy).is_multiple_of(2);
-            let (r, g, b) = if light {
-                (210u8, 215, 220)
-            } else {
-                (45u8, 50, 58)
-            };
-            let i = ((y * width + x) * 4) as usize;
-            out[i] = r;
-            out[i + 1] = g;
-            out[i + 2] = b;
-            out[i + 3] = 255;
-        }
+fn floor_plane_mesh() -> CpuMesh {
+    let h = FLOOR_METERS * 0.5;
+    CpuMesh {
+        positions: vec![
+            [-h, 0.0, -h],
+            [h, 0.0, -h],
+            [h, 0.0, h],
+            [-h, 0.0, h],
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        radius: h * std::f32::consts::SQRT_2,
     }
-    out
+}
+
+fn push_mesh_consts(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    layout: vk::PipelineLayout,
+    model: Mat4,
+    mode: u32,
+) {
+    let mut bytes = [0u8; MESH_PUSH_BYTES as usize];
+    let cols = model.to_cols_array();
+    bytes[..64].copy_from_slice(bytemuck::bytes_of(&cols));
+    bytes[64..68].copy_from_slice(&mode.to_le_bytes());
+    unsafe {
+        device.cmd_push_constants(
+            cmd,
+            layout,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            0,
+            &bytes,
+        );
+    }
 }
 
 fn create_staging_buffer(
@@ -1468,6 +1423,11 @@ fn create_clear_pipeline(
     Ok(pipes[0])
 }
 
+/// Push: model (64) + mode u32 (0=controller flat, 1=floor checker) + pad → 80 bytes.
+const MESH_PUSH_BYTES: u32 = 80;
+const MESH_MODE_CONTROLLER: u32 = 0;
+const MESH_MODE_FLOOR: u32 = 1;
+
 const MESH_WGSL: &str = r#"
 struct Views {
     view_proj: array<mat4x4<f32>, 2>,
@@ -1476,11 +1436,16 @@ struct Views {
 
 struct Push {
     model: mat4x4<f32>,
+    mode: u32,
+    _p0: u32,
+    _p1: u32,
+    _p2: u32,
 }
 var<push_constant> push: Push;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
+    @location(0) world_xz: vec2<f32>,
 }
 
 @vertex
@@ -1489,13 +1454,25 @@ fn vs_main(
     @builtin(view_index) view_index: i32,
 ) -> VsOut {
     var o: VsOut;
+    let world = push.model * vec4<f32>(position, 1.0);
+    o.world_xz = world.xz;
     let vp = views.view_proj[u32(view_index)];
-    o.pos = vp * push.model * vec4<f32>(position, 1.0);
+    o.pos = vp * world;
     return o;
 }
 
 @fragment
-fn fs_main() -> @location(0) vec4<f32> {
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    if (push.mode == 1u) {
+        // 2.5 m cells ≈ FLOOR_METERS/FLOOR_CELLS (40/16).
+        let cell = 2.5;
+        let c = floor(in.world_xz / cell);
+        let light = ((i32(c.x) + i32(c.y)) & 1) == 0;
+        if (light) {
+            return vec4<f32>(0.82, 0.84, 0.86, 1.0);
+        }
+        return vec4<f32>(0.18, 0.20, 0.23, 1.0);
+    }
     // Flat controller color (textures non-goal for x000b).
     return vec4<f32>(0.75, 0.78, 0.82, 1.0);
 }
@@ -1525,9 +1502,9 @@ fn create_mesh_pipeline(
         )?
     };
     let push_ranges = [vk::PushConstantRange {
-        stage_flags: vk::ShaderStageFlags::VERTEX,
+        stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
         offset: 0,
-        size: 64,
+        size: MESH_PUSH_BYTES,
     }];
     let layout = unsafe {
         device.create_pipeline_layout(
@@ -1734,8 +1711,8 @@ fn projection_from_fov(fov: xr::Fovf, near: f32, far: f32) -> Mat4 {
     let tan_up = fov.angle_up.tan();
     let tan_down = fov.angle_down.tan();
     let tan_width = tan_right - tan_left;
-    let tan_height = tan_up - tan_down;
-    // OpenXR / Vulkan clip space (Y down in NDC for Vulkan — OpenXR FOV already matches).
+    // Vulkan NDC Y grows downward; OpenXR view Y grows upward → use (down − up).
+    let tan_height = tan_down - tan_up;
     Mat4::from_cols(
         glam::Vec4::new(2.0 / tan_width, 0.0, 0.0, 0.0),
         glam::Vec4::new(0.0, 2.0 / tan_height, 0.0, 0.0),
