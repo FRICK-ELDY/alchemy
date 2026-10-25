@@ -23,7 +23,7 @@ use super::input::{
 use super::loco::{combine_turn_axes, intent_from_sticks, stage_move_to_world, STICK_DEADZONE};
 use super::render_model::{enable_if_available, RenderModelCache};
 use crate::host_control;
-use crate::mesh::CpuMesh;
+use crate::mesh::{CpuMesh, CpuSubmesh};
 use crate::scene::{MoveIntent, SharedState, MESH_ENTITY_ID, USER_ROOT_ENTITY_ID};
 use crate::system_ui::{SystemUi, UiAction};
 use crate::turn::{update_turn_yaw, TURN_DEADZONE};
@@ -361,9 +361,6 @@ pub fn run_openxr(
         let pipeline = create_clear_pipeline(&vk_device, render_pass, pipeline_layout, module)?;
         vk_device.destroy_shader_module(module, None);
 
-        let mesh_pipe =
-            create_mesh_pipeline(&vk_instance, vk_physical_device, &vk_device, render_pass)?;
-
         let cmd_pool = vk_device.create_command_pool(
             &vk::CommandPoolCreateInfo::default()
                 .queue_family_index(queue_family_index)
@@ -372,6 +369,14 @@ pub fn run_openxr(
                         | vk::CommandPoolCreateFlags::TRANSIENT,
                 ),
             None,
+        )?;
+        let mesh_pipe = create_mesh_pipeline(
+            &vk_instance,
+            vk_physical_device,
+            &vk_device,
+            queue,
+            cmd_pool,
+            render_pass,
         )?;
         let cmds = vk_device.allocate_command_buffers(
             &vk::CommandBufferAllocateInfo::default()
@@ -391,12 +396,12 @@ pub fn run_openxr(
         ui.init_cpu_canvas(UI_CANVAS_W, UI_CANVAS_H)?;
         ui.rebuild();
         log::info!(
-            "OpenXR ready — Menu toggles dash, Select clicks, thumbstick Noclip, checker floor, render models (x000b)"
+            "OpenXR ready — Menu toggles dash, Select clicks, thumbstick Noclip, checker floor, render models + baseColor (x000c)"
         );
 
         let mut swapchain: Option<Swapchain> = None;
         let mut depth_res: Option<DepthResources> = None;
-        let mut controller_gpu: Vec<GpuMesh> = Vec::new();
+        let mut controller_gpu: Vec<GpuController> = Vec::new();
         let mut controller_gpu_gen: u64 = 0;
         let mut ui_swapchain: Option<UiSwapchain> = None;
         let staging_bytes = UI_CANVAS_W * UI_CANVAS_H * 4;
@@ -408,13 +413,14 @@ pub fn run_openxr(
         )?;
 
         // Floor mesh in projection (depth-tested with controllers). Not a CompositionLayerQuad.
-        let floor_gpu = upload_gpu_mesh(
+        let floor_gpu = upload_gpu_submesh(
             &vk_instance,
             vk_physical_device,
             &vk_device,
             queue,
             cmd_pool,
-            &floor_plane_mesh(),
+            &mesh_pipe,
+            &floor_plane_submesh(),
         )?;
         log::info!("XR checker floor mesh ready ({FLOOR_METERS}m, depth-tested)");
 
@@ -491,16 +497,17 @@ pub fn run_openxr(
             }
             if controller_gpu_gen != render_models.generation {
                 for g in controller_gpu.drain(..) {
-                    destroy_gpu_mesh(&vk_device, g);
+                    destroy_gpu_controller(&vk_device, g);
                 }
                 for m in render_models.models() {
-                    match upload_gpu_mesh(
+                    match upload_gpu_controller(
                         &vk_instance,
                         vk_physical_device,
                         &vk_device,
                         queue,
                         cmd_pool,
-                        &m.mesh,
+                        &mesh_pipe,
+                        &m.mesh.submeshes,
                     ) {
                         Ok(g) => controller_gpu.push(g),
                         Err(err) => log::warn!("controller GPU upload: {err:#}"),
@@ -725,15 +732,17 @@ pub fn run_openxr(
                 vk::PipelineBindPoint::GRAPHICS,
                 mesh_pipe.layout,
                 0,
-                &[mesh_pipe.descriptor_set],
+                &[mesh_pipe.views_set],
                 &[],
             );
+            bind_mesh_texture(&vk_device, cmd, &mesh_pipe, mesh_pipe.white_set);
             push_mesh_consts(
                 &vk_device,
                 cmd,
                 mesh_pipe.layout,
                 floor_model,
                 MESH_MODE_FLOOR,
+                [1.0, 1.0, 1.0, 1.0],
             );
             vk_device.cmd_bind_vertex_buffers(cmd, 0, &[floor_gpu.vbo], &[0]);
             vk_device.cmd_bind_index_buffer(cmd, floor_gpu.ibo, 0, vk::IndexType::UINT32);
@@ -757,16 +766,25 @@ pub fn run_openxr(
                 }
                 let (pos, ori) = openxr_pose_to_isometry(loc.pose);
                 let model_mat = Mat4::from_rotation_translation(ori, pos);
-                push_mesh_consts(
-                    &vk_device,
-                    cmd,
-                    mesh_pipe.layout,
-                    model_mat,
-                    MESH_MODE_CONTROLLER,
-                );
-                vk_device.cmd_bind_vertex_buffers(cmd, 0, &[gpu.vbo], &[0]);
-                vk_device.cmd_bind_index_buffer(cmd, gpu.ibo, 0, vk::IndexType::UINT32);
-                vk_device.cmd_draw_indexed(cmd, gpu.index_count, 1, 0, 0, 0);
+                for sub in &gpu.submeshes {
+                    let (mode, tex_set) = if let Some(tex) = sub.texture.as_ref() {
+                        (MESH_MODE_TEXTURED, tex.set)
+                    } else {
+                        (MESH_MODE_CONTROLLER, mesh_pipe.white_set)
+                    };
+                    bind_mesh_texture(&vk_device, cmd, &mesh_pipe, tex_set);
+                    push_mesh_consts(
+                        &vk_device,
+                        cmd,
+                        mesh_pipe.layout,
+                        model_mat,
+                        mode,
+                        sub.factor,
+                    );
+                    vk_device.cmd_bind_vertex_buffers(cmd, 0, &[sub.vbo], &[0]);
+                    vk_device.cmd_bind_index_buffer(cmd, sub.ibo, 0, vk::IndexType::UINT32);
+                    vk_device.cmd_draw_indexed(cmd, sub.index_count, 1, 0, 0, 0);
+                }
             }
 
             vk_device.cmd_end_render_pass(cmd);
@@ -961,7 +979,7 @@ pub fn run_openxr(
         // Drop XR session before destroying Vulkan objects.
         render_models.clear(&xr_instance);
         for g in controller_gpu.drain(..) {
-            destroy_gpu_mesh(&vk_device, g);
+            destroy_gpu_controller(&vk_device, g);
         }
         drop(aim_left);
         drop(aim_right);
@@ -969,7 +987,7 @@ pub fn run_openxr(
         drop(stage);
         drop(ui_swapchain);
         drop(session);
-        destroy_gpu_mesh(&vk_device, floor_gpu);
+        destroy_gpu_submesh(&vk_device, floor_gpu);
         if let Some(sc) = swapchain.take() {
             for b in sc.buffers {
                 vk_device.destroy_framebuffer(b.framebuffer, None);
@@ -1012,22 +1030,51 @@ struct DepthResources {
     view: vk::ImageView,
 }
 
-struct GpuMesh {
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct MeshVertex {
+    pos: [f32; 3],
+    uv: [f32; 2],
+}
+
+struct GpuTexture {
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    view: vk::ImageView,
+    sampler: vk::Sampler,
+    pool: vk::DescriptorPool,
+    set: vk::DescriptorSet,
+}
+
+struct GpuSubmesh {
     vbo: vk::Buffer,
     vmem: vk::DeviceMemory,
     ibo: vk::Buffer,
     imem: vk::DeviceMemory,
     index_count: u32,
+    texture: Option<GpuTexture>,
+    factor: [f32; 4],
+}
+
+struct GpuController {
+    submeshes: Vec<GpuSubmesh>,
 }
 
 struct MeshPipeline {
     pipeline: vk::Pipeline,
     layout: vk::PipelineLayout,
-    descriptor_set_layout: vk::DescriptorSetLayout,
-    descriptor_pool: vk::DescriptorPool,
-    descriptor_set: vk::DescriptorSet,
+    views_set_layout: vk::DescriptorSetLayout,
+    tex_set_layout: vk::DescriptorSetLayout,
+    views_pool: vk::DescriptorPool,
+    views_set: vk::DescriptorSet,
     ubo: vk::Buffer,
     ubo_mem: vk::DeviceMemory,
+    white_image: vk::Image,
+    white_memory: vk::DeviceMemory,
+    white_view: vk::ImageView,
+    white_sampler: vk::Sampler,
+    white_pool: vk::DescriptorPool,
+    white_set: vk::DescriptorSet,
 }
 
 #[repr(C)]
@@ -1079,12 +1126,14 @@ fn create_sized_swapchain(
     Ok(UiSwapchain { handle, images })
 }
 
-fn floor_plane_mesh() -> CpuMesh {
+fn floor_plane_submesh() -> CpuSubmesh {
     let h = FLOOR_METERS * 0.5;
-    CpuMesh {
+    CpuSubmesh {
         positions: vec![[-h, 0.0, -h], [h, 0.0, -h], [h, 0.0, h], [-h, 0.0, h]],
+        uvs: vec![[0.0, 0.0]; 4],
         indices: vec![0, 1, 2, 0, 2, 3],
-        radius: h * std::f32::consts::SQRT_2,
+        base_color: None,
+        base_color_factor: [1.0, 1.0, 1.0, 1.0],
     }
 }
 
@@ -1094,11 +1143,13 @@ fn push_mesh_consts(
     layout: vk::PipelineLayout,
     model: Mat4,
     mode: u32,
+    factor: [f32; 4],
 ) {
     let mut bytes = [0u8; MESH_PUSH_BYTES as usize];
     let cols = model.to_cols_array();
     bytes[..64].copy_from_slice(bytemuck::bytes_of(&cols));
     bytes[64..68].copy_from_slice(&mode.to_le_bytes());
+    bytes[80..96].copy_from_slice(bytemuck::bytes_of(&factor));
     unsafe {
         device.cmd_push_constants(
             cmd,
@@ -1106,6 +1157,24 @@ fn push_mesh_consts(
             vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             0,
             &bytes,
+        );
+    }
+}
+
+fn bind_mesh_texture(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    mesh_pipe: &MeshPipeline,
+    tex_set: vk::DescriptorSet,
+) {
+    unsafe {
+        device.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            mesh_pipe.layout,
+            1,
+            &[tex_set],
+            &[],
         );
     }
 }
@@ -1416,16 +1485,19 @@ fn create_clear_pipeline(
     Ok(pipes[0])
 }
 
-/// Push: model (64) + mode u32 (0=controller flat, 1=floor checker) + pad → 80 bytes.
-const MESH_PUSH_BYTES: u32 = 80;
+/// Push: model (64) + mode u32 + pad (12) + baseColorFactor (16) → 96 bytes.
+const MESH_PUSH_BYTES: u32 = 96;
 const MESH_MODE_CONTROLLER: u32 = 0;
 const MESH_MODE_FLOOR: u32 = 1;
+const MESH_MODE_TEXTURED: u32 = 2;
 
 const MESH_WGSL: &str = r#"
 struct Views {
     view_proj: array<mat4x4<f32>, 2>,
 }
 @group(0) @binding(0) var<uniform> views: Views;
+@group(1) @binding(0) var base_tex: texture_2d<f32>;
+@group(1) @binding(1) var base_samp: sampler;
 
 struct Push {
     model: mat4x4<f32>,
@@ -1433,6 +1505,7 @@ struct Push {
     _p0: u32,
     _p1: u32,
     _p2: u32,
+    factor: vec4<f32>,
 }
 var<push_constant> push: Push;
 
@@ -1440,15 +1513,18 @@ struct VsOut {
     @builtin(position) pos: vec4<f32>,
     // Local XZ so floor checker is painted on the mesh (moves with loco, no UV scroll).
     @location(0) local_xz: vec2<f32>,
+    @location(1) uv: vec2<f32>,
 }
 
 @vertex
 fn vs_main(
     @location(0) position: vec3<f32>,
+    @location(1) uv: vec2<f32>,
     @builtin(view_index) view_index: i32,
 ) -> VsOut {
     var o: VsOut;
     o.local_xz = position.xz;
+    o.uv = uv;
     let world = push.model * vec4<f32>(position, 1.0);
     let vp = views.view_proj[u32(view_index)];
     o.pos = vp * world;
@@ -1467,7 +1543,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         return vec4<f32>(0.18, 0.20, 0.23, 1.0);
     }
-    // Flat controller color (textures non-goal for x000b).
+    if (push.mode == 2u) {
+        return textureSample(base_tex, base_samp, in.uv) * push.factor;
+    }
+    // Flat controller color when GLB has no usable baseColor (x000b fallback).
     return vec4<f32>(0.75, 0.78, 0.82, 1.0);
 }
 "#;
@@ -1476,6 +1555,8 @@ fn create_mesh_pipeline(
     instance: &ash::Instance,
     physical: vk::PhysicalDevice,
     device: &ash::Device,
+    queue: vk::Queue,
+    cmd_pool: vk::CommandPool,
     render_pass: vk::RenderPass,
 ) -> Result<MeshPipeline> {
     let spv = compile_wgsl_spv_multiview(MESH_WGSL).context("compile mesh shader")?;
@@ -1483,16 +1564,38 @@ fn create_mesh_pipeline(
         device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&spv), None)?
     };
 
-    let bindings = [vk::DescriptorSetLayoutBinding {
+    let views_bindings = [vk::DescriptorSetLayoutBinding {
         binding: 0,
         descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
         descriptor_count: 1,
         stage_flags: vk::ShaderStageFlags::VERTEX,
         ..Default::default()
     }];
-    let descriptor_set_layout = unsafe {
+    let views_set_layout = unsafe {
         device.create_descriptor_set_layout(
-            &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+            &vk::DescriptorSetLayoutCreateInfo::default().bindings(&views_bindings),
+            None,
+        )?
+    };
+    let tex_bindings = [
+        vk::DescriptorSetLayoutBinding {
+            binding: 0,
+            descriptor_type: vk::DescriptorType::SAMPLED_IMAGE,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::FRAGMENT,
+            ..Default::default()
+        },
+        vk::DescriptorSetLayoutBinding {
+            binding: 1,
+            descriptor_type: vk::DescriptorType::SAMPLER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::FRAGMENT,
+            ..Default::default()
+        },
+    ];
+    let tex_set_layout = unsafe {
+        device.create_descriptor_set_layout(
+            &vk::DescriptorSetLayoutCreateInfo::default().bindings(&tex_bindings),
             None,
         )?
     };
@@ -1504,7 +1607,7 @@ fn create_mesh_pipeline(
     let layout = unsafe {
         device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::default()
-                .set_layouts(&[descriptor_set_layout])
+                .set_layouts(&[views_set_layout, tex_set_layout])
                 .push_constant_ranges(&push_ranges),
             None,
         )?
@@ -1520,23 +1623,22 @@ fn create_mesh_pipeline(
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
     )?;
 
-    let pool_sizes = [vk::DescriptorPoolSize {
-        ty: vk::DescriptorType::UNIFORM_BUFFER,
-        descriptor_count: 1,
-    }];
-    let descriptor_pool = unsafe {
+    let views_pool = unsafe {
         device.create_descriptor_pool(
             &vk::DescriptorPoolCreateInfo::default()
                 .max_sets(1)
-                .pool_sizes(&pool_sizes),
+                .pool_sizes(&[vk::DescriptorPoolSize {
+                    ty: vk::DescriptorType::UNIFORM_BUFFER,
+                    descriptor_count: 1,
+                }]),
             None,
         )?
     };
-    let descriptor_set = unsafe {
+    let views_set = unsafe {
         device.allocate_descriptor_sets(
             &vk::DescriptorSetAllocateInfo::default()
-                .descriptor_pool(descriptor_pool)
-                .set_layouts(&[descriptor_set_layout]),
+                .descriptor_pool(views_pool)
+                .set_layouts(&[views_set_layout]),
         )?[0]
     };
     let ubo_info = [vk::DescriptorBufferInfo {
@@ -1547,7 +1649,7 @@ fn create_mesh_pipeline(
     unsafe {
         device.update_descriptor_sets(
             &[vk::WriteDescriptorSet {
-                dst_set: descriptor_set,
+                dst_set: views_set,
                 dst_binding: 0,
                 descriptor_count: 1,
                 descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
@@ -1557,6 +1659,16 @@ fn create_mesh_pipeline(
             &[],
         );
     }
+
+    let white = create_solid_texture(
+        instance,
+        physical,
+        device,
+        queue,
+        cmd_pool,
+        &tex_set_layout,
+        [255, 255, 255, 255],
+    )?;
 
     let entry = c"vs_main";
     let entry_fs = c"fs_main";
@@ -1576,15 +1688,23 @@ fn create_mesh_pipeline(
     ];
     let binding_desc = [vk::VertexInputBindingDescription {
         binding: 0,
-        stride: 12,
+        stride: std::mem::size_of::<MeshVertex>() as u32,
         input_rate: vk::VertexInputRate::VERTEX,
     }];
-    let attr_desc = [vk::VertexInputAttributeDescription {
-        location: 0,
-        binding: 0,
-        format: vk::Format::R32G32B32_SFLOAT,
-        offset: 0,
-    }];
+    let attr_desc = [
+        vk::VertexInputAttributeDescription {
+            location: 0,
+            binding: 0,
+            format: vk::Format::R32G32B32_SFLOAT,
+            offset: 0,
+        },
+        vk::VertexInputAttributeDescription {
+            location: 1,
+            binding: 0,
+            format: vk::Format::R32G32_SFLOAT,
+            offset: 12,
+        },
+    ];
     let noop = vk::StencilOpState::default();
     let pipes = unsafe {
         device.create_graphics_pipelines(
@@ -1647,11 +1767,18 @@ fn create_mesh_pipeline(
     Ok(MeshPipeline {
         pipeline: pipes[0],
         layout,
-        descriptor_set_layout,
-        descriptor_pool,
-        descriptor_set,
+        views_set_layout,
+        tex_set_layout,
+        views_pool,
+        views_set,
         ubo,
         ubo_mem,
+        white_image: white.image,
+        white_memory: white.memory,
+        white_view: white.view,
+        white_sampler: white.sampler,
+        white_pool: white.pool,
+        white_set: white.set,
     })
 }
 
@@ -1659,8 +1786,14 @@ fn destroy_mesh_pipeline(device: &ash::Device, p: MeshPipeline) {
     unsafe {
         device.destroy_pipeline(p.pipeline, None);
         device.destroy_pipeline_layout(p.layout, None);
-        device.destroy_descriptor_pool(p.descriptor_pool, None);
-        device.destroy_descriptor_set_layout(p.descriptor_set_layout, None);
+        device.destroy_descriptor_pool(p.views_pool, None);
+        device.destroy_descriptor_pool(p.white_pool, None);
+        device.destroy_descriptor_set_layout(p.views_set_layout, None);
+        device.destroy_descriptor_set_layout(p.tex_set_layout, None);
+        device.destroy_sampler(p.white_sampler, None);
+        device.destroy_image_view(p.white_view, None);
+        device.destroy_image(p.white_image, None);
+        device.free_memory(p.white_memory, None);
         device.destroy_buffer(p.ubo, None);
         device.free_memory(p.ubo_mem, None);
     }
@@ -1821,16 +1954,46 @@ fn create_buffer(
     Ok((buffer, memory))
 }
 
-fn upload_gpu_mesh(
+fn upload_gpu_controller(
     instance: &ash::Instance,
     physical: vk::PhysicalDevice,
     device: &ash::Device,
-    _queue: vk::Queue,
-    _cmd_pool: vk::CommandPool,
-    mesh: &CpuMesh,
-) -> Result<GpuMesh> {
-    let vbytes = bytemuck::cast_slice::<[f32; 3], u8>(&mesh.positions);
-    let ibytes = bytemuck::cast_slice::<u32, u8>(&mesh.indices);
+    queue: vk::Queue,
+    cmd_pool: vk::CommandPool,
+    mesh_pipe: &MeshPipeline,
+    submeshes: &[CpuSubmesh],
+) -> Result<GpuController> {
+    let mut out = Vec::with_capacity(submeshes.len());
+    for sub in submeshes {
+        out.push(upload_gpu_submesh(
+            instance, physical, device, queue, cmd_pool, mesh_pipe, sub,
+        )?);
+    }
+    Ok(GpuController { submeshes: out })
+}
+
+fn upload_gpu_submesh(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    device: &ash::Device,
+    queue: vk::Queue,
+    cmd_pool: vk::CommandPool,
+    mesh_pipe: &MeshPipeline,
+    sub: &CpuSubmesh,
+) -> Result<GpuSubmesh> {
+    if sub.positions.len() != sub.uvs.len() {
+        bail!(
+            "submesh pos/uv len mismatch: {} vs {}",
+            sub.positions.len(),
+            sub.uvs.len()
+        );
+    }
+    let mut verts = Vec::with_capacity(sub.positions.len());
+    for (pos, uv) in sub.positions.iter().zip(sub.uvs.iter()) {
+        verts.push(MeshVertex { pos: *pos, uv: *uv });
+    }
+    let vbytes = bytemuck::cast_slice::<MeshVertex, u8>(&verts);
+    let ibytes = bytemuck::cast_slice::<u32, u8>(&sub.indices);
     let (vbo, vmem) = create_buffer(
         instance,
         physical,
@@ -1855,22 +2018,245 @@ fn upload_gpu_mesh(
         std::ptr::copy_nonoverlapping(ibytes.as_ptr(), ptr as *mut u8, ibytes.len());
         device.unmap_memory(imem);
     }
-    Ok(GpuMesh {
+
+    let texture = match sub.base_color.as_ref() {
+        Some(img) => Some(upload_rgba_texture(
+            instance,
+            physical,
+            device,
+            queue,
+            cmd_pool,
+            &mesh_pipe.tex_set_layout,
+            &img.pixels,
+            img.width,
+            img.height,
+        )?),
+        None => None,
+    };
+
+    Ok(GpuSubmesh {
         vbo,
         vmem,
         ibo,
         imem,
-        index_count: mesh.indices.len() as u32,
+        index_count: sub.indices.len() as u32,
+        texture,
+        factor: sub.base_color_factor,
     })
 }
 
-fn destroy_gpu_mesh(device: &ash::Device, g: GpuMesh) {
+fn destroy_gpu_controller(device: &ash::Device, g: GpuController) {
+    for sub in g.submeshes {
+        destroy_gpu_submesh(device, sub);
+    }
+}
+
+fn destroy_gpu_submesh(device: &ash::Device, g: GpuSubmesh) {
+    if let Some(tex) = g.texture {
+        destroy_gpu_texture(device, tex);
+    }
     unsafe {
         device.destroy_buffer(g.vbo, None);
         device.free_memory(g.vmem, None);
         device.destroy_buffer(g.ibo, None);
         device.free_memory(g.imem, None);
     }
+}
+
+fn destroy_gpu_texture(device: &ash::Device, t: GpuTexture) {
+    unsafe {
+        device.destroy_descriptor_pool(t.pool, None);
+        device.destroy_sampler(t.sampler, None);
+        device.destroy_image_view(t.view, None);
+        device.destroy_image(t.image, None);
+        device.free_memory(t.memory, None);
+    }
+}
+
+fn create_solid_texture(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    device: &ash::Device,
+    queue: vk::Queue,
+    cmd_pool: vk::CommandPool,
+    tex_set_layout: &vk::DescriptorSetLayout,
+    rgba: [u8; 4],
+) -> Result<GpuTexture> {
+    upload_rgba_texture(
+        instance,
+        physical,
+        device,
+        queue,
+        cmd_pool,
+        tex_set_layout,
+        &rgba,
+        1,
+        1,
+    )
+}
+
+fn upload_rgba_texture(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    device: &ash::Device,
+    queue: vk::Queue,
+    cmd_pool: vk::CommandPool,
+    tex_set_layout: &vk::DescriptorSetLayout,
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<GpuTexture> {
+    let bytes = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+        .context("texture size overflow")?;
+    if pixels.len() < bytes {
+        bail!("texture pixel buffer too small");
+    }
+
+    let image_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk::Format::R8G8B8A8_SRGB)
+        .extent(vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    let image = unsafe { device.create_image(&image_info, None)? };
+    let reqs = unsafe { device.get_image_memory_requirements(image) };
+    let memory_type = find_memory_type(
+        instance,
+        physical,
+        reqs.memory_type_bits,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    )?;
+    let memory = unsafe {
+        device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(reqs.size)
+                .memory_type_index(memory_type),
+            None,
+        )?
+    };
+    unsafe { device.bind_image_memory(image, memory, 0)? };
+
+    let view = unsafe {
+        device.create_image_view(
+            &vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk::Format::R8G8B8A8_SRGB)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                }),
+            None,
+        )?
+    };
+    let sampler = unsafe {
+        device.create_sampler(
+            &vk::SamplerCreateInfo::default()
+                .mag_filter(vk::Filter::LINEAR)
+                .min_filter(vk::Filter::LINEAR)
+                .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+                .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .max_lod(0.0),
+            None,
+        )?
+    };
+
+    let staging = create_staging_buffer(instance, physical, device, bytes as vk::DeviceSize)?;
+    let upload = upload_rgba_to_image(
+        device,
+        queue,
+        cmd_pool,
+        &staging,
+        image,
+        &pixels[..bytes],
+        width,
+        height,
+    );
+    destroy_staging(device, &staging);
+    upload?;
+
+    let pool = unsafe {
+        device.create_descriptor_pool(
+            &vk::DescriptorPoolCreateInfo::default()
+                .max_sets(1)
+                .pool_sizes(&[
+                    vk::DescriptorPoolSize {
+                        ty: vk::DescriptorType::SAMPLED_IMAGE,
+                        descriptor_count: 1,
+                    },
+                    vk::DescriptorPoolSize {
+                        ty: vk::DescriptorType::SAMPLER,
+                        descriptor_count: 1,
+                    },
+                ]),
+            None,
+        )?
+    };
+    let set = unsafe {
+        device.allocate_descriptor_sets(
+            &vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(pool)
+                .set_layouts(&[*tex_set_layout]),
+        )?[0]
+    };
+    let image_infos = [vk::DescriptorImageInfo {
+        sampler: vk::Sampler::null(),
+        image_view: view,
+        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+    }];
+    let sampler_infos = [vk::DescriptorImageInfo {
+        sampler,
+        image_view: vk::ImageView::null(),
+        image_layout: vk::ImageLayout::UNDEFINED,
+    }];
+    unsafe {
+        device.update_descriptor_sets(
+            &[
+                vk::WriteDescriptorSet {
+                    dst_set: set,
+                    dst_binding: 0,
+                    descriptor_count: 1,
+                    descriptor_type: vk::DescriptorType::SAMPLED_IMAGE,
+                    p_image_info: image_infos.as_ptr(),
+                    ..Default::default()
+                },
+                vk::WriteDescriptorSet {
+                    dst_set: set,
+                    dst_binding: 1,
+                    descriptor_count: 1,
+                    descriptor_type: vk::DescriptorType::SAMPLER,
+                    p_image_info: sampler_infos.as_ptr(),
+                    ..Default::default()
+                },
+            ],
+            &[],
+        );
+    }
+
+    Ok(GpuTexture {
+        image,
+        memory,
+        view,
+        sampler,
+        pool,
+        set,
+    })
 }
 
 fn compile_wgsl_spv_multiview(src: &str) -> Result<Vec<u32>> {

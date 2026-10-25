@@ -29,12 +29,12 @@
 |:---|:---|
 | SteamVR（Windows）2.12+ で EXT 利用時、実機コントローラ GLB をルート pose で表示 | SteamVR フォルダからの資産コピー／同梱 |
 | 拡張欠如時も既存ダッシュ／ロコは動作 | ボタン等 animatable node のアニメ |
-| ランタイム提供 GLB のみ（再配布なし） | テクスチャ／PBR、手トラッキング、Coin mesh in XR |
+| ランタイム提供 GLB のみ（再配布なし） | テクスチャ／PBR、手トラッキング、Coin mesh in XR（テクスチャは [x000c](x000c-vr-controller-glb-textures.md)） |
 
 ## やらない（後続）
 
 - animatable node（トリガー／スティック可動部）
-- コントローラテクスチャ／マテリアル忠実度
+- コントローラテクスチャ／マテリアル忠実度 → [x000c](x000c-vr-controller-glb-textures.md)
 - `XR_EXT_hand_tracking`
 - SteamVR `drivers/.../rendermodels` のローカル読み込み
 
