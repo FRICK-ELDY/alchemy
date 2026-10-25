@@ -37,7 +37,7 @@ const UI_CANVAS_H: u32 = 540;
 const FLOOR_TEX_W: u32 = 256;
 const FLOOR_TEX_H: u32 = 256;
 const FLOOR_CELLS: u32 = 16;
-/// World-space floor quad size (meters). Matches host Rapier floor half-extent ~20.
+/// World-space floor quad size (meters), centered at world origin (Desktop metaphor).
 const FLOOR_METERS: f32 = 40.0;
 const DEFAULT_EYE_Y: f32 = 1.6;
 
@@ -376,7 +376,7 @@ pub fn run_openxr(
             staging_bytes as vk::DeviceSize,
         )?;
 
-        // World floor: checkerboard quad in stage space, offset by −user_root (Desktop metaphor).
+        // World floor at origin: stage pose = R_yaw * (−user_root). Restart host if you walk off.
         let mut floor_swapchain = create_sized_swapchain(&session, FLOOR_TEX_W, FLOOR_TEX_H)?;
         {
             let pixels = make_checkerboard_rgba(FLOOR_TEX_W, FLOOR_TEX_H, FLOOR_CELLS);
@@ -397,7 +397,7 @@ pub fn run_openxr(
                 floor_swapchain.handle.release_image()?;
             }
         }
-        log::info!("XR checker floor ready ({FLOOR_METERS}m, offset by user_root)");
+        log::info!("XR checker floor ready ({FLOOR_METERS}m, world origin, offset by −user_root)");
 
         let mut event_storage = xr::EventDataBuffer::new();
         let mut session_running = false;
@@ -765,12 +765,10 @@ pub fn run_openxr(
                 .space(&stage)
                 .views(&proj_views);
 
-            // Horizontal floor: rotate −90° about X so quad XY → world XZ; offset −user_root.
-            // Acquire each frame (content already uploaded); same release-before-end pattern as UI.
+            // Floor at world origin: yaw * pitch(-90°); position = R_yaw * (−user_root).
             let _floor_index = floor_swapchain.handle.acquire_image()?;
             floor_swapchain.handle.wait_image(xr::Duration::INFINITE)?;
             floor_swapchain.handle.release_image()?;
-            // Floor: yaw (comfort turn) * pitch −90°; position = yaw * (−user_root).
             let yaw_q = Quat::from_rotation_y(view_yaw);
             let floor_ori = yaw_q * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
             let floor_pos = yaw_q * Vec3::new(-user_root.x, -user_root.y, -user_root.z);
