@@ -405,8 +405,9 @@ pub fn run_openxr(
         let mut menu_was_down = false;
         let mut select_was_down = false;
         let mut exit_requested = false;
+        // Comfort yaw rotates viewed world (floor) only — move stays controller-aim relative.
         let mut view_yaw = 0.0_f32;
-        let mut snap_ready = true;
+        let mut snap_cooldown = 0.0_f32;
 
         'main_loop: loop {
             if !running.load(Ordering::Relaxed) || exit_requested {
@@ -676,7 +677,7 @@ pub fn run_openxr(
                         right_stick.x,
                         turn_settings,
                         dt,
-                        &mut snap_ready,
+                        &mut snap_cooldown,
                         TURN_DEADZONE,
                     );
                 }
@@ -686,6 +687,7 @@ pub fn run_openxr(
                     ..Default::default()
                 };
                 if !dash_open {
+                    // Must stay aim-relative: never bake comfort yaw into move Intent.
                     let v = intent_from_sticks(
                         left_ori,
                         (left_stick.x, left_stick.y),
@@ -695,12 +697,9 @@ pub fn run_openxr(
                         DEFAULT_MOVE_SPEED,
                         STICK_DEADZONE,
                     );
-                    // Apply comfort yaw so move aligns with the rotated world floor.
-                    let yaw_q = Quat::from_rotation_y(view_yaw);
-                    let rotated = yaw_q * Vec3::new(v.x, v.y, v.z);
-                    intent.move_x = rotated.x;
-                    intent.move_y = rotated.y;
-                    intent.move_z = rotated.z;
+                    intent.move_x = v.x;
+                    intent.move_y = v.y;
+                    intent.move_z = v.z;
                 }
                 if let Ok(mut slot) = shared.intent.lock() {
                     *slot = intent;
