@@ -1,10 +1,12 @@
 //! OpenXR surface (SteamVR). Falls back to Desktop on probe/session failure.
 //!
-//! Guarantees: menu toggle, ray click → system_ui UiAction, Exit ends session.
-//! Non-guarantees: WSL HMD, Quest standalone, locomotion.
+//! Guarantees: menu toggle, ray click → system_ui UiAction, Exit ends session,
+//! thumbstick Noclip Intent (aim-relative), comfort turn (snap/smooth), checker floor.
+//! Non-guarantees: WSL HMD, Quest standalone, Vive trackpad-only, Coin mesh in XR.
 
 mod input;
 mod loader;
+mod loco;
 mod vk_loop;
 
 use anyhow::{bail, Context, Result};

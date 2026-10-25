@@ -48,7 +48,7 @@ client は mode 非依存の Intent のみ送り、VR ロコモーションは�
 ## やらない（後続）
 
 - Desktop マウスルック / Pointer Lock
-- VR 親指スティック
+- VR 親指スティック → [x000a](x000a-vr-thumbstick-noclip.md)
 - Grab / コンテキストメニュー / 装備ツール
 - Resonite 型モジュール一覧＋ ActiveModuleIndex UI
 - world-server 署名 Manifest / verifier

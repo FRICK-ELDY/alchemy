@@ -1,7 +1,8 @@
 //! system_ui — retained Canvas dash (Desktop overlay; VR quad later).
 //!
-//! Guarantees: ESC toggle, hit-tested chrome, client exit action plumbing.
-//! Non-guarantees: OpenXR menu button, settings contents, mic/sync real control.
+//! Guarantees: ESC toggle, hit-tested chrome, client exit action plumbing,
+//! Settings shows default max speed (read-only).
+//! Non-guarantees: OpenXR menu button, virtual keyboard edit, mic/sync real control.
 
 mod dash;
 mod font;
@@ -120,6 +121,12 @@ impl SystemUi {
             }
             Some(WidgetId::ExitClientOnly) => UiAction::ExitClientOnly,
             Some(WidgetId::ExitClientAndHost) => UiAction::ExitClientAndHost,
+            Some(WidgetId::TurnModeToggle) => {
+                self.state.toggle_turn_mode();
+                self.rebuild();
+                log::info!("turn mode → {}", self.state.turn.mode.label());
+                UiAction::None
+            }
             Some(WidgetId::Mic)
             | Some(WidgetId::MicOff)
             | Some(WidgetId::Volume)

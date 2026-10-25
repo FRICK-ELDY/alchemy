@@ -13,14 +13,19 @@ use anyhow::{bail, Context, Result};
 use ash::vk::{self, Handle};
 use openxr as xr;
 
+use alchemy_protocol::DEFAULT_MOVE_SPEED;
+
 use super::input::{
     dash_quad_model, openxr_pose_to_isometry, pose_to_ray, ray_hit_dash_quad, QUAD_HEIGHT,
     QUAD_WIDTH,
 };
+use super::loco::{combine_turn_axes, intent_from_sticks, stage_move_to_world, STICK_DEADZONE};
 use crate::host_control;
 use crate::mesh::CpuMesh;
-use crate::scene::{SharedState, MESH_ENTITY_ID};
+use crate::scene::{MoveIntent, SharedState, MESH_ENTITY_ID, USER_ROOT_ENTITY_ID};
 use crate::system_ui::{SystemUi, UiAction};
+use crate::turn::{update_turn_yaw, TURN_DEADZONE};
+use glam::{Quat, Vec3};
 
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 const VIEW_COUNT: u32 = 2;
@@ -28,6 +33,13 @@ const COLOR_FORMAT: vk::Format = vk::Format::R8G8B8A8_SRGB;
 const PIPELINE_DEPTH: usize = 2;
 const UI_CANVAS_W: u32 = 960;
 const UI_CANVAS_H: u32 = 540;
+/// Checker floor texture (CompositionLayerQuad). Large enough to see loco slide.
+const FLOOR_TEX_W: u32 = 256;
+const FLOOR_TEX_H: u32 = 256;
+const FLOOR_CELLS: u32 = 16;
+/// World-space floor quad size (meters). Matches host Rapier floor half-extent ~20.
+const FLOOR_METERS: f32 = 40.0;
+const DEFAULT_EYE_Y: f32 = 1.6;
 
 pub fn run_openxr(
     mesh: CpuMesh,
@@ -153,15 +165,18 @@ pub fn run_openxr(
                 },
             )?;
 
-        let action_set = xr_instance.create_action_set("alchemy_ui", "Alchemy UI", 0)?;
-        let menu_action = action_set.create_action::<bool>("menu", "Menu toggle", &[])?;
-        let select_action = action_set.create_action::<bool>("select", "Select / click", &[])?;
-        let aim_action = action_set.create_action::<xr::Posef>("aim", "Aim pose", &[])?;
-
+        let action_set = xr_instance.create_action_set("alchemy_input", "Alchemy input", 0)?;
         let hands = [
             xr_instance.string_to_path("/user/hand/left")?,
             xr_instance.string_to_path("/user/hand/right")?,
         ];
+        let menu_action = action_set.create_action::<bool>("menu", "Menu toggle", &[])?;
+        let select_action = action_set.create_action::<bool>("select", "Select / click", &[])?;
+        let aim_action = action_set.create_action::<xr::Posef>("aim", "Aim pose", &hands)?;
+        let thumbstick_action =
+            action_set.create_action::<xr::Vector2f>("thumbstick", "Locomotion stick", &hands)?;
+
+        // simple_controller: menu / select / aim (no thumbstick).
         xr_instance.suggest_interaction_profile_bindings(
             xr_instance.string_to_path("/interaction_profiles/khr/simple_controller")?,
             &[
@@ -183,20 +198,97 @@ pub fn run_openxr(
                 ),
                 xr::Binding::new(
                     &aim_action,
+                    xr_instance.string_to_path("/user/hand/left/input/aim/pose")?,
+                ),
+                xr::Binding::new(
+                    &aim_action,
                     xr_instance.string_to_path("/user/hand/right/input/aim/pose")?,
+                ),
+            ],
+        )?;
+
+        // Oculus Touch / Quest-style (SteamVR OpenXR).
+        let _ = xr_instance.suggest_interaction_profile_bindings(
+            xr_instance.string_to_path("/interaction_profiles/oculus/touch_controller")?,
+            &[
+                xr::Binding::new(
+                    &menu_action,
+                    xr_instance.string_to_path("/user/hand/left/input/menu/click")?,
+                ),
+                xr::Binding::new(
+                    &menu_action,
+                    xr_instance.string_to_path("/user/hand/left/input/y/click")?,
+                ),
+                xr::Binding::new(
+                    &select_action,
+                    xr_instance.string_to_path("/user/hand/left/input/x/click")?,
+                ),
+                xr::Binding::new(
+                    &select_action,
+                    xr_instance.string_to_path("/user/hand/right/input/a/click")?,
                 ),
                 xr::Binding::new(
                     &aim_action,
                     xr_instance.string_to_path("/user/hand/left/input/aim/pose")?,
                 ),
+                xr::Binding::new(
+                    &aim_action,
+                    xr_instance.string_to_path("/user/hand/right/input/aim/pose")?,
+                ),
+                xr::Binding::new(
+                    &thumbstick_action,
+                    xr_instance.string_to_path("/user/hand/left/input/thumbstick")?,
+                ),
+                xr::Binding::new(
+                    &thumbstick_action,
+                    xr_instance.string_to_path("/user/hand/right/input/thumbstick")?,
+                ),
             ],
-        )?;
-        // Also try Valve Index / Oculus touch style menu paths via simple_controller is enough for SteamVR.
-        let _ = hands;
+        );
+
+        // Valve Index.
+        let _ = xr_instance.suggest_interaction_profile_bindings(
+            xr_instance.string_to_path("/interaction_profiles/valve/index_controller")?,
+            &[
+                xr::Binding::new(
+                    &menu_action,
+                    xr_instance.string_to_path("/user/hand/left/input/b/click")?,
+                ),
+                xr::Binding::new(
+                    &menu_action,
+                    xr_instance.string_to_path("/user/hand/right/input/b/click")?,
+                ),
+                xr::Binding::new(
+                    &select_action,
+                    xr_instance.string_to_path("/user/hand/left/input/trigger/click")?,
+                ),
+                xr::Binding::new(
+                    &select_action,
+                    xr_instance.string_to_path("/user/hand/right/input/trigger/click")?,
+                ),
+                xr::Binding::new(
+                    &aim_action,
+                    xr_instance.string_to_path("/user/hand/left/input/aim/pose")?,
+                ),
+                xr::Binding::new(
+                    &aim_action,
+                    xr_instance.string_to_path("/user/hand/right/input/aim/pose")?,
+                ),
+                xr::Binding::new(
+                    &thumbstick_action,
+                    xr_instance.string_to_path("/user/hand/left/input/thumbstick")?,
+                ),
+                xr::Binding::new(
+                    &thumbstick_action,
+                    xr_instance.string_to_path("/user/hand/right/input/thumbstick")?,
+                ),
+            ],
+        );
+
         session.attach_action_sets(&[&action_set])?;
 
-        let aim_space =
-            aim_action.create_space(session.clone(), xr::Path::NULL, xr::Posef::IDENTITY)?;
+        let aim_left = aim_action.create_space(session.clone(), hands[0], xr::Posef::IDENTITY)?;
+        let aim_right = aim_action.create_space(session.clone(), hands[1], xr::Posef::IDENTITY)?;
         let stage =
             session.create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)?;
         let view_ref =
@@ -270,22 +362,52 @@ pub fn run_openxr(
         let mut ui = SystemUi::new();
         ui.init_cpu_canvas(UI_CANVAS_W, UI_CANVAS_H)?;
         ui.rebuild();
-        log::info!("OpenXR system_ui ready — Menu toggles dash, Select clicks");
+        log::info!(
+            "OpenXR ready — Menu toggles dash, Select clicks, thumbstick Noclip, checker floor (x000a)"
+        );
 
         let mut swapchain: Option<Swapchain> = None;
         let mut ui_swapchain: Option<UiSwapchain> = None;
+        let staging_bytes = (UI_CANVAS_W * UI_CANVAS_H * 4).max(FLOOR_TEX_W * FLOOR_TEX_H * 4);
         let staging = create_staging_buffer(
             &vk_instance,
             vk_physical_device,
             &vk_device,
-            (UI_CANVAS_W * UI_CANVAS_H * 4) as vk::DeviceSize,
+            staging_bytes as vk::DeviceSize,
         )?;
+
+        // World floor: checkerboard quad in stage space, offset by −user_root (Desktop metaphor).
+        let mut floor_swapchain = create_sized_swapchain(&session, FLOOR_TEX_W, FLOOR_TEX_H)?;
+        {
+            let pixels = make_checkerboard_rgba(FLOOR_TEX_W, FLOOR_TEX_H, FLOOR_CELLS);
+            let n = floor_swapchain.images.len();
+            for _ in 0..n {
+                let index = floor_swapchain.handle.acquire_image()?;
+                floor_swapchain.handle.wait_image(xr::Duration::INFINITE)?;
+                upload_rgba_to_image(
+                    &vk_device,
+                    queue,
+                    cmd_pool,
+                    &staging,
+                    floor_swapchain.images[index as usize],
+                    &pixels,
+                    FLOOR_TEX_W,
+                    FLOOR_TEX_H,
+                )?;
+                floor_swapchain.handle.release_image()?;
+            }
+        }
+        log::info!("XR checker floor ready ({FLOOR_METERS}m, offset by user_root)");
+
         let mut event_storage = xr::EventDataBuffer::new();
         let mut session_running = false;
         let mut frame_i = 0usize;
         let mut menu_was_down = false;
         let mut select_was_down = false;
         let mut exit_requested = false;
+        // Comfort yaw rotates viewed world (floor) only — move stays controller-aim relative.
+        let mut view_yaw = 0.0_f32;
+        let mut snap_armed = true;
 
         'main_loop: loop {
             if !running.load(Ordering::Relaxed) || exit_requested {
@@ -474,8 +596,23 @@ pub fn run_openxr(
 
             let select_down = select_action.state(&session, xr::Path::NULL)?.current_state;
             if select_down && !select_was_down && ui.state.open {
-                if let Ok(aim_loc) = aim_space.locate(&stage, xr_frame_state.predicted_display_time)
-                {
+                let aim_for_ui = aim_right
+                    .locate(&stage, xr_frame_state.predicted_display_time)
+                    .ok()
+                    .filter(|l| {
+                        l.location_flags
+                            .contains(xr::SpaceLocationFlags::POSITION_VALID)
+                    })
+                    .or_else(|| {
+                        aim_left
+                            .locate(&stage, xr_frame_state.predicted_display_time)
+                            .ok()
+                            .filter(|l| {
+                                l.location_flags
+                                    .contains(xr::SpaceLocationFlags::POSITION_VALID)
+                            })
+                    });
+                if let Some(aim_loc) = aim_for_ui {
                     let (aim_pos, aim_orient) = openxr_pose_to_isometry(aim_loc.pose);
                     let ray = pose_to_ray(aim_pos, aim_orient);
                     if let Some((px, py)) = ray_hit_dash_quad(
@@ -503,15 +640,97 @@ pub fn run_openxr(
                 }
             }
             select_was_down = select_down;
+
+            // ---- VR thumbstick Noclip Intent (x000a) ----
+            {
+                let left_stick = thumbstick_action.state(&session, hands[0])?.current_state;
+                let right_stick = thumbstick_action.state(&session, hands[1])?.current_state;
+                let left_ori = aim_left
+                    .locate(&stage, xr_frame_state.predicted_display_time)
+                    .ok()
+                    .filter(|l| {
+                        l.location_flags
+                            .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+                    })
+                    .map(|l| openxr_pose_to_isometry(l.pose).1)
+                    .unwrap_or(Quat::IDENTITY);
+                let right_ori = aim_right
+                    .locate(&stage, xr_frame_state.predicted_display_time)
+                    .ok()
+                    .filter(|l| {
+                        l.location_flags
+                            .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+                    })
+                    .map(|l| openxr_pose_to_isometry(l.pose).1)
+                    .unwrap_or(Quat::IDENTITY);
+
+                let dash_open = ui.state.open;
+                let max_speed = ui.state.max_speed;
+                let turn_settings = ui.state.turn;
+                let dt = {
+                    let ns = xr_frame_state.predicted_display_period.as_nanos();
+                    ((ns as f64) / 1_000_000_000.0).clamp(0.001, 0.1) as f32
+                };
+                let mut intent = MoveIntent {
+                    suppress: dash_open,
+                    ..Default::default()
+                };
+                if !dash_open {
+                    // Both hands identical: X = turn (additive), Y = aim-relative move (additive).
+                    let turn_axis = combine_turn_axes(left_stick.x, right_stick.x);
+                    view_yaw = update_turn_yaw(
+                        view_yaw,
+                        turn_axis,
+                        turn_settings,
+                        dt,
+                        &mut snap_armed,
+                        TURN_DEADZONE,
+                    );
+
+                    let stage = intent_from_sticks(
+                        left_ori,
+                        (left_stick.x, left_stick.y),
+                        right_ori,
+                        (right_stick.x, right_stick.y),
+                        max_speed,
+                        DEFAULT_MOVE_SPEED,
+                        STICK_DEADZONE,
+                    );
+                    let v = stage_move_to_world(stage, view_yaw);
+                    intent.move_x = v.x;
+                    intent.move_y = v.y;
+                    intent.move_z = v.z;
+                }
+                if let Ok(mut slot) = shared.intent.lock() {
+                    *slot = intent;
+                }
+            }
+
             ui.prepare_cpu_canvas();
 
             let _ = (&mesh, dash_quad_model(head_pos, head_orient));
+            let user_root = shared
+                .entities
+                .lock()
+                .ok()
+                .and_then(|m| m.get(&USER_ROOT_ENTITY_ID).copied())
+                .unwrap_or(crate::scene::EntityPose {
+                    x: 0.0,
+                    y: DEFAULT_EYE_Y,
+                    z: 6.0,
+                });
             if frame_i == 0 {
                 if let Ok(map) = shared.entities.lock() {
                     if let Some(p) = map.get(&MESH_ENTITY_ID) {
                         log::debug!("XR coin pose {:.2},{:.2},{:.2}", p.x, p.y, p.z);
                     }
                 }
+                log::debug!(
+                    "XR user_root {:.2},{:.2},{:.2}",
+                    user_root.x,
+                    user_root.y,
+                    user_root.z
+                );
             }
 
             let ui_sc = ui_swapchain.get_or_insert_with(|| {
@@ -545,6 +764,49 @@ pub fn run_openxr(
             let proj = xr::CompositionLayerProjection::new()
                 .space(&stage)
                 .views(&proj_views);
+
+            // Horizontal floor: rotate −90° about X so quad XY → world XZ; offset −user_root.
+            // Acquire each frame (content already uploaded); same release-before-end pattern as UI.
+            let _floor_index = floor_swapchain.handle.acquire_image()?;
+            floor_swapchain.handle.wait_image(xr::Duration::INFINITE)?;
+            floor_swapchain.handle.release_image()?;
+            // Floor: yaw (comfort turn) * pitch −90°; position = yaw * (−user_root).
+            let yaw_q = Quat::from_rotation_y(view_yaw);
+            let floor_ori = yaw_q * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+            let floor_pos = yaw_q * Vec3::new(-user_root.x, -user_root.y, -user_root.z);
+            let floor_rect = xr::Rect2Di {
+                offset: xr::Offset2Di { x: 0, y: 0 },
+                extent: xr::Extent2Di {
+                    width: FLOOR_TEX_W as i32,
+                    height: FLOOR_TEX_H as i32,
+                },
+            };
+            let floor_quad = xr::CompositionLayerQuad::new()
+                .space(&stage)
+                .eye_visibility(xr::EyeVisibility::BOTH)
+                .sub_image(
+                    xr::SwapchainSubImage::new()
+                        .swapchain(&floor_swapchain.handle)
+                        .image_array_index(0)
+                        .image_rect(floor_rect),
+                )
+                .pose(xr::Posef {
+                    orientation: xr::Quaternionf {
+                        x: floor_ori.x,
+                        y: floor_ori.y,
+                        z: floor_ori.z,
+                        w: floor_ori.w,
+                    },
+                    position: xr::Vector3f {
+                        x: floor_pos.x,
+                        y: floor_pos.y,
+                        z: floor_pos.z,
+                    },
+                })
+                .size(xr::Extent2Df {
+                    width: FLOOR_METERS,
+                    height: FLOOR_METERS,
+                });
 
             if ui.state.open {
                 if let Some((pixels, cw, ch)) = ui.canvas_rgba() {
@@ -598,20 +860,20 @@ pub fn run_openxr(
                     frame_stream.end(
                         xr_frame_state.predicted_display_time,
                         environment_blend_mode,
-                        &[&proj, &quad],
+                        &[&proj, &floor_quad, &quad],
                     )?;
                 } else {
                     frame_stream.end(
                         xr_frame_state.predicted_display_time,
                         environment_blend_mode,
-                        &[&proj],
+                        &[&proj, &floor_quad],
                     )?;
                 }
             } else {
                 frame_stream.end(
                     xr_frame_state.predicted_display_time,
                     environment_blend_mode,
-                    &[&proj],
+                    &[&proj, &floor_quad],
                 )?;
             }
 
@@ -619,10 +881,12 @@ pub fn run_openxr(
         }
 
         // Drop XR session before destroying Vulkan objects.
-        drop(aim_space);
+        drop(aim_left);
+        drop(aim_right);
         drop(view_ref);
         drop(stage);
         drop(ui_swapchain);
+        drop(floor_swapchain);
         drop(session);
         if let Some(sc) = swapchain.take() {
             for b in sc.buffers {
@@ -671,13 +935,21 @@ fn create_ui_swapchain(
     session: &xr::Session<xr::Vulkan>,
     _vk_device: &ash::Device,
 ) -> Result<UiSwapchain> {
+    create_sized_swapchain(session, UI_CANVAS_W, UI_CANVAS_H)
+}
+
+fn create_sized_swapchain(
+    session: &xr::Session<xr::Vulkan>,
+    width: u32,
+    height: u32,
+) -> Result<UiSwapchain> {
     let handle = session.create_swapchain(&xr::SwapchainCreateInfo {
         create_flags: xr::SwapchainCreateFlags::EMPTY,
         usage_flags: xr::SwapchainUsageFlags::TRANSFER_DST | xr::SwapchainUsageFlags::SAMPLED,
         format: COLOR_FORMAT.as_raw() as _,
         sample_count: 1,
-        width: UI_CANVAS_W,
-        height: UI_CANVAS_H,
+        width,
+        height,
         face_count: 1,
         array_size: 1,
         mip_count: 1,
@@ -688,6 +960,32 @@ fn create_ui_swapchain(
         .map(vk::Image::from_raw)
         .collect();
     Ok(UiSwapchain { handle, images })
+}
+
+/// High-contrast checker so thumbstick loco is visible without mesh world draw.
+fn make_checkerboard_rgba(width: u32, height: u32, cells: u32) -> Vec<u8> {
+    let cells = cells.max(2);
+    let mut out = vec![0u8; (width * height * 4) as usize];
+    let cell_w = width as f32 / cells as f32;
+    let cell_h = height as f32 / cells as f32;
+    for y in 0..height {
+        for x in 0..width {
+            let cx = (x as f32 / cell_w) as u32;
+            let cy = (y as f32 / cell_h) as u32;
+            let light = (cx + cy).is_multiple_of(2);
+            let (r, g, b) = if light {
+                (210u8, 215, 220)
+            } else {
+                (45u8, 50, 58)
+            };
+            let i = ((y * width + x) * 4) as usize;
+            out[i] = r;
+            out[i + 1] = g;
+            out[i + 2] = b;
+            out[i + 3] = 255;
+        }
+    }
+    out
 }
 
 fn create_staging_buffer(

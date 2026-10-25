@@ -19,6 +19,8 @@ pub enum WidgetId {
     ExitClientOnly,
     ExitClientAndHost,
     SettingsPlaceholder,
+    /// Toggle Snap ↔ Smooth comfort turn.
+    TurnModeToggle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

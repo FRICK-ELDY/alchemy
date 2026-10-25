@@ -15,6 +15,10 @@ pub use prost::Message;
 /// Bump when `proto/` has an incompatible wire change.
 pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.4.0-x0009";
 
+/// Default free-move speed (m/s) when Manifest `move_speed` is 0.
+/// Shared by host Noclip and client Settings display (x000a).
+pub const DEFAULT_MOVE_SPEED: f32 = 4.0;
+
 /// `InputEvent.buttons` bits (mirror of proto `InputButtons`).
 pub mod input_buttons {
     pub const PRIMARY: u32 = 1;

@@ -19,6 +19,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | `InputEvent.room_token` フィールドの存在 | Token の署名検証（host-server / world-server の責務） |
 | Manifest と frame のキー式ヘルパ | world-server 署名付き Manifest |
 | `LocomotionConfig`（World 定義の active mode） | モジュール一覧 UI / 抑制ソース |
+| `DEFAULT_MOVE_SPEED`（host / Settings 表示の共有既定） | client 永続設定・仮想キーボード編集 |
 
 ## メッセージ
 
@@ -40,9 +41,10 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 ### InputEvent（`proto/input_events.proto`）— Intent（x0009）
 
 - `InputEvent { room_token, client_time_ms, move_x, move_y, move_z, buttons }`
-- `move_*` はカメラ相対→ワールド投影済みの正規化 Intent（~-1..1）。host が `move_speed` でスケール
+- `move_*` はワールド投影済みの正規化 Intent（~-1..1）。Desktop=固定 look、VR=コントローラー aim 相対。host が `move_speed` でスケール
 - `buttons` ビット: Primary / Secondary / Grab / Context / Jump（未使用は host 無視可）
 - `room_token` は world-server 発行の短命 JWT（検証は host-server）
+- `DEFAULT_MOVE_SPEED = 4.0`（Rust 定数。Manifest `move_speed` が 0 のときの host 既定 / Settings 表示）
 
 ## キー式ヘルパ
 

@@ -10,8 +10,9 @@ message InputEvent {
   string room_token = 1;
   // Client wall-clock-ish time in milliseconds (demo / debug).
   uint64 client_time_ms = 2;
-  // Camera-relative normalized move intent (~-1..1). Host scales by LocomotionConfig.move_speed.
-  // +X = right, +Y = up, +Z = forward (client local axes projected by look yaw for XZ).
+  // World-projected normalized move intent (~-1..1). Host scales by LocomotionConfig.move_speed.
+  // +X = right, +Y = up, +Z = forward.
+  // Desktop: fixed look yaw; OpenXR: controller aim-relative thumbstick (x000a).
   float move_x = 3;
   float move_y = 4;
   float move_z = 5;
@@ -19,7 +20,7 @@ message InputEvent {
   uint32 buttons = 6;
 }
 
-// Bit flags for InputEvent.buttons (Desktop x0009; VR later).
+// Bit flags for InputEvent.buttons (Desktop x0009; VR action bits later).
 enum InputButtons {
   INPUT_BUTTONS_NONE = 0;
   INPUT_BUTTONS_PRIMARY = 1;    // LMB / Y

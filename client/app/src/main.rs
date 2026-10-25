@@ -1,18 +1,21 @@
-//! Alchemy client — x0009 Desktop Noclip + OpenXR dash/Exit + C-C/D render path.
+//! Alchemy client — x000a VR thumbstick Noclip + Desktop WASD + OpenXR dash/Exit.
 //!
 //! Guarantees:
 //! - Subscribes to SceneManifest / RenderFrame; downloads blob; wgpu mesh on Desktop
 //! - Desktop WASD/Space/C → InputEvent Intent; dash suppresses move (mouse look deferred)
+//! - OpenXR thumbstick (aim-relative, L+R add) → same Intent path
 //! - Camera follows host user_root pose (fixed default look)
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
+//! - Settings shows default max speed (read-only)
 //!
-//! Non-guarantees: VR loco, Grab/tools, Quest standalone, WSL HMD, settings contents
+//! Non-guarantees: Grab/tools, Quest standalone, WSL HMD, virtual keyboard edit
 
 mod host_control;
 mod mesh;
 mod scene;
 mod surface;
 mod system_ui;
+mod turn;
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -319,7 +322,7 @@ fn main() -> Result<()> {
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "client x0009 starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} user_root={USER_ROOT_ENTITY_ID}"
+        "client x000a starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} user_root={USER_ROOT_ENTITY_ID}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;

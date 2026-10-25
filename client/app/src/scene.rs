@@ -18,7 +18,8 @@ use crate::mesh::CpuMesh;
 pub const MESH_ENTITY_ID: u32 = 1;
 /// Host-authoritative player root (x0009 Noclip camera position).
 pub const USER_ROOT_ENTITY_ID: u32 = 3;
-const FLOOR_EXTENT: f32 = 4.0;
+/// Half-extent of Desktop floor (meters). Larger so loco is obvious.
+const FLOOR_EXTENT: f32 = 20.0;
 /// Default eye height if user_root not yet received.
 const DEFAULT_EYE_Y: f32 = 1.6;
 

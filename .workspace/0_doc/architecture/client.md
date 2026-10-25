@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: x0009（Desktop Noclip。OpenXR ダッシュ＋Exit 維持）
+> **ステータス**: x000a（VR 親指スティック Noclip。Desktop WASD / OpenXR ダッシュ維持）
 
 ## レイアウト
 
@@ -23,7 +23,8 @@
 | Zenoh: Manifest Subscribe / frame デルタ Subscribe / input Publish | ルーター機能（他人の通信の中継は禁止） |
 | Manifest の blake3 → assets download（失敗時 fixture）→ BLAKE3 → wgpu | LOD / KTX2 / マテリアル本格 / スキン |
 | ローカル entity 表への upsert/remove。Coin=1、user_root=3 | 署名付き Manifest / world 台帳 |
-| Desktop: WASD/Space/C → Intent。カメラは user_root（マウスルックは後続） | VR ロコモーション / Pointer Lock |
+| Desktop: WASD/Space/C → Intent。カメラは user_root（マウスルックは後続） | Pointer Lock / マウスルック |
+| OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
 | auth login → Bearer 付き Room Token → InputEvent | OSC / Dual Editor / launcher 本実装 |
 | host: Rapier 60Hz + `is_finite` + Manifest Noclip → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk |
 | ESC（Desktop）/ Menu（OpenXR）ダッシュ・client 終了・host 終了スタブ | Grab / Context / Primary ツール本体 |
@@ -48,6 +49,16 @@
 | Y / T / R | Primary / Context / Secondary（キーのみスタブ） |
 | マウス | ダッシュ UI クリックのみ（look / Pointer Lock は後続） |
 
+## OpenXR バインド（x000a）
+
+| 入力 | 役割 |
+|:---|:---|
+| Menu | ダッシュ開閉（開いている間は移動 Intent = 0） |
+| Select + aim | ダッシュ UI クリック |
+| 左右 thumbstick Y | その手の aim 相対で前後移動（L+R 加算） |
+| 左右 thumbstick X | コンフォートターン（L+R 加算。既定 Snap 30° / Smooth 切替可） |
+| Settings タブ | max speed・snap 角・smooth 速度の既定表示。Turn モードはタップで切替 |
+
 ## アセット
 
 - モデル: Coin_PolygonalMind（Polygonal Mind / medieval-fair、CC0）
@@ -63,4 +74,4 @@
 - 転送: [zenoh-router.md](zenoh-router.md)
 - Room Token: [world-server.md](world-server.md)
 - Blob CAS: [assets-server.md](assets-server.md)
-- Slice: [x0009-desktop-noclip-loco.md](../roadmap/slices/x0009-desktop-noclip-loco.md)
+- Slice: [x000a-vr-thumbstick-noclip.md](../roadmap/slices/x000a-vr-thumbstick-noclip.md) · [x0009](../roadmap/slices/x0009-desktop-noclip-loco.md)

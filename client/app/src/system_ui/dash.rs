@@ -1,6 +1,7 @@
 //! Dash menu screen definition (Resonite-like chrome). Layout only — no host knowledge.
 
 use super::layout::{Color, LayoutTree, Rect, WidgetId};
+use crate::turn::{TurnSettings, DEFAULT_SMOOTH_TURN_DEG_PER_SEC, DEFAULT_SNAP_DEGREES};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DashTab {
@@ -16,10 +17,19 @@ pub struct DashState {
     pub fps_label: String,
     pub canvas_w: f32,
     pub canvas_h: f32,
+    /// Personal max move speed (m/s). Displayed in Settings; edit via virtual keyboard later.
+    pub max_speed: f32,
+    pub max_speed_label: String,
+    pub turn: TurnSettings,
+    pub turn_mode_label: String,
+    pub snap_degrees_label: String,
+    pub smooth_turn_label: String,
 }
 
 impl Default for DashState {
     fn default() -> Self {
+        let max_speed = alchemy_protocol::DEFAULT_MOVE_SPEED;
+        let turn = TurnSettings::default();
         Self {
             open: false,
             tab: DashTab::Exit,
@@ -27,7 +37,26 @@ impl Default for DashState {
             fps_label: "0 FPS".into(),
             canvas_w: 960.0,
             canvas_h: 540.0,
+            max_speed,
+            max_speed_label: format!("Max speed: {max_speed:.1} m/s"),
+            turn,
+            turn_mode_label: format!("Turn: {} (tap to toggle)", turn.mode.label()),
+            snap_degrees_label: format!("Snap angle: {DEFAULT_SNAP_DEGREES:.0}°"),
+            smooth_turn_label: format!("Smooth rate: {DEFAULT_SMOOTH_TURN_DEG_PER_SEC:.0}°/s"),
         }
+    }
+}
+
+impl DashState {
+    pub fn refresh_turn_labels(&mut self) {
+        self.turn_mode_label = format!("Turn: {} (tap to toggle)", self.turn.mode.label());
+        self.snap_degrees_label = format!("Snap angle: {:.0}°", self.turn.snap_degrees);
+        self.smooth_turn_label = format!("Smooth rate: {:.0}°/s", self.turn.smooth_deg_per_sec);
+    }
+
+    pub fn toggle_turn_mode(&mut self) {
+        self.turn.mode = self.turn.mode.toggle();
+        self.refresh_turn_labels();
     }
 }
 
@@ -233,15 +262,61 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
             );
         }
         DashTab::Settings => {
-            let panel = Rect::new(cx, cy0, cw, ch.min(200.0));
+            let panel = Rect::new(cx, cy0, cw, ch.min(320.0));
             tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
             tree.push_label(
-                Rect::new(cx + 24.0, cy0 + 40.0, cw - 48.0, 28.0),
-                "Settings — coming later",
-                MUTED,
+                Rect::new(cx + 24.0, cy0 + 24.0, cw - 48.0, 24.0),
+                "Locomotion",
+                TEXT,
                 2.0,
             );
-            tree.register_hit(WidgetId::SettingsPlaceholder, panel);
+            tree.push_label(
+                Rect::new(cx + 24.0, cy0 + 60.0, cw - 48.0, 24.0),
+                &state.max_speed_label,
+                TEXT,
+                1.5,
+            );
+            tree.push_label(
+                Rect::new(cx + 24.0, cy0 + 92.0, cw - 48.0, 18.0),
+                "speed edit later (virtual keyboard)",
+                MUTED,
+                1.0,
+            );
+
+            let toggle = Rect::new(cx + 24.0, cy0 + 130.0, (cw - 48.0).min(420.0), 44.0);
+            tree.push_rect(toggle, ACCENT);
+            tree.push_label(
+                Rect::new(toggle.x + 16.0, toggle.y + 10.0, toggle.w - 32.0, 24.0),
+                &state.turn_mode_label,
+                TEXT,
+                1.5,
+            );
+            tree.register_hit(WidgetId::TurnModeToggle, toggle);
+
+            tree.push_label(
+                Rect::new(cx + 24.0, cy0 + 190.0, cw - 48.0, 22.0),
+                &state.snap_degrees_label,
+                TEXT,
+                1.5,
+            );
+            tree.push_label(
+                Rect::new(cx + 24.0, cy0 + 220.0, cw - 48.0, 22.0),
+                &state.smooth_turn_label,
+                TEXT,
+                1.5,
+            );
+            tree.push_label(
+                Rect::new(cx + 24.0, cy0 + 252.0, cw - 48.0, 18.0),
+                "snap angle / smooth rate: edit later",
+                MUTED,
+                1.0,
+            );
+            tree.push_label(
+                Rect::new(cx + 24.0, cy0 + 280.0, cw - 48.0, 18.0),
+                "VR: both sticks Y=move (aim), X=turn",
+                MUTED,
+                1.0,
+            );
         }
     }
 }
@@ -278,5 +353,38 @@ mod tests {
         rebuild(&mut tree, &DashState::default());
         assert!(tree.hits.is_empty());
         assert!(tree.draws.is_empty());
+    }
+
+    #[test]
+    fn settings_tab_shows_max_speed() {
+        let state = DashState {
+            open: true,
+            tab: DashTab::Settings,
+            ..Default::default()
+        };
+        assert!(
+            state.max_speed_label.contains("Max speed"),
+            "label={}",
+            state.max_speed_label
+        );
+        assert!((state.max_speed - alchemy_protocol::DEFAULT_MOVE_SPEED).abs() < f32::EPSILON);
+        assert!(state.turn_mode_label.contains("Snap"));
+        assert!(state.snap_degrees_label.contains("30"));
+        let mut tree = LayoutTree::default();
+        rebuild(&mut tree, &state);
+        assert!(tree.draws.len() > 5);
+        assert!(tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::TurnModeToggle));
+    }
+
+    #[test]
+    fn toggle_turn_mode_snap_to_smooth() {
+        let mut state = DashState::default();
+        assert_eq!(state.turn.mode, crate::turn::TurnMode::Snap);
+        state.toggle_turn_mode();
+        assert_eq!(state.turn.mode, crate::turn::TurnMode::Smooth);
+        assert!(state.turn_mode_label.contains("Smooth"));
     }
 }
