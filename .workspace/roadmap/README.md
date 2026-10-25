@@ -64,9 +64,9 @@ depends_on: [x0006]
 | x000c | — | done | コントローラ GLB baseColor テクスチャ | [x000c-vr-controller-glb-textures.md](slices/x000c-vr-controller-glb-textures.md) |
 | x000d | — | done | コントローラ animatable node（トリガー／スティック） | [x000d-vr-controller-animatable-nodes.md](slices/x000d-vr-controller-animatable-nodes.md) |
 | x000e | — | done | VR UI レーザーポインタ（簡易・ダッシュ開中） | [x000e-vr-ui-laser-pointer.md](slices/x000e-vr-ui-laser-pointer.md) |
-| x000f | — | planned | Dash Facet 最小（個人・Pinned Exit・Button hover） | [x000f-dash-facet-minimal.md](slices/x000f-dash-facet-minimal.md) |
+| x000f | — | done | Dash Facet 最小（個人・Pinned Exit・Button hover） | [x000f-dash-facet-minimal.md](slices/x000f-dash-facet-minimal.md) |
 
-**現在の次:** [x000f — Dash Facet 最小](slices/x000f-dash-facet-minimal.md)
+**現在の次:** （未定義 — x000f 完了。次は `x0010`）
 
 ## 関連
 

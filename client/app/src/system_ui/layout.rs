@@ -1,7 +1,8 @@
-//! Retained layout primitives + hit testing for system_ui Canvas.
+//! Retained layout primitives + hit testing for system_ui Canvas (UI runtime).
 //!
-//! Guarantees: axis-aligned rect hit test in canvas pixel space.
-//! Non-guarantees: flexbox, wrapping, VR pointer rays.
+//! Guarantees: axis-aligned rect hit test in canvas pixel space; shared by
+//! Desktop pointer and XR surface (pixels only — no OpenXR types here).
+//! Non-guarantees: flexbox, wrapping, WorldRoot, Facet rearrange.
 
 #![allow(dead_code)]
 

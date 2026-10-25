@@ -1,8 +1,8 @@
 # x000f — Dash Facet 最小
 
-> **ID:** `x000f` · **slug:** `dash-facet-minimal` · **status:** planned · **area:** `[client, system_ui]` · **surface:** `[desktop, vr]` · **depends_on:** `[x0007, x000e]`
+> **ID:** `x000f` · **slug:** `dash-facet-minimal` · **status:** done · **area:** `[client, system_ui]` · **surface:** `[desktop, vr]` · **depends_on:** `[x0007, x000e]`
 
-目標: Resonite Facet に近い **個人ダッシュ**の器を切る。UI ランタイム（Canvas / Button・hover・press）は将来の World UI と共通化しつつ、**所有・同期境界は `DashRoot`（個人・非公開）と `WorldRoot`（空間・共有）で分ける**。本 Slice では公式デフォルト Facet＋**Pinned Exit**＋Button ホバー色まで。並べ替え・ユーザー Facet 追加は後続。
+目標: Resonite Facet に近い **個人ダッシュ**の器を切る。UI ランタイム（Canvas / Button・hover・press）は将来の World UI と共通化しつつ、**所有・同期境界は `DashRoot`（個人・非公開）と `WorldRoot`（空間・共有）で分ける**。本 Slice では公式デフォルト Facet＋**Pinned Exit**＋Button ホバー色まで。並べ替え・ユーザー Facet 追加は後続。（完了）
 
 正本: [client.md](../../0_doc/architecture/client.md) · [overview.md](../../0_doc/architecture/overview.md)（system_ui / Dual は目標）
 
@@ -20,11 +20,11 @@
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
 | 0 | Slice 文書 + 目次 | done |
-| 1 | 契約: `DashRoot` / Facet / Pinned + UI ランタイム境界を docs / モジュールコメントで固定 | pending |
-| 2 | Button interactable: hover / press + 色（既存 hit 経路） | pending |
-| 3 | XR レーザー命中 → hover（surface が UV を渡す。system_ui は XR 非知） | pending |
-| 4 | 現行ダッシュを「公式デフォルト Facet セット」として Facet 語彙へ寄せる（見た目・Exit 経路維持） | pending |
-| 5 | smoke + client.md / README 現状更新 | pending |
+| 1 | 契約: `DashRoot` / Facet / Pinned + UI ランタイム境界を docs / モジュールコメントで固定 | done |
+| 2 | Button interactable: hover / press + 色（既存 hit 経路） | done |
+| 3 | XR レーザー命中 → hover（surface が UV を渡す。system_ui は XR 非知） | done |
+| 4 | 現行ダッシュを「公式デフォルト Facet セット」として Facet 語彙へ寄せる（見た目・Exit 経路維持） | done |
+| 5 | smoke + client.md / README 現状更新 | done |
 
 ## 共通化するもの / しないもの
 
@@ -68,17 +68,19 @@ ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 cargo run -p client
 ```
 
-確認（Phase 完了時）:
+確認:
 
 1. ESC / Menu でダッシュ開 → Exit 等にポインタ／レーザーを当てると色が変わる  
 2. Select / クリックで既存どおり Exit 動作  
 3. 他クライアントや host の Scene にダッシュ Entity が増えない  
 
-## 実装メモ（予定）
+## 実装メモ
 
-- `client/app/src/system_ui/` — Facet / Button hover。OpenXR 非依存維持
-- `client/app/src/surface/` — Desktop マウス UV・XR レーザー UV を `on_hover` / `on_click` に渡す
-- 現行 `dash.rs` / `layout.rs` は公式デフォルト Facet セットへ段階移行（ビッグバン置換しない）
+- `client/app/src/system_ui/facet.rs` — `DashRoot` / `FacetId` / Pinned / `facet_of`
+- `client/app/src/system_ui/dash.rs` — 公式 Facet 語彙＋ `interact_color`（hover/press）
+- `client/app/src/system_ui/mod.rs` — `on_pointer` / `clear_pointer`（ピクセルのみ）
+- `client/app/src/surface/desktop.rs` — マウス → `on_pointer`
+- `client/app/src/surface/xr/vk_loop.rs` — レーザー UV → `on_pointer`（rasterize 前）
 - smoke: `bash .scripts/smoke-system-ui.sh` · `bash .scripts/smoke-openxr.sh`
 - 先行: [x0007-system-ui-dash.md](x0007-system-ui-dash.md) · [x000e-vr-ui-laser-pointer.md](x000e-vr-ui-laser-pointer.md)
 

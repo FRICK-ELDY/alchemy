@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: x000e（VR UI レーザーポインタ）完了。次は [x000f Dash Facet 最小](../roadmap/slices/x000f-dash-facet-minimal.md)
+> **ステータス**: x000f（Dash Facet 最小 — 個人・Pinned Exit・Button hover）。Desktop WASD / XR ロコ維持
 
 ## レイアウト
 
@@ -9,7 +9,7 @@
 |:---|:---|
 | `client/Cargo.toml` | workspace 根（将来 submodule の根） |
 | `client/app` | 画面プロセス（パッケージ名 `client`） |
-| `client/app/src/system_ui/` | retained Canvas + ダッシュ（OpenXR を知らない） |
+| `client/app/src/system_ui/` | 個人 DashRoot + 公式 Facet（OpenXR / Room を知らない） |
 | `client/app/src/surface/` | boot: Desktop (winit) / OpenXR。デバイス差の吸収 |
 | `client/app/assets/icons/` | Material Icons（静的同梱） |
 | `client/host-server` | 裏プロセスの計算ホスト（Rapier + user_root loco） |
@@ -26,10 +26,10 @@
 | Desktop: WASD/Space/C → Intent。カメラは user_root（マウスルックは後続） | Pointer Lock / マウスルック |
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
 | OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose + 埋め込み baseColor + animatable node） | SteamVR パス直読み／PBR（MR/normal 等）／手トラ |
-| OpenXR: ダッシュ UI＋aim レーザーを同一投影で描画（Select で Exit 等） | ホバー／Facet 編集（→ x000f）・ダッシュ閉時ワールドレーザー・CompositionLayerQuad ダッシュ |
+| OpenXR: ダッシュ UI＋aim レーザーを同一投影で描画；レーザー UV → Button hover/press（x000f） | Facet 並べ替え／WorldRoot・ダッシュ閉時ワールドレーザー・CompositionLayerQuad ダッシュ |
 | auth login → Bearer 付き Room Token → InputEvent | OSC / Dual Editor / launcher 本実装 |
 | host: Rapier 60Hz + `is_finite` + Manifest Noclip → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk |
-| ESC（Desktop）/ Menu（OpenXR）ダッシュ・client 終了・host 終了スタブ | Grab / Context / Primary ツール本体 |
+| ESC（Desktop）/ Menu（OpenXR）ダッシュ・Pinned Exit・Button hover・client 終了・host 終了スタブ | Facet 並べ替え / Grab / Context / Primary ツール本体 |
 | OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD・launcher 本実装 |
 
 ## チャネル分離（C-C + E + x0009）
