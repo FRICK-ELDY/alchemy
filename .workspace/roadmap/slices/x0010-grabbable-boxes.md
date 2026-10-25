@@ -65,8 +65,8 @@ cargo run -p client
 
 ## 実装メモ
 
-- `client/host-server/src/sim.rs` — boxes SoA（handles / grabbable / half_extent）
-- `client/host-server/src/main.rs` — entity 10..18 デルタ
+- `client/host-server/src/sim.rs` — boxes SoA（handles / grabbable / half_extent）。格子中心 z≈3.5（spawn 前方）
+- `client/host-server/src/main.rs` — entity 10..18 を **毎ネット tick 必ず upsert**（静止 sleep でも late joiner に届く）
 - `client/app/src/scene.rs` — Desktop 立方体描画
 - `client/app/src/surface/xr/input.rs` — AABB レイヒット
 - `client/app/src/surface/xr/vk_loop.rs` — ボックス + ダッシュ閉レーザー

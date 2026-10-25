@@ -24,8 +24,8 @@ pub const BOX_COUNT: usize = 9;
 pub const BOX_HALF_EXTENT: f32 = 0.25;
 /// Center-to-center spacing on XZ (meters).
 const BOX_SPACING: f32 = 0.8;
-/// Grid center on XZ (toward -Z from user spawn so boxes are in view).
-const BOX_GRID_CENTER: (f32, f32) = (0.0, 0.0);
+/// Grid center on XZ — ~2.5 m in front of [`USER_SPAWN`] (z=6 → z=3.5) so XR facing -Z sees them.
+const BOX_GRID_CENTER: (f32, f32) = (0.0, 3.5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LocoMode {
@@ -326,7 +326,10 @@ mod tests {
         let (x8, _, z8) = world.box_translation(8);
         assert!((y0 - BOX_HALF_EXTENT).abs() < 0.01);
         assert!((y4 - BOX_HALF_EXTENT).abs() < 0.01);
-        assert!((x4).abs() < 0.01 && (z4).abs() < 0.01);
+        assert!(
+            (x4).abs() < 0.01 && (z4 - BOX_GRID_CENTER.1).abs() < 0.01,
+            "center=({x4},{z4})"
+        );
         assert!((x8 - x0).abs() > 1.0 || (z8 - z0).abs() > 1.0);
     }
 

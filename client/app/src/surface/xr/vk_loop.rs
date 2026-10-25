@@ -478,6 +478,7 @@ pub fn run_openxr(
         let mut menu_was_down = false;
         let mut select_was_down = false;
         let mut exit_requested = false;
+        let mut logged_box_count: Option<usize> = None;
         // Comfort yaw rotates viewed world (floor) only — move stays controller-aim relative.
         let mut view_yaw = 0.0_f32;
         let mut snap_armed = true;
@@ -736,6 +737,21 @@ pub fn run_openxr(
                         .collect()
                 })
                 .unwrap_or_default();
+            if logged_box_count != Some(grabbable_boxes.len()) {
+                if grabbable_boxes.is_empty() {
+                    log::warn!("XR: no grabbable boxes in entity map yet (waiting for host frame)");
+                } else {
+                    let p0 = grabbable_boxes[0].1;
+                    log::info!(
+                        "XR grabbable boxes ready: count={} first=({:.2},{:.2},{:.2})",
+                        grabbable_boxes.len(),
+                        p0.x,
+                        p0.y,
+                        p0.z
+                    );
+                }
+                logged_box_count = Some(grabbable_boxes.len());
+            }
 
             // Menu before canvas upload so open/close applies this frame.
             let menu_down = menu_action.state(&session, xr::Path::NULL)?.current_state;

@@ -384,10 +384,14 @@ fn main() -> Result<()> {
 
         let mut upserts = Vec::new();
         for (id, next_pose) in poses {
-            let should_send = match last_sent.get(&id) {
-                None => true,
-                Some(prev) => pose_changed(*prev, next_pose),
-            };
+            // Boxes always upsert: they sleep after settle, and frame is delta-only —
+            // late joiners would otherwise never see entity 10..18 (x0010).
+            let is_box = (BOX_ENTITY_FIRST..BOX_ENTITY_FIRST + BOX_COUNT as u32).contains(&id);
+            let should_send = is_box
+                || match last_sent.get(&id) {
+                    None => true,
+                    Some(prev) => pose_changed(*prev, next_pose),
+                };
             if should_send {
                 upserts.push(to_entity(id, next_pose));
                 last_sent.insert(id, next_pose);
