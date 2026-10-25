@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0012`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0013`**）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -67,8 +67,9 @@ depends_on: [x0006]
 | x000f | — | done | Dash Facet 最小（個人・Pinned Exit・Button hover） | [x000f-dash-facet-minimal.md](slices/x000f-dash-facet-minimal.md) |
 | x0010 | — | done | Grabbable ボックス最小（3×3・コライダー・レイヒット） | [x0010-grabbable-boxes.md](slices/x0010-grabbable-boxes.md) |
 | x0011 | — | done | Grab hold（XR kinematic 追従・放下） | [x0011-grab-hold.md](slices/x0011-grab-hold.md) |
+| x0012 | — | done | Desktop マウスルック（Pointer Lock） | [x0012-desktop-mouse-look.md](slices/x0012-desktop-mouse-look.md) |
 
-**現在の次:** （未定義 — x0011 完了。次の空き ID = **`x0012`**）
+**現在の次:** （未定義 — x0012 完了。次の空き ID = **`x0013`**）
 
 ## 関連
 

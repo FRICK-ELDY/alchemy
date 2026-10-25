@@ -32,7 +32,7 @@ client は mode 非依存の Intent のみ送り、VR ロコモーションは�
 | WASD | 前/左/後/右（固定 look） | 実装 |
 | Space | Noclip/Fly: 上昇 / Walk: ジャンプ | Noclip 上昇 |
 | C | Noclip/Fly: 下降 | 実装 |
-| マウス移動 / Pointer Lock | yaw/pitch | **後続**（WSL で不安定のため一旦撤去） |
+| マウス移動 / Pointer Lock | yaw/pitch | → [x0012](x0012-desktop-mouse-look.md) |
 | Y / T / R | Primary / Context / Secondary | キースタブ |
 | LMB | ダッシュ UI | ダッシュ開時のみ |
 

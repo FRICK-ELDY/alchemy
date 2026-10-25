@@ -41,7 +41,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 ### InputEvent（`proto/input_events.proto`）— Intent（x0009）+ Grab（x0011）
 
 - `InputEvent { room_token, client_time_ms, move_x, move_y, move_z, buttons, grab_entity_id, aim_x, aim_y, aim_z }`
-- `move_*` はワールド投影済みの正規化 Intent（~-1..1）。Desktop=固定 look、VR=コントローラー aim 相対。host が `move_speed` でスケール
+- `move_*` はワールド投影済みの正規化 Intent（~-1..1）。Desktop=マウスルック yaw 相対（x0012）、VR=コントローラー aim 相対。host が `move_speed` でスケール
 - `buttons` ビット: Primary / Secondary / Grab / Context / Jump（未使用は host 無視可）
 - `grab_entity_id` + `aim_*`（ワールド aim 原点）: GRAB 中の kinematic 追従（x0011）。`0` / GRAB 無しは無視
 - `room_token` は world-server 発行の短命 JWT（検証は host-server）
