@@ -1,7 +1,8 @@
-//! XR_EXT_render_model + XR_EXT_interaction_render_model (x000b).
+//! XR_EXT_render_model + XR_EXT_interaction_render_model (x000b / x000c).
 //!
-//! Guarantees: optional enable; enumerate after sync_actions; GLB bytes + Space per model.
-//! Non-guarantees: animatable nodes, textures, SteamVR disk paths, every runtime.
+//! Guarantees: optional enable; enumerate after sync_actions; GLB bytes + Space per model;
+//! textured flatten (baseColor when present) handed to the Vulkan layer.
+//! Non-guarantees: animatable nodes, PBR maps, SteamVR disk paths, every runtime.
 //!
 //! Refresh is throttled and incremental so SteamVR change events cannot rebuild
 //! controllers / GPU meshes every frame (that froze the app).
@@ -15,7 +16,7 @@ use openxr as xr;
 use openxr::sys;
 use openxr::sys::Handle as _;
 
-use crate::mesh::{load_flattened_mesh_from_glb, CpuMesh};
+use crate::mesh::{load_flattened_textured_from_glb, CpuTexturedMesh};
 
 /// Min gap between refresh attempts while assets/ids are still settling.
 const RETRY_INTERVAL: Duration = Duration::from_millis(500);
@@ -55,7 +56,7 @@ pub struct ControllerModel {
     handle: sys::RenderModelEXT,
     /// Destroyed with Space Drop.
     pub space: xr::Space,
-    pub mesh: CpuMesh,
+    pub mesh: CpuTexturedMesh,
 }
 
 impl ControllerModel {
@@ -159,9 +160,17 @@ impl RenderModelCache {
             }
             match unsafe { load_one(session, rm, id) } {
                 Ok(Some(model)) => {
+                    let textured = model
+                        .mesh
+                        .submeshes
+                        .iter()
+                        .filter(|s| s.base_color.is_some())
+                        .count();
                     log::info!(
-                        "XR render model loaded ({} verts)",
-                        model.mesh.positions.len()
+                        "XR render model loaded ({} verts, {} submeshes, {} textured)",
+                        model.mesh.vertex_count(),
+                        model.mesh.submeshes.len(),
+                        textured
                     );
                     self.models.push(model);
                     added = true;
@@ -299,7 +308,7 @@ unsafe fn load_one<G>(
         }
     };
 
-    let mesh = match load_flattened_mesh_from_glb(&glb) {
+    let mesh = match load_flattened_textured_from_glb(&glb) {
         Ok(m) => m,
         Err(err) => {
             unsafe {

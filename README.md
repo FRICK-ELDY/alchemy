@@ -10,7 +10,7 @@
 `host-server` は **Rapier 60Hz**・**`is_finite` 入力ゲート**・配信 **30Hz デルタ**に加え、`SceneManifest.locomotion` 既定 **Noclip** で **user_root** を積分する。  
 `client`（Desktop）は **WASD / Space / C** → Intent。OpenXR は **左右 thumbstick（aim 相対・倒し量・加算）** → 同じ Intent。カメラは user_root を追従（マウスルックは後続）。  
 **Menu**（OpenXR）ダッシュ＋Exit・Settings に既定 max speed 表示。実機 XR 正本は **Windows + SteamVR**（WSL は HMD 非保証）。  
-Slice ID は `x` + 4桁16進（次は `x000b`）。規約は [`.workspace/roadmap/README.md`](.workspace/roadmap/README.md)。
+Slice ID は `x` + 4桁16進（次は `x000d`）。規約は [`.workspace/roadmap/README.md`](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|
@@ -101,7 +101,7 @@ bash .scripts/smoke-system-ui.sh       # system_ui unit + host_control コンパ
 bash .scripts/smoke-openxr.sh          # OpenXR モジュール unit + Desktop フォールバック compile
 bash .scripts/smoke-desktop-noclip.sh  # Manifest Noclip + user_root（zenohd + auth/world 必須）
 # ESC ダッシュ: client 起動後 Esc。WASD+Space+C で Noclip（マウスルックは後続）。
-# XR: SteamVR 2.12+ + Menu。親指スティック Noclip。コントローラは XR_EXT_render_model（ランタイム GLB）。
+# XR: SteamVR 2.12+ + Menu。親指スティック Noclip。コントローラは XR_EXT_render_model（ランタイム GLB + 埋め込み baseColor）。
 # client+host 終了は ALCHEMY_HOST_PID か host_control。Desktop 強制: ALCHEMY_FORCE_DESKTOP=1
 # OpenXR ローダー明示（Steam が特殊パスのとき）: ALCHEMY_OPENXR_LOADER=D:\...\openxr_loader.dll
 ```
