@@ -19,7 +19,7 @@ use super::input::{
     dash_quad_model, openxr_pose_to_isometry, pose_to_ray, ray_hit_dash_quad, QUAD_HEIGHT,
     QUAD_WIDTH,
 };
-use super::loco::{intent_from_sticks, stage_move_to_world, STICK_DEADZONE};
+use super::loco::{combine_turn_axes, intent_from_sticks, stage_move_to_world, STICK_DEADZONE};
 use crate::host_control;
 use crate::mesh::CpuMesh;
 use crate::scene::{MoveIntent, SharedState, MESH_ENTITY_ID, USER_ROOT_ENTITY_ID};
@@ -671,24 +671,22 @@ pub fn run_openxr(
                     let ns = xr_frame_state.predicted_display_period.as_nanos();
                     ((ns as f64) / 1_000_000_000.0).clamp(0.001, 0.1) as f32
                 };
-                if !dash_open {
-                    view_yaw = update_turn_yaw(
-                        view_yaw,
-                        right_stick.x,
-                        turn_settings,
-                        dt,
-                        &mut snap_cooldown,
-                        TURN_DEADZONE,
-                    );
-                }
-
                 let mut intent = MoveIntent {
                     suppress: dash_open,
                     ..Default::default()
                 };
                 if !dash_open {
-                    // Stick × controller aim in stage, then R(-view_yaw) → world Intent
-                    // (floor is drawn with R(+view_yaw); signs must stay inverse).
+                    // Both hands identical: X = turn (additive), Y = aim-relative move (additive).
+                    let turn_axis = combine_turn_axes(left_stick.x, right_stick.x);
+                    view_yaw = update_turn_yaw(
+                        view_yaw,
+                        turn_axis,
+                        turn_settings,
+                        dt,
+                        &mut snap_cooldown,
+                        TURN_DEADZONE,
+                    );
+
                     let stage = intent_from_sticks(
                         left_ori,
                         (left_stick.x, left_stick.y),
@@ -697,7 +695,6 @@ pub fn run_openxr(
                         max_speed,
                         DEFAULT_MOVE_SPEED,
                         STICK_DEADZONE,
-                        TURN_DEADZONE,
                     );
                     let v = stage_move_to_world(stage, view_yaw);
                     intent.move_x = v.x;

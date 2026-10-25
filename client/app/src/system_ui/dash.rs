@@ -313,7 +313,7 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
             );
             tree.push_label(
                 Rect::new(cx + 24.0, cy0 + 280.0, cw - 48.0, 18.0),
-                "VR: right stick X = turn; left stick = move",
+                "VR: both sticks Y=move (aim), X=turn",
                 MUTED,
                 1.0,
             );

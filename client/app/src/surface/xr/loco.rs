@@ -1,13 +1,15 @@
 //! VR thumbstick → world MoveIntent helpers (x000a).
 //!
-//! Guarantees: aim-relative stick projection, deadzone, L+R add+clamp, max-speed scale.
-//! Right stick X is reserved for comfort turn (see `crate::turn`); only Y adds to move.
+//! Binding (both hands identical):
+//! - Stick Y + controller aim → move (forward/back along aim; L+R add)
+//! - Stick X → comfort turn (see `crate::turn`; L+R add, clamped)
+//!
 //! Comfort yaw: stage aim → world Intent via `R(-yaw)` so it matches the yawed floor.
 //! Non-guarantees: OpenXR action binding (see vk_loop), host speed override protocol.
 
 use glam::{Quat, Vec3};
 
-/// Default stick deadzone (radial).
+/// Default stick deadzone (per-axis for Y move / used by turn module for X).
 pub const STICK_DEADZONE: f32 = 0.15;
 
 fn clamp_unit(v: Vec3) -> Vec3 {
@@ -35,9 +37,19 @@ pub fn stick_to_world(orientation: Quat, stick_x: f32, stick_y: f32, deadzone: f
     right * nx + forward * ny
 }
 
+/// Stick Y only → move along controller aim (no strafe from X).
+pub fn stick_y_to_world(orientation: Quat, stick_y: f32, deadzone: f32) -> Vec3 {
+    stick_to_world(orientation, 0.0, stick_y, deadzone)
+}
+
 /// Add left and right hand world vectors; clamp length to ≤ 1.
 pub fn combine_hands(left: Vec3, right: Vec3) -> Vec3 {
     clamp_unit(left + right)
+}
+
+/// Sum both sticks' X for turn, clamp to [-1, 1].
+pub fn combine_turn_axes(left_x: f32, right_x: f32) -> f32 {
+    (left_x + right_x).clamp(-1.0, 1.0)
 }
 
 /// Scale by `max_speed / default_speed` then re-clamp to unit length.
@@ -49,8 +61,7 @@ pub fn apply_max_speed_scale(v: Vec3, max_speed: f32, default_speed: f32) -> Vec
     clamp_unit(v * factor)
 }
 
-/// Left stick = full 2D move; right stick Y = forward/back only (X reserved for turn).
-/// When `|right_x| >= turn_deadzone`, right stick is turn-only (no move add).
+/// Both hands: Y → aim-relative move (additive); X is ignored here (turn is separate).
 pub fn intent_from_sticks(
     left_ori: Quat,
     left_stick: (f32, f32),
@@ -59,14 +70,9 @@ pub fn intent_from_sticks(
     max_speed: f32,
     default_speed: f32,
     deadzone: f32,
-    turn_deadzone: f32,
 ) -> Vec3 {
-    let l = stick_to_world(left_ori, left_stick.0, left_stick.1, deadzone);
-    let r = if right_stick.0.abs() >= turn_deadzone {
-        Vec3::ZERO
-    } else {
-        stick_to_world(right_ori, 0.0, right_stick.1, deadzone)
-    };
+    let l = stick_y_to_world(left_ori, left_stick.1, deadzone);
+    let r = stick_y_to_world(right_ori, right_stick.1, deadzone);
     apply_max_speed_scale(combine_hands(l, r), max_speed, default_speed)
 }
 
@@ -135,42 +141,43 @@ mod tests {
     }
 
     #[test]
-    fn intent_ignores_right_stick_x() {
+    fn intent_ignores_stick_x_both_hands() {
         let v = intent_from_sticks(
             Quat::IDENTITY,
-            (0.0, 0.0),
-            Quat::IDENTITY,
             (1.0, 0.0),
+            Quat::IDENTITY,
+            (-1.0, 0.0),
             4.0,
             4.0,
             0.0,
-            0.15,
         );
-        assert!(v.length() < 1e-5, "right X must not strafe, got {v:?}");
+        assert!(v.length() < 1e-5, "stick X must not strafe, got {v:?}");
     }
 
     #[test]
-    fn turn_deadzone_suppresses_right_move() {
+    fn both_hands_y_add_along_aim() {
         let v = intent_from_sticks(
             Quat::IDENTITY,
-            (0.0, 0.0),
+            (0.0, 0.5),
             Quat::IDENTITY,
-            (0.5, 1.0),
+            (0.0, 0.5),
             4.0,
             4.0,
             0.0,
-            0.15,
         );
-        assert!(
-            v.length() < 1e-5,
-            "turning right stick must not add move, got {v:?}"
-        );
+        // 0.5+0.5 = 1.0 forward (−Z)
+        assert!((v.z + 1.0).abs() < 1e-4, "expected full forward, got {v:?}");
+    }
+
+    #[test]
+    fn combine_turn_axes_sums_and_clamps() {
+        assert!((combine_turn_axes(0.4, 0.4) - 0.8).abs() < 1e-5);
+        assert!((combine_turn_axes(1.0, 1.0) - 1.0).abs() < 1e-5);
+        assert!((combine_turn_axes(-0.7, -0.7) + 1.0).abs() < 1e-5);
     }
 
     #[test]
     fn stage_to_world_inverse_matches_floor_yaw() {
-        // Floor uses R(+yaw). After 180° yaw, stage forward (−Z) must become world +Z
-        // so visual slide matches controller-forward on the rotated floor.
         let stage = Vec3::NEG_Z;
         let world = stage_move_to_world(stage, std::f32::consts::PI);
         assert!(
@@ -178,7 +185,6 @@ mod tests {
             "expected +Z after 180°, got {world:?}"
         );
         let world90 = stage_move_to_world(stage, std::f32::consts::FRAC_PI_2);
-        // R_y(-90°) * (0,0,-1) = (+1, 0, 0)
         assert!(
             (world90.x - 1.0).abs() < 1e-4 && world90.z.abs() < 1e-4,
             "expected +X after +90° yaw, got {world90:?}"

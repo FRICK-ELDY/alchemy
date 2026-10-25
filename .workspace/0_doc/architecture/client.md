@@ -55,9 +55,8 @@
 |:---|:---|
 | Menu | ダッシュ開閉（開いている間は移動 Intent = 0） |
 | Select + aim | ダッシュ UI クリック |
-| 左 thumbstick | aim 相対移動（倒し量） |
-| 右 thumbstick X | コンフォートターン（既定 Snap 30° / Smooth 切替可） |
-| 右 thumbstick Y | 前方/後方移動（左と加算） |
+| 左右 thumbstick Y | その手の aim 相対で前後移動（L+R 加算） |
+| 左右 thumbstick X | コンフォートターン（L+R 加算。既定 Snap 30° / Smooth 切替可） |
 | Settings タブ | max speed・snap 角・smooth 速度の既定表示。Turn モードはタップで切替 |
 
 ## アセット
