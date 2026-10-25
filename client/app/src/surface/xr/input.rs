@@ -13,6 +13,9 @@ pub const QUAD_DISTANCE: f32 = 1.4;
 /// Miss / open-air laser length (meters).
 pub const LASER_MAX_LENGTH: f32 = 5.0;
 
+/// Stop the beam this far short of the dash plane so the tip sits in front (same projection as UI).
+pub const LASER_TIP_GAP: f32 = 0.02;
+
 /// Half-extent of the unit laser box on X/Y before scale (meters at length=1 → scaled by radius).
 pub const LASER_RADIUS: f32 = 0.004;
 
@@ -83,7 +86,7 @@ pub fn ray_hit_dash_quad_full(
     })
 }
 
-/// Beam length for drawing: hit distance, or [`LASER_MAX_LENGTH`] on miss.
+/// Beam length for drawing: hit distance minus [`LASER_TIP_GAP`], or [`LASER_MAX_LENGTH`] on miss.
 pub fn laser_length(
     head_pos: Vec3,
     head_orient: Quat,
@@ -92,7 +95,7 @@ pub fn laser_length(
     canvas_h: f32,
 ) -> f32 {
     ray_hit_dash_quad_full(head_pos, head_orient, ray, canvas_w, canvas_h)
-        .map(|h| h.t)
+        .map(|h| (h.t - LASER_TIP_GAP).max(0.01))
         .unwrap_or(LASER_MAX_LENGTH)
         .clamp(0.01, LASER_MAX_LENGTH)
 }
@@ -166,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn center_hit_length_approx_quad_distance() {
+    fn center_hit_length_stops_short_of_quad() {
         let head_pos = Vec3::new(0.0, 1.6, 0.0);
         let head_orient = Quat::IDENTITY;
         let ray = Ray {
@@ -174,9 +177,10 @@ mod tests {
             dir: Vec3::NEG_Z,
         };
         let len = laser_length(head_pos, head_orient, ray, 960.0, 540.0);
+        let expected = QUAD_DISTANCE - LASER_TIP_GAP;
         assert!(
-            (len - QUAD_DISTANCE).abs() < 0.01,
-            "len={len} expected ~{QUAD_DISTANCE}"
+            (len - expected).abs() < 0.01,
+            "len={len} expected ~{expected}"
         );
     }
 

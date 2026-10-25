@@ -26,7 +26,7 @@
 | Desktop: WASD/Space/C → Intent。カメラは user_root（マウスルックは後続） | Pointer Lock / マウスルック |
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
 | OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose + 埋め込み baseColor + animatable node） | SteamVR パス直読み／PBR（MR/normal 等）／手トラ |
-| OpenXR: ダッシュ開中の aim レーザー可視化（Select で Exit 等） | ホバーハイライト・ダッシュ閉時ワールドレーザー |
+| OpenXR: ダッシュ UI＋aim レーザーを同一投影で描画（Select で Exit 等） | ホバーハイライト・ダッシュ閉時ワールドレーザー・CompositionLayerQuad ダッシュ |
 | auth login → Bearer 付き Room Token → InputEvent | OSC / Dual Editor / launcher 本実装 |
 | host: Rapier 60Hz + `is_finite` + Manifest Noclip → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk |
 | ESC（Desktop）/ Menu（OpenXR）ダッシュ・client 終了・host 終了スタブ | Grab / Context / Primary ツール本体 |

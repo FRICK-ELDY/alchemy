@@ -11,8 +11,8 @@
 | 層 | 役割 |
 |:---|:---|
 | `input.rs` | ヒット距離 `t`・`laser_model`（単位 -Z ボックス）の純関数 |
-| `vk_loop` | ダッシュ open 時のみ aim（右→左）でビーム描画。Select クリックと aim を共有 |
-| mesh パイプライン | `MESH_MODE_FLAT` + `push.factor`（シアン）。コントローラ fallback 色は据え置き |
+| `vk_loop` | ダッシュ UI を投影テクスチャクアッドで描画し、その後に aim ビーム。Select と aim 共有 |
+| mesh パイプライン | UI は `MESH_MODE_TEXTURED`（αブレンド）、レーザーは `MESH_MODE_FLAT`。コントローラ色は据え置き |
 | system_ui | OpenXR / レイを知らない（ピクセル `on_click` のみ） |
 
 | Phase | 内容 | 状態 |
@@ -35,8 +35,8 @@
 | 保証する | 保証しない |
 |:---|:---|
 | ダッシュ open 時、右→左 aim の 1 本レーザーを投影に描画 | 両ハンド同時・ダッシュ閉時のワールドポインタ |
-| クアッドヒット時はヒット距離、ミス時は固定最大長 | ホバーハイライト・カーソル描画 |
-| 既存 Select→Exit 経路を壊さない | CompositionLayerQuad より手前のビーム先端（簡易で許容） |
+| ダッシュ UI も同一投影（αブレンド）。ビームは平面手前で停止 | CompositionLayerQuad ダッシュ・ホバーハイライト |
+| 既存 Select→Exit 経路を壊さない | UI 解像度／シャープネスの Composition 層並み保証 |
 | WSL CI / Desktop 回帰（smoke） | WSL 実 HMD |
 
 ## やらない（後続）
@@ -66,8 +66,8 @@ cargo run -p client
 
 ## 実装メモ
 
-- `client/app/src/surface/xr/input.rs` — ヒット距離 / `laser_model` / `LASER_MAX_LENGTH`
-- `client/app/src/surface/xr/vk_loop.rs` — laser mesh + `MESH_MODE_FLAT` + aim 共有
+- `client/app/src/surface/xr/input.rs` — ヒット距離 / `laser_model` / `LASER_TIP_GAP`
+- `client/app/src/surface/xr/vk_loop.rs` — ダッシュを投影クアッド化 + laser（CompositionLayerQuad 廃止）
 - smoke: `bash .scripts/smoke-openxr.sh`
 - 先行: [x0008-openxr-dash-exit.md](x0008-openxr-dash-exit.md) · [x000b-vr-controller-render-models.md](x000b-vr-controller-render-models.md)
 

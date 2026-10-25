@@ -18,7 +18,7 @@ use alchemy_protocol::DEFAULT_MOVE_SPEED;
 
 use super::input::{
     dash_quad_model, laser_length, laser_model, openxr_pose_to_isometry, pose_to_ray,
-    ray_hit_dash_quad, QUAD_HEIGHT, QUAD_WIDTH,
+    ray_hit_dash_quad,
 };
 use super::loco::{combine_turn_axes, intent_from_sticks, stage_move_to_world, STICK_DEADZONE};
 use super::render_model::{enable_if_available, RenderModelCache};
@@ -403,7 +403,6 @@ pub fn run_openxr(
         let mut depth_res: Option<DepthResources> = None;
         let mut controller_gpu: Vec<GpuController> = Vec::new();
         let mut controller_gpu_gen: u64 = 0;
-        let mut ui_swapchain: Option<UiSwapchain> = None;
         let staging_bytes = UI_CANVAS_W * UI_CANVAS_H * 4;
         let staging = create_staging_buffer(
             &vk_instance,
@@ -423,6 +422,30 @@ pub fn run_openxr(
             &floor_plane_submesh(),
         )?;
         log::info!("XR checker floor mesh ready ({FLOOR_METERS}m, depth-tested)");
+
+        // Dash UI lives in the same projection as the laser (x000e) so draw order / depth match.
+        let ui_plane_gpu = upload_gpu_submesh(
+            &vk_instance,
+            vk_physical_device,
+            &vk_device,
+            queue,
+            cmd_pool,
+            &mesh_pipe,
+            &ui_plane_submesh(),
+        )?;
+        let blank_ui = vec![0u8; staging_bytes as usize];
+        let ui_canvas_tex = upload_rgba_texture(
+            &vk_instance,
+            vk_physical_device,
+            &vk_device,
+            queue,
+            cmd_pool,
+            &mesh_pipe.tex_set_layout,
+            &blank_ui,
+            UI_CANVAS_W,
+            UI_CANVAS_H,
+        )?;
+        log::info!("XR dash UI plane ready (projection, alpha-blended)");
 
         // Unit laser box along local -Z (z=0..-1); scaled per-frame by laser_model.
         let laser_gpu = upload_gpu_submesh(
@@ -688,6 +711,14 @@ pub fn run_openxr(
                 yaw_q * Vec3::new(-user_root.x, -user_root.y, -user_root.z),
             );
 
+            // Menu before canvas upload so open/close applies this frame.
+            let menu_down = menu_action.state(&session, xr::Path::NULL)?.current_state;
+            if menu_down && !menu_was_down {
+                ui.toggle();
+                log::info!("XR menu → system_ui open={}", ui.state.open);
+            }
+            menu_was_down = menu_down;
+
             // Head + UI aim before projection so laser draws with the same pose as Select.
             let head_located = view_ref.locate(&stage, xr_frame_state.predicted_display_time)?;
             let (head_pos, head_orient) = openxr_pose_to_isometry(head_located.pose);
@@ -712,6 +743,25 @@ pub fn run_openxr(
                 );
                 laser_model(aim_pos, aim_orient, len)
             });
+
+            let dash_ui_model = if ui.state.open {
+                ui.prepare_cpu_canvas();
+                if let Some((pixels, cw, ch)) = ui.canvas_rgba() {
+                    upload_rgba_to_image(
+                        &vk_device,
+                        queue,
+                        cmd_pool,
+                        &staging,
+                        ui_canvas_tex.image,
+                        pixels,
+                        cw,
+                        ch,
+                    )?;
+                }
+                Some(dash_quad_model(head_pos, head_orient))
+            } else {
+                None
+            };
 
             update_view_proj_ubo(&vk_device, &mesh_pipe, &views)?;
 
@@ -840,6 +890,22 @@ pub fn run_openxr(
                 }
             }
 
+            // Dash UI then laser (same projection): tip stops short of the plane (LASER_TIP_GAP).
+            if let Some(ui_model) = dash_ui_model {
+                bind_mesh_texture(&vk_device, cmd, &mesh_pipe, ui_canvas_tex.set);
+                push_mesh_consts(
+                    &vk_device,
+                    cmd,
+                    mesh_pipe.layout,
+                    ui_model,
+                    MESH_MODE_TEXTURED,
+                    [1.0, 1.0, 1.0, 1.0],
+                );
+                vk_device.cmd_bind_vertex_buffers(cmd, 0, &[ui_plane_gpu.vbo], &[0]);
+                vk_device.cmd_bind_index_buffer(cmd, ui_plane_gpu.ibo, 0, vk::IndexType::UINT32);
+                vk_device.cmd_draw_indexed(cmd, ui_plane_gpu.index_count, 1, 0, 0, 0);
+            }
+
             if let Some(laser_mat) = laser_draw {
                 bind_mesh_texture(&vk_device, cmd, &mesh_pipe, mesh_pipe.white_set);
                 push_mesh_consts(
@@ -864,14 +930,7 @@ pub fn run_openxr(
             )?;
             sc.handle.release_image()?;
 
-            // ---- menu / select UI (CPU); loco + laser aim already applied above ----
-            let menu_down = menu_action.state(&session, xr::Path::NULL)?.current_state;
-            if menu_down && !menu_was_down {
-                ui.toggle();
-                log::info!("XR menu → system_ui open={}", ui.state.open);
-            }
-            menu_was_down = menu_down;
-
+            // ---- select UI (CPU); menu + canvas already applied above ----
             let select_down = select_action.state(&session, xr::Path::NULL)?.current_state;
             if select_down && !select_was_down {
                 if let Some((aim_pos, aim_orient)) = aim_for_ui {
@@ -902,9 +961,7 @@ pub fn run_openxr(
             }
             select_was_down = select_down;
 
-            ui.prepare_cpu_canvas();
-
-            let _ = (&mesh, dash_quad_model(head_pos, head_orient));
+            let _ = &mesh;
             if frame_i == 0 {
                 if let Ok(map) = shared.entities.lock() {
                     if let Some(p) = map.get(&MESH_ENTITY_ID) {
@@ -918,10 +975,6 @@ pub fn run_openxr(
                     user_root.z
                 );
             }
-
-            let ui_sc = ui_swapchain.get_or_insert_with(|| {
-                create_ui_swapchain(&session, &vk_device).expect("ui swapchain")
-            });
 
             let rect = rect_to_xr(vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
@@ -951,75 +1004,12 @@ pub fn run_openxr(
                 .space(&stage)
                 .views(&proj_views);
 
-            // Floor is drawn inside projection (depth-tested). UI remains a composition quad.
-            if ui.state.open {
-                if let Some((pixels, cw, ch)) = ui.canvas_rgba() {
-                    let ui_index = ui_sc.handle.acquire_image()?;
-                    ui_sc.handle.wait_image(xr::Duration::INFINITE)?;
-                    upload_rgba_to_image(
-                        &vk_device,
-                        queue,
-                        cmd_pool,
-                        &staging,
-                        ui_sc.images[ui_index as usize],
-                        pixels,
-                        cw,
-                        ch,
-                    )?;
-                    ui_sc.handle.release_image()?;
-                    let ui_rect = xr::Rect2Di {
-                        offset: xr::Offset2Di { x: 0, y: 0 },
-                        extent: xr::Extent2Di {
-                            width: UI_CANVAS_W as i32,
-                            height: UI_CANVAS_H as i32,
-                        },
-                    };
-                    let quad = xr::CompositionLayerQuad::new()
-                        .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
-                        .space(&view_ref)
-                        .eye_visibility(xr::EyeVisibility::BOTH)
-                        .sub_image(
-                            xr::SwapchainSubImage::new()
-                                .swapchain(&ui_sc.handle)
-                                .image_array_index(0)
-                                .image_rect(ui_rect),
-                        )
-                        .pose(xr::Posef {
-                            orientation: xr::Quaternionf {
-                                x: 0.0,
-                                y: 0.0,
-                                z: 0.0,
-                                w: 1.0,
-                            },
-                            position: xr::Vector3f {
-                                x: 0.0,
-                                y: 0.0,
-                                z: -super::input::QUAD_DISTANCE,
-                            },
-                        })
-                        .size(xr::Extent2Df {
-                            width: QUAD_WIDTH,
-                            height: QUAD_HEIGHT,
-                        });
-                    frame_stream.end(
-                        xr_frame_state.predicted_display_time,
-                        environment_blend_mode,
-                        &[&proj, &quad],
-                    )?;
-                } else {
-                    frame_stream.end(
-                        xr_frame_state.predicted_display_time,
-                        environment_blend_mode,
-                        &[&proj],
-                    )?;
-                }
-            } else {
-                frame_stream.end(
-                    xr_frame_state.predicted_display_time,
-                    environment_blend_mode,
-                    &[&proj],
-                )?;
-            }
+            // Dash UI + laser are inside projection (depth-tested). No CompositionLayerQuad.
+            frame_stream.end(
+                xr_frame_state.predicted_display_time,
+                environment_blend_mode,
+                &[&proj],
+            )?;
 
             frame_i = (frame_i + 1) % PIPELINE_DEPTH;
         }
@@ -1033,9 +1023,10 @@ pub fn run_openxr(
         drop(aim_right);
         drop(view_ref);
         drop(stage);
-        drop(ui_swapchain);
         drop(session);
         destroy_gpu_submesh(&vk_device, laser_gpu);
+        destroy_gpu_texture(&vk_device, ui_canvas_tex);
+        destroy_gpu_submesh(&vk_device, ui_plane_gpu);
         destroy_gpu_submesh(&vk_device, floor_gpu);
         if let Some(sc) = swapchain.take() {
             for b in sc.buffers {
@@ -1135,46 +1126,10 @@ struct ViewProjUbo {
     mats: [[f32; 16]; 2],
 }
 
-struct UiSwapchain {
-    handle: xr::Swapchain<xr::Vulkan>,
-    images: Vec<vk::Image>,
-}
-
 struct StagingBuffer {
     memory: vk::DeviceMemory,
     buffer: vk::Buffer,
     size: vk::DeviceSize,
-}
-
-fn create_ui_swapchain(
-    session: &xr::Session<xr::Vulkan>,
-    _vk_device: &ash::Device,
-) -> Result<UiSwapchain> {
-    create_sized_swapchain(session, UI_CANVAS_W, UI_CANVAS_H)
-}
-
-fn create_sized_swapchain(
-    session: &xr::Session<xr::Vulkan>,
-    width: u32,
-    height: u32,
-) -> Result<UiSwapchain> {
-    let handle = session.create_swapchain(&xr::SwapchainCreateInfo {
-        create_flags: xr::SwapchainCreateFlags::EMPTY,
-        usage_flags: xr::SwapchainUsageFlags::TRANSFER_DST | xr::SwapchainUsageFlags::SAMPLED,
-        format: COLOR_FORMAT.as_raw() as _,
-        sample_count: 1,
-        width,
-        height,
-        face_count: 1,
-        array_size: 1,
-        mip_count: 1,
-    })?;
-    let images = handle
-        .enumerate_images()?
-        .into_iter()
-        .map(vk::Image::from_raw)
-        .collect();
-    Ok(UiSwapchain { handle, images })
 }
 
 fn floor_plane_submesh() -> CpuSubmesh {
@@ -1182,6 +1137,23 @@ fn floor_plane_submesh() -> CpuSubmesh {
     CpuSubmesh {
         positions: vec![[-h, 0.0, -h], [h, 0.0, -h], [h, 0.0, h], [-h, 0.0, h]],
         uvs: vec![[0.0, 0.0]; 4],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        base_color: None,
+        base_color_factor: [1.0, 1.0, 1.0, 1.0],
+        node_index: 0,
+    }
+}
+
+/// Unit quad in local XY (scaled by [`dash_quad_model`]). UV: top-left origin (canvas).
+fn ui_plane_submesh() -> CpuSubmesh {
+    CpuSubmesh {
+        positions: vec![
+            [-0.5, 0.5, 0.0],
+            [0.5, 0.5, 0.0],
+            [0.5, -0.5, 0.0],
+            [-0.5, -0.5, 0.0],
+        ],
+        uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
         indices: vec![0, 1, 2, 0, 2, 3],
         base_color: None,
         base_color_factor: [1.0, 1.0, 1.0, 1.0],
@@ -1858,8 +1830,14 @@ fn create_mesh_pipeline(
                 .color_blend_state(
                     &vk::PipelineColorBlendStateCreateInfo::default().attachments(&[
                         vk::PipelineColorBlendAttachmentState {
+                            blend_enable: vk::TRUE,
+                            src_color_blend_factor: vk::BlendFactor::SRC_ALPHA,
+                            dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                            color_blend_op: vk::BlendOp::ADD,
+                            src_alpha_blend_factor: vk::BlendFactor::ONE,
+                            dst_alpha_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                            alpha_blend_op: vk::BlendOp::ADD,
                             color_write_mask: vk::ColorComponentFlags::RGBA,
-                            ..Default::default()
                         },
                     ]),
                 )

@@ -1,14 +1,14 @@
 //! OpenXR surface (SteamVR). Falls back to Desktop on probe/session failure.
 //!
 //! Guarantees: menu toggle, ray click → system_ui UiAction, Exit ends session,
-//! dash-open aim laser beam (x000e), thumbstick Noclip Intent (aim-relative),
-//! comfort turn (snap/smooth), checker floor,
+//! dash UI + aim laser in the same projection (x000e; tip in front of panel),
+//! thumbstick Noclip Intent (aim-relative), comfort turn (snap/smooth), checker floor,
 //! XR_EXT_render_model controllers when runtime supports them (SteamVR 2.12+),
 //! embedded baseColor textures when present in the GLB (x000c),
 //! animatable node pose/visibility (x000d).
 //! Non-guarantees: WSL HMD, Quest standalone, Vive trackpad-only, Coin mesh in XR,
-//! hover highlight, world laser when dash closed, PBR maps,
-//! SteamVR rendermodels path loading.
+//! hover highlight, world laser when dash closed, CompositionLayerQuad dash,
+//! PBR maps, SteamVR rendermodels path loading.
 
 mod input;
 mod loader;
