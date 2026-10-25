@@ -1445,7 +1445,8 @@ var<push_constant> push: Push;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
-    @location(0) world_xz: vec2<f32>,
+    // Local XZ so floor checker is painted on the mesh (moves with loco, no UV scroll).
+    @location(0) local_xz: vec2<f32>,
 }
 
 @vertex
@@ -1454,8 +1455,8 @@ fn vs_main(
     @builtin(view_index) view_index: i32,
 ) -> VsOut {
     var o: VsOut;
+    o.local_xz = position.xz;
     let world = push.model * vec4<f32>(position, 1.0);
-    o.world_xz = world.xz;
     let vp = views.view_proj[u32(view_index)];
     o.pos = vp * world;
     return o;
@@ -1464,9 +1465,9 @@ fn vs_main(
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (push.mode == 1u) {
-        // 2.5 m cells ≈ FLOOR_METERS/FLOOR_CELLS (40/16).
+        // 2.5 m cells ≈ FLOOR_METERS/16.
         let cell = 2.5;
-        let c = floor(in.world_xz / cell);
+        let c = floor(in.local_xz / cell);
         let light = ((i32(c.x) + i32(c.y)) & 1) == 0;
         if (light) {
             return vec4<f32>(0.82, 0.84, 0.86, 1.0);
