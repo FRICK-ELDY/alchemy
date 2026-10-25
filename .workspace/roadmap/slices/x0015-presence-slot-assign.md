@@ -1,8 +1,8 @@
 # x0015 — Presence 動的スロット割当（3人以上）
 
-> **ID:** `x0015` · **slug:** `presence-slot-assign` · **status:** active · **area:** `[host, client, protocol, docs]` · **surface:** `[desktop, vr]` · **depends_on:** `[x0014]`
+> **ID:** `x0015` · **slug:** `presence-slot-assign` · **status:** done · **area:** `[host, client, protocol, docs]` · **surface:** `[desktop, vr]` · **depends_on:** `[x0014]`
 
-目標: client の **`AUTH_USER`→entity 固定マップを廃止**し、host が Room Token の **`sub` → user_root entity** を first-come で割り当て・公開する。client は自 `sub` で自 entity を発見し、カメラ追従する。同時接続は **最大 4**（entity `3..6`）。3 client（alice / bob / carol）smoke まで。
+目標: client の **`AUTH_USER`→entity 固定マップを廃止**し、host が Room Token の **`sub` → user_root entity** を first-come で割り当て・公開する。client は自 `sub` で自 entity を発見し、カメラ追従する。同時接続は **最大 4**（entity `3..6`）。3 client（alice / bob / carol）smoke まで。（完了）
 
 正本: [client.md](../../0_doc/architecture/client.md) · [protocol.md](../../0_doc/architecture/protocol.md)
 
@@ -18,10 +18,10 @@
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
 | 0 | Slice 文書 + 目次 | done |
-| 1 | protocol: `PresenceState` + key ヘルパ + pin | planned |
-| 2 | host: `USER_ROOT_SLOTS=4`・spawn・Presence publish | planned |
-| 3 | client: `sub` 解決 + Presence 購読 + 固定マップ削除 + remote 描画 | planned |
-| 4 | seeds 確認（carol）+ smoke 3-client + README / 正本 | planned |
+| 1 | protocol: `PresenceState` + key ヘルパ + pin | done |
+| 2 | host: `USER_ROOT_SLOTS=4`・spawn・Presence publish | done |
+| 3 | client: `sub` 解決 + Presence 購読 + 固定マップ削除 + remote 描画 | done |
+| 4 | seeds 確認（carol）+ smoke 3-client + README / 正本 | done |
 
 ## エンティティ規約（本 Slice）
 
@@ -34,12 +34,13 @@
 
 `AUTH_USER` は **ログイン用**のみ。entity 番号との対応は持たない。接続順でスロットが決まる（alice 先でも entity 3 とは限らないが、空室なら通常 3）。
 
-## Presence 契約（案）
+## Presence 契約
 
-- Zenoh key: `alchemy/dev/room/local/presence`（`PRESENCE_KEY_LOCAL` / 将来 `presence_key(room_id)`）
+- Zenoh key: `alchemy/dev/room/local/presence`（`PRESENCE_KEY_LOCAL` / `presence_key(room_id)`）
 - ペイロード: `PresenceState { revision, assignments: [{ sub, entity_id }] }`（occupied のみ）
-- host: 割当成功時に publish。既存 Manifest 同様、late-joiner 向けに低頻度 republish 可
-- client: 自 Room Token の `sub` と一致する `entity_id` を `local_user_root` にする
+- host: 割当成功時に publish。既存 Manifest 同様、late-joiner 向けに 5s republish
+- client: Room Token payload の `sub`（署名は検証しない）と一致する `entity_id` を `local_user_root` にする
+- `PROTOCOL_PIN`: `alchemy-protocol/0.6.0-x0015`
 
 ## 保証する / しない
 
@@ -68,11 +69,10 @@ ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=bob cargo run -p client
 ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=carol cargo run -p client
 ```
 
-## 実装メモ（予定）
+## 実装メモ
 
-- `USER_ROOT_SLOTS: 2 → 4`、`USER_SPAWN` を 4 点に拡張（boxes `10..` と衝突しない）
-- client remote 描画: 自以外の occupied root をボックス表示（UBO スロット不足なら dedicated buffer）
-- Room Token JWT の payload から `sub`（認証済み発行済み前提・検証は host 側）
-- smoke: `.scripts/smoke-lan-two-client.sh` を拡張、または `smoke-presence-slots.sh`
+- `USER_ROOT_SLOTS: 2 → 4`、`USER_SPAWN` 4 点（boxes `10..` と衝突しない）
+- client: `jwt_sub::sub_unverified` + Presence 購読；remote は box mesh の末尾 UBO を再利用
+- smoke: `bash .scripts/smoke-presence-slots.sh`
 
 ← [目次](../README.md)

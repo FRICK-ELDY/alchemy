@@ -1,17 +1,18 @@
-//! Alchemy client — x0014 presence + Grab / Noclip / OpenXR dash/Exit.
+//! Alchemy client — x0015 Presence slots + Grab / Noclip / OpenXR dash/Exit.
 //!
 //! Guarantees:
-//! - Subscribes to SceneManifest / RenderFrame; downloads blob; wgpu mesh on Desktop
+//! - Subscribes to SceneManifest / PresenceState / RenderFrame; downloads blob; wgpu mesh
 //! - Desktop WASD/Space/C → Intent (mouse-look yaw); Confined look; RMB Grab (look ray)
 //! - OpenXR thumbstick (aim-relative, L+R add) → same Intent path
-//! - Camera follows local user_root (alice→3 / bob→4); remote roots as colored boxes
+//! - Camera follows Presence-assigned local user_root; remotes as colored boxes
 //! - Grabbable boxes 10..18; XR world laser / Desktop look ray; Grab → host kinematic follow
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
-//! - `ZENOH_CONNECT` for LAN (x0014)
+//! - `ZENOH_CONNECT` for LAN
 //!
-//! Non-guarantees: Steal, rotation follow, throw, 3+ players, Quest standalone, WSL HMD
+//! Non-guarantees: Steal, rotation follow, throw, slot reclaim, Quest standalone, WSL HMD
 
 mod host_control;
+mod jwt_sub;
 mod mesh;
 mod scene;
 mod surface;
@@ -22,18 +23,19 @@ mod world_hit;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU32;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alchemy_protocol::{
-    InputEvent, Message, RenderFrame, SceneManifest, FRAME_KEY_LOCAL, INPUT_KEY_LOCAL,
-    MANIFEST_KEY_LOCAL, PROTOCOL_PIN,
+    InputEvent, Message, PresenceState, RenderFrame, SceneManifest, FRAME_KEY_LOCAL,
+    INPUT_KEY_LOCAL, MANIFEST_KEY_LOCAL, PRESENCE_KEY_LOCAL, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, COIN_BLAKE3_HEX};
-use scene::{local_user_root_entity, EntityPose, SharedState, MESH_ENTITY_ID};
+use scene::{EntityPose, SharedState, LOCAL_USER_ROOT_UNSET, MESH_ENTITY_ID};
 use serde::Deserialize;
 use zenoh::bytes::ZBytes;
 use zenoh::Config;
@@ -278,6 +280,61 @@ fn spawn_frame_subscriber(session: zenoh::Session, shared: Arc<SharedState>) -> 
     Ok(())
 }
 
+fn spawn_presence_subscriber(
+    session: zenoh::Session,
+    shared: Arc<SharedState>,
+    local_sub: String,
+) -> Result<()> {
+    let subscriber = session
+        .declare_subscriber(PRESENCE_KEY_LOCAL)
+        .wait()
+        .map_err(|e| anyhow::anyhow!("declare_subscriber presence failed: {e}"))?;
+
+    thread::Builder::new()
+        .name("zenoh-presence".into())
+        .spawn(move || {
+            let _session = session;
+            log::info!("subscribed to {PRESENCE_KEY_LOCAL} (sub={local_sub})");
+            while let Ok(sample) = subscriber.recv() {
+                let bytes: ZBytes = sample.payload().clone();
+                let payload = bytes.to_bytes();
+                match PresenceState::decode(payload.as_ref()) {
+                    Ok(state) => {
+                        let mine = state
+                            .assignments
+                            .iter()
+                            .find(|a| a.sub == local_sub)
+                            .map(|a| a.entity_id);
+                        match mine {
+                            Some(entity_id) => {
+                                let prev = shared.local_user_root();
+                                if prev != entity_id {
+                                    shared.set_local_user_root(entity_id);
+                                    log::info!(
+                                        "Presence: local sub={local_sub} → user_root entity {entity_id} (revision={})",
+                                        state.revision
+                                    );
+                                }
+                            }
+                            None => {
+                                if shared.local_user_root() != LOCAL_USER_ROOT_UNSET {
+                                    shared.set_local_user_root(LOCAL_USER_ROOT_UNSET);
+                                    log::warn!(
+                                        "Presence: local sub={local_sub} not in assignments (revision={})",
+                                        state.revision
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(err) => log::warn!("PresenceState decode failed: {err}"),
+                }
+            }
+        })
+        .context("spawn presence thread")?;
+    Ok(())
+}
+
 fn spawn_input_publisher(
     session: zenoh::Session,
     room_token: String,
@@ -347,21 +404,22 @@ fn main() -> Result<()> {
     let assets_url = std::env::var("ASSETS_URL").unwrap_or_else(|_| DEFAULT_ASSETS_URL.to_string());
     let room_id = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
     let auth_user = std::env::var("AUTH_USER").unwrap_or_else(|_| DEFAULT_AUTH_USER.to_string());
-    let local_root = local_user_root_entity(&auth_user);
     let fallback_blake3 =
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
     log::info!(
-        "client x0014 starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} auth_user={auth_user} local_user_root={local_root}"
+        "client x0015 starting; protocol_pin={PROTOCOL_PIN} manifest={MANIFEST_KEY_LOCAL} frame={FRAME_KEY_LOCAL} input={INPUT_KEY_LOCAL} presence={PRESENCE_KEY_LOCAL} auth_user={auth_user}"
     );
 
     let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
     let room_token =
         fetch_guest_token(&world_url, &room_id, &auth_token).context("fetch guest Room Token")?;
-    log::info!("auth JWT + guest Room Token acquired");
+    let local_sub = jwt_sub::sub_unverified(&room_token)
+        .context("read Room Token sub (unverified payload)")?;
+    log::info!("auth JWT + guest Room Token acquired; sub={local_sub}");
 
     let shared = Arc::new(SharedState {
-        local_user_root: local_root,
+        local_user_root: AtomicU32::new(LOCAL_USER_ROOT_UNSET),
         entities: Mutex::new(HashMap::new()),
         look: Mutex::new(Default::default()),
         intent: Mutex::new(Default::default()),
@@ -370,6 +428,7 @@ fn main() -> Result<()> {
 
     let session = open_zenoh().context("open zenoh session")?;
     spawn_manifest_subscriber(session.clone(), Arc::clone(&shared), blake3_tx)?;
+    spawn_presence_subscriber(session.clone(), Arc::clone(&shared), local_sub)?;
     spawn_frame_subscriber(session.clone(), Arc::clone(&shared))?;
     spawn_input_publisher(session.clone(), room_token, Arc::clone(&shared))?;
 

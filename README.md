@@ -5,12 +5,12 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（x0015 active / Presence 動的スロット）
+## 現状（x0015 / Presence 動的スロット）
 
-**実装中:** [x0015](.workspace/roadmap/slices/x0015-presence-slot-assign.md) — `AUTH_USER`→entity 固定マップをやめ、host が Token **`sub` → user_root（最大 4・entity 3..6）** を Presence で公開。直近完了は **x0014**（LAN 2-client・entity 3/4・alice/bob 固定）。  
-`host-server` は **Rapier 60Hz**・**sub 別** Intent/Grab・**立方体 ×9（10..18）**・配信 **30Hz デルタ**。Grab は kinematic 追従（Steal なし）。  
+`host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（最大 **4**）・**user_root entity 3..6**・**PresenceState** 公開・**立方体 ×9（10..18）**・配信 **30Hz デルタ**。Grab は kinematic 追従（Steal なし）。  
+`client` は Room Token の `sub` と Presence で自 entity を解決してカメラ追従。他 user_root は色付きボックス。`AUTH_USER` はログイン用のみ。Desktop Grab / XR Grab / Noclip は従来どおり。  
 **LAN:** zenohd が `0.0.0.0:7447` も listen。client/host は **`ZENOH_CONNECT`**（既定 `tcp/127.0.0.1:7447`）。  
-Slice ID は `x` + 4桁16進（次の空きは `x0016`）。規約は [`.workspace/roadmap/README.md`](.workspace/roadmap/README.md)。
+Slice ID は `x` + 4桁16進（次は `x0016`）。規約は [`.workspace/roadmap/README.md`](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|
@@ -100,11 +100,13 @@ bash .scripts/smoke-rapier-host.sh     # Rapier 60Hz / net 30Hz（zenohd 必須�
 bash .scripts/smoke-system-ui.sh       # system_ui unit + host_control コンパイル
 bash .scripts/smoke-openxr.sh          # OpenXR モジュール unit + Desktop フォールバック compile
 bash .scripts/smoke-desktop-noclip.sh  # Manifest Noclip + user_root（zenohd + auth/world 必須）
-bash .scripts/smoke-lan-two-client.sh  # x0014 dual user_root unit + host banner
-# 2 client（同マシン）: alice を先に、その後 bob
+bash .scripts/smoke-lan-two-client.sh   # legacy x0014 units (still useful)
+bash .scripts/smoke-presence-slots.sh   # x0015 Presence + user_roots 3..6 banner
+# 3 client（同マシン）:
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=alice cargo run -p client
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=bob cargo run -p client
-# LAN ノートPC: AUTH/WORLD/ASSETS_URL + ZENOH_CONNECT=tcp/<PC_IP>:7447 / AUTH_USER=bob
+#   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=carol cargo run -p client
+# LAN ノートPC: AUTH/WORLD/ASSETS_URL + ZENOH_CONNECT=tcp/<PC_IP>:7447 / AUTH_USER=bob|carol
 #   （PC 側 Docker は BIND_ALL=true。Windows ファイアウォールで 7447 と 4002–4004 を許可）
 # ESC ダッシュ / XR Grab / Noclip は従来どおり。Desktop 強制: ALCHEMY_FORCE_DESKTOP=1
 # OpenXR ローダー明示: ALCHEMY_OPENXR_LOADER=...

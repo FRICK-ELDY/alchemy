@@ -1,7 +1,7 @@
 # protocol（alchemy-protocol）
 
 > **正本**: [`protocol/`](../../../protocol/)  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.5.0-x0011`
+> **PROTOCOL_PIN**: `alchemy-protocol/0.6.0-x0015`
 
 ## 置き場の方針
 
@@ -13,13 +13,14 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 
 | 保証する | 保証しない |
 |:---|:---|
-| `SceneManifest` / `RenderFrame`（delta）/ `InputEvent` の encode / decode | 本格ビット圧縮・予測符号化 |
+| `SceneManifest` / `RenderFrame`（delta）/ `InputEvent` / `PresenceState` の encode / decode | 本格ビット圧縮・予測符号化 |
 | `PROTOCOL_PIN` による世代識別 | フル DrawCommand 体系 |
 | f64 空間座標（描画境界） | audio / tracking |
 | `InputEvent.room_token` フィールドの存在 | Token の署名検証（host-server / world-server の責務） |
-| Manifest と frame のキー式ヘルパ | world-server 署名付き Manifest |
+| Manifest / frame / presence のキー式ヘルパ | world-server 署名付き Manifest |
 | `LocomotionConfig`（World 定義の active mode） | モジュール一覧 UI / 抑制ソース |
 | `DEFAULT_MOVE_SPEED`（host / Settings 表示の共有既定） | client 永続設定・仮想キーボード編集 |
+| `PresenceState`（`sub`→user_root entity） | 切断時スロット解放・5 人以上の動的スケール |
 
 ## メッセージ
 
@@ -36,7 +37,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - `RenderFrame { tick, host_time_ms, upserts[], removes[] }`
 - `Entity { id, x,y,z (double), r,g,b,a (float) }`
 - 静止 Entity は `upserts` に載せない（フルスナップショット廃止）
-- entity: Coin=`1`、static=`2`、**user_root=`3` / `4`**（x0014・最大2・Token `sub` 割当）、**grabbable boxes=`10..18`**（x0010・手続き立方体、Manifest blake3 なし）
+- entity: Coin=`1`、static=`2`、**user_root=`3..6`**（x0015・最大4・Token `sub` 割当）、**grabbable boxes=`10..18`**（x0010・手続き立方体、Manifest blake3 なし）
 
 ### InputEvent（`proto/input_events.proto`）— Intent（x0009）+ Grab（x0011 / x0013）
 
@@ -47,6 +48,12 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - `room_token` は world-server 発行の短命 JWT（検証は host-server）
 - `DEFAULT_MOVE_SPEED = 4.0`（Rust 定数。Manifest `move_speed` が 0 のときの host 既定 / Settings 表示）
 
+### PresenceState（`proto/presence.proto`）— x0015・低頻度
+
+- `PresenceState { revision, assignments[] }`
+- `PresenceAssignment { sub, entity_id }` — occupied のみ。host が first-come 割当を公開
+- client は自 Room Token の `sub`（payload 読み取りのみ）で `entity_id` を解決
+
 ## キー式ヘルパ
 
 | 定数 / 関数 | 既定 |
@@ -54,3 +61,4 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | `MANIFEST_KEY_LOCAL` / `manifest_key(room_id)` | `alchemy/dev/room/local/manifest` |
 | `FRAME_KEY_LOCAL` / `frame_key(room_id)` | `alchemy/dev/room/local/frame` |
 | `INPUT_KEY_LOCAL` / `input_key(room_id)` | `alchemy/dev/room/local/input` |
+| `PRESENCE_KEY_LOCAL` / `presence_key(room_id)` | `alchemy/dev/room/local/presence` |

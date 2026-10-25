@@ -1,8 +1,8 @@
-//! Rapier world + dual user_root (x0014) + grabbable boxes + Grab hold.
+//! Rapier world + user_roots (x0015) + grabbable boxes + Grab hold.
 //!
 //! Guarantees: 60Hz-capable step; floor + coin + 3×3 cuboids (SoA grabbable);
-//! up to 2 kinematic user_roots (entity 3/4); per-slot Grab; no Steal.
-//! Non-guarantees: rotation follow, throw impulse, Slot/Component, polished Walk.
+//! up to 4 kinematic user_roots (entity 3..6); per-slot Grab; no Steal.
+//! Non-guarantees: rotation follow, throw impulse, slot reclaim, Slot/Component, polished Walk.
 
 use alchemy_protocol::LocomotionMode;
 use rapier3d::prelude::*;
@@ -15,8 +15,17 @@ const BALL_RADIUS: f32 = 0.25;
 pub const SPAWN_Y: f32 = 5.0;
 /// Demo gravity (weaker than Earth) so the drop lasts ~2s and is easy to see.
 const DEMO_GRAVITY_Y: f32 = -2.2;
-/// user_root spawn (eye height-ish above floor). Slot 1 is offset on +X.
-pub const USER_SPAWN: [(f32, f32, f32); USER_ROOT_SLOTS] = [(0.0, 1.6, 6.0), (1.5, 1.6, 6.0)];
+
+/// Max simultaneous players (x0015). Entity ids = [`USER_ROOT_ENTITY_FIRST`] .. +SLOTS-1.
+pub const USER_ROOT_SLOTS: usize = 4;
+pub const USER_ROOT_ENTITY_FIRST: u32 = 3;
+/// user_root spawn (eye height-ish above floor). Slots fan on ±X.
+pub const USER_SPAWN: [(f32, f32, f32); USER_ROOT_SLOTS] = [
+    (0.0, 1.6, 6.0),
+    (1.5, 1.6, 6.0),
+    (-1.5, 1.6, 6.0),
+    (3.0, 1.6, 6.0),
+];
 
 /// First entity id for the 3×3 grabbable grid (10..18).
 pub const BOX_ENTITY_FIRST: u32 = 10;
@@ -27,10 +36,6 @@ pub const BOX_HALF_EXTENT: f32 = 0.25;
 const BOX_SPACING: f32 = 0.8;
 /// Grid center on XZ — ~2.5 m in front of [`USER_SPAWN`] (z=6 → z=3.5) so XR facing -Z sees them.
 const BOX_GRID_CENTER: (f32, f32) = (0.0, 3.5);
-
-/// Max simultaneous players (x0014). Entity ids = [`USER_ROOT_ENTITY_FIRST`] .. +SLOTS-1.
-pub const USER_ROOT_SLOTS: usize = 2;
-pub const USER_ROOT_ENTITY_FIRST: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LocoMode {
@@ -403,10 +408,14 @@ pub fn box_color(index: usize) -> (f32, f32, f32, f32) {
 
 /// Distinct tint per user_root slot (remote avatar placeholder).
 pub fn user_root_color(slot: usize) -> (f32, f32, f32, f32) {
-    match slot {
-        0 => (0.4, 0.7, 1.0, 1.0),
-        _ => (1.0, 0.55, 0.25, 1.0),
-    }
+    const PALETTE: [(f32, f32, f32); USER_ROOT_SLOTS] = [
+        (0.4, 0.7, 1.0),
+        (1.0, 0.55, 0.25),
+        (0.45, 0.9, 0.5),
+        (0.9, 0.45, 0.85),
+    ];
+    let (r, g, b) = PALETTE[slot % USER_ROOT_SLOTS];
+    (r, g, b, 1.0)
 }
 
 #[cfg(test)]
@@ -453,6 +462,23 @@ mod tests {
         assert!(x0 > 0.5, "slot0 should move +X, got {x0}");
         assert!(x1 < 1.0, "slot1 should move -X from 1.5, got {x1}");
         assert!(x0 > x1, "slot0 ahead of slot1 on X");
+    }
+
+    #[test]
+    fn four_slots_have_distinct_spawns() {
+        let world = PhysicsWorld::new(LocoMode::Noclip, DEFAULT_MOVE_SPEED);
+        assert_eq!(USER_ROOT_SLOTS, 4);
+        assert_eq!(PhysicsWorld::user_root_entity_id(3), 6);
+        let mut xs = Vec::with_capacity(USER_ROOT_SLOTS);
+        for slot in 0..USER_ROOT_SLOTS {
+            let (x, y, z) = world.user_root_translation(slot);
+            assert!((y - 1.6).abs() < 0.01 && (z - 6.0).abs() < 0.01);
+            xs.push(x);
+        }
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for w in xs.windows(2) {
+            assert!((w[1] - w[0]).abs() > 0.5, "spawns should differ on X: {xs:?}");
+        }
     }
 
     #[test]

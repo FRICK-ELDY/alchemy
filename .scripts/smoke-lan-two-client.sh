@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# x0014: dual user_root unit tests; optional host banner when auth/world/zenohd are up.
+# x0014 legacy smoke — superseded by smoke-presence-slots.sh (x0015).
+# Still checks multi-slot units; host banner accepts x0015 (user_roots=3..6).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT/client"
@@ -13,7 +14,7 @@ cargo test -q -p host-server -- \
 AUTH_URL="${AUTH_URL:-http://127.0.0.1:4002}"
 if ! curl -sf --max-time 2 "${AUTH_URL}/health" >/dev/null 2>&1; then
   echo "smoke-lan-two-client: ok (units only; auth not reachable — skip host run)"
-  echo "  start auth/world + zenohd, then re-run for full banner check"
+  echo "  prefer: bash .scripts/smoke-presence-slots.sh"
   exit 0
 fi
 
@@ -23,12 +24,12 @@ RUST_LOG=info timeout 8 cargo run -q -p host-server >"$LOG" 2>&1
 set -e
 
 ok=1
-if ! grep -qE "host-server x0014 starting" "$LOG"; then
-  echo "smoke-lan-two-client: missing host-server x0014 start banner"
+if ! grep -qE "host-server x001[45] starting" "$LOG"; then
+  echo "smoke-lan-two-client: missing host-server start banner"
   ok=0
 fi
-if ! grep -q "user_roots=3..4" "$LOG"; then
-  echo "smoke-lan-two-client: missing user_roots=3..4 in banner"
+if ! grep -qE "user_roots=3\.\.[46]" "$LOG"; then
+  echo "smoke-lan-two-client: missing user_roots=3..N in banner"
   ok=0
 fi
 if ! grep -q "protocol_pin=alchemy-protocol/" "$LOG"; then
@@ -56,4 +57,4 @@ if [[ "$ok" -ne 1 ]]; then
 fi
 
 rm -f "$LOG"
-echo "smoke-lan-two-client: ok (manual: alice then bob clients — see x0014 slice)"
+echo "smoke-lan-two-client: ok (prefer smoke-presence-slots.sh for x0015)"

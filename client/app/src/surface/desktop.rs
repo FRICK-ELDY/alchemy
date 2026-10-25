@@ -310,24 +310,27 @@ impl App {
     }
 
     fn eye_and_look(&self) -> (EntityPose, CameraLook) {
-        let id = self.shared.local_user_root;
-        let spawn_x = if id == crate::scene::USER_ROOT_ENTITY_SECOND {
-            1.5
-        } else {
-            0.0
-        };
-        let eye = self
-            .shared
-            .entities
-            .lock()
-            .ok()
-            .and_then(|g| g.get(&id).copied())
-            .unwrap_or(EntityPose {
-                x: spawn_x,
+        let id = self.shared.local_user_root();
+        let eye = if id == crate::scene::LOCAL_USER_ROOT_UNSET {
+            EntityPose {
+                x: 0.0,
                 y: 1.6,
                 z: 6.0,
                 ..Default::default()
-            });
+            }
+        } else {
+            self.shared
+                .entities
+                .lock()
+                .ok()
+                .and_then(|g| g.get(&id).copied())
+                .unwrap_or(EntityPose {
+                    x: 0.0,
+                    y: 1.6,
+                    z: 6.0,
+                    ..Default::default()
+                })
+        };
         let look = self.shared.look.lock().ok().map(|g| *g).unwrap_or_default();
         (eye, look)
     }

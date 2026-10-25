@@ -2,18 +2,20 @@
 //!
 //! # Guarantees
 //! - `PROTOCOL_PIN` identifies the schema generation expected by peers.
-//! - `RenderFrame` (delta upserts/removes), `SceneManifest` (+ `LocomotionConfig`), `InputEvent` encode/decode.
+//! - `RenderFrame` (delta upserts/removes), `SceneManifest` (+ `LocomotionConfig`),
+//!   `InputEvent`, `PresenceState` (`sub`→entity) encode/decode.
 //!
 //! # Non-guarantees
 //! - Bit-packing / prediction coding, DrawCommand taxonomy, audio/tracking frames.
 //! - Cryptographic verification of `InputEvent.room_token` (host-server).
 //! - Signed Manifest issuance by world-server (later).
 //! - Locomotion module list UI / suppress sources.
+//! - Presence slot reclaim on disconnect (x0015).
 
 pub use prost::Message;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.5.0-x0011";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.6.0-x0015";
 
 /// Default free-move speed (m/s) when Manifest `move_speed` is 0.
 /// Shared by host Noclip and client Settings display (x000a).
@@ -40,6 +42,9 @@ pub const MANIFEST_KEY_LOCAL: &str = "alchemy/dev/room/local/manifest";
 /// Default Zenoh key for local host control (Slice E stub: shutdown).
 pub const HOST_CONTROL_KEY_LOCAL: &str = "alchemy/dev/room/local/host_control";
 
+/// Default Zenoh key for local room presence (low-frequency sub→entity; x0015).
+pub const PRESENCE_KEY_LOCAL: &str = "alchemy/dev/room/local/presence";
+
 /// Payload accepted by host-server on `HOST_CONTROL_KEY_LOCAL` (Slice E stub).
 pub const HOST_CONTROL_SHUTDOWN: &[u8] = b"shutdown";
 
@@ -63,9 +68,15 @@ pub fn host_control_key(room_id: &str) -> String {
     format!("alchemy/dev/room/{room_id}/host_control")
 }
 
+/// Build a presence key for an arbitrary room id (ASCII, no `/`).
+pub fn presence_key(room_id: &str) -> String {
+    format!("alchemy/dev/room/{room_id}/presence")
+}
+
 include!(concat!(env!("OUT_DIR"), "/alchemy.render.rs"));
 include!(concat!(env!("OUT_DIR"), "/alchemy.input.rs"));
 include!(concat!(env!("OUT_DIR"), "/alchemy.scene.rs"));
+include!(concat!(env!("OUT_DIR"), "/alchemy.presence.rs"));
 
 #[cfg(test)]
 mod tests {
@@ -155,10 +166,34 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_presence_state() {
+        let state = PresenceState {
+            revision: 2,
+            assignments: vec![
+                PresenceAssignment {
+                    sub: "alice-uuid".into(),
+                    entity_id: 3,
+                },
+                PresenceAssignment {
+                    sub: "bob-uuid".into(),
+                    entity_id: 4,
+                },
+            ],
+        };
+        let bytes = state.encode_to_vec();
+        let decoded = PresenceState::decode(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded.revision, 2);
+        assert_eq!(decoded.assignments.len(), 2);
+        assert_eq!(decoded.assignments[0].entity_id, 3);
+        assert_eq!(decoded.assignments[1].sub, "bob-uuid");
+    }
+
+    #[test]
     fn key_helpers() {
         assert_eq!(frame_key("local"), FRAME_KEY_LOCAL);
         assert_eq!(input_key("local"), INPUT_KEY_LOCAL);
         assert_eq!(manifest_key("local"), MANIFEST_KEY_LOCAL);
         assert_eq!(host_control_key("local"), HOST_CONTROL_KEY_LOCAL);
+        assert_eq!(presence_key("local"), PRESENCE_KEY_LOCAL);
     }
 }

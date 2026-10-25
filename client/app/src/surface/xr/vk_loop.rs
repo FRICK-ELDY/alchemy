@@ -732,7 +732,7 @@ pub fn run_openxr(
                 .entities
                 .lock()
                 .ok()
-                .and_then(|m| m.get(&shared.local_user_root).copied())
+                .and_then(|m| m.get(&shared.local_user_root()).copied())
                 .unwrap_or(EntityPose {
                     x: 0.0,
                     y: DEFAULT_EYE_Y,

@@ -3,9 +3,10 @@
 //! MoveIntent carries Grab hold fields for x0011 (host kinematic follow).
 //! `CameraLook` is Desktop-local (x0012); not published on Zenoh.
 //!
-//! Guarantees: draw with caller-supplied view/proj; boxes 10..18; remote roots 3/4 (x0014).
+//! Guarantees: draw with caller-supplied view/proj; boxes 10..18; remote roots 3..6 (x0015).
 //! Non-guarantees: XR swapchain ownership, system_ui layout, avatar GLB.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,10 +20,11 @@ use wgpu::util::DeviceExt;
 use crate::mesh::CpuMesh;
 
 pub const MESH_ENTITY_ID: u32 = 1;
-/// Host-authoritative player roots (x0014: alice→3, bob→4). Prefer [`local_user_root_entity`].
-pub const USER_ROOT_ENTITY_ID: u32 = 3;
-pub const USER_ROOT_ENTITY_SECOND: u32 = 4;
-pub const USER_ROOT_SLOTS: u32 = 2;
+/// Host-authoritative player roots (x0015: entity 3..6 via Presence).
+pub const USER_ROOT_ENTITY_FIRST: u32 = 3;
+pub const USER_ROOT_SLOTS: u32 = 4;
+/// Sentinel: Presence has not assigned a local user_root yet.
+pub const LOCAL_USER_ROOT_UNSET: u32 = 0;
 /// First entity id for the 3×3 grabbable grid (matches host x0010).
 pub const BOX_ENTITY_FIRST: u32 = 10;
 pub const BOX_COUNT: usize = 9;
@@ -31,16 +33,8 @@ pub const BOX_HALF_EXTENT: f32 = 0.25;
 /// Placeholder size for remote player (meters half-extent).
 pub const REMOTE_ROOT_HALF_EXTENT: f32 = 0.25;
 
-/// Demo map (x0014): `AUTH_USER=alice` → entity 3, `bob` → 4. Start alice before bob.
-pub fn local_user_root_entity(auth_user: &str) -> u32 {
-    match auth_user {
-        "bob" => USER_ROOT_ENTITY_SECOND,
-        _ => USER_ROOT_ENTITY_ID,
-    }
-}
-
 pub fn is_user_root_entity(id: u32) -> bool {
-    (USER_ROOT_ENTITY_ID..USER_ROOT_ENTITY_ID + USER_ROOT_SLOTS).contains(&id)
+    (USER_ROOT_ENTITY_FIRST..USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS).contains(&id)
 }
 /// Half-extent of Desktop floor (meters). Larger so loco is obvious.
 const FLOOR_EXTENT: f32 = 20.0;
@@ -137,11 +131,21 @@ pub struct Uniforms {
 }
 
 pub struct SharedState {
-    /// Local camera / aim follows this host entity (x0014 alice=3, bob=4).
-    pub local_user_root: u32,
+    /// Local camera / aim follows this host entity (`LOCAL_USER_ROOT_UNSET` until Presence).
+    pub local_user_root: AtomicU32,
     pub entities: Mutex<std::collections::HashMap<u32, EntityPose>>,
     pub look: Mutex<CameraLook>,
     pub intent: Mutex<MoveIntent>,
+}
+
+impl SharedState {
+    pub fn local_user_root(&self) -> u32 {
+        self.local_user_root.load(Ordering::Relaxed)
+    }
+
+    pub fn set_local_user_root(&self, entity_id: u32) {
+        self.local_user_root.store(entity_id, Ordering::Relaxed);
+    }
 }
 
 pub struct SceneGpu {
@@ -386,19 +390,22 @@ impl SceneGpu {
     }
 
     pub fn user_root_pose(&self) -> EntityPose {
-        let id = self.shared.local_user_root;
-        let spawn_x = if id == USER_ROOT_ENTITY_SECOND {
-            1.5
-        } else {
-            0.0
-        };
+        let id = self.shared.local_user_root();
+        if id == LOCAL_USER_ROOT_UNSET {
+            return EntityPose {
+                x: 0.0,
+                y: DEFAULT_EYE_Y,
+                z: 6.0,
+                ..Default::default()
+            };
+        }
         self.shared
             .entities
             .lock()
             .ok()
             .and_then(|m| m.get(&id).copied())
             .unwrap_or(EntityPose {
-                x: spawn_x,
+                x: 0.0,
                 y: DEFAULT_EYE_Y,
                 z: 6.0,
                 ..Default::default()
@@ -522,7 +529,7 @@ impl SceneGpu {
 
             // Grabbable boxes (x0010) + remote user_roots (x0014): unit cube mesh.
             // Per-slot UBOs — rewriting one buffer inside the pass would show only the last cube.
-            let local_root = self.shared.local_user_root;
+            let local_root = self.shared.local_user_root();
             type PoseList = Vec<(u32, EntityPose)>;
             let (boxes, remotes): (PoseList, PoseList) = self
                 .shared
@@ -537,7 +544,10 @@ impl SceneGpu {
                         .collect();
                     let remotes: PoseList = m
                         .iter()
-                        .filter(|(id, _)| EntityPose::is_user_root(**id) && **id != local_root)
+                        .filter(|(id, _)| {
+                            EntityPose::is_user_root(**id)
+                                && (local_root == LOCAL_USER_ROOT_UNSET || **id != local_root)
+                        })
                         .map(|(id, p)| (*id, *p))
                         .collect();
                     (boxes, remotes)
