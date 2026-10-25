@@ -8,8 +8,8 @@
   },
   listen: {
     endpoints: [
-      "tcp/127.0.0.1:7447",
-      // Same-LAN peers (x0014): bind all interfaces.
+      // All interfaces (includes localhost + LAN). Do not also bind 127.0.0.1:7447 —
+      // on Linux that conflicts with 0.0.0.0:7447 (Address already in use).
       "tcp/0.0.0.0:7447",
     ],
   },
