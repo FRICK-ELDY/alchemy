@@ -10,13 +10,13 @@
 //! - Cryptographic verification of `InputEvent.room_token` (host-server).
 //! - Signed Manifest issuance by world-server (later).
 //! - Locomotion module list UI / suppress sources.
-//! - Explicit Leave / liveliness (host Intent TTL reclaim is x0016 host policy).
 //! - Tenant namespace `alchemy/tenant/...` (dev keys only: `alchemy/dev/room/{room_id}/…`).
+//! - 5+ concurrent guests / signed Manifest / WAN liveliness ACL.
 
 pub use prost::Message;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.8.0-x0017";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.9.0-x0019";
 
 /// Default free-move speed (m/s) when Manifest `move_speed` is 0.
 /// Shared by host Noclip and client Settings display (x000a).
@@ -113,6 +113,30 @@ pub fn presence_key(room_id: &str) -> String {
     format!("alchemy/dev/room/{room_id}/presence")
 }
 
+/// Default Zenoh liveliness key prefix for local room (x0019; `sub` appended).
+pub const LIVELINESS_KEY_LOCAL_PREFIX: &str = "alchemy/dev/room/local/alive";
+
+/// Build a liveliness token key for `sub` in a room (caller should [`validate_room_id`]).
+///
+/// `sub` must not contain `/` (Room Token UUID is fine). Host parses the last segment on Delete.
+pub fn liveliness_key(room_id: &str, sub: &str) -> String {
+    format!("alchemy/dev/room/{room_id}/alive/{sub}")
+}
+
+/// Host wildcard subscribe key for room liveliness (x0019).
+pub fn liveliness_wildcard(room_id: &str) -> String {
+    format!("alchemy/dev/room/{room_id}/alive/**")
+}
+
+/// Parse `sub` from a liveliness key (`…/alive/{sub}`). Returns `None` if shape mismatches.
+pub fn liveliness_sub_from_key(key: &str) -> Option<&str> {
+    let (_, rest) = key.split_once("/alive/")?;
+    if rest.is_empty() || rest.contains('/') {
+        return None;
+    }
+    Some(rest)
+}
+
 include!(concat!(env!("OUT_DIR"), "/alchemy.render.rs"));
 include!(concat!(env!("OUT_DIR"), "/alchemy.input.rs"));
 include!(concat!(env!("OUT_DIR"), "/alchemy.scene.rs"));
@@ -192,6 +216,7 @@ mod tests {
             aim_x: 1.0,
             aim_y: 1.5,
             aim_z: 3.0,
+            leave: false,
         };
         let bytes = event.encode_to_vec();
         let decoded = InputEvent::decode(bytes.as_slice()).expect("decode");
@@ -203,6 +228,26 @@ mod tests {
         );
         assert_eq!(decoded.grab_entity_id, 14);
         assert!((decoded.aim_y - 1.5).abs() < f32::EPSILON);
+        assert!(!decoded.leave);
+    }
+
+    #[test]
+    fn roundtrip_input_event_leave() {
+        let event = InputEvent {
+            room_token: "dummy.jwt".into(),
+            client_time_ms: 1,
+            move_x: 0.0,
+            move_y: 0.0,
+            move_z: 0.0,
+            buttons: 0,
+            grab_entity_id: 0,
+            aim_x: 0.0,
+            aim_y: 0.0,
+            aim_z: 0.0,
+            leave: true,
+        };
+        let decoded = InputEvent::decode(event.encode_to_vec().as_slice()).expect("decode");
+        assert!(decoded.leave);
     }
 
     #[test]
@@ -237,6 +282,22 @@ mod tests {
         assert_eq!(presence_key("local"), PRESENCE_KEY_LOCAL);
         assert_eq!(presence_key("alpha"), "alchemy/dev/room/alpha/presence");
         assert_ne!(presence_key("alpha"), presence_key("beta"));
+        assert_eq!(
+            liveliness_key("local", "alice-uuid"),
+            format!("{LIVELINESS_KEY_LOCAL_PREFIX}/alice-uuid")
+        );
+        assert_eq!(
+            liveliness_wildcard("alpha"),
+            "alchemy/dev/room/alpha/alive/**"
+        );
+        assert_eq!(
+            liveliness_sub_from_key("alchemy/dev/room/local/alive/alice-uuid"),
+            Some("alice-uuid")
+        );
+        assert_eq!(
+            liveliness_sub_from_key("alchemy/dev/room/local/alive/a/b"),
+            None
+        );
     }
 
     #[test]

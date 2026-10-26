@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# x0017: ROOM_ID Zenoh keys + Presence Intent TTL reclaim (banner / pin).
+# Presence slots + ROOM_ID keys (banner / pin; x0019 pin supersedes x0017).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT/client"
@@ -18,6 +18,7 @@ cargo test -q -p host-server -- \
   sim::tests::release_slot_clears_grab_and_resets_spawn \
   presence_reclaim_tests::reclaim_stale_frees_slot_for_reuse \
   presence_reclaim_tests::same_sub_before_ttl_keeps_slot \
+  presence_reclaim_tests::reclaim_sub_frees_immediately \
   --exact
 
 cargo test -q -p client -- \
@@ -47,8 +48,8 @@ check_host_banner() {
   fi
 
   local ok=1
-  if ! grep -qE "host-server x0017 starting" "$log"; then
-    echo "smoke-presence-slots: missing host-server x0017 start banner (ROOM_ID=$room)"
+  if ! grep -qE "host-server x0019 starting" "$log"; then
+    echo "smoke-presence-slots: missing host-server x0019 start banner (ROOM_ID=$room)"
     ok=0
   fi
   if ! grep -q "user_roots=3..6" "$log"; then
@@ -63,8 +64,8 @@ check_host_banner() {
     echo "smoke-presence-slots: missing presence=${expect_presence} in banner"
     ok=0
   fi
-  if ! grep -q "protocol_pin=alchemy-protocol/0.8.0-x0017" "$log"; then
-    echo "smoke-presence-slots: missing PROTOCOL_PIN 0.8.0-x0017"
+  if ! grep -q "protocol_pin=alchemy-protocol/0.9.0-x0019" "$log"; then
+    echo "smoke-presence-slots: missing PROTOCOL_PIN 0.9.0-x0019"
     ok=0
   fi
   if ! grep -q "published PresenceState revision=0" "$log"; then
@@ -109,4 +110,4 @@ if [[ "$rc" -ne 0 ]]; then
   exit 1
 fi
 
-echo "smoke-presence-slots: ok (local + alpha keys; manual: stop a client ~3s → slot reclaim — see x0016/x0017)"
+echo "smoke-presence-slots: ok (local + alpha keys; Leave/liveliness = instant reclaim, TTL fallback — see x0019)"

@@ -24,6 +24,8 @@ message InputEvent {
   float aim_x = 8;
   float aim_y = 9;
   float aim_z = 10;
+  // Explicit leave (x0019). Host verifies token then reclaims Presence immediately; move/grab ignored.
+  bool leave = 11;
 }
 
 // Bit flags for InputEvent.buttons (Desktop x0009/x0013; VR Grab = grip / Select when dash closed).

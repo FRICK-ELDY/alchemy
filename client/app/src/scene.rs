@@ -5,6 +5,7 @@
 //!
 //! Guarantees: draw with caller-supplied view/proj; boxes 10..18; remote roots 3..6 (x0015).
 //! Non-guarantees: XR swapchain ownership, system_ui layout, avatar GLB.
+//! Leave / liveliness token ownership lives here; put/undeclare is `main::leave_room`.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -141,6 +142,8 @@ pub struct SharedState {
     pub assets_url: Arc<str>,
     /// Auth + Room Token gate (x0018). Intent publishes only when `room_token` is set.
     pub auth: Mutex<AuthGate>,
+    /// Zenoh liveliness token while joined (x0019). Drop/undeclare on leave.
+    pub liveliness: Mutex<Option<zenoh::liveliness::LivelinessToken>>,
     pub entities: Mutex<std::collections::HashMap<u32, EntityPose>>,
     pub look: Mutex<CameraLook>,
     pub intent: Mutex<MoveIntent>,
@@ -166,6 +169,9 @@ impl SharedState {
         if let Ok(mut auth) = self.auth.lock() {
             auth.room_token = None;
             auth.local_sub = None;
+        }
+        if let Ok(mut token) = self.liveliness.lock() {
+            *token = None;
         }
     }
 }

@@ -1,7 +1,8 @@
-//! Alchemy client — x0018 auth session shell + ROOM_ID keys / Presence / Grab / dash.
+//! Alchemy client — x0019 Leave / liveliness + auth shell / Presence / Grab / dash.
 //!
 //! Guarantees:
 //! - Home tab login / register / logout; Room Token only after auth (x0018)
+//! - Explicit Leave + Zenoh liveliness on join/logout (x0019); Intent TTL is host fallback
 //! - CI fallback: `AUTH_USER` or `ALCHEMY_AUTH_TOKEN` skips UI and joins
 //! - Subscribes to SceneManifest / PresenceState / RenderFrame; downloads blob; wgpu mesh
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
@@ -31,8 +32,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alchemy_protocol::{
-    frame_key, input_key, manifest_key, presence_key, validate_room_id, InputEvent, Message,
-    PresenceState, RenderFrame, SceneManifest, PROTOCOL_PIN,
+    frame_key, input_key, liveliness_key, manifest_key, presence_key, validate_room_id, InputEvent,
+    Message, PresenceState, RenderFrame, SceneManifest, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use auth::AuthGate;
@@ -381,6 +382,7 @@ fn spawn_input_publisher(
                     aim_x,
                     aim_y,
                     aim_z,
+                    leave: false,
                 };
                 if let Err(err) = publisher.put(event.encode_to_vec()).wait() {
                     log::warn!("input publish failed: {err}");
@@ -405,6 +407,66 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     Ok(())
 }
 
+/// Declare Zenoh liveliness for the current `local_sub` (x0019). No-op if not joined.
+pub fn declare_room_alive(shared: &SharedState, session: &zenoh::Session) -> Result<()> {
+    let sub = shared
+        .auth
+        .lock()
+        .ok()
+        .and_then(|g| g.local_sub.clone())
+        .context("declare liveliness: not joined")?;
+    if sub.contains('/') {
+        anyhow::bail!("Room Token sub must not contain '/' for liveliness key");
+    }
+    let key = liveliness_key(shared.room_id.as_ref(), &sub);
+    let token = session
+        .liveliness()
+        .declare_token(key.clone())
+        .wait()
+        .map_err(|e| anyhow::anyhow!("declare liveliness token failed: {e}"))?;
+    if let Ok(mut slot) = shared.liveliness.lock() {
+        *slot = Some(token);
+    }
+    log::info!("liveliness declared key={key}");
+    Ok(())
+}
+
+/// Explicit Leave put + liveliness undeclare + local clear (x0019).
+pub fn leave_room(shared: &SharedState, session: &zenoh::Session) {
+    let room_token = shared.auth.lock().ok().and_then(|g| g.room_token.clone());
+    if let Some(room_token) = room_token {
+        let key = input_key(shared.room_id.as_ref());
+        match session.declare_publisher(key.clone()).wait() {
+            Ok(publisher) => {
+                let event = InputEvent {
+                    room_token,
+                    client_time_ms: client_time_ms(),
+                    move_x: 0.0,
+                    move_y: 0.0,
+                    move_z: 0.0,
+                    buttons: 0,
+                    grab_entity_id: 0,
+                    aim_x: 0.0,
+                    aim_y: 0.0,
+                    aim_z: 0.0,
+                    leave: true,
+                };
+                if let Err(err) = publisher.put(event.encode_to_vec()).wait() {
+                    log::warn!("Leave InputEvent publish failed: {err}");
+                } else {
+                    log::info!("Leave InputEvent published on {key}");
+                }
+            }
+            Err(err) => log::warn!("Leave publisher declare failed: {err}"),
+        }
+    }
+    // Drop liveliness before clearing auth so host sees Delete promptly.
+    if let Ok(mut token) = shared.liveliness.lock() {
+        *token = None;
+    }
+    shared.leave_room_local();
+}
+
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -426,7 +488,7 @@ fn main() -> Result<()> {
     let silent = auth::try_silent_session(&auth_url).context("silent auth")?;
     let auth_mode = if silent.is_some() { "silent" } else { "ui" };
     log::info!(
-        "client x0018 starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
+        "client x0019 starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
     );
 
     let mut gate = AuthGate::default();
@@ -441,6 +503,7 @@ fn main() -> Result<()> {
         world_url: Arc::<str>::from(world_url),
         assets_url: Arc::<str>::from(assets_url.clone()),
         auth: Mutex::new(gate),
+        liveliness: Mutex::new(None),
         entities: Mutex::new(HashMap::new()),
         look: Mutex::new(Default::default()),
         intent: Mutex::new(Default::default()),
@@ -465,6 +528,15 @@ fn main() -> Result<()> {
     let (blake3_tx, blake3_rx) = mpsc::sync_channel::<String>(1);
 
     let session = open_zenoh().context("open zenoh session")?;
+    if shared
+        .auth
+        .lock()
+        .ok()
+        .map(|g| g.is_joined())
+        .unwrap_or(false)
+    {
+        declare_room_alive(&shared, &session).context("silent liveliness")?;
+    }
     spawn_manifest_subscriber(
         session.clone(),
         manifest_key_expr,

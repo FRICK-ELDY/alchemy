@@ -23,6 +23,7 @@ use super::input::{
 use super::loco::{combine_turn_axes, intent_from_sticks, stage_move_to_world, STICK_DEADZONE};
 use super::render_model::{enable_if_available, RenderModelCache};
 use crate::host_control;
+use crate::leave_room;
 use crate::mesh::{CpuMesh, CpuSubmesh};
 use crate::scene::{EntityPose, MoveIntent, SharedState, BOX_HALF_EXTENT, MESH_ENTITY_ID};
 use crate::system_ui::{SystemUi, UiAction};
@@ -1124,12 +1125,17 @@ pub fn run_openxr(
                                 ui.rebuild();
                             }
                             UiAction::AuthLogout => {
+                                if let Some(ref z) = zenoh {
+                                    leave_room(&shared, z);
+                                } else {
+                                    shared.leave_room_local();
+                                }
                                 if let Ok(mut gate) = shared.auth.lock() {
                                     gate.clear_session();
                                 }
-                                shared.leave_room_local();
                                 ui.state.home_logged_in_as = None;
-                                ui.state.home_status = "Signed out".into();
+                                ui.state.home_status =
+                                    "Signed out — Leave sent (host reclaim immediate)".into();
                                 ui.rebuild();
                             }
                             UiAction::None => {}

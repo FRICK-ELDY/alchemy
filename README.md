@@ -5,11 +5,11 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（x0018 / Home アカウント殻）
+## 現状（x0019 / 明示 Leave + liveliness）
 
-`host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（最大 **4**）・**user_root entity 3..6**・**PresenceState**・**Intent TTL 解放**・**`ROOM_ID` Zenoh キー**・**立方体 ×9**・**30Hz デルタ**。  
-`client` は Dash 下タブ **Home / Settings / Exit**。Home で **login / 最小 register / logout**（Desktop キーボード）。未ログインでは Room Token なし（Intent 無送信）。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` は CI サイレント login。Desktop Grab / XR Grab / Noclip は従来どおり。  
-**LAN:** zenohd `0.0.0.0:7447`、**`ZENOH_CONNECT`**。Slice 次 ID = **`x0019`**。[roadmap](.workspace/roadmap/README.md)。
+`host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（最大 **4**）・**user_root entity 3..6**・**PresenceState**・**Leave / liveliness / Intent TTL 解放**・**`ROOM_ID` Zenoh キー**・**立方体 ×9**・**30Hz デルタ**。  
+`client` は Dash 下タブ **Home / Settings / Exit**。Home で **login / 最小 register / logout**（logout は Leave + liveliness undeclare）。未ログインでは Room Token なし。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` は CI サイレント login。Desktop Grab / XR Grab / Noclip は従来どおり。  
+**LAN:** zenohd `0.0.0.0:7447`、**`ZENOH_CONNECT`**。Slice 次 ID = **`x001a`**。[roadmap](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|
@@ -103,13 +103,14 @@ bash .scripts/smoke-system-ui.sh       # system_ui unit + host_control コンパ
 bash .scripts/smoke-openxr.sh          # OpenXR モジュール unit + Desktop フォールバック compile
 bash .scripts/smoke-desktop-noclip.sh  # Manifest Noclip + user_root（zenohd + auth/world 必須）
 bash .scripts/smoke-lan-two-client.sh   # legacy x0014 units (still useful)
-bash .scripts/smoke-presence-slots.sh   # x0017 ROOM_ID keys + Presence TTL + user_roots 3..6 banner
+bash .scripts/smoke-presence-slots.sh   # Presence slots + ROOM_ID keys + pin banner
 bash .scripts/smoke-client-auth.sh      # x0018 Home units + login→logout HTTP
+bash .scripts/smoke-leave-liveliness.sh # x0019 Leave + liveliness units + host banner
 # 3 client（同マシン・既定 ROOM_ID=local）:
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=alice cargo run -p client
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=bob cargo run -p client
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=carol cargo run -p client
-# 別部屋: host/client とも ROOM_ID=alpha（beta とはキー隔離）。切断後 ~3s でスロット解放（x0016）。
+# 別部屋: host/client とも ROOM_ID=alpha（beta とはキー隔離）。logout → 即時 reclaim（x0019）；切断のみは liveliness / TTL。
 # LAN ノートPC: AUTH/WORLD/ASSETS_URL + ZENOH_CONNECT=tcp/<PC_IP>:7447 / AUTH_USER=bob|carol
 #   （PC 側 Docker は BIND_ALL=true。Windows ファイアウォールで 7447 と 4002–4004 を許可）
 # ESC ダッシュ / Home タブ / XR Grab / Noclip。Desktop 強制: ALCHEMY_FORCE_DESKTOP=1
