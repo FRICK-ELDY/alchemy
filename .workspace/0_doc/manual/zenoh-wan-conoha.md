@@ -125,9 +125,9 @@ cargo run -p host-server
 ### 外 client（別ネットワーク）
 
 ```powershell
-$env:AUTH_URL = "https://auth.your-domain.com"
-$env:WORLD_URL = "https://world.your-domain.com"
-$env:ASSETS_URL = "https://assets.your-domain.com"
+$env:AUTH_URL = "https://auth.example.tld"
+$env:WORLD_URL = "https://world.example.tld"
+$env:ASSETS_URL = "https://assets.example.tld"
 $env:ZENOH_CONNECT = "tcp/<VPS_IP>:7447"
 $env:ROOM_ID = "local"
 $env:ALCHEMY_FORCE_DESKTOP = "1"

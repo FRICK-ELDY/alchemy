@@ -61,9 +61,9 @@ export ZENOH_CONNECT=tcp/<VPS_IP>:7447
 cd client && cargo run -p host-server
 
 # 外 client（x001a URL + Zenoh）
-export AUTH_URL=https://auth.your-domain.com
-export WORLD_URL=https://world.your-domain.com
-export ASSETS_URL=https://assets.your-domain.com
+export AUTH_URL=https://auth.example.tld
+export WORLD_URL=https://world.example.tld
+export ASSETS_URL=https://assets.example.tld
 export ZENOH_CONNECT=tcp/<VPS_IP>:7447
 ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 
