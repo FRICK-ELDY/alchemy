@@ -24,6 +24,7 @@ services:
       ASSETS_S3_SECRET_ACCESS_KEY: ${ASSETS_S3_SECRET_ACCESS_KEY:-}
       ASSETS_S3_REGION: ${ASSETS_S3_REGION:-auto}
       ASSETS_S3_PREFIX: ${ASSETS_S3_PREFIX:-cas/}
+      ASSETS_S3_PRESIGN_TTL_SECONDS: ${ASSETS_S3_PRESIGN_TTL_SECONDS:-300}
     volumes:
       - .:/app
       - assets_deps:/app/deps

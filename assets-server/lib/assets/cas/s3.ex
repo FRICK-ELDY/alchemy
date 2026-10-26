@@ -1,6 +1,6 @@
 defmodule Assets.CAS.S3 do
   @moduledoc """
-  S3-compatible CAS (Cloudflare R2, QuObjects, …) keyed by BLAKE3 hex.
+  S3-compatible CAS (Cloudflare R2, QuObjects, �c) keyed by BLAKE3 hex.
   """
 
   @behaviour Assets.CAS.Backend
@@ -48,6 +48,18 @@ defmodule Assets.CAS.S3 do
     end
   end
 
+  @doc """
+  Locally signed GET URL for the CAS object (no network). Used for 302 redirect (x001d).
+  """
+  @spec presign_get(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def presign_get(blake3_hex, opts \\ []) when is_binary(blake3_hex) do
+    cfg = s3_config!()
+    ttl = Keyword.get(opts, :expires_in, Map.get(cfg, :presign_ttl_seconds, 300))
+    config = ExAws.Config.new(:s3, aws_config(cfg))
+
+    ExAws.S3.presigned_url(config, :get, cfg.bucket, object_key(blake3_hex), expires_in: ttl)
+  end
+
   @spec object_key(String.t()) :: String.t()
   def object_key(blake3_hex) when is_binary(blake3_hex) do
     prefix = s3_config!().prefix
@@ -87,7 +99,7 @@ defmodule Assets.CAS.S3 do
     Application.fetch_env!(:assets, :cas_s3)
   end
 
-  # Flat keys (host/scheme/port) — ExAws merges these for custom endpoints (R2).
+  # Flat keys (host/scheme/port) ? ExAws merges these for custom endpoints (R2).
   # Nested `:s3` alone can drop the host and yield broken URLs like `https:/bucket/...`.
   defp aws_config(cfg) do
     [

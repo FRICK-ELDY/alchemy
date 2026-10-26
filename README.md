@@ -5,15 +5,15 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（x001c / assets CAS → R2）
+## 現状（x001d / R2 署名 URL 直結）
 
 `host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（最大 **4**）・**user_root entity 3..6**・**PresenceState**・**Leave / liveliness / Intent TTL 解放**・**`ROOM_ID` Zenoh キー**・**立方体 ×9**・**30Hz デルタ**。  
 `client` は Dash 下タブ **Home / Settings / Exit**。Home で **login / 最小 register / logout**（logout は Leave + liveliness undeclare）。未ログインでは Room Token なし。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` は CI サイレント login。Desktop Grab / XR Grab / Noclip は従来どおり。  
 **LAN:** zenohd `0.0.0.0:7447`、**`ZENOH_CONNECT`**。  
 **HTTPS（x001a）:** Cloudflare Tunnel で auth / world / assets を公開（[`edge/cloudflared/`](edge/cloudflared/)）。  
 **WAN（x001b）:** ConoHa 上 zenohd + IP allowlist（[`zenoh-router/config.wan.json5`](zenoh-router/config.wan.json5) · [手順書](.workspace/0_doc/manual/zenoh-wan-conoha.md)）。  
-**Assets（x001c）:** CAS 本体を local / **R2（S3 互換）** 切替（メタ・Quota は assets-server）。  
-空き ID = **`x001d`**。[roadmap](.workspace/roadmap/README.md)。
+**Assets（x001c/x001d）:** CAS を local / **R2** 切替。s3 時 GET は **署名 URL 302**（client → R2 直 DL）。  
+空き ID = **`x001e`**。[roadmap](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|
@@ -102,7 +102,7 @@ AUTH_USER=alice ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 # 4) smoke（任意）
 make smoke-assets                      # または bash .scripts/smoke-assets.sh
 bash .scripts/smoke-assets-glb.sh      # Coin GLB → CAS
-make smoke-assets-r2                   # x001c: CAS=s3（R2 env + サーバー要）
+make smoke-assets-r2                   # x001c/x001d: CAS=s3 + 302 presign（R2 env 要）
 bash .scripts/smoke-manifest-delta.sh  # Manifest + デルタ（zenohd 必須）
 bash .scripts/smoke-rapier-host.sh     # Rapier 60Hz / net 30Hz（zenohd 必須）
 bash .scripts/smoke-system-ui.sh       # system_ui unit + host_control コンパイル

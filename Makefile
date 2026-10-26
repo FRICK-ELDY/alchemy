@@ -11,7 +11,7 @@ help:
 	@echo "  make ci-world"
 	@echo "  make ci-assets"
 	@echo "  make smoke-assets      # local CAS API smoke (auth+assets up)"
-	@echo "  make smoke-assets-r2   # x001c R2 CAS API smoke (ASSETS_CAS_BACKEND=s3)"
+	@echo "  make smoke-assets-r2   # x001c/x001d R2 CAS + 302 presign smoke (BACKEND=s3)"
 	@echo ""
 	@echo "Dev: see README.md"
 

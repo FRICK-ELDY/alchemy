@@ -88,6 +88,35 @@ defmodule Assets.Blobs do
     end
   end
 
+  @doc """
+  Resolve blob for HTTP GET: local proxies bytes; s3 returns a signed redirect URL (x001d).
+  """
+  @spec fetch(String.t()) ::
+          {:ok, binary(), BlobRef.t()}
+          | {:redirect, String.t(), BlobRef.t()}
+          | {:error, :not_found | :presign_failed}
+  def fetch(blake3) when is_binary(blake3) do
+    case Repo.get(BlobRef, blake3) do
+      nil ->
+        {:error, :not_found}
+
+      %BlobRef{} = blob ->
+        case Application.fetch_env!(:assets, :cas_backend) do
+          :local ->
+            case CAS.read(blake3) do
+              {:ok, data} -> {:ok, data, blob}
+              {:error, _} -> {:error, :not_found}
+            end
+
+          :s3 ->
+            case Assets.CAS.S3.presign_get(blake3) do
+              {:ok, url} -> {:redirect, url, blob}
+              {:error, _} -> {:error, :presign_failed}
+            end
+        end
+    end
+  end
+
   @spec quota(String.t()) :: %{used_bytes: non_neg_integer(), limit_bytes: pos_integer()}
   def quota(owner_sub) when is_binary(owner_sub) do
     limit = Application.fetch_env!(:assets, :quota_limit_bytes)

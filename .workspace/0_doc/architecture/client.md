@@ -21,7 +21,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | Zenoh: Manifest / Presence / frame Subscribe、input Publish（キーは `ROOM_ID`・x0017） | ルーター機能（他人の通信の中継は禁止）・テナント名前空間 |
-| Manifest の blake3 → assets download（失敗時 fixture）→ BLAKE3 → wgpu | LOD / KTX2 / マテリアル本格 / スキン |
+| Manifest の blake3 → assets GET（s3 時は 302 追従・x001d）→ BLAKE3 → wgpu | LOD / KTX2 / マテリアル本格 / スキン |
 | ローカル entity 表への upsert/remove。Coin=1、user_root=3..6、boxes=10..18 | 署名付き Manifest / world 台帳 |
 | Desktop: WASD/Space/C → Intent（look yaw 相対）。クリックで Confined（失敗時 Locked）→ マウスルック。look 中 RMB → Grab（x0013） | 感度 UI / クロスヘア必須 |
 | Presence で自 entity 解決→カメラ；他 root は色付きボックス（x0015）。欠落で unset（x0016）。Home タブ login/register/logout（x0018）。logout は Leave + liveliness undeclare（x0019）。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` は CI サイレント login。`ZENOH_CONNECT` LAN | 5人以上・アバター GLB・XR 文字入力 |

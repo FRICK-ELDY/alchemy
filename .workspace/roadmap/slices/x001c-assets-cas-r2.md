@@ -1,6 +1,6 @@
 # x001c — assets CAS → R2（S3 互換バックエンド）
 
-> **ID:** `x001c` · **slug:** `assets-cas-r2` · **status:** `active` · **area:** `[assets, docs]` · **depends_on:** `[x0003, x001a]`
+> **ID:** `x001c` · **slug:** `assets-cas-r2` · **status:** `done` · **area:** `[assets, docs]` · **depends_on:** `[x0003, x001a]`
 
 目標: assets-server の **不変バイナリ置き場**をローカルディスクだけでなく **S3 互換（Cloudflare R2）**に切替可能にする。メタ（BlobRef / Quota）・JWT 門番・既存 HTTP API は維持し、client の `ASSETS_URL` 契約は変えない（GET/PUT は引き続き assets-server 経由＝代理）。
 
@@ -35,7 +35,7 @@
 
 ## やらない（後続）
 
-- 署名付き URL / 302 で client → R2 直 DL（Egress 0 を最大化する縦）
+- 署名付き URL / 302 で client → R2 直 DL → **[x001d](x001d-assets-r2-presign.md)**
 - Vault / Folder / Commit
 - QuObjects（NAS）本番運用（S3 互換なら同一 backend で後から可）
 - エッジ JWT / Zenoh ACL
@@ -74,7 +74,7 @@ make smoke-assets-r2
 
 - `Assets.CAS` は facade。Local は現行ディスク、S3 は `ex_aws` + `ex_aws_s3`
 - `put_if_absent`: HEAD（または同等）で存在確認 → 無ければ PUT。CAS なので競合時は同一バイト前提
-- ダウンロードは当面 **assets-server が R2 から読んで返す**（API 契約固定）。直結は次 Slice
+- ダウンロード直結（302）は **[x001d](x001d-assets-r2-presign.md)**
 - Docker 既定は `local` のまま。R2 は compose override / 手元 env
 
 ← [目次](../README.md)

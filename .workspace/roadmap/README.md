@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x001d`**；x001c active）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x001e`**；x001d active）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -77,9 +77,10 @@ depends_on: [x0006]
 | x0019 | — | done | 明示 Leave / Zenoh liveliness | [x0019-explicit-leave-liveliness.md](slices/x0019-explicit-leave-liveliness.md) |
 | x001a | — | done | HTTPS 入口（Cloudflare Tunnel） | [x001a-https-edge-tunnel.md](slices/x001a-https-edge-tunnel.md) |
 | x001b | — | done | Zenoh WAN（ConoHa zenohd + IP allowlist） | [x001b-zenoh-wan-conoha.md](slices/x001b-zenoh-wan-conoha.md) |
-| x001c | — | active | assets CAS → R2（S3 互換バックエンド） | [x001c-assets-cas-r2.md](slices/x001c-assets-cas-r2.md) |
+| x001c | — | done | assets CAS → R2（S3 互換バックエンド） | [x001c-assets-cas-r2.md](slices/x001c-assets-cas-r2.md) |
+| x001d | — | active | R2 署名 URL 直結（GET 302） | [x001d-assets-r2-presign.md](slices/x001d-assets-r2-presign.md) |
 
-**現在の次:** **x001c**（assets CAS → R2）。次の空き ID = **`x001d`**
+**現在の次:** **x001d**（R2 署名 URL 直結）。次の空き ID = **`x001e`**
 
 ## 関連
 
