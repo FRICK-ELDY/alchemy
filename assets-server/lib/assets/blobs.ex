@@ -7,6 +7,7 @@ defmodule Assets.Blobs do
 
   alias Assets.Blobs.BlobRef
   alias Assets.CAS
+  alias Assets.CAS.S3, as: CasS3
   alias Assets.Quota.QuotaLedger
   alias Assets.Repo
 
@@ -97,23 +98,29 @@ defmodule Assets.Blobs do
           | {:error, :not_found | :presign_failed}
   def fetch(blake3) when is_binary(blake3) do
     case Repo.get(BlobRef, blake3) do
-      nil ->
-        {:error, :not_found}
+      nil -> {:error, :not_found}
+      %BlobRef{} = blob -> fetch_blob(blob, blake3)
+    end
+  end
 
-      %BlobRef{} = blob ->
-        case Application.fetch_env!(:assets, :cas_backend) do
-          :local ->
-            case CAS.read(blake3) do
-              {:ok, data} -> {:ok, data, blob}
-              {:error, _} -> {:error, :not_found}
-            end
+  defp fetch_blob(blob, blake3) do
+    case Application.fetch_env!(:assets, :cas_backend) do
+      :local -> fetch_local(blob, blake3)
+      :s3 -> fetch_s3_redirect(blob, blake3)
+    end
+  end
 
-          :s3 ->
-            case Assets.CAS.S3.presign_get(blake3) do
-              {:ok, url} -> {:redirect, url, blob}
-              {:error, _} -> {:error, :presign_failed}
-            end
-        end
+  defp fetch_local(blob, blake3) do
+    case CAS.read(blake3) do
+      {:ok, data} -> {:ok, data, blob}
+      {:error, _} -> {:error, :not_found}
+    end
+  end
+
+  defp fetch_s3_redirect(blob, blake3) do
+    case CasS3.presign_get(blake3) do
+      {:ok, url} -> {:redirect, url, blob}
+      {:error, _} -> {:error, :presign_failed}
     end
   end
 
