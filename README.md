@@ -5,15 +5,17 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（x001d / R2 署名 URL 直結）
+## 現状（x0020 / Desktop client 手通し）
 
 `host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（最大 **4**）・**user_root entity 3..6**・**PresenceState**・**Leave / liveliness / Intent TTL 解放**・**`ROOM_ID` Zenoh キー**・**立方体 ×9**・**30Hz デルタ**。  
 `client` は Dash 下タブ **Home / Settings / Exit**。Home で **login / 最小 register / logout**（logout は Leave + liveliness undeclare）。未ログインでは Room Token なし。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` は CI サイレント login。Desktop Grab / XR Grab / Noclip は従来どおり。  
+**Desktop 手通し（x0020）:** 日常スタック（`:4002/:4003/:4004` + zenohd `:7447`）が正本。手順は下記「Desktop 手通し」、env 例は [`client/env.desktop.example`](client/env.desktop.example)、機械検証は `make smoke-desktop-handthrough`。  
 **LAN:** zenohd `0.0.0.0:7447`、**`ZENOH_CONNECT`**。  
 **HTTPS（x001a）:** Cloudflare Tunnel で auth / world / assets を公開（[`edge/cloudflared/`](edge/cloudflared/)）。  
 **WAN（x001b）:** ConoHa 上 zenohd + IP allowlist（[`zenoh-router/config.wan.json5`](zenoh-router/config.wan.json5) · [手順書](.workspace/0_doc/manual/zenoh-wan-conoha.md)）。  
 **Assets（x001c/x001d）:** CAS を local / **R2** 切替。s3 時 GET は **署名 URL 302**（client → R2 直 DL）。  
-空き ID = **`x001e`**。[roadmap](.workspace/roadmap/README.md)。
+**Hermetic E2E（x001f）:** `docker-compose.e2e.yml`（`:4102` 系 / Zenoh `:7547`）。Desktop をそちらへ向ける場合は env 例のコメントを参照。  
+空き ID = **`x0021`**。[roadmap](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|
@@ -80,7 +82,9 @@ sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev \
   libx11-dev libxcursor-dev libxi-dev libxrandr-dev
 ```
 
-## 起動（macOS / Linux / WSL）
+## Desktop 手通し（x0020・正本）
+
+日常スタック（`:4002/:4003/:4004` + zenohd `:7447`）で Desktop まで通す。env 一覧は [`client/env.desktop.example`](client/env.desktop.example)。
 
 ```bash
 # 1) auth + world + assets
@@ -91,15 +95,28 @@ cd assets-server && docker compose up -d && cd ..
 # 2) zenohd
 zenohd -c zenoh-router/config.json5
 
-# 3) host + client（別ターミナル）
+# --- 次はどちらか一方（同一 ROOM_ID で dual host にしない）---
+
+# 3a) 手動手通し: host + Desktop client（別ターミナル）
 cd client
 cargo run -p host-server
 # UI login: omit AUTH_USER → Home tab opens
 ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
-# CI silent:
-AUTH_USER=alice ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
+# silent (debug は AUTH_USER のみ可 / release は password または token 必須):
+AUTH_USER=alice AUTH_PASSWORD=Password1 ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
+# または: ALCHEMY_AUTH_TOKEN=<access_jwt> ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 
-# 4) smoke（任意）
+# 3b) 機械検証（3a の代替。既存 host を止めてから。スタック未起動は赤）
+#    assert: host Token/Manifest/physics + client build/units（GUI・login→描画はしない）
+make smoke-desktop-handthrough
+```
+
+Hermetic e2e（x001f）に Desktop を向ける場合は `env.desktop.example` のコメント（`:4102` 系 / Zenoh `:7547`）を export。GUI CI は必須化していない。
+
+## 起動（その他 smoke / LAN / edge）
+
+```bash
+# smoke（任意）
 make smoke-assets                      # または bash .scripts/smoke-assets.sh
 bash .scripts/smoke-assets-glb.sh      # Coin GLB → CAS
 make smoke-assets-r2                   # x001c/x001d: CAS=s3 + 302 presign（R2 env 要）
@@ -108,6 +125,7 @@ bash .scripts/smoke-rapier-host.sh     # Rapier 60Hz / net 30Hz（zenohd 必須�
 bash .scripts/smoke-system-ui.sh       # system_ui unit + host_control コンパイル
 bash .scripts/smoke-openxr.sh          # OpenXR モジュール unit + Desktop フォールバック compile
 bash .scripts/smoke-desktop-noclip.sh  # Manifest Noclip + user_root（zenohd + auth/world 必須）
+make smoke-desktop-handthrough         # x0020: auth/world/zenoh + host Token/Manifest/physics + client build
 bash .scripts/smoke-lan-two-client.sh   # legacy x0014 units (still useful)
 bash .scripts/smoke-presence-slots.sh   # Presence slots + ROOM_ID keys + pin banner
 bash .scripts/smoke-client-auth.sh      # x0018 Home units + login→logout HTTP
@@ -139,9 +157,9 @@ make ci-e2e                             # x001f hermetic: compose 縦 login→to
 # OpenXR ローダー明示: ALCHEMY_OPENXR_LOADER=...
 ```
 
-環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID`（既定 `local`） / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（サイレント login） / `ZENOH_CONNECT` / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_PID` / `ALCHEMY_FORCE_DESKTOP` / `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。
+環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID`（既定 `local`） / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（サイレント login） / `ZENOH_CONNECT` / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_PID` / `ALCHEMY_FORCE_DESKTOP` / `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。Desktop 正本例: [`client/env.desktop.example`](client/env.desktop.example)。
 
-詳細は [`.workspace/roadmap/`](.workspace/roadmap/README.md)。
+詳細は [`.workspace/roadmap/`](.workspace/roadmap/README.md) · Slice [x0020](.workspace/roadmap/slices/x0020-desktop-handthrough.md)。
 
 ## ローカル CI
 
@@ -156,6 +174,7 @@ make ci-auth
 make ci-world
 make ci-assets
 make ci-e2e   # x001f（compose スタック起動後）
+make smoke-desktop-handthrough  # x0020（日常スタック起動後）
 ```
 
 ホストの `mix` で auth を回す場合のみ:
