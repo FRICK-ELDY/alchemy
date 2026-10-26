@@ -9,7 +9,7 @@
 | ブロック | 役割 |
 |:---|:---|
 | **1. 外部決済・公開エッジ ＆ Open Zenoh Relay** | MoR/Stripe・Cloudflare（WAF/CDN/R2）・公式/サードパーティ zenoh-router・連合ノード |
-| **2. 運営側コアインフラ** | 自宅 Proxmox 上の auth / assets / world(+verifier) / billing / market・DB・貸し出し host プール・NAS |
+| **2. 運営側コアインフラ** | 拠点 Proxmox 上の auth / assets / world(+verifier) / billing / market・DB・貸し出し host プール・NAS |
 | **3. 共通契約層** | Protobuf ワイヤ契約・shared-sim / host-server・Dual Representation |
 | **4. ホストユーザー端末** | launcher・ローカル host-server・client（OSC 受信・Dual Editor・LOD ビルド） |
 | **5. 参加プレイヤー ＆ マルチプラットフォーム** | Trusted メンバーの 1対1 P2P・外部ゲストのリレー経由・展開ロードマップ |
@@ -49,7 +49,7 @@ flowchart TB
     %% ====================================================================================
     %% 1. 外部決済・クラウドエッジ ＆ オープン Zenoh リレー経済圏レイヤー
     %% ====================================================================================
-    subgraph ExternalAndEdgeLayer["1. 外部決済・公開エッジ防波堤 ＆ Open Zenoh Relay 経済圏レイヤー (自宅IP完全秘匿)"]
+    subgraph ExternalAndEdgeLayer["1. 外部決済・公開エッジ防波堤 ＆ Open Zenoh Relay 経済圏レイヤー (拠点IP完全秘匿)"]
         direction TB
 
         subgraph PaymentCloud["外部決済プロバイダ (MoR / Stripe API)"]
@@ -57,7 +57,7 @@ flowchart TB
         end
 
         subgraph CloudflareEdge["Cloudflare ネットワーク (WAF / DDoS防御 / SSL終端 / CDN)"]
-            CFWAF["Cloudflare WAF & CDN Proxy<br/>全HTTPS API通信の窓口 (自宅ProxmoxのIPを秘匿)"]:::cf
+            CFWAF["Cloudflare WAF & CDN Proxy<br/>全HTTPS API通信の窓口 (拠点ProxmoxのIPを秘匿)"]:::cf
             CFR2[("Cloudflare R2 (CAS選択肢①)<br/>・S3互換オブジェクトストレージ<br/>・下り通信量(Egress)完全無料<br/>・バンドル化でClass A/B API回数を極小化")]:::storage
         end
 
@@ -74,10 +74,10 @@ flowchart TB
     end
 
     %% ====================================================================================
-    %% 2. 運営側コアインフラ (自宅ネットワーク)
+    %% 2. 運営側コアインフラ (拠点ネットワーク)
     %%     ※Stage 1(個人: SQLite単一構成) から Stage 4(大規模: PostgreSQLクラスタ) まで同一コードで伸縮
     %% ====================================================================================
-    subgraph OperatorHomeInfra["2. 運営側コアインフラ (自宅 @nifty光 10GbE ➔ NTT 10G ONU ➔ YAMAHA RTX1300 [NAT 65,534セッション] ➔ 2.5G/10GbE LAN)"]
+    subgraph OperatorHomeInfra["2. 運営側コアインフラ (拠点 @nifty光 10GbE ➔ NTT 10G ONU ➔ YAMAHA RTX1300 [NAT 65,534セッション] ➔ 2.5G/10GbE LAN)"]
         direction TB
 
         subgraph ProxmoxServer["Proxmox VE サーバー (PC1: Ryzen 7 5800H [8C/16T] / 32GB RAM — Stage 1〜4 対応)"]
@@ -86,7 +86,7 @@ flowchart TB
             %% --- CT1: 通信ブリッジ ---
             subgraph CT1_Bridge["CT 1: 通信ブリッジ層 (Ubuntu LXC / 1Core / 1GB)"]
                 Cloudflared["cloudflared (Cloudflare Tunnel)<br/>RTX1300のポート開放ゼロで内側からHTTPS公開"]:::cf
-                HomeZenoh["ローカル zenoh-router (zenohd)<br/>・自宅LAN内(作業用PC等)を 0.5ms で高速ルーティング<br/>・ConoHa VPS (または指名リレー屋) へ外向きブリッジ接続"]:::vps
+                HomeZenoh["ローカル zenoh-router (zenohd)<br/>・拠点LAN内(作業用PC等)を 0.5ms で高速ルーティング<br/>・ConoHa VPS (または指名リレー屋) へ外向きブリッジ接続"]:::vps
             end
 
             %% --- CT2: Elixir コア & オプション群 ---
@@ -135,8 +135,8 @@ flowchart TB
             CloudHosts <===>|"30Hz(可変) RenderFrame"| HomeZenoh
         end
 
-        %% --- マシン②：自宅 NAS ---
-        subgraph HomeNAS["自宅 NAS: QNAP TS-632X-4G (CAS選択肢②：10GbE SFP+ 接続)"]
+        %% --- マシン②：拠点 NAS ---
+        subgraph HomeNAS["拠点 NAS: QNAP TS-632X-4G (CAS選択肢②：10GbE SFP+ 接続)"]
             QNAPStorage[("QuObjects (S3互換オブジェクトストレージ)<br/>・アセット不変バイナリ (GLB / KTX2 / Audio) 保管<br/>・Proxmox コンテナ ＆ DB の自動バックアップ (UPS連動保護)<br/>※assets-server の環境変数 (.env) 1行で Cloudflare R2 と自在に切替・併用可能")]:::storage
         end
     end
@@ -206,7 +206,7 @@ flowchart TB
 
             TrustedMembers["自サーバー登録メンバー / 相互フレンド (Trusted Peers — 9人)<br/>・client + 待機中のローカル host-server<br/>・【1対1 ダイレクトP2P (QUIC Hole Punching)】:<br/> 信頼関係がある仲間同士は、音声(Opus)・フルトラ表情・P2Pキャッシュを<br/> ルーターを通さず1対1で直接送受信 (※他人の通信の中継＝サブルーター化は絶対しない)<br/>・【スマートホスト昇格待機】:<br/> client_info で『ホスト引き受けON』かつ高スペックなメンバーBは、<br/> ホストAが終了/突然死した瞬間に直前の受信フレームから0秒で新ホストへ自動昇格"]:::member
 
-            ExternalGuests["外部ゲストアカウント (Untrusted / 非フレンド — 5人)<br/>・client (または Webブラウザ / Quest単体)<br/>・【IP秘匿リレー経由】:<br/> 見知らぬゲストに対してはお互いの自宅IPアドレスを隠すため、<br/> ダイレクトP2Pは使わず必ず『zenoh-router (ConoHa VPS / 公認リレー屋)』を経由<br/>・入室した瞬間に有料アバター含む全員の姿を R2 / リレーキャッシュから表示"]:::guest
+            ExternalGuests["外部ゲストアカウント (Untrusted / 非フレンド — 5人)<br/>・client (または Webブラウザ / Quest単体)<br/>・【IP秘匿リレー経由】:<br/> 見知らぬゲストに対してはお互いの拠点IPアドレスを隠すため、<br/> ダイレクトP2Pは使わず必ず『zenoh-router (ConoHa VPS / 公認リレー屋)』を経由<br/>・入室した瞬間に有料アバター含む全員の姿を R2 / リレーキャッシュから表示"]:::guest
         end
 
         subgraph TargetPlatforms["単一 Pure Rust コードベースからのマルチプラットフォーム展開ロードマップ (Step 1〜5)"]
@@ -227,7 +227,7 @@ flowchart TB
     StripeMoR <===>|"① コイン購入決済 / Webhook通知"| BillingServer
     StripeMoR ===>|"② 月末SLA達成確認後、サブスクの30%をリレー貸し屋へ・売上をクリエイターへ報酬振込"| ThirdPartyRelay & MarketServer
 
-    %% 2. HTTPS API 通信 (Cloudflare Tunnel 経由で自宅IP完全秘匿)
+    %% 2. HTTPS API 通信 (Cloudflare Tunnel 経由で拠点IP完全秘匿)
     ClientMenuUI & TrustedMembers & ExternalGuests ===>|"③ HTTPS REST API (ログインJWT / 規約同意 / World一覧 / Room Token取得 / 買い物)"| CFWAF
     CFWAF ===>|"Cloudflare Tunnel (ポート開放不要)"| Cloudflared
     WorldServer <===>|"④ S2S HTTPS 連合 (World一覧・JWKS・Marketカタログ交換)"| FedNodeB
@@ -235,12 +235,12 @@ flowchart TB
 
     %% 3. アセットLODビルド保存 ＆ R2 / NAS 配信 (ホストやルーターを一切圧迫しない直結経路)
     ClientAssetAndCache ===>|"⑤ 自PCでビルドしたPC版+Quest軽量LODをGit Commit (Quota検査)"| AssetsServer
-    AssetsServer ===>|"⑥ S3互換APIで保存 (.env 1行でR2と自宅NASを切替)"| CFR2 & QNAPStorage
+    AssetsServer ===>|"⑥ S3互換APIで保存 (.env 1行でR2と拠点NASを切替)"| CFR2 & QNAPStorage
     CFR2 & QNAPStorage -.->|"⑦ 重い3D/画像バイナリはCDN/S3から直接高速DL (Egress 0円・ホスト負荷 0)"| ClientAssetAndCache & TrustedMembers & ExternalGuests
 
     %% 4. Zenoh 空間物理同期 (60Hz内部計算 ➔ 30Hz可変デルタ RenderFrame 配信)
     LocalHostEngine ===>|"⑧ 30Hz(20/30/60Hz可変) デルタ RenderFrame(binary64) を1回だけPublish"| HomeZenoh
-    HomeZenoh <===>|"⑨ ブリッジ接続 (自宅から外向き接続)"| OfficialVPS & ThirdPartyRelay
+    HomeZenoh <===>|"⑨ ブリッジ接続 (拠点から外向き接続)"| OfficialVPS & ThirdPartyRelay
     OfficialVPS & ThirdPartyRelay ===>|"⑩ 全参加者へ一斉配信 (Fan-out) ＆ verifier が抜き打ち監査"| TrustedMembers & ExternalGuests & VerifierApp
 
     %% 5. 音声 (Zenoh Audio Streaming)・フルトラ表情・キャッシュのハイブリッド経路 (host-server バイパス)
@@ -260,6 +260,12 @@ flowchart TB
 ---
 
 ## 関連ドキュメント
+
+### HTTPS 入口（運用）
+
+- Windows 手順書: [`manual/cloudflare-tunnel-windows.md`](../manual/cloudflare-tunnel-windows.md)
+- Cloudflare Tunnel テンプレ / runbook: [`edge/cloudflared/`](../../../edge/cloudflared/)（Slice [x001a](../../roadmap/slices/x001a-https-edge-tunnel.md)）
+- 外クライアント env 例: [`edge/client.env.example`](../../../edge/client.env.example)
 
 ### Alchemy 側（スタブ・未記入）
 

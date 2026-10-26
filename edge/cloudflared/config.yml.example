@@ -1,0 +1,18 @@
+# Named Tunnel — copy to config.yml and replace placeholders.
+# secrets: credentials.json is gitignored; never commit real tunnel id / credentials.
+#
+#   cp config.yml.example config.yml
+#   # run from this directory so ./credentials.json resolves:
+#   cd edge/cloudflared && cloudflared tunnel --config config.yml run
+
+tunnel: <TUNNEL_ID>
+credentials-file: ./credentials.json
+
+ingress:
+  - hostname: auth.example.tld
+    service: http://127.0.0.1:4002
+  - hostname: world.example.tld
+    service: http://127.0.0.1:4003
+  - hostname: assets.example.tld
+    service: http://127.0.0.1:4004
+  - service: http_status:404
