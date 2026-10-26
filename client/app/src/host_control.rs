@@ -6,9 +6,7 @@
 //! Default (x001e): do **not** publish Zenoh `host_control` (unauthenticated). Prefer
 //! `ALCHEMY_HOST_PID` (Unix). Set `ALCHEMY_HOST_CONTROL=1` only for local/dev.
 
-use alchemy_protocol::{
-    host_control_key, host_control_zenoh_enabled, HOST_CONTROL_SHUTDOWN,
-};
+use alchemy_protocol::{host_control_key, host_control_zenoh_enabled, HOST_CONTROL_SHUTDOWN};
 use anyhow::Result;
 use zenoh::Wait;
 

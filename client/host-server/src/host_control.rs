@@ -6,9 +6,7 @@
 //! Default (x001e): Zenoh `host_control` is **off**. WAN peers must not be able to stop host.
 //! Opt-in only via `ALCHEMY_HOST_CONTROL=1` (local/dev convenience until launcher IPC).
 
-use alchemy_protocol::{
-    host_control_key, host_control_zenoh_enabled, HOST_CONTROL_SHUTDOWN,
-};
+use alchemy_protocol::{host_control_key, host_control_zenoh_enabled, HOST_CONTROL_SHUTDOWN};
 use anyhow::{Context, Result};
 use zenoh::Wait;
 

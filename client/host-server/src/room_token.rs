@@ -194,7 +194,9 @@ pub fn fetch_auth_token(auth_url: &str) -> Result<String> {
 fn auth_login_credentials() -> Result<(String, String)> {
     resolve_auth_login_credentials(
         std::env::var("AUTH_USER").ok().filter(|s| !s.is_empty()),
-        std::env::var("AUTH_PASSWORD").ok().filter(|s| !s.is_empty()),
+        std::env::var("AUTH_PASSWORD")
+            .ok()
+            .filter(|s| !s.is_empty()),
         cfg!(debug_assertions),
     )
 }
@@ -297,8 +299,7 @@ mod tests {
 
     #[test]
     fn release_credentials_require_password_when_user_set() {
-        let err =
-            resolve_auth_login_credentials(Some("bob".into()), None, false).unwrap_err();
+        let err = resolve_auth_login_credentials(Some("bob".into()), None, false).unwrap_err();
         assert!(err.to_string().contains("AUTH_PASSWORD"));
         assert!(!err.to_string().contains("Password1"));
     }
