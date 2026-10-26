@@ -1,7 +1,8 @@
 # Cloudflare Tunnel（x001a）
 
-自宅の **auth / world / assets**（`127.0.0.1:4002` / `4003` / `4004`）を、ルーターのポート開放なしで HTTPS 公開する。
+拠点の **auth / world / assets**（`127.0.0.1:4002` / `4003` / `4004`）を、ルーターのポート開放なしで HTTPS 公開する。
 
+**Windows 初回〜常用の手順書:** [`.workspace/0_doc/manual/cloudflare-tunnel-windows.md`](../../.workspace/0_doc/manual/cloudflare-tunnel-windows.md)  
 正本 Slice: [`.workspace/roadmap/slices/x001a-https-edge-tunnel.md`](../../.workspace/roadmap/slices/x001a-https-edge-tunnel.md)
 
 ## 保証する / しない
@@ -16,7 +17,7 @@
 ## 前提
 
 - Cloudflare アカウントと **Zone**（カスタムドメイン。DNS 手作業可）
-- 自宅で auth / world / assets の Docker が起動済み（既存 `BIND_ALL`）
+- 拠点で auth / world / assets の Docker が起動済み（既存 `BIND_ALL`）
 - [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/) が PATH にある
 - **WSL:** cloudflared は `127.0.0.1:4002–4004` に届く側（WSL 内推奨）で起動する
 
@@ -73,7 +74,7 @@ cloudflared tunnel route dns alchemy-home world.example.tld
 cloudflared tunnel route dns alchemy-home assets.example.tld
 ```
 
-### 5. 自宅サービス起動
+### 5. 拠点サービス起動
 
 ```bash
 cd auth-server && docker compose up -d && cd ..
@@ -112,4 +113,4 @@ bash .scripts/smoke-https-edge.sh
 
 - ネイティブ client（ureq）なのでブラウザ CORS は対象外
 - JWT / Room Token の `iss` / 鍵は変えない。変わるのは到達 URL のみ
-- 自宅 host + 自宅 zenohd は従来どおり（本 Slice では Zenoh を変えない）
+- 拠点 host + 拠点 zenohd は従来どおり（本 Slice では Zenoh を変えない）

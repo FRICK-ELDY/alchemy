@@ -2,7 +2,7 @@
 
 > **ID:** `x001b` · **slug:** `zenoh-wan-conoha` · **status:** `planned` · **area:** `[zenoh, host, client, docs, relay]` · **depends_on:** `[x001a]`
 
-目標: ConoHa VPS（4Core / 4GB Ubuntu）上の **zenohd だけ**を公網 TCP で待受し、自宅 host + 外 client が `ZENOH_CONNECT` で同じ `ROOM_ID` に入る。x001a の HTTPS 入口と合わせて「外から入室できる」縦スライスを通す。
+目標: ConoHa VPS（4Core / 4GB Ubuntu）上の **zenohd だけ**を公網 TCP で待受し、拠点 host + 外 client が `ZENOH_CONNECT` で同じ `ROOM_ID` に入る。x001a の HTTPS 入口と合わせて「外から入室できる」縦スライスを通す。
 
 正本: [zenoh-router.md](../../0_doc/architecture/zenoh-router.md) · [overview.md](../../0_doc/architecture/overview.md)（公式リレー ConoHa）· [x001a](x001a-https-edge-tunnel.md)
 
@@ -12,7 +12,7 @@
 |:---|:---|
 | VPS zenohd | `tcp/0.0.0.0:7447`（または QUIC は後続）。**JWT は見ない** |
 | 公開面 | firewall / セキュリティグループで **IP allowlist**（検証用）。全世界開放はしない |
-| 自宅 host / client | `ZENOH_CONNECT=tcp/<VPS_IP>:7447`。host・auth/world/assets は自宅のまま |
+| 拠点 host / client | `ZENOH_CONNECT=tcp/<VPS_IP>:7447`。host・auth/world/assets は拠点のまま |
 | 外 client | x001a の `https://…` + 上記 `ZENOH_CONNECT` |
 
 | Phase | 内容 | 状態 |
@@ -28,7 +28,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | VPS zenohd 経由で同一 `ROOM_ID` の pub/sub | Room Token / JWKS による接続 ACL（→ 後続） |
-| 自宅 host + 外 client（または 2 外 client）の Presence / Leave | 自宅 zenohd ↔ VPS ブリッジ・マルチテナント隔離 |
+| 拠点 host + 外 client（または 2 外 client）の Presence / Leave | 拠点 zenohd ↔ VPS ブリッジ・マルチテナント隔離 |
 | IP allowlist による公開面の最小化 | CCU / 帯域 QoS・Relay Allocation Token |
 | x001a HTTPS と併用した外からの入室 runbook | QUIC / WebTransport / P2P |
 
@@ -42,7 +42,7 @@
 ## 成功条件（デモ）
 
 1. x001a 済み（外から login / Room Token / assets 可）
-2. VPS で zenohd 稼働、allowlist に自宅と検証クライアントのみ
+2. VPS で zenohd 稼働、allowlist に拠点と検証クライアントのみ
 3. 別ネットワークの 2 client が同じ room で互いの user_root が見える
 4. logout → Leave で即時 reclaim（x0019 動作が WAN でも維持）
 
@@ -53,7 +53,7 @@
 # zenohd -c /etc/alchemy/zenoh-wan.json5
 # ufw: 7447/tcp from <allowlist only>
 
-# 自宅 host（HTTPS は localhost で可）
+# 拠点 host（HTTPS は localhost で可）
 export ZENOH_CONNECT=tcp/<VPS_IP>:7447
 cd client && cargo run -p host-server
 
