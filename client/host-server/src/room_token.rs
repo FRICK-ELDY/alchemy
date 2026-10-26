@@ -13,7 +13,11 @@ use std::time::{Duration, Instant};
 const ISSUER: &str = "alchemy-world";
 const AUDIENCE: &str = "alchemy-room";
 const DEFAULT_AUTH_URL: &str = "http://127.0.0.1:4002";
+
+/// Debug-only seed credentials (x001e: absent from release binaries).
+#[cfg(debug_assertions)]
 const DEFAULT_AUTH_USER: &str = "alice";
+#[cfg(debug_assertions)]
 const DEFAULT_AUTH_PASSWORD: &str = "Password1";
 
 #[derive(Debug, Deserialize)]
@@ -161,6 +165,9 @@ struct AuthSession {
 }
 
 /// Login to auth-server (or use `ALCHEMY_AUTH_TOKEN`).
+///
+/// Release (x001e): requires `ALCHEMY_AUTH_TOKEN` or both `AUTH_USER` + `AUTH_PASSWORD`.
+/// Debug: may fall back to seed `alice` / `Password1` when env is unset.
 pub fn fetch_auth_token(auth_url: &str) -> Result<String> {
     if let Ok(token) = std::env::var("ALCHEMY_AUTH_TOKEN") {
         if !token.is_empty() {
@@ -168,9 +175,7 @@ pub fn fetch_auth_token(auth_url: &str) -> Result<String> {
         }
     }
 
-    let user = std::env::var("AUTH_USER").unwrap_or_else(|_| DEFAULT_AUTH_USER.to_string());
-    let password =
-        std::env::var("AUTH_PASSWORD").unwrap_or_else(|_| DEFAULT_AUTH_PASSWORD.to_string());
+    let (user, password) = auth_login_credentials()?;
     let base = auth_url.trim_end_matches('/');
     let login_url = format!("{base}/api/v1/auth/login");
 
@@ -184,6 +189,60 @@ pub fn fetch_auth_token(auth_url: &str) -> Result<String> {
         .into_json()
         .context("parse auth session")?;
     Ok(resp.access_token)
+}
+
+fn auth_login_credentials() -> Result<(String, String)> {
+    resolve_auth_login_credentials(
+        std::env::var("AUTH_USER").ok().filter(|s| !s.is_empty()),
+        std::env::var("AUTH_PASSWORD").ok().filter(|s| !s.is_empty()),
+        cfg!(debug_assertions),
+    )
+}
+
+/// Resolve login credentials.
+///
+/// - `allow_seed=false`: missing user/password → error (release / fail-closed path).
+/// - `allow_seed=true`: debug-only seed fallback; release builds always error if seed is requested.
+pub(crate) fn resolve_auth_login_credentials(
+    user: Option<String>,
+    password: Option<String>,
+    allow_seed: bool,
+) -> Result<(String, String)> {
+    if allow_seed {
+        return resolve_with_optional_seed(user, password);
+    }
+    let user = user.ok_or_else(|| {
+        anyhow!(
+            "AUTH_USER is required in release (or set ALCHEMY_AUTH_TOKEN); seed defaults are debug-only"
+        )
+    })?;
+    let password = password.ok_or_else(|| {
+        anyhow!(
+            "AUTH_PASSWORD is required in release (or set ALCHEMY_AUTH_TOKEN); seed defaults are debug-only"
+        )
+    })?;
+    Ok((user, password))
+}
+
+#[cfg(debug_assertions)]
+fn resolve_with_optional_seed(
+    user: Option<String>,
+    password: Option<String>,
+) -> Result<(String, String)> {
+    Ok((
+        user.unwrap_or_else(|| DEFAULT_AUTH_USER.to_string()),
+        password.unwrap_or_else(|| DEFAULT_AUTH_PASSWORD.to_string()),
+    ))
+}
+
+#[cfg(not(debug_assertions))]
+fn resolve_with_optional_seed(
+    _user: Option<String>,
+    _password: Option<String>,
+) -> Result<(String, String)> {
+    Err(anyhow!(
+        "seed credentials are debug-only; set AUTH_USER and AUTH_PASSWORD (or ALCHEMY_AUTH_TOKEN)"
+    ))
 }
 
 /// Ensure room exists and return a host Room Token (requires auth Bearer).
@@ -225,5 +284,39 @@ mod tests {
     fn verify_rejects_empty_token() {
         let verifier = RoomTokenVerifier::new("http://127.0.0.1:4003", "local");
         assert!(verifier.verify("").is_err());
+    }
+
+    #[test]
+    fn release_credentials_fail_closed_without_env() {
+        let err = resolve_auth_login_credentials(None, None, false).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("AUTH_USER"));
+        assert!(!msg.contains("Password1"));
+        assert!(!msg.contains("alice"));
+    }
+
+    #[test]
+    fn release_credentials_require_password_when_user_set() {
+        let err =
+            resolve_auth_login_credentials(Some("bob".into()), None, false).unwrap_err();
+        assert!(err.to_string().contains("AUTH_PASSWORD"));
+        assert!(!err.to_string().contains("Password1"));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn debug_seed_allowed_when_flag_set() {
+        let (user, password) =
+            resolve_auth_login_credentials(None, None, true).expect("seed ok in debug");
+        assert_eq!(user, "alice");
+        assert_eq!(password, "Password1");
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn release_build_rejects_allow_seed_flag() {
+        let err = resolve_auth_login_credentials(None, None, true).unwrap_err();
+        assert!(!err.to_string().contains("Password1"));
+        assert!(!err.to_string().contains("alice"));
     }
 }

@@ -652,7 +652,7 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
 
             tree.push_label(
                 Rect::new(cx, btn_y + btn_h + 32.0, cw, 20.0),
-                "Host exit is a stub ALCHEMY_HOST_PID or host_control",
+                "Host exit: ALCHEMY_HOST_PID (Unix) or ALCHEMY_HOST_CONTROL=1",
                 MUTED,
                 1.0,
             );

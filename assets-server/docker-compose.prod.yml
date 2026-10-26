@@ -1,0 +1,59 @@
+# Public / Tunnel origin (x001e). Prefer over docker-compose.yml (dev) behind Cloudflare.
+#
+#   cp .env.prod.example .env.prod
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+#   # Migrate goes through entrypoint → su-exec assets (do not use bare `exec` as root):
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod --profile migrate run --rm assets-migrate
+#
+# Guarantees: MIX_ENV=prod release image; entrypoint repairs /data ownership then su-exec assets.
+# Non-guarantees: source bind-mount / developer .env leaking into tests.
+
+x-assets-environment: &assets-environment
+  PHX_SERVER: "true"
+  PORT: "4004"
+  SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set SECRET_KEY_BASE in .env.prod}
+  DATABASE_PATH: /data/assets_prod.sqlite3
+  ASSETS_CAS_PATH: /data/cas
+  ASSETS_CAS_BACKEND: ${ASSETS_CAS_BACKEND:-local}
+  AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://host.docker.internal:4002/.well-known/jwks.json}
+  ASSETS_S3_BUCKET: ${ASSETS_S3_BUCKET:-}
+  ASSETS_S3_ENDPOINT: ${ASSETS_S3_ENDPOINT:-}
+  ASSETS_S3_ACCESS_KEY_ID: ${ASSETS_S3_ACCESS_KEY_ID:-}
+  ASSETS_S3_SECRET_ACCESS_KEY: ${ASSETS_S3_SECRET_ACCESS_KEY:-}
+  ASSETS_S3_REGION: ${ASSETS_S3_REGION:-auto}
+  ASSETS_S3_PREFIX: ${ASSETS_S3_PREFIX:-cas/}
+  ASSETS_S3_PRESIGN_TTL_SECONDS: ${ASSETS_S3_PRESIGN_TTL_SECONDS:-300}
+
+services:
+  assets:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: release
+    ports:
+      - "4004:4004"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      <<: *assets-environment
+    volumes:
+      - assets_prod_data:/data
+
+  # One-shot migrate: same entrypoint as the server → always runs as `assets`.
+  assets-migrate:
+    profiles: ["migrate"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: release
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      <<: *assets-environment
+    volumes:
+      - assets_prod_data:/data
+    entrypoint: ["/docker-entrypoint.release.sh"]
+    command: ["bin/assets", "eval", "Assets.Release.migrate()"]
+
+volumes:
+  assets_prod_data:

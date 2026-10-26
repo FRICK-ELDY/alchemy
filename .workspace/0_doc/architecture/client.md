@@ -30,7 +30,7 @@
 | OpenXR: ダッシュ開→UI レーザー；閉→ワールドレーザー＋ Grab hold（squeeze／Select）（x0011） | Steal／回転追従／Facet 並べ替え／WorldRoot／CompositionLayerQuad |
 | auth login → Bearer 付き Room Token → InputEvent（含 grab_entity_id + aim_*） | OSC / Dual Editor / launcher 本実装 |
 | host: Rapier 60Hz + `is_finite` + per-`sub` Intent（最大4）+ Presence + Leave/liveliness/TTL 解放（x0019）+ `ROOM_ID` キー（x0017）+ user_root 3..6 + cuboid×9 + Grab → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk / Steal |
-| ESC（Desktop）/ Menu（OpenXR）ダッシュ・下タブ Home/Settings/Exit・Pinned Exit・Home アカウント殻（x0018）・Button hover・client 終了・host 終了スタブ。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 / XR 仮想キーボード |
+| ESC（Desktop）/ Menu（OpenXR）ダッシュ・下タブ Home/Settings/Exit・Pinned Exit・Home アカウント殻（x0018）・Button hover・client 終了・host 終了は `ALCHEMY_HOST_PID`（Zenoh `host_control` は opt-in・x001e）。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 / XR 仮想キーボード / 認証付きリモート shutdown |
 | OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD・launcher 本実装 |
 
 ## チャネル分離（C-C + E + x0009）
@@ -42,7 +42,7 @@
 | `alchemy/dev/room/{ROOM_ID}/alive/{sub}` | liveliness | client token；host `alive/**` で Delete 監視（x0019） |
 | `alchemy/dev/room/{ROOM_ID}/frame` | 高（動いたものだけ） | pose upserts / removes（含 user_root） |
 | `alchemy/dev/room/{ROOM_ID}/input` | 入力 | Room Token 付き Intent（`move_*` + `buttons` + `leave`） |
-| `alchemy/dev/room/{ROOM_ID}/host_control` | 低（スタブ） | client→host `shutdown`（launcher 前） |
+| `alchemy/dev/room/{ROOM_ID}/host_control` | 低（既定オフ） | `ALCHEMY_HOST_CONTROL=1` のときのみ client→host `shutdown`（x001e。既定は `ALCHEMY_HOST_PID`） |
 
 ## Desktop バインド（x0009）
 
@@ -73,7 +73,7 @@
 - 詳細: [`client/fixtures/README.md`](../../../client/fixtures/README.md)
 - Icons: [`client/app/assets/icons/README.md`](../../../client/app/assets/icons/README.md)
 
-環境変数: `ASSETS_URL`（既定 `:4004`）、任意 `ROOM_ID`（既定 `local`・Zenoh キーと Room Token に反映・x0017）、任意 `ZENOH_CONNECT`（既定 `tcp/127.0.0.1:7447`）、任意 `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（設定時は Home UI をスキップしてサイレント login・x0018）、任意 `ALCHEMY_BLOB_BLAKE3`、任意 `ALCHEMY_HOST_PID`、任意 `ALCHEMY_FORCE_DESKTOP=1`、任意 `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。  
+環境変数: `ASSETS_URL`（既定 `:4004`）、任意 `ROOM_ID`（既定 `local`・Zenoh キーと Room Token に反映・x0017）、任意 `ZENOH_CONNECT`（既定 `tcp/127.0.0.1:7447`）、任意 `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（設定時は Home UI をスキップしてサイレント login・x0018。**release では seed 既定なし**・x001e）、任意 `ALCHEMY_BLOB_BLAKE3`、任意 `ALCHEMY_HOST_PID`、任意 `ALCHEMY_HOST_CONTROL=1`（Zenoh shutdown・ローカル専用）、任意 `ALCHEMY_FORCE_DESKTOP=1`、任意 `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。  
 未設定時は Desktop で Home タブが開き、login/register 後に入室する。
 
 ## 関連

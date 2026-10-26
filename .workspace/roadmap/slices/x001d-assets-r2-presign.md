@@ -1,6 +1,6 @@
 # x001d — R2 署名 URL 直結
 
-> **ID:** `x001d` · **slug:** `assets-r2-presign` · **status:** `active` · **area:** `[assets, client, docs]` · **depends_on:** `[x001c]`
+> **ID:** `x001d` · **slug:** `assets-r2-presign` · **status:** `done` · **area:** `[assets, client, docs]` · **depends_on:** `[x001c]`
 
 目標: `ASSETS_CAS_BACKEND=s3` のとき、`GET /api/v1/blobs/:blake3` を JWT 門番後に **短命署名 URL への 302** にし、client / smoke が **R2 から直取得**する（assets-server は本体を代理転送しない）。local 既定は従来どおり 200 代理。
 

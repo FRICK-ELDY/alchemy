@@ -24,6 +24,8 @@ jobs:
 
     env:
       MIX_ENV: test
+      # x001e: never pick up accidental ASSETS_CAS_BACKEND=s3 from runner env
+      ASSETS_CAS_BACKEND: local
 
     steps:
       - uses: actions/checkout@v4

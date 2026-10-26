@@ -1,23 +1,26 @@
-# Cloudflare Tunnel（x001a）
+# Cloudflare Tunnel（x001a / x001e）
 
 拠点の **auth / world / assets**（`127.0.0.1:4002` / `4003` / `4004`）を、ルーターのポート開放なしで HTTPS 公開する。
 
 **Windows 初回〜常用の手順書:** [`.workspace/0_doc/manual/cloudflare-tunnel-windows.md`](../../.workspace/0_doc/manual/cloudflare-tunnel-windows.md)  
-正本 Slice: [`.workspace/roadmap/slices/x001a-https-edge-tunnel.md`](../../.workspace/roadmap/slices/x001a-https-edge-tunnel.md)
+正本 Slice: [`.workspace/roadmap/slices/x001a-https-edge-tunnel.md`](../../.workspace/roadmap/slices/x001a-https-edge-tunnel.md) · [x001e](../../.workspace/roadmap/slices/x001e-p0-trust-boundary.md)
 
 ## 保証する / しない
 
 | 保証する | 保証しない |
 |:---|:---|
-| Named Tunnel + ホスト名振り分けのテンプレ | Quick Tunnel・path 振り分け |
+| Named Tunnel + ホスト名振り分けのテンプレ | Quick Tunnel・path 振り分け全般 |
 | 公網ポート開放ゼロで 3 サービスへ HTTPS 到達 | Zenoh WAN（→ x001b） |
 | credentials / 実 `config.yml` をリポに入れない | DNS / Zone の完全自動化 |
-| WSL から `127.0.0.1:400x` へ届く前提の起動手順 | cloudflared HA・複数拠点 |
+| **公開 origin は release / `MIX_ENV=prod` のみ**（x001e） | cloudflared HA・複数拠点 |
+| auth `/dev/*` は ingress で 404（mailbox 二重封鎖） | Cloudflare Access のフル構成 |
 
-## 前提
+## 前提（重要・x001e）
 
 - Cloudflare アカウントと **Zone**（カスタムドメイン。DNS 手作業可）
-- 拠点で auth / world / assets の Docker が起動済み（既存 `BIND_ALL`）
+- 拠点の auth / world / assets は **`docker-compose.prod.yml`（release）** で起動済み
+  - **禁止:** `docker compose up`（各サーバの `target: dev` / `MIX_ENV=dev`）を Tunnel の後ろに置くこと
+  - dev の `/dev/mailbox` は認証なしで見えるため、forgot-password → mailbox → reset でアカウントを奪える
 - [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/) が PATH にある
 - **WSL:** cloudflared は `127.0.0.1:4002–4004` に届く側（WSL 内推奨）で起動する
 
@@ -74,13 +77,28 @@ cloudflared tunnel route dns alchemy-home world.example.tld
 cloudflared tunnel route dns alchemy-home assets.example.tld
 ```
 
-### 5. 拠点サービス起動
+### 5. 拠点サービス起動（**prod / release のみ**）
+
+各サーバで `.env.prod.example` → `.env.prod` を用意し、release compose を使う:
 
 ```bash
-cd auth-server && docker compose up -d && cd ..
-cd world-server && docker compose up -d && cd ..
-cd assets-server && docker compose up -d && cd ..
+# auth（JWT PEM を secrets/ に配置してから）
+cd auth-server && docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build && cd ..
+docker compose -f auth-server/docker-compose.prod.yml --env-file auth-server/.env.prod \
+  exec auth bin/auth eval 'Auth.Release.migrate()'
+
+cd world-server && docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build && cd ..
+# Room Token 鍵は named volume `world_prod_keys`。`down -v` で消すと鍵が再生成され
+# 既存 Room Token はすべて無効 → クライアントは再 login / 再発行が必要。
+
+cd assets-server && docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build && cd ..
+# migrate は entrypoint 経由（su-exec assets）。素の `exec` は使わない。
+docker compose -f assets-server/docker-compose.prod.yml --env-file assets-server/.env.prod \
+  --profile migrate run --rm assets-migrate
+# または: bash .scripts/assets-prod-migrate.sh
 ```
+
+ローカル開発用の `docker compose up`（dev）は **Tunnel に繋がない**。
 
 ### 6. Tunnel 起動
 
@@ -96,6 +114,8 @@ cd edge/cloudflared && cloudflared tunnel --config config.yml run
 curl -sf https://auth.example.tld/health
 curl -sf https://world.example.tld/health
 curl -sf https://assets.example.tld/health
+# mailbox は 404 であること
+curl -o /dev/null -w "%{http_code}\n" https://auth.example.tld/dev/mailbox
 ```
 
 縦通し（login → Room Token → assets）:
@@ -114,3 +134,4 @@ bash .scripts/smoke-https-edge.sh
 - ネイティブ client（ureq）なのでブラウザ CORS は対象外
 - JWT / Room Token の `iss` / 鍵は変えない。変わるのは到達 URL のみ
 - 拠点 host + 拠点 zenohd は従来どおり（本 Slice では Zenoh を変えない）
+- release バイナリの host/client は `AUTH_USER` / `AUTH_PASSWORD`（または `ALCHEMY_AUTH_TOKEN`）必須。seed `alice`/`Password1` は debug のみ（x001e）

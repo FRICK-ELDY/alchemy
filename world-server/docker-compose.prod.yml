@@ -1,0 +1,34 @@
+# Public / Tunnel origin (x001e). Prefer over docker-compose.yml (dev) behind Cloudflare.
+#
+#   cp .env.prod.example .env.prod
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+#
+# Guarantees: MIX_ENV=prod release image (no hot-reload bind mount).
+# Room Token key: stored under named volume `world_prod_keys`. Recreate **without**
+# removing that volume keeps the key; `docker compose down -v` (or deleting the
+# volume) regenerates the key and **invalidates all outstanding Room Tokens** —
+# clients must re-login / re-issue tokens after that.
+
+services:
+  world:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: release
+    ports:
+      - "4003:4003"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PHX_SERVER: "true"
+      PORT: "4003"
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set SECRET_KEY_BASE in .env.prod}
+      ROOM_TOKEN_PRIVATE_KEY_PATH: /var/lib/world/room_jwt_private.pem
+      ROOM_TOKEN_GENERATE_KEY: "true"
+      WORLD_ALLOW_ANON_TOKENS: "false"
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://host.docker.internal:4002/.well-known/jwks.json}
+    volumes:
+      - world_prod_keys:/var/lib/world
+
+volumes:
+  world_prod_keys:

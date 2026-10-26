@@ -150,6 +150,9 @@ fn parse_session(resp: ureq::Response) -> Result<AuthSession> {
 }
 
 /// CI / smoke: env token or AUTH_USER login (no UI).
+///
+/// Release (x001e): `AUTH_USER` requires `AUTH_PASSWORD` (no seed default).
+/// Debug: may default password to `Password1` when only `AUTH_USER` is set.
 pub fn try_silent_session(auth_url: &str) -> Result<Option<AuthSession>> {
     if let Ok(token) = std::env::var("ALCHEMY_AUTH_TOKEN") {
         if !token.is_empty() {
@@ -172,7 +175,21 @@ pub fn try_silent_session(auth_url: &str) -> Result<Option<AuthSession>> {
     if user.is_empty() {
         return Ok(None);
     }
-    let password = std::env::var("AUTH_PASSWORD").unwrap_or_else(|_| "Password1".into());
+    let password = match std::env::var("AUTH_PASSWORD") {
+        Ok(p) if !p.is_empty() => p,
+        _ => {
+            #[cfg(debug_assertions)]
+            {
+                "Password1".into()
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                bail!(
+                    "AUTH_PASSWORD is required in release when AUTH_USER is set (seed defaults are debug-only)"
+                );
+            }
+        }
+    };
     Ok(Some(login(auth_url, &user, &password, false)?))
 }
 
