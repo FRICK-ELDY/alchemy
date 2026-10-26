@@ -261,6 +261,11 @@ flowchart TB
 
 ## 関連ドキュメント
 
+### HTTPS 入口（運用）
+
+- Cloudflare Tunnel テンプレ / runbook: [`edge/cloudflared/`](../../../edge/cloudflared/)（Slice [x001a](../../roadmap/slices/x001a-https-edge-tunnel.md)）
+- 外クライアント env 例: [`edge/client.env.example`](../../../edge/client.env.example)
+
 ### Alchemy 側（スタブ・未記入）
 
 - [auth-server](auth-server.md) · [assets-server](assets-server.md) · [world-server](world-server.md)

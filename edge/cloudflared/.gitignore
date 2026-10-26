@@ -1,0 +1,6 @@
+# Real tunnel config and secrets (keep *.example committed)
+config.yml
+credentials.json
+*.pem
+.env
+cert.pem

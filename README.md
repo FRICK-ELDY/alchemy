@@ -5,12 +5,13 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（x0019 / 明示 Leave + liveliness）
+## 現状（x001a / HTTPS 入口）
 
 `host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（最大 **4**）・**user_root entity 3..6**・**PresenceState**・**Leave / liveliness / Intent TTL 解放**・**`ROOM_ID` Zenoh キー**・**立方体 ×9**・**30Hz デルタ**。  
 `client` は Dash 下タブ **Home / Settings / Exit**。Home で **login / 最小 register / logout**（logout は Leave + liveliness undeclare）。未ログインでは Room Token なし。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` は CI サイレント login。Desktop Grab / XR Grab / Noclip は従来どおり。  
 **LAN:** zenohd `0.0.0.0:7447`、**`ZENOH_CONNECT`**。  
-**次:** [x001a HTTPS 入口](.workspace/roadmap/slices/x001a-https-edge-tunnel.md) → [x001b Zenoh WAN](.workspace/roadmap/slices/x001b-zenoh-wan-conoha.md)。空き ID = **`x001c`**。[roadmap](.workspace/roadmap/README.md)。
+**HTTPS:** Cloudflare Tunnel で auth / world / assets を公開（[`edge/cloudflared/`](edge/cloudflared/)）。  
+**次:** [x001b Zenoh WAN](.workspace/roadmap/slices/x001b-zenoh-wan-conoha.md)。空き ID = **`x001c`**。[roadmap](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|
@@ -20,6 +21,7 @@
 | zenoh-router | [`zenoh-router/`](zenoh-router/) |
 | protocol（共有ワイヤ契約） | [`protocol/`](protocol/) |
 | client workspace | [`client/`](client/)（`app` + `host-server`） |
+| edge（Cloudflare Tunnel） | [`edge/cloudflared/`](edge/cloudflared/) |
 
 ルートに Cargo workspace は置きません。Rust のビルド根は `client/`、契約クレートは独立した `protocol/` です。
 
@@ -107,6 +109,7 @@ bash .scripts/smoke-lan-two-client.sh   # legacy x0014 units (still useful)
 bash .scripts/smoke-presence-slots.sh   # Presence slots + ROOM_ID keys + pin banner
 bash .scripts/smoke-client-auth.sh      # x0018 Home units + login→logout HTTP
 bash .scripts/smoke-leave-liveliness.sh # x0019 Leave + liveliness units + host banner
+bash .scripts/smoke-https-edge.sh       # x001a Tunnel: AUTH/WORLD/ASSETS_URL 必須
 # 3 client（同マシン・既定 ROOM_ID=local）:
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=alice cargo run -p client
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=bob cargo run -p client
@@ -114,6 +117,12 @@ bash .scripts/smoke-leave-liveliness.sh # x0019 Leave + liveliness units + host 
 # 別部屋: host/client とも ROOM_ID=alpha（beta とはキー隔離）。logout → 即時 reclaim（x0019）；切断のみは liveliness / TTL。
 # LAN ノートPC: AUTH/WORLD/ASSETS_URL + ZENOH_CONNECT=tcp/<PC_IP>:7447 / AUTH_USER=bob|carol
 #   （PC 側 Docker は BIND_ALL=true。Windows ファイアウォールで 7447 と 4002–4004 を許可）
+# HTTPS（Tunnel・x001a）: 別ネットワークの client
+#   手順: edge/cloudflared/README.md
+#   cd edge/cloudflared && cloudflared tunnel --config config.yml run
+#   export AUTH_URL=https://auth.example.tld WORLD_URL=https://world.example.tld ASSETS_URL=https://assets.example.tld
+#   （env 例: edge/client.env.example / smoke: bash .scripts/smoke-https-edge.sh）
+#   Zenoh はまだ LAN / localhost（x001b まで）。公網ポート開放は不要。
 # ESC ダッシュ / Home タブ / XR Grab / Noclip。Desktop 強制: ALCHEMY_FORCE_DESKTOP=1
 # OpenXR ローダー明示: ALCHEMY_OPENXR_LOADER=...
 ```

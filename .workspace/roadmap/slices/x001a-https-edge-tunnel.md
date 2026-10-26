@@ -18,10 +18,10 @@
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
 | 0 | Slice 文書 + 目次 | done |
-| 1 | `edge/cloudflared`（または同等）設定テンプレ + 起動 runbook | planned |
-| 2 | ホスト名振り分け（auth / world / assets）+ health 確認手順 | planned |
-| 3 | 外クライアント用 env 例 + README / architecture 追記 | planned |
-| 4 | smoke（Tunnel 経由 login → Room Token → assets health/CAS 1本） | planned |
+| 1 | `edge/cloudflared`（または同等）設定テンプレ + 起動 runbook | done |
+| 2 | ホスト名振り分け（auth / world / assets）+ health 確認手順 | done |
+| 3 | 外クライアント用 env 例 + README / architecture 追記 | done |
+| 4 | smoke（Tunnel 経由 login → Room Token → assets health/CAS 1本） | done |
 
 ## 保証する / しない
 
@@ -49,7 +49,9 @@
    - `GET https://<assets-host>/health`（または CAS 1 blob）
 3. 自宅 host + 自宅 zenohd は従来どおり（本 Slice では Zenoh を変えない）
 
-## 起動（予定・Phase 1 以降で具体化）
+## 起動
+
+詳細 runbook: [`edge/cloudflared/README.md`](../../../edge/cloudflared/README.md)
 
 ```bash
 # 自宅: 既存 Docker
@@ -57,14 +59,15 @@ cd auth-server && docker compose up -d && cd ..
 cd world-server && docker compose up -d && cd ..
 cd assets-server && docker compose up -d && cd ..
 
-# Tunnel（テンプレ確定後）
-# cloudflared tunnel --config edge/cloudflared/config.yml run
+# Tunnel（config.yml は example からコピー・credentials 配置後）
+cd edge/cloudflared && cloudflared tunnel --config config.yml run
 
 # 外クライアント例（ホスト名は runbook の値に置換）
 export AUTH_URL=https://auth.example.tld
 export WORLD_URL=https://world.example.tld
 export ASSETS_URL=https://assets.example.tld
 # Zenoh はまだ LAN / localhost（x001b まで）
+# bash .scripts/smoke-https-edge.sh
 ```
 
 ## 実装メモ（方針）
