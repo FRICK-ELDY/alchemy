@@ -258,10 +258,15 @@ impl PhysicsWorld {
             return;
         }
         let handle = self.boxes.handles[index];
+        let (ux, uy, uz) = self.user_root_translation(slot);
         let Some(body) = self.rigid_body_set.get_mut(handle) else {
             return;
         };
         let t = *body.translation();
+        // x0021 P1-3: gate on player↔entity (aim spoof alone must not start Grab).
+        if !crate::finite::within_grab_start_distance((ux, uy, uz), (t.x, t.y, t.z)) {
+            return;
+        }
         let offset = t - aim_v;
         body.set_body_type(RigidBodyType::KinematicPositionBased, true);
         body.set_linvel(vector![0.0, 0.0, 0.0], true);
@@ -345,6 +350,7 @@ impl PhysicsWorld {
         if slot >= USER_ROOT_SLOTS {
             return;
         }
+        let (mx, my, mz) = crate::finite::clamp_move_vector(mx, my, mz);
         let speed = self.move_speed;
         let Some(body) = self.rigid_body_set.get_mut(self.user_roots[slot]) else {
             return;
@@ -583,20 +589,22 @@ mod tests {
     #[test]
     fn release_slot_clears_grab_and_resets_spawn() {
         let mut world = PhysicsWorld::new(LocoMode::Noclip, 10.0);
-        let dt = 1.0 / 60.0;
-        for _ in 0..60 {
-            world.apply_user_intent(0, 1.0, 0.0, 0.0, dt);
-            world.step();
-        }
-        let (x_moved, _, _) = world.user_root_translation(0);
-        assert!(x_moved > 0.5, "precondition: moved, got {x_moved}");
         for _ in 0..30 {
             world.step();
         }
+        // Grab while still near the box (player↔entity gate), then move away.
         let id = BOX_ENTITY_FIRST + 4;
         let (bx, by, bz) = world.box_translation(4);
         world.apply_grab(0, true, id, (bx, by, bz));
         assert_eq!(world.grab_entity_id(0), Some(id));
+        let dt = 1.0 / 60.0;
+        for _ in 0..60 {
+            world.apply_user_intent(0, 1.0, 0.0, 0.0, dt);
+            world.apply_grab(0, true, id, (bx + 1.0, by, bz));
+            world.step();
+        }
+        let (x_moved, _, _) = world.user_root_translation(0);
+        assert!(x_moved > 0.5, "precondition: moved, got {x_moved}");
         world.release_slot(0);
         assert!(world.grab_entity_id(0).is_none());
         let (x, y, z) = world.user_root_translation(0);
@@ -620,5 +628,41 @@ mod tests {
         world.apply_grab(1, true, id, (bx + 1.0, by, bz));
         assert!(world.grab_entity_id(1).is_none());
         assert_eq!(world.grab_entity_id(0), Some(id));
+    }
+
+    #[test]
+    fn grab_start_rejects_when_player_far() {
+        let mut world = PhysicsWorld::new(LocoMode::Noclip, 20.0);
+        let dt = 1.0 / 60.0;
+        // Move slot 0 far from the box grid so player↔entity exceeds Grab range.
+        for _ in 0..120 {
+            world.apply_user_intent(0, 1.0, 0.0, 0.0, dt);
+            world.step();
+        }
+        let id = BOX_ENTITY_FIRST + 4;
+        let (bx, by, bz) = world.box_translation(4);
+        let (ux, uy, uz) = world.user_root_translation(0);
+        assert!(
+            !crate::finite::within_grab_start_distance((ux, uy, uz), (bx, by, bz)),
+            "precondition: player far from box"
+        );
+        // Spoofed aim on the box must not start Grab.
+        world.apply_grab(0, true, id, (bx, by, bz));
+        assert!(world.grab_entity_id(0).is_none());
+    }
+
+    #[test]
+    fn huge_move_magnitude_does_not_teleport() {
+        let mut world = PhysicsWorld::new(LocoMode::Noclip, DEFAULT_MOVE_SPEED);
+        let (x0, y0, z0) = world.user_root_translation(0);
+        let dt = 1.0 / 60.0;
+        world.apply_user_intent(0, 1e30, 0.0, 0.0, dt);
+        world.step();
+        let (x1, y1, z1) = world.user_root_translation(0);
+        let dx = (x1 - x0).abs();
+        assert!(
+            dx < DEFAULT_MOVE_SPEED * dt * 1.1,
+            "expected clamped step, dx={dx} from ({x0},{y0},{z0}) to ({x1},{y1},{z1})"
+        );
     }
 }

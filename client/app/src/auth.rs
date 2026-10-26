@@ -1,10 +1,15 @@
-//! Auth-server HTTP session shell (x0018).
+//! Auth-server HTTP session shell (x0018 / x0021).
 //!
-//! Guarantees: login / register / logout / refresh against existing `/api/v1/auth/*`.
+//! Guarantees: login / register / logout / refresh against existing `/api/v1/auth/*`;
+//! refresh deadlines at ~80% of `expires_in` for access and Room Token.
 //! Non-guarantees: email verify UI, OAuth, disk credential vault, OpenXR keyboard.
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
+use std::time::{Duration, Instant};
+
+/// Fraction of TTL at which client re-fetches (P1-1).
+pub const TOKEN_REFRESH_FRACTION: f64 = 0.8;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuthUser {
@@ -30,6 +35,10 @@ pub struct AuthGate {
     pub username: Option<String>,
     pub room_token: Option<String>,
     pub local_sub: Option<String>,
+    /// When `Instant::now() >= deadline`, refresh access (None = do not auto-refresh).
+    pub access_deadline: Option<Instant>,
+    /// When `Instant::now() >= deadline`, re-issue Room Token.
+    pub room_deadline: Option<Instant>,
 }
 
 impl AuthGate {
@@ -47,18 +56,37 @@ impl AuthGate {
         self.username = None;
         self.room_token = None;
         self.local_sub = None;
+        self.access_deadline = None;
+        self.room_deadline = None;
     }
 
     pub fn apply_auth_session(&mut self, session: AuthSession) {
+        self.access_deadline = refresh_deadline(session.expires_in);
         self.access_token = Some(session.access_token);
         self.refresh_token = session.refresh_token;
         self.username = Some(session.user.username);
     }
 
-    pub fn apply_room(&mut self, room_token: String, local_sub: String) {
+    pub fn apply_room(&mut self, room_token: String, local_sub: String, expires_in: u64) {
         self.room_token = Some(room_token);
         self.local_sub = Some(local_sub);
+        self.room_deadline = refresh_deadline(expires_in);
     }
+
+    pub fn clear_room(&mut self) {
+        self.room_token = None;
+        self.local_sub = None;
+        self.room_deadline = None;
+    }
+}
+
+/// Instant at which a token with `expires_in` seconds should be refreshed, or `None` if TTL is 0.
+pub fn refresh_deadline(expires_in: u64) -> Option<Instant> {
+    if expires_in == 0 {
+        return None;
+    }
+    let secs = ((expires_in as f64) * TOKEN_REFRESH_FRACTION).floor() as u64;
+    Some(Instant::now() + Duration::from_secs(secs.max(1)))
 }
 
 pub fn login(
@@ -126,10 +154,6 @@ pub fn logout(auth_url: &str, access_token: &str, refresh_token: Option<&str>) -
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "x0018: optional access refresh when remember_me expires"
-)]
 pub fn refresh(auth_url: &str, refresh_token: &str) -> Result<AuthSession> {
     let base = auth_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/auth/refresh");
@@ -190,7 +214,8 @@ pub fn try_silent_session(auth_url: &str) -> Result<Option<AuthSession>> {
             }
         }
     };
-    Ok(Some(login(auth_url, &user, &password, false)?))
+    // remember_me so refresh_token is issued (x0021 P1-1 access refresh on silent/smoke).
+    Ok(Some(login(auth_url, &user, &password, true)?))
 }
 
 #[cfg(test)]
@@ -211,11 +236,33 @@ mod tests {
                 email: "a@b.c".into(),
             },
         });
-        g.apply_room("rt".into(), "sub".into());
+        g.apply_room("rt".into(), "sub".into(), 300);
         assert!(g.is_authenticated());
         assert!(g.is_joined());
+        assert!(g.room_deadline.is_some());
+        assert!(g.access_deadline.is_some());
         g.clear_session();
         assert!(!g.is_authenticated());
         assert!(!g.is_joined());
+        assert!(g.room_deadline.is_none());
+        assert!(g.access_deadline.is_none());
+    }
+
+    #[test]
+    fn refresh_deadline_none_when_ttl_zero() {
+        assert!(refresh_deadline(0).is_none());
+    }
+
+    #[test]
+    fn refresh_deadline_at_80_percent() {
+        let before = Instant::now();
+        let d = refresh_deadline(100).expect("deadline");
+        let after = Instant::now();
+        let wait = d.saturating_duration_since(before);
+        assert!(
+            wait.as_secs() >= 79 && wait.as_secs() <= 81,
+            "wait={wait:?}"
+        );
+        let _ = after;
     }
 }

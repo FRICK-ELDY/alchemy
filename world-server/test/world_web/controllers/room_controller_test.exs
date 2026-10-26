@@ -13,11 +13,11 @@ defmodule WorldWeb.RoomControllerTest do
     assert %{"error" => "missing_auth_token"} = json_response(conn, 401)
   end
 
-  test "creates room and issues token with auth JWT", %{conn: conn, signer: signer} do
+  test "creates room and issues host token to owner", %{conn: conn, signer: signer} do
     sub = "22222222-2222-2222-2222-222222222222"
     conn = TestAuthHelpers.put_auth(conn, signer, sub)
     conn = post(conn, "/api/v1/rooms", %{room_id: "local"})
-    assert %{"room_id" => "local"} = json_response(conn, 201)
+    assert %{"room_id" => "local", "owner_sub" => ^sub} = json_response(conn, 201)
 
     conn =
       build_conn()
@@ -30,6 +30,52 @@ defmodule WorldWeb.RoomControllerTest do
     assert body["role"] == "host"
     assert body["sub"] == sub
     assert body["expires_in"] > 0
+  end
+
+  test "token on missing room does not create or grant host", %{signer: signer} do
+    guest = "33333333-3333-3333-3333-333333333333"
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> post("/api/v1/rooms/ghost/tokens", %{role: "guest"})
+
+    assert %{"error" => "room_not_found"} = json_response(conn, 404)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> post("/api/v1/rooms/ghost/tokens", %{role: "host"})
+
+    assert %{"error" => "room_not_found"} = json_response(conn, 404)
+  end
+
+  test "non-owner cannot issue host token", %{conn: conn, signer: signer} do
+    owner = "22222222-2222-2222-2222-222222222222"
+    guest = "33333333-3333-3333-3333-333333333333"
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post("/api/v1/rooms", %{room_id: "owned"})
+
+    assert %{"room_id" => "owned"} = json_response(conn, 201)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> post("/api/v1/rooms/owned/tokens", %{role: "host"})
+
+    assert %{"error" => "host_role_owner_only"} = json_response(conn, 403)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> post("/api/v1/rooms/owned/tokens", %{role: "guest"})
+
+    body = json_response(conn, 200)
+    assert body["role"] == "guest"
+    assert body["sub"] == guest
   end
 
   test "health and jwks", %{conn: conn} do

@@ -1,18 +1,27 @@
 //! Room Token verification against world-server JWKS + auth-gated token fetch.
 //!
 //! Guarantees: RS256 verify + iss/aud/exp/room_id checks; Room Token issued only with auth JWT.
-//! Non-guarantees: auth UI, refresh-token rotation.
+//! x0021: verify never does HTTP on the input path (SWR + background refresh).
+//! Non-guarantees: auth UI, refresh-token rotation, session MAC (P2).
 
 use anyhow::{anyhow, Context, Result};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, SyncSender};
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const ISSUER: &str = "alchemy-world";
 const AUDIENCE: &str = "alchemy-room";
 const DEFAULT_AUTH_URL: &str = "http://127.0.0.1:4002";
+/// Soft TTL: after this, verify still uses cache and kicks background refresh (SWR).
+const JWKS_SOFT_TTL: Duration = Duration::from_secs(60);
+const JWKS_HTTP_TIMEOUT: Duration = Duration::from_secs(2);
+const JWKS_BG_POLL: Duration = Duration::from_secs(30);
+const UNKNOWN_KID_COOLDOWN: Duration = Duration::from_secs(1);
 
 /// Debug-only seed credentials (x001e: absent from release binaries).
 #[cfg(debug_assertions)]
@@ -48,11 +57,14 @@ pub struct RoomTokenVerifier {
     jwks_url: String,
     expected_room_id: String,
     cache: RwLock<KeyCache>,
+    refresh_tx: Mutex<Option<SyncSender<()>>>,
+    bg_started: AtomicBool,
 }
 
 struct KeyCache {
     keys: HashMap<String, DecodingKey>,
     fetched_at: Instant,
+    last_unknown_kid_kick: Option<Instant>,
 }
 
 impl RoomTokenVerifier {
@@ -64,12 +76,49 @@ impl RoomTokenVerifier {
             cache: RwLock::new(KeyCache {
                 keys: HashMap::new(),
                 fetched_at: Instant::now() - Duration::from_secs(3600),
+                last_unknown_kid_kick: None,
             }),
+            refresh_tx: Mutex::new(None),
+            bg_started: AtomicBool::new(false),
         }
     }
 
+    /// Poll JWKS off the input path. Safe to call once after initial [`Self::refresh_jwks`].
+    pub fn spawn_background_refresh(self: &Arc<Self>) {
+        if self
+            .bg_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        let (tx, rx) = mpsc::sync_channel::<()>(1);
+        if let Ok(mut slot) = self.refresh_tx.lock() {
+            *slot = Some(tx);
+        }
+        let this = Arc::clone(self);
+        thread::Builder::new()
+            .name("jwks-refresh".into())
+            .spawn(move || {
+                while let Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) =
+                    rx.recv_timeout(JWKS_BG_POLL)
+                {
+                    if let Err(err) = this.refresh_jwks() {
+                        log::warn!("JWKS background refresh failed (keeping cache): {err:#}");
+                    }
+                }
+            })
+            .expect("spawn jwks-refresh");
+    }
+
+    /// Fetch JWKS over HTTP (startup / background only — not from `verify`).
     pub fn refresh_jwks(&self) -> Result<()> {
-        let body: Jwks = ureq::get(&self.jwks_url)
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(JWKS_HTTP_TIMEOUT)
+            .timeout_read(JWKS_HTTP_TIMEOUT)
+            .build();
+        let body: Jwks = agent
+            .get(&self.jwks_url)
             .call()
             .context("fetch JWKS")?
             .into_json()
@@ -98,19 +147,31 @@ impl RoomTokenVerifier {
         Ok(())
     }
 
+    /// Verify using cached keys only (no HTTP). Soft-stale cache still accepts (SWR).
     pub fn verify(&self, token: &str) -> Result<RoomClaims> {
         if token.is_empty() {
             return Err(anyhow!("empty room token"));
         }
-        self.ensure_fresh_jwks()?;
 
         let header = decode_header(token).context("decode JWT header")?;
         let kid = header
             .kid
             .ok_or_else(|| anyhow!("JWT header missing kid"))?;
 
+        {
+            let cache = self.cache.read().expect("jwks cache lock");
+            if cache.keys.is_empty() {
+                return Err(anyhow!("JWKS cache empty; call refresh_jwks before verify"));
+            }
+            if cache.fetched_at.elapsed() > JWKS_SOFT_TTL {
+                drop(cache);
+                self.kick_refresh();
+            }
+        }
+
         if !self.has_kid(&kid) {
-            self.refresh_jwks()?;
+            self.kick_refresh_unknown_kid();
+            return Err(anyhow!("unknown kid: {kid}"));
         }
 
         let mut validation = Validation::new(Algorithm::RS256);
@@ -142,15 +203,25 @@ impl RoomTokenVerifier {
         cache.keys.contains_key(kid)
     }
 
-    fn ensure_fresh_jwks(&self) -> Result<()> {
-        let stale = {
-            let cache = self.cache.read().expect("jwks cache lock");
-            cache.keys.is_empty() || cache.fetched_at.elapsed() > Duration::from_secs(60)
-        };
-        if stale {
-            self.refresh_jwks()?;
+    fn kick_refresh(&self) {
+        if let Ok(guard) = self.refresh_tx.lock() {
+            if let Some(tx) = guard.as_ref() {
+                let _ = tx.try_send(());
+            }
         }
-        Ok(())
+    }
+
+    fn kick_refresh_unknown_kid(&self) {
+        {
+            let mut cache = self.cache.write().expect("jwks cache lock");
+            if let Some(last) = cache.last_unknown_kid_kick {
+                if last.elapsed() < UNKNOWN_KID_COOLDOWN {
+                    return;
+                }
+            }
+            cache.last_unknown_kid_kick = Some(Instant::now());
+        }
+        self.kick_refresh();
     }
 }
 
@@ -247,7 +318,9 @@ fn resolve_with_optional_seed(
     ))
 }
 
-/// Ensure room exists and return a host Room Token (requires auth Bearer).
+/// Create room as owner (if needed) and return a host Room Token (requires auth Bearer).
+///
+/// x0021: only `POST /rooms` assigns `owner_sub`. Guest clients must not create.
 pub fn fetch_host_token(world_url: &str, room_id: &str, auth_token: &str) -> Result<String> {
     if let Ok(token) = std::env::var("ALCHEMY_ROOM_TOKEN") {
         if !token.is_empty() {
@@ -258,20 +331,56 @@ pub fn fetch_host_token(world_url: &str, room_id: &str, auth_token: &str) -> Res
     let base = world_url.trim_end_matches('/');
     let authz = format!("Bearer {auth_token}");
     let create_url = format!("{base}/api/v1/rooms");
-    let _ = ureq::post(&create_url)
+    match ureq::post(&create_url)
         .set("content-type", "application/json")
         .set("authorization", &authz)
-        .send_json(serde_json::json!({ "room_id": room_id }));
+        .send_json(serde_json::json!({ "room_id": room_id }))
+    {
+        Ok(_) => log::info!("created room={room_id} as owner"),
+        Err(ureq::Error::Status(409, _)) => {
+            log::info!("room={room_id} already exists; requesting host Token as owner");
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            return Err(anyhow!(
+                "create room failed status={code} body={body}; host must own the room"
+            ));
+        }
+        Err(err) => {
+            return Err(anyhow!("create room request failed: {err:#}"));
+        }
+    }
 
     let token_url = format!("{base}/api/v1/rooms/{room_id}/tokens");
-    let resp: TokenResponse = ureq::post(&token_url)
+    match ureq::post(&token_url)
         .set("content-type", "application/json")
         .set("authorization", &authz)
         .send_json(serde_json::json!({ "role": "host" }))
-        .context("issue host Room Token")?
-        .into_json()
-        .context("parse token response")?;
-    Ok(resp.token)
+    {
+        Ok(resp) => {
+            let parsed: TokenResponse = resp.into_json().context("parse token response")?;
+            Ok(parsed.token)
+        }
+        Err(ureq::Error::Status(403, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(anyhow!(
+                "host Room Token forbidden (not room owner — another sub may have created the room first): {body}"
+            ))
+        }
+        Err(ureq::Error::Status(404, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(anyhow!(
+                "host Room Token: room not found after create ({body})"
+            ))
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(anyhow!(
+                "issue host Room Token failed status={code} body={body}"
+            ))
+        }
+        Err(err) => Err(anyhow!("issue host Room Token request failed: {err:#}")),
+    }
 }
 
 pub fn default_auth_url() -> String {
@@ -286,6 +395,19 @@ mod tests {
     fn verify_rejects_empty_token() {
         let verifier = RoomTokenVerifier::new("http://127.0.0.1:4003", "local");
         assert!(verifier.verify("").is_err());
+    }
+
+    #[test]
+    fn verify_does_not_http_when_cache_empty() {
+        let verifier = RoomTokenVerifier::new("http://127.0.0.1:9", "local");
+        let err = verifier
+            .verify("eyJhbGciOiJSUzI1NiIsImtpZCI6InQiLCJ0eXAiOiJKV1QifQ.e30.e30")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("JWKS cache empty"),
+            "verify must not reach network; got: {err}"
+        );
     }
 
     #[test]

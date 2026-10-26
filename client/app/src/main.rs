@@ -1,8 +1,9 @@
-//! Alchemy client — x0019 Leave / liveliness + auth shell / Presence / Grab / dash.
+//! Alchemy client — x0019 Leave / liveliness + auth shell / Presence / Grab / dash + x0021 refresh.
 //!
 //! Guarantees:
 //! - Home tab login / register / logout; Room Token only after auth (x0018)
 //! - Explicit Leave + Zenoh liveliness on join/logout (x0019); Intent TTL is host fallback
+//! - Access + Room Token auto-refresh at ~80% TTL while joined (x0021 P1-1)
 //! - CI fallback: `AUTH_USER` or `ALCHEMY_AUTH_TOKEN` skips UI and joins
 //! - Subscribes to SceneManifest / PresenceState / RenderFrame; downloads blob; wgpu mesh
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
@@ -56,7 +57,17 @@ const MANIFEST_WAIT: Duration = Duration::from_millis(400);
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     token: String,
+    /// Required from world-server; missing field fails deserialize (no silent `0`).
+    expires_in: u64,
 }
+
+#[derive(Debug, Clone)]
+pub struct GuestToken {
+    pub token: String,
+    pub expires_in: u64,
+}
+
+const TOKEN_REFRESH_POLL: Duration = Duration::from_secs(5);
 
 fn zenoh_connect_endpoint() -> String {
     std::env::var("ZENOH_CONNECT").unwrap_or_else(|_| DEFAULT_ZENOH_CONNECT.to_string())
@@ -77,30 +88,35 @@ fn open_zenoh() -> Result<zenoh::Session> {
         .map_err(|e| anyhow::anyhow!("zenoh open failed: {e}"))
 }
 
-pub fn fetch_guest_token(world_url: &str, room_id: &str, auth_token: &str) -> Result<String> {
+pub fn fetch_guest_token(world_url: &str, room_id: &str, auth_token: &str) -> Result<GuestToken> {
     if let Ok(token) = std::env::var("ALCHEMY_ROOM_TOKEN") {
         if !token.is_empty() {
-            return Ok(token);
+            return Ok(GuestToken {
+                token,
+                // Env override: no TTL → skip auto-refresh.
+                expires_in: 0,
+            });
         }
     }
 
+    // x0021: do not POST /rooms — owner is claimed only by host create.
     let base = world_url.trim_end_matches('/');
     let authz = format!("Bearer {auth_token}");
-    let create_url = format!("{base}/api/v1/rooms");
-    let _ = ureq::post(&create_url)
-        .set("content-type", "application/json")
-        .set("authorization", &authz)
-        .send_json(serde_json::json!({ "room_id": room_id }));
-
     let token_url = format!("{base}/api/v1/rooms/{room_id}/tokens");
     let resp: TokenResponse = ureq::post(&token_url)
         .set("content-type", "application/json")
         .set("authorization", &authz)
         .send_json(serde_json::json!({ "role": "guest" }))
-        .context("issue guest Room Token")?
+        .context("issue guest Room Token (is host up and room created?)")?
         .into_json()
         .context("parse token response")?;
-    Ok(resp.token)
+    if resp.expires_in == 0 {
+        anyhow::bail!("guest Room Token response missing positive expires_in");
+    }
+    Ok(GuestToken {
+        token: resp.token,
+        expires_in: resp.expires_in,
+    })
 }
 
 fn fetch_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<Vec<u8>> {
@@ -398,15 +414,115 @@ fn spawn_input_publisher(
 
 /// Apply auth session + guest Room Token into SharedState (x0018 join).
 pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result<()> {
-    let room_token = fetch_guest_token(&shared.world_url, &shared.room_id, access_token)
+    let guest = fetch_guest_token(&shared.world_url, &shared.room_id, access_token)
         .context("fetch guest Room Token")?;
-    let local_sub =
-        jwt_sub::sub_unverified(&room_token).context("read Room Token sub (unverified payload)")?;
+    let local_sub = jwt_sub::sub_unverified(&guest.token)
+        .context("read Room Token sub (unverified payload)")?;
     if let Ok(mut gate) = shared.auth.lock() {
-        gate.room_token = Some(room_token);
-        gate.local_sub = Some(local_sub.clone());
+        gate.apply_room(guest.token, local_sub.clone(), guest.expires_in);
     }
-    log::info!("joined room={} sub={local_sub}", shared.room_id);
+    log::info!(
+        "joined room={} sub={local_sub} expires_in={}",
+        shared.room_id,
+        guest.expires_in
+    );
+    Ok(())
+}
+
+/// Background access + Room Token refresh at ~80% TTL (x0021 P1-1).
+fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
+    thread::Builder::new()
+        .name("token-refresh".into())
+        .spawn(move || {
+            log::info!("token refresh loop every {}s", TOKEN_REFRESH_POLL.as_secs());
+            loop {
+                thread::sleep(TOKEN_REFRESH_POLL);
+                let now = Instant::now();
+
+                let need_access = shared
+                    .auth
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.access_deadline.map(|d| now >= d))
+                    .unwrap_or(false);
+                if need_access {
+                    let refresh_token = shared
+                        .auth
+                        .lock()
+                        .ok()
+                        .and_then(|g| g.refresh_token.clone());
+                    match refresh_token {
+                        Some(rt) => match auth::refresh(&shared.auth_url, &rt) {
+                            Ok(session) => {
+                                if let Ok(mut gate) = shared.auth.lock() {
+                                    gate.apply_auth_session(session);
+                                }
+                                log::info!("access token refreshed");
+                            }
+                            Err(err) => {
+                                log::warn!("access token refresh failed: {err:#}");
+                                if let Ok(mut gate) = shared.auth.lock() {
+                                    // Back off one poll interval to avoid tight failure loops.
+                                    gate.access_deadline = Some(now + TOKEN_REFRESH_POLL);
+                                }
+                            }
+                        },
+                        None => {
+                            // No refresh_token (e.g. silent env JWT): stop trying access refresh.
+                            if let Ok(mut gate) = shared.auth.lock() {
+                                gate.access_deadline = None;
+                            }
+                        }
+                    }
+                }
+
+                let need_room = shared
+                    .auth
+                    .lock()
+                    .ok()
+                    .map(|g| g.is_joined() && g.room_deadline.map(|d| now >= d).unwrap_or(false))
+                    .unwrap_or(false);
+                if need_room {
+                    let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+                    let Some(access) = access else {
+                        if let Ok(mut gate) = shared.auth.lock() {
+                            gate.room_deadline = Some(now + TOKEN_REFRESH_POLL);
+                        }
+                        continue;
+                    };
+                    match fetch_guest_token(&shared.world_url, &shared.room_id, &access) {
+                        Ok(guest) => {
+                            let local_sub = match jwt_sub::sub_unverified(&guest.token) {
+                                Ok(s) => s,
+                                Err(err) => {
+                                    log::warn!("Room Token refresh: bad sub: {err:#}");
+                                    if let Ok(mut gate) = shared.auth.lock() {
+                                        gate.room_deadline = Some(now + TOKEN_REFRESH_POLL);
+                                    }
+                                    continue;
+                                }
+                            };
+                            if let Ok(mut gate) = shared.auth.lock() {
+                                if gate.is_joined() {
+                                    gate.apply_room(guest.token, local_sub, guest.expires_in);
+                                    log::info!(
+                                        "Room Token refreshed expires_in={}",
+                                        guest.expires_in
+                                    );
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            log::warn!("Room Token refresh failed: {err:#}");
+                            if let Ok(mut gate) = shared.auth.lock() {
+                                gate.room_deadline = Some(now + TOKEN_REFRESH_POLL);
+                            }
+                        }
+                    }
+                }
+            }
+        })
+        .context("spawn token refresh")?;
     Ok(())
 }
 
@@ -529,6 +645,8 @@ fn main() -> Result<()> {
     }
 
     let (blake3_tx, blake3_rx) = mpsc::sync_channel::<String>(1);
+
+    spawn_token_refresh(Arc::clone(&shared))?;
 
     let session = open_zenoh().context("open zenoh session")?;
     if shared

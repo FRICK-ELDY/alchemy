@@ -168,8 +168,7 @@ impl SharedState {
             };
         }
         if let Ok(mut auth) = self.auth.lock() {
-            auth.room_token = None;
-            auth.local_sub = None;
+            auth.clear_room();
         }
         if let Ok(mut token) = self.liveliness.lock() {
             *token = None;

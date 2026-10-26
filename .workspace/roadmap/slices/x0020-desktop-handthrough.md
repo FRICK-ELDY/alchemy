@@ -34,10 +34,8 @@
 
 ## やらない（後続）
 
-- **P1-1** Room Token / access 自動 refresh（入室 10 分以上）
-- **P1-2** JWKS バックグラウンド更新
-- magnitude / Grab clamp、host role（P1-3 / P1-4）
-- **x0021** SceneManifest 駆動（定義 vs 実行）
+- P1 デモゲート（→ [x0021](x0021-p1-demo-gate.md)）
+- SceneManifest 駆動（P4 / 後続）
 - GUI E2E（クリック自動化）
 - e2e compose を Desktop の既定ポートに変更すること
 

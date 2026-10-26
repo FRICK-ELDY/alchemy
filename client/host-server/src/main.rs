@@ -514,6 +514,7 @@ fn main() -> Result<()> {
         .context("fetch host Room Token (is world-server up? auth Bearer required)")?;
     let verifier = Arc::new(RoomTokenVerifier::new(&world_url, &room_id));
     verifier.refresh_jwks().context("initial JWKS fetch")?;
+    verifier.spawn_background_refresh();
     verifier
         .verify(&host_token)
         .context("host Room Token self-check")?;

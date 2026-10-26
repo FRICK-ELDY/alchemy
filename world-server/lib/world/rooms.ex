@@ -1,35 +1,50 @@
 defmodule World.Rooms do
   @moduledoc """
   In-process ephemeral room registry (Slice B — no DB).
+
+  x0021: each room has an `owner_sub` set only via `create/2`. Token issuance
+  never creates a room (guest/host must not become owner by side effect).
   """
 
   use GenServer
 
   @type room_id :: String.t()
+  @type owner_sub :: String.t()
+  @type state :: %{room_id() => owner_sub()}
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @spec create(room_id() | nil) :: {:ok, room_id()} | {:error, :invalid_room_id | :already_exists}
-  def create(nil), do: create(random_room_id())
+  @spec create(room_id() | nil, owner_sub()) ::
+          {:ok, room_id()} | {:error, :invalid_room_id | :already_exists | :missing_owner}
+  def create(nil, owner_sub), do: create(random_room_id(), owner_sub)
 
-  def create(room_id) when is_binary(room_id) do
-    GenServer.call(__MODULE__, {:create, room_id})
+  def create(_room_id, owner_sub)
+      when not is_binary(owner_sub) or owner_sub == "" do
+    {:error, :missing_owner}
   end
 
-  def create(_), do: {:error, :invalid_room_id}
+  def create(room_id, owner_sub) when is_binary(room_id) and is_binary(owner_sub) do
+    GenServer.call(__MODULE__, {:create, room_id, owner_sub})
+  end
+
+  def create(_, _), do: {:error, :invalid_room_id}
 
   defp random_room_id do
     Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
   end
 
-  @spec ensure(room_id()) :: {:ok, room_id()} | {:error, :invalid_room_id}
-  def ensure(room_id) when is_binary(room_id) do
-    GenServer.call(__MODULE__, {:ensure, room_id})
+  @doc """
+  Validate `room_id` and confirm the room was created (owner already assigned).
+  Does not create rooms.
+  """
+  @spec require_existing(room_id()) :: :ok | {:error, :invalid_room_id | :not_found}
+  def require_existing(room_id) when is_binary(room_id) do
+    GenServer.call(__MODULE__, {:require_existing, room_id})
   end
 
-  def ensure(_), do: {:error, :invalid_room_id}
+  def require_existing(_), do: {:error, :invalid_room_id}
 
   @spec exists?(room_id()) :: boolean()
   def exists?(room_id) when is_binary(room_id) do
@@ -38,17 +53,31 @@ defmodule World.Rooms do
 
   def exists?(_), do: false
 
-  @impl true
-  def init(_opts), do: {:ok, MapSet.new()}
+  @spec owner(room_id()) :: owner_sub() | nil
+  def owner(room_id) when is_binary(room_id) do
+    GenServer.call(__MODULE__, {:owner, room_id})
+  end
+
+  def owner(_), do: nil
+
+  @spec owner?(room_id(), owner_sub()) :: boolean()
+  def owner?(room_id, sub) when is_binary(room_id) and is_binary(sub) do
+    owner(room_id) == sub
+  end
+
+  def owner?(_, _), do: false
 
   @impl true
-  def handle_call({:create, room_id}, _from, rooms) do
+  def init(_opts), do: {:ok, %{}}
+
+  @impl true
+  def handle_call({:create, room_id, owner_sub}, _from, rooms) do
     case validate_room_id(room_id) do
       :ok ->
-        if MapSet.member?(rooms, room_id) do
+        if Map.has_key?(rooms, room_id) do
           {:reply, {:error, :already_exists}, rooms}
         else
-          {:reply, {:ok, room_id}, MapSet.put(rooms, room_id)}
+          {:reply, {:ok, room_id}, Map.put(rooms, room_id, owner_sub)}
         end
 
       {:error, reason} ->
@@ -57,10 +86,14 @@ defmodule World.Rooms do
   end
 
   @impl true
-  def handle_call({:ensure, room_id}, _from, rooms) do
+  def handle_call({:require_existing, room_id}, _from, rooms) do
     case validate_room_id(room_id) do
       :ok ->
-        {:reply, {:ok, room_id}, MapSet.put(rooms, room_id)}
+        if Map.has_key?(rooms, room_id) do
+          {:reply, :ok, rooms}
+        else
+          {:reply, {:error, :not_found}, rooms}
+        end
 
       {:error, reason} ->
         {:reply, {:error, reason}, rooms}
@@ -69,7 +102,12 @@ defmodule World.Rooms do
 
   @impl true
   def handle_call({:exists?, room_id}, _from, rooms) do
-    {:reply, MapSet.member?(rooms, room_id), rooms}
+    {:reply, Map.has_key?(rooms, room_id), rooms}
+  end
+
+  @impl true
+  def handle_call({:owner, room_id}, _from, rooms) do
+    {:reply, Map.get(rooms, room_id), rooms}
   end
 
   defp validate_room_id(room_id) do
