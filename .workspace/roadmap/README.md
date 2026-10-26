@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0020`**；x001f done）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0021`**；x0020 done）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -81,8 +81,9 @@ depends_on: [x0006]
 | x001d | — | done | R2 署名 URL 直結（GET 302） | [x001d-assets-r2-presign.md](slices/x001d-assets-r2-presign.md) |
 | x001e | — | done | P0 信頼境界（Tunnel prod / host_control / seed / assets CI） | [x001e-p0-trust-boundary.md](slices/x001e-p0-trust-boundary.md) |
 | x001f | — | done | Hermetic Compose 縦 E2E（login→token→input→frame） | [x001f-hermetic-compose-e2e.md](slices/x001f-hermetic-compose-e2e.md) |
+| x0020 | — | done | Desktop client 手通し（日常スタック正本 + smoke） | [x0020-desktop-handthrough.md](slices/x0020-desktop-handthrough.md) |
 
-**現在の次:** **x0020**（手元デモ縦 — 未作成）。採番して Slice を切るところから。
+**現在の次:** **x0021**（SceneManifest 駆動 — 未作成）。採番して Slice を切るところから。P1-1 Token refresh も後続候補。
 
 ## 関連
 

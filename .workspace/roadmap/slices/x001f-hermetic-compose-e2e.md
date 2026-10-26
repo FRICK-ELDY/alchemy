@@ -44,7 +44,7 @@
 
 ## やらない（後続）
 
-- x0020: 手元デモ縦（Desktop client 手通し）
+- [x0020](x0020-desktop-handthrough.md): Desktop client 手通し（日常スタック正本 + smoke）
 - x0021: SceneManifest 駆動（定義 vs 実行）
 - P1 全項目・WAN TLS・BlobGrant
 
