@@ -1,0 +1,20 @@
+// Alchemy WAN zenoh-router (zenohd) — x001b / ConoHa
+// Guarantees: TCP listen on 0.0.0.0:7447 for explicit ZENOH_CONNECT clients.
+// Does NOT guarantee: JWT/JWKS ACL, CCU QoS, site↔VPS bridge, multi-tenant isolation.
+// Diff vs local config.json5: multicast scouting OFF (no LAN discovery on the public VPS).
+{
+  mode: "router",
+  metadata: {
+    name: "alchemy-wan-router",
+  },
+  listen: {
+    endpoints: [
+      "tcp/0.0.0.0:7447",
+    ],
+  },
+  scouting: {
+    multicast: {
+      enabled: false,
+    },
+  },
+}
