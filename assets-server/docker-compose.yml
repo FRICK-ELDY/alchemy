@@ -16,6 +16,14 @@ services:
       DATABASE_PATH: /app/priv/assets_dev.sqlite3
       ASSETS_CAS_PATH: /app/priv/cas
       AUTH_JWKS_URL: http://host.docker.internal:4002/.well-known/jwks.json
+      # x001c: set in assets-server/.env (gitignored). Default stays local.
+      ASSETS_CAS_BACKEND: ${ASSETS_CAS_BACKEND:-local}
+      ASSETS_S3_BUCKET: ${ASSETS_S3_BUCKET:-}
+      ASSETS_S3_ENDPOINT: ${ASSETS_S3_ENDPOINT:-}
+      ASSETS_S3_ACCESS_KEY_ID: ${ASSETS_S3_ACCESS_KEY_ID:-}
+      ASSETS_S3_SECRET_ACCESS_KEY: ${ASSETS_S3_SECRET_ACCESS_KEY:-}
+      ASSETS_S3_REGION: ${ASSETS_S3_REGION:-auto}
+      ASSETS_S3_PREFIX: ${ASSETS_S3_PREFIX:-cas/}
     volumes:
       - .:/app
       - assets_deps:/app/deps
