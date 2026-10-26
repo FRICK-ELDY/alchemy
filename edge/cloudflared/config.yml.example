@@ -4,11 +4,18 @@
 #   cp config.yml.example config.yml
 #   # run from this directory so ./credentials.json resolves:
 #   cd edge/cloudflared && cloudflared tunnel --config config.yml run
+#
+# x001e: origin must be MIX_ENV=prod / release images (not docker-compose.yml `target: dev`).
+# Belt-and-suspenders: /dev/* on auth returns 404 even if a misconfigured origin exposes mailbox.
 
 tunnel: <TUNNEL_ID>
 credentials-file: ./credentials.json
 
 ingress:
+  # Block Swoosh MailboxPreview / LiveDashboard if accidentally exposed.
+  - hostname: auth.example.tld
+    path: /dev/*
+    service: http_status:404
   - hostname: auth.example.tld
     service: http://127.0.0.1:4002
   - hostname: world.example.tld

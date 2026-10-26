@@ -8,10 +8,11 @@
 //! - PresenceState publish (`sub`→entity); explicit Leave + liveliness Delete + Intent TTL
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
 //! - Grabbable cuboids entity 10..18; Grab hold kinematic follow; no Steal
-//! - Slice E: `host_control` Subscribe → `shutdown` exits process
+//! - Slice E / x001e: Zenoh `host_control` off by default; `ALCHEMY_HOST_CONTROL=1` to enable
 //!
 //! Non-guarantees:
 //! - Steal / rotation follow / Formula / polished Walk / signed Manifest / verifier
+//! - Authenticated remote host shutdown (use launcher / `ALCHEMY_HOST_PID`)
 
 mod finite;
 mod host_control;
@@ -475,9 +476,14 @@ fn main() -> Result<()> {
     let presence_key_expr = presence_key(&room_id);
     let host_control_key_expr = host_control_key(&room_id);
     let liveliness_key_expr = liveliness_wildcard(&room_id);
+    let host_control_mode = if host_control::zenoh_control_enabled() {
+        "zenoh-opt-in"
+    } else {
+        "disabled"
+    };
 
     log::info!(
-        "host-server x0019 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr} world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        "host-server x0019 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
     );

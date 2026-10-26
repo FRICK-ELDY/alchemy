@@ -110,8 +110,10 @@ run_assets_docker() {
     return
   fi
   step "docker compose build assets" docker compose -f "$compose" build assets
+  # x001e: force local CAS so developer assets-server/.env (R2) cannot affect mix test
   step "assets mix checks (Docker)" docker compose -f "$compose" run --rm --entrypoint "" \
     -e MIX_ENV=test \
+    -e ASSETS_CAS_BACKEND=local \
     assets sh -c 'mix deps.get && mix format --check-formatted && mix compile --warnings-as-errors && mix credo --strict && mix test'
 }
 

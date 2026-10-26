@@ -13,7 +13,7 @@
 |:---|:---|
 | メタ（BlobRef / QuotaLedger）を SQLite に置く | GLB/KTX2 本体を DB に置く |
 | 不変バイナリを CAS（BLAKE3 キー）に置く | Vault / Folder / Commit（Spatial VCS） |
-| `ASSETS_CAS_BACKEND=local\|s3` で置き場切替（x001c） | 公開バケット・CDN カスタムドメイン |
+| `ASSETS_CAS_BACKEND=local\|s3` で置き場切替（x001c）。**test では runtime が CAS env を無視**（x001e） | 公開バケット・CDN カスタムドメイン |
 | s3 時 GET は短命署名 URL へ 302（x001d） | Upload の署名 URL 直 PUT |
 | Quota 超過のアップロード拒否（既定 1GiB） | 課金連動 Quota / pgvector / Origin Cert / Ash 本格 |
 | auth `sub` を所有者・Quota キーとして使う | 既存 local CAS の自動マイグレーション |

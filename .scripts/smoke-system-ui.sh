@@ -15,4 +15,4 @@ cd "$ROOT/protocol"
 cargo test key_helpers -- --nocapture
 
 echo "OK: system_ui / Dash Facet (x000f) compile/smoke gate passed."
-echo "Manual: Esc opens dash; hover lightens buttons; Exit client only / Exit client + host (ALCHEMY_HOST_PID or host_control)."
+echo "Manual: Esc opens dash; Exit client + host needs ALCHEMY_HOST_PID (Unix) or ALCHEMY_HOST_CONTROL=1."

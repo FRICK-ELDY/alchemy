@@ -45,19 +45,24 @@ RUN mix release
 
 FROM alpine:${ALPINE_VERSION} AS release
 
-RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates
+RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates su-exec \
+ && adduser -D -h /app world \
+ && mkdir -p /var/lib/world \
+ && chown world:world /app /var/lib/world
 
 WORKDIR /app
 
-RUN adduser -D -h /app world && chown world:world /app
-
 COPY --from=build --chown=world:world /app/_build/prod/rel/world ./
+COPY docker-entrypoint.release.sh /docker-entrypoint.release.sh
+RUN chmod 755 /docker-entrypoint.release.sh
 
-USER world
+# Entrypoint chowns the Room Token key volume, then drops to `world` (x001e).
+USER root
 
 ENV PHX_SERVER=true
 ENV PORT=4003
 
 EXPOSE 4003
 
+ENTRYPOINT ["/docker-entrypoint.release.sh"]
 CMD ["bin/world", "start"]

@@ -49,6 +49,24 @@ pub const PRESENCE_KEY_LOCAL: &str = "alchemy/dev/room/local/presence";
 /// Payload accepted by host-server on `host_control_key(room_id)` (Slice E stub).
 pub const HOST_CONTROL_SHUTDOWN: &[u8] = b"shutdown";
 
+/// Env var that opts into unauthenticated Zenoh `host_control` (x001e; default off).
+pub const HOST_CONTROL_ZENOH_ENV: &str = "ALCHEMY_HOST_CONTROL";
+
+/// Parse whether Zenoh host_control is enabled from an env value (testable).
+///
+/// Accepted truthy: `1`, `true`, `TRUE`, `yes`, `YES`. Anything else (incl. unset) is off.
+pub fn host_control_zenoh_enabled_from(value: Option<&str>) -> bool {
+    matches!(
+        value,
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
+    )
+}
+
+/// Read [`HOST_CONTROL_ZENOH_ENV`]; default **false** so WAN peers cannot stop host.
+pub fn host_control_zenoh_enabled() -> bool {
+    host_control_zenoh_enabled_from(std::env::var(HOST_CONTROL_ZENOH_ENV).ok().as_deref())
+}
+
 /// Why [`validate_room_id`] rejected a value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoomIdError {
@@ -313,5 +331,16 @@ mod tests {
             validate_room_id("部屋").unwrap_err(),
             RoomIdError::NonAsciiPrintable
         );
+    }
+
+    #[test]
+    fn host_control_zenoh_defaults_off() {
+        assert!(!host_control_zenoh_enabled_from(None));
+        assert!(!host_control_zenoh_enabled_from(Some("")));
+        assert!(!host_control_zenoh_enabled_from(Some("0")));
+        assert!(!host_control_zenoh_enabled_from(Some("false")));
+        assert!(host_control_zenoh_enabled_from(Some("1")));
+        assert!(host_control_zenoh_enabled_from(Some("true")));
+        assert!(host_control_zenoh_enabled_from(Some("YES")));
     }
 }

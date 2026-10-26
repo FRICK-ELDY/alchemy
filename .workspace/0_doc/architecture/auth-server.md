@@ -22,6 +22,8 @@
 
 ## 起動（Docker）
 
+ローカル開発:
+
 ```powershell
 cd auth-server
 docker compose up -d
@@ -29,7 +31,9 @@ docker compose up -d
 # http://localhost:4002/.well-known/jwks.json
 ```
 
-シードアカウント（`priv/repo/seeds.exs`）: `alice` / `bob` / `carol` / `admin`、パスワード `Password1`。
+**公開 / Tunnel（x001e）:** `docker-compose.prod.yml`（release）のみ。`MIX_ENV=dev` を Cloudflare の後ろに置かない（`/dev/mailbox` 乗っ取り経路）。手順: [`edge/cloudflared/README.md`](../../../edge/cloudflared/README.md)。
+
+シードアカウント（`priv/repo/seeds.exs`・**dev のみ**）: `alice` / `bob` / `carol` / `admin`、パスワード `Password1`。prod compose は seed しない。
 
 **推奨起動は全 OS とも Docker Compose**。  
 Windows ホスト直の `mix compile` は `argon2_elixir` に Visual C++ Build Tools（nmake）が必要。

@@ -108,13 +108,32 @@ Dashboard → DNS で Proxy（オレンジ雲）オンの CNAME が増えてい�
 
 ## 毎回の起動
 
+**x001e:** Tunnel の後ろは **release / `docker-compose.prod.yml` のみ**。  
+`docker compose up`（`MIX_ENV=dev`）は `/dev/mailbox` が公網に出てアカウント乗っ取り可能になるため **禁止**。
+
 1. Docker Desktop を起動  
-2. サービス:
+2. サービス（各ディレクトリで `.env.prod` を用意済みであること）:
 
 ```powershell
-cd D:\github\frick\alchemy\auth-server; docker compose up -d
-cd D:\github\frick\alchemy\world-server; docker compose up -d
-cd D:\github\frick\alchemy\assets-server; docker compose up -d
+cd D:\github\frick\alchemy\auth-server
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+
+cd D:\github\frick\alchemy\world-server
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+
+cd D:\github\frick\alchemy\assets-server
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+```
+
+初回のみ migrate（auth / assets）:
+
+```powershell
+cd D:\github\frick\alchemy\auth-server
+docker compose -f docker-compose.prod.yml --env-file .env.prod exec auth bin/auth eval "Auth.Release.migrate()"
+
+cd D:\github\frick\alchemy\assets-server
+# migrate は entrypoint 経由（su-exec assets）。素の `exec` は使わない。
+docker compose -f docker-compose.prod.yml --env-file .env.prod --profile migrate run --rm assets-migrate
 ```
 
 3. ローカル到達（任意）:
@@ -149,6 +168,8 @@ cloudflared tunnel --config config.yml --protocol http2 run
 curl.exe -sf https://auth.example.tld/health
 curl.exe -sf https://world.example.tld/health
 curl.exe -sf https://assets.example.tld/health
+# mailbox は 404（x001e ingress + prod で /dev なし）
+curl.exe -o NUL -w "%{http_code}`n" https://auth.example.tld/dev/mailbox
 ```
 
 縦通し（login → Room Token → assets）:
@@ -187,3 +208,4 @@ bash .scripts/smoke-https-edge.sh
 | ポート開放ゼロで 3 サービスへ HTTPS 到達 | Zenoh WAN（→ x001b） |
 | 拠点 IP をクライアント設定に書かない | cloudflared HA・複数拠点 |
 | 秘密をリポに入れない | WAF / Bot 対策の作り込み |
+| 公開 origin は prod release（`/dev/mailbox` 非公開） | Cloudflare Access フル構成 |

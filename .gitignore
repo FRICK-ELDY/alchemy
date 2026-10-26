@@ -31,6 +31,12 @@ assets-server/priv/*.sqlite3
 assets-server/priv/*.sqlite3-*
 assets-server/.env
 
+# prod compose env (x001e)
+auth-server/.env.prod
+auth-server/secrets/
+world-server/.env.prod
+assets-server/.env.prod
+
 # IDE / OS
 .idea/
 .vscode/

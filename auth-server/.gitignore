@@ -29,3 +29,7 @@ auth-*.tar
 /priv/jwt_private.pem
 /priv/jwt_public.pem
 
+# Production compose secrets (x001e)
+/.env.prod
+/secrets/
+

@@ -1,0 +1,55 @@
+# Public / Tunnel origin (x001e). Do NOT put docker-compose.yml (MIX_ENV=dev) behind Cloudflare.
+#
+#   mkdir -p secrets
+#   # generate RS256 PEM once (or copy existing priv/jwt_private.pem)
+#   cp .env.prod.example .env.prod   # fill SECRET_KEY_BASE, POSTGRES_PASSWORD
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod exec auth \
+#     bin/auth eval 'Auth.Release.migrate()'
+#
+# Guarantees: release image → no /dev/mailbox / LiveDashboard (dev_routes off at compile time).
+# Non-guarantees: seed accounts, Cloudflare Access, HA.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    # Tunnel stack: do not publish Postgres on all interfaces (x001e).
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_USER: alchemy_auth
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: alchemy_auth_prod
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alchemy_auth -d alchemy_auth_prod"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  auth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: release
+    ports:
+      - "4002:4002"
+    environment:
+      PHX_SERVER: "true"
+      BIND_ALL: "true"
+      PORT: "4002"
+      DATABASE_URL: ecto://alchemy_auth:${POSTGRES_PASSWORD}@postgres:5432/alchemy_auth_prod
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set SECRET_KEY_BASE in .env.prod}
+      JWT_PRIVATE_KEY_PATH: /run/secrets/jwt_private.pem
+      AUTH_FRONTEND_URL: ${AUTH_FRONTEND_URL:-https://auth.example.tld}
+      PHX_HOST: ${PHX_HOST:-auth.example.tld}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+    volumes:
+      - ${JWT_PRIVATE_KEY_FILE:-./secrets/jwt_private.pem}:/run/secrets/jwt_private.pem:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_prod_data:

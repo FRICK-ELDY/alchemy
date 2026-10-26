@@ -7,82 +7,90 @@ end
 port = String.to_integer(System.get_env("PORT", "4004"))
 config :assets, AssetsWeb.Endpoint, http: [port: port]
 
-if cas = System.get_env("ASSETS_CAS_PATH") do
-  config :assets, cas_path: cas
-end
-
-cas_backend =
-  case String.downcase(System.get_env("ASSETS_CAS_BACKEND", "local")) do
-    "local" ->
-      :local
-
-    "s3" ->
-      :s3
-
-    other ->
-      raise "ASSETS_CAS_BACKEND must be local or s3 (got: #{inspect(other)})"
+# x001e: test keeps config/test.exs (:local). Do not let developer .env / compose
+# override CAS into real R2 during `mix test`.
+if config_env() != :test do
+  if cas = System.get_env("ASSETS_CAS_PATH") do
+    config :assets, cas_path: cas
   end
 
-config :assets, cas_backend: cas_backend
+  cas_backend =
+    case String.downcase(System.get_env("ASSETS_CAS_BACKEND", "local")) do
+      "local" ->
+        :local
 
-if cas_backend == :s3 do
-  bucket =
-    System.get_env("ASSETS_S3_BUCKET") ||
-      raise "ASSETS_S3_BUCKET is required when ASSETS_CAS_BACKEND=s3"
+      "s3" ->
+        :s3
 
-  access_key_id =
-    System.get_env("ASSETS_S3_ACCESS_KEY_ID") ||
-      raise "ASSETS_S3_ACCESS_KEY_ID is required when ASSETS_CAS_BACKEND=s3"
+      other ->
+        raise "ASSETS_CAS_BACKEND must be local or s3 (got: #{inspect(other)})"
+    end
 
-  secret_access_key =
-    System.get_env("ASSETS_S3_SECRET_ACCESS_KEY") ||
-      raise "ASSETS_S3_SECRET_ACCESS_KEY is required when ASSETS_CAS_BACKEND=s3"
+  config :assets, cas_backend: cas_backend
 
-  endpoint =
-    System.get_env("ASSETS_S3_ENDPOINT") ||
-      raise "ASSETS_S3_ENDPOINT is required when ASSETS_CAS_BACKEND=s3 (e.g. https://<ACCOUNT_ID>.r2.cloudflarestorage.com)"
+  if cas_backend == :s3 do
+    bucket =
+      System.get_env("ASSETS_S3_BUCKET") ||
+        raise "ASSETS_S3_BUCKET is required when ASSETS_CAS_BACKEND=s3"
 
-  host =
-    endpoint
-    |> URI.parse()
-    |> Map.get(:host) ||
-      raise "ASSETS_S3_ENDPOINT must include a host (got: #{inspect(endpoint)})"
+    access_key_id =
+      System.get_env("ASSETS_S3_ACCESS_KEY_ID") ||
+        raise "ASSETS_S3_ACCESS_KEY_ID is required when ASSETS_CAS_BACKEND=s3"
 
-  prefix = System.get_env("ASSETS_S3_PREFIX", "cas/")
-  prefix = if String.ends_with?(prefix, "/") or prefix == "", do: prefix, else: prefix <> "/"
+    secret_access_key =
+      System.get_env("ASSETS_S3_SECRET_ACCESS_KEY") ||
+        raise "ASSETS_S3_SECRET_ACCESS_KEY is required when ASSETS_CAS_BACKEND=s3"
 
-  presign_ttl_seconds =
-    System.get_env("ASSETS_S3_PRESIGN_TTL_SECONDS", "300")
-    |> String.to_integer()
+    endpoint =
+      System.get_env("ASSETS_S3_ENDPOINT") ||
+        raise "ASSETS_S3_ENDPOINT is required when ASSETS_CAS_BACKEND=s3 (e.g. https://<ACCOUNT_ID>.r2.cloudflarestorage.com)"
 
-  config :assets,
-    cas_s3: %{
-      bucket: bucket,
-      host: host,
-      access_key_id: access_key_id,
-      secret_access_key: secret_access_key,
-      region: System.get_env("ASSETS_S3_REGION", "auto"),
-      prefix: prefix,
-      presign_ttl_seconds: presign_ttl_seconds
-    }
+    host =
+      endpoint
+      |> URI.parse()
+      |> Map.get(:host) ||
+        raise "ASSETS_S3_ENDPOINT must include a host (got: #{inspect(endpoint)})"
+
+    prefix = System.get_env("ASSETS_S3_PREFIX", "cas/")
+    prefix = if String.ends_with?(prefix, "/") or prefix == "", do: prefix, else: prefix <> "/"
+
+    presign_ttl_seconds =
+      System.get_env("ASSETS_S3_PRESIGN_TTL_SECONDS", "300")
+      |> String.to_integer()
+
+    config :assets,
+      cas_s3: %{
+        bucket: bucket,
+        host: host,
+        access_key_id: access_key_id,
+        secret_access_key: secret_access_key,
+        region: System.get_env("ASSETS_S3_REGION", "auto"),
+        prefix: prefix,
+        presign_ttl_seconds: presign_ttl_seconds
+      }
+  end
 end
 
-if db = System.get_env("DATABASE_PATH") do
-  config :assets, Assets.Repo, database: db
-end
+# x001e: keep test.exs DB / JWKS fixtures; compose injects DATABASE_PATH for the
+# long-running assets service and must not win during `mix test`.
+if config_env() != :test do
+  if db = System.get_env("DATABASE_PATH") do
+    config :assets, Assets.Repo, database: db
+  end
 
-if url = System.get_env("AUTH_JWKS_URL") do
-  config :assets, auth_jwks_url: url
-end
+  if url = System.get_env("AUTH_JWKS_URL") do
+    config :assets, auth_jwks_url: url
+  end
 
-if System.get_env("AUTH_JWKS_FETCH_ON_START") in ~w(false 0) do
-  config :assets, auth_jwks_fetch_on_start: false
-end
+  if System.get_env("AUTH_JWKS_FETCH_ON_START") in ~w(false 0) do
+    config :assets, auth_jwks_fetch_on_start: false
+  end
 
-if System.get_env("BIND_ALL") in ~w(true 1) do
-  config :assets, AssetsWeb.Endpoint,
-    http: [ip: {0, 0, 0, 0}, port: port],
-    server: true
+  if System.get_env("BIND_ALL") in ~w(true 1) do
+    config :assets, AssetsWeb.Endpoint,
+      http: [ip: {0, 0, 0, 0}, port: port],
+      server: true
+  end
 end
 
 if config_env() == :prod do
