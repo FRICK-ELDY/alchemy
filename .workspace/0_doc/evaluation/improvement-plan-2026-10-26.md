@@ -99,12 +99,12 @@ x001j  P4 Manifest 駆動（定義 vs 実行）
 
 ## 次回評価で見る完了定義
 
-- [ ] `make ci`（assets 含む）が開発者 `.env` ありでも緑
-- [ ] 公網手順が release のみ、mailbox 非公開
-- [ ] WAN から host_control / 偽 liveliness でセッション破壊できない（テストまたは手順で証明）
-- [ ] 入室 10 分後も入力可能
+- [x] `make ci`（assets 含む）が開発者 `.env` ありでも緑（x001e / x001f）
+- [x] 公網手順が release のみ、mailbox 非公開（x001e）
+- [ ] WAN から host_control / 偽 liveliness でセッション破壊できない（テストまたは手順で証明）— host_control は x001e、liveliness は P2
+- [x] 入室 10 分後も入力可能（x0021 P1-1）
 - [ ] architecture の保証表に assets GET モデルと Zenoh 信頼境界が追記されている
-- [ ] 採用マイナスの P0–P1 が「解決済み」とコード再検証できる
+- [x] 採用マイナスの P0–P1 が「解決済み」とコード再検証できる（x001e / x0021）
 
 ---
 

@@ -73,28 +73,13 @@ fn login(auth_url: &str, user: &str, password: &str) -> Result<String> {
 fn fetch_room_token(world_url: &str, room_id: &str, access: &str, role: &str) -> Result<String> {
     let base = world_url.trim_end_matches('/');
     let authz = format!("Bearer {access}");
-    // ureq maps non-2xx to Err(Status); 409 (already exists) is fine for ensure.
-    match ureq::post(&format!("{base}/api/v1/rooms"))
-        .set("content-type", "application/json")
-        .set("authorization", &authz)
-        .timeout(Duration::from_secs(15))
-        .send_json(serde_json::json!({ "room_id": room_id }))
-    {
-        Ok(_) => {}
-        Err(ureq::Error::Status(409, _)) => {}
-        Err(ureq::Error::Status(code, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
-            log::warn!("ensure room failed status={code} body={body}");
-        }
-        Err(err) => log::warn!("ensure room request error: {err:#}"),
-    }
-
+    // x0021: do not create rooms here — host-server owns create/owner_sub.
     let resp: TokenResponse = ureq::post(&format!("{base}/api/v1/rooms/{room_id}/tokens"))
         .set("content-type", "application/json")
         .set("authorization", &authz)
         .timeout(Duration::from_secs(15))
         .send_json(serde_json::json!({ "role": role }))
-        .context("issue Room Token")?
+        .context("issue Room Token (is host-server up and room created?)")?
         .into_json()
         .context("parse Room Token")?;
     if resp.token.is_empty() {
