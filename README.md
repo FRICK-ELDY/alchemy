@@ -5,13 +5,14 @@
 **対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
 ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
 
-## 現状（x001a / HTTPS 入口）
+## 現状（x001b / Zenoh WAN）
 
 `host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（最大 **4**）・**user_root entity 3..6**・**PresenceState**・**Leave / liveliness / Intent TTL 解放**・**`ROOM_ID` Zenoh キー**・**立方体 ×9**・**30Hz デルタ**。  
 `client` は Dash 下タブ **Home / Settings / Exit**。Home で **login / 最小 register / logout**（logout は Leave + liveliness undeclare）。未ログインでは Room Token なし。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` は CI サイレント login。Desktop Grab / XR Grab / Noclip は従来どおり。  
 **LAN:** zenohd `0.0.0.0:7447`、**`ZENOH_CONNECT`**。  
 **HTTPS:** Cloudflare Tunnel で auth / world / assets を公開（[`edge/cloudflared/`](edge/cloudflared/)）。  
-**次:** [x001b Zenoh WAN](.workspace/roadmap/slices/x001b-zenoh-wan-conoha.md)。空き ID = **`x001c`**。[roadmap](.workspace/roadmap/README.md)。
+**WAN:** ConoHa 上 zenohd + IP allowlist（[`zenoh-router/config.wan.json5`](zenoh-router/config.wan.json5) · [手順書](.workspace/0_doc/manual/zenoh-wan-conoha.md)）。  
+空き ID = **`x001c`**。[roadmap](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|
@@ -110,6 +111,7 @@ bash .scripts/smoke-presence-slots.sh   # Presence slots + ROOM_ID keys + pin ba
 bash .scripts/smoke-client-auth.sh      # x0018 Home units + login→logout HTTP
 bash .scripts/smoke-leave-liveliness.sh # x0019 Leave + liveliness units + host banner
 bash .scripts/smoke-https-edge.sh       # x001a Tunnel: AUTH/WORLD/ASSETS_URL 必須
+bash .scripts/smoke-zenoh-wan.sh        # x001b WAN: ZENOH_CONNECT 必須（TCP 到達）
 # 3 client（同マシン・既定 ROOM_ID=local）:
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=alice cargo run -p client
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=bob cargo run -p client
@@ -122,7 +124,12 @@ bash .scripts/smoke-https-edge.sh       # x001a Tunnel: AUTH/WORLD/ASSETS_URL �
 #   cd edge/cloudflared && cloudflared tunnel --config config.yml run
 #   export AUTH_URL=https://auth.example.tld WORLD_URL=https://world.example.tld ASSETS_URL=https://assets.example.tld
 #   （env 例: edge/client.env.example / smoke: bash .scripts/smoke-https-edge.sh）
-#   Zenoh はまだ LAN / localhost（x001b まで）。公網ポート開放は不要。
+#   公網へのルーターポート開放は不要（Tunnel）。
+# Zenoh WAN（x001b / ConoHa）:
+#   手順: .workspace/0_doc/manual/zenoh-wan-conoha.md
+#   VPS: zenohd -c config.wan.json5 + ufw allowlist（7447 全世界開放禁止）
+#   export ZENOH_CONNECT=tcp/<VPS_IP>:7447
+#   拠点 host + 外 client（x001a URL）で同じ ROOM_ID。smoke: bash .scripts/smoke-zenoh-wan.sh
 # ESC ダッシュ / Home タブ / XR Grab / Noclip。Desktop 強制: ALCHEMY_FORCE_DESKTOP=1
 # OpenXR ローダー明示: ALCHEMY_OPENXR_LOADER=...
 ```

@@ -76,9 +76,9 @@ depends_on: [x0006]
 | x0018 | — | done | client アカウント殻（login / logout / 最小 register） | [x0018-client-auth-session.md](slices/x0018-client-auth-session.md) |
 | x0019 | — | done | 明示 Leave / Zenoh liveliness | [x0019-explicit-leave-liveliness.md](slices/x0019-explicit-leave-liveliness.md) |
 | x001a | — | active | HTTPS 入口（Cloudflare Tunnel） | [x001a-https-edge-tunnel.md](slices/x001a-https-edge-tunnel.md) |
-| x001b | — | planned | Zenoh WAN（ConoHa zenohd + IP allowlist） | [x001b-zenoh-wan-conoha.md](slices/x001b-zenoh-wan-conoha.md) |
+| x001b | — | active | Zenoh WAN（ConoHa zenohd + IP allowlist） | [x001b-zenoh-wan-conoha.md](slices/x001b-zenoh-wan-conoha.md) |
 
-**現在の次:** **x001a**（HTTPS 入口・リポ側 Phase done / 運用者デモ待ち）→ その後 **x001b**（Zenoh WAN）。次の空き ID = **`x001c`**
+**現在の次:** **x001b**（Zenoh WAN・リポ側 Phase ほぼ done / 運用者デモ待ち）。次の空き ID = **`x001c`**
 
 ## 関連
 

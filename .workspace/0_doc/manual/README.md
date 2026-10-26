@@ -4,4 +4,5 @@
 
 | 文書 | 内容 |
 |:---|:---|
-| [cloudflare-tunnel-windows.md](cloudflare-tunnel-windows.md) | Cloudflare Tunnel（Windows）— auth / world / assets の HTTPS 公開 |
+| [cloudflare-tunnel-windows.md](cloudflare-tunnel-windows.md) | Cloudflare Tunnel（Windows）— auth / world / assets の HTTPS 公開（x001a） |
+| [zenoh-wan-conoha.md](zenoh-wan-conoha.md) | Zenoh WAN（ConoHa / Ubuntu 22.04・24.04）— zenohd + IP allowlist（x001b） |

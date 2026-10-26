@@ -4,7 +4,7 @@
 テンプレ・gitignore: [`edge/cloudflared/`](../../../edge/cloudflared/) · Slice: [x001a](../../roadmap/slices/x001a-https-edge-tunnel.md)
 
 対象 OS: **Windows**（Docker Desktop + ネイティブ `cloudflared`）。  
-例ドメイン: `your-domain.com`（自分の Zone に読み替え可）。
+例ドメイン: `example.tld`（自分の Zone に読み替え可）。
 
 ## 構成のイメージ
 
@@ -52,7 +52,7 @@ cd D:\github\frick\alchemy
 cloudflared tunnel login
 ```
 
-ブラウザで対象 Zone（例: `your-domain.com`）を選んで Authorize。
+ブラウザで対象 Zone（例: `example.tld`）を選んで Authorize。
 
 ```powershell
 cloudflared tunnel create alchemy-home
@@ -83,11 +83,11 @@ tunnel: <TUNNEL_ID>
 credentials-file: ./credentials.json
 
 ingress:
-  - hostname: auth.your-domain.com
+  - hostname: auth.example.tld
     service: http://127.0.0.1:4002
-  - hostname: world.your-domain.com
+  - hostname: world.example.tld
     service: http://127.0.0.1:4003
-  - hostname: assets.your-domain.com
+  - hostname: assets.example.tld
     service: http://127.0.0.1:4004
   - service: http_status:404
 ```
@@ -97,9 +97,9 @@ ingress:
 ### 4. DNS（CNAME）
 
 ```powershell
-cloudflared tunnel route dns alchemy-home auth.your-domain.com
-cloudflared tunnel route dns alchemy-home world.your-domain.com
-cloudflared tunnel route dns alchemy-home assets.your-domain.com
+cloudflared tunnel route dns alchemy-home auth.example.tld
+cloudflared tunnel route dns alchemy-home world.example.tld
+cloudflared tunnel route dns alchemy-home assets.example.tld
 ```
 
 Dashboard → DNS で Proxy（オレンジ雲）オンの CNAME が増えていれば OK。
@@ -146,18 +146,18 @@ cloudflared tunnel --config config.yml --protocol http2 run
 ## 確認
 
 ```powershell
-curl.exe -sf https://auth.your-domain.com/health
-curl.exe -sf https://world.your-domain.com/health
-curl.exe -sf https://assets.your-domain.com/health
+curl.exe -sf https://auth.example.tld/health
+curl.exe -sf https://world.example.tld/health
+curl.exe -sf https://assets.example.tld/health
 ```
 
 縦通し（login → Room Token → assets）:
 
 ```powershell
 cd D:\github\frick\alchemy
-$env:AUTH_URL = "https://auth.your-domain.com"
-$env:WORLD_URL = "https://world.your-domain.com"
-$env:ASSETS_URL = "https://assets.your-domain.com"
+$env:AUTH_URL = "https://auth.example.tld"
+$env:WORLD_URL = "https://world.example.tld"
+$env:ASSETS_URL = "https://assets.example.tld"
 bash .scripts/smoke-https-edge.sh
 ```
 
