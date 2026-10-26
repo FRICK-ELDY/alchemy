@@ -589,20 +589,22 @@ mod tests {
     #[test]
     fn release_slot_clears_grab_and_resets_spawn() {
         let mut world = PhysicsWorld::new(LocoMode::Noclip, 10.0);
-        let dt = 1.0 / 60.0;
-        for _ in 0..60 {
-            world.apply_user_intent(0, 1.0, 0.0, 0.0, dt);
-            world.step();
-        }
-        let (x_moved, _, _) = world.user_root_translation(0);
-        assert!(x_moved > 0.5, "precondition: moved, got {x_moved}");
         for _ in 0..30 {
             world.step();
         }
+        // Grab while still near the box (player↔entity gate), then move away.
         let id = BOX_ENTITY_FIRST + 4;
         let (bx, by, bz) = world.box_translation(4);
         world.apply_grab(0, true, id, (bx, by, bz));
         assert_eq!(world.grab_entity_id(0), Some(id));
+        let dt = 1.0 / 60.0;
+        for _ in 0..60 {
+            world.apply_user_intent(0, 1.0, 0.0, 0.0, dt);
+            world.apply_grab(0, true, id, (bx + 1.0, by, bz));
+            world.step();
+        }
+        let (x_moved, _, _) = world.user_root_translation(0);
+        assert!(x_moved > 0.5, "precondition: moved, got {x_moved}");
         world.release_slot(0);
         assert!(world.grab_entity_id(0).is_none());
         let (x, y, z) = world.user_root_translation(0);
