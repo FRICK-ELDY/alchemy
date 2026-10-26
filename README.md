@@ -114,6 +114,9 @@ bash .scripts/smoke-client-auth.sh      # x0018 Home units + login→logout HTTP
 bash .scripts/smoke-leave-liveliness.sh # x0019 Leave + liveliness units + host banner
 bash .scripts/smoke-https-edge.sh       # x001a Tunnel: AUTH/WORLD/ASSETS_URL 必須
 bash .scripts/smoke-zenoh-wan.sh        # x001b WAN: ZENOH_CONNECT 必須（TCP 到達）
+make ci-e2e                             # x001f hermetic: compose 縦 login→token→input→frame
+#   前提: docker compose -f docker-compose.e2e.yml up -d --build
+#   または COMPOSE_UP=1 make ci-e2e
 # 3 client（同マシン・既定 ROOM_ID=local）:
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=alice cargo run -p client
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=bob cargo run -p client
@@ -152,6 +155,7 @@ make ci-protocol
 make ci-auth
 make ci-world
 make ci-assets
+make ci-e2e   # x001f（compose スタック起動後）
 ```
 
 ホストの `mix` で auth を回す場合のみ:

@@ -1,6 +1,6 @@
 # x001e — P0 信頼境界（Tunnel prod / host_control / seed / assets CI）
 
-> **ID:** `x001e` · **slug:** `p0-trust-boundary` · **status:** `active` · **area:** `[auth, world, assets, host, client, relay, docs, ci]` · **depends_on:** `[x001d]`
+> **ID:** `x001e` · **slug:** `p0-trust-boundary` · **status:** `done` · **area:** `[auth, world, assets, host, client, relay, docs, ci]` · **depends_on:** `[x001d]`
 
 目標: 2026-10-26 評価の **P0**（公開面の穴）を塞ぐ。コード量少・被害大の項目を先に潰し、次回評価の正味を押し上げる。
 
@@ -34,9 +34,10 @@
 
 ## やらない（後続）
 
-- P1 Token refresh / JWKS bg / magnitude / host role（→ x001f）
+- Hermetic Compose 縦 E2E（→ x001f）
+- P1 Token refresh / JWKS bg / magnitude / host role
 - P2 liveliness / WAN TLS / session binding
-- Manifest 駆動（P4）
+- Manifest 駆動（P4 / x0021）
 
 ## 成功条件
 

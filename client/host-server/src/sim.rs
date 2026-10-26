@@ -8,7 +8,7 @@
 use alchemy_protocol::LocomotionMode;
 use rapier3d::prelude::*;
 
-pub use alchemy_protocol::DEFAULT_MOVE_SPEED;
+pub use alchemy_protocol::{DEFAULT_MOVE_SPEED, USER_ROOT_ENTITY_FIRST, USER_ROOT_SLOTS};
 
 const FLOOR_HALF_H: f32 = 0.5;
 const BALL_RADIUS: f32 = 0.25;
@@ -16,10 +16,6 @@ const BALL_RADIUS: f32 = 0.25;
 pub const SPAWN_Y: f32 = 5.0;
 /// Demo gravity (weaker than Earth) so the drop lasts ~2s and is easy to see.
 const DEMO_GRAVITY_Y: f32 = -2.2;
-
-/// Max simultaneous players (x0015). Entity ids = [`USER_ROOT_ENTITY_FIRST`] .. +SLOTS-1.
-pub const USER_ROOT_SLOTS: usize = 4;
-pub const USER_ROOT_ENTITY_FIRST: u32 = 3;
 /// user_root spawn (eye height-ish above floor). Slots fan on ±X.
 pub const USER_SPAWN: [(f32, f32, f32); USER_ROOT_SLOTS] = [
     (0.0, 1.6, 6.0),

@@ -18,13 +18,14 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
 
+use alchemy_protocol::user_root_entity_last;
+
 use crate::auth::AuthGate;
 use crate::mesh::CpuMesh;
 
 pub const MESH_ENTITY_ID: u32 = 1;
-/// Host-authoritative player roots (x0015: entity 3..6 via Presence).
-pub const USER_ROOT_ENTITY_FIRST: u32 = 3;
-pub const USER_ROOT_SLOTS: u32 = 4;
+/// Host-authoritative player roots (protocol SSoT; x0015 Presence).
+pub use alchemy_protocol::USER_ROOT_ENTITY_FIRST;
 /// Sentinel: Presence has not assigned a local user_root yet.
 pub const LOCAL_USER_ROOT_UNSET: u32 = 0;
 /// First entity id for the 3×3 grabbable grid (matches host x0010).
@@ -36,7 +37,7 @@ pub const BOX_HALF_EXTENT: f32 = 0.25;
 pub const REMOTE_ROOT_HALF_EXTENT: f32 = 0.25;
 
 pub fn is_user_root_entity(id: u32) -> bool {
-    (USER_ROOT_ENTITY_FIRST..USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS).contains(&id)
+    (USER_ROOT_ENTITY_FIRST..=user_root_entity_last()).contains(&id)
 }
 /// Half-extent of Desktop floor (meters). Larger so loco is obvious.
 const FLOOR_EXTENT: f32 = 20.0;

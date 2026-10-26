@@ -1,6 +1,6 @@
-# Entry points (macOS / Linux / WSL).
-.PHONY: ci ci-rust ci-protocol ci-auth ci-world ci-assets \
-	smoke-assets smoke-assets-r2 help
+# Entry points (macOS / Linux / WSL / Git Bash).
+.PHONY: ci ci-rust ci-protocol ci-auth ci-world ci-assets ci-e2e \
+	smoke-assets smoke-assets-r2 smoke-compose-e2e help
 
 help:
 	@echo "Targets:"
@@ -10,8 +10,10 @@ help:
 	@echo "  make ci-auth"
 	@echo "  make ci-world"
 	@echo "  make ci-assets"
+	@echo "  make ci-e2e            # x001f hermetic compose E2E (stack must be up, or COMPOSE_UP=1)"
 	@echo "  make smoke-assets      # local CAS API smoke (auth+assets up)"
 	@echo "  make smoke-assets-r2   # x001c/x001d R2 CAS + 302 presign smoke (BACKEND=s3)"
+	@echo "  make smoke-compose-e2e # alias of ci-e2e"
 	@echo ""
 	@echo "Dev: see README.md"
 
@@ -38,3 +40,6 @@ smoke-assets:
 
 smoke-assets-r2:
 	./.scripts/smoke-assets-r2.sh
+
+ci-e2e smoke-compose-e2e:
+	./.scripts/smoke-compose-e2e.sh

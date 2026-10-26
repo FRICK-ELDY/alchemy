@@ -9,7 +9,7 @@ RUN apk add --no-cache musl-dev \
 
 FROM ${ELIXIR_IMAGE} AS dev
 
-RUN apk add --no-cache build-base git
+RUN apk add --no-cache build-base git wget
 COPY --from=b3sum /b3sum /usr/local/bin/b3sum
 
 WORKDIR /app
