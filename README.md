@@ -9,7 +9,8 @@
 
 `host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（最大 **4**）・**user_root entity 3..6**・**PresenceState**・**Leave / liveliness / Intent TTL 解放**・**`ROOM_ID` Zenoh キー**・**立方体 ×9**・**30Hz デルタ**。  
 `client` は Dash 下タブ **Home / Settings / Exit**。Home で **login / 最小 register / logout**（logout は Leave + liveliness undeclare）。未ログインでは Room Token なし。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` は CI サイレント login。Desktop Grab / XR Grab / Noclip は従来どおり。  
-**LAN:** zenohd `0.0.0.0:7447`、**`ZENOH_CONNECT`**。Slice 次 ID = **`x001a`**。[roadmap](.workspace/roadmap/README.md)。
+**LAN:** zenohd `0.0.0.0:7447`、**`ZENOH_CONNECT`**。  
+**次:** [x001a HTTPS 入口](.workspace/roadmap/slices/x001a-https-edge-tunnel.md) → [x001b Zenoh WAN](.workspace/roadmap/slices/x001b-zenoh-wan-conoha.md)。空き ID = **`x001c`**。[roadmap](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|
