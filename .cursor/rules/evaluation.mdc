@@ -8,10 +8,10 @@ alwaysApply: false
 このルールが適用されたとき、エージェントはプロジェクト全体を以下の観点で**忌憚なく**評価し、
 スコアリングと文書化を行う。
 
-> **注意（技術評価層）**  
-> 下記の **技術評価層** は旧 AlchemyEngine（Elixir SSoT / contents / Formula NIF 等）時点の基準を引き継いだ草案であり、**大幅に変わる予定**である。  
-> 評価時は、現行の `.workspace/vision.md` / `.workspace/0_doc/architecture/` および実際のディレクトリ構成を優先し、この節の古い前提（Elixir = SSoT、`mix alchemy.ci`、存在しないアプリパス等）に機械的に従わないこと。  
-> 技術評価層の観点リストが更新されるまで、技術面は **現状コードとアーキテクチャ文書に基づく暫定評価** とし、陳腐化した観点は「該当コードなし／前提変更により評価対象外」と明記する。
+> **技術評価層の正本**  
+> 観点は [`.workspace/0_doc/architecture/overview.md`](../../.workspace/0_doc/architecture/overview.md) の目標構成と、リポジトリ直下の実ディレクトリに対応させる。  
+> 評価時は各コンポーネントの [`architecture/*.md`](../../.workspace/0_doc/architecture/)（保証する／しない）と現状コードを突き合わせる。  
+> **目標のみでコードが無い項目**は減点せず「未実装・評価対象外」または提案点 `0` とする。旧 Elixir 権威実行（contents / Formula NIF / Phoenix Channel・独自 UDP）前提は使わない。
 
 ---
 
@@ -19,116 +19,165 @@ alwaysApply: false
 
 満点・上限は設けない。加点・減点の積み上げで総合スコアを算出する。
 
-観点は **技術評価層**（コードと1対1対応）と **横断評価層**（コードを横断する品質・プロセス・プロダクト視点）の2層で構成する。
+観点は **技術評価層**（コード／コンポーネントと1対1対応）と **横断評価層**（コードを横断する品質・プロセス・プロダクト視点）の2層で構成する。
+
+技術評価層は overview のブロックに沿う。
+
+| ブロック | 評価対象ディレクトリ |
+|:---|:---|
+| **2. 運営側コア（Core Profile）** | `auth-server/` · `assets-server/` · `world-server/` |
+| **3. 共通契約層** | `protocol/` ·（目標）`shared-sim` ※現状は `client/host-server` に同居 |
+| **4. ホストユーザー端末** | `launcher/` · `client/host-server/` · `client/app/` |
+| **転送・公開エッジ** | `zenoh-router/` · `edge/` |
+| **Optional Profile（目標）** | billing / market-server ※リポジトリ未設置なら対象外 |
 
 ---
 
-### 技術評価層 — world-server/
+### 技術評価層 — auth-server/（アイデンティティ SSoT）
 
-`world-server/` 配下の Elixir アプリと Rust NIF を独立して評価する。
+`auth-server/` の認証 API を独立して評価する。Room Token・空間計算・アセット本体は対象外。
 
-> ※ 改定予定。権威実行の Rust 移行後は、本節のアプリ分割・SSoT 前提を置き換える。
-
-- **`world-server/apps/contents`**（コンテンツ実装・ゲームロジック・パラメータ設計）
-  - World/Rule 実装の質、エンティティパラメータの外部化、コンテンツ交換可能性の実証
-  - スポーン・レベル・ボス等のゲームシステムの設計品質
-  - `core` への依存が適切に制御されているか
-
-- **`world-server/apps/core`**（エンジンコア・OTP設計・コンポーネント・シーン管理）
-  - OTP Supervisor ツリー・GenServer 責務分離・耐障害性設計
-  - `ContentBehaviour` / `SceneBehaviour` / `Component` ビヘイビア設計
-  - SSoT（Elixir = Single Source of Truth）の一貫性
-  - バックプレッシャー・スケジューリング設計
-
-- **`world-server/apps/network`**（ネットワーク層・トランスポート・OTP隔離）
-  - Local / Phoenix Channels / UDP トランスポートの実装度
-  - OTP プロセス隔離の実証（ルーム間クラッシュ分離）
-  - 認証・セキュリティ設計
-
-- **`world-server/apps/server`**（アプリケーション起動・設定・エントリポイント）
-  - Application 起動シーケンスの堅牢性
-  - 設定管理（config.exs / runtime.exs）の設計
-  - 環境別（dev/test/prod）の分離
-
-- **`world-server/rust/nif`**（Formula VM・Elixir×Rust ブリッジ）
-  - バイトコード実行（`run_formula_bytecode`）。ゲーム用物理ループは対象外
-  - ゲームルールとバランス値を NIF に持たないこと。定義は Elixir の contents
-  - NIF 関数カテゴリ分類（ロック競合の予測可能性）
-  - `ResourceArc` による GC 連動ライフタイム管理
-  - `NifBridgeBehaviour` + Mox によるモック設計
-  - NIF バージョニング・ABI 互換性・エラーハンドリング
-
----
-
-### 技術評価層 — client/
-
-`client/` 配下の各 Rust クレートを独立して評価する。
-
-> ※ 改定予定。クレート分割が変わったら本節を更新する。
-
-- **`client/shared`**（共通データ・Elixir 契約・ゼロコピー）
-  - `#[repr(C)]` 構造体・bytemuck Pod/Zeroable
-  - Elixir-Rust 間の契約型定義の一貫性
-  - 予測・補間ロジック（interp/predict）の設計
-
-- **`client/network`**（Zenoh 通信・msgpack デコード・NetworkRenderBridge）
-  - Zenoh による Pub/Sub トランスポート
-  - MessagePack デコード・RenderFrame 変換
-  - `ClientSession` / `NetworkRenderBridge` の責務分離
-  - プラットフォーム切り替え（desktop / web）
-
-- **`client/render`**（描画パイプライン・シェーダー・補間）
-  - wgpu インスタンス描画・WGSL シェーダー
-  - サブフレーム補間（lerp）のロック外計算
-  - ヘッドレスレンダラー（CI対応）
-  - レンダーグラフ設計・フラスタムカリング・アロケーション効率
-
-- **`client/window`**（窓層・イベント管理・デスクトップループ）
-  - winit による窓・ライフサイクル管理
-  - 入力イベント正規化・RenderBridge インターフェース
-  - プラットフォーム固有処理の抽象化
-
-- **`client/audio`**（非同期設計・フォールバック・アセット管理）
-  - コマンドパターン + `mpsc::channel` 非同期設計
-  - デバイス不在時のグレースフルフォールバック
-  - ボイスリミット・優先度システム・空間オーディオ
-  - platform/ による OS 別実装
-
-- **`client/app`**（統合層・デスクトップエントリ）
-  - 各クレート（window / render / network / audio）の組み合わせ
-  - デスクトップクライアント（Zenoh 経由で RenderFrame 受信・入力送信）
-  - エントリポイントの責務分離
-
----
-
-### 技術評価層 — auth-server/
-
-`auth-server/` の認証 API を独立して評価する。ゲームロジックとルーム管理は対象外とする。
-
-> ※ 改定予定。実装言語・レイアウトが変わったら本節を更新する。
-
-- **`auth-server/lib/auth`**（アイデンティティの SSoT・アカウント・トークン）
+- **`auth-server/lib/auth`**（アカウント・トークン）
   - User を本サービスのみが持ち、他サービスは JWT `sub` だけを参照する分離
   - 登録・ログイン・パスワード（Argon2）・アカウントライフサイクル
   - アクセストークン（JWT / RS256）とリフレッシュトークンの発行・失効
-  - 鍵管理とトークン失効の設計
+  - 鍵管理（`kid` / JWKS）とトークン失効の設計
+  - （目標）Friendship / Group / ToS 同意 — 未実装なら提案または対象外
 
-- **`auth-server/lib/auth_web`**（HTTP 境界・認証ガード・レート制限）
+- **`auth-server/lib/auth_web`**（HTTP 境界・認証ガード）
   - 公開 API と認証必須 API のパイプライン分離
-  - `Authenticate` / `RateLimit` の責務分離
+  - 認証 Plug・レート制限の責務分離
   - エラー応答が認証情報を漏らさないこと
   - ヘルスと `/.well-known/jwks.json` の公開面
 
 ---
 
-### 技術評価層 — 追加コンポーネント（草案・詳細は未定義）
+### 技術評価層 — assets-server/（CAS・Quota・門番）
 
-新リポジトリでディレクトリが存在するが、旧評価基準に詳細が無いもの。観点の中身はアーキテクチャ文書の確定後に定義する。
+`assets-server/` を独立して評価する。Spatial VCS / Origin Cert / pgvector は目標。現状は CAS + Quota + HTTP 門番。
 
-- **`assets-server/`**
-- **`protocol/`**
+- **`assets-server/lib/assets`**（メタ・CAS・Quota）
+  - Blob メタ（owner_sub / blake3 / size）と不変バイナリの分離（DB に GLB 本体を置かない）
+  - CAS キー = BLAKE3。同一ハッシュ再アップロードで Quota 非加算
+  - `ASSETS_CAS_BACKEND=local|s3` 切替と s3 時 GET の署名 URL 302
+  - Quota 超過拒否・auth `sub` を所有者キーにすること
+  - （目標）Vault / Commit / Origin Cert / 検疫 — 未実装なら提案または対象外
+
+- **`assets-server/lib/assets_web`**（HTTP 境界）
+  - Bearer 必須 API とヘルスの分離
+  - PUT 代理アップロード / GET（local 代理 or s3 302）の契約明確さ
+  - エラー・認可漏れが他ユーザー Blob を晒さないこと
+
+---
+
+### 技術評価層 — world-server/（案内所・門番・監査）
+
+`world-server/` は **Pure Elixir・空間権威ではない**。Room Token・World 案内・（目標）verifier。NIF・独自 UDP・空間用 Phoenix Channel は廃止方針。
+
+- **`world-server/lib/world`**（Room・Token・JWKS）
+  - 短命 Room Token（RS256）の発行と claim 設計（`sub` / `room_id` / `role` / `aud`）
+  - auth-server JWT 検証（`AUTH_JWKS_URL`）と `sub` の Token への転写
+  - Room Token 用 `/.well-known/jwks.json`
+  - 匿名 Token 既定 OFF など門番ポリシー
+  - （目標）World 一覧永続・5段階公開範囲・Scene Manifest 署名・S2S 連合 — 未実装なら提案または対象外
+
+- **`world-server/lib/world_web`**（HTTP 境界）
+  - `/health` / JWKS / Room API のパイプライン分離
+  - Bearer 必須とエラー応答の一貫性
+
+- **verifier（目標・apps/verifier 等）**
+  - Untrusted host の Spot-Check・改ざん時の Token 失効
+  - 見る権利と着る権利の分離（Origin Cert → License → sub）
+  - スマートホスト移譲・リレー SLA 監視
+  - コードが無ければ評価対象外（減点しない）
+
+---
+
+### 技術評価層 — protocol/（ワイヤ契約 SSoT）
+
+`protocol/`（alchemy-protocol）を独立して評価する。client に埋め込まずスーパープロジェクト直下で共有する方針との一致も見る。
+
+- **`.proto` / 生成 Rust**
+  - `PROTOCOL_PIN` による世代固定
+  - `SceneManifest` / `RenderFrame`（delta）/ `InputEvent` / `PresenceState` の責務分離
+  - 描画境界の空間量（binary64 / f64）と GLB 非搭載（CAS 参照のみ）
+  - キー式ヘルパ・`validate_room_id`・liveliness キーの一貫性
+  - （目標）audio / tracking / 本格ビット圧縮 — 未実装なら提案または対象外
+
+---
+
+### 技術評価層 — client/host-server/（Untrusted 計算ホスト）
+
+`client/host-server/`（目標では shared-sim 同居の Pure Rust host）。空間状態・物理・配信の実行側。world-server は監査・門番のみ。
+
+- **入室・入力ゲート**
+  - Room Token 署名検証（JWKS）・`is_finite` サニタイズ
+  - per-`sub` Intent・Leave / liveliness / TTL によるスロット解放
+
+- **ティック構造**
+  - 内部物理 Tick（目標 60Hz）とネットワーク配信 Tick（20/30/60Hz 可変・デルタ）の分離
+  - Presence / Manifest / frame チャネル責務（ルーター化しない）
+
+- **シミュレーション範囲**
+  - Rapier 等の物理・entity 割当（user_root 等）の設計品質
+  - （目標）Formula VM・Wake-on-Join・貸し出しプール連携 — 未実装なら提案または対象外
+
+---
+
+### 技術評価層 — client/app/（体感・描画・UI エンドポイント）
+
+`client/app/`（パッケージ名 `client`）。**ルーター機能を持たない純粋エンドポイント**。host-server とは別プロセス前提。
+
+- **`surface/`**（boot・Desktop / OpenXR）
+  - ランタイム有無による VR / Desktop 切替・デバイス差の吸収
+  - 入力の Intent 正規化（Desktop / OpenXR バインド）
+
+- **`system_ui/`**（空間メニュー・Dash）
+  - Facet が OpenXR / Room 固有知識を持ちすぎないか
+  - Home login/register/logout・Leave / liveliness 連動
+
+- **描画・アセット経路**
+  - Zenoh Subscribe（manifest / presence / frame）→ BLAKE3 → assets GET（302 追従）→ wgpu
+  - 予測・補間（目標 ~60–120fps）の有無と設計
+  - （目標）OSC 受信エッジ・Dual Editor・LOD ビルド・空間オーディオ・P2P キャッシュ — 未実装なら提案または対象外
+
+- **プロセス境界**
+  - client が他人の通信を中継しないこと（サブルーター禁止）
+  - host との IPC / 起動責務が launcher 前提と矛盾しないこと
+
+---
+
+### 技術評価層 — launcher/（プロセスマネージャ）
+
+`launcher/`（alchemy-launcher）。client とローカル host-server の分離起動・死活監視・ディープリンク。
+
+- 両プロセスの起動・監視・終了委譲の設計
+- `alchemy://` ディープリンク・ホスト権限委譲（目標）
+- スタブ／空ディレクトリなら減点せず提案または対象外
+
+---
+
+### 技術評価層 — zenoh-router/ ＆ edge/（転送・公開エッジ）
+
+空間 Network Transport は **Zenoh のみ**。OSC は client 局所の Device Input Edge（目標）。
+
 - **`zenoh-router/`**
-- **`launcher/`**
+  - ローカル / LAN / WAN（ConoHa）設定の分離と運用手順の一致
+  - Token / ACL を zenohd に持たせず host 側検証にする境界
+  - （目標）マルチテナント名前空間・CCU/帯域 QoS・Relay Allocation Token — 未実装なら提案または対象外
+
+- **`edge/`**（cloudflared・client env 例）
+  - Cloudflare Tunnel による拠点 IP 秘匿・ポート開放ゼロ
+  - 設定テンプレ / runbook と実運用の一致
+
+---
+
+### 技術評価層 — Optional Profile（目標・リポジトリ未設置なら対象外）
+
+個人運営では OFF 可能な拡張。ディレクトリが無ければ評価しない（減点しない）。
+
+- **BillingProvider** — コイン・サブスク 70:30・Relay Allocation Token
+- **market-server** — License Token・FederationPolicy・エスクロー
 
 ---
 
@@ -164,20 +213,21 @@ alwaysApply: false
 
 - **開発者体験（DX）**
   - セットアップ手順の明確さ（README → 動作までのステップ数）
-  - ローカル開発環境の構築コスト（依存ツール・バージョンの明示）
-  - ローカル CI の単一エントリ（手順・コマンドはリポジトリ現状に合わせる。旧 `mix alchemy.ci` 前提は改定予定）
+  - ローカル開発環境の構築コスト（依存ツール・バージョンの明示。Docker 推奨の有無）
+  - ローカル CI / 検証の単一エントリ（手順・コマンドはリポジトリ現状に合わせる）
   - ビルドエラーメッセージの分かりやすさ
   - ローカル CI がエラーゼロで通過することを前提とする（存在する場合）
 
 - **セキュリティ・配布可能性**
-  - 認証・認可の設計
+  - 認証・認可の設計（auth JWT / Room Token / CAS 所有者境界）
+  - Untrusted host 前提（Token 検証・`is_finite`・verifier 目標）との一貫性
   - 依存クレート/パッケージの脆弱性管理（`cargo audit` 等）
-  - セーブデータの改ざん耐性
-  - ビルド成果物の配布手順（インストーラー・パッケージング）
-  - Windows/macOS/Linux の対応状況
+  - ビルド成果物の配布手順（launcher・インストーラー。未実装なら提案）
+  - マルチプラットフォーム展開（Desktop / OpenXR → 将来 Web/Mobile/Quest）の設計一貫性
 
 - **プロジェクト全体設計**
-  - ドキュメントの品質・網羅性・コードとの一致度
+  - ドキュメント（`overview.md` / 各 `architecture/*.md`）の品質・コードとの一致度
+  - 層間インターフェース（固有概念の漏洩・定義 vs 実行の逆転）の遵守
   - CI/CD パイプラインの設計（ジョブ構成・ベンチマーク回帰）
   - ビジョン（`.workspace/vision.md`）とコードの一致度
   - 自己改善サイクル（improvement-plan の運用）
@@ -287,15 +337,13 @@ alwaysApply: false
 2. `.workspace/0_doc/evaluation/specific-strengths-YYYY-MM-DD.md` — プラス点の統合一覧
 3. `.workspace/0_doc/evaluation/specific-proposals-YYYY-MM-DD.md` — 提案（0点）の統合一覧
 4. `.workspace/0_doc/evaluation/evaluation-YYYY-MM-DD.md` — 当日の総合評価レポート
-5. `.workspace/0_reference/improvement-plan.md` — まとめのマイナス点に基づく改善提案書
+5. `.workspace/0_doc/evaluation/improvement-plan-YYYY-MM-DD.md` — まとめのマイナス点に基づく改善提案書
 
-次回評価時、前回のまとめ（上記 1〜4）を `.workspace/0_doc/evaluation/archive/` へ移す。`improvement-plan.md` は最新版を置き換える。
+次回評価時、前回のまとめ（上記 1〜5）を `.workspace/0_doc/evaluation/archive/YYYY-MM-DD/` へ移す。
 
 ### アーカイブ
 
-- **まとめ**の前回分: `.workspace/0_doc/evaluation/archive/`
-- **Fable 5**（新規評価は行わない）: `.workspace/0_doc/evaluation/fable/archive/YYYY-MM-DD/`（フォルダ名は評価日）
-- **Fable 以前**（2026-03 系など）: `.workspace/0_doc/evaluation/archive/`
+- **まとめ**の前回分: `.workspace/0_doc/evaluation/archive/YYYY-MM-DD/`
 
 ### ドキュメントの書き方
 
@@ -326,4 +374,4 @@ alwaysApply: false
 - **根拠を示す**: ファイル名・行番号・コード例を引用して具体的に説明する
 - **建設的に**: マイナス点には必ず改善方針を添える
 - **提案は前向きに**: 0点提案は批判ではなく「次のステップ」として記述する
-- **比較軸を持つ**: 同種の OSS（Bevy, Godot, Phoenix LiveView 等）と比較して評価する
+- **比較軸を持つ**: 同種の OSS（Bevy, Godot, VRChat/Resonite 系の空間基盤, Zenoh, Phoenix/Ash 等）と比較して評価する
