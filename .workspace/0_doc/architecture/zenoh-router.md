@@ -1,7 +1,7 @@
 # zenoh-router
 
 > **正本**: [`zenoh-router/`](../../../zenoh-router/)  
-> **ステータス**: ローカル done · WAN（x001b）手順あり
+> **ステータス**: ローカル done · WAN（x001b）done
 
 ## 保証すること / しないこと
 
