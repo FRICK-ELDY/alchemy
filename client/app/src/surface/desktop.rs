@@ -23,7 +23,6 @@ use winit::window::{Cursor, CursorGrabMode, CustomCursor, Window, WindowId};
 
 use crate::auth;
 use crate::host_control;
-use crate::join_room_with_access;
 use crate::mesh::CpuMesh;
 use crate::scene::{
     create_depth_view, create_wgpu_for_window, CameraLook, EntityPose, MoveIntent, SceneGpu,
@@ -31,6 +30,7 @@ use crate::scene::{
 };
 use crate::system_ui::{DashTab, SystemUi, UiAction};
 use crate::world_hit::{desktop_look_ray, pick_grabbable_desktop};
+use crate::{declare_room_alive, join_room_with_access, leave_room};
 
 /// Radians per pixel (fixed; Settings Facet deferred).
 const LOOK_SENSITIVITY: f32 = 0.0025;
@@ -715,6 +715,11 @@ fn handle_ui_action(
                             .unwrap_or_default(),
                     ) {
                         Ok(()) => {
+                            if let Some(session) = zenoh {
+                                if let Err(err) = declare_room_alive(shared, session) {
+                                    log::warn!("liveliness after login failed: {err:#}");
+                                }
+                            }
                             ui.state.home_logged_in_as = Some(name);
                             ui.state.home_password.clear();
                             ui.state.home_status = "Joined room".into();
@@ -765,6 +770,11 @@ fn handle_ui_action(
                             .unwrap_or_default(),
                     ) {
                         Ok(()) => {
+                            if let Some(session) = zenoh {
+                                if let Err(err) = declare_room_alive(shared, session) {
+                                    log::warn!("liveliness after register failed: {err:#}");
+                                }
+                            }
                             ui.state.home_logged_in_as = Some(name);
                             ui.state.home_password.clear();
                             ui.state.home_status = "Account created — joined room".into();
@@ -791,18 +801,22 @@ fn handle_ui_action(
                 .ok()
                 .map(|g| (g.access_token.clone(), g.refresh_token.clone()))
                 .unwrap_or((None, None));
+            if let Some(session) = zenoh {
+                leave_room(shared, session);
+            } else {
+                shared.leave_room_local();
+            }
             if let Some(access) = access.as_deref() {
                 let _ = auth::logout(&shared.auth_url, access, refresh.as_deref());
             }
             if let Ok(mut gate) = shared.auth.lock() {
                 gate.clear_session();
             }
-            shared.leave_room_local();
             ui.state.home_logged_in_as = None;
-            ui.state.home_status = "Signed out — Intent stopped (slot TTL reclaim on host)".into();
+            ui.state.home_status = "Signed out — Leave sent (host reclaim immediate)".into();
             ui.state.tab = DashTab::Home;
             ui.rebuild();
-            log::info!("auth logout — local session cleared");
+            log::info!("auth logout — Leave + local session cleared");
         }
         UiAction::None => {}
     }

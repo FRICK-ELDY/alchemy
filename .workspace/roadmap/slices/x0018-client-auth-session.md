@@ -48,7 +48,7 @@
 
 - メール確認・パスワードリセットの client UI
 - VR ログインシェル（Home タブは見えるが文字入力は Desktop）
-- 明示 Leave / Zenoh liveliness
+- 明示 Leave / Zenoh liveliness → **[x0019](x0019-explicit-leave-liveliness.md)**（done）
 - Steal / 投げ / アバター GLB
 - launcher 本実装
 

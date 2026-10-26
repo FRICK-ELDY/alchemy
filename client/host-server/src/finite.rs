@@ -31,6 +31,7 @@ mod tests {
             aim_x: 0.0,
             aim_y: 0.0,
             aim_z: 0.0,
+            leave: false,
         }
     }
 

@@ -1,17 +1,17 @@
-//! Local host-server — x0017 ROOM_ID Zenoh keys + presence reclaim / Grab / loco.
+//! Local host-server — x0019 Leave / liveliness + ROOM_ID keys / presence / Grab / loco.
 //!
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
 //! - Input: Room Token verify + `is_finite` (NaN/Inf dropped before physics)
 //! - SceneManifest with default Noclip LocomotionConfig (blake3 refs; no GLB bytes)
 //! - Per-`sub` Intent/Grab → up to 4 user_roots (entity 3..6); first-come slot assign
-//! - PresenceState publish (`sub`→entity); Intent silence TTL reclaim (x0016)
+//! - PresenceState publish (`sub`→entity); explicit Leave + liveliness Delete + Intent TTL
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
 //! - Grabbable cuboids entity 10..18; Grab hold kinematic follow; no Steal
 //! - Slice E: `host_control` Subscribe → `shutdown` exits process
 //!
 //! Non-guarantees:
-//! - Steal / rotation follow / explicit Leave / Formula / polished Walk / signed Manifest / verifier
+//! - Steal / rotation follow / Formula / polished Walk / signed Manifest / verifier
 
 mod finite;
 mod host_control;
@@ -24,9 +24,10 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alchemy_protocol::{
-    frame_key, host_control_key, input_buttons, input_key, manifest_key, presence_key,
-    validate_room_id, Entity, InputEvent, LocomotionConfig, LocomotionMode, Message,
-    PresenceAssignment, PresenceState, RenderFrame, SceneEntry, SceneManifest, PROTOCOL_PIN,
+    frame_key, host_control_key, input_buttons, input_key, liveliness_sub_from_key,
+    liveliness_wildcard, manifest_key, presence_key, validate_room_id, Entity, InputEvent,
+    LocomotionConfig, LocomotionMode, Message, PresenceAssignment, PresenceState, RenderFrame,
+    SceneEntry, SceneManifest, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
@@ -36,6 +37,7 @@ use sim::{
     DEFAULT_MOVE_SPEED, USER_ROOT_ENTITY_FIRST, USER_ROOT_SLOTS,
 };
 use zenoh::bytes::ZBytes;
+use zenoh::sample::SampleKind;
 use zenoh::Config;
 use zenoh::Wait;
 
@@ -73,7 +75,7 @@ struct PoseOverride {
     aim_z: f32,
 }
 
-/// Per-sub input slots (x0015) + Intent TTL reclaim (x0016).
+/// Per-sub input slots (x0015) + Leave / liveliness / Intent TTL reclaim (x0019).
 #[derive(Debug)]
 struct PresenceIntents {
     by_slot: [PoseOverride; USER_ROOT_SLOTS],
@@ -84,6 +86,8 @@ struct PresenceIntents {
     dropped_full: u64,
     /// Bumped on assignment or reclaim (PresenceState.revision).
     revision: u64,
+    /// Entity ids freed off the physics thread (Leave / liveliness); drained each tick.
+    pending_removes: Vec<u32>,
 }
 
 impl Default for PresenceIntents {
@@ -94,6 +98,7 @@ impl Default for PresenceIntents {
             last_input: [None; USER_ROOT_SLOTS],
             dropped_full: 0,
             revision: 0,
+            pending_removes: Vec::new(),
         }
     }
 }
@@ -122,6 +127,33 @@ impl PresenceIntents {
         None
     }
 
+    /// Free one occupied slot. Returns entity id.
+    fn free_slot_at(&mut self, i: usize, reason: &str) -> u32 {
+        let sub = self.occupied_sub[i].take();
+        self.last_input[i] = None;
+        self.by_slot[i] = PoseOverride::default();
+        self.revision = self.revision.saturating_add(1);
+        let entity_id = PhysicsWorld::user_root_entity_id(i);
+        log::info!(
+            "presence: reclaimed slot={i} entity={entity_id} sub={} reason={reason} (revision={})",
+            sub.as_deref().unwrap_or("?"),
+            self.revision
+        );
+        entity_id
+    }
+
+    /// Immediate reclaim for Leave / liveliness (queues `pending_removes` for the sim loop).
+    fn reclaim_sub(&mut self, sub: &str, reason: &str) -> Option<u32> {
+        for i in 0..USER_ROOT_SLOTS {
+            if self.occupied_sub[i].as_deref() == Some(sub) {
+                let entity_id = self.free_slot_at(i, reason);
+                self.pending_removes.push(entity_id);
+                return Some(entity_id);
+            }
+        }
+        None
+    }
+
     /// Drop slots with no Intent for `ttl`. Returns freed user_root entity ids.
     fn reclaim_stale(&mut self, now: Instant, ttl: Duration) -> Vec<u32> {
         let mut freed = Vec::new();
@@ -136,18 +168,14 @@ impl PresenceIntents {
             if !stale {
                 continue;
             }
-            let sub = self.occupied_sub[i].take();
-            self.last_input[i] = None;
-            self.by_slot[i] = PoseOverride::default();
-            self.revision = self.revision.saturating_add(1);
-            let entity_id = PhysicsWorld::user_root_entity_id(i);
-            freed.push(entity_id);
-            log::info!(
-                "presence: reclaimed slot={i} entity={entity_id} sub={} (revision={})",
-                sub.as_deref().unwrap_or("?"),
-                self.revision
-            );
+            freed.push(self.free_slot_at(i, "ttl"));
         }
+        freed
+    }
+
+    fn drain_reclaims(&mut self, now: Instant, ttl: Duration) -> Vec<u32> {
+        let mut freed = self.reclaim_stale(now, ttl);
+        freed.append(&mut self.pending_removes);
         freed
     }
 
@@ -311,9 +339,10 @@ fn spawn_input_gate(
         .spawn(move || {
             let _session = session;
             log::info!(
-                "subscribed to {input_key_expr} (Room Token + is_finite + per-sub gate)"
+                "subscribed to {input_key_expr} (Room Token + is_finite + Leave + per-sub gate)"
             );
             let mut accepted: u64 = 0;
+            let mut leaves: u64 = 0;
             let mut dropped_token: u64 = 0;
             let mut dropped_finite: u64 = 0;
             let mut last_log = Instant::now();
@@ -323,7 +352,13 @@ fn spawn_input_gate(
                 match InputEvent::decode(payload.as_ref()) {
                     Ok(event) => match verifier.verify(&event.room_token) {
                         Ok(claims) => {
-                            if !input_event_is_finite(&event) {
+                            if event.leave {
+                                if let Ok(mut guard) = presence.lock() {
+                                    if guard.reclaim_sub(&claims.sub, "leave").is_some() {
+                                        leaves += 1;
+                                    }
+                                }
+                            } else if !input_event_is_finite(&event) {
                                 dropped_finite += 1;
                                 log::warn!(
                                     "drop InputEvent: non-finite move_*=({:.3},{:.3},{:.3})",
@@ -372,9 +407,10 @@ fn spawn_input_gate(
                         .map(|g| g.dropped_full)
                         .unwrap_or(0);
                     log::info!(
-                        "input gate: accepted={accepted} dropped_token={dropped_token} dropped_non_finite={dropped_finite} dropped_full={dropped_full} (last ~5s)"
+                        "input gate: accepted={accepted} leaves={leaves} dropped_token={dropped_token} dropped_non_finite={dropped_finite} dropped_full={dropped_full} (last ~5s)"
                     );
                     accepted = 0;
+                    leaves = 0;
                     dropped_token = 0;
                     dropped_finite = 0;
                     last_log = Instant::now();
@@ -382,6 +418,42 @@ fn spawn_input_gate(
             }
         })
         .context("spawn input thread")?;
+    Ok(())
+}
+
+fn spawn_liveliness_watcher(
+    session: zenoh::Session,
+    room_id: &str,
+    presence: Arc<Mutex<PresenceIntents>>,
+) -> Result<()> {
+    let key = liveliness_wildcard(room_id);
+    let subscriber = session
+        .liveliness()
+        .declare_subscriber(key.clone())
+        .history(true)
+        .wait()
+        .map_err(|e| anyhow::anyhow!("declare_subscriber liveliness failed: {e}"))?;
+
+    thread::Builder::new()
+        .name("zenoh-liveliness".into())
+        .spawn(move || {
+            let _session = session;
+            log::info!("subscribed to liveliness {key}");
+            while let Ok(sample) = subscriber.recv() {
+                if sample.kind() != SampleKind::Delete {
+                    continue;
+                }
+                let key_str = sample.key_expr().as_str();
+                let Some(sub) = liveliness_sub_from_key(key_str) else {
+                    log::warn!("liveliness Delete: unparseable key={key_str}");
+                    continue;
+                };
+                if let Ok(mut guard) = presence.lock() {
+                    let _ = guard.reclaim_sub(sub, "liveliness");
+                }
+            }
+        })
+        .context("spawn liveliness thread")?;
     Ok(())
 }
 
@@ -402,9 +474,10 @@ fn main() -> Result<()> {
     let input_key_expr = input_key(&room_id);
     let presence_key_expr = presence_key(&room_id);
     let host_control_key_expr = host_control_key(&room_id);
+    let liveliness_key_expr = liveliness_wildcard(&room_id);
 
     log::info!(
-        "host-server x0017 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr} host_control={host_control_key_expr} world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        "host-server x0019 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr} world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
     );
@@ -428,6 +501,7 @@ fn main() -> Result<()> {
         Arc::clone(&verifier),
         Arc::clone(&presence),
     )?;
+    spawn_liveliness_watcher(session.clone(), &room_id, Arc::clone(&presence))?;
     host_control::spawn_listener(session.clone(), &room_id)?;
 
     let manifest_pub = session
@@ -526,7 +600,7 @@ fn main() -> Result<()> {
         let (by_slot, occupied, presence_rev, presence_state, reclaimed) = presence
             .lock()
             .map(|mut g| {
-                let freed = g.reclaim_stale(tick_now, PRESENCE_SLOT_TTL);
+                let freed = g.drain_reclaims(tick_now, PRESENCE_SLOT_TTL);
                 (
                     g.by_slot,
                     g.occupied_sub.clone(),
@@ -740,5 +814,20 @@ mod presence_reclaim_tests {
         );
         // last_input refreshed at +2s; at +4s still within 3s TTL from last touch.
         assert!(freed.is_empty());
+    }
+
+    #[test]
+    fn reclaim_sub_frees_immediately() {
+        let mut p = PresenceIntents::default();
+        let t0 = Instant::now();
+        assert_eq!(p.assign_or_lookup("alice", t0), Some(0));
+        let entity = p.reclaim_sub("alice", "leave").expect("reclaim");
+        assert_eq!(entity, PhysicsWorld::user_root_entity_id(0));
+        assert!(p.occupied_sub[0].is_none());
+        assert_eq!(p.pending_removes, vec![entity]);
+        let drained = p.drain_reclaims(t0, PRESENCE_SLOT_TTL);
+        assert_eq!(drained, vec![entity]);
+        assert!(p.pending_removes.is_empty());
+        assert_eq!(p.assign_or_lookup("bob", t0), Some(0));
     }
 }
