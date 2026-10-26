@@ -12,6 +12,7 @@ config :assets, AssetsWeb.Endpoint,
   server: false
 
 config :assets,
+  cas_backend: :local,
   cas_path: "priv/cas_test",
   quota_limit_bytes: 1024,
   auth_jwks_url: "http://127.0.0.1:9/.well-known/jwks.json",

@@ -1,5 +1,6 @@
 # Entry points (macOS / Linux / WSL).
-.PHONY: ci ci-rust ci-protocol ci-auth ci-world ci-assets help
+.PHONY: ci ci-rust ci-protocol ci-auth ci-world ci-assets \
+	smoke-assets smoke-assets-r2 help
 
 help:
 	@echo "Targets:"
@@ -9,6 +10,8 @@ help:
 	@echo "  make ci-auth"
 	@echo "  make ci-world"
 	@echo "  make ci-assets"
+	@echo "  make smoke-assets      # local CAS API smoke (auth+assets up)"
+	@echo "  make smoke-assets-r2   # x001c R2 CAS API smoke (ASSETS_CAS_BACKEND=s3)"
 	@echo ""
 	@echo "Dev: see README.md"
 
@@ -29,3 +32,9 @@ ci-world:
 
 ci-assets:
 	./.scripts/ci.sh assets
+
+smoke-assets:
+	./.scripts/smoke-assets.sh
+
+smoke-assets-r2:
+	./.scripts/smoke-assets-r2.sh

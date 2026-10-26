@@ -5,7 +5,9 @@ defmodule Assets.Application do
 
   @impl true
   def start(_type, _args) do
-    File.mkdir_p!(Application.fetch_env!(:assets, :cas_path))
+    if Application.fetch_env!(:assets, :cas_backend) == :local do
+      File.mkdir_p!(Application.fetch_env!(:assets, :cas_path))
+    end
 
     children = [
       AssetsWeb.Telemetry,
