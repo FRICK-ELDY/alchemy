@@ -51,6 +51,10 @@ if cas_backend == :s3 do
   prefix = System.get_env("ASSETS_S3_PREFIX", "cas/")
   prefix = if String.ends_with?(prefix, "/") or prefix == "", do: prefix, else: prefix <> "/"
 
+  presign_ttl_seconds =
+    System.get_env("ASSETS_S3_PRESIGN_TTL_SECONDS", "300")
+    |> String.to_integer()
+
   config :assets,
     cas_s3: %{
       bucket: bucket,
@@ -58,7 +62,8 @@ if cas_backend == :s3 do
       access_key_id: access_key_id,
       secret_access_key: secret_access_key,
       region: System.get_env("ASSETS_S3_REGION", "auto"),
-      prefix: prefix
+      prefix: prefix,
+      presign_ttl_seconds: presign_ttl_seconds
     }
 end
 

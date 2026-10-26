@@ -34,7 +34,8 @@ BLAKE3=$(printf '%s' "$RESP" | python3 -c 'import sys,json; print(json.load(sys.
 test "$BLAKE3" = "$EXPECTED_BLAKE3"
 
 echo "download:"
-curl -sf -H "authorization: Bearer ${ACCESS}" \
+# -L: follow 302 to R2 presigned URL when ASSETS_CAS_BACKEND=s3 (x001d)
+curl -sfL -H "authorization: Bearer ${ACCESS}" \
   "$ASSETS/api/v1/blobs/${BLAKE3}" -o "$OUT"
 cmp -s "$FIXTURE" "$OUT"
 echo "bytes match fixture"

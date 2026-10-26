@@ -11,7 +11,8 @@ config :assets,
     access_key_id: nil,
     secret_access_key: nil,
     region: "auto",
-    prefix: "cas/"
+    prefix: "cas/",
+    presign_ttl_seconds: 300
   },
   quota_limit_bytes: 1_073_741_824,
   auth_jwks_url: "http://127.0.0.1:4002/.well-known/jwks.json",

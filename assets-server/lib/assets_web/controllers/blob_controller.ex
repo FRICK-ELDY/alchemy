@@ -23,17 +23,27 @@ defmodule AssetsWeb.BlobController do
   end
 
   def show(conn, %{"blake3" => blake3}) do
-    case Blobs.download(blake3) do
+    case Blobs.fetch(blake3) do
       {:ok, data, blob} ->
         conn
         |> put_resp_content_type(blob.mime)
         |> put_resp_header("x-alchemy-blake3", blob.blake3)
         |> send_resp(200, data)
 
+      {:redirect, url, blob} ->
+        conn
+        |> put_resp_header("x-alchemy-blake3", blob.blake3)
+        |> redirect(external: url)
+
       {:error, :not_found} ->
         conn
         |> put_status(:not_found)
         |> json(%{error: "not_found"})
+
+      {:error, :presign_failed} ->
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{error: "presign_failed"})
     end
   end
 

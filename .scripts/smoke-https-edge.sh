@@ -57,7 +57,8 @@ fi
 echo "smoke-https-edge: assets health (CAS path optional)…"
 curl -sf --max-time 15 "${ASSETS_URL}/health" >/dev/null
 if [[ -n "${ALCHEMY_BLOB_BLAKE3:-}" ]]; then
-  curl -sf --max-time 30 \
+  # -L: s3 backend may 302 to R2 presigned URL (x001d)
+  curl -sfL --max-time 30 \
     -H "authorization: Bearer ${ACCESS}" \
     "${ASSETS_URL}/api/v1/blobs/${ALCHEMY_BLOB_BLAKE3}" \
     -o /dev/null

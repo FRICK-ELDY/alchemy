@@ -107,7 +107,10 @@ fn fetch_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<
     let base = assets_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/blobs/{blake3}");
     let authz = format!("Bearer {auth_token}");
-    let resp = ureq::get(&url)
+    // Follow 302 → R2 presigned GET (x001d). ureq strips Authorization on cross-host redirect.
+    let agent = ureq::AgentBuilder::new().redirects(5).build();
+    let resp = agent
+        .get(&url)
         .set("authorization", &authz)
         .call()
         .context("assets blob download failed")?;
@@ -122,7 +125,7 @@ fn load_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<V
     match fetch_blob_bytes(assets_url, blake3, auth_token) {
         Ok(bytes) => {
             log::info!(
-                "downloaded blob from assets-server ({} bytes, blake3={})",
+                "downloaded blob via assets GET ({} bytes, blake3={}; may follow R2 redirect)",
                 bytes.len(),
                 blake3_hex(&bytes)
             );
