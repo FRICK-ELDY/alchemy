@@ -22,6 +22,21 @@ pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.9.0-x0019";
 /// Shared by host Noclip and client Settings display (x000a).
 pub const DEFAULT_MOVE_SPEED: f32 = 4.0;
 
+/// Max simultaneous players (Presence slots / user_roots).
+///
+/// Shared by host-server / client / e2e-probe to avoid id drift (x001f).
+/// Not a wire-schema field — host/content knowledge temporarily parked here;
+/// prefer a dedicated content/shared-sim crate if Presence capacity grows.
+pub const USER_ROOT_SLOTS: usize = 4;
+
+/// First user_root entity id; last = [`USER_ROOT_ENTITY_FIRST`] + [`USER_ROOT_SLOTS`] - 1.
+pub const USER_ROOT_ENTITY_FIRST: u32 = 3;
+
+/// Inclusive last user_root entity id.
+pub const fn user_root_entity_last() -> u32 {
+    USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1
+}
+
 /// `InputEvent.buttons` bits (mirror of proto `InputButtons`).
 pub mod input_buttons {
     pub const PRIMARY: u32 = 1;

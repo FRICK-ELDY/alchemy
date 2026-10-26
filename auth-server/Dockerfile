@@ -5,7 +5,8 @@ ARG ALPINE_VERSION=3.23
 # Development image for alchemy-auth (hot reload via bind mount).
 FROM ${ELIXIR_IMAGE} AS dev
 
-RUN apk add --no-cache build-base git
+# wget: hermetic compose healthcheck (x001f); not relying on busybox alone.
+RUN apk add --no-cache build-base git wget
 
 WORKDIR /app
 

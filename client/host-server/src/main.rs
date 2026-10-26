@@ -227,6 +227,27 @@ fn open_zenoh() -> Result<zenoh::Session> {
         .map_err(|e| anyhow::anyhow!("zenoh open failed: {e}"))
 }
 
+/// Hermetic E2E (x001f): signal only after input gate + frame publisher have put ≥1 frame.
+/// Write failures are logged and ignored so a stray env cannot take down production host.
+fn signal_host_ready_once(signaled: &mut bool) {
+    if *signaled {
+        return;
+    }
+    let Ok(path) = std::env::var("ALCHEMY_HOST_READY_FILE") else {
+        *signaled = true;
+        return;
+    };
+    if path.is_empty() {
+        *signaled = true;
+        return;
+    }
+    match std::fs::write(&path, b"ready\n") {
+        Ok(()) => log::info!("host ready file written (after first frame put): {path}"),
+        Err(err) => log::warn!("ALCHEMY_HOST_READY_FILE write failed ({path}): {err}"),
+    }
+    *signaled = true;
+}
+
 fn host_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -582,6 +603,8 @@ fn main() -> Result<()> {
     let mut empty_delta_frames: u64 = 0;
     let mut physics_steps_logged: u64 = 0;
     let mut last_sent: HashMap<u32, Pose> = HashMap::new();
+    // E2E ready = input gate + frame publisher live AND at least one frame put (x001f).
+    let mut host_ready_signaled = false;
 
     loop {
         let now = Instant::now();
@@ -686,6 +709,7 @@ fn main() -> Result<()> {
                     .map_err(|e| anyhow::anyhow!("frame publish failed: {e}"))?;
                 net_tick = net_tick.wrapping_add(1);
                 publishes += 1;
+                signal_host_ready_once(&mut host_ready_signaled);
             }
             continue;
         }
@@ -740,6 +764,7 @@ fn main() -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("frame publish failed: {e}"))?;
             net_tick = net_tick.wrapping_add(1);
             publishes += 1;
+            signal_host_ready_once(&mut host_ready_signaled);
         }
 
         if last_log.elapsed() >= Duration::from_secs(1) {

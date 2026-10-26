@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x001f`**；x001e active）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0020`**；x001f done）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -79,9 +79,10 @@ depends_on: [x0006]
 | x001b | — | done | Zenoh WAN（ConoHa zenohd + IP allowlist） | [x001b-zenoh-wan-conoha.md](slices/x001b-zenoh-wan-conoha.md) |
 | x001c | — | done | assets CAS → R2（S3 互換バックエンド） | [x001c-assets-cas-r2.md](slices/x001c-assets-cas-r2.md) |
 | x001d | — | done | R2 署名 URL 直結（GET 302） | [x001d-assets-r2-presign.md](slices/x001d-assets-r2-presign.md) |
-| x001e | — | active | P0 信頼境界（Tunnel prod / host_control / seed / assets CI） | [x001e-p0-trust-boundary.md](slices/x001e-p0-trust-boundary.md) |
+| x001e | — | done | P0 信頼境界（Tunnel prod / host_control / seed / assets CI） | [x001e-p0-trust-boundary.md](slices/x001e-p0-trust-boundary.md) |
+| x001f | — | done | Hermetic Compose 縦 E2E（login→token→input→frame） | [x001f-hermetic-compose-e2e.md](slices/x001f-hermetic-compose-e2e.md) |
 
-**現在の次:** **x001e**（P0 信頼境界）。次の空き ID = **`x001f`**
+**現在の次:** **x0020**（手元デモ縦 — 未作成）。採番して Slice を切るところから。
 
 ## 関連
 

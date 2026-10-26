@@ -3,7 +3,7 @@ ARG ALPINE_VERSION=3.23
 
 FROM ${ELIXIR_IMAGE} AS dev
 
-RUN apk add --no-cache build-base git
+RUN apk add --no-cache build-base git wget
 
 WORKDIR /app
 

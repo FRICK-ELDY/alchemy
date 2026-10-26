@@ -1,0 +1,162 @@
+# x001f — Hermetic Compose E2E stack (no Tunnel / R2 / WAN).
+# Usage:
+#   docker compose -f docker-compose.e2e.yml up -d --build
+#   make ci-e2e
+#   docker compose -f docker-compose.e2e.yml down
+#
+# Host ports are offset (+100 / +1000) so a developer auth/world/assets stack
+# on :4002–4004 / :5433 / :7447 can keep running.
+# Guarantees: auth / world / assets(local CAS) / zenohd reachable on those ports.
+# Non-guarantees: prod release images, Cloudflare, S3/R2.
+
+name: alchemy-e2e
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5533:5432"
+    environment:
+      POSTGRES_USER: alchemy_auth
+      POSTGRES_PASSWORD: alchemy_auth
+      POSTGRES_DB: alchemy_auth_dev
+    volumes:
+      - e2e_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alchemy_auth -d alchemy_auth_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [e2e]
+
+  # Auth uses Swoosh Local in this stack; mailpit is optional and not published
+  # to the host (avoids clashing with a developer auth-server compose on :1025).
+  mailpit:
+    image: axllent/mailpit:v1.27.10
+    networks: [e2e]
+
+  auth:
+    build:
+      context: ./auth-server
+      dockerfile: Dockerfile
+      target: dev
+    ports:
+      - "4102:4002"
+    environment:
+      MIX_ENV: dev
+      PHX_SERVER: "true"
+      BIND_ALL: "true"
+      PORT: "4002"
+      DATABASE_URL: ecto://alchemy_auth:alchemy_auth@postgres:5432/alchemy_auth_dev
+      JWT_PRIVATE_KEY_PATH: /app/priv/jwt_private.pem
+      AUTH_FRONTEND_URL: http://localhost:4000
+    volumes:
+      - ./auth-server:/app
+      - e2e_auth_deps:/app/deps
+      - e2e_auth_build:/app/_build
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    command: >
+      sh -c "mix deps.get &&
+             mix ash.setup &&
+             mix ecto.create &&
+             mix ecto.migrate &&
+             mix run priv/repo/seeds.exs &&
+             mix phx.server"
+    # Cold CI: deps+compile+migrate+seeds can exceed 3m; start_period covers that.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:4002/health >/dev/null || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 300s
+    networks: [e2e]
+
+  world:
+    build:
+      context: ./world-server
+      dockerfile: Dockerfile
+      target: dev
+    ports:
+      - "4103:4003"
+    environment:
+      MIX_ENV: dev
+      PHX_SERVER: "true"
+      BIND_ALL: "true"
+      PORT: "4003"
+      ROOM_TOKEN_PRIVATE_KEY_PATH: /app/priv/room_jwt_private.pem
+      ROOM_TOKEN_GENERATE_KEY: "true"
+      WORLD_ALLOW_ANON_TOKENS: "false"
+      AUTH_JWKS_URL: http://auth:4002/.well-known/jwks.json
+    volumes:
+      - ./world-server:/app
+      - e2e_world_deps:/app/deps
+      - e2e_world_build:/app/_build
+    depends_on:
+      auth:
+        condition: service_healthy
+    command: >
+      sh -c "mix deps.get &&
+             mix compile &&
+             mix phx.server"
+    networks: [e2e]
+
+  assets:
+    build:
+      context: ./assets-server
+      dockerfile: Dockerfile
+      target: dev
+    ports:
+      - "4104:4004"
+    environment:
+      MIX_ENV: dev
+      PHX_SERVER: "true"
+      BIND_ALL: "true"
+      PORT: "4004"
+      DATABASE_PATH: /app/priv/assets_dev.sqlite3
+      ASSETS_CAS_PATH: /app/priv/cas
+      AUTH_JWKS_URL: http://auth:4002/.well-known/jwks.json
+      ASSETS_CAS_BACKEND: local
+    volumes:
+      - ./assets-server:/app
+      - e2e_assets_deps:/app/deps
+      - e2e_assets_build:/app/_build
+    depends_on:
+      auth:
+        condition: service_healthy
+    command: >
+      sh -c "mix deps.get &&
+             mix ecto.create &&
+             mix ecto.migrate &&
+             mix phx.server"
+    networks: [e2e]
+
+  zenohd:
+    # Pin to client workspace zenoh crate major.minor.patch (Cargo.lock → 1.10.1).
+    image: eclipse/zenoh:1.10.1
+    ports:
+      - "7547:7447"
+    volumes:
+      - ./zenoh-router/config.json5:/config.json5:ro
+    command: ["--config", "/config.json5"]
+    networks: [e2e]
+
+volumes:
+  e2e_postgres_data:
+  e2e_auth_deps:
+  e2e_auth_build:
+  e2e_world_deps:
+  e2e_world_build:
+  e2e_assets_deps:
+  e2e_assets_build:
+
+networks:
+  e2e:
+    name: alchemy-e2e

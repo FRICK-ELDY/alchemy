@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "host-server",
     "app",
+    "e2e-probe",
 ]
 
 [workspace.package]

@@ -30,9 +30,12 @@ defmodule World.Auth.Jwks do
     GenServer.call(__MODULE__, {:install_test, jwks, signers_by_kid})
   end
 
+  # Min interval between outbound JWKS fetches when cache miss storms (x001f).
+  @fetch_cooldown_ms 1_000
+
   @impl true
   def init(_opts) do
-    {:ok, %{jwks: %{"keys" => []}, signers_by_kid: %{}, fetched_at: nil},
+    {:ok, %{jwks: %{"keys" => []}, signers_by_kid: %{}, fetched_at: nil, last_fetch_ms: 0},
      {:continue, :initial_fetch}}
   end
 
@@ -41,16 +44,20 @@ defmodule World.Auth.Jwks do
     if Application.get_env(:world, :auth_jwks_fetch_on_start, true) do
       case do_fetch() do
         {:ok, jwks, signers} ->
+          now = System.monotonic_time(:millisecond)
+
           {:noreply,
            %{
              state
              | jwks: jwks,
                signers_by_kid: signers,
-               fetched_at: System.monotonic_time(:second)
+               fetched_at: System.monotonic_time(:second),
+               last_fetch_ms: now
            }}
 
         {:error, reason} ->
           Logger.warning("auth JWKS initial fetch failed: #{inspect(reason)}")
+          # Do not advance last_fetch_ms on failure so the next call can retry immediately.
           {:noreply, state}
       end
     else
@@ -67,9 +74,7 @@ defmodule World.Auth.Jwks do
       {:ok, signer} ->
         {:reply, {:ok, signer}, state}
 
-      :error when state.signers_by_kid == %{} ->
-        {:reply, {:error, :empty_jwks}, state}
-
+      # Empty cache (e.g. auth was down at boot) or unknown kid: try a fetch.
       :error ->
         refresh_and_lookup_kid(kid, state)
     end
@@ -79,12 +84,15 @@ defmodule World.Auth.Jwks do
   def handle_call(:refresh, _from, state) do
     case do_fetch() do
       {:ok, jwks, signers} ->
+        now = System.monotonic_time(:millisecond)
+
         {:reply, :ok,
          %{
            state
            | jwks: jwks,
              signers_by_kid: signers,
-             fetched_at: System.monotonic_time(:second)
+             fetched_at: System.monotonic_time(:second),
+             last_fetch_ms: now
          }}
 
       {:error, reason} ->
@@ -95,23 +103,41 @@ defmodule World.Auth.Jwks do
   @impl true
   def handle_call({:install_test, jwks, signers}, _from, state) do
     {:reply, :ok,
-     %{state | jwks: jwks, signers_by_kid: signers, fetched_at: System.monotonic_time(:second)}}
+     %{
+       state
+       | jwks: jwks,
+         signers_by_kid: signers,
+         fetched_at: System.monotonic_time(:second),
+         last_fetch_ms: System.monotonic_time(:millisecond)
+     }}
   end
 
   defp refresh_and_lookup_kid(kid, state) do
-    case do_fetch() do
-      {:ok, jwks, signers} ->
-        state = %{
-          state
-          | jwks: jwks,
-            signers_by_kid: signers,
-            fetched_at: System.monotonic_time(:second)
-        }
+    now = System.monotonic_time(:millisecond)
+    # Cooldown only after a successful fetch (storm guard). Failures stay retryable.
+    has_keys = state.signers_by_kid != %{}
 
-        {:reply, lookup_kid(signers, kid), state}
+    if has_keys and now - state.last_fetch_ms < @fetch_cooldown_ms do
+      {:reply, lookup_kid(state.signers_by_kid, kid), state}
+    else
+      case do_fetch() do
+        {:ok, jwks, signers} ->
+          state = %{
+            state
+            | jwks: jwks,
+              signers_by_kid: signers,
+              fetched_at: System.monotonic_time(:second),
+              last_fetch_ms: now
+          }
 
-      {:error, _} ->
-        {:reply, {:error, :unknown_kid}, state}
+          {:reply, lookup_kid(signers, kid), state}
+
+        {:error, _} when state.signers_by_kid == %{} ->
+          {:reply, {:error, :empty_jwks}, state}
+
+        {:error, _} ->
+          {:reply, {:error, :unknown_kid}, state}
+      end
     end
   end
 
