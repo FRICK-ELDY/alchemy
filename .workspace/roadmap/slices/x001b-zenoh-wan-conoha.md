@@ -1,6 +1,6 @@
 # x001b — Zenoh WAN（ConoHa zenohd）
 
-> **ID:** `x001b` · **slug:** `zenoh-wan-conoha` · **status:** `active` · **area:** `[zenoh, host, client, docs, relay]` · **depends_on:** `[x001a]`
+> **ID:** `x001b` · **slug:** `zenoh-wan-conoha` · **status:** `done` · **area:** `[zenoh, host, client, docs, relay]` · **depends_on:** `[x001a]`
 
 目標: ConoHa VPS（4Core / 4GB Ubuntu **22.04 / 24.04**）上の **zenohd だけ**を公網 TCP で待受し、拠点 host + 外 client が `ZENOH_CONNECT` で同じ `ROOM_ID` に入る。x001a の HTTPS 入口と合わせて「外から入室できる」縦スライスを通す。
 
@@ -21,7 +21,7 @@
 | 0 | Slice 文書 + 目次 | done |
 | 1 | VPS セットアップ runbook（zenohd インストール・systemd・firewall） | done |
 | 2 | `zenoh-router` WAN 用 config 例 + ローカルとの差分文書 | done |
-| 3 | 2 client（別ネット）Presence / Leave 動作確認 | planned（運用者デモ） |
+| 3 | 2 client（別ネット）Presence / Leave 動作確認 | done |
 | 4 | smoke 手順 + README / architecture 更新 | done |
 
 ## 保証する / しない

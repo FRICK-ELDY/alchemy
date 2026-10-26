@@ -1,6 +1,6 @@
 # x001a — HTTPS 入口（Cloudflare Tunnel）
 
-> **ID:** `x001a` · **slug:** `https-edge-tunnel` · **status:** `active` · **area:** `[auth, world, assets, docs, relay]` · **depends_on:** `[x0019]`
+> **ID:** `x001a` · **slug:** `https-edge-tunnel` · **status:** `done` · **area:** `[auth, world, assets, docs, relay]` · **depends_on:** `[x0019]`
 
 目標: 拠点の **auth / world / assets** を、ルーターのポート開放なしで **HTTPS 公開**する。外のクライアントが `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` だけで login → Room Token → アセット取得まで縦に通ること。Zenoh WAN は次 Slice（x001b）。
 
