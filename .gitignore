@@ -37,6 +37,9 @@ auth-server/secrets/
 world-server/.env.prod
 assets-server/.env.prod
 
+# Local private docs (competitor notes etc.; never publish)
+.workspace/0_doc/private/
+
 # IDE / OS
 .idea/
 .vscode/
