@@ -12,6 +12,8 @@ message PresenceState {
   repeated PresenceAssignment assignments = 2;
   // Must equal peer `PROTOCOL_PIN` (x0023). Client rejects mismatch.
   string protocol_pin = 3;
+  // Host Ed25519 over encode with `host_sig` cleared (x0025). Verified with attested `host_pub`.
+  bytes host_sig = 4;
 }
 
 message PresenceAssignment {

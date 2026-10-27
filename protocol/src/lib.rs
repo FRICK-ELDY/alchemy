@@ -22,7 +22,7 @@ pub use prost::Message;
 pub mod wire_crypto;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.9.0-x0023";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.10.0-x0025";
 
 /// Default free-move speed (m/s) when Manifest `move_speed` is 0.
 /// Shared by host Noclip and client Settings display (x000a).
@@ -289,6 +289,7 @@ mod tests {
             }),
             protocol_pin: PROTOCOL_PIN.into(),
             host_pub: vec![1, 2, 3],
+            host_attestation: "eyJ.test.attestation".into(),
         };
         let bytes = manifest.encode_to_vec();
         let decoded = SceneManifest::decode(bytes.as_slice()).expect("decode");
@@ -377,6 +378,7 @@ mod tests {
                 },
             ],
             protocol_pin: PROTOCOL_PIN.into(),
+            host_sig: vec![],
         };
         let bytes = state.encode_to_vec();
         let decoded = PresenceState::decode(bytes.as_slice()).expect("decode");

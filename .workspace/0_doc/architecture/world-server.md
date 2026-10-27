@@ -1,7 +1,7 @@
 # world-server
 
 > **正本コード**: [`world-server/`](../../../world-server/)  
-> **ステータス**: Slice B.5（Room Token + auth JWT 必須）
+> **ステータス**: x0025（HostAttestation）+ Slice B.5（Room Token + auth JWT 必須）
 
 ## 図上の位置
 
@@ -16,6 +16,7 @@
 | `GET /.well-known/jwks.json`（Room Token 用） | verifier / ホスト死活監視 / S2S 連合 |
 | Room API は auth-server Bearer JWT 必須（`sub` を Room Token に転写） | 匿名 Token（既定 OFF。`WORLD_ALLOW_ANON_TOKENS=true` のみ） |
 | auth JWKS（`AUTH_JWKS_URL`）によるユーザー JWT 検証 | auth の revocation 再確認 |
+| HostAttestation JWT（`typ=host_attestation` / `aud=alchemy-host-attestation`）を host Room Token のみ発行（x0025）。発行失敗は 5xx（token 検証失敗は 401） | Manifest 全体の world 署名・Room 永続 |
 
 ## 契約（Room Token）
 
@@ -39,6 +40,7 @@
 | GET | `/.well-known/jwks.json` | 不要 | Room Token 検証用公開鍵 |
 | POST | `/api/v1/rooms` | Bearer（auth JWT） | Room 作成 |
 | POST | `/api/v1/rooms/:room_id/tokens` | Bearer（auth JWT） | Token 発行（`sub` は JWT から） |
+| POST | `/api/v1/rooms/:room_id/host_keys` | Bearer（**host Room Token**） | HostAttestation 発行（`host_pub` base64url・x0025） |
 
 ## 起動（Docker）
 

@@ -2,7 +2,7 @@
 
 > **正本**: [`protocol/`](../../../protocol/)  
 > **配送契約**: [`protocol/peer-delivery.md`](../../../protocol/peer-delivery.md)（x0024）  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.9.0-x0023`（x0024 でも据え置き）
+> **PROTOCOL_PIN**: `alchemy-protocol/0.10.0-x0025`
 
 ## 置き場の方針
 
@@ -18,7 +18,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | `PROTOCOL_PIN` を Manifest / Presence に載せ、不一致検出可能（x0023） | フル DrawCommand 体系・多世代同時運用 |
 | f64 空間座標（描画境界） | audio / tracking |
 | Intent: Ed25519 `session_pub` / `intent_seq` / `intent_sig` + 任意 `room_token`（bind 時）（x0023） | Token JWKS 検証そのもの（host-server） |
-| Frame: `host_sig` + Manifest `host_pub`；`snapshot_key` ヘルパ（x0023） | world-server 署名 Manifest・テナント名前空間 |
+| Frame / Presence: `host_sig` + Manifest `host_pub`（world HostAttestation 後・x0025） | Manifest 全体の world 署名・テナント名前空間 |
 | 配送クラス表（[`peer-delivery.md`](../../../protocol/peer-delivery.md)）+ `decide_frame_tick` / `FRAME_TICK_GAP_RESYNC`（x0024） | 確実配送 ACK / event ID チャネル・欠落デルタの再送 |
 | Manifest / frame / presence / host_control / snapshot のキー式ヘルパ + `validate_room_id`（x0017） | Zenoh ACL / mTLS |
 | `LocomotionConfig`（World 定義の active mode） | モジュール一覧 UI / 抑制ソース |
@@ -27,13 +27,13 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 
 ## メッセージ
 
-### SceneManifest（`proto/scene_manifest.proto`）— 低頻度 + x0009 loco + x0023
+### SceneManifest（`proto/scene_manifest.proto`）— 低頻度 + x0009 loco + x0023 / x0025
 
-- `SceneManifest { room_id, revision, entries[], locomotion, protocol_pin, host_pub }`
+- `SceneManifest { room_id, revision, entries[], locomotion, protocol_pin, host_pub, host_attestation }`
 - `SceneEntry { entity_id, blake3 (hex), x,y,z }`
 - `LocomotionConfig { mode, move_speed }` — `UNSPECIFIED` → host は **Noclip**
 - `LocomotionMode`: NOCLIP / FLY / WALK
-- `protocol_pin` / `host_pub`（32B Ed25519）: client は pin 不一致を拒否；Frame 署名検証に `host_pub` を使う（x0023）
+- `protocol_pin` / `host_pub`（32B Ed25519）+ `host_attestation`（world JWT）: client は pin 不一致・attestation 失敗で leave；Frame/Presence は attested `host_pub`（x0025）
 - **GLB バイトは載せない**（assets-server CAS 参照のみ）
 
 ### RenderFrame（`proto/render_frame.proto`）— 高頻度デルタ + 署名（x0023）
@@ -56,11 +56,11 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - `move_*` は正規化 Intent（~-1..1）。host が `move_speed` でスケール
 - `DEFAULT_MOVE_SPEED = 4.0`
 
-### PresenceState（`proto/presence.proto`）— x0015・低頻度（解放は x0016 / x0019 / x0022）
+### PresenceState（`proto/presence.proto`）— x0015・低頻度（解放は x0016 / x0019 / x0022 / x0025）
 
-- `PresenceState { revision, assignments[], protocol_pin }`
+- `PresenceState { revision, assignments[], protocol_pin, host_sig }`
 - `PresenceAssignment { sub, entity_id }` — occupied のみ
-- client は pin 不一致を拒否；自 `sub` で `entity_id` を解決
+- client は pin 不一致・`host_sig` 失敗を拒否；自 `sub` で `entity_id` を解決（x0025）
 - host 解放: **Leave** / **liveliness Delete（`sub`+`jti`）** + Intent TTL 3s
 
 ## キー式ヘルパ（x0017 + x0022 liveliness + x0023 snapshot）

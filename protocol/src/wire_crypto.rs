@@ -1,18 +1,18 @@
-//! Ed25519 session / host signatures for Intent and RenderFrame (x0023).
+//! Ed25519 session / host signatures for Intent, RenderFrame, Presence (x0023 / x0025).
 //!
 //! # Guarantees
 //! - Sign / verify over prost encode with the signature field cleared.
 //! - Reject wrong key lengths and invalid signatures.
 //!
 //! # Non-guarantees
-//! - Key distribution beyond Manifest `host_pub` / Intent `session_pub`.
+//! - Key distribution beyond world HostAttestation → Manifest `host_pub` / Intent `session_pub`.
 //! - Forward secrecy, rotation ceremonies, hardware-backed keys.
 
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey, SIGNATURE_LENGTH};
 use prost::Message;
 use rand::rngs::OsRng;
 
-use crate::{InputEvent, RenderFrame};
+use crate::{InputEvent, PresenceState, RenderFrame};
 
 pub use ed25519_dalek::SigningKey;
 
@@ -90,6 +90,29 @@ pub fn verify_frame(host_pub: &[u8], frame: &RenderFrame) -> Result<(), WireCryp
     let vk = verifying_key_from(host_pub)?;
     let sig = signature_from(&frame.host_sig)?;
     let msg = frame_signing_bytes(frame);
+    vk.verify(&msg, &sig)
+        .map_err(|_| WireCryptoError::VerifyFailed)
+}
+
+/// Encode `PresenceState` for signing (`host_sig` cleared).
+pub fn presence_signing_bytes(state: &PresenceState) -> Vec<u8> {
+    let mut s = state.clone();
+    s.host_sig.clear();
+    s.encode_to_vec()
+}
+
+/// Sign Presence in place (`host_sig` filled).
+pub fn sign_presence(key: &SigningKey, state: &mut PresenceState) {
+    state.host_sig.clear();
+    let msg = state.encode_to_vec();
+    state.host_sig = key.sign(&msg).to_bytes().to_vec();
+}
+
+/// Verify Presence with attested Manifest `host_pub` (x0025).
+pub fn verify_presence(host_pub: &[u8], state: &PresenceState) -> Result<(), WireCryptoError> {
+    let vk = verifying_key_from(host_pub)?;
+    let sig = signature_from(&state.host_sig)?;
+    let msg = presence_signing_bytes(state);
     vk.verify(&msg, &sig)
         .map_err(|_| WireCryptoError::VerifyFailed)
 }
@@ -205,5 +228,19 @@ mod tests {
         assert!(entity_is_finite(&e));
         e.x = f64::NAN;
         assert!(!entity_is_finite(&e));
+    }
+
+    #[test]
+    fn presence_roundtrip_sign_verify() {
+        let key = generate_signing_key();
+        let mut state = PresenceState {
+            revision: 3,
+            assignments: vec![],
+            protocol_pin: crate::PROTOCOL_PIN.into(),
+            host_sig: vec![],
+        };
+        sign_presence(&key, &mut state);
+        assert!(verify_presence(&public_key_bytes(&key), &state).is_ok());
+        assert!(verify_presence(&[0u8; 32], &state).is_err());
     }
 }
