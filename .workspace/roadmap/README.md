@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0028`**；x0027 done）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0029`**；x0028 done）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -89,8 +89,9 @@ depends_on: [x0006]
 | x0025 | — | done | host_pub 証明（world attestation + Presence host_sig） | [x0025-host-pub-attestation.md](slices/x0025-host-pub-attestation.md) |
 | x0026 | — | done | Manifest 全体の world seal（本体改ざん検知・P4 なし） | [x0026-manifest-world-seal.md](slices/x0026-manifest-world-seal.md) |
 | x0027 | — | done | SceneManifest 駆動（P4 最小 / D2） | [x0027-manifest-driven.md](slices/x0027-manifest-driven.md) |
+| x0028 | — | done | Room 永続（Ash + SQLite / D4） | [x0028-room-persistence.md](slices/x0028-room-persistence.md) |
 
-**現在の次:** P3 まとめ・Room 永続 / shared-sim（P4 残り）は後続。
+**現在の次:** RenderFrame 回転（E1）・shared-sim / role→capability・P3 衛生は後続。
 
 ## 関連
 

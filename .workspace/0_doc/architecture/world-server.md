@@ -1,7 +1,7 @@
 # world-server
 
 > **正本コード**: [`world-server/`](../../../world-server/)  
-> **ステータス**: x0027（DemoScene）+ x0026（ManifestSeal）+ x0025（HostAttestation）+ Slice B.5
+> **ステータス**: x0028（Room 永続 Ash/SQLite）+ x0027（DemoScene）+ x0026 seal + x0025 attestation
 
 ## 図上の位置
 
@@ -11,12 +11,12 @@
 
 | 保証する | 保証しない |
 |:---|:---|
-| Room の作成（プロセス内・揮発） | World 一覧の永続 DB / Ash |
+| Room の作成（Ash + SQLite。`owner_sub` + DemoScene を永続・x0028） | World 一覧 UI / Friendship / 公開範囲 |
 | 短命 Room Token（RS256）の発行 | 5段階公開範囲・Friendship ACL |
 | `GET /.well-known/jwks.json`（Room Token 用） | verifier / ホスト死活監視 / S2S 連合 |
 | Room API は auth-server Bearer JWT 必須（`sub` を Room Token に転写） | 匿名 Token（既定 OFF。`WORLD_ALLOW_ANON_TOKENS=true` のみ） |
 | auth JWKS（`AUTH_JWKS_URL`）によるユーザー JWT 検証 | auth の revocation 再確認 |
-| HostAttestation JWT（`typ=host_attestation`）を host Room Token のみ発行（x0025）。発行失敗は 5xx（token 検証失敗は 401） | Room DB 永続・UGC 編集 |
+| HostAttestation JWT（`typ=host_attestation`）を host Room Token のみ発行（x0025）。発行失敗は 5xx（token 検証失敗は 401） | UGC scene 編集 |
 | ManifestSeal JWT（`typ=manifest_seal` / `aud=alchemy-manifest-seal`）を host Room Token のみ発行（x0026）。body は blake3 のみ受け取る | seal 時の entries 改変（host が body を組む） |
 | DemoScene（entries + loco）を Room 作成時に紐付け。`GET …/scene` は **host** Room Token のみ（x0027） | guest への scene 配布・複数シーン切替 UI |
 
@@ -46,6 +46,17 @@
 | POST | `/api/v1/rooms/:room_id/manifest_seal` | Bearer（**host Room Token**） | ManifestSeal 発行（`revision` + `manifest_blake3`・x0026） |
 | GET | `/api/v1/rooms/:room_id/scene` | Bearer（**host Room Token**） | DemoScene `{ revision, entries, locomotion }`（x0027） |
 
+## 永続（x0028）
+
+| 項目 | 内容 |
+|:---|:---|
+| 既定 | AshSqlite。DB ファイルは `priv/data/world_dev.db`（test は `world_test.db`） |
+| 上書き | env `WORLD_DATABASE_PATH` |
+| スキーマ | `rooms(room_id PK, owner_sub, scene JSON, timestamps)` |
+| Postgres 切替 | 属性は Postgres 互換のみ。運営規模拡大時は `ash_postgres` + `AshPostgres.DataLayer` / `AshPostgres.Repo` に差し替え、`mix ash.codegen` で再生成。API facade（`World.Rooms`）は変えない |
+| 障害 | SQLite / Ash 失敗は `:storage_error` → HTTP 503 `storage_unavailable`（404/422 に潰さない） |
+| prod volume | `world_prod_keys` に JWT PEM と SQLite を同居（`/var/lib/world`）。`-v` で両方消える |
+
 ## 起動（Docker）
 
 auth-server を先に起動すること（JWKS 参照）。
@@ -55,6 +66,7 @@ cd auth-server && docker compose up -d && cd ..
 cd world-server && docker compose up -d
 # http://localhost:4003/health
 # AUTH_JWKS_URL 既定: http://host.docker.internal:4002/.well-known/jwks.json
+# mix ash.setup が SQLite migrate を実行
 ```
 
 ## 関連

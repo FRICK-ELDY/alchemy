@@ -43,14 +43,26 @@ if System.get_env("BIND_ALL") in ~w(true 1) do
     server: true
 end
 
+if db_path = System.get_env("WORLD_DATABASE_PATH") do
+  config :world, World.Repo, database: db_path
+end
+
 if config_env() == :prod do
   secret_key_base =
     System.get_env("SECRET_KEY_BASE") ||
       raise "environment variable SECRET_KEY_BASE is missing."
 
+  database =
+    System.get_env("WORLD_DATABASE_PATH") ||
+      raise "environment variable WORLD_DATABASE_PATH is missing (SQLite file path)."
+
   config :world, WorldWeb.Endpoint,
     http: [ip: {0, 0, 0, 0}, port: port],
     secret_key_base: secret_key_base
+
+  config :world, World.Repo,
+    database: database,
+    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "5")
 
   config :world,
     room_token_generate_key_on_startup:

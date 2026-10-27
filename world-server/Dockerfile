@@ -14,6 +14,7 @@ RUN mix deps.get || true
 
 COPY config config
 COPY lib lib
+COPY priv priv
 COPY test test
 COPY .formatter.exs ./
 
@@ -38,6 +39,7 @@ RUN mix deps.get --only prod
 
 COPY config config
 COPY lib lib
+COPY priv priv
 COPY .formatter.exs ./
 
 RUN mix compile

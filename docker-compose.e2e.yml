@@ -95,6 +95,7 @@ services:
       ROOM_TOKEN_GENERATE_KEY: "true"
       WORLD_ALLOW_ANON_TOKENS: "false"
       AUTH_JWKS_URL: http://auth:4002/.well-known/jwks.json
+      WORLD_DATABASE_PATH: /app/priv/data/world_e2e.db
     volumes:
       - ./world-server:/app
       - e2e_world_deps:/app/deps
@@ -104,6 +105,7 @@ services:
         condition: service_healthy
     command: >
       sh -c "mix deps.get &&
+             mix ash.setup &&
              mix compile &&
              mix phx.server"
     networks: [e2e]

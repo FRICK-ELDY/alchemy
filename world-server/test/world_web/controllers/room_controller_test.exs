@@ -362,4 +362,33 @@ defmodule WorldWeb.RoomControllerTest do
              })
              |> json_response(404)
   end
+
+  test "create returns 503 storage_unavailable when repo is down", %{signer: signer} do
+    stop_repo!()
+
+    assert %{"error" => "storage_unavailable"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer)
+             |> post("/api/v1/rooms", %{room_id: "down-room"})
+             |> json_response(503)
+  after
+    restart_repo!()
+  end
+
+  defp stop_repo! do
+    case Supervisor.terminate_child(World.Supervisor, World.Repo) do
+      :ok -> :ok
+      {:error, :not_found} -> :ok
+    end
+  end
+
+  defp restart_repo! do
+    case Supervisor.restart_child(World.Supervisor, World.Repo) do
+      {:ok, _} -> :ok
+      {:ok, _, _} -> :ok
+      {:error, {:already_started, _}} -> :ok
+      {:error, :running} -> :ok
+      other -> flunk("failed to restart World.Repo: #{inspect(other)}")
+    end
+  end
 end

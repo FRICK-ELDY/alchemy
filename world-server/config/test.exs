@@ -1,5 +1,14 @@
 import Config
 
+config :world, World.Repo,
+  database:
+    Path.expand(
+      "../priv/data/world_test#{System.get_env("MIX_TEST_PARTITION")}.db",
+      __DIR__
+    ),
+  pool: Ecto.Adapters.SQL.Sandbox,
+  pool_size: 5
+
 config :world, WorldWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4005],
   secret_key_base: "test-only-world-secret-key-base-slice-b-xxxxxxxxxxxxxxxx",

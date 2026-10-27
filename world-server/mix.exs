@@ -27,6 +27,9 @@ defmodule World.MixProject do
   defp deps do
     [
       {:phoenix, "~> 1.8.8"},
+      {:phoenix_ecto, "~> 4.5"},
+      {:ecto_sql, "~> 3.13"},
+      {:ecto_sqlite3, "~> 0.17"},
       {:bandit, "~> 1.5"},
       {:jason, "~> 1.2"},
       {:joken, "~> 2.6"},
@@ -34,6 +37,8 @@ defmodule World.MixProject do
       {:req, "~> 0.5"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
+      {:ash, "~> 3.0"},
+      {:ash_sqlite, "~> 0.2"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end
@@ -49,7 +54,8 @@ defmodule World.MixProject do
 
   defp aliases do
     [
-      setup: ["deps.get"],
+      setup: ["deps.get", "ash.setup"],
+      test: ["ash.setup --quiet", "test"],
       precommit: [
         "compile --warnings-as-errors",
         "format",

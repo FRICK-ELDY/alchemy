@@ -1,6 +1,10 @@
 import Config
 
+config :ash, default_string_length_count: :codepoints
+
 config :world,
+  ecto_repos: [World.Repo],
+  ash_domains: [World.Domain],
   generators: [timestamp_type: :utc_datetime],
   room_token_ttl_seconds: 300,
   room_token_issuer: "alchemy-world",

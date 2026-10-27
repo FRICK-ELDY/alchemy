@@ -4,10 +4,10 @@
 #   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
 #
 # Guarantees: MIX_ENV=prod release image (no hot-reload bind mount).
-# Room Token key: stored under named volume `world_prod_keys`. Recreate **without**
-# removing that volume keeps the key; `docker compose down -v` (or deleting the
-# volume) regenerates the key and **invalidates all outstanding Room Tokens** —
-# clients must re-login / re-issue tokens after that.
+# Named volume `world_prod_keys` holds both Room Token PEM and SQLite DB under
+# `/var/lib/world` (x001e keys + x0028 ledger). Recreate **without** removing
+# that volume keeps the key and rooms; `docker compose down -v` regenerates the
+# key (**invalidates Room Tokens**) and wipes the room ledger.
 
 services:
   world:
@@ -27,6 +27,7 @@ services:
       ROOM_TOKEN_GENERATE_KEY: "true"
       WORLD_ALLOW_ANON_TOKENS: "false"
       AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://host.docker.internal:4002/.well-known/jwks.json}
+      WORLD_DATABASE_PATH: /var/lib/world/world.db
     volumes:
       - world_prod_keys:/var/lib/world
 

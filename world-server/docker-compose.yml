@@ -17,15 +17,19 @@ services:
       ROOM_TOKEN_GENERATE_KEY: "true"
       WORLD_ALLOW_ANON_TOKENS: "false"
       AUTH_JWKS_URL: http://host.docker.internal:4002/.well-known/jwks.json
+      WORLD_DATABASE_PATH: /app/priv/data/world_dev.db
     volumes:
       - .:/app
       - world_deps:/app/deps
       - world_build:/app/_build
+      - world_data:/app/priv/data
     command: >
       sh -c "mix deps.get &&
+             mix ash.setup &&
              mix compile &&
              mix phx.server"
 
 volumes:
   world_deps:
   world_build:
+  world_data:
