@@ -4,6 +4,7 @@ members = [
     "host-server",
     "app",
     "e2e-probe",
+    "zenoh-connect",
 ]
 
 [workspace.package]
@@ -14,9 +15,11 @@ version = "0.1.0"
 [workspace.dependencies]
 # Shared wire contract lives at repo-root protocol/ (not inside this workspace).
 alchemy-protocol = { path = "../protocol" }
+zenoh-connect = { path = "zenoh-connect" }
 prost = "0.14"
 zenoh = "1.10"
 anyhow = "1"
+serde_json = "1"
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"
 winit = "0.30"

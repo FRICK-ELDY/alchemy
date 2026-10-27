@@ -48,6 +48,8 @@ pub struct RoomClaims {
     pub sub: String,
     pub room_id: String,
     pub role: String,
+    /// Room Token id — binds Zenoh liveliness Delete to a verified session (x0022).
+    pub jti: String,
     /// Present for JWT exp validation / serde; not read by host logic.
     #[allow(dead_code)]
     pub exp: i64,

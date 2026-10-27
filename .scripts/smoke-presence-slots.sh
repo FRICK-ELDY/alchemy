@@ -48,8 +48,8 @@ check_host_banner() {
   fi
 
   local ok=1
-  if ! grep -qE "host-server x0019 starting" "$log"; then
-    echo "smoke-presence-slots: missing host-server x0019 start banner (ROOM_ID=$room)"
+  if ! grep -qE "host-server x0022 starting" "$log"; then
+    echo "smoke-presence-slots: missing host-server x0022 start banner (ROOM_ID=$room)"
     ok=0
   fi
   if ! grep -q "user_roots=3..6" "$log"; then
@@ -64,8 +64,8 @@ check_host_banner() {
     echo "smoke-presence-slots: missing presence=${expect_presence} in banner"
     ok=0
   fi
-  if ! grep -q "protocol_pin=alchemy-protocol/0.9.0-x0019" "$log"; then
-    echo "smoke-presence-slots: missing PROTOCOL_PIN 0.9.0-x0019"
+  if ! grep -q "protocol_pin=alchemy-protocol/0.9.0-x0022" "$log"; then
+    echo "smoke-presence-slots: missing PROTOCOL_PIN 0.9.0-x0022"
     ok=0
   fi
   if ! grep -q "published PresenceState revision=0" "$log"; then

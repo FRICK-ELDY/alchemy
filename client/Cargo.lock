@@ -543,6 +543,7 @@ dependencies = [
  "winit",
  "winreg",
  "zenoh",
+ "zenoh-connect",
 ]
 
 [[package]]
@@ -965,6 +966,7 @@ dependencies = [
  "serde_json",
  "ureq",
  "zenoh",
+ "zenoh-connect",
 ]
 
 [[package]]
@@ -1554,6 +1556,7 @@ dependencies = [
  "serde_json",
  "ureq",
  "zenoh",
+ "zenoh-connect",
 ]
 
 [[package]]
@@ -5969,6 +5972,16 @@ dependencies = [
  "zenoh-protocol",
  "zenoh-result",
  "zenoh-util",
+]
+
+[[package]]
+name = "zenoh-connect"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "serde_json",
+ "zenoh",
 ]
 
 [[package]]

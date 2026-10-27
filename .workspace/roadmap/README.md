@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0022`**；x0021 done）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0023`**；x0022 done）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -83,8 +83,9 @@ depends_on: [x0006]
 | x001f | — | done | Hermetic Compose 縦 E2E（login→token→input→frame） | [x001f-hermetic-compose-e2e.md](slices/x001f-hermetic-compose-e2e.md) |
 | x0020 | — | done | Desktop client 手通し（日常スタック正本 + smoke） | [x0020-desktop-handthrough.md](slices/x0020-desktop-handthrough.md) |
 | x0021 | — | done | P1 デモゲート（Token refresh / JWKS bg / clamp / host role） | [x0021-p1-demo-gate.md](slices/x0021-p1-demo-gate.md) |
+| x0022 | — | done | liveliness セッション紐付け + WAN TLS（P2 前半） | [x0022-liveliness-wan-tls.md](slices/x0022-liveliness-wan-tls.md) |
 
-**現在の次:** **x0022**（未作成）。候補: SceneManifest 駆動（P4）または P2（liveliness / WAN TLS）。
+**現在の次:** **x0023**（未作成）。候補: P2 後半（session binding / client Frame 検証 / snapshot）、または SceneManifest 駆動（P4）。
 
 ## 関連
 

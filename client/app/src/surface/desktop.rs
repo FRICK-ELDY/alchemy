@@ -716,7 +716,7 @@ fn handle_ui_action(
                     ) {
                         Ok(()) => {
                             if let Some(session) = zenoh {
-                                if let Err(err) = declare_room_alive(shared, session) {
+                                if let Err(err) = declare_room_alive(shared, session, false) {
                                     log::warn!("liveliness after login failed: {err:#}");
                                 }
                             }
@@ -771,7 +771,7 @@ fn handle_ui_action(
                     ) {
                         Ok(()) => {
                             if let Some(session) = zenoh {
-                                if let Err(err) = declare_room_alive(shared, session) {
+                                if let Err(err) = declare_room_alive(shared, session, false) {
                                     log::warn!("liveliness after register failed: {err:#}");
                                 }
                             }

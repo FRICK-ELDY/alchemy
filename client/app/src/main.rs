@@ -42,7 +42,6 @@ use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, COIN_BLAKE3_HEX};
 use scene::{EntityPose, SharedState, LOCAL_USER_ROOT_UNSET, MESH_ENTITY_ID};
 use serde::Deserialize;
 use zenoh::bytes::ZBytes;
-use zenoh::Config;
 use zenoh::Wait;
 
 const DEFAULT_ZENOH_CONNECT: &str = "tcp/127.0.0.1:7447";
@@ -74,18 +73,7 @@ fn zenoh_connect_endpoint() -> String {
 }
 
 fn open_zenoh() -> Result<zenoh::Session> {
-    let endpoint = zenoh_connect_endpoint();
-    let mut config = Config::default();
-    config
-        .insert_json5("mode", r#""client""#)
-        .map_err(|e| anyhow::anyhow!("zenoh mode: {e}"))?;
-    config
-        .insert_json5("connect/endpoints", &format!(r#"["{endpoint}"]"#))
-        .map_err(|e| anyhow::anyhow!("zenoh connect: {e}"))?;
-    log::info!("zenoh connect={endpoint}");
-    zenoh::open(config)
-        .wait()
-        .map_err(|e| anyhow::anyhow!("zenoh open failed: {e}"))
+    zenoh_connect::open_client(&zenoh_connect_endpoint())
 }
 
 pub fn fetch_guest_token(world_url: &str, room_id: &str, auth_token: &str) -> Result<GuestToken> {
@@ -356,7 +344,6 @@ fn spawn_input_publisher(
     thread::Builder::new()
         .name("zenoh-input-pub".into())
         .spawn(move || {
-            let _session = session;
             log::info!(
                 "publishing InputEvent intent to {key} @ {INPUT_HZ}Hz (gated by room_token)"
             );
@@ -405,6 +392,35 @@ fn spawn_input_publisher(
                 };
                 if let Err(err) = publisher.put(event.encode_to_vec()).wait() {
                     log::warn!("input publish failed: {err}");
+                    continue;
+                }
+                // put().wait() only means the router accepted the sample — not that host verified
+                // the new jti. Rebind keeps the old token until the *next* put; host also uses a
+                // liveliness reclaim grace so Delete(old) before Intent(new) does not free the slot.
+                let (need_rebind, need_retire_prev) = shared
+                    .auth
+                    .lock()
+                    .ok()
+                    .map(|g| (g.liveliness_rebind, g.liveliness_retire_prev))
+                    .unwrap_or((false, false));
+                if need_retire_prev {
+                    if let Ok(mut prev) = shared.liveliness_prev.lock() {
+                        *prev = None;
+                    }
+                    if let Ok(mut gate) = shared.auth.lock() {
+                        gate.liveliness_retire_prev = false;
+                    }
+                }
+                if need_rebind {
+                    match declare_room_alive(&shared, &session, /* retain_previous */ true) {
+                        Ok(()) => {
+                            if let Ok(mut gate) = shared.auth.lock() {
+                                gate.liveliness_rebind = false;
+                                gate.liveliness_retire_prev = true;
+                            }
+                        }
+                        Err(err) => log::warn!("liveliness rebind after refresh failed: {err:#}"),
+                    }
                 }
             }
         })
@@ -504,9 +520,13 @@ fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                             };
                             if let Ok(mut gate) = shared.auth.lock() {
                                 if gate.is_joined() {
-                                    gate.apply_room(guest.token, local_sub, guest.expires_in);
+                                    gate.apply_room_refresh(
+                                        guest.token,
+                                        local_sub,
+                                        guest.expires_in,
+                                    );
                                     log::info!(
-                                        "Room Token refreshed expires_in={}",
+                                        "Room Token refreshed expires_in={} (liveliness rebind pending)",
                                         guest.expires_in
                                     );
                                 }
@@ -526,27 +546,42 @@ fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
     Ok(())
 }
 
-/// Declare Zenoh liveliness for the current `local_sub` (x0019). No-op if not joined.
-pub fn declare_room_alive(shared: &SharedState, session: &zenoh::Session) -> Result<()> {
-    let sub = shared
+/// Declare Zenoh liveliness for current Room Token `sub`+`jti` (x0022). No-op if not joined.
+///
+/// `retain_previous`: only for Room Token **refresh** rebind. Stashes the old token in
+/// `liveliness_prev` until the next Intent put. Join / re-login pass `false` and drop any
+/// previous key immediately (no dual-key leak until leave).
+pub fn declare_room_alive(
+    shared: &SharedState,
+    session: &zenoh::Session,
+    retain_previous: bool,
+) -> Result<()> {
+    let room_token = shared
         .auth
         .lock()
         .ok()
-        .and_then(|g| g.local_sub.clone())
+        .and_then(|g| g.room_token.clone())
         .context("declare liveliness: not joined")?;
-    if sub.contains('/') {
-        anyhow::bail!("Room Token sub must not contain '/' for liveliness key");
-    }
-    let key = liveliness_key(shared.room_id.as_ref(), &sub);
+    let (sub, jti) =
+        jwt_sub::sub_jti_unverified(&room_token).context("declare liveliness: read sub/jti")?;
+    let key = liveliness_key(shared.room_id.as_ref(), &sub, &jti);
     let token = session
         .liveliness()
         .declare_token(key.clone())
         .wait()
         .map_err(|e| anyhow::anyhow!("declare liveliness token failed: {e}"))?;
     if let Ok(mut slot) = shared.liveliness.lock() {
-        *slot = Some(token);
+        let old = slot.replace(token);
+        if let Some(old) = old {
+            if retain_previous {
+                if let Ok(mut prev) = shared.liveliness_prev.lock() {
+                    *prev = Some(old);
+                }
+            }
+            // else: drop `old` immediately (join / re-login)
+        }
     }
-    log::info!("liveliness declared key={key}");
+    log::info!("liveliness declared key={key} retain_previous={retain_previous}");
     Ok(())
 }
 
@@ -583,6 +618,9 @@ pub fn leave_room(shared: &SharedState, session: &zenoh::Session) {
     if let Ok(mut token) = shared.liveliness.lock() {
         *token = None;
     }
+    if let Ok(mut prev) = shared.liveliness_prev.lock() {
+        *prev = None;
+    }
     shared.leave_room_local();
 }
 
@@ -607,7 +645,7 @@ fn main() -> Result<()> {
     let silent = auth::try_silent_session(&auth_url).context("silent auth")?;
     let auth_mode = if silent.is_some() { "silent" } else { "ui" };
     log::info!(
-        "client x0019 starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
+        "client x0022 starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
     );
 
     let mut gate = AuthGate::default();
@@ -623,6 +661,7 @@ fn main() -> Result<()> {
         assets_url: Arc::<str>::from(assets_url.clone()),
         auth: Mutex::new(gate),
         liveliness: Mutex::new(None),
+        liveliness_prev: Mutex::new(None),
         entities: Mutex::new(HashMap::new()),
         look: Mutex::new(Default::default()),
         intent: Mutex::new(Default::default()),
@@ -656,7 +695,7 @@ fn main() -> Result<()> {
         .map(|g| g.is_joined())
         .unwrap_or(false)
     {
-        declare_room_alive(&shared, &session).context("silent liveliness")?;
+        declare_room_alive(&shared, &session, false).context("silent liveliness")?;
     }
     spawn_manifest_subscriber(
         session.clone(),

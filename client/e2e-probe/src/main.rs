@@ -15,7 +15,6 @@ use alchemy_protocol::{
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use zenoh::bytes::ZBytes;
-use zenoh::Config;
 use zenoh::Wait;
 
 /// Defaults match `docker-compose.e2e.yml` host ports (offset from day-to-day :4002 stack).
@@ -89,16 +88,7 @@ fn fetch_room_token(world_url: &str, room_id: &str, access: &str, role: &str) ->
 }
 
 fn open_zenoh(endpoint: &str) -> Result<zenoh::Session> {
-    let mut config = Config::default();
-    config
-        .insert_json5("mode", r#""client""#)
-        .map_err(|e| anyhow!("zenoh mode: {e}"))?;
-    config
-        .insert_json5("connect/endpoints", &format!(r#"["{endpoint}"]"#))
-        .map_err(|e| anyhow!("zenoh connect: {e}"))?;
-    zenoh::open(config)
-        .wait()
-        .map_err(|e| anyhow!("zenoh open failed: {e}"))
+    zenoh_connect::open_client(endpoint)
 }
 
 fn client_time_ms() -> u64 {

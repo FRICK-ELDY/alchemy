@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# x001b: Zenoh WAN (ConoHa) — connectivity gate for ZENOH_CONNECT.
+# x0022 / x001b: Zenoh WAN — TCP reachability gate for ZENOH_CONNECT (tls/ or legacy tcp/).
 # Full 2-client Presence / Leave is an operator demo (see manual).
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
-usage: ZENOH_CONNECT=tcp/<VPS_IP>:7447 bash .scripts/smoke-zenoh-wan.sh
+usage: ZENOH_CONNECT=tls/<VPS_HOST>:7447 bash .scripts/smoke-zenoh-wan.sh
+   or: ZENOH_CONNECT=tcp/<VPS_HOST>:7447 bash .scripts/smoke-zenoh-wan.sh  # legacy
 
-Checks that the TCP endpoint in ZENOH_CONNECT accepts connections (allowlist).
-Does not run host/client. Operator demo:
+Checks that the host:port in ZENOH_CONNECT accepts TCP connections (allowlist).
+Does not verify the TLS handshake. Operator demo:
   .workspace/0_doc/manual/zenoh-wan-conoha.md
 EOF
 }
@@ -18,16 +19,18 @@ if [[ -z "${ZENOH_CONNECT:-}" ]]; then
   exit 1
 fi
 
-# Expect forms like tcp/1.2.3.4:7447 or tcp/[::1]:7447
-endpoint="${ZENOH_CONNECT#tcp/}"
-if [[ "$endpoint" == "$ZENOH_CONNECT" ]]; then
-  echo "smoke-zenoh-wan: ZENOH_CONNECT must look like tcp/<host>:7447 (got: ${ZENOH_CONNECT})"
-  exit 1
-fi
+endpoint="$ZENOH_CONNECT"
+case "$endpoint" in
+  tls/*) endpoint="${endpoint#tls/}" ;;
+  tcp/*) endpoint="${endpoint#tcp/}" ;;
+  *)
+    echo "smoke-zenoh-wan: ZENOH_CONNECT must look like tls/<host>:7447 (got: ${ZENOH_CONNECT})"
+    exit 1
+    ;;
+esac
 
 host="${endpoint%:*}"
 port="${endpoint##*:}"
-# strip brackets for IPv6 literals if present
 host="${host#[}"
 host="${host%]}"
 
@@ -38,21 +41,23 @@ fi
 
 echo "smoke-zenoh-wan: probing ${host}:${port} …"
 if command -v nc >/dev/null 2>&1; then
-  if nc -z -w 5 "$host" "$port" 2>/dev/null; then
-    echo "smoke-zenoh-wan: ok (TCP accept on ${ZENOH_CONNECT})"
-    echo "smoke-zenoh-wan: next — 2 clients Presence/Leave per manual/zenoh-wan-conoha.md"
+  if nc -vz -w 5 "$host" "$port"; then
+    echo "smoke-zenoh-wan: ok (TCP accept; TLS handshake not checked)"
     exit 0
   fi
-  echo "smoke-zenoh-wan: TCP probe failed (ufw allowlist / zenohd down / wrong IP?)"
+  echo "smoke-zenoh-wan: FAILED (nc)"
   exit 1
 fi
 
-# Fallback: bash /dev/tcp (bash only)
-if timeout 5 bash -c "echo >/dev/tcp/${host}/${port}" 2>/dev/null; then
-  echo "smoke-zenoh-wan: ok (TCP accept on ${ZENOH_CONNECT})"
-  echo "smoke-zenoh-wan: next — 2 clients Presence/Leave per manual/zenoh-wan-conoha.md"
-  exit 0
+# Fallback: bash /dev/tcp with an outer timeout so filter drops cannot hang forever.
+if command -v timeout >/dev/null 2>&1; then
+  if timeout 5 bash -c "echo >/dev/tcp/${host}/${port}" >/dev/null 2>&1; then
+    echo "smoke-zenoh-wan: ok (TCP accept via /dev/tcp; TLS handshake not checked)"
+    exit 0
+  fi
+  echo "smoke-zenoh-wan: FAILED (/dev/tcp or timeout)"
+  exit 1
 fi
 
-echo "smoke-zenoh-wan: TCP probe failed (install nc, or check allowlist / zenohd)"
+echo "smoke-zenoh-wan: FAILED (need nc or GNU timeout + bash /dev/tcp)"
 exit 1

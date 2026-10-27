@@ -23,6 +23,7 @@ prost = { workspace = true }
 wgpu = { workspace = true }
 winit = { workspace = true }
 zenoh = { workspace = true }
+zenoh-connect = { workspace = true }
 openxr = { workspace = true }
 ash = { workspace = true }
 naga = { workspace = true }
