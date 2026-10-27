@@ -1,13 +1,14 @@
-//! World-space ray hits against grabbable box AABBs (Desktop + XR).
+//! World-space ray hits against grabbable box OBBs (Desktop + XR, x002b).
 //!
-//! Guarantees: nearest AABB among caller-supplied grabbable poses within [`MAX_HIT_DISTANCE`].
-//! Half-extent uses Manifest size × Frame `scale` max component (x0029).
-//! Non-guarantees: OBB / `pose.rotation()`（描画とヒットは回転で乖離しうる・x0029）;
-//! mesh triangles, Slot hierarchy, XR dash quad (stays in surface/xr).
+//! Guarantees: nearest OBB among caller-supplied grabbable poses within [`MAX_HIT_DISTANCE`].
+//! Local half-extents = Manifest `half_extent` × Frame `scale` (per-axis); orientation from
+//! `pose.rotation()` — matches Desktop/XR draw TRS (x0029).
+//! Non-guarantees: mesh triangles, Slot hierarchy, XR dash quad (stays in surface/xr);
+//! Grab aim rotation follow on host (translation only).
 
 use std::collections::HashMap;
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 
 use crate::scene::{EntityPose, BOX_HALF_EXTENT};
 
@@ -20,7 +21,7 @@ pub struct Ray {
     pub dir: Vec3,
 }
 
-/// Closest AABB hit among grabbable boxes.
+/// Closest box hit among grabbable poses.
 #[derive(Clone, Copy, Debug)]
 pub struct BoxHit {
     pub entity_id: u32,
@@ -28,7 +29,13 @@ pub struct BoxHit {
 }
 
 /// Ray vs axis-aligned box (center + uniform half-extent). Returns entry `t` or None.
-pub fn ray_hit_aabb(ray: Ray, center: Vec3, half: f32) -> Option<f32> {
+#[cfg(test)]
+fn ray_hit_aabb(ray: Ray, center: Vec3, half: f32) -> Option<f32> {
+    ray_hit_aabb_extents(ray, center, Vec3::splat(half))
+}
+
+/// Ray vs AABB with per-axis half-extents (local or world axis-aligned).
+fn ray_hit_aabb_extents(ray: Ray, center: Vec3, half: Vec3) -> Option<f32> {
     let dir = ray.dir;
     if dir.length_squared() < 1e-12 {
         return None;
@@ -50,8 +57,8 @@ pub fn ray_hit_aabb(ray: Ray, center: Vec3, half: f32) -> Option<f32> {
             f32::INFINITY.copysign(dir.z)
         },
     );
-    let min = center - Vec3::splat(half);
-    let max = center + Vec3::splat(half);
+    let min = center - half;
+    let max = center + half;
     let t0 = (min - ray.origin) * inv;
     let t1 = (max - ray.origin) * inv;
     let tmin = t0.min(t1);
@@ -69,7 +76,25 @@ pub fn ray_hit_aabb(ray: Ray, center: Vec3, half: f32) -> Option<f32> {
     }
 }
 
-/// Nearest grabbable box along `ray` (caller pre-filters the set; uniform half-extent).
+/// Ray vs oriented box: transform ray into box local space, then AABB slab (x002b).
+pub fn ray_hit_obb(ray: Ray, center: Vec3, rotation: Quat, half_extents: Vec3) -> Option<f32> {
+    // Mirror scales (negative components) keep the same solid extent as draw.
+    let half_extents = half_extents.abs();
+    let inv = rotation.inverse();
+    let local = Ray {
+        origin: inv * (ray.origin - center),
+        dir: inv * ray.dir,
+    };
+    ray_hit_aabb_extents(local, Vec3::ZERO, half_extents)
+}
+
+/// Local half-extents: `(Manifest half [+ Desktop pad]) * Frame scale` (per-axis).
+/// Pad is applied to the Manifest scalar **before** scale, matching `half_for` callers.
+fn local_half_extents(half: f32, pose: EntityPose) -> Vec3 {
+    Vec3::splat(half.max(0.0)) * pose.scale().abs()
+}
+
+/// Nearest grabbable box along `ray` (caller pre-filters the set; uniform Manifest half).
 pub fn ray_hit_grabbable_boxes(
     ray: Ray,
     boxes: &[(u32, EntityPose)],
@@ -78,7 +103,7 @@ pub fn ray_hit_grabbable_boxes(
     ray_hit_grabbable_boxes_with_extents(ray, boxes, |_| half_extent)
 }
 
-/// Nearest box using per-entity half-extents (`BOX_HALF_EXTENT` fallback).
+/// Nearest box using per-entity half-extents (`BOX_HALF_EXTENT` fallback) + Frame TRS.
 pub fn ray_hit_grabbable_boxes_with_extents(
     ray: Ray,
     boxes: &[(u32, EntityPose)],
@@ -86,9 +111,8 @@ pub fn ray_hit_grabbable_boxes_with_extents(
 ) -> Option<BoxHit> {
     let mut best: Option<BoxHit> = None;
     for &(id, pose) in boxes {
-        // Definition × execution scale; rotation ignored (AABB, not OBB).
-        let half = half_for(id) * pose.scale().max_element().max(0.0);
-        let Some(t) = ray_hit_aabb(ray, pose.position(), half) else {
+        let he = local_half_extents(half_for(id), pose);
+        let Some(t) = ray_hit_obb(ray, pose.position(), pose.rotation(), he) else {
             continue;
         };
         if t > MAX_HIT_DISTANCE {
@@ -121,7 +145,8 @@ pub fn pick_grabbable(ray: Ray, boxes: &[(u32, EntityPose)]) -> Option<BoxHit> {
     ray_hit_grabbable_boxes(ray, boxes, BOX_HALF_EXTENT)
 }
 
-/// Desktop pick pad: floor boxes sit below eye height; slight AABB inflate helps look-aim.
+/// Desktop pick pad added to Manifest half **before** Frame scale
+/// (`(half + PAD) * scale`, not `half * scale + PAD`).
 pub const DESKTOP_PICK_HALF_PAD: f32 = 0.12;
 
 pub fn pick_grabbable_desktop(
@@ -137,9 +162,10 @@ pub fn pick_grabbable_desktop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::FRAC_PI_4;
 
     #[test]
-    fn aabb_half_uses_frame_scale_max() {
+    fn scale_expands_hit_along_axes() {
         let ray = Ray {
             origin: Vec3::new(0.0, 0.0, 3.0),
             dir: Vec3::NEG_Z,
@@ -170,6 +196,61 @@ mod tests {
         let t_scaled = ray_hit_grabbable_boxes(ray, &scaled, 0.25).unwrap().t;
         assert!(t_scaled < t_unit);
         assert!((t_scaled - 2.5).abs() < 0.05, "t_scaled={t_scaled}");
+    }
+
+    #[test]
+    fn nonuniform_scale_is_per_axis_not_max_element() {
+        // Along +X: sx=2 → half_x=0.5; sy=sz=1 → half_y/z=0.25.
+        // Old max_element AABB would use half=0.5 on all axes and hit a ray at y=0.4.
+        // Per-axis OBB must miss (0.4 > 0.25).
+        let ray = Ray {
+            origin: Vec3::new(-3.0, 0.4, 0.0),
+            dir: Vec3::X,
+        };
+        let pose = [(
+            10,
+            EntityPose {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                sx: 2.0,
+                sy: 1.0,
+                sz: 1.0,
+                ..Default::default()
+            },
+        )];
+        assert!(
+            ray_hit_grabbable_boxes(ray, &pose, 0.25).is_none(),
+            "y=0.4 must miss when half_y=0.25"
+        );
+        let ray_on_axis = Ray {
+            origin: Vec3::new(-3.0, 0.0, 0.0),
+            dir: Vec3::X,
+        };
+        let hit = ray_hit_grabbable_boxes(ray_on_axis, &pose, 0.25).expect("x-axis should hit");
+        assert!((hit.t - 2.5).abs() < 0.05, "t={}", hit.t);
+    }
+
+    #[test]
+    fn negative_scale_matches_positive_extent() {
+        let ray = Ray {
+            origin: Vec3::new(0.0, 0.0, 3.0),
+            dir: Vec3::NEG_Z,
+        };
+        let mirrored = [(
+            10,
+            EntityPose {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                sx: -2.0,
+                sy: -2.0,
+                sz: -2.0,
+                ..Default::default()
+            },
+        )];
+        let hit = ray_hit_grabbable_boxes(ray, &mirrored, 0.25).expect("mirror scale hits");
+        assert!((hit.t - 2.5).abs() < 0.05, "t={}", hit.t);
     }
 
     #[test]
@@ -211,6 +292,67 @@ mod tests {
         let hit = ray_hit_grabbable_boxes(ray, &boxes, 0.25).unwrap();
         assert_eq!(hit.entity_id, 11);
         assert!((hit.t - 1.75).abs() < 0.05, "t={}", hit.t);
+    }
+
+    #[test]
+    fn yaw45_obb_hits_where_identity_aabb_misses() {
+        // half=0.5 → identity AABB |x|<=0.5. Ray at x=0.6 misses identity.
+        // 45° yaw expands XZ footprint to ~0.707 → OBB hits.
+        let ray = Ray {
+            origin: Vec3::new(0.6, 0.0, 3.0),
+            dir: Vec3::NEG_Z,
+        };
+        let identity = [(
+            10,
+            EntityPose {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                ..Default::default()
+            },
+        )];
+        assert!(ray_hit_grabbable_boxes(ray, &identity, 0.5).is_none());
+
+        let q = Quat::from_rotation_y(FRAC_PI_4);
+        let rotated = [(
+            10,
+            EntityPose {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                qx: q.x,
+                qy: q.y,
+                qz: q.z,
+                qw: q.w,
+                ..Default::default()
+            },
+        )];
+        let hit = ray_hit_grabbable_boxes(ray, &rotated, 0.5).expect("OBB should hit");
+        assert_eq!(hit.entity_id, 10);
+        assert!(hit.t > 0.0 && hit.t < MAX_HIT_DISTANCE);
+    }
+
+    #[test]
+    fn identity_rotation_matches_aabb() {
+        let ray = Ray {
+            origin: Vec3::new(0.0, 0.0, 2.0),
+            dir: Vec3::NEG_Z,
+        };
+        let pose = EntityPose {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            ..Default::default()
+        };
+        let t_aabb = ray_hit_aabb(ray, pose.position(), 0.25).unwrap();
+        let t_obb = ray_hit_obb(
+            ray,
+            pose.position(),
+            pose.rotation(),
+            local_half_extents(0.25, pose),
+        )
+        .unwrap();
+        assert!((t_aabb - t_obb).abs() < 1e-5);
     }
 
     #[test]
