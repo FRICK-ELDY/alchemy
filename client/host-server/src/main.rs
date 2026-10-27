@@ -731,7 +731,7 @@ fn main() -> Result<()> {
         host_pub.clone(),
         creds.host_attestation.clone(),
     );
-    let loco = manifest.locomotion.clone().unwrap_or(LocomotionConfig {
+    let loco = manifest.locomotion.unwrap_or(LocomotionConfig {
         mode: LocomotionMode::Noclip.into(),
         move_speed: DEFAULT_MOVE_SPEED,
     });
