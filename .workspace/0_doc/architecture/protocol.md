@@ -2,7 +2,7 @@
 
 > **正本**: [`protocol/`](../../../protocol/)  
 > **配送契約**: [`protocol/peer-delivery.md`](../../../protocol/peer-delivery.md)（x0024）  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.10.0-x0025`
+> **PROTOCOL_PIN**: `alchemy-protocol/0.11.0-x0026`
 
 ## 置き場の方針
 
@@ -18,7 +18,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | `PROTOCOL_PIN` を Manifest / Presence に載せ、不一致検出可能（x0023） | フル DrawCommand 体系・多世代同時運用 |
 | f64 空間座標（描画境界） | audio / tracking |
 | Intent: Ed25519 `session_pub` / `intent_seq` / `intent_sig` + 任意 `room_token`（bind 時）（x0023） | Token JWKS 検証そのもの（host-server） |
-| Frame / Presence: `host_sig` + Manifest `host_pub`（world HostAttestation 後・x0025） | Manifest 全体の world 署名・テナント名前空間 |
+| Frame / Presence: `host_sig` + Manifest `host_pub`（HostAttestation）+ Manifest **`world_seal`**（x0026） | SceneManifest 駆動（P4）・テナント名前空間 |
 | 配送クラス表（[`peer-delivery.md`](../../../protocol/peer-delivery.md)）+ `decide_frame_tick` / `FRAME_TICK_GAP_RESYNC`（x0024） | 確実配送 ACK / event ID チャネル・欠落デルタの再送 |
 | Manifest / frame / presence / host_control / snapshot のキー式ヘルパ + `validate_room_id`（x0017） | Zenoh ACL / mTLS |
 | `LocomotionConfig`（World 定義の active mode） | モジュール一覧 UI / 抑制ソース |
@@ -29,11 +29,11 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 
 ### SceneManifest（`proto/scene_manifest.proto`）— 低頻度 + x0009 loco + x0023 / x0025
 
-- `SceneManifest { room_id, revision, entries[], locomotion, protocol_pin, host_pub, host_attestation }`
+- `SceneManifest { room_id, revision, entries[], locomotion, protocol_pin, host_pub, host_attestation, world_seal }`
 - `SceneEntry { entity_id, blake3 (hex), x,y,z }`
 - `LocomotionConfig { mode, move_speed }` — `UNSPECIFIED` → host は **Noclip**
 - `LocomotionMode`: NOCLIP / FLY / WALK
-- `protocol_pin` / `host_pub`（32B Ed25519）+ `host_attestation`（world JWT）: client は pin 不一致・attestation 失敗で leave；Frame/Presence は attested `host_pub`（x0025）
+- `protocol_pin` / `host_pub`（32B Ed25519）+ `host_attestation` + **`world_seal`**（world JWT・body blake3）: client は pin / seal / attestation 失敗で leave；Frame/Presence は attested `host_pub`（x0026）
 - **GLB バイトは載せない**（assets-server CAS 参照のみ）
 
 ### RenderFrame（`proto/render_frame.proto`）— 高頻度デルタ + 署名（x0023）

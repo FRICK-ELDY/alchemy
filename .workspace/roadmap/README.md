@@ -87,8 +87,9 @@ depends_on: [x0006]
 | x0023 | — | done | P2 後半（session binding / Frame 検証 / snapshot） | [x0023-p2-session-frame.md](slices/x0023-p2-session-frame.md) |
 | x0024 | — | done | 配送クラス契約（peer-delivery + frame 欠落→snapshot） | [x0024-delivery-class.md](slices/x0024-delivery-class.md) |
 | x0025 | — | done | host_pub 証明（world attestation + Presence host_sig） | [x0025-host-pub-attestation.md](slices/x0025-host-pub-attestation.md) |
+| x0026 | — | done | Manifest 全体の world seal（本体改ざん検知・P4 なし） | [x0026-manifest-world-seal.md](slices/x0026-manifest-world-seal.md) |
 
-**現在の次:** **x0026**（未作成）。候補: SceneManifest 駆動（P4）、または Manifest 全体の world 署名、または P3 まとめ。
+**現在の次:** **x0027**（未作成）。候補: SceneManifest 駆動（P4）、または P3 まとめ。
 
 ## 関連
 

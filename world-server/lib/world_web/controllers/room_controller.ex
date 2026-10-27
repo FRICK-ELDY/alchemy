@@ -4,6 +4,7 @@ defmodule WorldWeb.RoomController do
   require Logger
 
   alias World.HostAttestation
+  alias World.ManifestSeal
   alias World.Rooms
   alias World.Token
 
@@ -179,6 +180,81 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:unprocessable_entity)
         |> json(%{error: "invalid_host_pub"})
+
+      {:error, :invalid_room_id} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_room_id"})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "invalid_room_token", detail: inspect(reason)})
+    end
+  end
+
+  @doc """
+  x0026: issue ManifestSeal JWT. Authorization must be a **host** Room Token.
+  """
+  def create_manifest_seal(conn, %{"room_id" => room_id} = params) do
+    with {:ok, bearer} <- fetch_bearer(conn),
+         {:ok, claims} <- Token.verify(bearer),
+         :ok <- require_host_token(claims, room_id),
+         :ok <- Rooms.require_existing(room_id),
+         :ok <- require_owner(room_id, claims["sub"]),
+         {:ok, revision} <- ManifestSeal.parse_revision(Map.get(params, "revision")),
+         {:ok, blake3} <- ManifestSeal.parse_blake3(Map.get(params, "manifest_blake3")) do
+      case ManifestSeal.generate(room_id, revision, blake3, claims["sub"]) do
+        {:ok, seal, ttl} ->
+          json(conn, %{
+            seal: seal,
+            expires_in: ttl,
+            room_id: room_id,
+            token_type: "Bearer"
+          })
+
+        {:error, reason} ->
+          Logger.error("ManifestSeal.generate failed: #{inspect(reason)}")
+
+          conn
+          |> put_status(:internal_server_error)
+          |> json(%{error: "manifest_seal_issue_failed", detail: inspect(reason)})
+      end
+    else
+      {:error, :missing_bearer} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "missing_room_token"})
+
+      {:error, :not_host_token} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "host_role_required"})
+
+      {:error, :room_mismatch} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "room_id_mismatch"})
+
+      {:error, :forbidden_host} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "host_role_owner_only"})
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "room_not_found"})
+
+      {:error, :invalid_revision} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_revision"})
+
+      {:error, :invalid_manifest_blake3} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_manifest_blake3"})
 
       {:error, :invalid_room_id} ->
         conn

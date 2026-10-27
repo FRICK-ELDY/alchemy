@@ -22,7 +22,7 @@ pub use prost::Message;
 pub mod wire_crypto;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.10.0-x0025";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.11.0-x0026";
 
 /// Default free-move speed (m/s) when Manifest `move_speed` is 0.
 /// Shared by host Noclip and client Settings display (x000a).
@@ -290,6 +290,7 @@ mod tests {
             protocol_pin: PROTOCOL_PIN.into(),
             host_pub: vec![1, 2, 3],
             host_attestation: "eyJ.test.attestation".into(),
+            world_seal: "eyJ.test.seal".into(),
         };
         let bytes = manifest.encode_to_vec();
         let decoded = SceneManifest::decode(bytes.as_slice()).expect("decode");
@@ -306,6 +307,16 @@ mod tests {
         assert!((loco.move_speed - 4.0).abs() < f32::EPSILON);
         assert_eq!(decoded.protocol_pin, PROTOCOL_PIN);
         assert_eq!(decoded.host_pub, vec![1, 2, 3]);
+        assert_eq!(decoded.world_seal, "eyJ.test.seal");
+        let seal_hex = wire_crypto::manifest_seal_blake3_hex(&decoded);
+        assert_eq!(seal_hex.len(), 64);
+        let mut cleared = decoded.clone();
+        cleared.world_seal.clear();
+        assert_eq!(
+            wire_crypto::manifest_seal_blake3_hex(&cleared),
+            seal_hex,
+            "world_seal must not affect seal blake3"
+        );
     }
 
     #[test]
