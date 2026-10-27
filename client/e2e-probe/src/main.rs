@@ -8,7 +8,9 @@ use std::env;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use alchemy_protocol::wire_crypto::{generate_signing_key, public_key_bytes, sign_input, SigningKey};
+use alchemy_protocol::wire_crypto::{
+    generate_signing_key, public_key_bytes, sign_input, SigningKey,
+};
 use alchemy_protocol::{
     frame_key, input_key, snapshot_key, user_root_entity_last, validate_room_id, InputEvent,
     Message, RenderFrame, PROTOCOL_PIN, USER_ROOT_ENTITY_FIRST,

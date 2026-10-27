@@ -24,7 +24,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use alchemy_protocol::wire_crypto::{generate_signing_key, public_key_bytes, sign_frame, SigningKey};
+use alchemy_protocol::wire_crypto::{
+    generate_signing_key, public_key_bytes, sign_frame, SigningKey,
+};
 use alchemy_protocol::{
     frame_key, host_control_key, input_buttons, input_key, liveliness_binding_from_key,
     liveliness_wildcard, manifest_key, presence_key, snapshot_key, validate_room_id, Entity,
@@ -558,10 +560,7 @@ fn spawn_snapshot_queryable(
                 let frame = snapshot.lock().map(|g| g.clone()).ok();
                 let Some(mut frame) = frame.filter(|f| !f.upserts.is_empty()) else {
                     // Contract: empty = not ready. Do not sign an empty frame as success.
-                    if let Err(err) = query
-                        .reply_err("snapshot not ready (no poses yet)")
-                        .wait()
-                    {
+                    if let Err(err) = query.reply_err("snapshot not ready (no poses yet)").wait() {
                         log::warn!("snapshot reply_err failed: {err}");
                     }
                     continue;
@@ -1040,7 +1039,10 @@ mod presence_reclaim_tests {
         let t0 = Instant::now();
         assert_eq!(p.assign_or_lookup("alice", "j1", t0), Some(0));
         let entity = p.reclaim_sub("alice", "leave").expect("reclaim");
-        assert_eq!(entity, (PhysicsWorld::user_root_entity_id(0), "alice".into()));
+        assert_eq!(
+            entity,
+            (PhysicsWorld::user_root_entity_id(0), "alice".into())
+        );
         assert!(p.occupied_sub[0].is_none());
         assert_eq!(p.pending_removes, vec![entity.clone()]);
         let drained = p.drain_reclaims(t0, PRESENCE_SLOT_TTL);

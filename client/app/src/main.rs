@@ -284,7 +284,10 @@ fn apply_frame(shared: &SharedState, frame: RenderFrame, replace_entities: bool)
         return false;
     }
     if !frame_entities_finite(&frame) {
-        log::warn!("drop RenderFrame: non-finite entity fields (tick={})", frame.tick);
+        log::warn!(
+            "drop RenderFrame: non-finite entity fields (tick={})",
+            frame.tick
+        );
         return false;
     }
     if replace_entities && frame.upserts.is_empty() {

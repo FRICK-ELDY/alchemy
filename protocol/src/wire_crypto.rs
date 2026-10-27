@@ -121,7 +121,9 @@ pub enum WireCryptoError {
 impl std::fmt::Display for WireCryptoError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::BadPublicKeyLen(n) => write!(f, "public key length {n}, expected {PUBLIC_KEY_LENGTH}"),
+            Self::BadPublicKeyLen(n) => {
+                write!(f, "public key length {n}, expected {PUBLIC_KEY_LENGTH}")
+            }
             Self::BadPublicKey => write!(f, "invalid Ed25519 public key"),
             Self::BadSignatureLen(n) => {
                 write!(f, "signature length {n}, expected {SIGNATURE_LENGTH}")

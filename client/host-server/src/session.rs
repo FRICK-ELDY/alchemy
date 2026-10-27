@@ -209,7 +209,9 @@ mod tests {
 
         let mut rng = rand::thread_rng();
         let private = RsaPrivateKey::new(&mut rng, 2048).expect("rsa");
-        let priv_pem = private.to_pkcs1_pem(pkcs1::LineEnding::LF).expect("priv pem");
+        let priv_pem = private
+            .to_pkcs1_pem(pkcs1::LineEnding::LF)
+            .expect("priv pem");
         let pub_pem = private
             .to_public_key()
             .to_public_key_pem(pkcs8::LineEnding::LF)
