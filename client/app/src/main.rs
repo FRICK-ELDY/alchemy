@@ -1015,7 +1015,7 @@ fn main() -> Result<()> {
     let silent = auth::try_silent_session(&auth_url).context("silent auth")?;
     let auth_mode = if silent.is_some() { "silent" } else { "ui" };
     log::info!(
-        "client x002c starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
+        "client x002e starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
     );
 
     let mut gate = AuthGate::default();

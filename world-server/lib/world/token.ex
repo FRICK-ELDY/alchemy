@@ -72,11 +72,7 @@ defmodule World.Token do
     end
   end
 
-  defp valid_room_id?(value) when is_binary(value) do
-    value != "" and not String.contains?(value, "/") and byte_size(value) <= 64
-  end
-
-  defp valid_room_id?(_), do: false
+  defp valid_room_id?(value), do: World.RoomId.valid?(value)
 
   defp uuid_v4 do
     <<a::32, b::16, c::16, d::16, e::48>> = :crypto.strong_rand_bytes(16)

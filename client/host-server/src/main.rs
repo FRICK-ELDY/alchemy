@@ -24,9 +24,17 @@ mod sim;
 mod wire_tick;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// Mutex poison must not degrade into empty Presence / silent skip (x002e / P3-8).
+fn lock_or_fatal<'a, T>(mutex: &'a Mutex<T>, label: &str) -> MutexGuard<'a, T> {
+    mutex.lock().unwrap_or_else(|poisoned| {
+        log::error!("{label} mutex poisoned: {poisoned}; aborting host-server");
+        std::process::exit(78);
+    })
+}
 
 use alchemy_protocol::wire_crypto::{
     generate_signing_key, manifest_seal_blake3_hex, public_key_bytes, sign_frame, sign_presence,
@@ -494,13 +502,7 @@ fn spawn_input_gate(
                 match InputEvent::decode(payload.as_ref()) {
                     Ok(event) => {
                         let auth = {
-                            let mut table = match sessions.lock() {
-                                Ok(g) => g,
-                                Err(_) => {
-                                    dropped_auth += 1;
-                                    continue;
-                                }
-                            };
+                            let mut table = lock_or_fatal(&sessions, "sessions");
                             table.authorize(&event, verifier.as_ref())
                         };
                         match auth {
@@ -508,14 +510,12 @@ fn spawn_input_gate(
                                 let mut event = event;
                                 alchemy_protocol::sim_capability::mask_intent(caps, &mut event);
                                 if event.leave {
-                                    if let Ok(mut guard) = presence.lock() {
-                                        if guard.reclaim_sub(&sub, "leave").is_some() {
-                                            leaves += 1;
-                                        }
+                                    let mut guard = lock_or_fatal(&presence, "presence");
+                                    if guard.reclaim_sub(&sub, "leave").is_some() {
+                                        leaves += 1;
                                     }
-                                    if let Ok(mut table) = sessions.lock() {
-                                        table.remove_by_sub(&sub);
-                                    }
+                                    drop(guard);
+                                    lock_or_fatal(&sessions, "sessions").remove_by_sub(&sub);
                                 } else if !input_event_is_finite(&event) {
                                     dropped_finite += 1;
                                     log::warn!(
@@ -524,7 +524,8 @@ fn spawn_input_gate(
                                         event.move_y,
                                         event.move_z
                                     );
-                                } else if let Ok(mut guard) = presence.lock() {
+                                } else {
+                                    let mut guard = lock_or_fatal(&presence, "presence");
                                     match guard.assign_or_lookup(&sub, &jti, Instant::now()) {
                                         Some(slot) => {
                                             let overlay = &mut guard.by_slot[slot];
@@ -561,7 +562,7 @@ fn spawn_input_gate(
                     }
                 }
                 if last_log.elapsed() >= Duration::from_secs(5) {
-                    let dropped_full = presence.lock().map(|g| g.dropped_full).unwrap_or(0);
+                    let dropped_full = lock_or_fatal(&presence, "presence").dropped_full;
                     log::info!(
                         "input gate: accepted={accepted} leaves={leaves} dropped_auth={dropped_auth} dropped_non_finite={dropped_finite} dropped_full={dropped_full} (last ~5s)"
                     );
@@ -593,14 +594,14 @@ fn spawn_snapshot_queryable(
         .spawn(move || {
             log::info!("queryable ready on {snapshot_key_expr}");
             while let Ok(query) = queryable.recv() {
-                let frame = snapshot.lock().map(|g| g.clone()).ok();
-                let Some(mut frame) = frame.filter(|f| !f.upserts.is_empty()) else {
-                    // Contract: empty = not ready. Do not sign an empty frame as success.
+                let mut frame = lock_or_fatal(&snapshot, "snapshot").clone();
+                // Contract: empty = not ready. Do not sign an empty frame as success.
+                if frame.upserts.is_empty() {
                     if let Err(err) = query.reply_err("snapshot not ready (no poses yet)").wait() {
                         log::warn!("snapshot reply_err failed: {err}");
                     }
                     continue;
-                };
+                }
                 sign_frame(&host_key, &mut frame);
                 let key = snapshot_key_expr.clone();
                 if let Err(err) = query.reply(key, frame.encode_to_vec()).wait() {
@@ -639,9 +640,8 @@ fn spawn_liveliness_watcher(
                     log::warn!("liveliness Delete: unparseable key={key_str}");
                     continue;
                 };
-                if let Ok(mut guard) = presence.lock() {
-                    let _ = guard.schedule_liveliness_reclaim(sub, jti, Instant::now());
-                }
+                let mut guard = lock_or_fatal(&presence, "presence");
+                let _ = guard.schedule_liveliness_reclaim(sub, jti, Instant::now());
             }
         })
         .context("spawn liveliness thread")?;
@@ -674,7 +674,7 @@ fn main() -> Result<()> {
     let host_pub = public_key_bytes(&host_signing_key);
 
     log::info!(
-        "host-server x002c starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        "host-server x002e starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
     );
@@ -902,41 +902,24 @@ fn main() -> Result<()> {
         }
 
         let tick_now = Instant::now();
-        let (by_slot, occupied, presence_rev, mut presence_state, reclaimed) = presence
-            .lock()
-            .map(|mut g| {
-                let freed = g.drain_reclaims(tick_now, PRESENCE_SLOT_TTL);
-                (
-                    g.by_slot,
-                    g.occupied_sub.clone(),
-                    g.revision,
-                    g.to_presence_state(),
-                    freed,
-                )
-            })
-            .unwrap_or_else(|_| {
-                (
-                    [PoseOverride::default(); USER_ROOT_SLOTS],
-                    std::array::from_fn(|_| None),
-                    0,
-                    PresenceState {
-                        revision: 0,
-                        assignments: vec![],
-                        protocol_pin: PROTOCOL_PIN.to_string(),
-                        host_sig: vec![],
-                    },
-                    Vec::new(),
-                )
-            });
+        let (by_slot, occupied, presence_rev, mut presence_state, reclaimed) = {
+            let mut g = lock_or_fatal(&presence, "presence");
+            let freed = g.drain_reclaims(tick_now, PRESENCE_SLOT_TTL);
+            (
+                g.by_slot,
+                g.occupied_sub.clone(),
+                g.revision,
+                g.to_presence_state(),
+                freed,
+            )
+        };
 
         for (entity_id, sub) in &reclaimed {
             let slot = (entity_id - USER_ROOT_ENTITY_FIRST) as usize;
             physics.release_slot(slot);
             last_sent.remove(entity_id);
             if !sub.is_empty() {
-                if let Ok(mut table) = sessions.lock() {
-                    table.remove_by_sub(sub);
-                }
+                lock_or_fatal(&sessions, "sessions").remove_by_sub(sub);
             }
         }
 
@@ -983,12 +966,11 @@ fn main() -> Result<()> {
         if !physics_steps.is_multiple_of(PHYSICS_PER_NET) {
             // Still flush removes promptly when reclaim happens between net ticks.
             if !remove_ids.is_empty() {
-                if let Ok(mut cache) = snapshot_cache.lock() {
-                    cache.upserts.retain(|e| !remove_ids.contains(&e.id));
-                    cache.tick = net_tick;
-                    cache.host_time_ms = host_time_ms();
-                    cache.host_sig.clear();
-                }
+                let mut cache = lock_or_fatal(&snapshot_cache, "snapshot");
+                cache.upserts.retain(|e| !remove_ids.contains(&e.id));
+                cache.tick = net_tick;
+                cache.host_time_ms = host_time_ms();
+                cache.host_sig.clear();
                 let mut frame = RenderFrame {
                     tick: net_tick,
                     host_time_ms: host_time_ms(),
@@ -1046,20 +1028,20 @@ fn main() -> Result<()> {
             // published tick — never stamp the next unpublished `net_tick` (DropStale trap).
             empty_delta_frames += 1;
             if let Some(tick) = wire_tick::snapshot_tick_on_empty_hold(last_published_tick) {
-                if let Ok(mut cache) = snapshot_cache.lock() {
-                    cache.tick = tick;
-                    cache.host_time_ms = host_time_ms();
-                    cache.upserts = all_poses
-                        .iter()
-                        .map(|(id, pose)| to_entity(*id, *pose))
-                        .collect();
-                    cache.removes.clear();
-                    cache.host_sig.clear();
-                }
+                let mut cache = lock_or_fatal(&snapshot_cache, "snapshot");
+                cache.tick = tick;
+                cache.host_time_ms = host_time_ms();
+                cache.upserts = all_poses
+                    .iter()
+                    .map(|(id, pose)| to_entity(*id, *pose))
+                    .collect();
+                cache.removes.clear();
+                cache.host_sig.clear();
             }
         } else {
             upsert_entities += upsert_len;
-            if let Ok(mut cache) = snapshot_cache.lock() {
+            {
+                let mut cache = lock_or_fatal(&snapshot_cache, "snapshot");
                 cache.tick = net_tick;
                 cache.host_time_ms = host_time_ms();
                 cache.upserts = all_poses

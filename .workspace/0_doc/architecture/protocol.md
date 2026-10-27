@@ -2,7 +2,7 @@
 
 > **正本**: [`protocol/`](../../../protocol/)  
 > **配送契約**: [`protocol/peer-delivery.md`](../../../protocol/peer-delivery.md)（x0024）  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.14.0-x002c`
+> **PROTOCOL_PIN**: `alchemy-protocol/0.15.0-x002e`
 
 ## 置き場の方針
 
@@ -96,5 +96,5 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 | `HOST_CONTROL_KEY_LOCAL` / `host_control_key(room_id)` | `alchemy/dev/room/local/host_control` |
 | `liveliness_key(room_id, sub, jti)` / `liveliness_wildcard(room_id)` | `…/alive/{sub}/{jti}` / `…/alive/**` |
 | `liveliness_binding_from_key` | `(sub, jti)`。単セグメント旧キーは拒否 |
-| `validate_room_id` | 非空・`/` なし・ASCII 印刷可能 |
+| `validate_room_id` | 非空・`/` なし・≤64・`[A-Za-z0-9_-]+`（x002e；world と共有ベクタ） |
 | `wire_crypto` | Intent / Frame の Ed25519 sign・verify |

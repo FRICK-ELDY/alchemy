@@ -219,22 +219,5 @@ defmodule World.Rooms do
     String.contains?(message, "already been taken")
   end
 
-  defp validate_room_id(room_id) do
-    cond do
-      room_id == "" ->
-        {:error, :invalid_room_id}
-
-      String.contains?(room_id, "/") ->
-        {:error, :invalid_room_id}
-
-      byte_size(room_id) > 64 ->
-        {:error, :invalid_room_id}
-
-      not Regex.match?(~r/^[A-Za-z0-9_-]+$/, room_id) ->
-        {:error, :invalid_room_id}
-
-      true ->
-        :ok
-    end
-  end
+  defp validate_room_id(room_id), do: World.RoomId.validate(room_id)
 end
