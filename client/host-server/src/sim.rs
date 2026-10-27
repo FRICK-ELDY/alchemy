@@ -509,9 +509,7 @@ pub fn user_root_color(slot: usize) -> (f32, f32, f32, f32) {
 #[cfg(test)]
 pub fn demo_entries_for_test() -> Vec<SceneEntry> {
     use alchemy_protocol::{ENTITY_QUAT_IDENTITY, ENTITY_SCALE_ONE, SCENE_FLAG_GRABBABLE};
-    use alchemy_shared_sim::demo::{
-        DEMO_BOX_ENTITY_BASE, DEMO_COIN_BLAKE3, DEMO_MESH_ENTITY_ID,
-    };
+    use alchemy_shared_sim::demo::{DEMO_BOX_ENTITY_BASE, DEMO_COIN_BLAKE3, DEMO_MESH_ENTITY_ID};
     use alchemy_shared_sim::DEFAULT_BOX_HALF_EXTENT;
     // Keep in sync with World.DemoScene @yaw45_* / center-box sx (x002c).
     const YAW45_QY: f64 = 0.3826834323650898;

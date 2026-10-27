@@ -27,10 +27,7 @@ pub fn shutdown_requested() -> bool {
 
 /// Bound `127.0.0.1:port` after [`spawn_listener`], if IPC is enabled.
 pub fn bound_addr() -> Option<String> {
-    bound_slot()
-        .lock()
-        .ok()
-        .and_then(|g| g.clone())
+    bound_slot().lock().ok().and_then(|g| g.clone())
 }
 
 /// Bind loopback ephemeral port when token env is set. Holds the listener until process end.

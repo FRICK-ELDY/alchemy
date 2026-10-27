@@ -33,7 +33,10 @@ fn run() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let client_dir = resolve_client_dir();
-    log::info!("alchemy-launcher x0032; client_dir={}", client_dir.display());
+    log::info!(
+        "alchemy-launcher x0032; client_dir={}",
+        client_dir.display()
+    );
 
     let shutting_down = Arc::new(AtomicBool::new(false));
     {
@@ -46,10 +49,8 @@ fn run() -> Result<()> {
     }
 
     let ipc_token = make_token()?;
-    let ready_path = std::env::temp_dir().join(format!(
-        "alchemy-host-ready-{}.txt",
-        std::process::id()
-    ));
+    let ready_path =
+        std::env::temp_dir().join(format!("alchemy-host-ready-{}.txt", std::process::id()));
     let _ = fs::remove_file(&ready_path);
 
     // Host binds 127.0.0.1:0 itself; addr is published in the ready file (no TOCTOU).
@@ -66,9 +67,8 @@ fn run() -> Result<()> {
     };
     log::info!("host IPC addr from ready file: {ipc_addr}");
 
-    let mut client = Some(
-        spawn_client(&client_dir, &ipc_addr, &ipc_token).context("spawn client")?,
-    );
+    let mut client =
+        Some(spawn_client(&client_dir, &ipc_addr, &ipc_token).context("spawn client")?);
     if let Some(ref c) = client {
         log::info!("client pid={}", c.id());
     }
@@ -235,11 +235,7 @@ fn client_command(client_dir: &Path) -> Command {
 }
 
 /// Wait for ready file; return bound IPC addr from `ipc=` line.
-fn wait_ready(
-    ready_path: &Path,
-    host: &mut Child,
-    shutting_down: &AtomicBool,
-) -> Result<String> {
+fn wait_ready(ready_path: &Path, host: &mut Child, shutting_down: &AtomicBool) -> Result<String> {
     let start = Instant::now();
     while start.elapsed() < READY_TIMEOUT {
         if shutting_down.load(Ordering::SeqCst) {

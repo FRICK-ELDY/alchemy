@@ -103,12 +103,7 @@ mod tests {
         scene_entry_is_box, scene_entry_is_user_root, SCENE_FLAG_GRABBABLE, USER_ROOT_ENTITY_FIRST,
     };
 
-    fn entry(
-        entity_id: u32,
-        blake3: &str,
-        half_extent: f32,
-        flags: u32,
-    ) -> SceneEntry {
+    fn entry(entity_id: u32, blake3: &str, half_extent: f32, flags: u32) -> SceneEntry {
         SceneEntry {
             entity_id,
             blake3: blake3.into(),
@@ -127,7 +122,11 @@ mod tests {
 
         let mesh = entry(1, "abc", 0.25, 0);
         assert_eq!(classify_scene_entry(&mesh), EntityKind::Mesh);
-        assert!(!scene_entry_is_box(&mesh.blake3, mesh.half_extent, mesh.entity_id));
+        assert!(!scene_entry_is_box(
+            &mesh.blake3,
+            mesh.half_extent,
+            mesh.entity_id
+        ));
 
         let cuboid = entry(10, "", 0.25, SCENE_FLAG_GRABBABLE);
         assert_eq!(classify_scene_entry(&cuboid), EntityKind::Box);
