@@ -9,14 +9,16 @@
 //! - Per-`sub` Intent/Grab → up to 4 user_roots; Presence Leave / liveliness jti grace (x0022)
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
 //! - Slice E / x001e: Zenoh `host_control` off by default; `ALCHEMY_HOST_CONTROL=1` to enable
+//! - x0032: localhost IPC shutdown when `ALCHEMY_HOST_IPC_*` set (alchemy-launcher)
 //!
 //! Non-guarantees:
-//! - Steal / rotation follow / Formula / polished Walk / shared-sim / EntityKind / verifier
-//! - Authenticated remote host shutdown (use launcher / `ALCHEMY_HOST_PID`)
+//! - Steal / rotation follow / Formula / polished Walk / verifier
+//! - Authenticated remote (WAN) host shutdown
 //! - Re-fetch of world `GET …/scene` after boot (room redefinition requires host restart)
 
 mod finite;
 mod host_control;
+mod host_ipc;
 mod pose_delta;
 mod room_token;
 mod session;
@@ -325,7 +327,8 @@ fn open_zenoh() -> Result<zenoh::Session> {
     zenoh_connect::open_client(&zenoh_connect_endpoint())
 }
 
-/// Hermetic E2E (x001f): signal only after input gate + frame publisher have put ≥1 frame.
+/// Hermetic E2E (x001f) / launcher (x0032): after first frame put.
+/// Body is `ready\n` plus optional `ipc=127.0.0.1:port\n` when launcher IPC is bound.
 /// Write failures are logged and ignored so a stray env cannot take down production host.
 fn signal_host_ready_once(signaled: &mut bool) {
     if *signaled {
@@ -339,7 +342,9 @@ fn signal_host_ready_once(signaled: &mut bool) {
         *signaled = true;
         return;
     }
-    match std::fs::write(&path, b"ready\n") {
+    let ipc = host_ipc::bound_addr();
+    let body = alchemy_protocol::host_ipc::ready_file_body(ipc.as_deref());
+    match std::fs::write(&path, body.as_bytes()) {
         Ok(()) => log::info!("host ready file written (after first frame put): {path}"),
         Err(err) => log::warn!("ALCHEMY_HOST_READY_FILE write failed ({path}): {err}"),
     }
@@ -740,6 +745,7 @@ fn main() -> Result<()> {
         host_signing_key.clone(),
     )?;
     host_control::spawn_listener(session.clone(), &room_id)?;
+    host_ipc::spawn_listener().context("launcher IPC listener")?;
 
     let manifest_pub = session
         .declare_publisher(manifest_key_expr)
@@ -832,6 +838,10 @@ fn main() -> Result<()> {
     let mut host_ready_signaled = false;
 
     loop {
+        if host_ipc::shutdown_requested() {
+            log::info!("launcher IPC shutdown requested — leaving main loop (exit 0)");
+            break;
+        }
         let now = Instant::now();
         if now < next_physics {
             std::thread::sleep(next_physics - now);
@@ -1100,6 +1110,7 @@ fn main() -> Result<()> {
             last_log = Instant::now();
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

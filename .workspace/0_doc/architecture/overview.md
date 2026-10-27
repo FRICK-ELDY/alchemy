@@ -272,11 +272,12 @@ flowchart TB
 - ConoHa / Ubuntu 22.04・24.04 手順書: [`manual/zenoh-wan-conoha.md`](../manual/zenoh-wan-conoha.md)（Slice [x001b](../../roadmap/slices/x001b-zenoh-wan-conoha.md)）
 - WAN config: [`zenoh-router/config.wan.json5`](../../../zenoh-router/config.wan.json5)
 
-### Alchemy 側（スタブ・未記入）
+### Alchemy 側
 
 - [auth-server](auth-server.md) · [assets-server](assets-server.md) · [world-server](world-server.md)
 - [protocol](protocol.md) · [zenoh-router](zenoh-router.md)
-- [launcher](launcher.md) · [client](client.md)
+- [trust-boundary](trust-boundary.md)（脅威モデル / 防御責任・x0031）
+- [launcher](launcher.md)（x0032 最小 PM）· [client](client.md)
 
 ### 転送と OSC
 

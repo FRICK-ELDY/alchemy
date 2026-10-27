@@ -27,11 +27,18 @@
 |:---|:---|
 | RenderFrame | `alchemy/dev/room/{room_id}/frame` |
 | InputEvent | `alchemy/dev/room/{room_id}/input` |
+| SceneManifest | `alchemy/dev/room/{room_id}/manifest` |
+| PresenceState | `alchemy/dev/room/{room_id}/presence` |
+| Snapshot | `alchemy/dev/room/{room_id}/snapshot` |
+| Liveliness | `alchemy/dev/room/{room_id}/alive/{sub}/{jti}` |
+| Host control | `alchemy/dev/room/{room_id}/host_control`（**既定オフ**・x001e） |
 
 既定 `room_id`: `local`
+
+偽 publish 時の防御責任: [trust-boundary.md](trust-boundary.md)。
 
 詳細・起動手順は [zenoh-router/README.md](../../../zenoh-router/README.md)。
 
 ## トークン検証
 
-zenohd は Token を見ない。host-server が入力ペイロード内の Room Token を JWKS で検証する。
+zenohd は Token を見ない。host-server が入力ペイロード内の Room Token を JWKS で検証する。アプリ層の境界は [trust-boundary.md](trust-boundary.md)。

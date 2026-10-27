@@ -106,6 +106,9 @@ ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 AUTH_USER=alice AUTH_PASSWORD=Password1 ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 # または: ALCHEMY_AUTH_TOKEN=<access_jwt> ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 
+# 3a') launcher（x0032）: host+client を一括。client 終了後も host 維持。Ctrl+C で IPC stop
+cd launcher && cargo run -p alchemy-launcher
+
 # 3b) 機械検証（3a の代替。既存 host を止めてから。スタック未起動は赤）
 #    assert: host Token/Manifest/physics + client build/units（GUI・login→描画はしない）
 make smoke-desktop-handthrough

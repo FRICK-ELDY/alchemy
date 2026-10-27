@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 alchemy-protocol = { workspace = true }
+alchemy-shared-sim = { workspace = true }
 anyhow = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }

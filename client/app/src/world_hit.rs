@@ -14,7 +14,8 @@ use glam::{Quat, Vec3};
 use crate::scene::{EntityPose, BOX_HALF_EXTENT};
 
 /// Max ray length for world pointer / Grab pick (meters). Matches XR open-air laser.
-pub const MAX_HIT_DISTANCE: f32 = 5.0;
+/// SSoT: `alchemy_shared_sim::MAX_GRAB_HIT_DISTANCE` (x0030).
+pub use alchemy_shared_sim::MAX_GRAB_HIT_DISTANCE as MAX_HIT_DISTANCE;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Ray {
