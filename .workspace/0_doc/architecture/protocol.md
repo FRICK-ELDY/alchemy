@@ -50,15 +50,28 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - `host_sig`: encode（sig 空）を host 秘密鍵で署名
 - entity id は Manifest entries 由来（デモ: Coin=`1`、user_root=`3..6`、grabbable boxes=`10..18`）。client/host は ID 帯ハードコードで Grab しない（x0027）
 
-### InputEvent（`proto/input_events.proto`）— Intent + session（x0023）
+### InputEvent（`proto/input_events.proto`）— Intent + session（x0023）+ capability（x002a）
 
 - `InputEvent { room_token, client_time_ms, move_*, buttons, grab_*, aim_*, leave, session_pub, intent_seq, intent_sig }`
-- **Bind**: 有効 JWT + `session_pub`(32) + 単調 `intent_seq` + `intent_sig`(64)。host は **同一 `sub` の他 pub を破棄**して pubkey→`(sub,jti)` を記録（後勝ち・1 session/sub）
+- **Bind**: 有効 JWT + `session_pub`(32) + 単調 `intent_seq` + `intent_sig`(64)。host は **同一 `sub` の他 pub を破棄**して pubkey→`(sub,jti,caps)` を記録（後勝ち・1 session/sub）
 - **Steady**: `room_token` 空。同じ `session_pub` + 進んだ `seq` + 有効 sig のみ受理（バスで拾った JWT だけではなりすませない）
 - **再 bind**: host 世代交代 → client は鍵ごと作り直し；Presence reclaim → 同じ鍵で Token 付き Intent を再開
-- `leave=true`: セッション検証後に即 `reclaim_sub`
+- `leave=true`: セッション検証後に即 `reclaim_sub`（`INTENT_LEAVE` が無い caps では無視）
 - `move_*` は正規化 Intent（~-1..1）。host が `move_speed` でスケール
 - `DEFAULT_MOVE_SPEED = 4.0`
+
+### Role → capability（x002a・proto 外）
+
+`alchemy_protocol::sim_capability`（PIN 不変）。Room Token `role` → bitset。
+
+| bit | guest | host | 強制 |
+|:---|:---|:---|:---|
+| `INTENT_MOVE` / `GRAB` / `LEAVE` | ✓ | ✓ | host bind 保存 → Intent 適用前 `mask_intent` |
+| `HTTP_SCENE` / `ATTEST` / `SEAL` | ✗ | ✓ | world-server 既存 host Token ゲート（表と対応） |
+
+未知 role → caps `0`（Intent bind 拒否）。JWT/Presence への caps 載せは非保証。  
+caps は **Intent bind 時に凍結**（再 bind まで role 変更を見ない）。  
+HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は本節 / `sim_capability`。
 
 ### PresenceState（`proto/presence.proto`）— x0015・低頻度（解放は x0016 / x0019 / x0022 / x0025）
 

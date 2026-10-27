@@ -26,7 +26,7 @@
 |:---|:---|
 | `sub` | auth ユーザー ID（UUID）。匿名時のみ `anon` 等 |
 | `room_id` | 部屋 ID（ASCII、`/` なし） |
-| `role` | `host` \| `guest` |
+| `role` | `host` \| `guest`（→ sim/HTTP capability 表は [protocol.md](protocol.md) x002a） |
 | `iss` | `alchemy-world` |
 | `aud` | `alchemy-room` |
 | `exp` | 短命（既定 300 秒） |
