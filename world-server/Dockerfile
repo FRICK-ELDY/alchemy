@@ -1,6 +1,7 @@
 ARG ELIXIR_IMAGE=elixir:1.19-otp-28-alpine
 ARG ALPINE_VERSION=3.23
 
+# Build context: repository root (shared/alchemy_auth_client path dep).
 FROM ${ELIXIR_IMAGE} AS dev
 
 RUN apk add --no-cache build-base git wget
@@ -9,14 +10,15 @@ WORKDIR /app
 
 RUN mix local.hex --force && mix local.rebar --force
 
-COPY mix.exs ./
+COPY shared/alchemy_auth_client /shared/alchemy_auth_client
+COPY world-server/mix.exs world-server/mix.lock ./
 RUN mix deps.get || true
 
-COPY config config
-COPY lib lib
-COPY priv priv
-COPY test test
-COPY .formatter.exs ./
+COPY world-server/config config
+COPY world-server/lib lib
+COPY world-server/priv priv
+COPY world-server/test test
+COPY world-server/.formatter.exs ./
 
 RUN mix deps.get && mix compile
 
@@ -34,13 +36,14 @@ RUN mix local.hex --force && mix local.rebar --force
 
 ENV MIX_ENV=prod
 
-COPY mix.exs ./
+COPY shared/alchemy_auth_client /shared/alchemy_auth_client
+COPY world-server/mix.exs world-server/mix.lock ./
 RUN mix deps.get --only prod
 
-COPY config config
-COPY lib lib
-COPY priv priv
-COPY .formatter.exs ./
+COPY world-server/config config
+COPY world-server/lib lib
+COPY world-server/priv priv
+COPY world-server/.formatter.exs ./
 
 RUN mix compile
 RUN mix release
@@ -55,7 +58,7 @@ RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates su-exec \
 WORKDIR /app
 
 COPY --from=build --chown=world:world /app/_build/prod/rel/world ./
-COPY docker-entrypoint.release.sh /docker-entrypoint.release.sh
+COPY world-server/docker-entrypoint.release.sh /docker-entrypoint.release.sh
 RUN chmod 755 /docker-entrypoint.release.sh
 
 # Entrypoint chowns the Room Token key volume, then drops to `world` (x001e).

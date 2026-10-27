@@ -96,8 +96,9 @@ depends_on: [x0006]
 | x002c | — | done | Manifest 初期 quat + scale | [x002c-manifest-initial-trs.md](slices/x002c-manifest-initial-trs.md) |
 | x002d | — | done | P3 衛生（Quota / Refresh / Parsers / audit / `-o` / protoc） | [x002d-p3-hygiene.md](slices/x002d-p3-hygiene.md) |
 | x002e | — | done | P3 境界・契約 + ランタイム（ClientIp / room_id / poison / UI worker） | [x002e-p3-boundary-runtime.md](slices/x002e-p3-boundary-runtime.md) |
+| x002f | — | done | P3 alchemy_auth_client JWKS 共通化 + undocumented_unsafe deny | [x002f-p3-auth-client-unsafe.md](slices/x002f-p3-auth-client-unsafe.md) |
 
-**現在の次:** [x002e](slices/x002e-p3-boundary-runtime.md)。後続: JWKS 共通化 / undocumented_unsafe・shared-sim / EntityKind。
+**現在の次:** shared-sim / EntityKind（P4 残り）。
 
 ## 関連
 

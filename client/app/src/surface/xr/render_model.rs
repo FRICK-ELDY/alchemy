@@ -6,6 +6,11 @@
 //!
 //! Refresh is throttled and incremental so SteamVR change events cannot rebuild
 //! controllers / GPU meshes every frame (that froze the app).
+//!
+//! # Safety (FFI)
+//! OpenXR render-model handles are created only after the EXT is enabled on `session`.
+//! Every `create_*` error/early-return path destroys the handle; `Drop` / refresh tear-down
+//! destroy surviving ones. Buffer sizes follow the OpenXR two-call idiom.
 
 use std::collections::HashSet;
 use std::ptr;
@@ -206,6 +211,7 @@ impl RenderModelCache {
             return Ok(());
         };
 
+        // Safety: session live; two-call enumerate with vector sized to count.
         let ids = unsafe { enumerate_ids(session, irm)? };
         if ids.is_empty() {
             log::debug!("XR render models: enumerate returned 0 ids (will retry)");
@@ -241,6 +247,7 @@ impl RenderModelCache {
             if have_now.contains(&id.into_raw()) {
                 continue;
             }
+            // Safety: session + EXT function pointers valid; callee destroys handles on failure.
             match unsafe { load_one(session, rm, id) } {
                 Ok(Some(model)) => {
                     let textured = model
@@ -325,6 +332,7 @@ unsafe fn enumerate_ids<G>(
         return Ok(Vec::new());
     }
     let mut ids = vec![sys::RenderModelIdEXT::from_raw(0); count as usize];
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let r = unsafe {
         (irm.enumerate_interaction_render_model_ids)(
             session.as_raw(),
@@ -354,6 +362,7 @@ unsafe fn load_one<G>(
         gltf_extensions: ptr::null(),
     };
     let mut handle = sys::RenderModelEXT::NULL;
+    // Safety: session + EXT enabled; new handle destroyed on all error returns below.
     let r = unsafe { (rm.create_render_model)(session.as_raw(), &create_info, &mut handle) };
     if r.into_raw() < 0 {
         bail!("xrCreateRenderModelEXT: {r:?}");
@@ -369,14 +378,17 @@ unsafe fn load_one<G>(
         cache_id: sys::UuidEXT { data: [0; 16] },
         animatable_node_count: 0,
     };
+    // Safety: handle valid for this session; output buffer capacity matches prior count query.
     let r = unsafe { (rm.get_render_model_properties)(handle, &props_info, &mut props) };
     if r == sys::Result::ERROR_RENDER_MODEL_ASSET_UNAVAILABLE_EXT {
+        // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
         unsafe {
             let _ = (rm.destroy_render_model)(handle);
         }
         return Ok(None);
     }
     if r.into_raw() < 0 {
+        // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
         unsafe {
             let _ = (rm.destroy_render_model)(handle);
         }
@@ -385,9 +397,11 @@ unsafe fn load_one<G>(
 
     let anim_count = props.animatable_node_count as usize;
     let (glb, anim_names) =
+        // Safety: session + EXT function pointers valid; callee destroys handles on failure.
         match unsafe { fetch_glb_and_names(session, rm, props.cache_id, anim_count) } {
             Ok(v) => v,
             Err(err) => {
+                // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
                 unsafe {
                     let _ = (rm.destroy_render_model)(handle);
                 }
@@ -399,6 +413,7 @@ unsafe fn load_one<G>(
     let mesh = match load_textured_rigged_from_glb(&glb, &name_refs) {
         Ok(m) => m,
         Err(err) => {
+            // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
             unsafe {
                 let _ = (rm.destroy_render_model)(handle);
             }
@@ -413,8 +428,10 @@ unsafe fn load_one<G>(
     };
     let mut space_handle = sys::Space::NULL;
     let r =
+        // Safety: session + EXT enabled; new handle destroyed on all error returns below.
         unsafe { (rm.create_render_model_space)(session.as_raw(), &space_info, &mut space_handle) };
     if r.into_raw() < 0 {
+        // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
         unsafe {
             let _ = (rm.destroy_render_model)(handle);
         }
@@ -456,6 +473,7 @@ unsafe fn fetch_glb_and_names<G>(
         cache_id,
     };
     let mut asset = sys::RenderModelAssetEXT::NULL;
+    // Safety: session + EXT enabled; new handle destroyed on all error returns below.
     let r = unsafe { (rm.create_render_model_asset)(session.as_raw(), &create_info, &mut asset) };
     if r == sys::Result::ERROR_RENDER_MODEL_ASSET_UNAVAILABLE_EXT {
         bail!("render model asset unavailable");
@@ -475,8 +493,10 @@ unsafe fn fetch_glb_and_names<G>(
         buffer_count_output: 0,
         buffer: ptr::null_mut(),
     };
+    // Safety: handle valid for this session; output buffer capacity matches prior count query.
     let r = unsafe { (rm.get_render_model_asset_data)(asset, &get_info, &mut data) };
     if r.into_raw() < 0 {
+        // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
         unsafe {
             let _ = (rm.destroy_render_model_asset)(asset);
         }
@@ -484,6 +504,7 @@ unsafe fn fetch_glb_and_names<G>(
     }
     let size = data.buffer_count_output as usize;
     if size == 0 {
+        // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
         unsafe {
             let _ = (rm.destroy_render_model_asset)(asset);
         }
@@ -492,8 +513,10 @@ unsafe fn fetch_glb_and_names<G>(
     let mut buf = vec![0u8; size];
     data.buffer_capacity_input = size as u32;
     data.buffer = buf.as_mut_ptr();
+    // Safety: handle valid for this session; output buffer capacity matches prior count query.
     let r = unsafe { (rm.get_render_model_asset_data)(asset, &get_info, &mut data) };
     if r.into_raw() < 0 {
+        // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
         unsafe {
             let _ = (rm.destroy_render_model_asset)(asset);
         }
@@ -504,9 +527,11 @@ unsafe fn fetch_glb_and_names<G>(
     let names = if anim_count == 0 {
         Vec::new()
     } else {
+        // Safety: session + EXT function pointers valid; callee destroys handles on failure.
         match unsafe { read_animatable_names(rm, asset, anim_count) } {
             Ok(n) => n,
             Err(err) => {
+                // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
                 unsafe {
                     let _ = (rm.destroy_render_model_asset)(asset);
                 }
@@ -515,6 +540,7 @@ unsafe fn fetch_glb_and_names<G>(
         }
     };
 
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     unsafe {
         let _ = (rm.destroy_render_model_asset)(asset);
     }

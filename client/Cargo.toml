@@ -12,6 +12,10 @@ edition = "2021"
 license = "MIT"
 version = "0.1.0"
 
+[workspace.lints.clippy]
+# x002f / P3-14: every `unsafe` must state why it is sound (XR Vulkan/OpenXR path).
+undocumented_unsafe_blocks = "deny"
+
 [workspace.dependencies]
 # Shared wire contract lives at repo-root protocol/ (not inside this workspace).
 alchemy-protocol = { path = "../protocol" }

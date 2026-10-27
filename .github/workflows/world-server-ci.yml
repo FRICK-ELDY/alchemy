@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - "world-server/**"
+      - "shared/alchemy_auth_client/**"
       - ".github/workflows/world-server-ci.yml"
   pull_request:
     paths:
       - "world-server/**"
+      - "shared/alchemy_auth_client/**"
       - ".github/workflows/world-server-ci.yml"
 
 concurrency:
@@ -39,7 +41,7 @@ jobs:
           path: |
             world-server/deps
             world-server/_build
-          key: ${{ runner.os }}-world-mix-${{ hashFiles('world-server/mix.lock') }}
+          key: ${{ runner.os }}-world-mix-${{ hashFiles('world-server/mix.lock', 'shared/alchemy_auth_client/mix.lock', 'shared/alchemy_auth_client/lib/**/*.ex', 'shared/alchemy_auth_client/mix.exs') }}
           restore-keys: |
             ${{ runner.os }}-world-mix-
 
@@ -48,4 +50,5 @@ jobs:
       - run: mix format --check-formatted
       - run: mix compile --warnings-as-errors
       - run: mix credo --strict
+      # Shared package tests: `.github/workflows/alchemy-auth-client-ci.yml` (avoid triple-run).
       - run: mix test

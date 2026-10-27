@@ -81,8 +81,8 @@ services:
 
   world:
     build:
-      context: ./world-server
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: world-server/Dockerfile
       target: dev
     ports:
       - "4103:4003"
@@ -98,6 +98,7 @@ services:
       WORLD_DATABASE_PATH: /app/priv/data/world_e2e.db
     volumes:
       - ./world-server:/app
+      - ./shared/alchemy_auth_client:/shared/alchemy_auth_client
       - e2e_world_deps:/app/deps
       - e2e_world_build:/app/_build
     depends_on:
@@ -112,8 +113,8 @@ services:
 
   assets:
     build:
-      context: ./assets-server
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: assets-server/Dockerfile
       target: dev
     ports:
       - "4104:4004"
@@ -128,6 +129,7 @@ services:
       ASSETS_CAS_BACKEND: local
     volumes:
       - ./assets-server:/app
+      - ./shared/alchemy_auth_client:/shared/alchemy_auth_client
       - e2e_assets_deps:/app/deps
       - e2e_assets_build:/app/_build
     depends_on:
