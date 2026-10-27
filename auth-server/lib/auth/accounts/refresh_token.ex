@@ -13,6 +13,8 @@ defmodule Auth.Accounts.RefreshToken do
     domain: Auth.Domain,
     data_layer: AshPostgres.DataLayer
 
+  import Ash.Expr
+
   postgres do
     table "refresh_tokens"
     repo Auth.Repo
@@ -74,6 +76,8 @@ defmodule Auth.Accounts.RefreshToken do
 
     update :revoke do
       accept [:revoked_at]
+      # Conditional revoke: no-op / fail when already revoked (x002d / P3-2).
+      change filter(expr(is_nil(revoked_at)))
     end
 
     destroy :destroy do

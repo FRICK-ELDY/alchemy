@@ -46,7 +46,9 @@ defmodule Assets.Blobs do
   end
 
   defp insert_new_blob!(owner_sub, blake3, data, size, mime) do
-    ensure_quota!(owner_sub, size)
+    # Ensure row, then consume with a single conditional UPDATE (x002d / P3-1).
+    ensure_quota_ledger!(owner_sub)
+    consume_quota!(owner_sub, size)
 
     case CAS.put_if_absent(blake3, data) do
       :ok ->
@@ -60,7 +62,6 @@ defmodule Assets.Blobs do
 
         case Repo.insert(changeset) do
           {:ok, blob} ->
-            add_quota_usage!(owner_sub, size)
             {:created, blob}
 
           {:error, changeset} ->
@@ -137,34 +138,40 @@ defmodule Assets.Blobs do
     end
   end
 
-  defp ensure_quota!(owner_sub, add_bytes) do
+  defp ensure_quota_ledger!(owner_sub) do
     limit = Application.fetch_env!(:assets, :quota_limit_bytes)
 
-    ledger =
-      case Repo.get(QuotaLedger, owner_sub) do
-        nil ->
-          %QuotaLedger{}
-          |> QuotaLedger.changeset(%{
-            owner_sub: owner_sub,
-            used_bytes: 0,
-            limit_bytes: limit
-          })
-          |> Repo.insert!()
+    changeset =
+      QuotaLedger.changeset(%QuotaLedger{}, %{
+        owner_sub: owner_sub,
+        used_bytes: 0,
+        limit_bytes: limit
+      })
 
-        existing ->
-          existing
-      end
+    case Repo.insert(changeset, on_conflict: :nothing, conflict_target: :owner_sub) do
+      {:ok, _} ->
+        :ok
 
-    if ledger.used_bytes + add_bytes > ledger.limit_bytes do
-      Repo.rollback(:quota_exceeded)
-    else
-      :ok
+      {:error, reason} ->
+        Repo.rollback({:quota_ledger_error, reason})
     end
   end
 
-  defp add_quota_usage!(owner_sub, add_bytes) do
-    from(q in QuotaLedger, where: q.owner_sub == ^owner_sub)
-    |> Repo.update_all(inc: [used_bytes: add_bytes])
+  # Atomic: only increments when used_bytes + add_bytes <= limit_bytes.
+  defp consume_quota!(owner_sub, add_bytes) when add_bytes >= 0 do
+    {n, _} =
+      from(q in QuotaLedger,
+        where:
+          q.owner_sub == ^owner_sub and
+            q.used_bytes + ^add_bytes <= q.limit_bytes
+      )
+      |> Repo.update_all(inc: [used_bytes: add_bytes])
+
+    if n == 1 do
+      :ok
+    else
+      Repo.rollback(:quota_exceeded)
+    end
   end
 
   defp mime_or_default(""), do: "application/octet-stream"

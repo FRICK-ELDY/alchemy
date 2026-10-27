@@ -115,20 +115,35 @@ defmodule Auth.Accounts do
   def refresh(refresh_token) when is_binary(refresh_token) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-    case get_refresh_token_record(refresh_token) do
-      {:ok, %{revoked_at: revoked_at} = record} when not is_nil(revoked_at) ->
+    case Repo.transaction(fn ->
+           case fetch_refresh_token_for_update(refresh_token) do
+             {:ok, %{revoked_at: revoked_at} = record} when not is_nil(revoked_at) ->
+               # Family revoke must commit outside this TX (x002d).
+               Repo.rollback({:revoked_reuse, record})
+
+             {:ok, record} ->
+               refresh_locked!(record, now)
+
+             _ ->
+               Repo.rollback(:invalid_refresh_token)
+           end
+         end) do
+      {:ok, session} ->
+        {:ok, session}
+
+      {:error, {:revoked_reuse, record}} ->
         grace_seconds = Application.fetch_env!(:auth, :refresh_token_reuse_grace_seconds)
 
-        if DateTime.diff(now, revoked_at, :second) > grace_seconds do
+        if DateTime.diff(now, record.revoked_at, :second) > grace_seconds do
           revoke_refresh_token_family(record.family_id, now)
         end
 
         {:error, :invalid_refresh_token}
 
-      {:ok, record} ->
-        do_refresh(record, now)
+      {:error, :invalid_refresh_token} ->
+        {:error, :invalid_refresh_token}
 
-      _ ->
+      {:error, _} ->
         {:error, :invalid_refresh_token}
     end
   end
@@ -304,26 +319,21 @@ defmodule Auth.Accounts do
     }
   end
 
-  defp do_refresh(record, now) do
-    case Repo.transaction(fn ->
-           with :ok <- ensure_refresh_token_usable(record, now),
-                {:ok, %User{status: :active} = user} <- fetch_user(record.user_id),
-                {:ok, new_refresh_token} <- rotate_refresh_token(record, user, now),
-                {:ok, access_token, _jti, expires_in} <- Token.generate(user) do
-             %{
-               access_token: access_token,
-               token_type: "Bearer",
-               expires_in: expires_in,
-               refresh_token: new_refresh_token,
-               user: user_payload(user)
-             }
-           else
-             _ -> Repo.rollback(:invalid_refresh_token)
-           end
-         end) do
-      {:ok, session} -> {:ok, session}
-      {:error, :invalid_refresh_token} -> {:error, :invalid_refresh_token}
-      {:error, _} -> {:error, :invalid_refresh_token}
+  # Caller must already hold a transaction + FOR UPDATE lock on `record`.
+  defp refresh_locked!(record, now) do
+    with :ok <- ensure_refresh_token_usable(record, now),
+         {:ok, %User{status: :active} = user} <- fetch_user(record.user_id),
+         {:ok, new_refresh_token} <- rotate_refresh_token(record, user, now),
+         {:ok, access_token, _jti, expires_in} <- Token.generate(user) do
+      %{
+        access_token: access_token,
+        token_type: "Bearer",
+        expires_in: expires_in,
+        refresh_token: new_refresh_token,
+        user: user_payload(user)
+      }
+    else
+      _ -> Repo.rollback(:invalid_refresh_token)
     end
   end
 
@@ -352,8 +362,45 @@ defmodule Auth.Accounts do
   end
 
   defp rotate_refresh_token(record, user, now) do
-    with {:ok, _} <- RefreshToken.revoke(record, %{revoked_at: now}) do
-      create_refresh_token(user, record.family_id)
+    case RefreshToken.revoke(record, %{revoked_at: now}) do
+      {:ok, _} ->
+        create_refresh_token(user, record.family_id)
+
+      {:error, error} ->
+        if stale_record_error?(error) do
+          {:error, :already_revoked}
+        else
+          Logger.warning("refresh revoke failed: #{inspect(error)}")
+          {:error, :revoke_failed}
+        end
+    end
+  end
+
+  defp stale_record_error?(%Ash.Error.Changes.StaleRecord{}), do: true
+
+  defp stale_record_error?(%{errors: errors}) when is_list(errors) do
+    Enum.any?(errors, &stale_record_error?/1)
+  end
+
+  defp stale_record_error?(%{error: inner}), do: stale_record_error?(inner)
+
+  defp stale_record_error?(_), do: false
+
+  defp fetch_refresh_token_for_update(plaintext) do
+    hash = hash_refresh_token(plaintext)
+
+    case RefreshToken
+         |> Ash.Query.for_read(:get_by_token_hash, %{token_hash: hash})
+         |> Ash.Query.lock("FOR UPDATE")
+         |> Ash.read_one() do
+      {:ok, nil} ->
+        {:error, :not_found}
+
+      {:ok, record} ->
+        {:ok, record}
+
+      {:error, error} ->
+        if Auth.AshErrors.not_found?(error), do: {:error, :not_found}, else: {:error, error}
     end
   end
 

@@ -1,0 +1,51 @@
+# cargo-deny for the client workspace (x002d / P3-6).
+# Run from `client/`: `cargo deny check`
+#
+# Policy: vulnerabilities deny (with documented ignores); unmaintained/unsound
+# not gated yet (transitive / graphics stack). Licenses allow common open set.
+
+[graph]
+all-features = false
+no-default-features = false
+
+[advisories]
+# "none" | "workspace" | "transitive" | "all" — scope of unmaintained/unsound fails
+unmaintained = "none"
+unsound = "none"
+yanked = "deny"
+ignore = [
+  # rsa: Marvin Attack; no patched crates.io release yet (transitive via zenoh/tls).
+  { id = "RUSTSEC-2023-0071", reason = "rsa Marvin Attack; no fixed release; not used for Alchemy JWT (auth is Elixir jose)" },
+  # lz4_flex: block API leak; held until zenoh/deps bump past fixed version.
+  { id = "RUSTSEC-2026-0041", reason = "lz4_flex transitive via zenoh; bump when upstream allows" },
+]
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "CDLA-Permissive-2.0",
+  "Zlib",
+  "BSL-1.0",
+  "CC0-1.0",
+  "Unlicense",
+  "MPL-2.0",
+  "OpenSSL",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

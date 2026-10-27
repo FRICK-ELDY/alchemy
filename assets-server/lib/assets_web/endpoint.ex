@@ -4,13 +4,10 @@ defmodule AssetsWeb.Endpoint do
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
-  plug Plug.Parsers,
-    parsers: [:urlencoded, :multipart, :json],
-    pass: ["*/*"],
-    json_decoder: Phoenix.json_library(),
-    length: 100_000_000
+  # No Plug.Parsers: POST /blobs uses raw read_body (x002d / P3-3).
+  # JSON Content-Type must not consume the body before the controller.
+  # No MethodOverride: no body params to supply _method.
 
-  plug Plug.MethodOverride
   plug Plug.Head
   plug AssetsWeb.Router
 end

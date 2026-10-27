@@ -27,16 +27,15 @@ defmodule Assets.MixProject do
   defp deps do
     [
       {:phoenix, "~> 1.8.8"},
-      {:bandit, "~> 1.5"},
+      {:bandit, "~> 1.14"},
       {:jason, "~> 1.2"},
       {:ecto_sql, "~> 3.12"},
       {:ecto_sqlite3, "~> 0.17"},
       {:joken, "~> 2.6"},
-      {:jose, "~> 1.11"},
+      {:jose, "~> 1.11.13"},
       {:req, "~> 0.5"},
       {:ex_aws, "~> 2.5"},
       {:ex_aws_s3, "~> 2.5"},
-      {:hackney, "~> 1.20"},
       {:sweet_xml, "~> 0.7"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},

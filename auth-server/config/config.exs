@@ -7,6 +7,9 @@
 # General application configuration
 import Config
 
+# Ash 3.37+: string length counting for constraints / validations (x002d).
+config :ash, default_string_length_count: :codepoints
+
 config :auth,
   ecto_repos: [Auth.Repo],
   ash_domains: [Auth.Domain],
