@@ -3,7 +3,8 @@ defmodule World.HostAttestation do
   Issues short-lived HostAttestation JWTs (RS256) proving `(room_id, host_pub)`.
 
   Guarantees: same world JWKS as Room Tokens; distinct `aud` / `typ`.
-  Non-guarantees: Manifest body integrity (P4); Presence world signatures.
+  Non-guarantees: Manifest body integrity (see ManifestSeal / x0026); Presence world signatures;
+  SceneManifest-driven content (P4).
   """
 
   alias World.Token.Keys

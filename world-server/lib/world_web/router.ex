@@ -16,11 +16,12 @@ defmodule WorldWeb.Router do
     post "/rooms/:room_id/tokens", RoomController, :create_token
   end
 
-  # x0025: Bearer is host Room Token (not auth JWT).
+  # x0025 / x0026: Bearer is host Room Token (not auth JWT).
   scope "/api/v1", WorldWeb do
     pipe_through [:api]
 
     post "/rooms/:room_id/host_keys", RoomController, :create_host_key
+    post "/rooms/:room_id/manifest_seal", RoomController, :create_manifest_seal
   end
 
   scope "/", WorldWeb do

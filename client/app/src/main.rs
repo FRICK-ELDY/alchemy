@@ -1,4 +1,4 @@
-//! Alchemy client — x0025 host_pub attestation + x0024 gap→snapshot + session / Frame.
+//! Alchemy client — x0026 Manifest world seal + x0025 attestation + x0024 gap→snapshot.
 //!
 //! Guarantees:
 //! - Home tab login / register / logout; Room Token only after auth (x0018)
@@ -6,7 +6,7 @@
 //! - Access + Room Token auto-refresh at ~80% TTL while joined (x0021 P1-1)
 //! - Intent Ed25519 session (Token on bind only); Frame finite/tick/sig + snapshot (x0023)
 //! - Frame tick gap → do not apply delta; `…/snapshot` replace (x0024 / peer-delivery)
-//! - Manifest `host_attestation` via world JWKS before adopting `host_pub`; Presence `host_sig` (x0025)
+//! - Manifest `world_seal` + `host_attestation` via world JWKS before adopting `host_pub`; Presence `host_sig` (x0026)
 //! - PROTOCOL_PIN mismatch on Manifest/Presence rejects apply (x0023)
 //! - CI fallback: `AUTH_USER` or `ALCHEMY_AUTH_TOKEN` skips UI and joins
 //! - Subscribes to SceneManifest / PresenceState / RenderFrame; downloads blob; wgpu mesh
@@ -16,19 +16,21 @@
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
 //!
 //! Non-guarantees: Steal, XR login keyboard, email verify UI, Quest standalone, WSL HMD,
-//! reliable-delivery ACK channel, Manifest body world signature
+//! reliable-delivery ACK channel, SceneManifest-driven content (P4)
 
 mod auth;
 mod host_attestation;
 mod host_control;
 mod intent_session;
 mod jwt_sub;
+mod manifest_seal;
 mod mesh;
 mod scene;
 mod surface;
 mod system_ui;
 mod turn;
 mod world_hit;
+mod world_jwks;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -38,7 +40,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use alchemy_protocol::wire_crypto::{frame_entities_finite, verify_frame, verify_presence};
+use alchemy_protocol::wire_crypto::{
+    frame_entities_finite, manifest_seal_blake3_hex, verify_frame, verify_presence,
+};
 use alchemy_protocol::{
     decide_frame_tick, frame_key, input_key, liveliness_key, manifest_key, presence_key,
     protocol_pin_matches, snapshot_key, validate_room_id, FrameTickDecision, Message,
@@ -47,9 +51,11 @@ use alchemy_protocol::{
 use anyhow::{Context, Result};
 use auth::AuthGate;
 use host_attestation::HostAttestationVerifier;
+use manifest_seal::ManifestSealVerifier;
 use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, COIN_BLAKE3_HEX};
 use scene::{EntityPose, SharedState, LOCAL_USER_ROOT_UNSET, MESH_ENTITY_ID};
 use serde::Deserialize;
+use world_jwks::WorldJwks;
 use zenoh::bytes::ZBytes;
 use zenoh::Wait;
 
@@ -177,6 +183,7 @@ fn spawn_manifest_subscriber(
     key: String,
     shared: Arc<SharedState>,
     blake3_tx: mpsc::SyncSender<String>,
+    seal: Arc<ManifestSealVerifier>,
     attest: Arc<HostAttestationVerifier>,
 ) -> Result<()> {
     let subscriber = session
@@ -217,6 +224,16 @@ fn spawn_manifest_subscriber(
                             log::error!(
                                 "SceneManifest host_pub length {} (want 32); leaving room",
                                 manifest.host_pub.len()
+                            );
+                            shared.leave_room_local();
+                            continue;
+                        }
+                        let body_hex = manifest_seal_blake3_hex(&manifest);
+                        if let Err(err) =
+                            seal.verify(&manifest.world_seal, manifest.revision, &body_hex)
+                        {
+                            log::error!(
+                                "SceneManifest world_seal rejected: {err:#}; leaving room"
                             );
                             shared.leave_room_local();
                             continue;
@@ -924,7 +941,7 @@ fn main() -> Result<()> {
     let silent = auth::try_silent_session(&auth_url).context("silent auth")?;
     let auth_mode = if silent.is_some() { "silent" } else { "ui" };
     log::info!(
-        "client x0025 starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
+        "client x0026 starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
     );
 
     let mut gate = AuthGate::default();
@@ -968,13 +985,17 @@ fn main() -> Result<()> {
 
     spawn_token_refresh(Arc::clone(&shared))?;
 
-    let attest = Arc::new(HostAttestationVerifier::new(
-        shared.world_url.as_ref(),
+    let jwks = Arc::new(WorldJwks::new(shared.world_url.as_ref()));
+    jwks.refresh()
+        .context("initial world JWKS (ManifestSeal + HostAttestation)")?;
+    let seal = Arc::new(ManifestSealVerifier::new(
+        Arc::clone(&jwks),
         shared.room_id.as_ref(),
     ));
-    attest
-        .refresh_jwks()
-        .context("initial world JWKS for HostAttestation")?;
+    let attest = Arc::new(HostAttestationVerifier::new(
+        Arc::clone(&jwks),
+        shared.room_id.as_ref(),
+    ));
 
     let session = open_zenoh().context("open zenoh session")?;
     if shared
@@ -991,6 +1012,7 @@ fn main() -> Result<()> {
         manifest_key_expr,
         Arc::clone(&shared),
         blake3_tx,
+        Arc::clone(&seal),
         Arc::clone(&attest),
     )?;
     spawn_presence_subscriber(session.clone(), presence_key_expr, Arc::clone(&shared))?;

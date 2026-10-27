@@ -1,18 +1,21 @@
 //! Ed25519 session / host signatures for Intent, RenderFrame, Presence (x0023 / x0025).
+//! Manifest seal body hashing for world ManifestSeal JWT (x0026).
 //!
 //! # Guarantees
 //! - Sign / verify over prost encode with the signature field cleared.
 //! - Reject wrong key lengths and invalid signatures.
+//! - Manifest seal blake3 is over protobuf with `world_seal` cleared.
 //!
 //! # Non-guarantees
 //! - Key distribution beyond world HostAttestation → Manifest `host_pub` / Intent `session_pub`.
 //! - Forward secrecy, rotation ceremonies, hardware-backed keys.
+//! - SceneManifest-driven content (P4).
 
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey, SIGNATURE_LENGTH};
 use prost::Message;
 use rand::rngs::OsRng;
 
-use crate::{InputEvent, PresenceState, RenderFrame};
+use crate::{InputEvent, PresenceState, RenderFrame, SceneManifest};
 
 pub use ed25519_dalek::SigningKey;
 
@@ -115,6 +118,20 @@ pub fn verify_presence(host_pub: &[u8], state: &PresenceState) -> Result<(), Wir
     let msg = presence_signing_bytes(state);
     vk.verify(&msg, &sig)
         .map_err(|_| WireCryptoError::VerifyFailed)
+}
+
+/// Encode `SceneManifest` for world seal hashing (`world_seal` cleared).
+pub fn manifest_seal_bytes(manifest: &SceneManifest) -> Vec<u8> {
+    let mut m = manifest.clone();
+    m.world_seal.clear();
+    m.encode_to_vec()
+}
+
+/// Lowercase hex BLAKE3 of [`manifest_seal_bytes`] (x0026).
+pub fn manifest_seal_blake3_hex(manifest: &SceneManifest) -> String {
+    blake3::hash(&manifest_seal_bytes(manifest))
+        .to_hex()
+        .to_string()
 }
 
 /// True when all Entity numeric fields are finite.

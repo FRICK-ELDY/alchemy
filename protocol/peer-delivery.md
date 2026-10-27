@@ -26,7 +26,7 @@
 |:---|:---|:---|:---|
 | `…/frame` | **latest**（デルタ） | 届いたデルタを `host_sig` 検証・finite・tick 規則の後に適用できる。**publish された tick は連番**（空は未送かつ未加算） | 物理 Hz ごとの空 tick・欠落の再送 |
 | `…/snapshot` | **request/response**（フル pose） | late join / 再同期で entity 表を置換収束（`upserts` 非空） | 連続 query のレート・空応答時の即時成功 |
-| `…/manifest` | **latest**（低頻度＋再送） | 届いた最新 revision を `protocol_pin` + **HostAttestation**（world JWKS）+ `room_id` 一致後に採用（x0025）。host は auth→Room Token→attestation を TTL 80% で更新し、失敗時は公開停止 | Manifest 全体の world 署名（P4）・欠落再送・適用完了 ACK・stale JWT の継続公開 |
+| `…/manifest` | **latest**（低頻度＋再送） | 届いた最新を **`protocol_pin` → `room_id` → `world_seal`（blake3）→ `host_attestation`** の順で検証後に採用（x0026）。host は seal / attestation を TTL 80% で更新し、失敗時は公開停止 | SceneManifest 駆動（P4）・欠落再送・適用完了 ACK・stale seal の継続公開 |
 | `…/presence` | **latest**（低頻度） | 届いた割当表を pin + **`host_sig`**（attested `host_pub`）後に採用（x0025） | world 署名・途中欠落の補完 |
 | `…/input` | **best-effort Intent** | host が受理した Intent について `intent_seq` 単調 | put 成功＝適用成功、ACK、確実配送 |
 | `…/host_control` | **best-effort command**（既定 OFF） | `ALCHEMY_HOST_CONTROL=1` のとき到達は best-effort | 認証・ACK |

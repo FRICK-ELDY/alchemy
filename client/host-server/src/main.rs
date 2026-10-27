@@ -3,7 +3,7 @@
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
 //! - Input: Ed25519 session bind (Token on bind only) + `is_finite` (x0023 / x0021)
-//! - SceneManifest with world `host_attestation` + `host_pub`; Frames / Presence signed (x0025)
+//! - SceneManifest with world `host_attestation` + `world_seal` + `host_pub`; Frames / Presence signed (x0026)
 //! - `…/snapshot` queryable for late join; pure pose deltas (no box every-tick upsert)
 //! - Empty deltas: **no publish and no `net_tick` advance**; snapshot tick = last published (x0024)
 //! - Per-`sub` Intent/Grab → up to 4 user_roots; Presence Leave / liveliness jti grace (x0022)
@@ -11,7 +11,7 @@
 //! - Slice E / x001e: Zenoh `host_control` off by default; `ALCHEMY_HOST_CONTROL=1` to enable
 //!
 //! Non-guarantees:
-//! - Steal / rotation follow / Formula / polished Walk / world-signed Manifest body / verifier
+//! - Steal / rotation follow / Formula / polished Walk / SceneManifest-driven content (P4) / verifier
 //! - Authenticated remote host shutdown (use launcher / `ALCHEMY_HOST_PID`)
 
 mod finite;
@@ -27,7 +27,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alchemy_protocol::wire_crypto::{
-    generate_signing_key, public_key_bytes, sign_frame, sign_presence, SigningKey,
+    generate_signing_key, manifest_seal_blake3_hex, public_key_bytes, sign_frame, sign_presence,
+    SigningKey,
 };
 use alchemy_protocol::{
     frame_key, host_control_key, input_buttons, input_key, liveliness_binding_from_key,
@@ -37,7 +38,7 @@ use alchemy_protocol::{
 };
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
-use room_token::{default_auth_url, HostCredentialChain, RoomTokenVerifier};
+use room_token::{default_auth_url, HostCredentialChain, ManifestSealCache, RoomTokenVerifier};
 use session::SessionTable;
 use sim::{
     box_color, user_root_color, LocoMode, PhysicsWorld, BOX_COUNT, BOX_ENTITY_FIRST,
@@ -418,6 +419,7 @@ fn build_manifest(
     blake3: &str,
     host_pub: Vec<u8>,
     host_attestation: String,
+    world_seal: String,
 ) -> SceneManifest {
     SceneManifest {
         room_id: room_id.to_string(),
@@ -436,7 +438,33 @@ fn build_manifest(
         protocol_pin: PROTOCOL_PIN.to_string(),
         host_pub,
         host_attestation,
+        world_seal,
     }
+}
+
+/// Build Manifest body (empty seal), obtain/cache world seal, return publishable Manifest.
+fn sealed_manifest(
+    room_id: &str,
+    blob_blake3: &str,
+    host_pub: &[u8],
+    host_attestation: &str,
+    world_url: &str,
+    host_token: &str,
+    seal_cache: &mut ManifestSealCache,
+) -> Result<SceneManifest> {
+    let mut manifest = build_manifest(
+        room_id,
+        blob_blake3,
+        host_pub.to_vec(),
+        host_attestation.to_string(),
+        String::new(),
+    );
+    let body_hex = manifest_seal_blake3_hex(&manifest);
+    seal_cache
+        .ensure(world_url, room_id, host_token, manifest.revision, &body_hex)
+        .context("ensure ManifestSeal")?;
+    manifest.world_seal = seal_cache.seal.clone();
+    Ok(manifest)
 }
 
 fn spawn_input_gate(
@@ -650,7 +678,7 @@ fn main() -> Result<()> {
     let host_pub = public_key_bytes(&host_signing_key);
 
     log::info!(
-        "host-server x0025 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        "host-server x0026 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
     );
@@ -725,12 +753,17 @@ fn main() -> Result<()> {
     let mut last_presence_rev = 0u64;
     let mut last_presence = Instant::now();
 
-    let mut manifest = build_manifest(
+    let mut seal_cache = ManifestSealCache::empty();
+    let mut manifest = sealed_manifest(
         &room_id,
         &blob_blake3,
-        host_pub.clone(),
-        creds.host_attestation.clone(),
-    );
+        &host_pub,
+        &creds.host_attestation,
+        &world_url,
+        &creds.host_token,
+        &mut seal_cache,
+    )
+    .context("initial ManifestSeal")?;
     let loco = manifest.locomotion.unwrap_or(LocomotionConfig {
         mode: LocomotionMode::Noclip.into(),
         move_speed: DEFAULT_MOVE_SPEED,
@@ -748,7 +781,7 @@ fn main() -> Result<()> {
         .wait()
         .map_err(|e| anyhow::anyhow!("manifest publish failed: {e}"))?;
     log::info!(
-        "published SceneManifest revision={} entries={} blake3={} loco={:?} speed={move_speed} (attested)",
+        "published SceneManifest revision={} entries={} blake3={} loco={:?} speed={move_speed} (attested+sealed)",
         manifest.revision,
         manifest.entries.len(),
         blob_blake3,
@@ -792,6 +825,8 @@ fn main() -> Result<()> {
 
         // Credential refresh runs every physics tick (cheap until due) so Room Token /
         // auth TTL cannot silently expire between Manifest republishes. Fail-closed.
+        // Note: due layers use sync ureq with CREDENTIAL_HTTP_TIMEOUT; multiple dues
+        // on one tick stack serially (auth/host/attest then seal).
         let attest_rotated = match creds.refresh_if_due(
             &auth_url,
             &world_url,
@@ -807,13 +842,26 @@ fn main() -> Result<()> {
                 return Err(err).context("host credential refresh failed");
             }
         };
-        if attest_rotated || last_manifest.elapsed() >= MANIFEST_REPUBLISH {
-            manifest = build_manifest(
+        // Seal may be due even when attestation is not; fail-closed on seal refresh.
+        let seal_due = Instant::now() >= seal_cache.refresh_at;
+        if attest_rotated || seal_due || last_manifest.elapsed() >= MANIFEST_REPUBLISH {
+            manifest = match sealed_manifest(
                 &room_id,
                 &blob_blake3,
-                host_pub.clone(),
-                creds.host_attestation.clone(),
-            );
+                &host_pub,
+                &creds.host_attestation,
+                &world_url,
+                &creds.host_token,
+                &mut seal_cache,
+            ) {
+                Ok(m) => m,
+                Err(err) => {
+                    log::error!(
+                        "ManifestSeal refresh failed (fail-closed): {err:#}; stopping Manifest publish"
+                    );
+                    return Err(err).context("host ManifestSeal refresh failed");
+                }
+            };
             manifest_bytes = manifest.encode_to_vec();
             manifest_pub
                 .put(manifest_bytes.clone())
@@ -823,6 +871,11 @@ fn main() -> Result<()> {
             if attest_rotated {
                 log::info!(
                     "published SceneManifest revision={} (HostAttestation rotated)",
+                    manifest.revision
+                );
+            } else if seal_due {
+                log::info!(
+                    "published SceneManifest revision={} (ManifestSeal rotated)",
                     manifest.revision
                 );
             } else {

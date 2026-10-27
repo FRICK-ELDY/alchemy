@@ -21,6 +21,9 @@ message SceneManifest {
   // World-issued HostAttestation JWT (RS256). Client verifies via world JWKS before
   // adopting `host_pub` (x0025). Must attest the same 32-byte key as `host_pub`.
   string host_attestation = 7;
+  // World-issued ManifestSeal JWT (RS256). Client verifies via world JWKS and checks
+  // `manifest_blake3` against the protobuf body with this field cleared (x0026).
+  string world_seal = 8;
 }
 
 message SceneEntry {
