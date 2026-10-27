@@ -5,19 +5,21 @@ defmodule WorldWeb.RoomController do
 
   alias World.HostAttestation
   alias World.ManifestSeal
+  alias World.RoomAccess
   alias World.Rooms
   alias World.Token
 
   def create(conn, params) do
     room_id = Map.get(params, "room_id")
+    visibility = Map.get(params, "visibility", "public")
 
     case resolve_sub(conn, params) do
       {:ok, owner_sub} ->
-        case Rooms.create(room_id, owner_sub) do
-          {:ok, id} ->
+        case Rooms.create(room_id, owner_sub, visibility) do
+          {:ok, id, stored_visibility} ->
             conn
             |> put_status(:created)
-            |> json(%{room_id: id, owner_sub: owner_sub})
+            |> json(%{room_id: id, owner_sub: owner_sub, visibility: stored_visibility})
 
           {:error, :already_exists} ->
             conn
@@ -33,6 +35,11 @@ defmodule WorldWeb.RoomController do
             conn
             |> put_status(:unprocessable_entity)
             |> json(%{error: "invalid_room_id"})
+
+          {:error, :invalid_visibility} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "invalid_visibility"})
 
           {:error, :storage_error} ->
             storage_unavailable(conn)
@@ -59,6 +66,54 @@ defmodule WorldWeb.RoomController do
     end
   end
 
+  def update_visibility(conn, %{"room_id" => room_id} = params) do
+    visibility = Map.get(params, "visibility")
+
+    case resolve_sub(conn, params) do
+      {:ok, sub} ->
+        room_id
+        |> Rooms.set_visibility(sub, visibility || "")
+        |> render_visibility_update(conn, room_id)
+
+      {:error, :anon_disabled} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "anon_tokens_disabled"})
+    end
+  end
+
+  defp render_visibility_update({:ok, stored_visibility}, conn, room_id) do
+    json(conn, %{room_id: room_id, visibility: stored_visibility})
+  end
+
+  defp render_visibility_update({:error, :not_found}, conn, _room_id) do
+    conn
+    |> put_status(:not_found)
+    |> json(%{error: "room_not_found"})
+  end
+
+  defp render_visibility_update({:error, :forbidden_host}, conn, _room_id) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{error: "owner_only"})
+  end
+
+  defp render_visibility_update({:error, :invalid_visibility}, conn, _room_id) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "invalid_visibility"})
+  end
+
+  defp render_visibility_update({:error, :invalid_room_id}, conn, _room_id) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "invalid_room_id"})
+  end
+
+  defp render_visibility_update({:error, :storage_error}, conn, _room_id) do
+    storage_unavailable(conn)
+  end
+
   defp resolve_sub(conn, params) do
     case conn.assigns[:auth_sub] do
       sub when is_binary(sub) and sub != "" ->
@@ -75,7 +130,9 @@ defmodule WorldWeb.RoomController do
 
   # Token paths never create rooms (x0021): owner is only set by POST /rooms.
   defp issue_token(conn, room_id, role, sub) do
-    with :ok <- authorize_role(room_id, role, sub),
+    with {:ok, room} <- Rooms.get(room_id),
+         :ok <- RoomAccess.authorize(conn, room.owner_sub, sub, room.visibility),
+         :ok <- authorize_role_cached(room, role, sub),
          {:ok, token, ttl} <- Token.generate(room_id, role, sub) do
       json(conn, %{
         token: token,
@@ -83,6 +140,7 @@ defmodule WorldWeb.RoomController do
         room_id: room_id,
         role: role,
         sub: sub,
+        visibility: room.visibility,
         token_type: "Bearer"
       })
     else
@@ -101,6 +159,21 @@ defmodule WorldWeb.RoomController do
         |> put_status(:forbidden)
         |> json(%{error: "host_role_owner_only"})
 
+      {:error, :forbidden_visibility} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "visibility_forbidden"})
+
+      {:error, :lan_required} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "lan_required"})
+
+      {:error, :auth_unavailable} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "auth_access_unavailable"})
+
       {:error, :invalid_role} ->
         conn
         |> put_status(:unprocessable_entity)
@@ -116,13 +189,14 @@ defmodule WorldWeb.RoomController do
     end
   end
 
-  # x0021 P1-4: only the room owner may request role=host.
-  # Guest needs existence only; host uses ensure_owner (covers not_found).
-  defp authorize_role(room_id, "guest", _sub), do: Rooms.require_existing(room_id)
+  # x0021 P1-4: only the room owner may request role=host (room already loaded).
+  defp authorize_role_cached(_room, "guest", _sub), do: :ok
 
-  defp authorize_role(room_id, "host", sub), do: Rooms.ensure_owner(room_id, sub)
+  defp authorize_role_cached(%{owner_sub: owner}, "host", sub) when owner == sub, do: :ok
 
-  defp authorize_role(_room_id, _role, _sub), do: {:error, :invalid_role}
+  defp authorize_role_cached(_room, "host", _sub), do: {:error, :forbidden_host}
+
+  defp authorize_role_cached(_room, _role, _sub), do: {:error, :invalid_role}
 
   @doc """
   x0025: issue HostAttestation JWT. Authorization must be a **host** Room Token.

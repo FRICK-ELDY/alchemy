@@ -1,5 +1,7 @@
 import Config
 
+config :world, auth_internal_token: "dev-internal-token"
+
 config :world, World.Repo,
   database: Path.expand("../priv/data/world_dev.db", __DIR__),
   pool_size: 5,

@@ -42,6 +42,13 @@ if System.get_env("PHX_SERVER") do
   config :auth, AuthWeb.Endpoint, server: true
 end
 
+# Non-prod: optional override of dev/test default. Prod: required below.
+if config_env() != :prod do
+  if token = System.get_env("AUTH_INTERNAL_TOKEN") do
+    config :auth, :internal_token, token
+  end
+end
+
 config :auth, AuthWeb.Endpoint, http: [port: String.to_integer(System.get_env("PORT", "4002"))]
 
 if config_env() != :test and System.get_env("DATABASE_URL") do
@@ -69,6 +76,15 @@ if config_env() != :test and System.get_env("BIND_ALL") in ~w(true 1) do
 end
 
 if config_env() == :prod do
+  internal_token =
+    System.get_env("AUTH_INTERNAL_TOKEN") ||
+      raise """
+      environment variable AUTH_INTERNAL_TOKEN is missing.
+      Required for world → auth S2S (fail-closed; no default secret).
+      """
+
+  config :auth, :internal_token, internal_token
+
   database_url =
     System.get_env("DATABASE_URL") ||
       raise """

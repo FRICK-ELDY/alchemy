@@ -2,11 +2,15 @@ defmodule World.Rooms do
   @moduledoc """
   Room ledger facade (x0028).
 
-  Guarantees: create / owner / scene backed by Ash + SQLite (survives restart).
-  Non-guarantees: UGC scene edits; multi-node replication; Postgres (swap path documented).
+  Guarantees: create / owner / scene / visibility backed by Ash + SQLite (survives restart).
+  Non-guarantees: UGC scene edits; multi-node replication; Postgres (swap path documented);
+  Room Token revocation on visibility / friendship change (TTL-only; see RoomAccess).
 
-  x0021: `owner_sub` set only via `create/2`. Token issuance never creates a room.
+  x0021: `owner_sub` set only via `create/3` (`{:ok, room_id, visibility}`).
+  Token issuance never creates a room.
   x0027: DemoScene assigned at create and returned by `scene/1`.
+
+
 
   Authorization: use `ensure_owner/2` (and `require_existing/1` for existence-only).
   Do not infer auth from boolean helpers — those APIs are intentionally absent so
@@ -25,29 +29,54 @@ defmodule World.Rooms do
   @type owner_sub :: String.t()
   @type storage_error :: :storage_error
 
-  @spec create(room_id() | nil, owner_sub()) ::
-          {:ok, room_id()}
-          | {:error, :invalid_room_id | :already_exists | :missing_owner | storage_error()}
-  def create(nil, owner_sub), do: create(random_room_id(), owner_sub)
+  @spec create(room_id() | nil, owner_sub(), String.t()) ::
+          {:ok, room_id(), String.t()}
+          | {:error,
+             :invalid_room_id
+             | :already_exists
+             | :missing_owner
+             | :invalid_visibility
+             | storage_error()}
+  def create(room_id, owner_sub, visibility \\ "public")
 
-  def create(_room_id, owner_sub)
+  def create(nil, owner_sub, visibility), do: create(random_room_id(), owner_sub, visibility)
+
+  def create(_room_id, owner_sub, _visibility)
       when not is_binary(owner_sub) or owner_sub == "" do
     {:error, :missing_owner}
   end
 
-  def create(room_id, owner_sub) when is_binary(room_id) and is_binary(owner_sub) do
+  def create(room_id, owner_sub, visibility)
+      when is_binary(room_id) and is_binary(owner_sub) and is_binary(visibility) do
     with :ok <- validate_room_id(room_id),
-         {:ok, %Room{room_id: id}} <- insert_room(room_id, owner_sub) do
-      {:ok, id}
+         {:ok, vis} <- World.Visibility.parse(visibility),
+         {:ok, %Room{room_id: id, visibility: stored}} <- insert_room(room_id, owner_sub, vis) do
+      {:ok, id, stored}
     else
       {:error, :invalid_room_id} = err -> err
+      {:error, :invalid_visibility} = err -> err
       {:error, :already_exists} = err -> err
       {:error, :storage_error} = err -> err
       {:error, error} -> map_create_error(error)
     end
   end
 
-  def create(_, _), do: {:error, :invalid_room_id}
+  def create(_, _, _), do: {:error, :invalid_room_id}
+
+  @doc "Fetch room row once (owner + visibility + scene)."
+  @spec get(room_id()) ::
+          {:ok, Room.t()} | {:error, :invalid_room_id | :not_found | storage_error()}
+  def get(room_id) when is_binary(room_id) do
+    with :ok <- validate_room_id(room_id) do
+      case Room.get_by_room_id(room_id) do
+        {:ok, %Room{} = room} -> {:ok, room}
+        {:ok, nil} -> {:error, :not_found}
+        {:error, error} -> map_read_error(error, :get)
+      end
+    end
+  end
+
+  def get(_), do: {:error, :invalid_room_id}
 
   defp random_room_id do
     Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
@@ -124,11 +153,53 @@ defmodule World.Rooms do
 
   def scene(_), do: {:error, :invalid_room_id}
 
-  defp insert_room(room_id, owner_sub) do
+  @doc "Return visibility for an existing room (x0034)."
+  @spec visibility(room_id()) ::
+          {:ok, String.t()} | {:error, :invalid_room_id | :not_found | storage_error()}
+  def visibility(room_id) when is_binary(room_id) do
+    with :ok <- validate_room_id(room_id) do
+      case Room.get_by_room_id(room_id) do
+        {:ok, %Room{visibility: vis}} when is_binary(vis) -> {:ok, vis}
+        {:ok, nil} -> {:error, :not_found}
+        {:error, error} -> map_read_error(error, :visibility)
+      end
+    end
+  end
+
+  def visibility(_), do: {:error, :invalid_room_id}
+
+  @doc "Owner updates visibility (x0034)."
+  @spec set_visibility(room_id(), owner_sub(), String.t()) ::
+          {:ok, String.t()}
+          | {:error,
+             :invalid_room_id
+             | :not_found
+             | :forbidden_host
+             | :invalid_visibility
+             | storage_error()}
+  def set_visibility(room_id, sub, visibility)
+      when is_binary(room_id) and is_binary(sub) and is_binary(visibility) do
+    with {:ok, vis} <- World.Visibility.parse(visibility),
+         {:ok, %Room{} = room} <- get(room_id),
+         :ok <- owner_matches(room, sub) do
+      case Room.set_visibility(room, %{visibility: vis}) do
+        {:ok, %{visibility: stored}} -> {:ok, stored}
+        {:error, error} -> storage_error(error, :set_visibility)
+      end
+    end
+  end
+
+  def set_visibility(_, _, _), do: {:error, :invalid_room_id}
+
+  defp owner_matches(%Room{owner_sub: owner}, sub) when owner == sub, do: :ok
+  defp owner_matches(%Room{}, _), do: {:error, :forbidden_host}
+
+  defp insert_room(room_id, owner_sub, visibility) do
     Room.create(%{
       room_id: room_id,
       owner_sub: owner_sub,
-      scene: DemoScene.build()
+      scene: DemoScene.build(),
+      visibility: visibility
     })
   end
 

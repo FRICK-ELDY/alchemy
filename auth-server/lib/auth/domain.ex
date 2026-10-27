@@ -10,5 +10,7 @@ defmodule Auth.Domain do
     resource Auth.Accounts.TokenRevocation
     resource Auth.Accounts.RefreshToken
     resource Auth.Accounts.AccountToken
+    resource Auth.Social.Follow
+    resource Auth.Social.Friendship
   end
 end

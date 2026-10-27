@@ -32,6 +32,7 @@ config :auth,
   password_reset_token_ttl_hours: 1,
   mail_from: {"Alchemy Auth", "noreply@alchemy.frick-eldy.com"}
 
+# internal_token: set in dev/test only; prod requires AUTH_INTERNAL_TOKEN (runtime.exs).
 config :auth, :trusted_proxies, []
 
 config :auth, Auth.RateLimit,

@@ -16,7 +16,11 @@ config :world,
   auth_jwks_url: "http://127.0.0.1:4002/.well-known/jwks.json",
   auth_jwks_fetch_on_start: true,
   auth_jwt_issuer: "alchemy-auth",
-  auth_jwt_audience: "alchemy-platform"
+  auth_jwt_audience: "alchemy-platform",
+  # x0034 S2S — auth_internal_token: dev/test only; prod requires AUTH_INTERNAL_TOKEN
+  auth_internal_url: "http://127.0.0.1:4002",
+  auth_access_mode: :http,
+  trusted_proxies: []
 
 config :world, WorldWeb.Endpoint,
   url: [host: "localhost"],

@@ -29,6 +29,20 @@ if url = System.get_env("AUTH_JWKS_URL") do
   config :world, auth_jwks_url: url
 end
 
+if url = System.get_env("AUTH_INTERNAL_URL") do
+  config :world, auth_internal_url: url
+end
+
+if proxies = System.get_env("TRUSTED_PROXIES") do
+  list =
+    proxies
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+
+  config :world, trusted_proxies: list
+end
+
 if issuer = System.get_env("AUTH_JWT_ISSUER") do
   config :world, auth_jwt_issuer: issuer
 end
@@ -56,6 +70,13 @@ if config_env() == :prod do
     System.get_env("WORLD_DATABASE_PATH") ||
       raise "environment variable WORLD_DATABASE_PATH is missing (SQLite file path)."
 
+  internal_token =
+    System.get_env("AUTH_INTERNAL_TOKEN") ||
+      raise """
+      environment variable AUTH_INTERNAL_TOKEN is missing.
+      Required for world → auth S2S (fail-closed; no default secret).
+      """
+
   config :world, WorldWeb.Endpoint,
     http: [ip: {0, 0, 0, 0}, port: port],
     secret_key_base: secret_key_base
@@ -65,6 +86,7 @@ if config_env() == :prod do
     pool_size: String.to_integer(System.get_env("POOL_SIZE") || "5")
 
   config :world,
+    auth_internal_token: internal_token,
     room_token_generate_key_on_startup:
       System.get_env("ROOM_TOKEN_GENERATE_KEY", "false") in ~w(true 1),
     allow_anon_tokens: System.get_env("WORLD_ALLOW_ANON_TOKENS", "false") in ~w(true 1)

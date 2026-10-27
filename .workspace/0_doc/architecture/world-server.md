@@ -11,8 +11,9 @@
 
 | 保証する | 保証しない |
 |:---|:---|
-| Room の作成（Ash + SQLite。`owner_sub` + DemoScene を永続・x0028） | World 一覧 UI / Friendship / 公開範囲 |
-| 短命 Room Token（RS256）の発行 | 5段階公開範囲・Friendship ACL |
+| Room の作成（Ash + SQLite。`owner_sub` + DemoScene + `visibility`・x0028/x0034） | World 一覧 UI / Group |
+| 短命 Room Token（RS256）の発行 | Friendship 正本（auth）。Token 前に S2S 照会 |
+| 7段階公開範囲 ACL（Token 発行時・x0034–x0036） | client 公開範囲ピッカー UI；unfollow / visibility 変更時の既発行 Token 即時失効（TTL まで有効） |
 | `GET /.well-known/jwks.json`（Room Token 用） | verifier / ホスト死活監視 / S2S 連合 |
 | Room API は auth-server Bearer JWT 必須（`sub` を Room Token に転写） | 匿名 Token（既定 OFF。`WORLD_ALLOW_ANON_TOKENS=true` のみ） |
 | auth JWKS（`AUTH_JWKS_URL`）によるユーザー JWT 検証 | auth の revocation 再確認 |
@@ -36,12 +37,25 @@
 
 ## API（Slice B.5）
 
+### 公開範囲（x0033–x0036）
+
+| 値 | 入場 |
+|:---|:---|
+| `lan` | LAN 上のみ。Tunnel / 公網 IP は拒否（x0036） |
+| `private` | owner のみ |
+| `friends` | 確定フレンド（auth S2S） |
+| `friends_plus` | Friends ∪ FoF |
+| `followers` | owner のフォロワー |
+| `followers_plus` | Followers ∪ follow-of-follower |
+| `public` | 認証済みなら誰でも（Room 既定・デモ互換） |
+
 | Method | Path | Auth | 内容 |
 |:---|:---|:---|:---|
 | GET | `/health` | 不要 | 生存確認 |
 | GET | `/.well-known/jwks.json` | 不要 | Room Token 検証用公開鍵 |
-| POST | `/api/v1/rooms` | Bearer（auth JWT） | Room 作成 |
-| POST | `/api/v1/rooms/:room_id/tokens` | Bearer（auth JWT） | Token 発行（`sub` は JWT から） |
+| POST | `/api/v1/rooms` | Bearer（auth JWT） | Room 作成（任意 `visibility`） |
+| PUT | `/api/v1/rooms/:room_id/visibility` | Bearer（auth JWT） | owner のみ更新 |
+| POST | `/api/v1/rooms/:room_id/tokens` | Bearer（auth JWT） | Token 発行（visibility ACL 後） |
 | POST | `/api/v1/rooms/:room_id/host_keys` | Bearer（**host Room Token**） | HostAttestation 発行（`host_pub` base64url・x0025） |
 | POST | `/api/v1/rooms/:room_id/manifest_seal` | Bearer（**host Room Token**） | ManifestSeal 発行（`revision` + `manifest_blake3`・x0026） |
 | GET | `/api/v1/rooms/:room_id/scene` | Bearer（**host Room Token**） | DemoScene `{ revision, entries, locomotion }`（x0027） |
@@ -52,7 +66,7 @@
 |:---|:---|
 | 既定 | AshSqlite。DB ファイルは `priv/data/world_dev.db`（test は `world_test.db`） |
 | 上書き | env `WORLD_DATABASE_PATH` |
-| スキーマ | `rooms(room_id PK, owner_sub, scene JSON, timestamps)` |
+| スキーマ | `rooms(room_id PK, owner_sub, scene JSON, visibility, timestamps)` |
 | Postgres 切替 | 属性は Postgres 互換のみ。運営規模拡大時は `ash_postgres` + `AshPostgres.DataLayer` / `AshPostgres.Repo` に差し替え、`mix ash.codegen` で再生成。API facade（`World.Rooms`）は変えない |
 | 障害 | SQLite / Ash 失敗は `:storage_error` → HTTP 503 `storage_unavailable`（404/422 に潰さない） |
 | prod volume | `world_prod_keys` に JWT PEM と SQLite を同居（`/var/lib/world`）。`-v` で両方消える |

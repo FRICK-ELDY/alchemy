@@ -14,6 +14,7 @@ defmodule WorldWeb.Router do
 
     post "/rooms", RoomController, :create
     post "/rooms/:room_id/tokens", RoomController, :create_token
+    put "/rooms/:room_id/visibility", RoomController, :update_visibility
   end
 
   # x0025 / x0026: Bearer is host Room Token (not auth JWT).

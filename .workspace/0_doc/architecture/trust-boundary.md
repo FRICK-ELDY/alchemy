@@ -54,7 +54,8 @@ flowchart TB
 | 経路 | 偽 / 不正リクエストの被害 | 現状の防御 | 保証しない |
 |:---|:---|:---|:---|
 | auth `/api/*` | 資格情報窃取・なりすまし JWT | TLS（Tunnel prod）+ 認証フロー；release シード fail-closed（x001e） | `/dev/*` を公網に出すこと |
-| world Room Token / scene / seal | 不正入室・偽 scene | Bearer + host role（x0021）+ owner 系 | Friends 公開範囲の永続 capability |
+| world Room Token / scene / seal | 不正入室・偽 scene | Bearer + host role（x0021）+ owner 系 + visibility ACL（x0034–x0036） | Group ACL / 一覧 UI |
+
 | assets GET/PUT | 容量食い・他人 blob 読み | Bearer + Quota 原子更新（x002d）；GET は認証済み読み取り capability（[client.md](client.md)） | BlobGrant（所有者/license） |
 
 ## ホスト端末プロセス境界

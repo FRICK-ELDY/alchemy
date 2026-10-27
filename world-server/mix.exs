@@ -36,6 +36,7 @@ defmodule World.MixProject do
       {:joken, "~> 2.6"},
       {:jose, "~> 1.11.13"},
       {:req, "~> 0.5"},
+      {:remote_ip, "~> 1.2"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:ash, "~> 3.0"},
