@@ -1,10 +1,11 @@
-//! Local host-server — x0023 session Intent + snapshot + x0022 liveliness↔jti.
+//! Local host-server — x0024 wire-tick consecutive + x0023 session / snapshot.
 //!
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
 //! - Input: Ed25519 session bind (Token on bind only) + `is_finite` (x0023 / x0021)
 //! - SceneManifest with `protocol_pin` + `host_pub`; Frames signed (x0023)
 //! - `…/snapshot` queryable for late join; pure pose deltas (no box every-tick upsert)
+//! - Empty deltas: **no publish and no `net_tick` advance**; snapshot tick = last published (x0024)
 //! - Per-`sub` Intent/Grab → up to 4 user_roots; Presence Leave / liveliness jti grace (x0022)
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
 //! - Slice E / x001e: Zenoh `host_control` off by default; `ALCHEMY_HOST_CONTROL=1` to enable
@@ -18,6 +19,7 @@ mod host_control;
 mod room_token;
 mod session;
 mod sim;
+mod wire_tick;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -751,6 +753,9 @@ fn main() -> Result<()> {
     let mut next_physics = Instant::now();
     let mut physics_steps: u64 = 0;
     let mut net_tick: u64 = 0;
+    // Last published frame tick (`None` until first put). Snapshot must not advertise the
+    // next unpublished `net_tick` during empty hold (DropStale trap; x0024).
+    let mut last_published_tick: Option<u64> = None;
     let mut last_log = Instant::now();
     let mut publishes: u64 = 0;
     let mut upsert_entities: u64 = 0;
@@ -877,6 +882,7 @@ fn main() -> Result<()> {
                     .put(frame.encode_to_vec())
                     .wait()
                     .map_err(|e| anyhow::anyhow!("frame publish failed: {e}"))?;
+                last_published_tick = Some(net_tick);
                 net_tick = net_tick.wrapping_add(1);
                 publishes += 1;
                 signal_host_ready_once(&mut host_ready_signaled);
@@ -899,19 +905,9 @@ fn main() -> Result<()> {
         for i in 0..BOX_COUNT {
             all_poses.push((physics.boxes.entity_ids[i], box_pose_from_sim(&physics, i)));
         }
-        if let Ok(mut cache) = snapshot_cache.lock() {
-            cache.tick = net_tick;
-            cache.host_time_ms = host_time_ms();
-            cache.upserts = all_poses
-                .iter()
-                .map(|(id, pose)| to_entity(*id, *pose))
-                .collect();
-            cache.removes.clear();
-            cache.host_sig.clear();
-        }
 
         let mut upserts = Vec::new();
-        for (id, next_pose) in all_poses {
+        for &(id, next_pose) in &all_poses {
             // Pure delta (x0023): late joiners use `…/snapshot` instead of every-tick box upserts.
             let should_send = match last_sent.get(&id) {
                 None => true,
@@ -925,10 +921,33 @@ fn main() -> Result<()> {
 
         let upsert_len = upserts.len() as u64;
         if upserts.is_empty() && remove_ids.is_empty() {
+            // x0024: no publish / no `net_tick` advance. Refresh poses only under last
+            // published tick — never stamp the next unpublished `net_tick` (DropStale trap).
             empty_delta_frames += 1;
-            net_tick = net_tick.wrapping_add(1);
+            if let Some(tick) = wire_tick::snapshot_tick_on_empty_hold(last_published_tick) {
+                if let Ok(mut cache) = snapshot_cache.lock() {
+                    cache.tick = tick;
+                    cache.host_time_ms = host_time_ms();
+                    cache.upserts = all_poses
+                        .iter()
+                        .map(|(id, pose)| to_entity(*id, *pose))
+                        .collect();
+                    cache.removes.clear();
+                    cache.host_sig.clear();
+                }
+            }
         } else {
             upsert_entities += upsert_len;
+            if let Ok(mut cache) = snapshot_cache.lock() {
+                cache.tick = net_tick;
+                cache.host_time_ms = host_time_ms();
+                cache.upserts = all_poses
+                    .iter()
+                    .map(|(id, pose)| to_entity(*id, *pose))
+                    .collect();
+                cache.removes.clear();
+                cache.host_sig.clear();
+            }
             let mut frame = RenderFrame {
                 tick: net_tick,
                 host_time_ms: host_time_ms(),
@@ -941,6 +960,7 @@ fn main() -> Result<()> {
                 .put(frame.encode_to_vec())
                 .wait()
                 .map_err(|e| anyhow::anyhow!("frame publish failed: {e}"))?;
+            last_published_tick = Some(net_tick);
             net_tick = net_tick.wrapping_add(1);
             publishes += 1;
             signal_host_ready_once(&mut host_ready_signaled);

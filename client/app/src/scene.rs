@@ -44,7 +44,7 @@ const FLOOR_EXTENT: f32 = 20.0;
 /// Default eye height if user_root not yet received.
 const DEFAULT_EYE_Y: f32 = 1.6;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EntityPose {
     pub x: f32,
     pub y: f32,

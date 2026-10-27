@@ -1,7 +1,8 @@
 # protocol（alchemy-protocol）
 
 > **正本**: [`protocol/`](../../../protocol/)  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.9.0-x0023`
+> **配送契約**: [`protocol/peer-delivery.md`](../../../protocol/peer-delivery.md)（x0024）  
+> **PROTOCOL_PIN**: `alchemy-protocol/0.9.0-x0023`（x0024 でも据え置き）
 
 ## 置き場の方針
 
@@ -18,6 +19,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | f64 空間座標（描画境界） | audio / tracking |
 | Intent: Ed25519 `session_pub` / `intent_seq` / `intent_sig` + 任意 `room_token`（bind 時）（x0023） | Token JWKS 検証そのもの（host-server） |
 | Frame: `host_sig` + Manifest `host_pub`；`snapshot_key` ヘルパ（x0023） | world-server 署名 Manifest・テナント名前空間 |
+| 配送クラス表（[`peer-delivery.md`](../../../protocol/peer-delivery.md)）+ `decide_frame_tick` / `FRAME_TICK_GAP_RESYNC`（x0024） | 確実配送 ACK / event ID チャネル・欠落デルタの再送 |
 | Manifest / frame / presence / host_control / snapshot のキー式ヘルパ + `validate_room_id`（x0017） | Zenoh ACL / mTLS |
 | `LocomotionConfig`（World 定義の active mode） | モジュール一覧 UI / 抑制ソース |
 | `DEFAULT_MOVE_SPEED`（host / Settings 表示の共有既定） | client 永続設定・仮想キーボード編集 |
@@ -38,8 +40,9 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 
 - `RenderFrame { tick, host_time_ms, upserts[], removes[], host_sig }`
 - `Entity { id, x,y,z (double), r,g,b,a (float) }`
-- 静止 Entity は `upserts` に載せない。late join は `…/snapshot` queryable（同スキーマ・全 Entity upsert）
-- Snapshot 成功条件: **`upserts` 非空**（空は未準備。host は `reply_err`）。client は snapshot に tick 単調ゲートをかけない
+- 静止 Entity は `upserts` に載せない。late join / **tick 欠落再同期**は `…/snapshot` queryable（同スキーマ・全 Entity upsert）
+- Snapshot 成功条件: **`upserts` 非空**（空は未準備。host は `reply_err`）。client は snapshot に tick ゲートをかけない
+- デルタ tick: host は空デルタで `net_tick` を進めない。snapshot キャッシュ tick は **最後に publish した値**（次の未送 `net_tick` 禁止）。client は `FRAME_TICK_GAP_RESYNC`（既定 1）超過で適用せず snapshot（x0024）
 - `host_sig`: encode（sig 空）を host 秘密鍵で署名
 - entity: Coin=`1`、static=`2`、**user_root=`3..6`**（x0015）、**grabbable boxes=`10..18`**（x0010）
 

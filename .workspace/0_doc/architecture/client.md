@@ -1,7 +1,8 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: x0023（session Intent / Frame 検証 / snapshot）+ x0021 refresh + x0018 Home
+> **ステータス**: x0024（frame 欠落→snapshot）+ x0023 session / Frame 検証 + x0021 refresh + x0018 Home  
+> **配送契約**: [`protocol/peer-delivery.md`](../../../protocol/peer-delivery.md)
 
 ## レイアウト
 
@@ -22,8 +23,8 @@
 |:---|:---|
 | Zenoh: Manifest / Presence / frame Subscribe、snapshot get、input Publish（`ROOM_ID`・x0017 / x0023） | ルーター機能（他人の通信の中継は禁止）・テナント名前空間 |
 | Manifest の blake3 → assets GET（Bearer + CAS；s3 時は 302 追従・x001d）→ BLAKE3 → wgpu。**GET は認証済み読み取り capability**（所有者 grant は後続 BlobGrant） | LOD / KTX2 / マテリアル本格 / スキン |
-| Frame: `host_sig` 検証・finite・単調 tick。Manifest `host_pub` / pin 不一致は適用拒否（x0023） | 予測補間 / jitter buffer |
-| ローカル entity 表への upsert/remove。Coin=1、user_root=3..6、boxes=10..18。late join は snapshot | world 署名 Manifest 台帳 |
+| Frame: `host_sig` 検証・finite・tick 規則。Manifest `host_pub` / pin 不一致は適用拒否（x0023） | 予測補間 / jitter buffer・欠落デルタ再送 |
+| ローカル entity 表への upsert/remove。Coin=1、user_root=3..6、boxes=10..18。late join / **tick gap** は snapshot 置換（クールダウン 500ms・x0024） | world 署名 Manifest 台帳 |
 | Desktop: WASD/Space/C → Intent（look yaw 相対）。クリックで Confined（失敗時 Locked）→ マウスルック。look 中 RMB → Grab（x0013） | 感度 UI / クロスヘア必須 |
 | Presence で自 entity 解決→カメラ；他 root は色付きボックス（x0015）。欠落で unset（x0016）。Home タブ login/register/logout（x0018）。logout は Leave + liveliness undeclare（x0019）。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` は CI サイレント login。`ZENOH_CONNECT` LAN | 5人以上・アバター GLB・XR 文字入力 |
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
@@ -41,8 +42,8 @@
 | `alchemy/dev/room/{ROOM_ID}/manifest` | 低（host は 5s 再送で late joiner 補助） | `entity_id → blake3` + `locomotion` |
 | `alchemy/dev/room/{ROOM_ID}/presence` | 低（割当・解放変更 + 5s 再送） | `sub → user_root entity`（x0015 / 解放 x0016+x0019） |
 | `alchemy/dev/room/{ROOM_ID}/alive/{sub}/{jti}` | liveliness | client token；host は検証済み jti 一致時のみ reclaim（x0022） |
-| `alchemy/dev/room/{ROOM_ID}/frame` | 高（動いたものだけ） | 署名付き pose upserts / removes（x0023） |
-| `alchemy/dev/room/{ROOM_ID}/snapshot` | queryable | late join 用フル pose（`RenderFrame`・x0023） |
+| `alchemy/dev/room/{ROOM_ID}/frame` | 高（動いたものだけ）・**latest デルタ** | 署名付き pose upserts / removes。tick 欠落時は適用せず snapshot（x0023 / x0024） |
+| `alchemy/dev/room/{ROOM_ID}/snapshot` | queryable | late join / 再同期用フル pose（`RenderFrame`・x0023 / x0024） |
 | `alchemy/dev/room/{ROOM_ID}/input` | 入力 | session 署名 Intent（Token は bind / refresh 時のみ・x0023） |
 | `alchemy/dev/room/{ROOM_ID}/host_control` | 低（既定オフ） | `ALCHEMY_HOST_CONTROL=1` のときのみ client→host `shutdown`（x001e。既定は `ALCHEMY_HOST_PID`） |
 

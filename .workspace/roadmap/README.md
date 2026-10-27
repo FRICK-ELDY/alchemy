@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0024`**；x0023 done）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0025`**；x0024 done）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -85,8 +85,9 @@ depends_on: [x0006]
 | x0021 | — | done | P1 デモゲート（Token refresh / JWKS bg / clamp / host role） | [x0021-p1-demo-gate.md](slices/x0021-p1-demo-gate.md) |
 | x0022 | — | done | liveliness セッション紐付け + WAN TLS（P2 前半） | [x0022-liveliness-wan-tls.md](slices/x0022-liveliness-wan-tls.md) |
 | x0023 | — | done | P2 後半（session binding / Frame 検証 / snapshot） | [x0023-p2-session-frame.md](slices/x0023-p2-session-frame.md) |
+| x0024 | — | done | 配送クラス契約（peer-delivery + frame 欠落→snapshot） | [x0024-delivery-class.md](slices/x0024-delivery-class.md) |
 
-**現在の次:** **x0024**（未作成）。候補: P3 まとめ（Quota/Parsers/audit 等）、または SceneManifest 駆動（P4 / x0025）。
+**現在の次:** **x0025**（未作成）。候補: SceneManifest 駆動（P4）、または P3 まとめ（Quota/Parsers/audit 等）。
 
 ## 関連
 
