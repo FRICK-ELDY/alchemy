@@ -2,9 +2,10 @@
 //!
 //! Guarantees: nearest OBB among caller-supplied grabbable poses within [`MAX_HIT_DISTANCE`].
 //! Local half-extents = Manifest `half_extent` × Frame `scale` (per-axis); orientation from
-//! `pose.rotation()` — matches Desktop/XR draw TRS (x0029).
+//! `pose.rotation()` — matches Desktop/XR draw TRS (x0029 / x002c).
 //! Non-guarantees: mesh triangles, Slot hierarchy, XR dash quad (stays in surface/xr);
-//! Grab aim rotation follow on host (translation only).
+//! Grab aim rotation follow on host (translation only); host Rapier / grab-distance use
+//! `half_extent` only (client OBB may disagree when Frame scale ≠ 1 — x002c).
 
 use std::collections::HashMap;
 

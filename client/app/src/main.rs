@@ -49,8 +49,8 @@ use alchemy_protocol::wire_crypto::{
 use alchemy_protocol::{
     decide_frame_tick, frame_key, input_key, liveliness_key, manifest_key, presence_key,
     protocol_pin_matches, scene_entry_grabbable, scene_entry_is_box, scene_entry_is_user_root,
-    snapshot_key, validate_room_id, FrameTickDecision, Message, PresenceState, RenderFrame,
-    SceneManifest, FRAME_TICK_GAP_RESYNC, PROTOCOL_PIN,
+    scene_entry_quat_xyzw, scene_entry_scale, snapshot_key, validate_room_id, FrameTickDecision,
+    Message, PresenceState, RenderFrame, SceneManifest, FRAME_TICK_GAP_RESYNC, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use auth::AuthGate;
@@ -329,19 +329,28 @@ fn spawn_manifest_subscriber(
                                 };
                                 match world.entities.entry(entry.entity_id) {
                                     std::collections::hash_map::Entry::Vacant(v) => {
+                                        let [qx, qy, qz, qw] = scene_entry_quat_xyzw(entry);
+                                        let [sx, sy, sz] = scene_entry_scale(entry);
                                         v.insert(EntityPose {
                                             x: entry.x as f32,
                                             y: entry.y as f32,
                                             z: entry.z as f32,
+                                            qx: qx as f32,
+                                            qy: qy as f32,
+                                            qz: qz as f32,
+                                            qw: qw as f32,
+                                            sx: sx as f32,
+                                            sy: sy as f32,
+                                            sz: sz as f32,
                                             r,
                                             g,
                                             b,
                                             a,
-                                            ..Default::default()
                                         });
                                     }
                                     std::collections::hash_map::Entry::Occupied(mut o) => {
-                                        // Frame may already own pose; still refresh Manifest tint.
+                                        // Frame owns pose (quat/scale); Manifest revises tint only
+                                        // — no TRS reseed on revision (x002c).
                                         if entry.a > 0.0 {
                                             let p = o.get_mut();
                                             p.r = r;
@@ -1006,7 +1015,7 @@ fn main() -> Result<()> {
     let silent = auth::try_silent_session(&auth_url).context("silent auth")?;
     let auth_mode = if silent.is_some() { "silent" } else { "ui" };
     log::info!(
-        "client x0029 starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
+        "client x002c starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
     );
 
     let mut gate = AuthGate::default();

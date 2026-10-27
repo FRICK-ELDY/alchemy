@@ -1,7 +1,7 @@
 # world-server
 
 > **正本コード**: [`world-server/`](../../../world-server/)  
-> **ステータス**: x0028（Room 永続 Ash/SQLite）+ x0027（DemoScene）+ x0026 seal + x0025 attestation
+> **ステータス**: x0028（Room 永続 Ash/SQLite）+ x0027 / x002c（DemoScene + 初期 TRS）+ x0026 seal + x0025 attestation
 
 ## 図上の位置
 
@@ -18,7 +18,7 @@
 | auth JWKS（`AUTH_JWKS_URL`）によるユーザー JWT 検証 | auth の revocation 再確認 |
 | HostAttestation JWT（`typ=host_attestation`）を host Room Token のみ発行（x0025）。発行失敗は 5xx（token 検証失敗は 401） | UGC scene 編集 |
 | ManifestSeal JWT（`typ=manifest_seal` / `aud=alchemy-manifest-seal`）を host Room Token のみ発行（x0026）。body は blake3 のみ受け取る | seal 時の entries 改変（host が body を組む） |
-| DemoScene（entries + loco）を Room 作成時に紐付け。`GET …/scene` は **host** Room Token のみ（x0027） | guest への scene 配布・複数シーン切替 UI |
+| DemoScene（entries + loco + **初期 quat/scale**）を Room 作成時に紐付け。`GET …/scene` は **host** Room Token のみ（x0027 / x002c） | guest への scene 配布・複数シーン切替 UI・collider scale |
 
 ## 契約（Room Token）
 

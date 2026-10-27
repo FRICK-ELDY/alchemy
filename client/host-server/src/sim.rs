@@ -1,14 +1,19 @@
-//! Rapier world driven by SceneManifest entries (x0027).
+//! Rapier world driven by SceneManifest entries (x0027 / x002c).
 //!
 //! Guarantees: floor (host-local) + mesh ball + boxes + user_roots from Manifest;
-//! per-slot Grab; no Steal; `release_slot` resets to Manifest spawn.
+//! Manifest initial **rotation** ? Rapier spawn; Manifest **scale** ? Frame Pose seed
+//! (`scales` map; collider stays `half_extent`); per-slot Grab; no Steal;
+//! `release_slot` resets translation+rotation to Manifest spawn.
 //! Non-guarantees: Grab aim **rotation** follow (translation only); throw impulse;
-//! shared-sim; EntityKind; non-uniform collider scale. Frame emits Rapier rotation (x0029).
+//! shared-sim; EntityKind; non-uniform collider scale (client OBB uses Frame scale,
+//! host physics / grab distance use `half_extent` only ? x002c). Frame emits Rapier
+//! rotation + Manifest scale (x0029 / x002c).
 
 use alchemy_protocol::{
-    scene_entry_grabbable, scene_entry_is_box, scene_entry_is_user_root, LocomotionMode,
-    SceneEntry, DEFAULT_MOVE_SPEED,
+    scene_entry_grabbable, scene_entry_is_box, scene_entry_is_user_root, scene_entry_quat_xyzw,
+    scene_entry_scale, LocomotionMode, SceneEntry, DEFAULT_MOVE_SPEED,
 };
+use rapier3d::na::{Isometry3, Quaternion, Translation3, UnitQuaternion};
 use rapier3d::prelude::*;
 use std::collections::HashMap;
 
@@ -81,11 +86,31 @@ pub struct PhysicsWorld {
     mesh: Option<(u32, RigidBodyHandle)>,
     user_roots: [RigidBodyHandle; USER_ROOT_SLOTS],
     user_root_spawns: [(f32, f32, f32); USER_ROOT_SLOTS],
+    user_root_quats: [[f32; 4]; USER_ROOT_SLOTS],
+    /// Manifest initial scale (Frame seed; not a Rapier collider size; x002c).
+    scales: HashMap<u32, [f32; 3]>,
     pub boxes: CuboidBoxes,
     colors: HashMap<u32, (f32, f32, f32, f32)>,
     loco_mode: LocoMode,
     move_speed: f32,
     grabs: [Option<ActiveGrab>; USER_ROOT_SLOTS],
+}
+
+fn entry_unit_quat(entry: &SceneEntry) -> UnitQuaternion<f32> {
+    let [qx, qy, qz, qw] = scene_entry_quat_xyzw(entry);
+    UnitQuaternion::from_quaternion(Quaternion::new(qw as f32, qx as f32, qy as f32, qz as f32))
+}
+
+fn entry_isometry(entry: &SceneEntry) -> Isometry3<f32> {
+    Isometry3::from_parts(
+        Translation3::new(entry.x as f32, entry.y as f32, entry.z as f32),
+        entry_unit_quat(entry),
+    )
+}
+
+fn entry_scale_f32(entry: &SceneEntry) -> [f32; 3] {
+    let [sx, sy, sz] = scene_entry_scale(entry);
+    [sx as f32, sy as f32, sz as f32]
 }
 
 impl PhysicsWorld {
@@ -108,16 +133,22 @@ impl PhysicsWorld {
         let mut mesh: Option<(u32, RigidBodyHandle)> = None;
         let mut boxes = CuboidBoxes::empty();
         let mut user_root_spawns = [(0.0_f32, 1.6_f32, 6.0_f32); USER_ROOT_SLOTS];
+        let mut user_root_quats = [[0.0_f32, 0.0, 0.0, 1.0]; USER_ROOT_SLOTS];
+        let mut scales: HashMap<u32, [f32; 3]> = HashMap::new();
         let mut roots_seen = [false; USER_ROOT_SLOTS];
 
         for entry in entries {
             let color = entry_color(entry);
             colors.insert(entry.entity_id, color);
+            scales.insert(entry.entity_id, entry_scale_f32(entry));
+            let pose = entry_isometry(entry);
 
             if scene_entry_is_user_root(entry.entity_id) {
                 let slot = (entry.entity_id - USER_ROOT_ENTITY_FIRST) as usize;
                 if slot < USER_ROOT_SLOTS {
                     user_root_spawns[slot] = (entry.x as f32, entry.y as f32, entry.z as f32);
+                    let [qx, qy, qz, qw] = scene_entry_quat_xyzw(entry);
+                    user_root_quats[slot] = [qx as f32, qy as f32, qz as f32, qw as f32];
                     roots_seen[slot] = true;
                 }
                 continue;
@@ -132,7 +163,7 @@ impl PhysicsWorld {
                 }
                 if mesh.is_none() {
                     let ball = RigidBodyBuilder::dynamic()
-                        .translation(vector![entry.x as f32, entry.y as f32, entry.z as f32])
+                        .position(pose)
                         .linvel(vector![0.1, 0.0, 0.05])
                         .build();
                     let handle = rigid_body_set.insert(ball);
@@ -150,16 +181,14 @@ impl PhysicsWorld {
                 let he = entry.half_extent;
                 let can_grab = scene_entry_grabbable(entry.flags);
                 let body = if can_grab {
-                    RigidBodyBuilder::dynamic()
-                        .translation(vector![entry.x as f32, entry.y as f32, entry.z as f32])
-                        .build()
+                    RigidBodyBuilder::dynamic().position(pose).build()
                 } else {
                     // Static scenery: Fixed so knocks / mesh ball do not displace it.
-                    RigidBodyBuilder::fixed()
-                        .translation(vector![entry.x as f32, entry.y as f32, entry.z as f32])
-                        .build()
+                    RigidBodyBuilder::fixed().position(pose).build()
                 };
                 let handle = rigid_body_set.insert(body);
+                // Cuboid uses Manifest half_extent only. Frame/client OBB may be larger
+                // when Manifest sx..sz != 1 (x002c non-guarantee: draw vs physics size).
                 collider_set.insert_with_parent(
                     ColliderBuilder::cuboid(he, he, he)
                         .restitution(0.05)
@@ -177,8 +206,10 @@ impl PhysicsWorld {
         let mut user_root_handles = Vec::with_capacity(USER_ROOT_SLOTS);
         for slot in 0..USER_ROOT_SLOTS {
             let (ux, uy, uz) = user_root_spawns[slot];
+            let [qx, qy, qz, qw] = user_root_quats[slot];
+            let rot = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
             let user = RigidBodyBuilder::kinematic_position_based()
-                .translation(vector![ux, uy, uz])
+                .position(Isometry3::from_parts(Translation3::new(ux, uy, uz), rot))
                 .build();
             let handle = rigid_body_set.insert(user);
             collider_set.insert_with_parent(
@@ -217,6 +248,8 @@ impl PhysicsWorld {
             mesh,
             user_roots,
             user_root_spawns,
+            user_root_quats,
+            scales,
             boxes,
             colors,
             loco_mode,
@@ -234,6 +267,14 @@ impl PhysicsWorld {
             .get(&entity_id)
             .copied()
             .unwrap_or((1.0, 1.0, 1.0, 1.0))
+    }
+
+    /// Manifest initial Frame scale (identity when unset; x002c).
+    pub fn scale_for(&self, entity_id: u32) -> [f32; 3] {
+        self.scales
+            .get(&entity_id)
+            .copied()
+            .unwrap_or([1.0, 1.0, 1.0])
     }
 
     pub fn user_root_entity_id(slot: usize) -> u32 {
@@ -329,11 +370,15 @@ impl PhysicsWorld {
         }
         self.release_grab(slot);
         let (sx, sy, sz) = self.user_root_spawns[slot];
+        let [qx, qy, qz, qw] = self.user_root_quats[slot];
+        let rot = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
         let Some(body) = self.rigid_body_set.get_mut(self.user_roots[slot]) else {
             return;
         };
         body.set_next_kinematic_translation(vector![sx, sy, sz]);
         body.set_translation(vector![sx, sy, sz], true);
+        body.set_next_kinematic_rotation(rot);
+        body.set_rotation(rot, true);
     }
 
     pub fn grab_entity_id(&self, slot: usize) -> Option<u32> {
@@ -463,10 +508,14 @@ pub fn user_root_color(slot: usize) -> (f32, f32, f32, f32) {
 }
 
 /// Unit-test fixture mirroring `World.DemoScene` layout.
-/// Production SSoT is Elixir `DemoScene`; keep this in sync manually (x0027 debt).
+/// Production SSoT is Elixir `DemoScene`; keep this in sync manually
+/// (x0027 / x002c debt ? center box yaw45 + sx=1.5 must match `demo_scene.ex`).
 #[cfg(test)]
 pub fn demo_entries_for_test() -> Vec<SceneEntry> {
-    use alchemy_protocol::SCENE_FLAG_GRABBABLE;
+    use alchemy_protocol::{ENTITY_QUAT_IDENTITY, ENTITY_SCALE_ONE, SCENE_FLAG_GRABBABLE};
+    // Keep in sync with World.DemoScene @yaw45_* / center-box sx (x002c).
+    const YAW45_QY: f64 = 0.3826834323650898;
+    const YAW45_QW: f64 = 0.9238795325112867;
     let coin = SceneEntry {
         entity_id: 1,
         blake3: "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555feb66d4f82ee1e72a".into(),
@@ -479,6 +528,13 @@ pub fn demo_entries_for_test() -> Vec<SceneEntry> {
         g: 0.9,
         b: 0.4,
         a: 1.0,
+        qx: ENTITY_QUAT_IDENTITY[0],
+        qy: ENTITY_QUAT_IDENTITY[1],
+        qz: ENTITY_QUAT_IDENTITY[2],
+        qw: ENTITY_QUAT_IDENTITY[3],
+        sx: ENTITY_SCALE_ONE[0],
+        sy: ENTITY_SCALE_ONE[1],
+        sz: ENTITY_SCALE_ONE[2],
     };
     let roots = [
         (0.0, 1.6, 6.0),
@@ -500,6 +556,13 @@ pub fn demo_entries_for_test() -> Vec<SceneEntry> {
         g: 0.0,
         b: 0.0,
         a: 0.0,
+        qx: ENTITY_QUAT_IDENTITY[0],
+        qy: ENTITY_QUAT_IDENTITY[1],
+        qz: ENTITY_QUAT_IDENTITY[2],
+        qw: ENTITY_QUAT_IDENTITY[3],
+        sx: ENTITY_SCALE_ONE[0],
+        sy: ENTITY_SCALE_ONE[1],
+        sz: ENTITY_SCALE_ONE[2],
     });
     let palette = [
         (0.90, 0.35, 0.30),
@@ -515,6 +578,19 @@ pub fn demo_entries_for_test() -> Vec<SceneEntry> {
     let boxes = palette.into_iter().enumerate().map(|(i, (r, g, b))| {
         let row = (i / 3) as f64;
         let col = (i % 3) as f64;
+        let (qx, qy, qz, qw, sx, sy, sz) = if i == 4 {
+            (0.0, YAW45_QY, 0.0, YAW45_QW, 1.5, 1.0, 1.0)
+        } else {
+            (
+                ENTITY_QUAT_IDENTITY[0],
+                ENTITY_QUAT_IDENTITY[1],
+                ENTITY_QUAT_IDENTITY[2],
+                ENTITY_QUAT_IDENTITY[3],
+                ENTITY_SCALE_ONE[0],
+                ENTITY_SCALE_ONE[1],
+                ENTITY_SCALE_ONE[2],
+            )
+        };
         SceneEntry {
             entity_id: 10 + i as u32,
             blake3: String::new(),
@@ -527,6 +603,13 @@ pub fn demo_entries_for_test() -> Vec<SceneEntry> {
             g,
             b,
             a: 1.0,
+            qx,
+            qy,
+            qz,
+            qw,
+            sx,
+            sy,
+            sz,
         }
     });
     std::iter::once(coin).chain(roots).chain(boxes).collect()
@@ -633,6 +716,24 @@ mod tests {
     }
 
     #[test]
+    fn center_box_spawns_with_manifest_trs() {
+        let world = test_world();
+        let id = world.boxes.entity_ids[4];
+        let scale = world.scale_for(id);
+        assert!((scale[0] - 1.5).abs() < 1e-5);
+        assert!((scale[1] - 1.0).abs() < 1e-5);
+        assert!((scale[2] - 1.0).abs() < 1e-5);
+        let (_, q) = world.box_pose(4);
+        // 45 deg yaw ~= (0, 0.3827, 0, 0.9239)
+        assert!((q[0]).abs() < 1e-4);
+        assert!((q[1] - 0.38268343).abs() < 1e-4);
+        assert!((q[2]).abs() < 1e-4);
+        assert!((q[3] - 0.9238795).abs() < 1e-4);
+        // half_extent stays definition size (scale is Frame-only).
+        assert!((world.boxes.half_extents[4] - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
     fn non_grabbable_box_is_fixed() {
         let entries = vec![SceneEntry {
             entity_id: 20,
@@ -646,6 +747,7 @@ mod tests {
             g: 1.0,
             b: 1.0,
             a: 1.0,
+            ..Default::default()
         }];
         let mut world = PhysicsWorld::from_entries(&entries, LocoMode::Noclip, DEFAULT_MOVE_SPEED);
         assert_eq!(world.boxes.len(), 1);

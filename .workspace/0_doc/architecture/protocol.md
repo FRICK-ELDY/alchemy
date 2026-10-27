@@ -2,7 +2,7 @@
 
 > **正本**: [`protocol/`](../../../protocol/)  
 > **配送契約**: [`protocol/peer-delivery.md`](../../../protocol/peer-delivery.md)（x0024）  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.13.0-x0029`
+> **PROTOCOL_PIN**: `alchemy-protocol/0.14.0-x002c`
 
 ## 置き場の方針
 
@@ -19,7 +19,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | f64 空間座標（描画境界） | audio / tracking |
 | Intent: Ed25519 `session_pub` / `intent_seq` / `intent_sig` + 任意 `room_token`（bind 時）（x0023） | Token JWKS 検証そのもの（host-server） |
 | Frame / Presence: `host_sig` + Manifest `host_pub`（HostAttestation）+ Manifest **`world_seal`**（x0026） | shared-sim / EntityKind（P4 残り）・テナント名前空間 |
-| `SceneEntry` の `half_extent` / `flags`（`SCENE_FLAG_GRABBABLE`）/ rgba — 配置・Grab・mesh の定義正本（x0027） | UGC 編集 UI・Room DB 永続 |
+| `SceneEntry` の `half_extent` / `flags`（`SCENE_FLAG_GRABBABLE`）/ rgba / **初期 quat+scale**（x0027 / x002c）— 配置・Grab・mesh・初期 TRS の定義正本 | UGC 編集 UI・コライダーの非一様リサイズ |
 | 配送クラス表（[`peer-delivery.md`](../../../protocol/peer-delivery.md)）+ `decide_frame_tick` / `FRAME_TICK_GAP_RESYNC`（x0024） | 確実配送 ACK / event ID チャネル・欠落デルタの再送 |
 | Manifest / frame / presence / host_control / snapshot のキー式ヘルパ + `validate_room_id`（x0017） | Zenoh ACL / mTLS |
 | `LocomotionConfig`（World 定義の active mode） | モジュール一覧 UI / 抑制ソース |
@@ -28,11 +28,12 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 
 ## メッセージ
 
-### SceneManifest（`proto/scene_manifest.proto`）— 低頻度 + x0009 loco + x0023 / x0025 / x0027
+### SceneManifest（`proto/scene_manifest.proto`）— 低頻度 + x0009 loco + x0023 / x0025 / x0027 / x002c
 
 - `SceneManifest { room_id, revision, entries[], locomotion, protocol_pin, host_pub, host_attestation, world_seal }`
-- `SceneEntry { entity_id, blake3 (hex), x,y,z, half_extent, flags, r,g,b,a }`
+- `SceneEntry { entity_id, blake3 (hex), x,y,z, half_extent, flags, r,g,b,a, qx..qw, sx,sy,sz }`
   - **分類優先（host/client 共通・`scene_entry_is_box`）:** (1) `USER_ROOT_*` ID 帯 → Presence spawn (2) `blake3` 非空 → **mesh のみ**（同居の `half_extent`/Grab flags は box 経路で無視）(3) `half_extent > 0` → 直方体の描画/コリジョン (4) `flags & SCENE_FLAG_GRABBABLE` → Grab 可＝Dynamic、非 Grab box＝Fixed 静的ジオメトリ
+  - **初期 TRS（x002c）:** quat xyzw（全ゼロ／非有限→identity）。scale（全ゼロ／非有限→`(1,1,1)`；一部ゼロは維持）。host は rotation を Rapier spawn に、scale を Frame Pose に載せる。**collider / host Grab 距離は `half_extent` 固定**（client OBB・描画は Frame scale）
 - `LocomotionConfig { mode, move_speed }` — `UNSPECIFIED` → host は **Noclip**
 - `LocomotionMode`: NOCLIP / FLY / WALK
 - `protocol_pin` / `host_pub`（32B Ed25519）+ `host_attestation` + **`world_seal`**（world JWT・body blake3）: client は pin / seal / attestation 失敗で leave；Frame/Presence は attested `host_pub`（x0026）

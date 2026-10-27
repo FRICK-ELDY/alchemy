@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x002c`**；x002b done）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x002d`**；x002c done）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -93,8 +93,9 @@ depends_on: [x0006]
 | x0029 | — | done | RenderFrame 回転 + スケール（E1） | [x0029-renderframe-trs.md](slices/x0029-renderframe-trs.md) |
 | x002a | — | done | role → sim capability（D4 残り） | [x002a-role-sim-capability.md](slices/x002a-role-sim-capability.md) |
 | x002b | — | done | Grab OBB（描画 TRS 整合） | [x002b-grab-obb.md](slices/x002b-grab-obb.md) |
+| x002c | — | done | Manifest 初期 quat + scale | [x002c-manifest-initial-trs.md](slices/x002c-manifest-initial-trs.md) |
 
-**現在の次:** Manifest 初期 quat・shared-sim / EntityKind・P3 衛生は後続。
+**現在の次:** shared-sim / EntityKind・P3 衛生は後続。
 
 ## 関連
 
