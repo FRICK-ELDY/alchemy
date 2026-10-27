@@ -18,34 +18,37 @@ defmodule World.RoomAccess do
           | {:error, :forbidden_visibility | :lan_required | :auth_unavailable | :not_found}
   def authorize(conn, owner_sub, viewer_sub, visibility)
       when is_binary(owner_sub) and is_binary(viewer_sub) and is_binary(visibility) do
-    cond do
-      owner_sub == viewer_sub ->
-        :ok
-
-      visibility == "public" ->
-        :ok
-
-      visibility == "private" ->
-        {:error, :forbidden_visibility}
-
-      visibility == "lan" ->
-        if ClientIp.lan_eligible?(conn) do
-          :ok
-        else
-          {:error, :lan_required}
-        end
-
-      Visibility.needs_social?(visibility) ->
-        case AuthAccess.allowed?(owner_sub, viewer_sub, visibility) do
-          {:ok, true} -> :ok
-          {:ok, false} -> {:error, :forbidden_visibility}
-          {:error, _} -> {:error, :auth_unavailable}
-        end
-
-      true ->
-        {:error, :forbidden_visibility}
+    if owner_sub == viewer_sub do
+      :ok
+    else
+      authorize_visibility(conn, owner_sub, viewer_sub, visibility)
     end
   end
 
   def authorize(_, _, _, _), do: {:error, :forbidden_visibility}
+
+  defp authorize_visibility(_conn, _owner_sub, _viewer_sub, "public"), do: :ok
+
+  defp authorize_visibility(_conn, _owner_sub, _viewer_sub, "private"),
+    do: {:error, :forbidden_visibility}
+
+  defp authorize_visibility(conn, _owner_sub, _viewer_sub, "lan") do
+    if ClientIp.lan_eligible?(conn), do: :ok, else: {:error, :lan_required}
+  end
+
+  defp authorize_visibility(_conn, owner_sub, viewer_sub, visibility) do
+    if Visibility.needs_social?(visibility) do
+      social_allowed?(owner_sub, viewer_sub, visibility)
+    else
+      {:error, :forbidden_visibility}
+    end
+  end
+
+  defp social_allowed?(owner_sub, viewer_sub, visibility) do
+    case AuthAccess.allowed?(owner_sub, viewer_sub, visibility) do
+      {:ok, true} -> :ok
+      {:ok, false} -> {:error, :forbidden_visibility}
+      {:error, _} -> {:error, :auth_unavailable}
+    end
+  end
 end

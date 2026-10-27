@@ -100,7 +100,6 @@ defmodule AuthWeb.SocialController do
     end
   end
 
-
   def unfriend(conn, %{"user_id" => user_id}) do
     case Social.unfriend(conn.assigns.current_user_id, user_id) do
       :ok ->

@@ -71,39 +71,47 @@ defmodule WorldWeb.RoomController do
 
     case resolve_sub(conn, params) do
       {:ok, sub} ->
-        case Rooms.set_visibility(room_id, sub, visibility || "") do
-          {:ok, stored_visibility} ->
-            json(conn, %{room_id: room_id, visibility: stored_visibility})
-
-          {:error, :not_found} ->
-            conn
-            |> put_status(:not_found)
-            |> json(%{error: "room_not_found"})
-
-          {:error, :forbidden_host} ->
-            conn
-            |> put_status(:forbidden)
-            |> json(%{error: "owner_only"})
-
-          {:error, :invalid_visibility} ->
-            conn
-            |> put_status(:unprocessable_entity)
-            |> json(%{error: "invalid_visibility"})
-
-          {:error, :invalid_room_id} ->
-            conn
-            |> put_status(:unprocessable_entity)
-            |> json(%{error: "invalid_room_id"})
-
-          {:error, :storage_error} ->
-            storage_unavailable(conn)
-        end
+        room_id
+        |> Rooms.set_visibility(sub, visibility || "")
+        |> render_visibility_update(conn, room_id)
 
       {:error, :anon_disabled} ->
         conn
         |> put_status(:unauthorized)
         |> json(%{error: "anon_tokens_disabled"})
     end
+  end
+
+  defp render_visibility_update({:ok, stored_visibility}, conn, room_id) do
+    json(conn, %{room_id: room_id, visibility: stored_visibility})
+  end
+
+  defp render_visibility_update({:error, :not_found}, conn, _room_id) do
+    conn
+    |> put_status(:not_found)
+    |> json(%{error: "room_not_found"})
+  end
+
+  defp render_visibility_update({:error, :forbidden_host}, conn, _room_id) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{error: "owner_only"})
+  end
+
+  defp render_visibility_update({:error, :invalid_visibility}, conn, _room_id) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "invalid_visibility"})
+  end
+
+  defp render_visibility_update({:error, :invalid_room_id}, conn, _room_id) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "invalid_room_id"})
+  end
+
+  defp render_visibility_update({:error, :storage_error}, conn, _room_id) do
+    storage_unavailable(conn)
   end
 
   defp resolve_sub(conn, params) do

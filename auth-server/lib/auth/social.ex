@@ -146,7 +146,6 @@ defmodule Auth.Social do
     end
   end
 
-
   @spec unfriend(user_id(), user_id()) :: :ok | {:error, :not_found | term()}
   def unfriend(a, b) do
     with {:ok, a} <- cast_id(a),
