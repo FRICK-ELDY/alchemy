@@ -23,7 +23,7 @@
 
 ## 保証しない
 
-- Grab ヒットの OBB（当面 AABB + 位置×scale。**回転はヒット未反映** — 見た目だけ先。OBB は後続 slice）
+- Grab ヒットの OBB → **x002b で解消**（当時は AABB + 位置×scale）
 - Frame scale アニメ / コライダーの非一様リサイズ
 - Manifest `SceneEntry` への初期 quat（定義側の回転は後続）
 - shared-sim / EntityKind

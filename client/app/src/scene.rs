@@ -5,8 +5,8 @@
 //!
 //! Guarantees: draw with caller-supplied view/proj; grabbable boxes from Manifest (x0027);
 //! remote roots 3..6 (x0015); Frame TRS on draw (x0029).
-//! Non-guarantees: Grab / world_hit OBB（ヒットは AABB・回転未反映）; XR swapchain ownership,
-//! system_ui layout, avatar GLB.
+//! Non-guarantees: XR swapchain ownership, system_ui layout, avatar GLB.
+//! Grab hits use OBB in `world_hit` (x002b; draw TRS aligned).
 //! Leave / liveliness token ownership lives here; put/undeclare is `main::leave_room`.
 
 use std::collections::{HashMap, HashSet};
