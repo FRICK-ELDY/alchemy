@@ -520,34 +520,26 @@ fn spawn_input_publisher(
                     let mut slot = shared.intent_session.lock().ok()?;
                     let session = slot.as_mut()?;
                     let intent = shared.intent.lock().ok().map(|g| *g).unwrap_or_default();
-                    let (mx, my, mz, buttons, grab_entity_id, aim_x, aim_y, aim_z) =
-                        if intent.suppress {
-                            (0.0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0.0)
-                        } else {
-                            (
-                                intent.move_x,
-                                intent.move_y,
-                                intent.move_z,
-                                intent.buttons,
-                                intent.grab_entity_id,
-                                intent.aim_x,
-                                intent.aim_y,
-                                intent.aim_z,
-                            )
-                        };
-                    Some(session.signed_intent(
-                        Some(&room_token),
-                        client_time_ms(),
-                        mx,
-                        my,
-                        mz,
-                        buttons,
-                        grab_entity_id,
-                        aim_x,
-                        aim_y,
-                        aim_z,
-                        false,
-                    ))
+                    let body = if intent.suppress {
+                        intent_session::IntentBody {
+                            client_time_ms: client_time_ms(),
+                            ..Default::default()
+                        }
+                    } else {
+                        intent_session::IntentBody {
+                            client_time_ms: client_time_ms(),
+                            move_x: intent.move_x,
+                            move_y: intent.move_y,
+                            move_z: intent.move_z,
+                            buttons: intent.buttons,
+                            grab_entity_id: intent.grab_entity_id,
+                            aim_x: intent.aim_x,
+                            aim_y: intent.aim_y,
+                            aim_z: intent.aim_z,
+                            leave: false,
+                        }
+                    };
+                    Some(session.signed_intent(Some(&room_token), body))
                 })() else {
                     continue;
                 };
@@ -771,16 +763,11 @@ pub fn leave_room(shared: &SharedState, session: &zenoh::Session) {
             let sess = opt.as_mut()?;
             Some(sess.signed_intent(
                 room_token.as_deref(),
-                client_time_ms(),
-                0.0,
-                0.0,
-                0.0,
-                0,
-                0,
-                0.0,
-                0.0,
-                0.0,
-                true,
+                intent_session::IntentBody {
+                    client_time_ms: client_time_ms(),
+                    leave: true,
+                    ..Default::default()
+                },
             ))
         })
     };

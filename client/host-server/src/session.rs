@@ -26,7 +26,8 @@ pub struct SessionTable {
 }
 
 impl SessionTable {
-    pub fn get(&self, session_pub: &[u8]) -> Option<&SessionBinding> {
+    #[cfg(test)]
+    fn get(&self, session_pub: &[u8]) -> Option<&SessionBinding> {
         self.by_pub.get(session_pub)
     }
 

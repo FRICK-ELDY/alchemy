@@ -13,6 +13,21 @@ use alchemy_protocol::InputEvent;
 /// Covers put failure retries and brief host reject windows without an ack channel.
 const BIND_PUTS_REQUIRED: u32 = 3;
 
+/// Non-auth fields for a signed Intent (keeps `signed_intent` under clippy arg limits).
+#[derive(Clone, Copy, Default)]
+pub struct IntentBody {
+    pub client_time_ms: u64,
+    pub move_x: f32,
+    pub move_y: f32,
+    pub move_z: f32,
+    pub buttons: u32,
+    pub grab_entity_id: u32,
+    pub aim_x: f32,
+    pub aim_y: f32,
+    pub aim_z: f32,
+    pub leave: bool,
+}
+
 #[derive(Clone)]
 pub struct IntentSession {
     key: SigningKey,
@@ -44,20 +59,7 @@ impl IntentSession {
     }
 
     /// Build a signed Intent. Does **not** clear bind state (caller does after put OK).
-    pub fn signed_intent(
-        &mut self,
-        room_token: Option<&str>,
-        client_time_ms: u64,
-        move_x: f32,
-        move_y: f32,
-        move_z: f32,
-        buttons: u32,
-        grab_entity_id: u32,
-        aim_x: f32,
-        aim_y: f32,
-        aim_z: f32,
-        leave: bool,
-    ) -> InputEvent {
+    pub fn signed_intent(&mut self, room_token: Option<&str>, body: IntentBody) -> InputEvent {
         self.seq = self.seq.saturating_add(1);
         let include_token = self.bind_puts_remaining > 0;
         let token = if include_token {
@@ -67,16 +69,16 @@ impl IntentSession {
         };
         let mut event = InputEvent {
             room_token: token,
-            client_time_ms,
-            move_x,
-            move_y,
-            move_z,
-            buttons,
-            grab_entity_id,
-            aim_x,
-            aim_y,
-            aim_z,
-            leave,
+            client_time_ms: body.client_time_ms,
+            move_x: body.move_x,
+            move_y: body.move_y,
+            move_z: body.move_z,
+            buttons: body.buttons,
+            grab_entity_id: body.grab_entity_id,
+            aim_x: body.aim_x,
+            aim_y: body.aim_y,
+            aim_z: body.aim_z,
+            leave: body.leave,
             session_pub: public_key_bytes(&self.key),
             intent_seq: self.seq,
             intent_sig: vec![],
@@ -100,7 +102,7 @@ mod tests {
     fn bind_clears_only_after_note_put_ok() {
         let mut s = IntentSession::new();
         assert!(s.bind_pending());
-        let ev = s.signed_intent(Some("jwt"), 0, 0.0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0.0, false);
+        let ev = s.signed_intent(Some("jwt"), IntentBody::default());
         assert!(!ev.room_token.is_empty());
         assert!(s.bind_pending());
         s.note_bind_put_ok();
@@ -108,7 +110,7 @@ mod tests {
         s.note_bind_put_ok();
         s.note_bind_put_ok();
         assert!(!s.bind_pending());
-        let steady = s.signed_intent(Some("jwt"), 0, 0.0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0.0, false);
+        let steady = s.signed_intent(Some("jwt"), IntentBody::default());
         assert!(steady.room_token.is_empty());
     }
 }
