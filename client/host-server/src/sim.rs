@@ -2,7 +2,8 @@
 //!
 //! Guarantees: floor (host-local) + mesh ball + boxes + user_roots from Manifest;
 //! per-slot Grab; no Steal; `release_slot` resets to Manifest spawn.
-//! Non-guarantees: rotation follow, throw impulse, shared-sim, EntityKind.
+//! Non-guarantees: Grab aim **rotation** follow (translation only); throw impulse;
+//! shared-sim; EntityKind; non-uniform collider scale. Frame emits Rapier rotation (x0029).
 
 use alchemy_protocol::{
     scene_entry_grabbable, scene_entry_is_box, scene_entry_is_user_root, LocomotionMode,
@@ -388,49 +389,57 @@ impl PhysicsWorld {
         }
     }
 
-    pub fn moving_translation(&self) -> (f32, f32, f32) {
+    /// Translation + unit quaternion (xyzw) for a rigid body (x0029).
+    pub fn moving_pose(&self) -> ((f32, f32, f32), [f32; 4]) {
         let Some((_, handle)) = self.mesh else {
-            return (0.0, 5.0, 0.0);
+            return ((0.0, 5.0, 0.0), [0.0, 0.0, 0.0, 1.0]);
         };
         self.rigid_body_set
             .get(handle)
-            .map(|b| {
-                let t = b.translation();
-                (t.x, t.y, t.z)
-            })
-            .unwrap_or((0.0, 5.0, 0.0))
+            .map(body_translation_quat)
+            .unwrap_or(((0.0, 5.0, 0.0), [0.0, 0.0, 0.0, 1.0]))
     }
 
-    pub fn user_root_translation(&self, slot: usize) -> (f32, f32, f32) {
-        let fallback = self
-            .user_root_spawns
-            .get(slot)
-            .copied()
-            .unwrap_or((0.0, 1.6, 6.0));
+    pub fn user_root_pose(&self, slot: usize) -> ((f32, f32, f32), [f32; 4]) {
+        let fallback = (
+            self.user_root_spawns
+                .get(slot)
+                .copied()
+                .unwrap_or((0.0, 1.6, 6.0)),
+            [0.0, 0.0, 0.0, 1.0],
+        );
         if slot >= USER_ROOT_SLOTS {
             return fallback;
         }
         self.rigid_body_set
             .get(self.user_roots[slot])
-            .map(|b| {
-                let t = b.translation();
-                (t.x, t.y, t.z)
-            })
+            .map(body_translation_quat)
             .unwrap_or(fallback)
     }
 
-    pub fn box_translation(&self, index: usize) -> (f32, f32, f32) {
+    pub fn box_pose(&self, index: usize) -> ((f32, f32, f32), [f32; 4]) {
         let he = self.boxes.half_extents.get(index).copied().unwrap_or(0.25);
         self.boxes
             .handles
             .get(index)
             .and_then(|h| self.rigid_body_set.get(*h))
-            .map(|b| {
-                let t = b.translation();
-                (t.x, t.y, t.z)
-            })
-            .unwrap_or((0.0, he, 0.0))
+            .map(body_translation_quat)
+            .unwrap_or(((0.0, he, 0.0), [0.0, 0.0, 0.0, 1.0]))
     }
+
+    pub fn moving_translation(&self) -> (f32, f32, f32) {
+        self.moving_pose().0
+    }
+
+    pub fn user_root_translation(&self, slot: usize) -> (f32, f32, f32) {
+        self.user_root_pose(slot).0
+    }
+}
+
+fn body_translation_quat(body: &RigidBody) -> ((f32, f32, f32), [f32; 4]) {
+    let t = body.translation();
+    let q = body.rotation();
+    ((t.x, t.y, t.z), [q.i, q.j, q.k, q.w])
 }
 
 fn entry_color(entry: &SceneEntry) -> (f32, f32, f32, f32) {
@@ -615,7 +624,7 @@ mod tests {
         assert_eq!(world.boxes.entity_ids[0], 10);
         assert_eq!(world.boxes.entity_ids[8], 18);
         assert!(world.boxes.grabbable.iter().all(|&g| g));
-        let (x4, y4, z4) = world.box_translation(4);
+        let (x4, y4, z4) = world.box_pose(4).0;
         assert!((y4 - 0.25).abs() < 0.01);
         assert!(
             x4.abs() < 0.01 && (z4 - 3.5).abs() < 0.01,
@@ -641,11 +650,11 @@ mod tests {
         let mut world = PhysicsWorld::from_entries(&entries, LocoMode::Noclip, DEFAULT_MOVE_SPEED);
         assert_eq!(world.boxes.len(), 1);
         assert!(!world.boxes.grabbable[0]);
-        let (_, y0, _) = world.box_translation(0);
+        let (_, y0, _) = world.box_pose(0).0;
         for _ in 0..120 {
             world.step();
         }
-        let (_, y1, _) = world.box_translation(0);
+        let (_, y1, _) = world.box_pose(0).0;
         assert!(
             (y1 - y0).abs() < 1e-4,
             "Fixed non-Grab box must not settle under gravity: {y0} → {y1}"
@@ -659,7 +668,7 @@ mod tests {
             world.step();
         }
         for i in 0..world.boxes.len() {
-            let (_, y, _) = world.box_translation(i);
+            let (_, y, _) = world.box_pose(i).0;
             assert!(y > 0.15 && y < 0.6, "box {i} expected on floor, y={y}");
         }
     }
@@ -671,7 +680,7 @@ mod tests {
             world.step();
         }
         let id = 14u32;
-        let (bx, by, bz) = world.box_translation(4);
+        let (bx, by, bz) = world.box_pose(4).0;
         let aim0 = (bx - 0.1, by, bz - 0.2);
         world.apply_grab(0, true, id, aim0);
         assert_eq!(world.grab_entity_id(0), Some(id));
@@ -680,7 +689,7 @@ mod tests {
             world.apply_grab(0, true, id, aim1);
             world.step();
         }
-        let (x, y, z) = world.box_translation(4);
+        let (x, y, z) = world.box_pose(4).0;
         assert!(
             (x - (bx + 3.0)).abs() < 0.05 && (y - (by + 2.5)).abs() < 0.05 && (z - bz).abs() < 0.05,
             "expected follow, got ({x},{y},{z})"
@@ -690,7 +699,7 @@ mod tests {
         for _ in 0..300 {
             world.step();
         }
-        let (_, y_after, _) = world.box_translation(4);
+        let (_, y_after, _) = world.box_pose(4).0;
         assert!(y_after < 1.0 && y_after < y - 1.0);
     }
 
@@ -709,7 +718,7 @@ mod tests {
             world.step();
         }
         let id = 14u32;
-        let (bx, by, bz) = world.box_translation(4);
+        let (bx, by, bz) = world.box_pose(4).0;
         world.apply_grab(0, true, id, (bx, by, bz));
         assert_eq!(world.grab_entity_id(0), Some(id));
         let dt = 1.0 / 60.0;
@@ -732,7 +741,7 @@ mod tests {
             world.step();
         }
         let id = 14u32;
-        let (bx, by, bz) = world.box_translation(4);
+        let (bx, by, bz) = world.box_pose(4).0;
         world.apply_grab(0, true, id, (bx, by, bz));
         world.apply_grab(1, true, id, (bx + 1.0, by, bz));
         assert!(world.grab_entity_id(1).is_none());
@@ -749,7 +758,7 @@ mod tests {
             world.step();
         }
         let id = 14u32;
-        let (bx, by, bz) = world.box_translation(4);
+        let (bx, by, bz) = world.box_pose(4).0;
         let (ux, uy, uz) = world.user_root_translation(0);
         assert!(!crate::finite::within_grab_start_distance(
             (ux, uy, uz),

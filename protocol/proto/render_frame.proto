@@ -31,4 +31,16 @@ message Entity {
   float g = 6;
   float b = 7;
   float a = 8;
+  // Unit quaternion (xyzw). Proto3 zeros are invalid — publishers must send
+  // identity (0,0,0,1) when orientation is unused (x0029 / E1).
+  double qx = 9;
+  double qy = 10;
+  double qz = 11;
+  double qw = 12;
+  // Non-uniform scale. Identity is (1,1,1). Proto3 zeros mean "unset" and
+  // consumers treat as (1,1,1). Multiplies Manifest half_extent / mesh visual
+  // size (definition × execution; x0029).
+  double sx = 13;
+  double sy = 14;
+  double sz = 15;
 }

@@ -134,7 +134,10 @@ pub fn manifest_seal_blake3_hex(manifest: &SceneManifest) -> String {
         .to_string()
 }
 
-/// True when all Entity numeric fields are finite.
+/// True when all Entity numeric fields are finite and orientation is usable (x0029).
+///
+/// Rejects proto3 zero quat (invalid). Near-unit after normalize is not required here —
+/// clients normalize; hosts should publish unit quats. Scale may be all-zero (unset → 1,1,1).
 pub fn entity_is_finite(e: &crate::Entity) -> bool {
     e.x.is_finite()
         && e.y.is_finite()
@@ -143,6 +146,19 @@ pub fn entity_is_finite(e: &crate::Entity) -> bool {
         && e.g.is_finite()
         && e.b.is_finite()
         && e.a.is_finite()
+        && e.qx.is_finite()
+        && e.qy.is_finite()
+        && e.qz.is_finite()
+        && e.qw.is_finite()
+        && e.sx.is_finite()
+        && e.sy.is_finite()
+        && e.sz.is_finite()
+        && entity_quat_nonzero(e)
+}
+
+fn entity_quat_nonzero(e: &crate::Entity) -> bool {
+    let n2 = e.qx * e.qx + e.qy * e.qy + e.qz * e.qz + e.qw * e.qw;
+    n2.is_finite() && n2 > 1e-24
 }
 
 /// True when every upsert in the frame is finite.
@@ -178,7 +194,6 @@ impl std::error::Error for WireCryptoError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Entity;
 
     #[test]
     fn input_roundtrip_sign_verify() {
@@ -212,16 +227,7 @@ mod tests {
         let mut frame = RenderFrame {
             tick: 7,
             host_time_ms: 100,
-            upserts: vec![Entity {
-                id: 1,
-                x: 1.0,
-                y: 2.0,
-                z: 3.0,
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 1.0,
-            }],
+            upserts: vec![crate::entity_at(1, 1.0, 2.0, 3.0, 1.0, 1.0, 1.0, 1.0)],
             removes: vec![],
             host_sig: vec![],
         };
@@ -232,18 +238,21 @@ mod tests {
 
     #[test]
     fn rejects_non_finite_entity() {
-        let mut e = Entity {
-            id: 1,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-            r: 1.0,
-            g: 1.0,
-            b: 1.0,
-            a: 1.0,
-        };
+        let mut e = crate::entity_at(1, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0);
         assert!(entity_is_finite(&e));
         e.x = f64::NAN;
+        assert!(!entity_is_finite(&e));
+        e = crate::entity_at(1, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0);
+        e.qw = f64::INFINITY;
+        assert!(!entity_is_finite(&e));
+        e = crate::entity_at(1, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0);
+        e.sx = f64::NAN;
+        assert!(!entity_is_finite(&e));
+        e = crate::entity_at(1, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0);
+        e.qx = 0.0;
+        e.qy = 0.0;
+        e.qz = 0.0;
+        e.qw = 0.0;
         assert!(!entity_is_finite(&e));
     }
 

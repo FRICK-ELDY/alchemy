@@ -4,8 +4,9 @@
 //! `CameraLook` is Desktop-local (x0012); not published on Zenoh.
 //!
 //! Guarantees: draw with caller-supplied view/proj; grabbable boxes from Manifest (x0027);
-//! remote roots 3..6 (x0015).
-//! Non-guarantees: XR swapchain ownership, system_ui layout, avatar GLB.
+//! remote roots 3..6 (x0015); Frame TRS on draw (x0029).
+//! Non-guarantees: Grab / world_hit OBB（ヒットは AABB・回転未反映）; XR swapchain ownership,
+//! system_ui layout, avatar GLB.
 //! Leave / liveliness token ownership lives here; put/undeclare is `main::leave_room`.
 
 use std::collections::{HashMap, HashSet};
@@ -58,6 +59,15 @@ pub struct EntityPose {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+    /// Unit quaternion xyzw (identity when unset).
+    pub qx: f32,
+    pub qy: f32,
+    pub qz: f32,
+    pub qw: f32,
+    /// Frame scale (multiplies Manifest half_extent / mesh visual size).
+    pub sx: f32,
+    pub sy: f32,
+    pub sz: f32,
     pub r: f32,
     pub g: f32,
     pub b: f32,
@@ -70,6 +80,13 @@ impl Default for EntityPose {
             x: 0.0,
             y: 0.0,
             z: 0.0,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            qw: 1.0,
+            sx: 1.0,
+            sy: 1.0,
+            sz: 1.0,
             r: 1.0,
             g: 1.0,
             b: 1.0,
@@ -81,6 +98,26 @@ impl Default for EntityPose {
 impl EntityPose {
     pub fn position(self) -> Vec3 {
         Vec3::new(self.x, self.y, self.z)
+    }
+
+    /// Wire quat → glam; zero-length (proto3 unset) → identity.
+    pub fn rotation(self) -> glam::Quat {
+        let q = glam::Quat::from_xyzw(self.qx, self.qy, self.qz, self.qw);
+        if q.length_squared() < 1e-12 {
+            glam::Quat::IDENTITY
+        } else {
+            q.normalize()
+        }
+    }
+
+    /// Wire scale; all-zero (proto3 unset) → (1,1,1).
+    pub fn scale(self) -> Vec3 {
+        let s = Vec3::new(self.sx, self.sy, self.sz);
+        if s.length_squared() < 1e-12 {
+            Vec3::ONE
+        } else {
+            s
+        }
     }
 
     pub fn color(self) -> [f32; 4] {
@@ -637,9 +674,12 @@ impl SceneGpu {
             const PHYS_BALL_RADIUS: f32 = 0.25;
             let visual_scale =
                 (PHYS_BALL_RADIUS * 0.95 / self.mesh_radius.max(1e-3)).clamp(0.02, 4.0);
-            let model = Mat4::from_translation(Vec3::new(pose.x, pose.y, pose.z))
-                * Mat4::from_rotation_x(0.25)
-                * Mat4::from_scale(Vec3::splat(visual_scale));
+            // Mesh asset tilt (0.25 rad X) stays client-local; Frame TRS is sim authority (x0029).
+            let model = Mat4::from_scale_rotation_translation(
+                pose.scale() * visual_scale,
+                pose.rotation() * glam::Quat::from_rotation_x(0.25),
+                pose.position(),
+            );
             let height_t = (pose.y / 5.0).clamp(0.0, 1.0);
             let coin_color = [
                 0.95 * height_t + 0.15,
@@ -707,8 +747,8 @@ impl SceneGpu {
                     .copied()
                     .unwrap_or(BOX_HALF_EXTENT);
                 let model = Mat4::from_scale_rotation_translation(
-                    Vec3::splat(he * 2.0),
-                    glam::Quat::IDENTITY,
+                    pose.scale() * (he * 2.0),
+                    pose.rotation(),
                     pose.position(),
                 );
                 let mut color = pose.color();
@@ -740,8 +780,8 @@ impl SceneGpu {
                 }
                 let slot = BOX_DRAW_SLOTS - 1 - i;
                 let model = Mat4::from_scale_rotation_translation(
-                    Vec3::splat(REMOTE_ROOT_HALF_EXTENT * 2.0),
-                    glam::Quat::IDENTITY,
+                    pose.scale() * (REMOTE_ROOT_HALF_EXTENT * 2.0),
+                    pose.rotation(),
                     pose.position(),
                 );
                 let box_uniforms = Uniforms {

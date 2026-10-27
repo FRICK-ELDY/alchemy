@@ -12,6 +12,7 @@
 //! - Bit-packing / prediction coding, DrawCommand taxonomy, audio/tracking frames.
 //! - Cryptographic verification of `InputEvent.room_token` (host-server JWKS).
 //! - SceneManifest-driven shared-sim / EntityKind (P4 remainder after x0027).
+//! - Frame scale animation / non-uniform collider resize (x0029 emits unit scale).
 //! - Reliable-delivery ACK / event-id channel (edit / inventory); see peer-delivery.md.
 //! - Locomotion module list UI / suppress sources.
 //! - Tenant namespace `alchemy/tenant/...` (dev keys only: `alchemy/dev/room/{room_id}/…`).
@@ -22,7 +23,13 @@ pub use prost::Message;
 pub mod wire_crypto;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.12.0-x0027";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.13.0-x0029";
+
+/// Identity orientation on the wire (`Entity.qx..qw`, xyzw).
+pub const ENTITY_QUAT_IDENTITY: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
+
+/// Unit scale on the wire (`Entity.sx..sz`).
+pub const ENTITY_SCALE_ONE: [f64; 3] = [1.0, 1.0, 1.0];
 
 /// `SceneEntry.flags`: entity may be Grab-held (x0027).
 pub const SCENE_FLAG_GRABBABLE: u32 = 1;
@@ -64,6 +71,54 @@ pub const fn scene_entry_is_user_root(entity_id: u32) -> bool {
 /// 3. `half_extent > 0` → cuboid; Grab only when [`scene_entry_grabbable`]
 pub fn scene_entry_is_box(blake3: &str, half_extent: f32, entity_id: u32) -> bool {
     !scene_entry_is_user_root(entity_id) && blake3.is_empty() && half_extent > 0.0
+}
+
+/// Build an [`Entity`] with identity orientation and unit scale (x0029).
+pub fn entity_at(id: u32, x: f64, y: f64, z: f64, r: f32, g: f32, b: f32, a: f32) -> Entity {
+    entity_trs(
+        id,
+        x,
+        y,
+        z,
+        ENTITY_QUAT_IDENTITY,
+        ENTITY_SCALE_ONE,
+        r,
+        g,
+        b,
+        a,
+    )
+}
+
+/// Build an [`Entity`] with explicit TRS (x0029).
+pub fn entity_trs(
+    id: u32,
+    x: f64,
+    y: f64,
+    z: f64,
+    quat_xyzw: [f64; 4],
+    scale: [f64; 3],
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+) -> Entity {
+    Entity {
+        id,
+        x,
+        y,
+        z,
+        r,
+        g,
+        b,
+        a,
+        qx: quat_xyzw[0],
+        qy: quat_xyzw[1],
+        qz: quat_xyzw[2],
+        qw: quat_xyzw[3],
+        sx: scale[0],
+        sy: scale[1],
+        sz: scale[2],
+    }
 }
 
 /// `InputEvent.buttons` bits (mirror of proto `InputButtons`).
@@ -273,16 +328,18 @@ mod tests {
         let frame = RenderFrame {
             tick: 42,
             host_time_ms: 1_000,
-            upserts: vec![Entity {
-                id: 1,
-                x: 1.5,
-                y: 0.0,
-                z: -2.0,
-                r: 1.0,
-                g: 0.2,
-                b: 0.1,
-                a: 1.0,
-            }],
+            upserts: vec![entity_trs(
+                1,
+                1.5,
+                0.0,
+                -2.0,
+                [0.0, 0.7071067811865476, 0.0, 0.7071067811865476],
+                [2.0, 1.0, 0.5],
+                1.0,
+                0.2,
+                0.1,
+                1.0,
+            )],
             removes: vec![9],
             host_sig: vec![],
         };
@@ -291,6 +348,8 @@ mod tests {
         assert_eq!(decoded.tick, 42);
         assert_eq!(decoded.upserts.len(), 1);
         assert!((decoded.upserts[0].x - 1.5).abs() < f64::EPSILON);
+        assert!((decoded.upserts[0].qw - 0.7071067811865476).abs() < 1e-9);
+        assert!((decoded.upserts[0].sx - 2.0).abs() < f64::EPSILON);
         assert_eq!(decoded.removes, vec![9]);
     }
 
