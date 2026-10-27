@@ -16,6 +16,13 @@ defmodule WorldWeb.Router do
     post "/rooms/:room_id/tokens", RoomController, :create_token
   end
 
+  # x0025: Bearer is host Room Token (not auth JWT).
+  scope "/api/v1", WorldWeb do
+    pipe_through [:api]
+
+    post "/rooms/:room_id/host_keys", RoomController, :create_host_key
+  end
+
   scope "/", WorldWeb do
     get "/health", HealthController, :index
     get "/.well-known/jwks.json", JwksController, :index

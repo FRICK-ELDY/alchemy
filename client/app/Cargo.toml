@@ -30,6 +30,8 @@ naga = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", features = ["json"] }
+jsonwebtoken = "9"
+base64 = "0.22"
 png = "0.17"
 libc = "0.2"
 

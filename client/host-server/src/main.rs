@@ -1,9 +1,9 @@
-//! Local host-server — x0024 wire-tick consecutive + x0023 session / snapshot.
+//! Local host-server — x0025 host_pub attestation + x0024 wire-tick + x0023 session.
 //!
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
 //! - Input: Ed25519 session bind (Token on bind only) + `is_finite` (x0023 / x0021)
-//! - SceneManifest with `protocol_pin` + `host_pub`; Frames signed (x0023)
+//! - SceneManifest with world `host_attestation` + `host_pub`; Frames / Presence signed (x0025)
 //! - `…/snapshot` queryable for late join; pure pose deltas (no box every-tick upsert)
 //! - Empty deltas: **no publish and no `net_tick` advance**; snapshot tick = last published (x0024)
 //! - Per-`sub` Intent/Grab → up to 4 user_roots; Presence Leave / liveliness jti grace (x0022)
@@ -11,7 +11,7 @@
 //! - Slice E / x001e: Zenoh `host_control` off by default; `ALCHEMY_HOST_CONTROL=1` to enable
 //!
 //! Non-guarantees:
-//! - Steal / rotation follow / Formula / polished Walk / world-signed Manifest / verifier
+//! - Steal / rotation follow / Formula / polished Walk / world-signed Manifest body / verifier
 //! - Authenticated remote host shutdown (use launcher / `ALCHEMY_HOST_PID`)
 
 mod finite;
@@ -27,7 +27,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alchemy_protocol::wire_crypto::{
-    generate_signing_key, public_key_bytes, sign_frame, SigningKey,
+    generate_signing_key, public_key_bytes, sign_frame, sign_presence, SigningKey,
 };
 use alchemy_protocol::{
     frame_key, host_control_key, input_buttons, input_key, liveliness_binding_from_key,
@@ -37,7 +37,7 @@ use alchemy_protocol::{
 };
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
-use room_token::{default_auth_url, fetch_auth_token, fetch_host_token, RoomTokenVerifier};
+use room_token::{default_auth_url, HostCredentialChain, RoomTokenVerifier};
 use session::SessionTable;
 use sim::{
     box_color, user_root_color, LocoMode, PhysicsWorld, BOX_COUNT, BOX_ENTITY_FIRST,
@@ -289,6 +289,7 @@ impl PresenceIntents {
             revision: self.revision,
             assignments,
             protocol_pin: PROTOCOL_PIN.to_string(),
+            host_sig: vec![],
         }
     }
 }
@@ -412,7 +413,12 @@ fn pose_changed(prev: Pose, next: Pose) -> bool {
         || (prev.z - next.z).abs() > MOVE_EPSILON
 }
 
-fn build_manifest(room_id: &str, blake3: &str, host_pub: Vec<u8>) -> SceneManifest {
+fn build_manifest(
+    room_id: &str,
+    blake3: &str,
+    host_pub: Vec<u8>,
+    host_attestation: String,
+) -> SceneManifest {
     SceneManifest {
         room_id: room_id.to_string(),
         revision: 1,
@@ -429,6 +435,7 @@ fn build_manifest(room_id: &str, blake3: &str, host_pub: Vec<u8>) -> SceneManife
         }),
         protocol_pin: PROTOCOL_PIN.to_string(),
         host_pub,
+        host_attestation,
     }
 }
 
@@ -643,21 +650,25 @@ fn main() -> Result<()> {
     let host_pub = public_key_bytes(&host_signing_key);
 
     log::info!(
-        "host-server x0023 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        "host-server x0025 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
     );
 
-    let auth_token = fetch_auth_token(&auth_url).context("fetch auth JWT")?;
-    let host_token = fetch_host_token(&world_url, &room_id, &auth_token)
-        .context("fetch host Room Token (is world-server up? auth Bearer required)")?;
     let verifier = Arc::new(RoomTokenVerifier::new(&world_url, &room_id));
     verifier.refresh_jwks().context("initial JWKS fetch")?;
     verifier.spawn_background_refresh();
-    verifier
-        .verify(&host_token)
-        .context("host Room Token self-check")?;
-    log::info!("auth JWT + host Room Token acquired and verified");
+    let mut creds = HostCredentialChain::bootstrap(
+        &auth_url,
+        &world_url,
+        &room_id,
+        &host_pub,
+        verifier.as_ref(),
+    )
+    .context("bootstrap auth → host Room Token → HostAttestation")?;
+    log::info!(
+        "auth JWT + host Room Token (role=host) + HostAttestation acquired; three-tier refresh enabled (fail-closed)"
+    );
 
     let presence = Arc::new(Mutex::new(PresenceIntents::default()));
     let sessions = Arc::new(Mutex::new(SessionTable::default()));
@@ -699,21 +710,28 @@ fn main() -> Result<()> {
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_publisher frame failed: {e}"))?;
 
-    let empty_presence = PresenceState {
+    let mut empty_presence = PresenceState {
         revision: 0,
         assignments: vec![],
         protocol_pin: PROTOCOL_PIN.to_string(),
+        host_sig: vec![],
     };
+    sign_presence(&host_signing_key, &mut empty_presence);
     presence_pub
         .put(empty_presence.encode_to_vec())
         .wait()
         .map_err(|e| anyhow::anyhow!("presence publish failed: {e}"))?;
-    log::info!("published PresenceState revision=0 assignments=0");
+    log::info!("published PresenceState revision=0 assignments=0 (signed)");
     let mut last_presence_rev = 0u64;
     let mut last_presence = Instant::now();
 
-    let manifest = build_manifest(&room_id, &blob_blake3, host_pub);
-    let loco = manifest.locomotion.unwrap_or(LocomotionConfig {
+    let mut manifest = build_manifest(
+        &room_id,
+        &blob_blake3,
+        host_pub.clone(),
+        creds.host_attestation.clone(),
+    );
+    let loco = manifest.locomotion.clone().unwrap_or(LocomotionConfig {
         mode: LocomotionMode::Noclip.into(),
         move_speed: DEFAULT_MOVE_SPEED,
     });
@@ -724,13 +742,13 @@ fn main() -> Result<()> {
         DEFAULT_MOVE_SPEED
     };
 
-    let manifest_bytes = manifest.encode_to_vec();
+    let mut manifest_bytes = manifest.encode_to_vec();
     manifest_pub
         .put(manifest_bytes.clone())
         .wait()
         .map_err(|e| anyhow::anyhow!("manifest publish failed: {e}"))?;
     log::info!(
-        "published SceneManifest revision={} entries={} blake3={} loco={:?} speed={move_speed}",
+        "published SceneManifest revision={} entries={} blake3={} loco={:?} speed={move_speed} (attested)",
         manifest.revision,
         manifest.entries.len(),
         blob_blake3,
@@ -772,20 +790,51 @@ fn main() -> Result<()> {
         }
         next_physics += physics_period;
 
-        if last_manifest.elapsed() >= MANIFEST_REPUBLISH {
+        // Credential refresh runs every physics tick (cheap until due) so Room Token /
+        // auth TTL cannot silently expire between Manifest republishes. Fail-closed.
+        let attest_rotated = match creds.refresh_if_due(
+            &auth_url,
+            &world_url,
+            &room_id,
+            &host_pub,
+            verifier.as_ref(),
+        ) {
+            Ok(rotated) => rotated,
+            Err(err) => {
+                log::error!(
+                    "credential refresh failed (fail-closed): {err:#}; stopping Manifest publish"
+                );
+                return Err(err).context("host credential refresh failed");
+            }
+        };
+        if attest_rotated || last_manifest.elapsed() >= MANIFEST_REPUBLISH {
+            manifest = build_manifest(
+                &room_id,
+                &blob_blake3,
+                host_pub.clone(),
+                creds.host_attestation.clone(),
+            );
+            manifest_bytes = manifest.encode_to_vec();
             manifest_pub
                 .put(manifest_bytes.clone())
                 .wait()
                 .map_err(|e| anyhow::anyhow!("manifest republish failed: {e}"))?;
             last_manifest = Instant::now();
-            log::info!(
-                "republished SceneManifest revision={} (late-joiner assist)",
-                manifest.revision
-            );
+            if attest_rotated {
+                log::info!(
+                    "published SceneManifest revision={} (HostAttestation rotated)",
+                    manifest.revision
+                );
+            } else {
+                log::info!(
+                    "republished SceneManifest revision={} (late-joiner assist)",
+                    manifest.revision
+                );
+            }
         }
 
         let tick_now = Instant::now();
-        let (by_slot, occupied, presence_rev, presence_state, reclaimed) = presence
+        let (by_slot, occupied, presence_rev, mut presence_state, reclaimed) = presence
             .lock()
             .map(|mut g| {
                 let freed = g.drain_reclaims(tick_now, PRESENCE_SLOT_TTL);
@@ -806,6 +855,7 @@ fn main() -> Result<()> {
                         revision: 0,
                         assignments: vec![],
                         protocol_pin: PROTOCOL_PIN.to_string(),
+                        host_sig: vec![],
                     },
                     Vec::new(),
                 )
@@ -823,6 +873,7 @@ fn main() -> Result<()> {
         }
 
         if presence_rev != last_presence_rev || last_presence.elapsed() >= PRESENCE_REPUBLISH {
+            sign_presence(&host_signing_key, &mut presence_state);
             let n = presence_state.assignments.len();
             let rev = presence_state.revision;
             presence_pub

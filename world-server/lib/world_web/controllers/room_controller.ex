@@ -1,6 +1,9 @@
 defmodule WorldWeb.RoomController do
   use WorldWeb, :controller
 
+  require Logger
+
+  alias World.HostAttestation
   alias World.Rooms
   alias World.Token
 
@@ -119,4 +122,98 @@ defmodule WorldWeb.RoomController do
   end
 
   defp authorize_role(_room_id, _role, _sub), do: {:error, :invalid_role}
+
+  @doc """
+  x0025: issue HostAttestation JWT. Authorization must be a **host** Room Token.
+  """
+  def create_host_key(conn, %{"room_id" => room_id} = params) do
+    with {:ok, bearer} <- fetch_bearer(conn),
+         {:ok, claims} <- Token.verify(bearer),
+         :ok <- require_host_token(claims, room_id),
+         :ok <- Rooms.require_existing(room_id),
+         :ok <- require_owner(room_id, claims["sub"]),
+         {:ok, host_pub} <- HostAttestation.decode_host_pub(Map.get(params, "host_pub")) do
+      case HostAttestation.generate(room_id, host_pub, claims["sub"]) do
+        {:ok, attestation, ttl} ->
+          json(conn, %{
+            attestation: attestation,
+            expires_in: ttl,
+            room_id: room_id,
+            token_type: "Bearer"
+          })
+
+        {:error, reason} ->
+          Logger.error("HostAttestation.generate failed: #{inspect(reason)}")
+
+          conn
+          |> put_status(:internal_server_error)
+          |> json(%{error: "attestation_issue_failed", detail: inspect(reason)})
+      end
+    else
+      {:error, :missing_bearer} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "missing_room_token"})
+
+      {:error, :not_host_token} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "host_role_required"})
+
+      {:error, :room_mismatch} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "room_id_mismatch"})
+
+      {:error, :forbidden_host} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "host_role_owner_only"})
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "room_not_found"})
+
+      {:error, :invalid_host_pub} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_host_pub"})
+
+      {:error, :invalid_room_id} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_room_id"})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "invalid_room_token", detail: inspect(reason)})
+    end
+  end
+
+  defp fetch_bearer(conn) do
+    case get_req_header(conn, "authorization") do
+      ["Bearer " <> token] when byte_size(token) > 0 -> {:ok, token}
+      _ -> {:error, :missing_bearer}
+    end
+  end
+
+  defp require_host_token(%{"role" => "host", "room_id" => token_room}, room_id) do
+    if token_room == room_id do
+      :ok
+    else
+      {:error, :room_mismatch}
+    end
+  end
+
+  defp require_host_token(_, _), do: {:error, :not_host_token}
+
+  defp require_owner(room_id, sub) do
+    if Rooms.owner?(room_id, sub) do
+      :ok
+    else
+      {:error, :forbidden_host}
+    end
+  end
 end

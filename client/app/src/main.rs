@@ -1,4 +1,4 @@
-//! Alchemy client — x0024 delivery gap→snapshot + x0023 session / Frame + Leave.
+//! Alchemy client — x0025 host_pub attestation + x0024 gap→snapshot + session / Frame.
 //!
 //! Guarantees:
 //! - Home tab login / register / logout; Room Token only after auth (x0018)
@@ -6,6 +6,7 @@
 //! - Access + Room Token auto-refresh at ~80% TTL while joined (x0021 P1-1)
 //! - Intent Ed25519 session (Token on bind only); Frame finite/tick/sig + snapshot (x0023)
 //! - Frame tick gap → do not apply delta; `…/snapshot` replace (x0024 / peer-delivery)
+//! - Manifest `host_attestation` via world JWKS before adopting `host_pub`; Presence `host_sig` (x0025)
 //! - PROTOCOL_PIN mismatch on Manifest/Presence rejects apply (x0023)
 //! - CI fallback: `AUTH_USER` or `ALCHEMY_AUTH_TOKEN` skips UI and joins
 //! - Subscribes to SceneManifest / PresenceState / RenderFrame; downloads blob; wgpu mesh
@@ -15,9 +16,10 @@
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
 //!
 //! Non-guarantees: Steal, XR login keyboard, email verify UI, Quest standalone, WSL HMD,
-//! reliable-delivery ACK channel
+//! reliable-delivery ACK channel, Manifest body world signature
 
 mod auth;
+mod host_attestation;
 mod host_control;
 mod intent_session;
 mod jwt_sub;
@@ -36,7 +38,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use alchemy_protocol::wire_crypto::{frame_entities_finite, verify_frame};
+use alchemy_protocol::wire_crypto::{frame_entities_finite, verify_frame, verify_presence};
 use alchemy_protocol::{
     decide_frame_tick, frame_key, input_key, liveliness_key, manifest_key, presence_key,
     protocol_pin_matches, snapshot_key, validate_room_id, FrameTickDecision, Message,
@@ -44,6 +46,7 @@ use alchemy_protocol::{
 };
 use anyhow::{Context, Result};
 use auth::AuthGate;
+use host_attestation::HostAttestationVerifier;
 use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, COIN_BLAKE3_HEX};
 use scene::{EntityPose, SharedState, LOCAL_USER_ROOT_UNSET, MESH_ENTITY_ID};
 use serde::Deserialize;
@@ -83,13 +86,16 @@ fn open_zenoh() -> Result<zenoh::Session> {
 }
 
 pub fn fetch_guest_token(world_url: &str, room_id: &str, auth_token: &str) -> Result<GuestToken> {
-    if let Ok(token) = std::env::var("ALCHEMY_ROOM_TOKEN") {
-        if !token.is_empty() {
-            return Ok(GuestToken {
-                token,
-                // Env override: no TTL → skip auto-refresh.
-                expires_in: 0,
-            });
+    // x0025: env bypass is debug-only (release fail-closed).
+    if cfg!(debug_assertions) {
+        if let Ok(token) = std::env::var("ALCHEMY_ROOM_TOKEN") {
+            if !token.is_empty() {
+                return Ok(GuestToken {
+                    token,
+                    // Env override: no TTL → skip auto-refresh.
+                    expires_in: 0,
+                });
+            }
         }
     }
 
@@ -171,6 +177,7 @@ fn spawn_manifest_subscriber(
     key: String,
     shared: Arc<SharedState>,
     blake3_tx: mpsc::SyncSender<String>,
+    attest: Arc<HostAttestationVerifier>,
 ) -> Result<()> {
     let subscriber = session
         .declare_subscriber(key.clone())
@@ -197,47 +204,69 @@ fn spawn_manifest_subscriber(
                             shared.leave_room_local();
                             continue;
                         }
-                        if manifest.host_pub.len() == 32 {
-                            // Only Some→different Some is a host generation change.
-                            // None→Some is first install (do not renew IntentSession).
-                            let generation_changed = match shared.host_pub.lock() {
-                                Ok(mut slot) => match slot.as_ref() {
-                                    None => {
-                                        *slot = Some(manifest.host_pub.clone());
-                                        false
-                                    }
-                                    Some(prev) if prev != &manifest.host_pub => {
-                                        *slot = Some(manifest.host_pub.clone());
-                                        true
-                                    }
-                                    Some(_) => false,
-                                },
-                                Err(err) => {
-                                    log::error!(
-                                        "host_pub lock poisoned; skip generation reset: {err}"
-                                    );
-                                    false
-                                }
-                            };
-                            if generation_changed {
-                                log::info!(
-                                    "SceneManifest host_pub changed; reset world + renew Intent session for new host"
-                                );
-                                shared.reset_for_host_generation();
-                                snapshot_ok = false;
-                            }
-                            if !snapshot_ok {
-                                snapshot_ok =
-                                    fetch_snapshot(&session, shared.room_id.as_ref(), &shared);
-                            }
-                        } else {
-                            log::warn!(
-                                "SceneManifest host_pub length {} (want 32); Frame verify will wait",
+                        if manifest.room_id != shared.room_id.as_ref() {
+                            log::error!(
+                                "SceneManifest room_id mismatch: got {:?} want {}; leaving room",
+                                manifest.room_id,
+                                shared.room_id
+                            );
+                            shared.leave_room_local();
+                            continue;
+                        }
+                        if manifest.host_pub.len() != 32 {
+                            log::error!(
+                                "SceneManifest host_pub length {} (want 32); leaving room",
                                 manifest.host_pub.len()
                             );
+                            shared.leave_room_local();
+                            continue;
+                        }
+                        let attested_pub = match attest
+                            .verify_and_host_pub(&manifest.host_attestation, &manifest.host_pub)
+                        {
+                            Ok(pub_bytes) => pub_bytes,
+                            Err(err) => {
+                                log::error!(
+                                    "SceneManifest host_attestation rejected: {err:#}; leaving room"
+                                );
+                                shared.leave_room_local();
+                                continue;
+                            }
+                        };
+                        // Only Some→different Some is a host generation change.
+                        // None→Some is first install (do not renew IntentSession).
+                        let generation_changed = match shared.host_pub.lock() {
+                            Ok(mut slot) => match slot.as_ref() {
+                                None => {
+                                    *slot = Some(attested_pub.clone());
+                                    false
+                                }
+                                Some(prev) if prev != &attested_pub => {
+                                    *slot = Some(attested_pub.clone());
+                                    true
+                                }
+                                Some(_) => false,
+                            },
+                            Err(err) => {
+                                log::error!(
+                                    "host_pub lock poisoned; skip generation reset: {err}"
+                                );
+                                false
+                            }
+                        };
+                        if generation_changed {
+                            log::info!(
+                                "SceneManifest host_pub changed; reset world + renew Intent session for new host"
+                            );
+                            shared.reset_for_host_generation();
+                            snapshot_ok = false;
+                        }
+                        if !snapshot_ok {
+                            snapshot_ok =
+                                fetch_snapshot(&session, shared.room_id.as_ref(), &shared);
                         }
                         log::info!(
-                            "SceneManifest revision={} entries={} pin_ok snapshot_ok={snapshot_ok}",
+                            "SceneManifest revision={} entries={} pin_ok attested snapshot_ok={snapshot_ok}",
                             manifest.revision,
                             manifest.entries.len()
                         );
@@ -497,6 +526,15 @@ fn spawn_presence_subscriber(
                                 state.protocol_pin
                             );
                             shared.leave_room_local();
+                            continue;
+                        }
+                        let host_pub = shared.host_pub.lock().ok().and_then(|g| g.clone());
+                        let Some(host_pub) = host_pub else {
+                            log::warn!("drop PresenceState: host_pub not yet attested");
+                            continue;
+                        };
+                        if let Err(err) = verify_presence(&host_pub, &state) {
+                            log::warn!("drop PresenceState: bad host_sig: {err}");
                             continue;
                         }
                         let local_sub = shared
@@ -886,7 +924,7 @@ fn main() -> Result<()> {
     let silent = auth::try_silent_session(&auth_url).context("silent auth")?;
     let auth_mode = if silent.is_some() { "silent" } else { "ui" };
     log::info!(
-        "client x0023 starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
+        "client x0025 starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
     );
 
     let mut gate = AuthGate::default();
@@ -930,6 +968,14 @@ fn main() -> Result<()> {
 
     spawn_token_refresh(Arc::clone(&shared))?;
 
+    let attest = Arc::new(HostAttestationVerifier::new(
+        shared.world_url.as_ref(),
+        shared.room_id.as_ref(),
+    ));
+    attest
+        .refresh_jwks()
+        .context("initial world JWKS for HostAttestation")?;
+
     let session = open_zenoh().context("open zenoh session")?;
     if shared
         .auth
@@ -945,6 +991,7 @@ fn main() -> Result<()> {
         manifest_key_expr,
         Arc::clone(&shared),
         blake3_tx,
+        Arc::clone(&attest),
     )?;
     spawn_presence_subscriber(session.clone(), presence_key_expr, Arc::clone(&shared))?;
     spawn_frame_subscriber(session.clone(), frame_key_expr, Arc::clone(&shared))?;
