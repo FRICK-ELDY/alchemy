@@ -1,5 +1,8 @@
 import Config
 
+# world → auth S2S (dev only; prod requires AUTH_INTERNAL_TOKEN)
+config :auth, :internal_token, "dev-internal-token"
+
 # Configure your database
 config :auth, Auth.Repo,
   username: "alchemy_auth",

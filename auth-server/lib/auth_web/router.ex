@@ -13,6 +13,10 @@ defmodule AuthWeb.Router do
     plug AuthWeb.Plugs.Authenticate
   end
 
+  pipeline :internal do
+    plug AuthWeb.Plugs.InternalToken
+  end
+
   scope "/api/v1/auth", AuthWeb do
     pipe_through [:api, :rate_limited]
 
@@ -32,6 +36,25 @@ defmodule AuthWeb.Router do
     post "/change-password", AuthController, :change_password
     post "/deactivate", AuthController, :deactivate
     get "/me", AuthController, :me
+  end
+
+  # x0033: Follow / Friendship (Bearer user JWT)
+  scope "/api/v1/social", AuthWeb do
+    pipe_through [:api, :authenticated]
+
+    post "/follows/:user_id", SocialController, :follow
+    delete "/follows/:user_id", SocialController, :unfollow
+    post "/friend-requests/:user_id", SocialController, :request_friend
+    post "/friend-requests/:user_id/accept", SocialController, :accept_friend
+    post "/friend-requests/:user_id/reject", SocialController, :reject_friend
+    delete "/friends/:user_id", SocialController, :unfriend
+  end
+
+  # x0034: world → auth visibility S2S
+  scope "/internal/v1", AuthWeb do
+    pipe_through [:api, :internal]
+
+    get "/access", AccessController, :show
   end
 
   scope "/", AuthWeb do

@@ -96,11 +96,14 @@ flowchart TB
                 subgraph CoreProfile["【必須コア基盤 (Core Profile — 永続権威 ＆ セッション台帳の絶対的 SSoT)】"]
                     direction LR
 
-                    AuthServer["auth-server (Elixir 1.19 / OTP 28 / Phoenix 1.8 / Ash 3.0)<br/>・RS256 署名 JWT 発行 (sub = user_id UUID)<br/>・Remember Me (7日スライディング Refresh Token)<br/>・利用規約同意管理 (tos_agreed / tos_agreed_at / tos_version)<br/>・フレンド関係 (Friendship) ＆ グループ所属 (Group) SSoT<br/>・/.well-known/jwks.json 公開鍵配信"]:::elixir
+                    AuthServer["auth-server (Elixir 1.19 / OTP 28 / Phoenix 1.8 / Ash 3.0)<br/>・RS256 署名 JWT 発行 (sub = user_id UUID)<br/>・Remember Me (7日スライディング Refresh Token)<br/>・利用規約同意管理 (tos_agreed / tos_agreed_at / tos_version)<br/>・Follow（X型）＋ Friendship（相互フォロー時のみ申請）SSoT / Group は後続<br/>・/.well-known/jwks.json 公開鍵配信"]:::elixir
+
 
                     AssetsServer["assets-server (Elixir / Ash + Git型 Spatial VCS + 容量管理)<br/>・Quota Enforcer (プラン別容量上限ゲート):<br/> $0: 1GB ｜ $1: 5GB ｜ $5: 25GB ｜ $10: 50GB ｜ $20: 100GB + グループ共有Vault 50GB<br/> (※マーケット購入品はリンク保持のみで容量消費0 / 改変Commit差分のみ計上)<br/>・インベントリ階層整理 ＆ WorldManifest / AlchemyPrefab 管理<br/>・Git操作: Commit / Branch / Tag / Diff / Fork<br/>・原産地証明 (Origin Cert: origin_id + 作者sub + CommitHash + 親ID) 電子署名<br/>・アップロード検疫: クライアントビルド済みGLB/KTX2の軽量ヘッダ検査<br/>・3D特徴量検疫 (pgvector): ボーン構造/UV形状/画像pHash類似度で頂点ずらし盗品を自動隔離"]:::vcs
 
-                    WorldServer["world-server (100% Pure Elixir Umbrella — NIF完全廃止・案内所・門番・監査)<br/>・apps/core & network:<br/> - World一覧配信 ＆ S2S HTTPS による他運営者との連合リスト交換<br/> - /.well-known/alchemy-node-info.json (機能ディスカバリ配信)<br/> - alchemy:// ディープリンク解決 (URL 1つで特定座標へ直ワープ)<br/> - 5段階公開範囲判定 (Private/LAN/Friends/Friends+/Public) ＆ 短命 Room Token 発行<br/> - 空間台帳 (Scene Manifest: 誰が何をスポーン・着用可能か) の署名発行<br/> - ※独自UDP (Network.UDP) と空間用Phoenix Channelは廃止し Zenoh に一本化<br/>・apps/contents:<br/> - 空間オーディオの『指揮者(Conductor)』として非同期コマンド発行<br/> - 旧v1第一級コンテンツ3本 (CanvasTest/BulletHell3D/FormulaTest) を検証用Manifestとして保持"]:::elixir
+                    WorldServer["world-server (100% Pure Elixir Umbrella — NIF完全廃止・案内所・門番・監査)<br/>・apps/core & network:<br/> - World一覧配信 ＆ S2S HTTPS による他運営者との連合リスト交換<br/> - /.well-known/alchemy-node-info.json (機能ディスカバリ配信)<br/> - alchemy:// ディープリンク解決 (URL 1つで特定座標へ直ワープ)<br/> - 7段階公開範囲 (LAN/Private/Friends/Friends+/Followers/Followers+/Public) ＆ 短命 Room Token 発行<br/>
+ - 空間台帳 (Scene Manifest: 誰が何をスポーン・着用可能か) の署名発行<br/> - ※独自UDP (Network.UDP) と空間用Phoenix Channelは廃止し Zenoh に一本化<br/>・apps/contents:<br/> - 空間オーディオの『指揮者(Conductor)』として非同期コマンド発行<br/> - 旧v1第一級コンテンツ3本 (CanvasTest/BulletHell3D/FormulaTest) を検証用Manifestとして保持"]:::elixir
+
 
                     VerifierApp["world-server: apps/verifier (ゼロトラスト改ざん監査 ＆ スマート死活監視移譲)<br/>・【Untrustedホスト監査】ローカルhost-serverのRenderFrameを抜き打ち監査(Spot-Check)。<br/> 不正ワープや未許可アセット混入検知時は Room Token を即時失効しホスト権限を剥奪<br/>・【見る権利と着る権利の分離】表示は全員即時OK、着用・配置時のみ<br/> Origin Cert ➔ License Token ➔ 着用者JWT sub の署名チェーンを検証<br/>・【スマートホスト移譲】client_info の『引き受けON/OFF』と『PC性能(CPU/RAM/Ping)』を監視。<br/> ホスト終了/突然死時は『①予備ヘッドレスB/C』➔『②最高性能PCゲスト』へ0秒で昇格指令<br/>・【オープンリレーSLA監視】公認リレー屋のPing・稼働率(98%+)を検査し、障害時は公式リレーへ自動切替"]:::guard
                 end
@@ -177,7 +180,9 @@ flowchart TB
 
             ClientBootAndOSC["① 起動・VR自動判定・ローカルファイル ＆ 標準OSC受信エッジ (app / window / xr / input)<br/>・OpenXRランタイム応答あり ➔ VRモード ／ なし ➔ Desktopモード (最初はPrivateでホームを0秒ローカル起動)<br/>・ローカルファイル (.glb / .png / .ogg) のドラッグ＆ドロップ 0秒プレビュー ＆ 3Dインゲーム・ファイルブラウザ<br/>・標準 OSC over UDP 受信口 (Pure Rust: rosc クレート / localhost:9000):<br/> トラッカーからの長いOSC文字列アドレスを受信 ➔ is_finite() 検証 ➔ コンパクトな数値配列 Protobuf に圧縮して Zenoh へ送信"]:::local
 
-            ClientMenuUI["② 空間メニューパネル (system_ui — メニューボタン or ESCキーで表示 / alchemy-node-info.json で自動適応)<br/>・Worldタブ: 5段階公開範囲(Private/LAN/Friends/Friends+/Public)、配信レート(20/30/60Hz)設定、<br/> 『ホスト引き受け(死活監視移行) ON/OFF』トグル、運営貸し出しホスト選択、公認 Zenoh リレー屋選択<br/>・Inventoryタブ: 個人Vault ＆ グループ共有Vault(50GB) のフォルダ階層整理、空間への取り出し、空間内改造Prefabの逆保存<br/>・Git履歴タブ (Spatial VCS): Commit / Branch切替 / 3D空間ビジュアルDiff / 1クリックRollback<br/>・Shop ＆ プラン管理タブ: 利用規約同意(tos_version)、180日期限コインチャージ、$0〜$20プラン変更、購入アセットの0秒着用"]:::vcs
+            ClientMenuUI["② 空間メニューパネル (system_ui — メニューボタン or ESCキーで表示 / alchemy-node-info.json で自動適応)<br/>・Worldタブ: 7段階公開範囲(LAN→Private→Friends→Friends+→Followers→Followers+→Public)、配信レート(20/30/60Hz)設定、<br/>
+ 『ホスト引き受け(死活監視移行) ON/OFF』トグル、運営貸し出しホスト選択、公認 Zenoh リレー屋選択<br/>・Inventoryタブ: 個人Vault ＆ グループ共有Vault(50GB) のフォルダ階層整理、空間への取り出し、空間内改造Prefabの逆保存<br/>・Git履歴タブ (Spatial VCS): Commit / Branch切替 / 3D空間ビジュアルDiff / 1クリックRollback<br/>・Shop ＆ プラン管理タブ: 利用規約同意(tos_version)、180日期限コインチャージ、$0〜$20プラン変更、購入アセットの0秒着用"]:::vcs
+
 
             ClientDualEditor["③ Dual Editor (ノード ＆ テキスト両対応シェーダー / 空間ギミック作成環境)<br/>・公式標準マテリアルもブラックボックス化せずノードグラフまたはコードとして開いて改造(Fork)可能<br/>・ノード派は3D空間内でノード結線、コード派はインゲーム/外部エディタで WGSL 関数 / Formula スクリプトを記述<br/>・シェーダー無害化: DAG循環(無限ループ)排除・GPU命令コスト上限検査 ➔ wgpu内蔵『Naga』(Pure Rust)でミリ秒検証＆即時反映"]:::shader
 

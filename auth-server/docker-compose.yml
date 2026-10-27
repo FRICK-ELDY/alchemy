@@ -38,6 +38,7 @@ services:
       # Keep Swoosh Local adapter (config.exs). SMTP needs :gen_smtp which is not
       # in Mix deps yet; mailpit remains available for later SMTP wiring.
       AUTH_FRONTEND_URL: http://localhost:4000
+      AUTH_INTERNAL_TOKEN: dev-internal-token
     volumes:
       - .:/app
       - auth_deps:/app/deps

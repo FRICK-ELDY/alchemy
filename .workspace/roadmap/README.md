@@ -15,7 +15,8 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0033`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0037`**）
+
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -100,8 +101,15 @@ depends_on: [x0006]
 | x0030 | — | done | shared-sim / EntityKind（P4-2） | [x0030-shared-sim-entity-kind.md](slices/x0030-shared-sim-entity-kind.md) |
 | x0031 | — | done | trust-boundary threat model（P4-3） | [x0031-trust-boundary-threat-model.md](slices/x0031-trust-boundary-threat-model.md) |
 | x0032 | — | done | launcher 最小実装（P4-4） | [x0032-launcher-minimal.md](slices/x0032-launcher-minimal.md) |
+| x0033 | — | done | Follow / Friendship（auth SSoT・相互→申請） | [x0033-friendship-follow.md](slices/x0033-friendship-follow.md) |
+| x0034 | — | done | Room visibility + Token 門番（private/friends/public + S2S） | [x0034-visibility-token-gate.md](slices/x0034-visibility-token-gate.md) |
+| x0035 | — | done | friends_plus / followers / followers_plus（2hop） | [x0035-visibility-hops.md](slices/x0035-visibility-hops.md) |
+| x0036 | — | done | lan 公開範囲（外部・Tunnel 拒否） | [x0036-lan-visibility.md](slices/x0036-lan-visibility.md) |
 
-**現在の次:** Friendship → 公開範囲（P4-5）または次評価までの残り提案。
+**現在の次:** Group / client 公開範囲 UI / BlobGrant、または次評価までの残り提案。
+
+次の空き番号は **`x0037`**。
+
 
 ## 関連
 

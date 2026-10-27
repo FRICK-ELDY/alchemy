@@ -20,7 +20,11 @@ config :world,
   allow_anon_tokens: false,
   auth_jwks_url: "http://127.0.0.1:9/.well-known/jwks.json",
   # Tests install JWKS via World.Auth.Jwks.install_test_jwks!/2.
-  auth_jwks_fetch_on_start: false
+  auth_jwks_fetch_on_start: false,
+  auth_access_mode: :stub,
+  auth_access_stub: fn _owner, _viewer, _vis -> false end,
+  auth_internal_token: "dev-internal-token",
+  trusted_proxies: []
 
 config :logger, level: :warning
 config :phoenix, :plug_init_mode, :runtime

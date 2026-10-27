@@ -100,6 +100,74 @@ defmodule WorldWeb.RoomControllerTest do
     assert %{"error" => "room_already_exists"} = json_response(conn, 409)
   end
 
+  test "friends visibility forbids non-friend guest", %{conn: conn, signer: signer} do
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    guest = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+    previous = Application.get_env(:world, :auth_access_stub)
+
+    on_exit(fn ->
+      Application.put_env(:world, :auth_access_stub, previous)
+    end)
+
+    Application.put_env(:world, :auth_access_stub, fn ^owner, ^guest, "friends" -> false end)
+
+    assert %{"visibility" => "friends"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "friends-room", visibility: "friends"})
+             |> json_response(201)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> post("/api/v1/rooms/friends-room/tokens", %{role: "guest"})
+
+    assert %{"error" => "visibility_forbidden"} = json_response(conn, 403)
+  end
+
+  test "private visibility allows owner host token only", %{conn: conn, signer: signer} do
+    owner = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    guest = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+
+    assert %{"visibility" => "private"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "priv", visibility: "private"})
+             |> json_response(201)
+
+    assert %{"role" => "host"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms/priv/tokens", %{role: "host"})
+             |> json_response(200)
+
+    assert %{"error" => "visibility_forbidden"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, guest)
+             |> post("/api/v1/rooms/priv/tokens", %{role: "guest"})
+             |> json_response(403)
+  end
+
+  test "lan visibility rejects cf-connecting-ip path", %{conn: conn, signer: signer} do
+    owner = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    guest = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+    assert %{"visibility" => "lan"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "lan1", visibility: "lan"})
+             |> json_response(201)
+
+    assert %{"error" => "lan_required"} =
+             build_conn()
+             |> Map.put(:remote_ip, {192, 168, 0, 5})
+             |> Plug.Conn.put_req_header("cf-connecting-ip", "203.0.113.1")
+             |> TestAuthHelpers.put_auth(signer, guest)
+             |> post("/api/v1/rooms/lan1/tokens", %{role: "guest"})
+             |> json_response(403)
+  end
+
   test "host_keys issues attestation for owner host token", %{conn: conn, signer: signer} do
     sub = "22222222-2222-2222-2222-222222222222"
     host_pub = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
