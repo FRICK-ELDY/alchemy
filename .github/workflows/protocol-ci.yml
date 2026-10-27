@@ -33,7 +33,9 @@ jobs:
           protoc -I protocol/proto --include_imports \
             --descriptor_set_out=/tmp/alchemy-descriptor.pb \
             protocol/proto/render_frame.proto \
-            protocol/proto/input_events.proto
+            protocol/proto/input_events.proto \
+            protocol/proto/presence.proto \
+            protocol/proto/scene_manifest.proto
           test -s /tmp/alchemy-descriptor.pb
 
   rust-test:
@@ -45,4 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: protocol -> target
       - run: cargo test

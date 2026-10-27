@@ -52,13 +52,13 @@ defmodule Auth.MixProject do
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
-      {:bandit, "~> 1.5"},
+      {:bandit, "~> 1.14"},
       {:remote_ip, "~> 1.2"},
-      {:ash, "~> 3.0"},
-      {:ash_postgres, "~> 2.0"},
+      {:ash, "~> 3.37"},
+      {:ash_postgres, "~> 2.6"},
       {:argon2_elixir, "~> 4.0"},
       {:joken, "~> 2.6"},
-      {:jose, "~> 1.11"},
+      {:jose, "~> 1.11.13"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end

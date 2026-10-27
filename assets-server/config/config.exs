@@ -21,7 +21,9 @@ config :assets,
   auth_jwt_audience: "alchemy-platform",
   max_upload_bytes: 100_000_000
 
-config :ex_aws, json_codec: Jason
+config :ex_aws,
+  json_codec: Jason,
+  http_client: Assets.CAS.ExAwsReq
 
 config :assets, Assets.Repo,
   database: Path.expand("../priv/assets_dev.sqlite3", Path.dirname(__ENV__.file)),

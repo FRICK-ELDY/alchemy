@@ -28,6 +28,12 @@ run_rust() {
   pushd client >/dev/null
   step "cargo fmt --check" cargo fmt --all -- --check
   step "cargo clippy" cargo clippy --workspace -- -D warnings
+  # Local may SKIP; GitHub Actions rust-deny job always gates (x002d).
+  if command -v cargo-deny >/dev/null 2>&1; then
+    step "cargo deny check" cargo deny check
+  else
+    echo "[SKIP] cargo deny check (local only; CI gates via EmbarkStudios/cargo-deny-action — install: cargo install cargo-deny)"
+  fi
   step "cargo build --workspace" cargo build --workspace
   step "cargo test --workspace" cargo test --workspace
   popd >/dev/null
@@ -40,7 +46,7 @@ run_protocol() {
   if command -v protoc >/dev/null 2>&1; then
     out="${TMPDIR:-/tmp}/alchemy-descriptor.pb"
     step "protoc schema compile" \
-      bash -c "protoc -I protocol/proto --include_imports --descriptor_set_out='${out}' protocol/proto/render_frame.proto protocol/proto/input_events.proto && test -s '${out}'"
+      bash -c "protoc -I protocol/proto --include_imports --descriptor_set_out='${out}' protocol/proto/render_frame.proto protocol/proto/input_events.proto protocol/proto/presence.proto protocol/proto/scene_manifest.proto && test -s '${out}'"
   else
     echo "[SKIP] protoc schema compile (protoc not on PATH; optional locally)"
   fi
@@ -57,7 +63,7 @@ run_auth_docker() {
   step "docker compose build auth" docker compose -f "$compose" build auth
   step "auth mix checks (Docker)" docker compose -f "$compose" run --rm --entrypoint "" \
     -e MIX_ENV=test -e PGHOST=postgres -e PGPORT=5432 \
-    auth sh -c 'mix deps.get && mix format --check-formatted && mix compile --warnings-as-errors && mix credo --strict && mix ecto.create && mix ecto.migrate && mix test'
+    auth sh -c 'mix deps.get && mix hex.audit && mix format --check-formatted && mix compile --warnings-as-errors && mix credo --strict && mix ecto.create && mix ecto.migrate && mix test'
 }
 
 run_auth_host() {
@@ -72,6 +78,7 @@ run_auth_host() {
   (
     cd auth-server
     step "mix deps.get" mix deps.get
+    step "mix hex.audit" mix hex.audit
     step "mix format --check-formatted" mix format --check-formatted
     step "mix compile --warnings-as-errors" mix compile --warnings-as-errors
     step "mix credo --strict" mix credo --strict
@@ -99,7 +106,7 @@ run_world_docker() {
   step "docker compose build world" docker compose -f "$compose" build world
   step "world mix checks (Docker)" docker compose -f "$compose" run --rm --entrypoint "" \
     -e MIX_ENV=test \
-    world sh -c 'mix deps.get && mix format --check-formatted && mix compile --warnings-as-errors && mix credo --strict && mix test'
+    world sh -c 'mix deps.get && mix hex.audit && mix format --check-formatted && mix compile --warnings-as-errors && mix credo --strict && mix test'
 }
 
 run_assets_docker() {
@@ -114,7 +121,7 @@ run_assets_docker() {
   step "assets mix checks (Docker)" docker compose -f "$compose" run --rm --entrypoint "" \
     -e MIX_ENV=test \
     -e ASSETS_CAS_BACKEND=local \
-    assets sh -c 'mix deps.get && mix format --check-formatted && mix compile --warnings-as-errors && mix credo --strict && mix test'
+    assets sh -c 'mix deps.get && mix hex.audit && mix format --check-formatted && mix compile --warnings-as-errors && mix credo --strict && mix test'
 }
 
 echo "Alchemy local CI (target=${TARGET})"

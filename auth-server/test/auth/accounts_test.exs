@@ -2,10 +2,12 @@ defmodule Auth.AccountsTest do
   use Auth.DataCase, async: true
 
   import Auth.AccountsFixtures
+  import Ecto.Query
 
   alias Auth.Accounts
   alias Auth.Accounts.RefreshToken
   alias Auth.Password
+  alias Auth.Repo
 
   describe "register/1" do
     test "creates a user with hashed password and TOS stamp" do
@@ -164,7 +166,10 @@ defmodule Auth.AccountsTest do
       outside_grace =
         DateTime.add(DateTime.utc_now(), -30, :second) |> DateTime.truncate(:second)
 
-      {:ok, _} = RefreshToken.revoke(record, %{revoked_at: outside_grace})
+      # Backdate revoked_at past grace (bypass conditional revoke filter; x002d).
+      {1, _} =
+        from(r in RefreshToken, where: r.id == ^record.id)
+        |> Repo.update_all(set: [revoked_at: outside_grace])
 
       assert {:error, :invalid_refresh_token} = Accounts.refresh(refresh_token)
       assert {:error, :invalid_refresh_token} = Accounts.refresh(current)

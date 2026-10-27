@@ -83,6 +83,44 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"error" => "quota_exceeded"} = json_response(conn, 413)
   end
 
+  test "conditional quota: dual upload callers yield exactly one success", %{sub: sub} do
+    # Two 600-byte uploads against 1024 limit: only one may succeed (x002d).
+    # ConnCase async: false → shared sandbox (one connection): Tasks serialize,
+    # so this asserts the API contract, not a true race on the conditional UPDATE.
+    tasks =
+      for _ <- 1..2 do
+        Task.async(fn ->
+          Blobs.upload(sub, :crypto.strong_rand_bytes(600), "application/octet-stream")
+        end)
+      end
+
+    results = Enum.map(tasks, &Task.await(&1, 10_000))
+    oks = Enum.count(results, &match?({:ok, _, :created}, &1))
+    errs = Enum.count(results, &match?({:error, :quota_exceeded}, &1))
+    assert oks == 1
+    assert errs == 1
+    assert %{used_bytes: used, limit_bytes: 1024} = Blobs.quota(sub)
+    assert used == 600
+  end
+
+  test "upload with application/json content-type still reads raw body", %{
+    conn: conn,
+    signer: signer,
+    sub: sub
+  } do
+    # Use opaque bytes so ConnTest does not JSON-encode the body.
+    body = <<0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11>>
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> put_req_header("content-type", "application/json")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"blake3" => blake3, "size" => 12, "status" => "created"} = json_response(conn, 201)
+    assert blake3 == Blobs.blake3_hex(body)
+  end
+
   test "health", %{conn: conn} do
     conn = get(conn, "/health")
     assert %{"status" => "ok", "service" => "assets-server"} = json_response(conn, 200)
