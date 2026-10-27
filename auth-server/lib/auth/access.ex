@@ -19,11 +19,9 @@ defmodule Auth.Access do
   end
 
   def parse_visibility(v) when is_binary(v) do
-    try do
-      parse_visibility(String.to_existing_atom(v))
-    rescue
-      ArgumentError -> {:error, :invalid_visibility}
-    end
+    parse_visibility(String.to_existing_atom(v))
+  rescue
+    ArgumentError -> {:error, :invalid_visibility}
   end
 
   def parse_visibility(_), do: {:error, :invalid_visibility}
@@ -36,36 +34,27 @@ defmodule Auth.Access do
   @spec allowed?(String.t(), String.t(), atom()) :: boolean()
   def allowed?(owner_sub, viewer_sub, visibility)
       when is_binary(owner_sub) and is_binary(viewer_sub) and is_atom(visibility) do
-    cond do
-      owner_sub == viewer_sub ->
-        true
-
-      visibility == :public ->
-        true
-
-      visibility == :lan ->
-        # Path gate is world's job; relationship gate is open.
-        true
-
-      visibility == :private ->
-        false
-
-      visibility == :friends ->
-        Social.friends?(owner_sub, viewer_sub)
-
-      visibility == :friends_plus ->
-        Social.friends_plus?(owner_sub, viewer_sub)
-
-      visibility == :followers ->
-        Social.follower?(owner_sub, viewer_sub)
-
-      visibility == :followers_plus ->
-        Social.followers_plus?(owner_sub, viewer_sub)
-
-      true ->
-        false
-    end
+    owner_sub == viewer_sub or allowed_for_visibility?(owner_sub, viewer_sub, visibility)
   end
 
   def allowed?(_, _, _), do: false
+
+  # Path gate for `:lan` is world's job; relationship gate is open.
+  defp allowed_for_visibility?(_owner_sub, _viewer_sub, :public), do: true
+  defp allowed_for_visibility?(_owner_sub, _viewer_sub, :lan), do: true
+  defp allowed_for_visibility?(_owner_sub, _viewer_sub, :private), do: false
+
+  defp allowed_for_visibility?(owner_sub, viewer_sub, :friends),
+    do: Social.friends?(owner_sub, viewer_sub)
+
+  defp allowed_for_visibility?(owner_sub, viewer_sub, :friends_plus),
+    do: Social.friends_plus?(owner_sub, viewer_sub)
+
+  defp allowed_for_visibility?(owner_sub, viewer_sub, :followers),
+    do: Social.follower?(owner_sub, viewer_sub)
+
+  defp allowed_for_visibility?(owner_sub, viewer_sub, :followers_plus),
+    do: Social.followers_plus?(owner_sub, viewer_sub)
+
+  defp allowed_for_visibility?(_owner_sub, _viewer_sub, _visibility), do: false
 end

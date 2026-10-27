@@ -193,13 +193,11 @@ defmodule Auth.Social do
          {:ok, viewer_id} <- cast_id(viewer_id) do
       owner_friends = MapSet.new(friend_ids(owner_id))
 
-      cond do
-        MapSet.member?(owner_friends, viewer_id) ->
-          true
-
-        true ->
-          viewer_friends = MapSet.new(friend_ids(viewer_id))
-          not MapSet.disjoint?(owner_friends, viewer_friends)
+      if MapSet.member?(owner_friends, viewer_id) do
+        true
+      else
+        viewer_friends = MapSet.new(friend_ids(viewer_id))
+        not MapSet.disjoint?(owner_friends, viewer_friends)
       end
     else
       _ -> false
