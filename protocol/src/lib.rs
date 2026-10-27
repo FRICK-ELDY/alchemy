@@ -470,10 +470,7 @@ mod tests {
             FrameTickDecision::DropStale
         );
         // Wider tolerance for tests / future tuning.
-        assert_eq!(
-            decide_frame_tick(Some(10), 12, 2),
-            FrameTickDecision::Apply
-        );
+        assert_eq!(decide_frame_tick(Some(10), 12, 2), FrameTickDecision::Apply);
         assert_eq!(
             decide_frame_tick(Some(10), 13, 2),
             FrameTickDecision::ResyncSnapshot

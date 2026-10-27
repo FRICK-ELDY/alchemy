@@ -372,7 +372,9 @@ fn apply_frame(
         replace_entities,
     );
     match outcome {
-        ApplyFrameOutcome::Dropped if !replace_entities && prev_tick.is_some_and(|p| frame.tick < p) => {
+        ApplyFrameOutcome::Dropped
+            if !replace_entities && prev_tick.is_some_and(|p| frame.tick < p) =>
+        {
             log::warn!(
                 "drop RenderFrame: tick {} < last {}",
                 frame.tick,
@@ -1031,8 +1033,7 @@ mod tests {
         };
         let before = world.entities.clone();
 
-        let outcome =
-            apply_delta_entities(&mut world, 12, &[sample_entity(1, 9.0)], &[], false);
+        let outcome = apply_delta_entities(&mut world, 12, &[sample_entity(1, 9.0)], &[], false);
 
         assert_eq!(outcome, ApplyFrameOutcome::NeedResync);
         assert_eq!(world.last_frame_tick, Some(10));
@@ -1046,8 +1047,7 @@ mod tests {
             entities: Default::default(),
         };
 
-        let outcome =
-            apply_delta_entities(&mut world, 11, &[sample_entity(7, 3.0)], &[], false);
+        let outcome = apply_delta_entities(&mut world, 11, &[sample_entity(7, 3.0)], &[], false);
 
         assert_eq!(outcome, ApplyFrameOutcome::Applied);
         assert_eq!(world.last_frame_tick, Some(11));
@@ -1061,8 +1061,7 @@ mod tests {
             entities: [(1, EntityPose::default())].into(),
         };
 
-        let outcome =
-            apply_delta_entities(&mut world, 5, &[sample_entity(2, 1.5)], &[], true);
+        let outcome = apply_delta_entities(&mut world, 5, &[sample_entity(2, 1.5)], &[], true);
 
         assert_eq!(outcome, ApplyFrameOutcome::Applied);
         assert_eq!(world.last_frame_tick, Some(5));
@@ -1076,35 +1075,17 @@ mod tests {
     #[test]
     fn after_snapshot_next_published_tick_applies_same_tick_is_stale() {
         let mut world = WorldView::default();
-        let snap = apply_delta_entities(
-            &mut world,
-            5,
-            &[sample_entity(1, 1.0)],
-            &[],
-            true,
-        );
+        let snap = apply_delta_entities(&mut world, 5, &[sample_entity(1, 1.0)], &[], true);
         assert_eq!(snap, ApplyFrameOutcome::Applied);
         assert_eq!(world.last_frame_tick, Some(5));
 
         // Wrong host: snapshot.tick == next delta.tick → DropStale, pose stuck.
-        let same = apply_delta_entities(
-            &mut world,
-            5,
-            &[sample_entity(1, 9.0)],
-            &[],
-            false,
-        );
+        let same = apply_delta_entities(&mut world, 5, &[sample_entity(1, 9.0)], &[], false);
         assert_eq!(same, ApplyFrameOutcome::Dropped);
         assert!((world.entities.get(&1).unwrap().x - 1.0).abs() < f32::EPSILON);
 
         // Correct host: next publish is last_published+1.
-        let next = apply_delta_entities(
-            &mut world,
-            6,
-            &[sample_entity(1, 9.0)],
-            &[],
-            false,
-        );
+        let next = apply_delta_entities(&mut world, 6, &[sample_entity(1, 9.0)], &[], false);
         assert_eq!(next, ApplyFrameOutcome::Applied);
         assert_eq!(world.last_frame_tick, Some(6));
         assert!((world.entities.get(&1).unwrap().x - 9.0).abs() < f32::EPSILON);
