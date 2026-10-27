@@ -17,6 +17,7 @@
 
 mod finite;
 mod host_control;
+mod pose_delta;
 mod room_token;
 mod session;
 mod sim;
@@ -57,7 +58,6 @@ const DEFAULT_ZENOH_CONNECT: &str = "tcp/127.0.0.1:7447";
 const DEFAULT_WORLD_URL: &str = "http://127.0.0.1:4003";
 const DEFAULT_ROOM_ID: &str = "local";
 /// Pose change below this is treated as static (sleep / omit from upserts).
-const MOVE_EPSILON: f64 = 1e-4;
 /// Republish Manifest so late joiners still see blob refs (still ≪ frame rate).
 const MANIFEST_REPUBLISH: Duration = Duration::from_secs(5);
 /// Republish Presence for late joiners (same cadence as Manifest).
@@ -296,6 +296,13 @@ struct Pose {
     x: f64,
     y: f64,
     z: f64,
+    qx: f64,
+    qy: f64,
+    qz: f64,
+    qw: f64,
+    sx: f64,
+    sy: f64,
+    sz: f64,
     r: f32,
     g: f32,
     b: f32,
@@ -338,12 +345,24 @@ fn host_time_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn pose_with_color(x: f32, y: f32, z: f32, rgba: (f32, f32, f32, f32)) -> Pose {
+fn pose_with_trs(
+    translation: (f32, f32, f32),
+    quat_xyzw: [f32; 4],
+    rgba: (f32, f32, f32, f32),
+) -> Pose {
+    let (x, y, z) = translation;
     let (r, g, b, a) = rgba;
     Pose {
         x: f64::from(x),
         y: f64::from(y),
         z: f64::from(z),
+        qx: f64::from(quat_xyzw[0]),
+        qy: f64::from(quat_xyzw[1]),
+        qz: f64::from(quat_xyzw[2]),
+        qw: f64::from(quat_xyzw[3]),
+        sx: alchemy_protocol::ENTITY_SCALE_ONE[0],
+        sy: alchemy_protocol::ENTITY_SCALE_ONE[1],
+        sz: alchemy_protocol::ENTITY_SCALE_ONE[2],
         r,
         g,
         b,
@@ -353,39 +372,44 @@ fn pose_with_color(x: f32, y: f32, z: f32, rgba: (f32, f32, f32, f32)) -> Pose {
 
 fn moving_pose_from_sim(world: &PhysicsWorld) -> Option<(u32, Pose)> {
     let id = world.mesh_entity_id()?;
-    let (x, y, z) = world.moving_translation();
-    Some((id, pose_with_color(x, y, z, world.color_for(id))))
+    let (t, q) = world.moving_pose();
+    Some((id, pose_with_trs(t, q, world.color_for(id))))
 }
 
 fn user_root_pose_from_sim(world: &PhysicsWorld, slot: usize) -> Pose {
     let id = PhysicsWorld::user_root_entity_id(slot);
-    let (x, y, z) = world.user_root_translation(slot);
-    pose_with_color(x, y, z, world.color_for(id))
+    let (t, q) = world.user_root_pose(slot);
+    pose_with_trs(t, q, world.color_for(id))
 }
 
 fn box_pose_from_sim(world: &PhysicsWorld, index: usize) -> Pose {
     let id = world.boxes.entity_ids[index];
-    let (x, y, z) = world.box_translation(index);
-    pose_with_color(x, y, z, world.color_for(id))
+    let (t, q) = world.box_pose(index);
+    pose_with_trs(t, q, world.color_for(id))
 }
 
 fn to_entity(id: u32, pose: Pose) -> Entity {
-    Entity {
+    alchemy_protocol::entity_trs(
         id,
-        x: pose.x,
-        y: pose.y,
-        z: pose.z,
-        r: pose.r,
-        g: pose.g,
-        b: pose.b,
-        a: pose.a,
-    }
+        pose.x,
+        pose.y,
+        pose.z,
+        [pose.qx, pose.qy, pose.qz, pose.qw],
+        [pose.sx, pose.sy, pose.sz],
+        pose.r,
+        pose.g,
+        pose.b,
+        pose.a,
+    )
 }
 
 fn pose_changed(prev: Pose, next: Pose) -> bool {
-    (prev.x - next.x).abs() > MOVE_EPSILON
-        || (prev.y - next.y).abs() > MOVE_EPSILON
-        || (prev.z - next.z).abs() > MOVE_EPSILON
+    pose_delta::translation_changed([prev.x, prev.y, prev.z], [next.x, next.y, next.z])
+        || pose_delta::orientation_changed(
+            [prev.qx, prev.qy, prev.qz, prev.qw],
+            [next.qx, next.qy, next.qz, next.qw],
+        )
+        || pose_delta::scale_changed([prev.sx, prev.sy, prev.sz], [next.sx, next.sy, next.sz])
 }
 
 fn build_manifest_from_scene(
@@ -644,7 +668,7 @@ fn main() -> Result<()> {
     let host_pub = public_key_bytes(&host_signing_key);
 
     log::info!(
-        "host-server x0027 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        "host-server x0029 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
     );

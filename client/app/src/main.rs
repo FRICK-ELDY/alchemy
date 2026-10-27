@@ -1,4 +1,4 @@
-//! Alchemy client — x0026 Manifest world seal + x0025 attestation + x0024 gap→snapshot.
+//! Alchemy client — x0029 Frame TRS + x0026 Manifest seal + x0025 attestation.
 //!
 //! Guarantees:
 //! - Home tab login / register / logout; Room Token only after auth (x0018)
@@ -8,6 +8,7 @@
 //! - Frame tick gap → do not apply delta; `…/snapshot` replace (x0024 / peer-delivery)
 //! - Manifest `world_seal` + `host_attestation` via world JWKS before adopting `host_pub`; Presence `host_sig` (x0026)
 //! - Manifest entries drive mesh blake3 / Grab flags / box half-extents (x0027)
+//! - RenderFrame Entity carries quat + scale; client applies TRS (x0029)
 //! - PROTOCOL_PIN mismatch on Manifest/Presence rejects apply (x0023)
 //! - CI fallback: `AUTH_USER` or `ALCHEMY_AUTH_TOKEN` skips UI and joins
 //! - Subscribes to SceneManifest / PresenceState / RenderFrame; downloads blob; wgpu mesh
@@ -336,6 +337,7 @@ fn spawn_manifest_subscriber(
                                             g,
                                             b,
                                             a,
+                                            ..Default::default()
                                         });
                                     }
                                     std::collections::hash_map::Entry::Occupied(mut o) => {
@@ -410,6 +412,13 @@ fn apply_delta_entities(
                 x: e.x as f32,
                 y: e.y as f32,
                 z: e.z as f32,
+                qx: e.qx as f32,
+                qy: e.qy as f32,
+                qz: e.qz as f32,
+                qw: e.qw as f32,
+                sx: e.sx as f32,
+                sy: e.sy as f32,
+                sz: e.sz as f32,
                 r: e.r,
                 g: e.g,
                 b: e.b,
@@ -997,7 +1006,7 @@ fn main() -> Result<()> {
     let silent = auth::try_silent_session(&auth_url).context("silent auth")?;
     let auth_mode = if silent.is_some() { "silent" } else { "ui" };
     log::info!(
-        "client x0026 starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
+        "client x0029 starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
     );
 
     let mut gate = AuthGate::default();
@@ -1134,16 +1143,7 @@ mod tests {
     use scene::WorldView;
 
     fn sample_entity(id: u32, x: f64) -> Entity {
-        Entity {
-            id,
-            x,
-            y: 0.0,
-            z: 0.0,
-            r: 1.0,
-            g: 0.0,
-            b: 0.0,
-            a: 1.0,
-        }
+        alchemy_protocol::entity_at(id, x, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0)
     }
 
     #[test]
@@ -1180,6 +1180,34 @@ mod tests {
         assert_eq!(outcome, ApplyFrameOutcome::Applied);
         assert_eq!(world.last_frame_tick, Some(11));
         assert!((world.entities.get(&7).unwrap().x - 3.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn delta_applies_quat_and_scale() {
+        let mut world = WorldView {
+            last_frame_tick: Some(1),
+            entities: Default::default(),
+        };
+        let e = alchemy_protocol::entity_trs(
+            10,
+            0.0,
+            0.25,
+            0.0,
+            [0.0, 0.0, 0.70710677, 0.70710677],
+            [2.0, 1.0, 0.5],
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        );
+
+        let outcome = apply_delta_entities(&mut world, 2, &[e], &[], false);
+
+        assert_eq!(outcome, ApplyFrameOutcome::Applied);
+        let p = world.entities.get(&10).unwrap();
+        assert!((p.qw - 0.70710677).abs() < 1e-5);
+        assert!((p.sx - 2.0).abs() < f32::EPSILON);
+        assert!((p.sz - 0.5).abs() < f32::EPSILON);
     }
 
     #[test]

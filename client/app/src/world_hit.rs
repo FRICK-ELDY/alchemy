@@ -1,7 +1,9 @@
 //! World-space ray hits against grabbable box AABBs (Desktop + XR).
 //!
 //! Guarantees: nearest AABB among caller-supplied grabbable poses within [`MAX_HIT_DISTANCE`].
-//! Non-guarantees: mesh triangles, Slot hierarchy, XR dash quad (stays in surface/xr).
+//! Half-extent uses Manifest size × Frame `scale` max component (x0029).
+//! Non-guarantees: OBB / `pose.rotation()`（描画とヒットは回転で乖離しうる・x0029）;
+//! mesh triangles, Slot hierarchy, XR dash quad (stays in surface/xr).
 
 use std::collections::HashMap;
 
@@ -84,7 +86,8 @@ pub fn ray_hit_grabbable_boxes_with_extents(
 ) -> Option<BoxHit> {
     let mut best: Option<BoxHit> = None;
     for &(id, pose) in boxes {
-        let half = half_for(id);
+        // Definition × execution scale; rotation ignored (AABB, not OBB).
+        let half = half_for(id) * pose.scale().max_element().max(0.0);
         let Some(t) = ray_hit_aabb(ray, pose.position(), half) else {
             continue;
         };
@@ -134,6 +137,40 @@ pub fn pick_grabbable_desktop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aabb_half_uses_frame_scale_max() {
+        let ray = Ray {
+            origin: Vec3::new(0.0, 0.0, 3.0),
+            dir: Vec3::NEG_Z,
+        };
+        let unit = [(
+            10,
+            EntityPose {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                ..Default::default()
+            },
+        )];
+        // half=0.25 → enter at t=2.75; with scale 2 → half=0.5 → enter at t=2.5
+        let t_unit = ray_hit_grabbable_boxes(ray, &unit, 0.25).unwrap().t;
+        let scaled = [(
+            10,
+            EntityPose {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                sx: 2.0,
+                sy: 2.0,
+                sz: 2.0,
+                ..Default::default()
+            },
+        )];
+        let t_scaled = ray_hit_grabbable_boxes(ray, &scaled, 0.25).unwrap().t;
+        assert!(t_scaled < t_unit);
+        assert!((t_scaled - 2.5).abs() < 0.05, "t_scaled={t_scaled}");
+    }
 
     #[test]
     fn aabb_hit_from_front() {

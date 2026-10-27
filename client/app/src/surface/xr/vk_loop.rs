@@ -1007,8 +1007,8 @@ pub fn run_openxr(
                     .copied()
                     .unwrap_or(BOX_HALF_EXTENT);
                 let local = Mat4::from_scale_rotation_translation(
-                    Vec3::splat(he * 2.0),
-                    Quat::IDENTITY,
+                    pose.scale() * (he * 2.0),
+                    pose.rotation(),
                     pose.position(),
                 );
                 push_mesh_consts(

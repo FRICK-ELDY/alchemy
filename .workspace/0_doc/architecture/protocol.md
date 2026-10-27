@@ -2,7 +2,7 @@
 
 > **正本**: [`protocol/`](../../../protocol/)  
 > **配送契約**: [`protocol/peer-delivery.md`](../../../protocol/peer-delivery.md)（x0024）  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.12.0-x0027`
+> **PROTOCOL_PIN**: `alchemy-protocol/0.13.0-x0029`
 
 ## 置き場の方針
 
@@ -38,11 +38,13 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - `protocol_pin` / `host_pub`（32B Ed25519）+ `host_attestation` + **`world_seal`**（world JWT・body blake3）: client は pin / seal / attestation 失敗で leave；Frame/Presence は attested `host_pub`（x0026）
 - **定義の正本は world 発行 entries**（host は実行・seal、client は描画/Grab）。**GLB バイトは載せない**（assets-server CAS 参照のみ）
 
-### RenderFrame（`proto/render_frame.proto`）— 高頻度デルタ + 署名（x0023）
+### RenderFrame（`proto/render_frame.proto`）— 高頻度デルタ + 署名（x0023）+ TRS（x0029）
 
 - `RenderFrame { tick, host_time_ms, upserts[], removes[], host_sig }`
-- `Entity { id, x,y,z (double), r,g,b,a (float) }`
-- 静止 Entity は `upserts` に載せない。late join / **tick 欠落再同期**は `…/snapshot` queryable（同スキーマ・全 Entity upsert）
+- `Entity { id, x,y,z, r,g,b,a, qx,qy,qz,qw, sx,sy,sz }`（位置・色・**単位 quat xyzw**・**scale**。すべて描画境界は double / float 明示）
+  - quat: 発行側は未使用時も identity `(0,0,0,1)`（proto3 ゼロ quat は不正）
+  - scale: identity `(1,1,1)`。全ゼロは unset → 消費側は `(1,1,1)`。box 見た目 = Manifest `half_extent*2` × Frame scale
+- 静止 Entity は `upserts` に載せない（**回転 / scale 変化も upsert**）。late join / **tick 欠落再同期**は `…/snapshot` queryable（同スキーマ・全 Entity upsert）
 - Snapshot 成功条件: **`upserts` 非空**（空は未準備。host は `reply_err`）。client は snapshot に tick ゲートをかけない
 - デルタ tick: host は空デルタで `net_tick` を進めない。snapshot キャッシュ tick は **最後に publish した値**（次の未送 `net_tick` 禁止）。client は `FRAME_TICK_GAP_RESYNC`（既定 1）超過で適用せず snapshot（x0024）
 - `host_sig`: encode（sig 空）を host 秘密鍵で署名
