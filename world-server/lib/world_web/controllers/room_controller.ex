@@ -99,7 +99,6 @@ defmodule WorldWeb.RoomController do
             storage_unavailable(conn)
         end
 
-
       {:error, :anon_disabled} ->
         conn
         |> put_status(:unauthorized)
@@ -190,7 +189,6 @@ defmodule WorldWeb.RoomController do
   defp authorize_role_cached(_room, "host", _sub), do: {:error, :forbidden_host}
 
   defp authorize_role_cached(_room, _role, _sub), do: {:error, :invalid_role}
-
 
   @doc """
   x0025: issue HostAttestation JWT. Authorization must be a **host** Room Token.

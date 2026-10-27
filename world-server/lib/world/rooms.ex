@@ -194,7 +194,6 @@ defmodule World.Rooms do
   defp owner_matches(%Room{owner_sub: owner}, sub) when owner == sub, do: :ok
   defp owner_matches(%Room{}, _), do: {:error, :forbidden_host}
 
-
   defp insert_room(room_id, owner_sub, visibility) do
     Room.create(%{
       room_id: room_id,
