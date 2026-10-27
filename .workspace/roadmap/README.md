@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x002e`**；x002d done）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x002f`**；x002e active）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -95,8 +95,9 @@ depends_on: [x0006]
 | x002b | — | done | Grab OBB（描画 TRS 整合） | [x002b-grab-obb.md](slices/x002b-grab-obb.md) |
 | x002c | — | done | Manifest 初期 quat + scale | [x002c-manifest-initial-trs.md](slices/x002c-manifest-initial-trs.md) |
 | x002d | — | done | P3 衛生（Quota / Refresh / Parsers / audit / `-o` / protoc） | [x002d-p3-hygiene.md](slices/x002d-p3-hygiene.md) |
+| x002e | — | done | P3 境界・契約 + ランタイム（ClientIp / room_id / poison / UI worker） | [x002e-p3-boundary-runtime.md](slices/x002e-p3-boundary-runtime.md) |
 
-**現在の次:** ClientIp / room_id / Mutex poison / UI HTTP worker / JWKS 共通化 / undocumented_unsafe・shared-sim / EntityKind。
+**現在の次:** [x002e](slices/x002e-p3-boundary-runtime.md)。後続: JWKS 共通化 / undocumented_unsafe・shared-sim / EntityKind。
 
 ## 関連
 

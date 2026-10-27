@@ -59,12 +59,12 @@
 | P3-2 | Refresh `FOR UPDATE` / 条件付き revoke | -2 | accounts.refresh |
 | P3-3 | `/blobs` で Plug.Parsers を外す | -2 | JSON PUT が空にならないテスト |
 | P3-4 | `alchemy_auth_client` で JWKS 共通化 | -2 | world/assets 複製解消 + kid クールダウン |
-| P3-5 | ClientIp + TRUSTED_PROXIES / CF-Connecting-IP | -2 | edge README 必須手順 |
-| P3-6 | `mix hex.audit` / `cargo deny` を CI gate | -2 | hackney 解消または差し替え |
+| P3-5 | ClientIp + TRUSTED_PROXIES / CF-Connecting-IP | -2 | edge README 必須手順（x002e） |
+| P3-6 | `mix hex.audit` / `cargo deny` を CI gate | -2 | hackney 解消または差し替え（x002d） |
 | P3-7 | Compose 縦 E2E（login→token→input→frame） | -2 | smoke の vacuous success 廃止 |
-| P3-8 | Mutex poison は fatal | -2 | 空 Presence 継続をやめる |
-| P3-9 | UI HTTP をワーカーへ | -2 | desktop click 非ブロック |
-| P3-10 | room_id validator を protocol 正本に統一 | -2 | 共有テストベクタ |
+| P3-8 | Mutex poison は fatal | -2 | 空 Presence 継続をやめる（x002e） |
+| P3-9 | UI HTTP をワーカーへ | -2 | desktop click 非ブロック（x002e） |
+| P3-10 | room_id validator を protocol 正本に統一 | -2 | 共有テストベクタ（x002e） |
 | P3-11 | RenderFrame に quaternion | -2 | PIN 上げ |
 | P3-12 | 誤コミット `-o` 削除 | -1 | `git rm -- -o` |
 | P3-13 | protoc 全 proto・Rust cache | -1 | workflow 修正 |

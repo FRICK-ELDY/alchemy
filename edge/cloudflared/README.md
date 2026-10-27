@@ -100,6 +100,27 @@ docker compose -f assets-server/docker-compose.prod.yml --env-file assets-server
 
 ローカル開発用の `docker compose up`（dev）は **Tunnel に繋がない**。
 
+### 5b. auth `TRUSTED_PROXIES`（必須・x002e）
+
+Tunnel / Cloudflare 背後では `conn.remote_ip` が edge（cloudflared）になる。レート制限のクライアント IP 正本のため、**auth prod で必ず設定する**:
+
+1. `auth-server/.env.prod` に **cloudflared の実 peer IP/CIDR だけ**を列挙する（Docker bridge 全体は不可）。  
+   `docker-compose.prod.yml` は `4002:4002` を公開するため、`172.16.0.0/12` を信頼すると同一ネットの他コンテナが `CF-Connecting-IP` を偽造してレート制限を汚染できる。
+
+   ```bash
+   # ホスト上の cloudflared（loopback）
+   TRUSTED_PROXIES=127.0.0.1,::1
+
+   # 同一 compose ネットの cloudflared コンテナなら、その IP だけ:
+   # docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' <cloudflared>
+   # TRUSTED_PROXIES=172.18.0.5
+   ```
+
+2. auth を再起動後、信頼プロキシからの要求では **`CF-Connecting-IP` を優先**し、無ければ `X-Forwarded-For`（`AuthWeb.ClientIp`）。信頼外 peer の CF / XFF ヘッダは無視する。
+3. `TRUSTED_PROXIES` が空のままでは peer IP のみを使う（Tunnel 経由でも edge IP にレート制限が寄る）。
+
+未設定のまま公開しないこと。
+
 ### 6. Tunnel 起動
 
 `credentials-file: ./credentials.json` は起動時の cwd 基準。このディレクトリから起動する:

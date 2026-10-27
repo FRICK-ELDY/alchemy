@@ -26,7 +26,7 @@ pub mod sim_capability;
 pub mod wire_crypto;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.14.0-x002c";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.15.0-x002e";
 
 /// Identity orientation on the wire (`Entity.qx..qw`, xyzw).
 pub const ENTITY_QUAT_IDENTITY: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -179,7 +179,8 @@ pub fn host_control_zenoh_enabled() -> bool {
 pub enum RoomIdError {
     Empty,
     ContainsSlash,
-    NonAsciiPrintable,
+    TooLong,
+    InvalidCharset,
 }
 
 impl std::fmt::Display for RoomIdError {
@@ -187,8 +188,9 @@ impl std::fmt::Display for RoomIdError {
         match self {
             Self::Empty => write!(f, "room_id must not be empty"),
             Self::ContainsSlash => write!(f, "room_id must not contain '/'"),
-            Self::NonAsciiPrintable => {
-                write!(f, "room_id must be non-empty ASCII printable (0x20..=0x7E)")
+            Self::TooLong => write!(f, "room_id must be at most 64 bytes"),
+            Self::InvalidCharset => {
+                write!(f, "room_id must match [A-Za-z0-9_-]+")
             }
         }
     }
@@ -196,19 +198,30 @@ impl std::fmt::Display for RoomIdError {
 
 impl std::error::Error for RoomIdError {}
 
-/// Validate `ROOM_ID` for Zenoh key segments (x0017).
+/// Max byte length for [`validate_room_id`] (x002e; shared with world).
+pub const ROOM_ID_MAX_BYTES: usize = 64;
+
+/// Validate `ROOM_ID` for Zenoh key segments / world Room Token (x0017 / x002e).
 ///
-/// Guarantees: non-empty, no `/`, every byte in `0x20..=0x7E`.
-/// Non-guarantees: URL encoding, Unicode, max length.
+/// Guarantees: non-empty, no `/`, ≤ [`ROOM_ID_MAX_BYTES`], charset `[A-Za-z0-9_-]`.
+/// Non-guarantees: URL encoding, Unicode, uniqueness.
 pub fn validate_room_id(room_id: &str) -> Result<&str, RoomIdError> {
     if room_id.is_empty() {
         return Err(RoomIdError::Empty);
     }
+    // Slash is also outside the charset below; keep a dedicated error so callers
+    // (and tests) can distinguish Zenoh key-segment breaks from other bad chars.
     if room_id.contains('/') {
         return Err(RoomIdError::ContainsSlash);
     }
-    if !room_id.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
-        return Err(RoomIdError::NonAsciiPrintable);
+    if room_id.len() > ROOM_ID_MAX_BYTES {
+        return Err(RoomIdError::TooLong);
+    }
+    if !room_id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(RoomIdError::InvalidCharset);
     }
     Ok(room_id)
 }
@@ -640,19 +653,29 @@ mod tests {
         assert!(!protocol_pin_matches("alchemy-protocol/0.9.0-x0022"));
     }
 
+    /// Shared vectors with world `World.RoomId` (x002e). Keep Elixir tests in sync.
     #[test]
-    fn validate_room_id_accepts_local_and_rejects_bad() {
-        assert_eq!(validate_room_id("local").unwrap(), "local");
-        assert_eq!(validate_room_id("alpha").unwrap(), "alpha");
+    fn validate_room_id_shared_vectors() {
+        let ok = ["local", "alpha", "a", "A_b-9", &"x".repeat(64)];
+        for id in ok {
+            assert_eq!(validate_room_id(id).unwrap(), id, "accept {id:?}");
+        }
         assert_eq!(validate_room_id("").unwrap_err(), RoomIdError::Empty);
         assert_eq!(
             validate_room_id("a/b").unwrap_err(),
             RoomIdError::ContainsSlash
         );
         assert_eq!(
-            validate_room_id("部屋").unwrap_err(),
-            RoomIdError::NonAsciiPrintable
+            validate_room_id(&"x".repeat(65)).unwrap_err(),
+            RoomIdError::TooLong
         );
+        for bad in ["部屋", "a b", "a*b", "a.b", "a@b"] {
+            assert_eq!(
+                validate_room_id(bad).unwrap_err(),
+                RoomIdError::InvalidCharset,
+                "reject {bad:?}"
+            );
+        }
     }
 
     #[test]

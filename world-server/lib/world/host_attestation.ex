@@ -73,14 +73,7 @@ defmodule World.HostAttestation do
   defp validate_host_pub(bin) when byte_size(bin) == @host_pub_bytes, do: :ok
   defp validate_host_pub(_), do: {:error, :invalid_host_pub}
 
-  defp validate_room_id(value) do
-    if is_binary(value) and value != "" and not String.contains?(value, "/") and
-         byte_size(value) <= 64 do
-      :ok
-    else
-      {:error, :invalid_room_id}
-    end
-  end
+  defp validate_room_id(value), do: World.RoomId.validate(value)
 
   defp uuid_v4 do
     <<a::32, b::16, c::16, d::16, e::48>> = :crypto.strong_rand_bytes(16)
