@@ -92,7 +92,7 @@ x001f  Hermetic Compose E2E — done
 x0020  Desktop 手通し — done
 x0021  P1（Token refresh / JWKS bg / magnitude / host role）— done
 x0022  P2 前半（liveliness / WAN TLS）— done
-x0023  P2 後半（session binding / client verify / snapshot）
+x0023  P2 後半（session binding / client verify / snapshot）— done
 x0024  P3 まとめて（Quota/Parsers/audit 等）
 x0025  P4 Manifest 駆動（定義 vs 実行）
 ```
@@ -106,7 +106,7 @@ x0025  P4 Manifest 駆動（定義 vs 実行）
 - [x] 公網手順が release のみ、mailbox 非公開（x001e）
 - [x] WAN から host_control / 偽 liveliness でセッション破壊できない — host_control は x001e、liveliness jti 紐付けは x0022（単体テスト）
 - [x] 入室 10 分後も入力可能（x0021 P1-1）
-- [ ] architecture の保証表に assets GET モデルと Zenoh 信頼境界が追記されている（Zenoh TLS は x0022 で追記済み；assets GET は残）
+- [x] architecture の保証表に assets GET モデルと Zenoh 信頼境界が追記されている（Zenoh TLS は x0022；assets GET capability は x0023 client.md）
 - [x] 採用マイナスの P0–P1 が「解決済み」とコード再検証できる（x001e / x0021）
 - [x] WAN が平文 TCP のみの公開をやめる（x0022 TLS）
 

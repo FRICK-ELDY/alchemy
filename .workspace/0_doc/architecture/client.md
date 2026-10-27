@@ -1,7 +1,7 @@
 # client
 
 > **正本**: [`client/`](../../../client/)（Cargo workspace）  
-> **ステータス**: x0018（Home タブ login / logout / 最小 register・`ROOM_ID` キーは x0017）
+> **ステータス**: x0023（session Intent / Frame 検証 / snapshot）+ x0021 refresh + x0018 Home
 
 ## レイアウト
 
@@ -20,16 +20,17 @@
 
 | 保証する | 保証しない |
 |:---|:---|
-| Zenoh: Manifest / Presence / frame Subscribe、input Publish（キーは `ROOM_ID`・x0017） | ルーター機能（他人の通信の中継は禁止）・テナント名前空間 |
-| Manifest の blake3 → assets GET（s3 時は 302 追従・x001d）→ BLAKE3 → wgpu | LOD / KTX2 / マテリアル本格 / スキン |
-| ローカル entity 表への upsert/remove。Coin=1、user_root=3..6、boxes=10..18 | 署名付き Manifest / world 台帳 |
+| Zenoh: Manifest / Presence / frame Subscribe、snapshot get、input Publish（`ROOM_ID`・x0017 / x0023） | ルーター機能（他人の通信の中継は禁止）・テナント名前空間 |
+| Manifest の blake3 → assets GET（Bearer + CAS；s3 時は 302 追従・x001d）→ BLAKE3 → wgpu。**GET は認証済み読み取り capability**（所有者 grant は後続 BlobGrant） | LOD / KTX2 / マテリアル本格 / スキン |
+| Frame: `host_sig` 検証・finite・単調 tick。Manifest `host_pub` / pin 不一致は適用拒否（x0023） | 予測補間 / jitter buffer |
+| ローカル entity 表への upsert/remove。Coin=1、user_root=3..6、boxes=10..18。late join は snapshot | world 署名 Manifest 台帳 |
 | Desktop: WASD/Space/C → Intent（look yaw 相対）。クリックで Confined（失敗時 Locked）→ マウスルック。look 中 RMB → Grab（x0013） | 感度 UI / クロスヘア必須 |
 | Presence で自 entity 解決→カメラ；他 root は色付きボックス（x0015）。欠落で unset（x0016）。Home タブ login/register/logout（x0018）。logout は Leave + liveliness undeclare（x0019）。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` は CI サイレント login。`ZENOH_CONNECT` LAN | 5人以上・アバター GLB・XR 文字入力 |
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
 | OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose + 埋め込み baseColor + animatable node） | SteamVR パス直読み／PBR（MR/normal 等）／手トラ |
 | OpenXR: ダッシュ開→UI レーザー；閉→ワールドレーザー＋ Grab hold（squeeze／Select）（x0011） | Steal／回転追従／Facet 並べ替え／WorldRoot／CompositionLayerQuad |
-| auth login → Bearer 付き Room Token → InputEvent（含 grab_entity_id + aim_*） | OSC / Dual Editor / launcher 本実装 |
-| host: Rapier 60Hz + `is_finite` + per-`sub` Intent（最大4）+ Presence + Leave / jti 一致 liveliness / TTL 解放（x0022）+ `ROOM_ID` キー（x0017）+ user_root 3..6 + cuboid×9 + Grab → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk / Steal |
+| auth login → Room Token は **bind Intent のみ**。以降は Ed25519 session（x0023） | OSC / Dual Editor / launcher 本実装 |
+| host: Rapier 60Hz + session gate + `is_finite` + Presence + Leave / jti liveliness / TTL（x0022）+ signed 30Hz 純デルタ + snapshot queryable（x0023） | Formula / 予測補間 / verifier / 本格 Walk / Steal |
 | ESC（Desktop）/ Menu（OpenXR）ダッシュ・下タブ Home/Settings/Exit・Pinned Exit・Home アカウント殻（x0018）・Button hover・client 終了・host 終了は `ALCHEMY_HOST_PID`（Zenoh `host_control` は opt-in・x001e）。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 / XR 仮想キーボード / 認証付きリモート shutdown |
 | OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD・launcher 本実装 |
 
@@ -40,8 +41,9 @@
 | `alchemy/dev/room/{ROOM_ID}/manifest` | 低（host は 5s 再送で late joiner 補助） | `entity_id → blake3` + `locomotion` |
 | `alchemy/dev/room/{ROOM_ID}/presence` | 低（割当・解放変更 + 5s 再送） | `sub → user_root entity`（x0015 / 解放 x0016+x0019） |
 | `alchemy/dev/room/{ROOM_ID}/alive/{sub}/{jti}` | liveliness | client token；host は検証済み jti 一致時のみ reclaim（x0022） |
-| `alchemy/dev/room/{ROOM_ID}/frame` | 高（動いたものだけ） | pose upserts / removes（含 user_root） |
-| `alchemy/dev/room/{ROOM_ID}/input` | 入力 | Room Token 付き Intent（`move_*` + `buttons` + `leave`） |
+| `alchemy/dev/room/{ROOM_ID}/frame` | 高（動いたものだけ） | 署名付き pose upserts / removes（x0023） |
+| `alchemy/dev/room/{ROOM_ID}/snapshot` | queryable | late join 用フル pose（`RenderFrame`・x0023） |
+| `alchemy/dev/room/{ROOM_ID}/input` | 入力 | session 署名 Intent（Token は bind / refresh 時のみ・x0023） |
 | `alchemy/dev/room/{ROOM_ID}/host_control` | 低（既定オフ） | `ALCHEMY_HOST_CONTROL=1` のときのみ client→host `shutdown`（x001e。既定は `ALCHEMY_HOST_PID`） |
 
 ## Desktop バインド（x0009）

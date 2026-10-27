@@ -133,6 +133,13 @@ pub struct Uniforms {
     pub color: [f32; 4],
 }
 
+/// Pose table + tick gate under one lock (x0023: snapshot/delta race-free).
+#[derive(Default)]
+pub struct WorldView {
+    pub last_frame_tick: Option<u64>,
+    pub entities: std::collections::HashMap<u32, EntityPose>,
+}
+
 pub struct SharedState {
     /// Local camera / aim follows this host entity (`LOCAL_USER_ROOT_UNSET` until Presence).
     pub local_user_root: AtomicU32,
@@ -143,11 +150,16 @@ pub struct SharedState {
     pub assets_url: Arc<str>,
     /// Auth + Room Token gate (x0018). Intent publishes only when `room_token` is set.
     pub auth: Mutex<AuthGate>,
+    /// Ed25519 Intent session while joined (x0023).
+    pub intent_session: Mutex<Option<crate::intent_session::IntentSession>>,
+    /// Host Frame verify key from Manifest `host_pub` (x0023).
+    pub host_pub: Mutex<Option<Vec<u8>>>,
     /// Zenoh liveliness token while joined (x0022 `sub`+`jti`). Drop/undeclare on leave.
     pub liveliness: Mutex<Option<zenoh::liveliness::LivelinessToken>>,
     /// Previous liveliness key retained one Intent put after refresh rebind (x0022).
     pub liveliness_prev: Mutex<Option<zenoh::liveliness::LivelinessToken>>,
-    pub entities: Mutex<std::collections::HashMap<u32, EntityPose>>,
+    /// Entity poses + last applied frame tick (single mutex).
+    pub world: Mutex<WorldView>,
     pub look: Mutex<CameraLook>,
     pub intent: Mutex<MoveIntent>,
 }
@@ -172,11 +184,45 @@ impl SharedState {
         if let Ok(mut auth) = self.auth.lock() {
             auth.clear_room();
         }
+        if let Ok(mut session) = self.intent_session.lock() {
+            *session = None;
+        }
+        if let Ok(mut host_pub) = self.host_pub.lock() {
+            *host_pub = None;
+        }
+        if let Ok(mut world) = self.world.lock() {
+            *world = WorldView::default();
+        }
         if let Ok(mut token) = self.liveliness.lock() {
             *token = None;
         }
         if let Ok(mut prev) = self.liveliness_prev.lock() {
             *prev = None;
+        }
+    }
+
+    /// Host generation change: clear world + mint a new Intent session key (x0023).
+    pub fn reset_for_host_generation(&self) {
+        if let Ok(mut world) = self.world.lock() {
+            *world = WorldView::default();
+        }
+        if let Ok(mut sess) = self.intent_session.lock() {
+            if sess.is_some() {
+                *sess = Some(crate::intent_session::IntentSession::new());
+                log::info!("intent session renewed (new Ed25519 key) for host generation change");
+            }
+        }
+    }
+
+    /// Same host dropped our session (Presence reclaim): keep key, resend Room Token binds.
+    pub fn request_intent_rebind(&self) {
+        if let Ok(mut sess) = self.intent_session.lock() {
+            if let Some(s) = sess.as_mut() {
+                if !s.bind_pending() {
+                    s.mark_bind_pending();
+                    log::info!("intent rebind pending (Presence missing while steady)");
+                }
+            }
         }
     }
 }
@@ -415,10 +461,10 @@ impl SceneGpu {
 
     pub fn coin_pose(&self) -> EntityPose {
         self.shared
-            .entities
+            .world
             .lock()
             .ok()
-            .and_then(|m| m.get(&MESH_ENTITY_ID).copied())
+            .and_then(|w| w.entities.get(&MESH_ENTITY_ID).copied())
             .unwrap_or_default()
     }
 
@@ -433,10 +479,10 @@ impl SceneGpu {
             };
         }
         self.shared
-            .entities
+            .world
             .lock()
             .ok()
-            .and_then(|m| m.get(&id).copied())
+            .and_then(|w| w.entities.get(&id).copied())
             .unwrap_or(EntityPose {
                 x: 0.0,
                 y: DEFAULT_EYE_Y,
@@ -566,16 +612,18 @@ impl SceneGpu {
             type PoseList = Vec<(u32, EntityPose)>;
             let (boxes, remotes): (PoseList, PoseList) = self
                 .shared
-                .entities
+                .world
                 .lock()
                 .ok()
-                .map(|m| {
-                    let boxes: PoseList = m
+                .map(|w| {
+                    let boxes: PoseList = w
+                        .entities
                         .iter()
                         .filter(|(id, _)| EntityPose::is_grabbable_box(**id))
                         .map(|(id, p)| (*id, *p))
                         .collect();
-                    let remotes: PoseList = m
+                    let remotes: PoseList = w
+                        .entities
                         .iter()
                         .filter(|(id, _)| {
                             EntityPose::is_user_root(**id)

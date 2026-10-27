@@ -730,10 +730,10 @@ pub fn run_openxr(
                 }
             }
             let user_root = shared
-                .entities
+                .world
                 .lock()
                 .ok()
-                .and_then(|m| m.get(&shared.local_user_root()).copied())
+                .and_then(|w| w.entities.get(&shared.local_user_root()).copied())
                 .unwrap_or(EntityPose {
                     x: 0.0,
                     y: DEFAULT_EYE_Y,
@@ -747,11 +747,12 @@ pub fn run_openxr(
             );
 
             let grabbable_boxes: Vec<(u32, EntityPose)> = shared
-                .entities
+                .world
                 .lock()
                 .ok()
-                .map(|m| {
-                    m.iter()
+                .map(|w| {
+                    w.entities
+                        .iter()
                         .filter(|(id, _)| EntityPose::is_grabbable_box(**id))
                         .map(|(id, p)| (*id, *p))
                         .collect()
@@ -1147,8 +1148,8 @@ pub fn run_openxr(
 
             let _ = &mesh;
             if frame_i == 0 {
-                if let Ok(map) = shared.entities.lock() {
-                    if let Some(p) = map.get(&MESH_ENTITY_ID) {
+                if let Ok(world) = shared.world.lock() {
+                    if let Some(p) = world.entities.get(&MESH_ENTITY_ID) {
                         log::debug!("XR coin pose {:.2},{:.2},{:.2}", p.x, p.y, p.z);
                     }
                 }

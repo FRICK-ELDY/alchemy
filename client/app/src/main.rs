@@ -1,9 +1,11 @@
-//! Alchemy client — x0019 Leave / liveliness + auth shell / Presence / Grab / dash + x0021 refresh.
+//! Alchemy client — x0023 session Intent / Frame verify + x0021 refresh + Leave.
 //!
 //! Guarantees:
 //! - Home tab login / register / logout; Room Token only after auth (x0018)
 //! - Explicit Leave + Zenoh liveliness on join/logout (x0019); Intent TTL is host fallback
 //! - Access + Room Token auto-refresh at ~80% TTL while joined (x0021 P1-1)
+//! - Intent Ed25519 session (Token on bind only); Frame finite/tick/sig + snapshot (x0023)
+//! - PROTOCOL_PIN mismatch on Manifest/Presence rejects apply (x0023)
 //! - CI fallback: `AUTH_USER` or `ALCHEMY_AUTH_TOKEN` skips UI and joins
 //! - Subscribes to SceneManifest / PresenceState / RenderFrame; downloads blob; wgpu mesh
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
@@ -15,6 +17,7 @@
 
 mod auth;
 mod host_control;
+mod intent_session;
 mod jwt_sub;
 mod mesh;
 mod scene;
@@ -23,7 +26,6 @@ mod system_ui;
 mod turn;
 mod world_hit;
 
-use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU32;
@@ -32,9 +34,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use alchemy_protocol::wire_crypto::{frame_entities_finite, verify_frame};
 use alchemy_protocol::{
-    frame_key, input_key, liveliness_key, manifest_key, presence_key, validate_room_id, InputEvent,
-    Message, PresenceState, RenderFrame, SceneManifest, PROTOCOL_PIN,
+    frame_key, input_key, liveliness_key, manifest_key, presence_key, protocol_pin_matches,
+    snapshot_key, validate_room_id, Message, PresenceState, RenderFrame, SceneManifest,
+    PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use auth::AuthGate;
@@ -174,22 +178,70 @@ fn spawn_manifest_subscriber(
     thread::Builder::new()
         .name("zenoh-manifest".into())
         .spawn(move || {
-            let _session = session;
             log::info!("subscribed to {key}");
             let mut sent_blake3 = false;
+            // `true` only after a successful snapshot apply for the current `host_pub`.
+            let mut snapshot_ok = false;
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = bytes.to_bytes();
                 match SceneManifest::decode(payload.as_ref()) {
                     Ok(manifest) => {
+                        if !protocol_pin_matches(&manifest.protocol_pin) {
+                            log::error!(
+                                "SceneManifest protocol_pin mismatch: got {:?} want {PROTOCOL_PIN}; leaving room",
+                                manifest.protocol_pin
+                            );
+                            shared.leave_room_local();
+                            continue;
+                        }
+                        if manifest.host_pub.len() == 32 {
+                            // Only Some→different Some is a host generation change.
+                            // None→Some is first install (do not renew IntentSession).
+                            let generation_changed = match shared.host_pub.lock() {
+                                Ok(mut slot) => match slot.as_ref() {
+                                    None => {
+                                        *slot = Some(manifest.host_pub.clone());
+                                        false
+                                    }
+                                    Some(prev) if prev != &manifest.host_pub => {
+                                        *slot = Some(manifest.host_pub.clone());
+                                        true
+                                    }
+                                    Some(_) => false,
+                                },
+                                Err(err) => {
+                                    log::error!(
+                                        "host_pub lock poisoned; skip generation reset: {err}"
+                                    );
+                                    false
+                                }
+                            };
+                            if generation_changed {
+                                log::info!(
+                                    "SceneManifest host_pub changed; reset world + renew Intent session for new host"
+                                );
+                                shared.reset_for_host_generation();
+                                snapshot_ok = false;
+                            }
+                            if !snapshot_ok {
+                                snapshot_ok =
+                                    fetch_snapshot(&session, shared.room_id.as_ref(), &shared);
+                            }
+                        } else {
+                            log::warn!(
+                                "SceneManifest host_pub length {} (want 32); Frame verify will wait",
+                                manifest.host_pub.len()
+                            );
+                        }
                         log::info!(
-                            "SceneManifest revision={} entries={}",
+                            "SceneManifest revision={} entries={} pin_ok snapshot_ok={snapshot_ok}",
                             manifest.revision,
                             manifest.entries.len()
                         );
-                        if let Ok(mut map) = shared.entities.lock() {
+                        if let Ok(mut world) = shared.world.lock() {
                             for entry in &manifest.entries {
-                                map.entry(entry.entity_id).or_insert(EntityPose {
+                                world.entities.entry(entry.entity_id).or_insert(EntityPose {
                                     x: entry.x as f32,
                                     y: entry.y as f32,
                                     z: entry.z as f32,
@@ -216,6 +268,105 @@ fn spawn_manifest_subscriber(
     Ok(())
 }
 
+/// Apply a verified frame. `replace_entities` clears the map first (snapshot convergence).
+///
+/// Snapshot contract (x0023): success requires **non-empty `upserts`**. Empty signed
+/// frames (host not ready) must not set `snapshot_ok`. Snapshot also **skips** the
+/// monotonic tick gate so a racing delta cannot block convergence.
+fn apply_frame(shared: &SharedState, frame: RenderFrame, replace_entities: bool) -> bool {
+    let host_pub = shared.host_pub.lock().ok().and_then(|g| g.clone());
+    let Some(host_pub) = host_pub else {
+        log::warn!("drop RenderFrame: host_pub not yet known from Manifest");
+        return false;
+    };
+    if let Err(err) = verify_frame(&host_pub, &frame) {
+        log::warn!("drop RenderFrame: bad host_sig: {err}");
+        return false;
+    }
+    if !frame_entities_finite(&frame) {
+        log::warn!("drop RenderFrame: non-finite entity fields (tick={})", frame.tick);
+        return false;
+    }
+    if replace_entities && frame.upserts.is_empty() {
+        log::warn!(
+            "drop snapshot: empty upserts (tick={}); host not ready — retry later",
+            frame.tick
+        );
+        return false;
+    }
+    // Single lock for tick gate + entity mutate (no snapshot/delta interleave).
+    let Ok(mut world) = shared.world.lock() else {
+        log::warn!("drop RenderFrame: world lock poisoned/failed");
+        return false;
+    };
+    if !replace_entities {
+        match world.last_frame_tick {
+            Some(prev) if frame.tick < prev => {
+                log::warn!("drop RenderFrame: tick {} < last {prev}", frame.tick);
+                return false;
+            }
+            Some(prev) if frame.tick == prev => {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    if replace_entities {
+        world.entities.clear();
+    }
+    for e in frame.upserts {
+        world.entities.insert(
+            e.id,
+            EntityPose {
+                x: e.x as f32,
+                y: e.y as f32,
+                z: e.z as f32,
+                r: e.r,
+                g: e.g,
+                b: e.b,
+                a: e.a,
+            },
+        );
+    }
+    for id in frame.removes {
+        world.entities.remove(&id);
+    }
+    world.last_frame_tick = Some(frame.tick);
+    true
+}
+
+/// Returns true when a non-empty snapshot was verified and applied (replace).
+fn fetch_snapshot(session: &zenoh::Session, room_id: &str, shared: &SharedState) -> bool {
+    let key = snapshot_key(room_id);
+    let mut applied = false;
+    match session.get(&key).wait() {
+        Ok(receiver) => {
+            while let Ok(reply) = receiver.recv() {
+                match reply.result() {
+                    Ok(sample) => {
+                        let bytes: ZBytes = sample.payload().clone();
+                        match RenderFrame::decode(bytes.to_bytes().as_ref()) {
+                            Ok(frame) => {
+                                if apply_frame(shared, frame, /* replace */ true) {
+                                    log::info!("snapshot applied from {key}");
+                                    applied = true;
+                                }
+                            }
+                            Err(err) => log::warn!("snapshot decode failed: {err}"),
+                        }
+                    }
+                    Err(err) => log::warn!("snapshot reply err: {err}"),
+                }
+            }
+        }
+        Err(err) => log::warn!("snapshot get failed: {err}"),
+    }
+    if !applied {
+        log::warn!("snapshot not applied yet; will retry on next Manifest");
+    }
+    applied
+}
+
 fn spawn_frame_subscriber(
     session: zenoh::Session,
     key: String,
@@ -230,31 +381,13 @@ fn spawn_frame_subscriber(
         .name("zenoh-frame".into())
         .spawn(move || {
             let _session = session;
-            log::info!("subscribed to {key} (delta upserts/removes)");
+            log::info!("subscribed to {key} (signed delta upserts/removes)");
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = bytes.to_bytes();
                 match RenderFrame::decode(payload.as_ref()) {
                     Ok(frame) => {
-                        if let Ok(mut map) = shared.entities.lock() {
-                            for e in frame.upserts {
-                                map.insert(
-                                    e.id,
-                                    EntityPose {
-                                        x: e.x as f32,
-                                        y: e.y as f32,
-                                        z: e.z as f32,
-                                        r: e.r,
-                                        g: e.g,
-                                        b: e.b,
-                                        a: e.a,
-                                    },
-                                );
-                            }
-                            for id in frame.removes {
-                                map.remove(&id);
-                            }
-                        }
+                        let _ = apply_frame(&shared, frame, /* replace */ false);
                     }
                     Err(err) => log::warn!("RenderFrame decode failed: {err}"),
                 }
@@ -284,6 +417,14 @@ fn spawn_presence_subscriber(
                 let payload = bytes.to_bytes();
                 match PresenceState::decode(payload.as_ref()) {
                     Ok(state) => {
+                        if !protocol_pin_matches(&state.protocol_pin) {
+                            log::error!(
+                                "PresenceState protocol_pin mismatch: got {:?} want {PROTOCOL_PIN}; leaving room",
+                                state.protocol_pin
+                            );
+                            shared.leave_room_local();
+                            continue;
+                        }
                         let local_sub = shared
                             .auth
                             .lock()
@@ -313,12 +454,24 @@ fn spawn_presence_subscriber(
                                 }
                             }
                             None => {
-                                if shared.local_user_root() != LOCAL_USER_ROOT_UNSET {
+                                // Rebind only when we *lost* a prior assignment (not first-join wait).
+                                let had_slot =
+                                    shared.local_user_root() != LOCAL_USER_ROOT_UNSET;
+                                if had_slot {
                                     shared.set_local_user_root(LOCAL_USER_ROOT_UNSET);
                                     log::warn!(
-                                        "Presence: local sub={local_sub} not in assignments (revision={})",
+                                        "Presence: local sub={local_sub} left assignments (revision={})",
                                         state.revision
                                     );
+                                    let joined = shared
+                                        .auth
+                                        .lock()
+                                        .ok()
+                                        .map(|g| g.is_joined())
+                                        .unwrap_or(false);
+                                    if joined {
+                                        shared.request_intent_rebind();
+                                    }
                                 }
                             }
                         }
@@ -345,7 +498,7 @@ fn spawn_input_publisher(
         .name("zenoh-input-pub".into())
         .spawn(move || {
             log::info!(
-                "publishing InputEvent intent to {key} @ {INPUT_HZ}Hz (gated by room_token)"
+                "publishing InputEvent intent to {key} @ {INPUT_HZ}Hz (session Ed25519; Token on bind)"
             );
             let period = Duration::from_nanos(1_000_000_000 / INPUT_HZ);
             let mut next = Instant::now();
@@ -360,43 +513,56 @@ fn spawn_input_publisher(
                 let Some(room_token) = room_token else {
                     continue;
                 };
-
-                let intent = shared.intent.lock().ok().map(|g| *g).unwrap_or_default();
-                let (mx, my, mz, buttons, grab_entity_id, aim_x, aim_y, aim_z) = if intent.suppress
-                {
-                    (0.0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0.0)
-                } else {
-                    (
-                        intent.move_x,
-                        intent.move_y,
-                        intent.move_z,
-                        intent.buttons,
-                        intent.grab_entity_id,
-                        intent.aim_x,
-                        intent.aim_y,
-                        intent.aim_z,
-                    )
+                let Some(event) = (|| {
+                    let mut slot = shared.intent_session.lock().ok()?;
+                    let session = slot.as_mut()?;
+                    let intent = shared.intent.lock().ok().map(|g| *g).unwrap_or_default();
+                    let (mx, my, mz, buttons, grab_entity_id, aim_x, aim_y, aim_z) =
+                        if intent.suppress {
+                            (0.0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0.0)
+                        } else {
+                            (
+                                intent.move_x,
+                                intent.move_y,
+                                intent.move_z,
+                                intent.buttons,
+                                intent.grab_entity_id,
+                                intent.aim_x,
+                                intent.aim_y,
+                                intent.aim_z,
+                            )
+                        };
+                    Some(session.signed_intent(
+                        Some(&room_token),
+                        client_time_ms(),
+                        mx,
+                        my,
+                        mz,
+                        buttons,
+                        grab_entity_id,
+                        aim_x,
+                        aim_y,
+                        aim_z,
+                        false,
+                    ))
+                })() else {
+                    continue;
                 };
-                let event = InputEvent {
-                    room_token,
-                    client_time_ms: client_time_ms(),
-                    move_x: mx,
-                    move_y: my,
-                    move_z: mz,
-                    buttons,
-                    grab_entity_id,
-                    aim_x,
-                    aim_y,
-                    aim_z,
-                    leave: false,
-                };
+                let was_bind = !event.room_token.is_empty();
                 if let Err(err) = publisher.put(event.encode_to_vec()).wait() {
                     log::warn!("input publish failed: {err}");
+                    // Keep bind_pending so the next Intent still carries room_token.
                     continue;
                 }
-                // put().wait() only means the router accepted the sample — not that host verified
-                // the new jti. Rebind keeps the old token until the *next* put; host also uses a
-                // liveliness reclaim grace so Delete(old) before Intent(new) does not free the slot.
+                if was_bind {
+                    if let Ok(mut slot) = shared.intent_session.lock() {
+                        if let Some(s) = slot.as_mut() {
+                            s.note_bind_put_ok();
+                        }
+                    }
+                }
+                // put().wait() = router accept, not host verify. Liveliness rebind only after a
+                // bind Intent put (Token on wire) so refresh without bind does not rotate jti early.
                 let (need_rebind, need_retire_prev) = shared
                     .auth
                     .lock()
@@ -411,7 +577,7 @@ fn spawn_input_publisher(
                         gate.liveliness_retire_prev = false;
                     }
                 }
-                if need_rebind {
+                if need_rebind && was_bind {
                     match declare_room_alive(&shared, &session, /* retain_previous */ true) {
                         Ok(()) => {
                             if let Ok(mut gate) = shared.auth.lock() {
@@ -436,6 +602,9 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
         .context("read Room Token sub (unverified payload)")?;
     if let Ok(mut gate) = shared.auth.lock() {
         gate.apply_room(guest.token, local_sub.clone(), guest.expires_in);
+    }
+    if let Ok(mut session) = shared.intent_session.lock() {
+        *session = Some(intent_session::IntentSession::new());
     }
     log::info!(
         "joined room={} sub={local_sub} expires_in={}",
@@ -525,8 +694,13 @@ fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                                         local_sub,
                                         guest.expires_in,
                                     );
+                                    if let Ok(mut sess) = shared.intent_session.lock() {
+                                        if let Some(s) = sess.as_mut() {
+                                            s.mark_bind_pending();
+                                        }
+                                    }
                                     log::info!(
-                                        "Room Token refreshed expires_in={} (liveliness rebind pending)",
+                                        "Room Token refreshed expires_in={} (session rebind + liveliness pending)",
                                         guest.expires_in
                                     );
                                 }
@@ -585,26 +759,32 @@ pub fn declare_room_alive(
     Ok(())
 }
 
-/// Explicit Leave put + liveliness undeclare + local clear (x0019).
+/// Explicit Leave put + liveliness undeclare + local clear (x0019 / x0023 session).
 pub fn leave_room(shared: &SharedState, session: &zenoh::Session) {
     let room_token = shared.auth.lock().ok().and_then(|g| g.room_token.clone());
-    if let Some(room_token) = room_token {
+    let leave_event = {
+        let mut slot = shared.intent_session.lock().ok();
+        slot.as_mut().and_then(|opt| {
+            let sess = opt.as_mut()?;
+            Some(sess.signed_intent(
+                room_token.as_deref(),
+                client_time_ms(),
+                0.0,
+                0.0,
+                0.0,
+                0,
+                0,
+                0.0,
+                0.0,
+                0.0,
+                true,
+            ))
+        })
+    };
+    if let Some(event) = leave_event {
         let key = input_key(shared.room_id.as_ref());
         match session.declare_publisher(key.clone()).wait() {
             Ok(publisher) => {
-                let event = InputEvent {
-                    room_token,
-                    client_time_ms: client_time_ms(),
-                    move_x: 0.0,
-                    move_y: 0.0,
-                    move_z: 0.0,
-                    buttons: 0,
-                    grab_entity_id: 0,
-                    aim_x: 0.0,
-                    aim_y: 0.0,
-                    aim_z: 0.0,
-                    leave: true,
-                };
                 if let Err(err) = publisher.put(event.encode_to_vec()).wait() {
                     log::warn!("Leave InputEvent publish failed: {err}");
                 } else {
@@ -645,7 +825,7 @@ fn main() -> Result<()> {
     let silent = auth::try_silent_session(&auth_url).context("silent auth")?;
     let auth_mode = if silent.is_some() { "silent" } else { "ui" };
     log::info!(
-        "client x0022 starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
+        "client x0023 starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
     );
 
     let mut gate = AuthGate::default();
@@ -660,9 +840,11 @@ fn main() -> Result<()> {
         world_url: Arc::<str>::from(world_url),
         assets_url: Arc::<str>::from(assets_url.clone()),
         auth: Mutex::new(gate),
+        intent_session: Mutex::new(None),
+        host_pub: Mutex::new(None),
         liveliness: Mutex::new(None),
         liveliness_prev: Mutex::new(None),
-        entities: Mutex::new(HashMap::new()),
+        world: Mutex::new(scene::WorldView::default()),
         look: Mutex::new(Default::default()),
         intent: Mutex::new(Default::default()),
     });

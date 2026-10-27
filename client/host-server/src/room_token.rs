@@ -225,6 +225,14 @@ impl RoomTokenVerifier {
         }
         self.kick_refresh();
     }
+
+    /// Test-only: inject a DecodingKey so `verify` works without HTTP JWKS.
+    #[cfg(test)]
+    pub fn insert_decoding_key_for_test(&self, kid: &str, key: DecodingKey) {
+        let mut cache = self.cache.write().expect("jwks cache lock");
+        cache.keys.insert(kid.to_string(), key);
+        cache.fetched_at = Instant::now();
+    }
 }
 
 #[derive(Debug, Deserialize)]

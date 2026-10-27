@@ -10,6 +10,8 @@ message PresenceState {
   // Bump when the assignment set changes; late-joiner republish may reuse revision.
   uint64 revision = 1;
   repeated PresenceAssignment assignments = 2;
+  // Must equal peer `PROTOCOL_PIN` (x0023). Client rejects mismatch.
+  string protocol_pin = 3;
 }
 
 message PresenceAssignment {

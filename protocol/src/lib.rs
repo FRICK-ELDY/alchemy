@@ -1,22 +1,25 @@
 //! Alchemy wire contracts (Protobuf).
 //!
 //! # Guarantees
-//! - `PROTOCOL_PIN` identifies the schema generation expected by peers.
-//! - `RenderFrame` (delta upserts/removes), `SceneManifest` (+ `LocomotionConfig`),
-//!   `InputEvent`, `PresenceState` (`sub`→entity) encode/decode.
+//! - `PROTOCOL_PIN` identifies the schema generation expected by peers (also on Manifest/Presence).
+//! - `RenderFrame` (delta upserts/removes + host_sig), `SceneManifest` (+ `LocomotionConfig`, host_pub),
+//!   `InputEvent` (session Ed25519), `PresenceState` (`sub`→entity) encode/decode.
+//! - [`wire_crypto`] sign/verify helpers for Intent / Frame (x0023).
 //!
 //! # Non-guarantees
 //! - Bit-packing / prediction coding, DrawCommand taxonomy, audio/tracking frames.
-//! - Cryptographic verification of `InputEvent.room_token` (host-server).
+//! - Cryptographic verification of `InputEvent.room_token` (host-server JWKS).
 //! - Signed Manifest issuance by world-server (later).
 //! - Locomotion module list UI / suppress sources.
 //! - Tenant namespace `alchemy/tenant/...` (dev keys only: `alchemy/dev/room/{room_id}/…`).
-//! - 5+ concurrent guests / signed Manifest / WAN liveliness ACL.
+//! - 5+ concurrent guests / WAN liveliness ACL / Zenoh ACL.
 
 pub use prost::Message;
 
+pub mod wire_crypto;
+
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.9.0-x0022";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.9.0-x0023";
 
 /// Default free-move speed (m/s) when Manifest `move_speed` is 0.
 /// Shared by host Noclip and client Settings display (x000a).
@@ -60,6 +63,9 @@ pub const HOST_CONTROL_KEY_LOCAL: &str = "alchemy/dev/room/local/host_control";
 
 /// Default Zenoh key for local room presence (low-frequency sub→entity; x0015).
 pub const PRESENCE_KEY_LOCAL: &str = "alchemy/dev/room/local/presence";
+
+/// Default Zenoh key for local room snapshot queryable (x0023).
+pub const SNAPSHOT_KEY_LOCAL: &str = "alchemy/dev/room/local/snapshot";
 
 /// Payload accepted by host-server on `host_control_key(room_id)` (Slice E stub).
 pub const HOST_CONTROL_SHUTDOWN: &[u8] = b"shutdown";
@@ -146,6 +152,16 @@ pub fn presence_key(room_id: &str) -> String {
     format!("alchemy/dev/room/{room_id}/presence")
 }
 
+/// Build a snapshot queryable key for an arbitrary room id (x0023).
+pub fn snapshot_key(room_id: &str) -> String {
+    format!("alchemy/dev/room/{room_id}/snapshot")
+}
+
+/// True when wire `protocol_pin` matches this crate's [`PROTOCOL_PIN`].
+pub fn protocol_pin_matches(pin: &str) -> bool {
+    pin == PROTOCOL_PIN
+}
+
 /// Default Zenoh liveliness key prefix for local room (x0019; `sub` appended).
 pub const LIVELINESS_KEY_LOCAL_PREFIX: &str = "alchemy/dev/room/local/alive";
 
@@ -203,6 +219,7 @@ mod tests {
                 a: 1.0,
             }],
             removes: vec![9],
+            host_sig: vec![],
         };
         let bytes = frame.encode_to_vec();
         let decoded = RenderFrame::decode(bytes.as_slice()).expect("decode");
@@ -228,6 +245,8 @@ mod tests {
                 mode: LocomotionMode::Noclip.into(),
                 move_speed: 4.0,
             }),
+            protocol_pin: PROTOCOL_PIN.into(),
+            host_pub: vec![1, 2, 3],
         };
         let bytes = manifest.encode_to_vec();
         let decoded = SceneManifest::decode(bytes.as_slice()).expect("decode");
@@ -242,6 +261,8 @@ mod tests {
         let loco = decoded.locomotion.expect("locomotion");
         assert_eq!(loco.mode, i32::from(LocomotionMode::Noclip));
         assert!((loco.move_speed - 4.0).abs() < f32::EPSILON);
+        assert_eq!(decoded.protocol_pin, PROTOCOL_PIN);
+        assert_eq!(decoded.host_pub, vec![1, 2, 3]);
     }
 
     #[test]
@@ -258,6 +279,9 @@ mod tests {
             aim_y: 1.5,
             aim_z: 3.0,
             leave: false,
+            session_pub: vec![0u8; 32],
+            intent_seq: 3,
+            intent_sig: vec![0u8; 64],
         };
         let bytes = event.encode_to_vec();
         let decoded = InputEvent::decode(bytes.as_slice()).expect("decode");
@@ -270,6 +294,8 @@ mod tests {
         assert_eq!(decoded.grab_entity_id, 14);
         assert!((decoded.aim_y - 1.5).abs() < f32::EPSILON);
         assert!(!decoded.leave);
+        assert_eq!(decoded.intent_seq, 3);
+        assert_eq!(decoded.session_pub.len(), 32);
     }
 
     #[test]
@@ -286,6 +312,9 @@ mod tests {
             aim_y: 0.0,
             aim_z: 0.0,
             leave: true,
+            session_pub: vec![],
+            intent_seq: 0,
+            intent_sig: vec![],
         };
         let decoded = InputEvent::decode(event.encode_to_vec().as_slice()).expect("decode");
         assert!(decoded.leave);
@@ -305,6 +334,7 @@ mod tests {
                     entity_id: 4,
                 },
             ],
+            protocol_pin: PROTOCOL_PIN.into(),
         };
         let bytes = state.encode_to_vec();
         let decoded = PresenceState::decode(bytes.as_slice()).expect("decode");
@@ -312,6 +342,7 @@ mod tests {
         assert_eq!(decoded.assignments.len(), 2);
         assert_eq!(decoded.assignments[0].entity_id, 3);
         assert_eq!(decoded.assignments[1].sub, "bob-uuid");
+        assert_eq!(decoded.protocol_pin, PROTOCOL_PIN);
     }
 
     #[test]
@@ -321,6 +352,7 @@ mod tests {
         assert_eq!(manifest_key("local"), MANIFEST_KEY_LOCAL);
         assert_eq!(host_control_key("local"), HOST_CONTROL_KEY_LOCAL);
         assert_eq!(presence_key("local"), PRESENCE_KEY_LOCAL);
+        assert_eq!(snapshot_key("local"), SNAPSHOT_KEY_LOCAL);
         assert_eq!(presence_key("alpha"), "alchemy/dev/room/alpha/presence");
         assert_ne!(presence_key("alpha"), presence_key("beta"));
         assert_eq!(
@@ -343,6 +375,8 @@ mod tests {
             liveliness_binding_from_key("alchemy/dev/room/local/alive/a/b/c"),
             None
         );
+        assert!(protocol_pin_matches(PROTOCOL_PIN));
+        assert!(!protocol_pin_matches("alchemy-protocol/0.9.0-x0022"));
     }
 
     #[test]

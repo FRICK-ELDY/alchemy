@@ -7,6 +7,8 @@ description = "Alchemy wire contracts (Protobuf SSoT) — shared by client, host
 
 [dependencies]
 prost = "0.14"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
 
 [build-dependencies]
 prost-build = "0.14"

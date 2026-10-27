@@ -322,10 +322,10 @@ impl App {
             }
         } else {
             self.shared
-                .entities
+                .world
                 .lock()
                 .ok()
-                .and_then(|g| g.get(&id).copied())
+                .and_then(|w| w.entities.get(&id).copied())
                 .unwrap_or(EntityPose {
                     x: 0.0,
                     y: 1.6,
@@ -339,11 +339,12 @@ impl App {
 
     fn grabbable_boxes(&self) -> Vec<(u32, EntityPose)> {
         self.shared
-            .entities
+            .world
             .lock()
             .ok()
-            .map(|g| {
-                g.iter()
+            .map(|w| {
+                w.entities
+                    .iter()
                     .filter(|(id, _)| EntityPose::is_grabbable_box(**id))
                     .map(|(id, p)| (*id, *p))
                     .collect()

@@ -84,6 +84,7 @@ impl AuthGate {
     }
 
     /// Room Token refresh: keep join, schedule liveliness rebind after next Intent put.
+    /// Caller should also `intent_session.mark_bind_pending()` (x0023).
     pub fn apply_room_refresh(&mut self, room_token: String, local_sub: String, expires_in: u64) {
         self.room_token = Some(room_token);
         self.local_sub = Some(local_sub);

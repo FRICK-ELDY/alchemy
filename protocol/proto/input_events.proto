@@ -26,6 +26,13 @@ message InputEvent {
   float aim_z = 10;
   // Explicit leave (x0019). Host verifies token then reclaims Presence immediately; move/grab ignored.
   bool leave = 11;
+  // Ed25519 public key (32 bytes) identifying this Intent session (x0023). Required every Intent.
+  bytes session_pub = 12;
+  // Monotonic per-session sequence; host rejects `seq <= last_seq`.
+  uint64 intent_seq = 13;
+  // Ed25519 signature (64 bytes) over encode with `intent_sig` cleared (x0023).
+  // Steady Intent may omit `room_token`; bind / Token refresh must include a valid JWT.
+  bytes intent_sig = 14;
 }
 
 // Bit flags for InputEvent.buttons (Desktop x0009/x0013; VR Grab = grip / Select when dash closed).
