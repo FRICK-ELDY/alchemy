@@ -1,6 +1,9 @@
 //! OpenXR + Vulkan frame loop (SteamVR). World via clear shader; UI via CPU canvas quad.
 //!
-//! Safety: OpenXR/Vulkan FFI; drop order ends session before destroying vk devices.
+//! # Safety (FFI)
+//! Vulkan objects are created on the device opened for this XR session and destroyed before
+//! the device (drop order: session end → pipelines/images/buffers → device). Each `unsafe`
+//! call site comments which handle it uses and the matching destroy/error path.
 
 #![allow(clippy::missing_transmute_annotations)] // OpenXR vulkan_enable2 get_instance_proc_addr
 #![allow(clippy::too_many_arguments)] // upload_rgba_to_image staging path
@@ -1479,6 +1482,7 @@ fn push_mesh_consts(
     bytes[..64].copy_from_slice(bytemuck::bytes_of(&cols));
     bytes[64..68].copy_from_slice(&mode.to_le_bytes());
     bytes[80..96].copy_from_slice(bytemuck::bytes_of(&factor));
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     unsafe {
         device.cmd_push_constants(
             cmd,
@@ -1496,6 +1500,7 @@ fn bind_mesh_texture(
     mesh_pipe: &MeshPipeline,
     tex_set: vk::DescriptorSet,
 ) {
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     unsafe {
         device.cmd_bind_descriptor_sets(
             cmd,
@@ -1514,6 +1519,7 @@ fn create_staging_buffer(
     device: &ash::Device,
     size: vk::DeviceSize,
 ) -> Result<StagingBuffer> {
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let buffer = unsafe {
         device.create_buffer(
             &vk::BufferCreateInfo::default()
@@ -1523,6 +1529,7 @@ fn create_staging_buffer(
             None,
         )?
     };
+    // Safety: Vulkan object/handle from this device/instance; ash query is read-only.
     let reqs = unsafe { device.get_buffer_memory_requirements(buffer) };
     let memory_type = find_memory_type(
         instance,
@@ -1530,6 +1537,7 @@ fn create_staging_buffer(
         reqs.memory_type_bits,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
     )?;
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let memory = unsafe {
         device.allocate_memory(
             &vk::MemoryAllocateInfo::default()
@@ -1538,6 +1546,7 @@ fn create_staging_buffer(
             None,
         )?
     };
+    // Safety: buffer/image and memory allocated on this device; sizes from get_*_memory_requirements.
     unsafe { device.bind_buffer_memory(buffer, memory, 0)? };
     Ok(StagingBuffer {
         memory,
@@ -1547,6 +1556,7 @@ fn create_staging_buffer(
 }
 
 fn destroy_staging(device: &ash::Device, staging: &StagingBuffer) {
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     unsafe {
         device.destroy_buffer(staging.buffer, None);
         device.free_memory(staging.memory, None);
@@ -1559,6 +1569,7 @@ fn find_memory_type(
     type_bits: u32,
     props: vk::MemoryPropertyFlags,
 ) -> Result<u32> {
+    // Safety: Vulkan object/handle from this device/instance; ash query is read-only.
     let mem_props = unsafe { instance.get_physical_device_memory_properties(physical) };
     for i in 0..mem_props.memory_type_count {
         if type_bits & (1 << i) != 0
@@ -1586,6 +1597,7 @@ fn upload_rgba_to_image(
     if pixels.len() < bytes || staging.size < bytes as u64 {
         bail!("staging/pixel size mismatch");
     }
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     unsafe {
         let ptr =
             device.map_memory(staging.memory, 0, staging.size, vk::MemoryMapFlags::empty())?;
@@ -1761,6 +1773,7 @@ fn create_clear_pipeline(
         },
     ];
     let noop = vk::StencilOpState::default();
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let pipes = unsafe {
         device.create_graphics_pipelines(
             vk::PipelineCache::null(),
@@ -1896,6 +1909,7 @@ fn create_mesh_pipeline(
     render_pass: vk::RenderPass,
 ) -> Result<MeshPipeline> {
     let spv = compile_wgsl_spv_multiview(MESH_WGSL).context("compile mesh shader")?;
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let module = unsafe {
         device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&spv), None)?
     };
@@ -1907,6 +1921,7 @@ fn create_mesh_pipeline(
         stage_flags: vk::ShaderStageFlags::VERTEX,
         ..Default::default()
     }];
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let views_set_layout = unsafe {
         device.create_descriptor_set_layout(
             &vk::DescriptorSetLayoutCreateInfo::default().bindings(&views_bindings),
@@ -1929,6 +1944,7 @@ fn create_mesh_pipeline(
             ..Default::default()
         },
     ];
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let tex_set_layout = unsafe {
         device.create_descriptor_set_layout(
             &vk::DescriptorSetLayoutCreateInfo::default().bindings(&tex_bindings),
@@ -1940,6 +1956,7 @@ fn create_mesh_pipeline(
         offset: 0,
         size: MESH_PUSH_BYTES,
     }];
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let layout = unsafe {
         device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::default()
@@ -1959,6 +1976,7 @@ fn create_mesh_pipeline(
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
     )?;
 
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let views_pool = unsafe {
         device.create_descriptor_pool(
             &vk::DescriptorPoolCreateInfo::default()
@@ -1970,6 +1988,7 @@ fn create_mesh_pipeline(
             None,
         )?
     };
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let views_set = unsafe {
         device.allocate_descriptor_sets(
             &vk::DescriptorSetAllocateInfo::default()
@@ -1982,6 +2001,7 @@ fn create_mesh_pipeline(
         offset: 0,
         range: ubo_size,
     }];
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     unsafe {
         device.update_descriptor_sets(
             &[vk::WriteDescriptorSet {
@@ -2042,6 +2062,7 @@ fn create_mesh_pipeline(
         },
     ];
     let noop = vk::StencilOpState::default();
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let pipes = unsafe {
         device.create_graphics_pipelines(
             vk::PipelineCache::null(),
@@ -2104,6 +2125,7 @@ fn create_mesh_pipeline(
         )
     }
     .map_err(|(_, e)| e)?;
+    // Safety: handle was created on this path and not previously destroyed.
     unsafe { device.destroy_shader_module(module, None) };
 
     Ok(MeshPipeline {
@@ -2125,6 +2147,7 @@ fn create_mesh_pipeline(
 }
 
 fn destroy_mesh_pipeline(device: &ash::Device, p: MeshPipeline) {
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     unsafe {
         device.destroy_pipeline(p.pipeline, None);
         device.destroy_pipeline_layout(p.layout, None);
@@ -2158,6 +2181,7 @@ fn update_view_proj_ubo(
         let proj = projection_from_fov(view.fov, NEAR_Z, FAR_Z);
         ubo.mats[i] = (proj * view_mat).to_cols_array();
     }
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     unsafe {
         let ptr = device.map_memory(
             mesh_pipe.ubo_mem,
@@ -2217,7 +2241,9 @@ fn create_depth_resources(
         .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED);
+    // Safety: device owned by this loop; created object destroyed in paired cleanup / error path.
     let image = unsafe { device.create_image(&image_info, None)? };
+    // Safety: Vulkan object/handle from this device/instance; ash query is read-only.
     let reqs = unsafe { device.get_image_memory_requirements(image) };
     let memory_type = find_memory_type(
         instance,
@@ -2225,6 +2251,7 @@ fn create_depth_resources(
         reqs.memory_type_bits,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
     )?;
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let memory = unsafe {
         device.allocate_memory(
             &vk::MemoryAllocateInfo::default()
@@ -2233,7 +2260,9 @@ fn create_depth_resources(
             None,
         )?
     };
+    // Safety: buffer/image and memory allocated on this device; sizes from get_*_memory_requirements.
     unsafe { device.bind_image_memory(image, memory, 0)? };
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let view = unsafe {
         device.create_image_view(
             &vk::ImageViewCreateInfo::default()
@@ -2258,6 +2287,7 @@ fn create_depth_resources(
 }
 
 fn destroy_depth_resources(device: &ash::Device, d: DepthResources) {
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     unsafe {
         device.destroy_image_view(d.view, None);
         device.destroy_image(d.image, None);
@@ -2273,6 +2303,7 @@ fn create_buffer(
     usage: vk::BufferUsageFlags,
     props: vk::MemoryPropertyFlags,
 ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let buffer = unsafe {
         device.create_buffer(
             &vk::BufferCreateInfo::default()
@@ -2282,8 +2313,10 @@ fn create_buffer(
             None,
         )?
     };
+    // Safety: Vulkan object/handle from this device/instance; ash query is read-only.
     let reqs = unsafe { device.get_buffer_memory_requirements(buffer) };
     let memory_type = find_memory_type(instance, physical, reqs.memory_type_bits, props)?;
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let memory = unsafe {
         device.allocate_memory(
             &vk::MemoryAllocateInfo::default()
@@ -2292,6 +2325,7 @@ fn create_buffer(
             None,
         )?
     };
+    // Safety: buffer/image and memory allocated on this device; sizes from get_*_memory_requirements.
     unsafe { device.bind_buffer_memory(buffer, memory, 0)? };
     Ok((buffer, memory))
 }
@@ -2352,6 +2386,7 @@ fn upload_gpu_submesh(
         vk::BufferUsageFlags::INDEX_BUFFER,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
     )?;
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     unsafe {
         let ptr = device.map_memory(vmem, 0, vbytes.len() as u64, vk::MemoryMapFlags::empty())?;
         std::ptr::copy_nonoverlapping(vbytes.as_ptr(), ptr as *mut u8, vbytes.len());
@@ -2398,6 +2433,7 @@ fn destroy_gpu_submesh(device: &ash::Device, g: GpuSubmesh) {
     if let Some(tex) = g.texture {
         destroy_gpu_texture(device, tex);
     }
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     unsafe {
         device.destroy_buffer(g.vbo, None);
         device.free_memory(g.vmem, None);
@@ -2407,6 +2443,7 @@ fn destroy_gpu_submesh(device: &ash::Device, g: GpuSubmesh) {
 }
 
 fn destroy_gpu_texture(device: &ash::Device, t: GpuTexture) {
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     unsafe {
         device.destroy_descriptor_pool(t.pool, None);
         device.destroy_sampler(t.sampler, None);
@@ -2472,7 +2509,9 @@ fn upload_rgba_texture(
         .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED);
+    // Safety: device owned by this loop; created object destroyed in paired cleanup / error path.
     let image = unsafe { device.create_image(&image_info, None)? };
+    // Safety: Vulkan object/handle from this device/instance; ash query is read-only.
     let reqs = unsafe { device.get_image_memory_requirements(image) };
     let memory_type = find_memory_type(
         instance,
@@ -2480,6 +2519,7 @@ fn upload_rgba_texture(
         reqs.memory_type_bits,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
     )?;
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let memory = unsafe {
         device.allocate_memory(
             &vk::MemoryAllocateInfo::default()
@@ -2488,8 +2528,10 @@ fn upload_rgba_texture(
             None,
         )?
     };
+    // Safety: buffer/image and memory allocated on this device; sizes from get_*_memory_requirements.
     unsafe { device.bind_image_memory(image, memory, 0)? };
 
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let view = unsafe {
         device.create_image_view(
             &vk::ImageViewCreateInfo::default()
@@ -2506,6 +2548,7 @@ fn upload_rgba_texture(
             None,
         )?
     };
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let sampler = unsafe {
         device.create_sampler(
             &vk::SamplerCreateInfo::default()
@@ -2534,6 +2577,7 @@ fn upload_rgba_texture(
     destroy_staging(device, &staging);
     upload?;
 
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let pool = unsafe {
         device.create_descriptor_pool(
             &vk::DescriptorPoolCreateInfo::default()
@@ -2551,6 +2595,7 @@ fn upload_rgba_texture(
             None,
         )?
     };
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     let set = unsafe {
         device.allocate_descriptor_sets(
             &vk::DescriptorSetAllocateInfo::default()
@@ -2568,6 +2613,7 @@ fn upload_rgba_texture(
         image_view: vk::ImageView::null(),
         image_layout: vk::ImageLayout::UNDEFINED,
     }];
+    // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
     unsafe {
         device.update_descriptor_sets(
             &[

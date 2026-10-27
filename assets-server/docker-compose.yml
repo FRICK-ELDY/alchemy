@@ -1,8 +1,8 @@
 services:
   assets:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: assets-server/Dockerfile
       target: dev
     ports:
       - "4004:4004"
@@ -27,6 +27,7 @@ services:
       ASSETS_S3_PRESIGN_TTL_SECONDS: ${ASSETS_S3_PRESIGN_TTL_SECONDS:-300}
     volumes:
       - .:/app
+      - ../shared/alchemy_auth_client:/shared/alchemy_auth_client
       - assets_deps:/app/deps
       - assets_build:/app/_build
     command: >

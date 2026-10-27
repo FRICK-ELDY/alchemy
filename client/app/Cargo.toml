@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "Alchemy client (x0008: OpenXR dash+Exit + system_ui + C-C/D render)"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "client"
 path = "src/main.rs"

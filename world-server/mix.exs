@@ -32,6 +32,7 @@ defmodule World.MixProject do
       {:ecto_sqlite3, "~> 0.17"},
       {:bandit, "~> 1.14"},
       {:jason, "~> 1.2"},
+      {:alchemy_auth_client, path: "../shared/alchemy_auth_client"},
       {:joken, "~> 2.6"},
       {:jose, "~> 1.11.13"},
       {:req, "~> 0.5"},

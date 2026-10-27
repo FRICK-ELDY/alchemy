@@ -1,8 +1,8 @@
 services:
   world:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: world-server/Dockerfile
       target: dev
     ports:
       - "4003:4003"
@@ -20,6 +20,7 @@ services:
       WORLD_DATABASE_PATH: /app/priv/data/world_dev.db
     volumes:
       - .:/app
+      - ../shared/alchemy_auth_client:/shared/alchemy_auth_client
       - world_deps:/app/deps
       - world_build:/app/_build
       - world_data:/app/priv/data

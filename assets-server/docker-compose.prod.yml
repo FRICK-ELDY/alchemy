@@ -27,8 +27,8 @@ x-assets-environment: &assets-environment
 services:
   assets:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: assets-server/Dockerfile
       target: release
     ports:
       - "4004:4004"
@@ -43,8 +43,8 @@ services:
   assets-migrate:
     profiles: ["migrate"]
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: assets-server/Dockerfile
       target: release
     extra_hosts:
       - "host.docker.internal:host-gateway"

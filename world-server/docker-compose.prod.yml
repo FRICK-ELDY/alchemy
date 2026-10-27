@@ -12,8 +12,8 @@
 services:
   world:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: world-server/Dockerfile
       target: release
     ports:
       - "4003:4003"

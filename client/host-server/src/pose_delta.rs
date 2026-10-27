@@ -48,7 +48,8 @@ mod tests {
 
     #[test]
     fn opposite_hemisphere_quats_are_same_orientation() {
-        let q = [0.0, 0.0, 0.7071067811865476, 0.7071067811865476];
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let q = [0.0, 0.0, h, h];
         let neg = [-q[0], -q[1], -q[2], -q[3]];
         assert!(!orientation_changed(q, neg));
         assert!(!orientation_changed(q, q));
@@ -57,7 +58,8 @@ mod tests {
     #[test]
     fn rotation_only_is_detected() {
         let identity = [0.0, 0.0, 0.0, 1.0];
-        let yaw90 = [0.0, 0.7071067811865476, 0.0, 0.7071067811865476];
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let yaw90 = [0.0, h, 0.0, h];
         assert!(orientation_changed(identity, yaw90));
         assert!(!translation_changed([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]));
     }
