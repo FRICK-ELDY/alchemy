@@ -1,10 +1,11 @@
-//! Alchemy client — x0023 session Intent / Frame verify + x0021 refresh + Leave.
+//! Alchemy client — x0024 delivery gap→snapshot + x0023 session / Frame + Leave.
 //!
 //! Guarantees:
 //! - Home tab login / register / logout; Room Token only after auth (x0018)
 //! - Explicit Leave + Zenoh liveliness on join/logout (x0019); Intent TTL is host fallback
 //! - Access + Room Token auto-refresh at ~80% TTL while joined (x0021 P1-1)
 //! - Intent Ed25519 session (Token on bind only); Frame finite/tick/sig + snapshot (x0023)
+//! - Frame tick gap → do not apply delta; `…/snapshot` replace (x0024 / peer-delivery)
 //! - PROTOCOL_PIN mismatch on Manifest/Presence rejects apply (x0023)
 //! - CI fallback: `AUTH_USER` or `ALCHEMY_AUTH_TOKEN` skips UI and joins
 //! - Subscribes to SceneManifest / PresenceState / RenderFrame; downloads blob; wgpu mesh
@@ -13,7 +14,8 @@
 //! - Camera follows Presence-assigned local user_root; remotes as colored boxes
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
 //!
-//! Non-guarantees: Steal, XR login keyboard, email verify UI, Quest standalone, WSL HMD
+//! Non-guarantees: Steal, XR login keyboard, email verify UI, Quest standalone, WSL HMD,
+//! reliable-delivery ACK channel
 
 mod auth;
 mod host_control;
@@ -36,9 +38,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alchemy_protocol::wire_crypto::{frame_entities_finite, verify_frame};
 use alchemy_protocol::{
-    frame_key, input_key, liveliness_key, manifest_key, presence_key, protocol_pin_matches,
-    snapshot_key, validate_room_id, Message, PresenceState, RenderFrame, SceneManifest,
-    PROTOCOL_PIN,
+    decide_frame_tick, frame_key, input_key, liveliness_key, manifest_key, presence_key,
+    protocol_pin_matches, snapshot_key, validate_room_id, FrameTickDecision, Message,
+    PresenceState, RenderFrame, SceneManifest, FRAME_TICK_GAP_RESYNC, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use auth::AuthGate;
@@ -268,56 +270,38 @@ fn spawn_manifest_subscriber(
     Ok(())
 }
 
-/// Apply a verified frame. `replace_entities` clears the map first (snapshot convergence).
+/// Outcome of [`apply_frame`] (x0023 / x0024).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApplyFrameOutcome {
+    /// Entity table updated.
+    Applied,
+    /// Dropped (bad sig / stale / not ready); no resync.
+    Dropped,
+    /// Tick gap on a delta — do not apply; caller must `fetch_snapshot`.
+    NeedResync,
+}
+
+/// Apply a tick-gated delta to a [`scene::WorldView`] (no crypto). Snapshot path skips the gate.
 ///
-/// Snapshot contract (x0023): success requires **non-empty `upserts`**. Empty signed
-/// frames (host not ready) must not set `snapshot_ok`. Snapshot also **skips** the
-/// monotonic tick gate so a racing delta cannot block convergence.
-fn apply_frame(shared: &SharedState, frame: RenderFrame, replace_entities: bool) -> bool {
-    let host_pub = shared.host_pub.lock().ok().and_then(|g| g.clone());
-    let Some(host_pub) = host_pub else {
-        log::warn!("drop RenderFrame: host_pub not yet known from Manifest");
-        return false;
-    };
-    if let Err(err) = verify_frame(&host_pub, &frame) {
-        log::warn!("drop RenderFrame: bad host_sig: {err}");
-        return false;
-    }
-    if !frame_entities_finite(&frame) {
-        log::warn!(
-            "drop RenderFrame: non-finite entity fields (tick={})",
-            frame.tick
-        );
-        return false;
-    }
-    if replace_entities && frame.upserts.is_empty() {
-        log::warn!(
-            "drop snapshot: empty upserts (tick={}); host not ready — retry later",
-            frame.tick
-        );
-        return false;
-    }
-    // Single lock for tick gate + entity mutate (no snapshot/delta interleave).
-    let Ok(mut world) = shared.world.lock() else {
-        log::warn!("drop RenderFrame: world lock poisoned/failed");
-        return false;
-    };
+/// On [`ApplyFrameOutcome::NeedResync`], the world is left unchanged.
+fn apply_delta_entities(
+    world: &mut scene::WorldView,
+    tick: u64,
+    upserts: &[alchemy_protocol::Entity],
+    removes: &[u32],
+    replace_entities: bool,
+) -> ApplyFrameOutcome {
     if !replace_entities {
-        match world.last_frame_tick {
-            Some(prev) if frame.tick < prev => {
-                log::warn!("drop RenderFrame: tick {} < last {prev}", frame.tick);
-                return false;
-            }
-            Some(prev) if frame.tick == prev => {
-                return false;
-            }
-            _ => {}
+        match decide_frame_tick(world.last_frame_tick, tick, FRAME_TICK_GAP_RESYNC) {
+            FrameTickDecision::DropStale => return ApplyFrameOutcome::Dropped,
+            FrameTickDecision::ResyncSnapshot => return ApplyFrameOutcome::NeedResync,
+            FrameTickDecision::Apply => {}
         }
     }
     if replace_entities {
         world.entities.clear();
     }
-    for e in frame.upserts {
+    for e in upserts {
         world.entities.insert(
             e.id,
             EntityPose {
@@ -331,11 +315,80 @@ fn apply_frame(shared: &SharedState, frame: RenderFrame, replace_entities: bool)
             },
         );
     }
-    for id in frame.removes {
-        world.entities.remove(&id);
+    for id in removes {
+        world.entities.remove(id);
     }
-    world.last_frame_tick = Some(frame.tick);
-    true
+    world.last_frame_tick = Some(tick);
+    ApplyFrameOutcome::Applied
+}
+
+/// Apply a verified frame. `replace_entities` clears the map first (snapshot convergence).
+///
+/// Snapshot contract (x0023): success requires **non-empty `upserts`**. Empty signed
+/// frames (host not ready) must not set `snapshot_ok`. Snapshot also **skips** the
+/// tick gate so a racing delta cannot block convergence.
+///
+/// Delta contract (x0024): tick advance beyond [`FRAME_TICK_GAP_RESYNC`] →
+/// [`ApplyFrameOutcome::NeedResync`] (no partial apply).
+fn apply_frame(
+    shared: &SharedState,
+    frame: RenderFrame,
+    replace_entities: bool,
+) -> ApplyFrameOutcome {
+    let host_pub = shared.host_pub.lock().ok().and_then(|g| g.clone());
+    let Some(host_pub) = host_pub else {
+        log::warn!("drop RenderFrame: host_pub not yet known from Manifest");
+        return ApplyFrameOutcome::Dropped;
+    };
+    if let Err(err) = verify_frame(&host_pub, &frame) {
+        log::warn!("drop RenderFrame: bad host_sig: {err}");
+        return ApplyFrameOutcome::Dropped;
+    }
+    if !frame_entities_finite(&frame) {
+        log::warn!(
+            "drop RenderFrame: non-finite entity fields (tick={})",
+            frame.tick
+        );
+        return ApplyFrameOutcome::Dropped;
+    }
+    if replace_entities && frame.upserts.is_empty() {
+        log::warn!(
+            "drop snapshot: empty upserts (tick={}); host not ready — retry later",
+            frame.tick
+        );
+        return ApplyFrameOutcome::Dropped;
+    }
+    // Single lock for tick gate + entity mutate (no snapshot/delta interleave).
+    let Ok(mut world) = shared.world.lock() else {
+        log::warn!("drop RenderFrame: world lock poisoned/failed");
+        return ApplyFrameOutcome::Dropped;
+    };
+    let prev_tick = world.last_frame_tick;
+    let outcome = apply_delta_entities(
+        &mut world,
+        frame.tick,
+        &frame.upserts,
+        &frame.removes,
+        replace_entities,
+    );
+    match outcome {
+        ApplyFrameOutcome::Dropped if !replace_entities && prev_tick.is_some_and(|p| frame.tick < p) => {
+            log::warn!(
+                "drop RenderFrame: tick {} < last {}",
+                frame.tick,
+                prev_tick.unwrap_or(0)
+            );
+        }
+        ApplyFrameOutcome::NeedResync => {
+            log::warn!(
+                "frame tick gap: got {} last {:?} (max_gap={FRAME_TICK_GAP_RESYNC}); defer delta → snapshot",
+                frame.tick,
+                prev_tick
+            );
+        }
+        _ => {}
+    }
+    outcome
 }
 
 /// Returns true when a non-empty snapshot was verified and applied (replace).
@@ -350,7 +403,9 @@ fn fetch_snapshot(session: &zenoh::Session, room_id: &str, shared: &SharedState)
                         let bytes: ZBytes = sample.payload().clone();
                         match RenderFrame::decode(bytes.to_bytes().as_ref()) {
                             Ok(frame) => {
-                                if apply_frame(shared, frame, /* replace */ true) {
+                                if apply_frame(shared, frame, /* replace */ true)
+                                    == ApplyFrameOutcome::Applied
+                                {
                                     log::info!("snapshot applied from {key}");
                                     applied = true;
                                 }
@@ -365,10 +420,15 @@ fn fetch_snapshot(session: &zenoh::Session, room_id: &str, shared: &SharedState)
         Err(err) => log::warn!("snapshot get failed: {err}"),
     }
     if !applied {
-        log::warn!("snapshot not applied yet; will retry on next Manifest");
+        log::warn!("snapshot not applied yet; will retry on next Manifest or frame gap");
     }
     applied
 }
+
+/// Minimum spacing between gap-triggered snapshot gets (x0024). Applied **before**
+/// `fetch_snapshot` so success and failure share the same 500ms wait (load shed;
+/// see `protocol/peer-delivery.md`). Manifest path can still retry independently.
+const SNAPSHOT_GAP_RESYNC_COOLDOWN: Duration = Duration::from_millis(500);
 
 fn spawn_frame_subscriber(
     session: zenoh::Session,
@@ -383,15 +443,24 @@ fn spawn_frame_subscriber(
     thread::Builder::new()
         .name("zenoh-frame".into())
         .spawn(move || {
-            let _session = session;
             log::info!("subscribed to {key} (signed delta upserts/removes)");
+            let mut resync_cooldown_until = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = bytes.to_bytes();
                 match RenderFrame::decode(payload.as_ref()) {
-                    Ok(frame) => {
-                        let _ = apply_frame(&shared, frame, /* replace */ false);
-                    }
+                    Ok(frame) => match apply_frame(&shared, frame, /* replace */ false) {
+                        ApplyFrameOutcome::Applied | ApplyFrameOutcome::Dropped => {}
+                        ApplyFrameOutcome::NeedResync => {
+                            // x0024: missing deltas are not retransmitted — resync via snapshot.
+                            let now = Instant::now();
+                            if now < resync_cooldown_until {
+                                continue;
+                            }
+                            resync_cooldown_until = now + SNAPSHOT_GAP_RESYNC_COOLDOWN;
+                            let _ = fetch_snapshot(&session, shared.room_id.as_ref(), &shared);
+                        }
+                    },
                     Err(err) => log::warn!("RenderFrame decode failed: {err}"),
                 }
             }
@@ -926,4 +995,118 @@ fn main() -> Result<()> {
     let kind = surface::choose();
     surface::run(kind, mesh, shared, Some(session))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alchemy_protocol::Entity;
+    use scene::WorldView;
+
+    fn sample_entity(id: u32, x: f64) -> Entity {
+        Entity {
+            id,
+            x,
+            y: 0.0,
+            z: 0.0,
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        }
+    }
+
+    #[test]
+    fn gap_delta_does_not_mutate_entities_and_signals_resync() {
+        let mut world = WorldView {
+            last_frame_tick: Some(10),
+            entities: [(
+                1,
+                EntityPose {
+                    x: 1.0,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+        };
+        let before = world.entities.clone();
+
+        let outcome =
+            apply_delta_entities(&mut world, 12, &[sample_entity(1, 9.0)], &[], false);
+
+        assert_eq!(outcome, ApplyFrameOutcome::NeedResync);
+        assert_eq!(world.last_frame_tick, Some(10));
+        assert_eq!(world.entities, before);
+    }
+
+    #[test]
+    fn consecutive_delta_applies_and_advances_tick() {
+        let mut world = WorldView {
+            last_frame_tick: Some(10),
+            entities: Default::default(),
+        };
+
+        let outcome =
+            apply_delta_entities(&mut world, 11, &[sample_entity(7, 3.0)], &[], false);
+
+        assert_eq!(outcome, ApplyFrameOutcome::Applied);
+        assert_eq!(world.last_frame_tick, Some(11));
+        assert!((world.entities.get(&7).unwrap().x - 3.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn snapshot_replace_skips_tick_gate() {
+        let mut world = WorldView {
+            last_frame_tick: Some(100),
+            entities: [(1, EntityPose::default())].into(),
+        };
+
+        let outcome =
+            apply_delta_entities(&mut world, 5, &[sample_entity(2, 1.5)], &[], true);
+
+        assert_eq!(outcome, ApplyFrameOutcome::Applied);
+        assert_eq!(world.last_frame_tick, Some(5));
+        assert!(!world.entities.contains_key(&1));
+        assert!(world.entities.contains_key(&2));
+    }
+
+    /// Host must stamp snapshot with *last published* tick. If it wrongly used the next
+    /// unpublished `net_tick`, the following delta would share that tick and DropStale —
+    /// entity updates stall forever (x0024 regression).
+    #[test]
+    fn after_snapshot_next_published_tick_applies_same_tick_is_stale() {
+        let mut world = WorldView::default();
+        let snap = apply_delta_entities(
+            &mut world,
+            5,
+            &[sample_entity(1, 1.0)],
+            &[],
+            true,
+        );
+        assert_eq!(snap, ApplyFrameOutcome::Applied);
+        assert_eq!(world.last_frame_tick, Some(5));
+
+        // Wrong host: snapshot.tick == next delta.tick → DropStale, pose stuck.
+        let same = apply_delta_entities(
+            &mut world,
+            5,
+            &[sample_entity(1, 9.0)],
+            &[],
+            false,
+        );
+        assert_eq!(same, ApplyFrameOutcome::Dropped);
+        assert!((world.entities.get(&1).unwrap().x - 1.0).abs() < f32::EPSILON);
+
+        // Correct host: next publish is last_published+1.
+        let next = apply_delta_entities(
+            &mut world,
+            6,
+            &[sample_entity(1, 9.0)],
+            &[],
+            false,
+        );
+        assert_eq!(next, ApplyFrameOutcome::Applied);
+        assert_eq!(world.last_frame_tick, Some(6));
+        assert!((world.entities.get(&1).unwrap().x - 9.0).abs() < f32::EPSILON);
+    }
 }

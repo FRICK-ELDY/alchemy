@@ -5,11 +5,14 @@
 //! - `RenderFrame` (delta upserts/removes + host_sig), `SceneManifest` (+ `LocomotionConfig`, host_pub),
 //!   `InputEvent` (session Ed25519), `PresenceState` (`sub`→entity) encode/decode.
 //! - [`wire_crypto`] sign/verify helpers for Intent / Frame (x0023).
+//! - Delivery class table: [`peer-delivery.md`](../peer-delivery.md). Frame tick gap → snapshot
+//!   ([`decide_frame_tick`], [`FRAME_TICK_GAP_RESYNC`]; x0024).
 //!
 //! # Non-guarantees
 //! - Bit-packing / prediction coding, DrawCommand taxonomy, audio/tracking frames.
 //! - Cryptographic verification of `InputEvent.room_token` (host-server JWKS).
 //! - Signed Manifest issuance by world-server (later).
+//! - Reliable-delivery ACK / event-id channel (edit / inventory); see peer-delivery.md.
 //! - Locomotion module list UI / suppress sources.
 //! - Tenant namespace `alchemy/tenant/...` (dev keys only: `alchemy/dev/room/{room_id}/…`).
 //! - 5+ concurrent guests / WAN liveliness ACL / Zenoh ACL.
@@ -160,6 +163,45 @@ pub fn snapshot_key(room_id: &str) -> String {
 /// True when wire `protocol_pin` matches this crate's [`PROTOCOL_PIN`].
 pub fn protocol_pin_matches(pin: &str) -> bool {
     pin == PROTOCOL_PIN
+}
+
+/// Max tick advance allowed on a **delta** `frame` without treating local state as unknown (x0024).
+///
+/// `1` = consecutive only (`last + 1`). Larger values tolerate small drops under latest semantics
+/// but risk ghost entities from missed `removes`. See [`peer-delivery.md`](../peer-delivery.md).
+pub const FRAME_TICK_GAP_RESYNC: u64 = 1;
+
+/// What a client should do with a delta `RenderFrame.tick` relative to `last_frame_tick` (x0024).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameTickDecision {
+    /// Apply the delta (`upserts` / `removes`).
+    Apply,
+    /// Stale or duplicate tick — drop without resync.
+    DropStale,
+    /// Tick jumped past [`FRAME_TICK_GAP_RESYNC`]; do **not** apply; fetch `…/snapshot`.
+    ResyncSnapshot,
+}
+
+/// Decide delta-frame tick handling (snapshot path skips this and replaces entities).
+///
+/// `max_gap` is normally [`FRAME_TICK_GAP_RESYNC`].
+///
+/// Monotonic forward only: `tick <= prev` → [`FrameTickDecision::DropStale`].
+/// Host uses `wrapping_add` after each **publish**, but u64 wrap is not handled here
+/// (would look like a huge rewind → DropStale until Manifest/snapshot resets `last`).
+pub fn decide_frame_tick(last: Option<u64>, tick: u64, max_gap: u64) -> FrameTickDecision {
+    let Some(prev) = last else {
+        return FrameTickDecision::Apply;
+    };
+    if tick <= prev {
+        return FrameTickDecision::DropStale;
+    }
+    let advance = tick - prev;
+    if advance <= max_gap {
+        FrameTickDecision::Apply
+    } else {
+        FrameTickDecision::ResyncSnapshot
+    }
 }
 
 /// Default Zenoh liveliness key prefix for local room (x0019; `sub` appended).
@@ -403,5 +445,38 @@ mod tests {
         assert!(host_control_zenoh_enabled_from(Some("1")));
         assert!(host_control_zenoh_enabled_from(Some("true")));
         assert!(host_control_zenoh_enabled_from(Some("YES")));
+    }
+
+    #[test]
+    fn decide_frame_tick_consecutive_and_gap() {
+        assert_eq!(
+            decide_frame_tick(None, 0, FRAME_TICK_GAP_RESYNC),
+            FrameTickDecision::Apply
+        );
+        assert_eq!(
+            decide_frame_tick(Some(10), 11, FRAME_TICK_GAP_RESYNC),
+            FrameTickDecision::Apply
+        );
+        assert_eq!(
+            decide_frame_tick(Some(10), 12, FRAME_TICK_GAP_RESYNC),
+            FrameTickDecision::ResyncSnapshot
+        );
+        assert_eq!(
+            decide_frame_tick(Some(10), 10, FRAME_TICK_GAP_RESYNC),
+            FrameTickDecision::DropStale
+        );
+        assert_eq!(
+            decide_frame_tick(Some(10), 9, FRAME_TICK_GAP_RESYNC),
+            FrameTickDecision::DropStale
+        );
+        // Wider tolerance for tests / future tuning.
+        assert_eq!(
+            decide_frame_tick(Some(10), 12, 2),
+            FrameTickDecision::Apply
+        );
+        assert_eq!(
+            decide_frame_tick(Some(10), 13, 2),
+            FrameTickDecision::ResyncSnapshot
+        );
     }
 }
