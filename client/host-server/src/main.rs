@@ -1,11 +1,11 @@
-//! Local host-server — x0019 Leave / liveliness + ROOM_ID keys / presence / Grab / loco.
+//! Local host-server — x0022 liveliness↔jti + x0019 Leave + ROOM_ID keys / presence / Grab.
 //!
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
 //! - Input: Room Token verify + `is_finite` (NaN/Inf dropped before physics)
 //! - SceneManifest with default Noclip LocomotionConfig (blake3 refs; no GLB bytes)
 //! - Per-`sub` Intent/Grab → up to 4 user_roots (entity 3..6); first-come slot assign
-//! - PresenceState publish (`sub`→entity); explicit Leave + liveliness Delete + Intent TTL
+//! - PresenceState: Leave by verified `sub`; liveliness Delete schedules jti-matched reclaim with grace (x0022)
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
 //! - Grabbable cuboids entity 10..18; Grab hold kinematic follow; no Steal
 //! - Slice E / x001e: Zenoh `host_control` off by default; `ALCHEMY_HOST_CONTROL=1` to enable
@@ -25,7 +25,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alchemy_protocol::{
-    frame_key, host_control_key, input_buttons, input_key, liveliness_sub_from_key,
+    frame_key, host_control_key, input_buttons, input_key, liveliness_binding_from_key,
     liveliness_wildcard, manifest_key, presence_key, validate_room_id, Entity, InputEvent,
     LocomotionConfig, LocomotionMode, Message, PresenceAssignment, PresenceState, RenderFrame,
     SceneEntry, SceneManifest, PROTOCOL_PIN,
@@ -39,7 +39,6 @@ use sim::{
 };
 use zenoh::bytes::ZBytes;
 use zenoh::sample::SampleKind;
-use zenoh::Config;
 use zenoh::Wait;
 
 const PHYSICS_HZ: u64 = 60;
@@ -76,12 +75,24 @@ struct PoseOverride {
     aim_z: f32,
 }
 
-/// Per-sub input slots (x0015) + Leave / liveliness / Intent TTL reclaim (x0019).
+/// Grace before confirming liveliness Delete reclaim (x0022).
+///
+/// Covers Intent↔Delete reorder after Room Token refresh (distinct Zenoh keys).
+/// Limits: only cancels when `session_jti` **rotates**; same-jti Intent during grace does not
+/// clear a pending Delete (legitimate disconnect stays ~+1.5s). If Intent(new) arrives **after**
+/// this window, Delete(old) can still reclaim (extreme delay / partition — out of guarantee).
+const LIVELINESS_RECLAIM_GRACE: Duration = Duration::from_millis(1_500);
+
+/// Per-sub input slots (x0015) + Leave / jti-bound liveliness / Intent TTL reclaim (x0022).
 #[derive(Debug)]
 struct PresenceIntents {
     by_slot: [PoseOverride; USER_ROOT_SLOTS],
     /// Occupied slots: Some(sub) when assigned.
     occupied_sub: [Option<String>; USER_ROOT_SLOTS],
+    /// Last verified Room Token `jti` per occupied slot (x0022). None until first verify.
+    session_jti: [Option<String>; USER_ROOT_SLOTS],
+    /// Scheduled liveliness reclaim: `(deleted_jti, confirm_after)`. Cancelled if `session_jti` rotates.
+    pending_liveliness: [Option<(String, Instant)>; USER_ROOT_SLOTS],
     /// Last accepted Intent time per slot (None when free).
     last_input: [Option<Instant>; USER_ROOT_SLOTS],
     dropped_full: u64,
@@ -96,6 +107,8 @@ impl Default for PresenceIntents {
         Self {
             by_slot: [PoseOverride::default(); USER_ROOT_SLOTS],
             occupied_sub: std::array::from_fn(|_| None),
+            session_jti: std::array::from_fn(|_| None),
+            pending_liveliness: std::array::from_fn(|_| None),
             last_input: [None; USER_ROOT_SLOTS],
             dropped_full: 0,
             revision: 0,
@@ -105,16 +118,24 @@ impl Default for PresenceIntents {
 }
 
 impl PresenceIntents {
-    fn assign_or_lookup(&mut self, sub: &str, now: Instant) -> Option<usize> {
+    fn assign_or_lookup(&mut self, sub: &str, jti: &str, now: Instant) -> Option<usize> {
         for (i, occupied) in self.occupied_sub.iter().enumerate() {
             if occupied.as_deref() == Some(sub) {
                 self.last_input[i] = Some(now);
+                // Cancel pending Delete only on jti rotate (refresh). Same-jti Intent leaves
+                // the schedule so crash/undeclare still confirms after grace.
+                if self.session_jti[i].as_deref() != Some(jti) {
+                    self.pending_liveliness[i] = None;
+                }
+                self.session_jti[i] = Some(jti.to_string());
                 return Some(i);
             }
         }
         for (i, occupied) in self.occupied_sub.iter_mut().enumerate() {
             if occupied.is_none() {
                 *occupied = Some(sub.to_string());
+                self.session_jti[i] = Some(jti.to_string());
+                self.pending_liveliness[i] = None;
                 self.last_input[i] = Some(now);
                 self.revision = self.revision.saturating_add(1);
                 log::info!(
@@ -131,6 +152,8 @@ impl PresenceIntents {
     /// Free one occupied slot. Returns entity id.
     fn free_slot_at(&mut self, i: usize, reason: &str) -> u32 {
         let sub = self.occupied_sub[i].take();
+        self.session_jti[i] = None;
+        self.pending_liveliness[i] = None;
         self.last_input[i] = None;
         self.by_slot[i] = PoseOverride::default();
         self.revision = self.revision.saturating_add(1);
@@ -143,7 +166,10 @@ impl PresenceIntents {
         entity_id
     }
 
-    /// Immediate reclaim for Leave / liveliness (queues `pending_removes` for the sim loop).
+    /// Immediate reclaim for verified Leave (queues `pending_removes`).
+    ///
+    /// Leave is authorized by JWT `sub` alone (any unexpired Room Token for that sub).
+    /// Stale-token Leave kick is accepted; revocation feed is out of scope (→ P2-2 / auth).
     fn reclaim_sub(&mut self, sub: &str, reason: &str) -> Option<u32> {
         for i in 0..USER_ROOT_SLOTS {
             if self.occupied_sub[i].as_deref() == Some(sub) {
@@ -153,6 +179,72 @@ impl PresenceIntents {
             }
         }
         None
+    }
+
+    /// Schedule reclaim when Delete `jti` matches the bound session (x0022).
+    ///
+    /// Does **not** free immediately: grace lets a refresh Intent with a new `jti` cancel the
+    /// pending Delete when liveliness arrives before the Intent (no cross-key order).
+    fn schedule_liveliness_reclaim(&mut self, sub: &str, jti: &str, now: Instant) -> bool {
+        for i in 0..USER_ROOT_SLOTS {
+            if self.occupied_sub[i].as_deref() != Some(sub) {
+                continue;
+            }
+            match self.session_jti[i].as_deref() {
+                Some(bound) if bound == jti => {
+                    let confirm_at = now + LIVELINESS_RECLAIM_GRACE;
+                    self.pending_liveliness[i] = Some((jti.to_string(), confirm_at));
+                    log::info!(
+                        "liveliness Delete scheduled: sub={sub} jti={jti} confirm_in_ms={}",
+                        LIVELINESS_RECLAIM_GRACE.as_millis()
+                    );
+                    return true;
+                }
+                Some(bound) => {
+                    log::warn!(
+                        "liveliness Delete ignored: sub={sub} jti={jti} bound_jti={bound} (mismatch)"
+                    );
+                    return false;
+                }
+                None => {
+                    log::warn!(
+                        "liveliness Delete ignored: sub={sub} jti={jti} (no verified session yet)"
+                    );
+                    return false;
+                }
+            }
+        }
+        false
+    }
+
+    /// Confirm scheduled liveliness reclaim if grace elapsed and `jti` still bound.
+    fn confirm_liveliness_reclaims(&mut self, now: Instant) -> Vec<u32> {
+        let mut freed = Vec::new();
+        for i in 0..USER_ROOT_SLOTS {
+            let Some((jti, confirm_at)) = self.pending_liveliness[i].clone() else {
+                continue;
+            };
+            if now < confirm_at {
+                continue;
+            }
+            self.pending_liveliness[i] = None;
+            match self.session_jti[i].as_deref() {
+                Some(bound) if bound == jti && self.occupied_sub[i].is_some() => {
+                    freed.push(self.free_slot_at(i, "liveliness"));
+                }
+                Some(bound) => {
+                    log::info!(
+                        "liveliness Delete cancelled after grace: deleted_jti={jti} bound_jti={bound}"
+                    );
+                }
+                None => {
+                    log::info!(
+                        "liveliness Delete cancelled after grace: deleted_jti={jti} (slot free)"
+                    );
+                }
+            }
+        }
+        freed
     }
 
     /// Drop slots with no Intent for `ttl`. Returns freed user_root entity ids.
@@ -176,6 +268,7 @@ impl PresenceIntents {
 
     fn drain_reclaims(&mut self, now: Instant, ttl: Duration) -> Vec<u32> {
         let mut freed = self.reclaim_stale(now, ttl);
+        freed.extend(self.confirm_liveliness_reclaims(now));
         freed.append(&mut self.pending_removes);
         freed
     }
@@ -213,18 +306,7 @@ fn zenoh_connect_endpoint() -> String {
 }
 
 fn open_zenoh() -> Result<zenoh::Session> {
-    let endpoint = zenoh_connect_endpoint();
-    let mut config = Config::default();
-    config
-        .insert_json5("mode", r#""client""#)
-        .map_err(|e| anyhow::anyhow!("zenoh mode: {e}"))?;
-    config
-        .insert_json5("connect/endpoints", &format!(r#"["{endpoint}"]"#))
-        .map_err(|e| anyhow::anyhow!("zenoh connect: {e}"))?;
-    log::info!("zenoh connect={endpoint}");
-    zenoh::open(config)
-        .wait()
-        .map_err(|e| anyhow::anyhow!("zenoh open failed: {e}"))
+    zenoh_connect::open_client(&zenoh_connect_endpoint())
 }
 
 /// Hermetic E2E (x001f): signal only after input gate + frame publisher have put ≥1 frame.
@@ -374,7 +456,10 @@ fn spawn_input_gate(
                 match InputEvent::decode(payload.as_ref()) {
                     Ok(event) => match verifier.verify(&event.room_token) {
                         Ok(claims) => {
-                            if event.leave {
+                            if claims.jti.is_empty() || claims.jti.contains('/') {
+                                dropped_token += 1;
+                                log::warn!("drop InputEvent: Room Token jti missing or contains '/'");
+                            } else if event.leave {
                                 if let Ok(mut guard) = presence.lock() {
                                     if guard.reclaim_sub(&claims.sub, "leave").is_some() {
                                         leaves += 1;
@@ -389,7 +474,11 @@ fn spawn_input_gate(
                                     event.move_z
                                 );
                             } else if let Ok(mut guard) = presence.lock() {
-                                match guard.assign_or_lookup(&claims.sub, Instant::now()) {
+                                match guard.assign_or_lookup(
+                                    &claims.sub,
+                                    &claims.jti,
+                                    Instant::now(),
+                                ) {
                                     Some(slot) => {
                                         let overlay = &mut guard.by_slot[slot];
                                         overlay.x = event.move_x;
@@ -466,12 +555,12 @@ fn spawn_liveliness_watcher(
                     continue;
                 }
                 let key_str = sample.key_expr().as_str();
-                let Some(sub) = liveliness_sub_from_key(key_str) else {
+                let Some((sub, jti)) = liveliness_binding_from_key(key_str) else {
                     log::warn!("liveliness Delete: unparseable key={key_str}");
                     continue;
                 };
                 if let Ok(mut guard) = presence.lock() {
-                    let _ = guard.reclaim_sub(sub, "liveliness");
+                    let _ = guard.schedule_liveliness_reclaim(sub, jti, Instant::now());
                 }
             }
         })
@@ -504,7 +593,7 @@ fn main() -> Result<()> {
     };
 
     log::info!(
-        "host-server x0019 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        "host-server x0022 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
     );
@@ -809,7 +898,7 @@ mod presence_reclaim_tests {
     fn reclaim_stale_frees_slot_for_reuse() {
         let mut p = PresenceIntents::default();
         let t0 = Instant::now();
-        let slot = p.assign_or_lookup("alice", t0).expect("assign");
+        let slot = p.assign_or_lookup("alice", "j1", t0).expect("assign");
         assert_eq!(slot, 0);
         assert_eq!(p.to_presence_state().assignments.len(), 1);
 
@@ -825,7 +914,11 @@ mod presence_reclaim_tests {
         assert!(p.revision >= 2);
 
         let slot2 = p
-            .assign_or_lookup("bob", t0 + PRESENCE_SLOT_TTL + Duration::from_millis(1))
+            .assign_or_lookup(
+                "bob",
+                "j2",
+                t0 + PRESENCE_SLOT_TTL + Duration::from_millis(1),
+            )
             .expect("reuse");
         assert_eq!(slot2, 0);
         assert_eq!(p.to_presence_state().assignments[0].sub, "bob".to_string());
@@ -835,9 +928,9 @@ mod presence_reclaim_tests {
     fn same_sub_before_ttl_keeps_slot() {
         let mut p = PresenceIntents::default();
         let t0 = Instant::now();
-        assert_eq!(p.assign_or_lookup("alice", t0), Some(0));
+        assert_eq!(p.assign_or_lookup("alice", "j1", t0), Some(0));
         assert_eq!(
-            p.assign_or_lookup("alice", t0 + Duration::from_secs(2)),
+            p.assign_or_lookup("alice", "j1", t0 + Duration::from_secs(2)),
             Some(0)
         );
         let freed = p.reclaim_stale(
@@ -852,7 +945,7 @@ mod presence_reclaim_tests {
     fn reclaim_sub_frees_immediately() {
         let mut p = PresenceIntents::default();
         let t0 = Instant::now();
-        assert_eq!(p.assign_or_lookup("alice", t0), Some(0));
+        assert_eq!(p.assign_or_lookup("alice", "j1", t0), Some(0));
         let entity = p.reclaim_sub("alice", "leave").expect("reclaim");
         assert_eq!(entity, PhysicsWorld::user_root_entity_id(0));
         assert!(p.occupied_sub[0].is_none());
@@ -860,6 +953,60 @@ mod presence_reclaim_tests {
         let drained = p.drain_reclaims(t0, PRESENCE_SLOT_TTL);
         assert_eq!(drained, vec![entity]);
         assert!(p.pending_removes.is_empty());
-        assert_eq!(p.assign_or_lookup("bob", t0), Some(0));
+        assert_eq!(p.assign_or_lookup("bob", "j2", t0), Some(0));
+    }
+
+    #[test]
+    fn schedule_liveliness_requires_matching_jti() {
+        let mut p = PresenceIntents::default();
+        let t0 = Instant::now();
+        assert_eq!(p.assign_or_lookup("alice", "jti-real", t0), Some(0));
+
+        assert!(!p.schedule_liveliness_reclaim("alice", "jti-fake", t0));
+        assert!(p.occupied_sub[0].is_some());
+        assert!(p.pending_liveliness[0].is_none());
+
+        assert!(p.schedule_liveliness_reclaim("alice", "jti-real", t0));
+        assert!(p.occupied_sub[0].is_some());
+        assert!(p.pending_liveliness[0].is_some());
+
+        // Before grace: still occupied.
+        let early = p.confirm_liveliness_reclaims(t0 + Duration::from_millis(100));
+        assert!(early.is_empty());
+        assert!(p.occupied_sub[0].is_some());
+
+        let freed = p.confirm_liveliness_reclaims(t0 + LIVELINESS_RECLAIM_GRACE);
+        assert_eq!(freed, vec![PhysicsWorld::user_root_entity_id(0)]);
+        assert!(p.occupied_sub[0].is_none());
+    }
+
+    #[test]
+    fn schedule_liveliness_ignores_unknown_sub() {
+        let mut p = PresenceIntents::default();
+        assert!(!p.schedule_liveliness_reclaim("nobody", "jti", Instant::now()));
+    }
+
+    #[test]
+    fn refresh_intent_cancels_pending_liveliness_delete() {
+        // Race: Delete(old_jti) arrives before Intent(new_jti). Grace + jti rotate must not reclaim.
+        let mut p = PresenceIntents::default();
+        let t0 = Instant::now();
+        assert_eq!(p.assign_or_lookup("alice", "jti-old", t0), Some(0));
+        assert!(p.schedule_liveliness_reclaim("alice", "jti-old", t0));
+
+        // New Room Token Intent arrives within grace.
+        assert_eq!(
+            p.assign_or_lookup("alice", "jti-new", t0 + Duration::from_millis(50)),
+            Some(0)
+        );
+        assert!(
+            p.pending_liveliness[0].is_none(),
+            "pending Delete must clear on jti rotate"
+        );
+
+        let freed = p.confirm_liveliness_reclaims(t0 + LIVELINESS_RECLAIM_GRACE);
+        assert!(freed.is_empty());
+        assert_eq!(p.occupied_sub[0].as_deref(), Some("alice"));
+        assert_eq!(p.session_jti[0].as_deref(), Some("jti-new"));
     }
 }

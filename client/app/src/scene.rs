@@ -143,8 +143,10 @@ pub struct SharedState {
     pub assets_url: Arc<str>,
     /// Auth + Room Token gate (x0018). Intent publishes only when `room_token` is set.
     pub auth: Mutex<AuthGate>,
-    /// Zenoh liveliness token while joined (x0019). Drop/undeclare on leave.
+    /// Zenoh liveliness token while joined (x0022 `sub`+`jti`). Drop/undeclare on leave.
     pub liveliness: Mutex<Option<zenoh::liveliness::LivelinessToken>>,
+    /// Previous liveliness key retained one Intent put after refresh rebind (x0022).
+    pub liveliness_prev: Mutex<Option<zenoh::liveliness::LivelinessToken>>,
     pub entities: Mutex<std::collections::HashMap<u32, EntityPose>>,
     pub look: Mutex<CameraLook>,
     pub intent: Mutex<MoveIntent>,
@@ -172,6 +174,9 @@ impl SharedState {
         }
         if let Ok(mut token) = self.liveliness.lock() {
             *token = None;
+        }
+        if let Ok(mut prev) = self.liveliness_prev.lock() {
+            *prev = None;
         }
     }
 }

@@ -4,13 +4,14 @@
 Room Token の検証は zenohd ではなく host-server が行う。
 
 正本アーキテクチャ: [`.workspace/0_doc/architecture/zenoh-router.md`](../.workspace/0_doc/architecture/zenoh-router.md)  
-WAN 運用手順: [`.workspace/0_doc/manual/zenoh-wan-conoha.md`](../.workspace/0_doc/manual/zenoh-wan-conoha.md)（x001b）
+WAN 運用手順: [`.workspace/0_doc/manual/zenoh-wan-conoha.md`](../.workspace/0_doc/manual/zenoh-wan-conoha.md)（x001b → **TLS x0022**）
 
 ## 保証すること / しないこと
 
 | 保証する | 保証しない |
 |:---|:---|
 | 同一マシン / LAN /（WAN 時）allowlist 経由のプロセスが同じ zenohd に接続できる | JWKS / Room Token による ACL |
+| WAN 待受は TLS（平文 TCP のみの公網公開をしない） | mTLS |
 | キー式での Publish / Subscribe | CCU・帯域 QoS |
 | | 拠点 zenohd ↔ VPS ブリッジ・マルチテナント隔離 |
 
@@ -18,10 +19,10 @@ WAN 運用手順: [`.workspace/0_doc/manual/zenoh-wan-conoha.md`](../.workspace/
 
 | | ローカル [`config.json5`](config.json5) | WAN [`config.wan.json5`](config.wan.json5) |
 |:---|:---|:---|
-| 用途 | 開発・LAN（x0014） | ConoHa 公網待受（x001b） |
-| listen | `tcp/0.0.0.0:7447` | 同じ |
+| 用途 | 開発・LAN（x0014） | ConoHa 公網待受（x0022 TLS） |
+| listen | `tcp/0.0.0.0:7447` | `tls/0.0.0.0:7447` |
 | multicast scouting | **ON** | **OFF** |
-| 公開面 | LAN / ファイアウォール任意 | **ufw IP allowlist 必須**（手順書） |
+| 公開面 | LAN / ファイアウォール任意 | **TLS + ufw IP allowlist**（手順書） |
 
 ## MVP キー式
 
@@ -60,10 +61,12 @@ VPS 上では [`config.wan.json5`](config.wan.json5) を使う。systemd・ufw�
 [`.workspace/0_doc/manual/zenoh-wan-conoha.md`](../.workspace/0_doc/manual/zenoh-wan-conoha.md)
 
 ```bash
-# VPS 上の例
+# VPS 上の例（証明書は /etc/alchemy/tls/ — scripts/gen-wan-dev-certs.sh）
 zenohd -c /etc/alchemy/zenoh-wan.json5
 # クライアント側
-export ZENOH_CONNECT=tcp/<VPS_IP>:7447
+export ZENOH_CONNECT=tls/<VPS_HOST>:7447
+# 私有 CA のとき:
+# export ZENOH_TLS_ROOT_CA=/path/to/ca-cert.pem
 ```
 
 ## トークン検証

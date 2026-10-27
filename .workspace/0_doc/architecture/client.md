@@ -29,7 +29,7 @@
 | OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose + 埋め込み baseColor + animatable node） | SteamVR パス直読み／PBR（MR/normal 等）／手トラ |
 | OpenXR: ダッシュ開→UI レーザー；閉→ワールドレーザー＋ Grab hold（squeeze／Select）（x0011） | Steal／回転追従／Facet 並べ替え／WorldRoot／CompositionLayerQuad |
 | auth login → Bearer 付き Room Token → InputEvent（含 grab_entity_id + aim_*） | OSC / Dual Editor / launcher 本実装 |
-| host: Rapier 60Hz + `is_finite` + per-`sub` Intent（最大4）+ Presence + Leave/liveliness/TTL 解放（x0019）+ `ROOM_ID` キー（x0017）+ user_root 3..6 + cuboid×9 + Grab → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk / Steal |
+| host: Rapier 60Hz + `is_finite` + per-`sub` Intent（最大4）+ Presence + Leave / jti 一致 liveliness / TTL 解放（x0022）+ `ROOM_ID` キー（x0017）+ user_root 3..6 + cuboid×9 + Grab → 30Hz デルタ | Formula / 予測補間 / verifier / 本格 Walk / Steal |
 | ESC（Desktop）/ Menu（OpenXR）ダッシュ・下タブ Home/Settings/Exit・Pinned Exit・Home アカウント殻（x0018）・Button hover・client 終了・host 終了は `ALCHEMY_HOST_PID`（Zenoh `host_control` は opt-in・x001e）。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 / XR 仮想キーボード / 認証付きリモート shutdown |
 | OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD・launcher 本実装 |
 
@@ -39,7 +39,7 @@
 |:---|:---|:---|
 | `alchemy/dev/room/{ROOM_ID}/manifest` | 低（host は 5s 再送で late joiner 補助） | `entity_id → blake3` + `locomotion` |
 | `alchemy/dev/room/{ROOM_ID}/presence` | 低（割当・解放変更 + 5s 再送） | `sub → user_root entity`（x0015 / 解放 x0016+x0019） |
-| `alchemy/dev/room/{ROOM_ID}/alive/{sub}` | liveliness | client token；host `alive/**` で Delete 監視（x0019） |
+| `alchemy/dev/room/{ROOM_ID}/alive/{sub}/{jti}` | liveliness | client token；host は検証済み jti 一致時のみ reclaim（x0022） |
 | `alchemy/dev/room/{ROOM_ID}/frame` | 高（動いたものだけ） | pose upserts / removes（含 user_root） |
 | `alchemy/dev/room/{ROOM_ID}/input` | 入力 | Room Token 付き Intent（`move_*` + `buttons` + `leave`） |
 | `alchemy/dev/room/{ROOM_ID}/host_control` | 低（既定オフ） | `ALCHEMY_HOST_CONTROL=1` のときのみ client→host `shutdown`（x001e。既定は `ALCHEMY_HOST_PID`） |

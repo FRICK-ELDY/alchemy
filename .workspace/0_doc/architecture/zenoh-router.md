@@ -1,7 +1,7 @@
 # zenoh-router
 
 > **正本**: [`zenoh-router/`](../../../zenoh-router/)  
-> **ステータス**: ローカル done · WAN（x001b）done
+> **ステータス**: ローカル done · WAN TCP（x001b）→ **WAN TLS（x0022）**
 
 ## 保証すること / しないこと
 
@@ -9,17 +9,17 @@
 |:---|:---|
 | 同一マシン / LAN の pub-sub | JWKS / Room Token ACL（検証は host-server） |
 | TCP リスナ `0.0.0.0:7447`（localhost + LAN、x0014） | CCU・帯域 QoS |
-| WAN: ConoHa 上 zenohd + IP allowlist（x001b） | 拠点 zenohd ↔ VPS ブリッジ・マルチテナント隔離 |
-| client/host の `ZENOH_CONNECT`（既定 localhost） | Relay Allocation Token / QoS |
+| WAN: ConoHa 上 zenohd の **TLS** 待受 + IP allowlist（x0022） | mTLS・拠点 zenohd ↔ VPS ブリッジ・マルチテナント隔離 |
+| client/host の `ZENOH_CONNECT`（既定 localhost `tcp`；WAN は `tls/`） | Relay Allocation Token / QoS |
 
 ## 設定ファイル
 
 | ファイル | 用途 |
 |:---|:---|
-| [`config.json5`](../../../zenoh-router/config.json5) | ローカル / LAN（multicast ON） |
-| [`config.wan.json5`](../../../zenoh-router/config.wan.json5) | ConoHa 公網（multicast OFF） |
+| [`config.json5`](../../../zenoh-router/config.json5) | ローカル / LAN（multicast ON・tcp） |
+| [`config.wan.json5`](../../../zenoh-router/config.wan.json5) | ConoHa 公網（multicast OFF・**tls**） |
 
-運用手順（Ubuntu 22.04 / systemd / ufw）: [`manual/zenoh-wan-conoha.md`](../manual/zenoh-wan-conoha.md)
+運用手順（Ubuntu 22.04 / systemd / ufw / TLS）: [`manual/zenoh-wan-conoha.md`](../manual/zenoh-wan-conoha.md)
 
 ## MVP キー式
 

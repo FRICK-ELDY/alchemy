@@ -87,13 +87,16 @@
 ## 推奨スライス順序（例）
 
 ```
-x001e  P0（prod Tunnel / host_control / seed / assets CI）
-x001f  P1（Token refresh / JWKS bg / magnitude / host role）
-x001g  P2 前半（liveliness / WAN TLS）
-x001h  P2 後半（session binding / client verify / snapshot）
-x001i  P3 まとめて（Quota/Parsers/audit/E2E）
-x001j  P4 Manifest 駆動（定義 vs 実行）
+x001e  P0（prod Tunnel / host_control / seed / assets CI）— done
+x001f  Hermetic Compose E2E — done
+x0020  Desktop 手通し — done
+x0021  P1（Token refresh / JWKS bg / magnitude / host role）— done
+x0022  P2 前半（liveliness / WAN TLS）— done
+x0023  P2 後半（session binding / client verify / snapshot）
+x0024  P3 まとめて（Quota/Parsers/audit 等）
+x0025  P4 Manifest 駆動（定義 vs 実行）
 ```
+（Slice ID は 16 進連番。上の対応は評価計画上の推奨順。）
 
 ---
 
@@ -101,10 +104,11 @@ x001j  P4 Manifest 駆動（定義 vs 実行）
 
 - [x] `make ci`（assets 含む）が開発者 `.env` ありでも緑（x001e / x001f）
 - [x] 公網手順が release のみ、mailbox 非公開（x001e）
-- [ ] WAN から host_control / 偽 liveliness でセッション破壊できない（テストまたは手順で証明）— host_control は x001e、liveliness は P2
+- [x] WAN から host_control / 偽 liveliness でセッション破壊できない — host_control は x001e、liveliness jti 紐付けは x0022（単体テスト）
 - [x] 入室 10 分後も入力可能（x0021 P1-1）
-- [ ] architecture の保証表に assets GET モデルと Zenoh 信頼境界が追記されている
+- [ ] architecture の保証表に assets GET モデルと Zenoh 信頼境界が追記されている（Zenoh TLS は x0022 で追記済み；assets GET は残）
 - [x] 採用マイナスの P0–P1 が「解決済み」とコード再検証できる（x001e / x0021）
+- [x] WAN が平文 TCP のみの公開をやめる（x0022 TLS）
 
 ---
 

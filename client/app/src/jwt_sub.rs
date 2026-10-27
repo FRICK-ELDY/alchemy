@@ -1,6 +1,6 @@
-//! Read JWT `sub` from payload without signature verification.
+//! Read JWT claims from payload without signature verification.
 //!
-//! Host verifies Room Token; client only needs `sub` to match PresenceState.
+//! Host verifies Room Token; client only needs `sub` / `jti` for Presence and liveliness.
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -10,8 +10,37 @@ struct ClaimsSub {
     sub: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ClaimsSubJti {
+    sub: String,
+    jti: String,
+}
+
 /// Decode JWT payload and return `sub`. Does **not** verify the signature.
 pub fn sub_unverified(token: &str) -> Result<String> {
+    let claims: ClaimsSub = payload_unverified(token)?;
+    if claims.sub.is_empty() {
+        bail!("JWT sub is empty");
+    }
+    Ok(claims.sub)
+}
+
+/// Decode JWT payload and return `(sub, jti)` for liveliness binding (x0022).
+pub fn sub_jti_unverified(token: &str) -> Result<(String, String)> {
+    let claims: ClaimsSubJti = payload_unverified(token)?;
+    if claims.sub.is_empty() {
+        bail!("JWT sub is empty");
+    }
+    if claims.jti.is_empty() {
+        bail!("JWT jti is empty");
+    }
+    if claims.sub.contains('/') || claims.jti.contains('/') {
+        bail!("JWT sub/jti must not contain '/'");
+    }
+    Ok((claims.sub, claims.jti))
+}
+
+fn payload_unverified<T: for<'de> Deserialize<'de>>(token: &str) -> Result<T> {
     let mut parts = token.split('.');
     let _header = parts.next().context("JWT missing header")?;
     let payload_b64 = parts.next().context("JWT missing payload")?;
@@ -19,11 +48,7 @@ pub fn sub_unverified(token: &str) -> Result<String> {
         bail!("JWT missing signature segment");
     }
     let json = base64url_decode(payload_b64).context("JWT payload base64")?;
-    let claims: ClaimsSub = serde_json::from_slice(&json).context("JWT payload JSON")?;
-    if claims.sub.is_empty() {
-        bail!("JWT sub is empty");
-    }
-    Ok(claims.sub)
+    serde_json::from_slice(&json).context("JWT payload JSON")
 }
 
 fn base64url_decode(input: &str) -> Result<Vec<u8>> {
@@ -84,5 +109,14 @@ mod tests {
         // {"sub":"user-1"} — header/sig are dummy
         let token = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyLTEifQ.sig";
         assert_eq!(sub_unverified(token).unwrap(), "user-1");
+    }
+
+    #[test]
+    fn decodes_sub_and_jti() {
+        // {"sub":"user-1","jti":"tok-9"}
+        let token = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyLTEiLCJqdGkiOiJ0b2stOSJ9.sig";
+        let (sub, jti) = sub_jti_unverified(token).unwrap();
+        assert_eq!(sub, "user-1");
+        assert_eq!(jti, "tok-9");
     }
 }

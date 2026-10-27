@@ -39,6 +39,11 @@ pub struct AuthGate {
     pub access_deadline: Option<Instant>,
     /// When `Instant::now() >= deadline`, re-issue Room Token.
     pub room_deadline: Option<Instant>,
+    /// After Room Token refresh: declare new `…/alive/{sub}/{jti}` after the next Intent put (x0022).
+    pub liveliness_rebind: bool,
+    /// After rebind declare: drop the previous liveliness token on the *following* Intent put.
+    /// Keeps old key alive one more put; host also defers liveliness reclaim with grace.
+    pub liveliness_retire_prev: bool,
 }
 
 impl AuthGate {
@@ -58,6 +63,8 @@ impl AuthGate {
         self.local_sub = None;
         self.access_deadline = None;
         self.room_deadline = None;
+        self.liveliness_rebind = false;
+        self.liveliness_retire_prev = false;
     }
 
     pub fn apply_auth_session(&mut self, session: AuthSession) {
@@ -71,12 +78,26 @@ impl AuthGate {
         self.room_token = Some(room_token);
         self.local_sub = Some(local_sub);
         self.room_deadline = refresh_deadline(expires_in);
+        // Initial join declares liveliness explicitly; refresh sets rebind via `apply_room_refresh`.
+        self.liveliness_rebind = false;
+        self.liveliness_retire_prev = false;
+    }
+
+    /// Room Token refresh: keep join, schedule liveliness rebind after next Intent put.
+    pub fn apply_room_refresh(&mut self, room_token: String, local_sub: String, expires_in: u64) {
+        self.room_token = Some(room_token);
+        self.local_sub = Some(local_sub);
+        self.room_deadline = refresh_deadline(expires_in);
+        self.liveliness_rebind = true;
+        self.liveliness_retire_prev = false;
     }
 
     pub fn clear_room(&mut self) {
         self.room_token = None;
         self.local_sub = None;
         self.room_deadline = None;
+        self.liveliness_rebind = false;
+        self.liveliness_retire_prev = false;
     }
 }
 

@@ -16,7 +16,7 @@
 pub use prost::Message;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.9.0-x0019";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.9.0-x0022";
 
 /// Default free-move speed (m/s) when Manifest `move_speed` is 0.
 /// Shared by host Noclip and client Settings display (x000a).
@@ -149,25 +149,33 @@ pub fn presence_key(room_id: &str) -> String {
 /// Default Zenoh liveliness key prefix for local room (x0019; `sub` appended).
 pub const LIVELINESS_KEY_LOCAL_PREFIX: &str = "alchemy/dev/room/local/alive";
 
-/// Build a liveliness token key for `sub` in a room (caller should [`validate_room_id`]).
+/// Build a liveliness token key bound to Room Token `jti` (x0022).
 ///
-/// `sub` must not contain `/` (Room Token UUID is fine). Host parses the last segment on Delete.
-pub fn liveliness_key(room_id: &str, sub: &str) -> String {
-    format!("alchemy/dev/room/{room_id}/alive/{sub}")
+/// `sub` / `jti` must not contain `/`. Host reclaims on Delete only when `jti` matches
+/// the last verified Input for that `sub`.
+pub fn liveliness_key(room_id: &str, sub: &str, jti: &str) -> String {
+    format!("alchemy/dev/room/{room_id}/alive/{sub}/{jti}")
 }
 
-/// Host wildcard subscribe key for room liveliness (x0019).
+/// Host wildcard subscribe key for room liveliness (x0019 / x0022).
 pub fn liveliness_wildcard(room_id: &str) -> String {
     format!("alchemy/dev/room/{room_id}/alive/**")
 }
 
-/// Parse `sub` from a liveliness key (`…/alive/{sub}`). Returns `None` if shape mismatches.
-pub fn liveliness_sub_from_key(key: &str) -> Option<&str> {
+/// Parse `(sub, jti)` from `…/alive/{sub}/{jti}`. Returns `None` if shape mismatches.
+pub fn liveliness_binding_from_key(key: &str) -> Option<(&str, &str)> {
     let (_, rest) = key.split_once("/alive/")?;
-    if rest.is_empty() || rest.contains('/') {
+    let (sub, jti) = rest.split_once('/')?;
+    if sub.is_empty() || jti.is_empty() || jti.contains('/') {
         return None;
     }
-    Some(rest)
+    Some((sub, jti))
+}
+
+/// Deprecated shape helper — x0019 single-segment keys are rejected (x0022).
+#[deprecated(note = "use liveliness_binding_from_key")]
+pub fn liveliness_sub_from_key(key: &str) -> Option<&str> {
+    liveliness_binding_from_key(key).map(|(sub, _)| sub)
 }
 
 include!(concat!(env!("OUT_DIR"), "/alchemy.render.rs"));
@@ -316,19 +324,23 @@ mod tests {
         assert_eq!(presence_key("alpha"), "alchemy/dev/room/alpha/presence");
         assert_ne!(presence_key("alpha"), presence_key("beta"));
         assert_eq!(
-            liveliness_key("local", "alice-uuid"),
-            format!("{LIVELINESS_KEY_LOCAL_PREFIX}/alice-uuid")
+            liveliness_key("local", "alice-uuid", "jti-1"),
+            format!("{LIVELINESS_KEY_LOCAL_PREFIX}/alice-uuid/jti-1")
         );
         assert_eq!(
             liveliness_wildcard("alpha"),
             "alchemy/dev/room/alpha/alive/**"
         );
         assert_eq!(
-            liveliness_sub_from_key("alchemy/dev/room/local/alive/alice-uuid"),
-            Some("alice-uuid")
+            liveliness_binding_from_key("alchemy/dev/room/local/alive/alice-uuid/jti-1"),
+            Some(("alice-uuid", "jti-1"))
         );
         assert_eq!(
-            liveliness_sub_from_key("alchemy/dev/room/local/alive/a/b"),
+            liveliness_binding_from_key("alchemy/dev/room/local/alive/alice-uuid"),
+            None
+        );
+        assert_eq!(
+            liveliness_binding_from_key("alchemy/dev/room/local/alive/a/b/c"),
             None
         );
     }

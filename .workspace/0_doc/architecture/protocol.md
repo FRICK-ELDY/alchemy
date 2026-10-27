@@ -1,7 +1,7 @@
 # protocol（alchemy-protocol）
 
 > **正本**: [`protocol/`](../../../protocol/)  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.9.0-x0019`
+> **PROTOCOL_PIN**: `alchemy-protocol/0.9.0-x0022`
 
 ## 置き場の方針
 
@@ -54,11 +54,11 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - `PresenceState { revision, assignments[] }`
 - `PresenceAssignment { sub, entity_id }` — occupied のみ。host が first-come 割当を公開
 - client は自 Room Token の `sub`（payload 読み取りのみ）で `entity_id` を解決
-- host 解放: **Leave** / **liveliness Delete**（即時・x0019）+ Intent 無音 TTL 3s（フォールバック・x0016）
+- host 解放: **Leave** / **liveliness Delete（`sub`+`jti` 一致時のみ・x0022）** + Intent 無音 TTL 3s（フォールバック・x0016）
 
-## キー式ヘルパ（x0017: `ROOM_ID` 本配線 + x0019 liveliness）
+## キー式ヘルパ（x0017: `ROOM_ID` 本配線 + x0022 liveliness）
 
-式: `alchemy/dev/room/{room_id}/{manifest|frame|input|presence|host_control|alive/{sub}}`。  
+式: `alchemy/dev/room/{room_id}/{manifest|frame|input|presence|host_control|alive/{sub}/{jti}}`。  
 `*_KEY_LOCAL` は `room_id=local` の別名。host/client は env `ROOM_ID`（既定 `local`）を `validate_room_id` してから `*_key` で declare する。
 
 | 定数 / 関数 | 既定 |
@@ -68,5 +68,6 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | `INPUT_KEY_LOCAL` / `input_key(room_id)` | `alchemy/dev/room/local/input` |
 | `PRESENCE_KEY_LOCAL` / `presence_key(room_id)` | `alchemy/dev/room/local/presence` |
 | `HOST_CONTROL_KEY_LOCAL` / `host_control_key(room_id)` | `alchemy/dev/room/local/host_control` |
-| `liveliness_key(room_id, sub)` / `liveliness_wildcard(room_id)` | `…/alive/{sub}` / `…/alive/**` |
+| `liveliness_key(room_id, sub, jti)` / `liveliness_wildcard(room_id)` | `…/alive/{sub}/{jti}` / `…/alive/**` |
+| `liveliness_binding_from_key` | `(sub, jti)`。単セグメント旧キーは拒否 |
 | `validate_room_id` | 非空・`/` なし・ASCII 印刷可能 |

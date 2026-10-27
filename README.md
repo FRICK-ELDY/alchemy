@@ -148,16 +148,17 @@ make ci-e2e                             # x001f hermetic: compose 縦 login→to
 #   export AUTH_URL=https://auth.example.tld WORLD_URL=https://world.example.tld ASSETS_URL=https://assets.example.tld
 #   （env 例: edge/client.env.example / smoke: bash .scripts/smoke-https-edge.sh）
 #   公網へのルーターポート開放は不要（Tunnel）。
-# Zenoh WAN（x001b / ConoHa）:
+# Zenoh WAN TLS（x0022 / ConoHa）:
 #   手順: .workspace/0_doc/manual/zenoh-wan-conoha.md
-#   VPS: zenohd -c config.wan.json5 + ufw allowlist（7447 全世界開放禁止）
-#   export ZENOH_CONNECT=tcp/<VPS_IP>:7447
+#   VPS: zenohd -c config.wan.json5（tls）+ certs + ufw allowlist（7447 全世界開放禁止）
+#   export ZENOH_CONNECT=tls/<VPS_HOST>:7447
+#   # 私有 CA: export ZENOH_TLS_ROOT_CA=/path/to/ca-cert.pem
 #   拠点 host + 外 client（x001a URL）で同じ ROOM_ID。smoke: bash .scripts/smoke-zenoh-wan.sh
 # ESC ダッシュ / Home タブ / XR Grab / Noclip。Desktop 強制: ALCHEMY_FORCE_DESKTOP=1
 # OpenXR ローダー明示: ALCHEMY_OPENXR_LOADER=...
 ```
 
-環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID`（既定 `local`） / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（サイレント login） / `ZENOH_CONNECT` / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_PID` / `ALCHEMY_FORCE_DESKTOP` / `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。Desktop 正本例: [`client/env.desktop.example`](client/env.desktop.example)。
+環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID`（既定 `local`） / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（サイレント login） / `ZENOH_CONNECT` / `ZENOH_TLS_ROOT_CA`（WAN 私有 CA） / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_PID` / `ALCHEMY_FORCE_DESKTOP` / `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。Desktop 正本例: [`client/env.desktop.example`](client/env.desktop.example)。
 
 詳細は [`.workspace/roadmap/`](.workspace/roadmap/README.md) · Slice [x0020](.workspace/roadmap/slices/x0020-desktop-handthrough.md)。
 
