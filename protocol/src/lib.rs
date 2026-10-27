@@ -5,6 +5,7 @@
 //! - `RenderFrame` (delta upserts/removes + host_sig), `SceneManifest` (+ `LocomotionConfig`, host_pub),
 //!   `InputEvent` (session Ed25519), `PresenceState` (`sub`→entity) encode/decode.
 //! - [`wire_crypto`] sign/verify helpers for Intent / Frame (x0023).
+//! - [`sim_capability`] role → Intent/HTTP capability bits (x002a; not a wire schema).
 //! - Delivery class table: [`peer-delivery.md`](../peer-delivery.md). Frame tick gap → snapshot
 //!   ([`decide_frame_tick`], [`FRAME_TICK_GAP_RESYNC`]; x0024).
 //!
@@ -13,13 +14,14 @@
 //! - Cryptographic verification of `InputEvent.room_token` (host-server JWKS).
 //! - SceneManifest-driven shared-sim / EntityKind (P4 remainder after x0027).
 //! - Frame scale animation / non-uniform collider resize (x0029 emits unit scale).
-//! - Reliable-delivery ACK / event-id channel (edit / inventory); see peer-delivery.md.
+//! - Caps on Presence / JWT claim; invite ACL; reliable-delivery ACK / event-id channel.
 //! - Locomotion module list UI / suppress sources.
 //! - Tenant namespace `alchemy/tenant/...` (dev keys only: `alchemy/dev/room/{room_id}/…`).
 //! - 5+ concurrent guests / WAN liveliness ACL / Zenoh ACL.
 
 pub use prost::Message;
 
+pub mod sim_capability;
 pub mod wire_crypto;
 
 /// Bump when `proto/` has an incompatible wire change.
@@ -74,6 +76,7 @@ pub fn scene_entry_is_box(blake3: &str, half_extent: f32, entity_id: u32) -> boo
 }
 
 /// Build an [`Entity`] with identity orientation and unit scale (x0029).
+#[allow(clippy::too_many_arguments)]
 pub fn entity_at(id: u32, x: f64, y: f64, z: f64, r: f32, g: f32, b: f32, a: f32) -> Entity {
     entity_trs(
         id,
@@ -90,6 +93,7 @@ pub fn entity_at(id: u32, x: f64, y: f64, z: f64, r: f32, g: f32, b: f32, a: f32
 }
 
 /// Build an [`Entity`] with explicit TRS (x0029).
+#[allow(clippy::too_many_arguments)]
 pub fn entity_trs(
     id: u32,
     x: f64,

@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x002a`**；x0029 done）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x002b`**；x002a done）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -91,8 +91,9 @@ depends_on: [x0006]
 | x0027 | — | done | SceneManifest 駆動（P4 最小 / D2） | [x0027-manifest-driven.md](slices/x0027-manifest-driven.md) |
 | x0028 | — | done | Room 永続（Ash + SQLite / D4） | [x0028-room-persistence.md](slices/x0028-room-persistence.md) |
 | x0029 | — | done | RenderFrame 回転 + スケール（E1） | [x0029-renderframe-trs.md](slices/x0029-renderframe-trs.md) |
+| x002a | — | done | role → sim capability（D4 残り） | [x002a-role-sim-capability.md](slices/x002a-role-sim-capability.md) |
 
-**現在の次:** role→sim capability（D4 残り）・shared-sim / EntityKind・P3 衛生は後続。
+**現在の次:** Grab OBB・shared-sim / EntityKind・P3 衛生は後続。
 
 ## 関連
 

@@ -29,7 +29,7 @@
 | `…/manifest` | **latest**（低頻度＋再送） | 届いた最新を **`protocol_pin` → `room_id` → `world_seal`（blake3）→ `host_attestation`** の順で検証後に採用（x0026）。entries が配置・Grab・mesh の定義正本（x0027）。host は seal / attestation を TTL 80% で更新し、失敗時は公開停止 | shared-sim / EntityKind・欠落再送・適用完了 ACK・stale seal の継続公開 |
 | world `GET …/scene` | **request/response**（HTTP） | host が Room 作成後に DemoScene を取得し Rapier / Manifest の入力にする（x0027） | guest 取得・シーン編集 |
 | `…/presence` | **latest**（低頻度） | 届いた割当表を pin + **`host_sig`**（attested `host_pub`）後に採用（x0025） | world 署名・途中欠落の補完 |
-| `…/input` | **best-effort Intent** | host が受理した Intent について `intent_seq` 単調 | put 成功＝適用成功、ACK、確実配送 |
+| `…/input` | **best-effort Intent** | host が受理した Intent について `intent_seq` 単調。bind 時 `role`→caps で move/grab/leave をマスク（x002a） | put 成功＝適用成功、ACK、確実配送、caps のワイヤ明示 |
 | `…/host_control` | **best-effort command**（既定 OFF） | `ALCHEMY_HOST_CONTROL=1` のとき到達は best-effort | 認証・ACK |
 | `…/alive/{sub}/{jti}` | liveliness | Delete で host が jti 一致時 reclaim（x0022） | WAN ACL・他人 Delete の完全防御 |
 | assets HTTP CAS | **Blob（参照）** | blake3 参照の取得は assets 層の契約 | Zenoh 上の Blob 配送 |

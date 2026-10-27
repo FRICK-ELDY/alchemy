@@ -324,6 +324,9 @@ defmodule WorldWeb.RoomController do
     end
   end
 
+  # HTTP_* capabilities (scene / attest / seal) are defined in alchemy-protocol
+  # `sim_capability` (x002a). Elixir cannot import that crate — keep `role == "host"`
+  # here in lockstep with the protocol table.
   defp require_host_token(%{"role" => "host", "room_id" => token_room}, room_id) do
     if token_room == room_id do
       :ok
