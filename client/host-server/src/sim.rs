@@ -1,17 +1,21 @@
-//! Rapier world driven by SceneManifest entries (x0027 / x002c).
+//! Rapier world driven by SceneManifest entries (x0027 / x002c / x0030).
 //!
 //! Guarantees: floor (host-local) + mesh ball + boxes + user_roots from Manifest;
-//! Manifest initial **rotation** ? Rapier spawn; Manifest **scale** ? Frame Pose seed
+//! Manifest initial **rotation** → Rapier spawn; Manifest **scale** → Frame Pose seed
 //! (`scales` map; collider stays `half_extent`); per-slot Grab; no Steal;
 //! `release_slot` resets translation+rotation to Manifest spawn.
+//! Classification via `alchemy-shared-sim` [`EntityKind`] (x0030).
 //! Non-guarantees: Grab aim **rotation** follow (translation only); throw impulse;
-//! shared-sim; EntityKind; non-uniform collider scale (client OBB uses Frame scale,
-//! host physics / grab distance use `half_extent` only ? x002c). Frame emits Rapier
+//! non-uniform collider scale (client OBB uses Frame scale,
+//! host physics / grab distance use `half_extent` only — x002c). Frame emits Rapier
 //! rotation + Manifest scale (x0029 / x002c).
 
 use alchemy_protocol::{
-    scene_entry_grabbable, scene_entry_is_box, scene_entry_is_user_root, scene_entry_quat_xyzw,
-    scene_entry_scale, LocomotionMode, SceneEntry, DEFAULT_MOVE_SPEED,
+    scene_entry_grabbable, scene_entry_quat_xyzw, scene_entry_scale, LocomotionMode, SceneEntry,
+    DEFAULT_MOVE_SPEED,
+};
+use alchemy_shared_sim::{
+    classify_scene_entry, scene_entry_color_rgba, EntityKind, PHYS_BALL_RADIUS,
 };
 use rapier3d::na::{Isometry3, Quaternion, Translation3, UnitQuaternion};
 use rapier3d::prelude::*;
@@ -20,7 +24,6 @@ use std::collections::HashMap;
 pub use alchemy_protocol::{USER_ROOT_ENTITY_FIRST, USER_ROOT_SLOTS};
 
 const FLOOR_HALF_H: f32 = 0.5;
-const BALL_RADIUS: f32 = 0.25;
 const DEMO_GRAVITY_Y: f32 = -2.2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,68 +141,69 @@ impl PhysicsWorld {
         let mut roots_seen = [false; USER_ROOT_SLOTS];
 
         for entry in entries {
-            let color = entry_color(entry);
+            let color = scene_entry_color_rgba(entry);
             colors.insert(entry.entity_id, color);
             scales.insert(entry.entity_id, entry_scale_f32(entry));
             let pose = entry_isometry(entry);
 
-            if scene_entry_is_user_root(entry.entity_id) {
-                let slot = (entry.entity_id - USER_ROOT_ENTITY_FIRST) as usize;
-                if slot < USER_ROOT_SLOTS {
-                    user_root_spawns[slot] = (entry.x as f32, entry.y as f32, entry.z as f32);
-                    let [qx, qy, qz, qw] = scene_entry_quat_xyzw(entry);
-                    user_root_quats[slot] = [qx as f32, qy as f32, qz as f32, qw as f32];
-                    roots_seen[slot] = true;
+            match classify_scene_entry(entry) {
+                EntityKind::UserRoot => {
+                    let slot = (entry.entity_id - USER_ROOT_ENTITY_FIRST) as usize;
+                    if slot < USER_ROOT_SLOTS {
+                        user_root_spawns[slot] = (entry.x as f32, entry.y as f32, entry.z as f32);
+                        let [qx, qy, qz, qw] = scene_entry_quat_xyzw(entry);
+                        user_root_quats[slot] = [qx as f32, qy as f32, qz as f32, qw as f32];
+                        roots_seen[slot] = true;
+                    }
                 }
-                continue;
-            }
-
-            if !entry.blake3.is_empty() {
-                if entry.half_extent > 0.0 {
-                    log::warn!(
-                        "scene entry {} has blake3 + half_extent; mesh wins (box ignored)",
-                        entry.entity_id
-                    );
+                EntityKind::Mesh => {
+                    if entry.half_extent > 0.0 {
+                        log::warn!(
+                            "scene entry {} has blake3 + half_extent; mesh wins (box ignored)",
+                            entry.entity_id
+                        );
+                    }
+                    if mesh.is_none() {
+                        let ball = RigidBodyBuilder::dynamic()
+                            .position(pose)
+                            .linvel(vector![0.1, 0.0, 0.05])
+                            .build();
+                        let handle = rigid_body_set.insert(ball);
+                        collider_set.insert_with_parent(
+                            ColliderBuilder::ball(PHYS_BALL_RADIUS)
+                                .restitution(0.15)
+                                .build(),
+                            handle,
+                            &mut rigid_body_set,
+                        );
+                        mesh = Some((entry.entity_id, handle));
+                    }
                 }
-                if mesh.is_none() {
-                    let ball = RigidBodyBuilder::dynamic()
-                        .position(pose)
-                        .linvel(vector![0.1, 0.0, 0.05])
-                        .build();
-                    let handle = rigid_body_set.insert(ball);
+                EntityKind::Box => {
+                    let he = entry.half_extent;
+                    let can_grab = scene_entry_grabbable(entry.flags);
+                    let body = if can_grab {
+                        RigidBodyBuilder::dynamic().position(pose).build()
+                    } else {
+                        // Static scenery: Fixed so knocks / mesh ball do not displace it.
+                        RigidBodyBuilder::fixed().position(pose).build()
+                    };
+                    let handle = rigid_body_set.insert(body);
+                    // Cuboid uses Manifest half_extent only. Frame/client OBB may be larger
+                    // when Manifest sx..sz != 1 (x002c non-guarantee: draw vs physics size).
                     collider_set.insert_with_parent(
-                        ColliderBuilder::ball(BALL_RADIUS).restitution(0.15).build(),
+                        ColliderBuilder::cuboid(he, he, he)
+                            .restitution(0.05)
+                            .build(),
                         handle,
                         &mut rigid_body_set,
                     );
-                    mesh = Some((entry.entity_id, handle));
+                    boxes.handles.push(handle);
+                    boxes.entity_ids.push(entry.entity_id);
+                    boxes.grabbable.push(can_grab);
+                    boxes.half_extents.push(he);
                 }
-                continue;
-            }
-
-            if scene_entry_is_box(&entry.blake3, entry.half_extent, entry.entity_id) {
-                let he = entry.half_extent;
-                let can_grab = scene_entry_grabbable(entry.flags);
-                let body = if can_grab {
-                    RigidBodyBuilder::dynamic().position(pose).build()
-                } else {
-                    // Static scenery: Fixed so knocks / mesh ball do not displace it.
-                    RigidBodyBuilder::fixed().position(pose).build()
-                };
-                let handle = rigid_body_set.insert(body);
-                // Cuboid uses Manifest half_extent only. Frame/client OBB may be larger
-                // when Manifest sx..sz != 1 (x002c non-guarantee: draw vs physics size).
-                collider_set.insert_with_parent(
-                    ColliderBuilder::cuboid(he, he, he)
-                        .restitution(0.05)
-                        .build(),
-                    handle,
-                    &mut rigid_body_set,
-                );
-                boxes.handles.push(handle);
-                boxes.entity_ids.push(entry.entity_id);
-                boxes.grabbable.push(can_grab);
-                boxes.half_extents.push(he);
+                EntityKind::Ignored => {}
             }
         }
 
@@ -487,14 +491,6 @@ fn body_translation_quat(body: &RigidBody) -> ((f32, f32, f32), [f32; 4]) {
     ((t.x, t.y, t.z), [q.i, q.j, q.k, q.w])
 }
 
-fn entry_color(entry: &SceneEntry) -> (f32, f32, f32, f32) {
-    if entry.a > 0.0 {
-        (entry.r, entry.g, entry.b, entry.a)
-    } else {
-        (1.0, 1.0, 1.0, 1.0)
-    }
-}
-
 /// Distinct tint per user_root slot when Manifest omits color.
 pub fn user_root_color(slot: usize) -> (f32, f32, f32, f32) {
     const PALETTE: [(f32, f32, f32); USER_ROOT_SLOTS] = [
@@ -509,16 +505,20 @@ pub fn user_root_color(slot: usize) -> (f32, f32, f32, f32) {
 
 /// Unit-test fixture mirroring `World.DemoScene` layout.
 /// Production SSoT is Elixir `DemoScene`; keep this in sync manually
-/// (x0027 / x002c debt ? center box yaw45 + sx=1.5 must match `demo_scene.ex`).
+/// (x0027 / x002c / x0030 — center box yaw45 + sx=1.5 must match `demo_scene.ex`).
 #[cfg(test)]
 pub fn demo_entries_for_test() -> Vec<SceneEntry> {
     use alchemy_protocol::{ENTITY_QUAT_IDENTITY, ENTITY_SCALE_ONE, SCENE_FLAG_GRABBABLE};
+    use alchemy_shared_sim::demo::{
+        DEMO_BOX_ENTITY_BASE, DEMO_COIN_BLAKE3, DEMO_MESH_ENTITY_ID,
+    };
+    use alchemy_shared_sim::DEFAULT_BOX_HALF_EXTENT;
     // Keep in sync with World.DemoScene @yaw45_* / center-box sx (x002c).
     const YAW45_QY: f64 = 0.3826834323650898;
     const YAW45_QW: f64 = 0.9238795325112867;
     let coin = SceneEntry {
-        entity_id: 1,
-        blake3: "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555feb66d4f82ee1e72a".into(),
+        entity_id: DEMO_MESH_ENTITY_ID,
+        blake3: DEMO_COIN_BLAKE3.into(),
         x: 0.0,
         y: 5.0,
         z: 0.0,
@@ -592,12 +592,12 @@ pub fn demo_entries_for_test() -> Vec<SceneEntry> {
             )
         };
         SceneEntry {
-            entity_id: 10 + i as u32,
+            entity_id: DEMO_BOX_ENTITY_BASE + i as u32,
             blake3: String::new(),
             x: (col - 1.0) * 0.8,
             y: 0.25,
             z: 3.5 + (row - 1.0) * 0.8,
-            half_extent: 0.25,
+            half_extent: DEFAULT_BOX_HALF_EXTENT,
             flags: SCENE_FLAG_GRABBABLE,
             r,
             g,

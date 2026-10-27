@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "host-server",
     "app",
+    "shared-sim",
     "e2e-probe",
     "zenoh-connect",
 ]
@@ -19,6 +20,7 @@ undocumented_unsafe_blocks = "deny"
 [workspace.dependencies]
 # Shared wire contract lives at repo-root protocol/ (not inside this workspace).
 alchemy-protocol = { path = "../protocol" }
+alchemy-shared-sim = { path = "shared-sim" }
 zenoh-connect = { path = "zenoh-connect" }
 prost = "0.14"
 zenoh = "1.10"

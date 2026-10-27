@@ -18,7 +18,7 @@
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
 //!
 //! Non-guarantees: Steal, XR login keyboard, email verify UI, Quest standalone, WSL HMD,
-//! reliable-delivery ACK channel, shared-sim / EntityKind (P4 remainder)
+//! reliable-delivery ACK channel
 
 mod auth;
 mod host_attestation;
@@ -34,7 +34,6 @@ mod turn;
 mod world_hit;
 mod world_jwks;
 
-use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU32;
@@ -48,10 +47,11 @@ use alchemy_protocol::wire_crypto::{
 };
 use alchemy_protocol::{
     decide_frame_tick, frame_key, input_key, liveliness_key, manifest_key, presence_key,
-    protocol_pin_matches, scene_entry_grabbable, scene_entry_is_box, scene_entry_is_user_root,
-    scene_entry_quat_xyzw, scene_entry_scale, snapshot_key, validate_room_id, FrameTickDecision,
-    Message, PresenceState, RenderFrame, SceneManifest, FRAME_TICK_GAP_RESYNC, PROTOCOL_PIN,
+    protocol_pin_matches, scene_entry_quat_xyzw, scene_entry_scale, snapshot_key, validate_room_id,
+    FrameTickDecision, Message, PresenceState, RenderFrame, SceneManifest, FRAME_TICK_GAP_RESYNC,
+    PROTOCOL_PIN,
 };
+use alchemy_shared_sim::{scene_entry_color_rgba, ManifestIndex};
 use anyhow::{Context, Result};
 use auth::AuthGate;
 use host_attestation::HostAttestationVerifier;
@@ -291,42 +291,26 @@ fn spawn_manifest_subscriber(
                             manifest.revision,
                             manifest.entries.len()
                         );
-                        // Classification priority matches host (x0027):
-                        // user_root → mesh (blake3) → box (half_extent); Grab = flags on boxes only.
-                        let mut grabbable = HashSet::new();
-                        let mut half_extents = HashMap::new();
-                        let mut mesh_id = 0u32;
+                        // Classification: ManifestIndex (shared-sim / x0030; priority = x0027).
+                        let index = ManifestIndex::from_entries(&manifest.entries);
+                        let mesh_id = index.mesh_entity_id.unwrap_or(0);
                         let mut mesh_blake3: Option<String> = None;
+                        if let Some(mid) = index.mesh_entity_id {
+                            if let Some(entry) =
+                                manifest.entries.iter().find(|e| e.entity_id == mid)
+                            {
+                                if entry.half_extent > 0.0 {
+                                    log::warn!(
+                                        "scene entry {} has blake3 + half_extent; mesh wins (box ignored)",
+                                        entry.entity_id
+                                    );
+                                }
+                                mesh_blake3 = Some(entry.blake3.clone());
+                            }
+                        }
                         if let Ok(mut world) = shared.world.lock() {
                             for entry in &manifest.entries {
-                                if scene_entry_is_user_root(entry.entity_id) {
-                                    // spawn pose / tint only
-                                } else if !entry.blake3.is_empty() {
-                                    if entry.half_extent > 0.0 {
-                                        log::warn!(
-                                            "scene entry {} has blake3 + half_extent; mesh wins (box ignored)",
-                                            entry.entity_id
-                                        );
-                                    }
-                                    if mesh_blake3.is_none() {
-                                        mesh_id = entry.entity_id;
-                                        mesh_blake3 = Some(entry.blake3.clone());
-                                    }
-                                } else if scene_entry_is_box(
-                                    &entry.blake3,
-                                    entry.half_extent,
-                                    entry.entity_id,
-                                ) {
-                                    half_extents.insert(entry.entity_id, entry.half_extent);
-                                    if scene_entry_grabbable(entry.flags) {
-                                        grabbable.insert(entry.entity_id);
-                                    }
-                                }
-                                let (r, g, b, a) = if entry.a > 0.0 {
-                                    (entry.r, entry.g, entry.b, entry.a)
-                                } else {
-                                    (1.0, 1.0, 1.0, 1.0)
-                                };
+                                let (r, g, b, a) = scene_entry_color_rgba(entry);
                                 match world.entities.entry(entry.entity_id) {
                                     std::collections::hash_map::Entry::Vacant(v) => {
                                         let [qx, qy, qz, qw] = scene_entry_quat_xyzw(entry);
@@ -362,7 +346,11 @@ fn spawn_manifest_subscriber(
                                 }
                             }
                         }
-                        shared.apply_manifest_defs(grabbable, half_extents, mesh_id);
+                        shared.apply_manifest_defs(
+                            index.grabbable,
+                            index.half_extents,
+                            mesh_id,
+                        );
                         if let Some(hex) = mesh_blake3 {
                             if !sent_blake3 {
                                 let _ = blake3_tx.send(hex);

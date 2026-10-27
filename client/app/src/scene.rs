@@ -28,26 +28,24 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
 
-use alchemy_protocol::user_root_entity_last;
+use alchemy_protocol::scene_entry_is_user_root;
 
 use crate::auth::AuthGate;
 use crate::mesh::CpuMesh;
 
 /// Fallback mesh entity before Manifest arrives (fixture / smoke).
-pub const MESH_ENTITY_ID: u32 = 1;
-/// Host-authoritative player roots (protocol SSoT; x0015 Presence).
-pub use alchemy_protocol::USER_ROOT_ENTITY_FIRST;
+pub use alchemy_shared_sim::demo::DEMO_MESH_ENTITY_ID as MESH_ENTITY_ID;
 /// Sentinel: Presence has not assigned a local user_root yet.
 pub const LOCAL_USER_ROOT_UNSET: u32 = 0;
 /// Max cuboid draw UBOs (demo has 9; headroom for Manifest-driven scenes).
 pub const BOX_DRAW_SLOTS: usize = 16;
 /// Default half-extent when Manifest omits per-entity size.
-pub const BOX_HALF_EXTENT: f32 = 0.25;
+pub use alchemy_shared_sim::DEFAULT_BOX_HALF_EXTENT as BOX_HALF_EXTENT;
 /// Placeholder size for remote player (meters half-extent).
 pub const REMOTE_ROOT_HALF_EXTENT: f32 = 0.25;
 
 pub fn is_user_root_entity(id: u32) -> bool {
-    (USER_ROOT_ENTITY_FIRST..=user_root_entity_last()).contains(&id)
+    scene_entry_is_user_root(id)
 }
 /// Half-extent of Desktop floor (meters). Larger so loco is obvious.
 const FLOOR_EXTENT: f32 = 20.0;
@@ -671,9 +669,9 @@ impl SceneGpu {
             pass.set_index_buffer(self.floor_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.floor_index_count, 0, 0..1);
 
-            const PHYS_BALL_RADIUS: f32 = 0.25;
-            let visual_scale =
-                (PHYS_BALL_RADIUS * 0.95 / self.mesh_radius.max(1e-3)).clamp(0.02, 4.0);
+            let visual_scale = (alchemy_shared_sim::PHYS_BALL_RADIUS * 0.95
+                / self.mesh_radius.max(1e-3))
+            .clamp(0.02, 4.0);
             // Mesh asset tilt (0.25 rad X) stays client-local; Frame TRS is sim authority (x0029).
             let model = Mat4::from_scale_rotation_translation(
                 pose.scale() * visual_scale,

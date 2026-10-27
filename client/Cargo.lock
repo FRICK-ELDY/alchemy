@@ -70,6 +70,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "alchemy-shared-sim"
+version = "0.1.0"
+dependencies = [
+ "alchemy-protocol",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -525,6 +532,7 @@ name = "client"
 version = "0.1.0"
 dependencies = [
  "alchemy-protocol",
+ "alchemy-shared-sim",
  "anyhow",
  "ash",
  "base64 0.22.1",
@@ -1609,6 +1617,7 @@ name = "host-server"
 version = "0.1.0"
 dependencies = [
  "alchemy-protocol",
+ "alchemy-shared-sim",
  "anyhow",
  "base64 0.22.1",
  "env_logger",

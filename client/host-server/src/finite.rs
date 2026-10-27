@@ -1,4 +1,4 @@
-//! Input sanitization (Slice D / x0011 / x0021).
+//! Input sanitization (Slice D / x0011 / x0021 / x0030).
 //!
 //! Guarantees: non-finite move_* / aim_* never reach physics; move magnitude
 //! capped to unit ball; Grab start requires player↔entity within [`MAX_GRAB_START_DISTANCE`].
@@ -9,8 +9,8 @@ use alchemy_protocol::InputEvent;
 /// Protocol contract: move_* are ~-1..1; host clamps to this sphere.
 pub const MAX_MOVE_MAGNITUDE: f32 = 1.0;
 
-/// Match client pick range (`world_hit::MAX_HIT_DISTANCE`).
-pub const MAX_GRAB_START_DISTANCE: f32 = 5.0;
+/// Match client pick range (`world_hit::MAX_HIT_DISTANCE`); SSoT in shared-sim (x0030).
+pub use alchemy_shared_sim::MAX_GRAB_HIT_DISTANCE as MAX_GRAB_START_DISTANCE;
 
 /// Returns true when all spatial fields are finite (not NaN / Inf).
 pub fn input_event_is_finite(event: &InputEvent) -> bool {

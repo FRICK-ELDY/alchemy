@@ -26,16 +26,17 @@
 | Manifest の blake3 → assets GET（Bearer + CAS；s3 時は 302 追従・x001d）→ BLAKE3 → wgpu。**GET は認証済み読み取り capability**（所有者 grant は後続 BlobGrant） | LOD / KTX2 / マテリアル本格 / スキン |
 | Frame: `host_sig` 検証・finite・tick 規則。Manifest は **`world_seal`** + **HostAttestation** 後にのみ `host_pub` 採用；失敗は leave（x0026） | 予測補間 / jitter buffer・欠落デルタ再送 |
 | Presence: pin + `host_sig`（attested `host_pub`）。失敗は適用しない（x0025） | Presence の world 署名 |
-| Manifest entries → mesh blake3 / box=`half_extent` 描画 / Grab=`SCENE_FLAG_GRABBABLE`（x0027）。entity 表 upsert/remove。late join / **tick gap** は snapshot 置換（クールダウン 500ms・x0024） | shared-sim / EntityKind・loco の client 解釈・boot 後の mesh blake3 再取得 |
+| Manifest entries → mesh blake3 / box=`half_extent` 描画 / Grab=`SCENE_FLAG_GRABBABLE`（x0027）。分類は `alchemy-shared-sim` `ManifestIndex` / `EntityKind`（x0030）。entity 表 upsert/remove。late join / **tick gap** は snapshot 置換（クールダウン 500ms・x0024） | loco の client 解釈・boot 後の mesh blake3 再取得 |
 | Desktop: WASD/Space/C → Intent（look yaw 相対）。クリックで Confined（失敗時 Locked）→ マウスルック。look 中 RMB → Grab（x0013） | 感度 UI / クロスヘア必須 |
 | Presence で自 entity 解決→カメラ；他 root は色付きボックス（x0015）。欠落で unset（x0016）。Home タブ login/register/logout（x0018）。logout は Leave + liveliness undeclare（x0019）。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` は CI サイレント login。`ZENOH_CONNECT` LAN | 5人以上・アバター GLB・XR 文字入力 |
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
 | OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose + 埋め込み baseColor + animatable node） | SteamVR パス直読み／PBR（MR/normal 等）／手トラ |
 | OpenXR: ダッシュ開→UI レーザー；閉→ワールドレーザー＋ Grab hold（squeeze／Select）（x0011） | Steal／回転追従／Facet 並べ替え／WorldRoot／CompositionLayerQuad |
-| auth login → Room Token は **bind Intent のみ**。以降は Ed25519 session（x0023） | OSC / Dual Editor / launcher 本実装 |
+| auth login → Room Token は **bind Intent のみ**。以降は Ed25519 session（x0023） | OSC / Dual Editor |
+| launcher（x0032）: host/client 分離 spawn・IPC shutdown。Exit Host は `ALCHEMY_HOST_IPC_*` 優先 | deep link / トレイ / handoff |
 | host: world `GET …/scene` → Rapier `from_entries` + sealed Manifest 公開（x0027）。60Hz + session gate + `is_finite` + Presence + Leave / jti liveliness / TTL（x0022）+ signed 30Hz 純デルタ + snapshot + attestation / seal refresh（x0026）。`ALCHEMY_AUTH_TOKEN` は長命前提 | Formula / 予測補間 / verifier / 本格 Walk / Steal / floor Manifest 化 / refresh 失敗後の自動復旧 / 短命静的 auth JWT の自動更新 |
 | ESC（Desktop）/ Menu（OpenXR）ダッシュ・下タブ Home/Settings/Exit・Pinned Exit・Home アカウント殻（x0018）・Button hover・client 終了・host 終了は `ALCHEMY_HOST_PID`（Zenoh `host_control` は opt-in・x001e）。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 / XR 仮想キーボード / 認証付きリモート shutdown |
-| OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD・launcher 本実装 |
+| OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD |
 
 ## チャネル分離（C-C + E + x0009）
 
