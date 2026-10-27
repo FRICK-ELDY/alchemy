@@ -2,6 +2,7 @@ defmodule World.HostAttestationTest do
   use ExUnit.Case, async: false
 
   alias World.HostAttestation
+  alias World.Token.Keys
 
   @host_pub :crypto.strong_rand_bytes(32)
   @sub "11111111-1111-1111-1111-111111111111"
@@ -11,7 +12,7 @@ defmodule World.HostAttestationTest do
     assert ttl > 0
     assert is_binary(token)
 
-    signer = World.Token.Keys.signer()
+    signer = Keys.signer()
     assert {:ok, claims} = Joken.verify(token, signer)
     assert claims["typ"] == HostAttestation.typ()
     assert claims["aud"] == HostAttestation.audience()

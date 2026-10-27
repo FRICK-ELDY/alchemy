@@ -878,13 +878,7 @@ mod tests {
     #[test]
     fn plan_refresh_all_layers_when_all_due() {
         let now = Instant::now();
-        let plan = plan_credential_refresh(
-            now,
-            Some(now),
-            now,
-            now,
-        )
-        .expect("due");
+        let plan = plan_credential_refresh(now, Some(now), now, now).expect("due");
         assert_eq!(
             plan,
             CredentialRefreshPlan {

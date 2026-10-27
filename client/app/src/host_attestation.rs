@@ -178,9 +178,11 @@ impl HostAttestationVerifier {
             .keys
             .get(kid)
             .ok_or_else(|| anyhow!("unknown kid: {kid}"))?;
-        Ok(decode::<HostAttestationClaims>(attestation, key, validation)
-            .context("RS256 verify")?
-            .claims)
+        Ok(
+            decode::<HostAttestationClaims>(attestation, key, validation)
+                .context("RS256 verify")?
+                .claims,
+        )
     }
 }
 
