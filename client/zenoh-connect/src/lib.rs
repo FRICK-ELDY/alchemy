@@ -28,8 +28,7 @@ pub fn apply_tls_root_ca_from_env(config: &mut Config) -> Result<()> {
     if ca.is_empty() {
         return Ok(());
     }
-    let value =
-        serde_json::to_string(&ca).map_err(|e| anyhow!("zenoh tls root ca json: {e}"))?;
+    let value = serde_json::to_string(&ca).map_err(|e| anyhow!("zenoh tls root ca json: {e}"))?;
     config
         .insert_json5("transport/link/tls/root_ca_certificate", &value)
         .map_err(|e| anyhow!("zenoh tls root ca: {e}"))?;

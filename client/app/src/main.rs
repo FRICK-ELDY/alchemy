@@ -562,8 +562,8 @@ pub fn declare_room_alive(
         .ok()
         .and_then(|g| g.room_token.clone())
         .context("declare liveliness: not joined")?;
-    let (sub, jti) = jwt_sub::sub_jti_unverified(&room_token)
-        .context("declare liveliness: read sub/jti")?;
+    let (sub, jti) =
+        jwt_sub::sub_jti_unverified(&room_token).context("declare liveliness: read sub/jti")?;
     let key = liveliness_key(shared.room_id.as_ref(), &sub, &jti);
     let token = session
         .liveliness()
