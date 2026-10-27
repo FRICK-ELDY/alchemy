@@ -22,6 +22,7 @@ defmodule WorldWeb.Router do
 
     post "/rooms/:room_id/host_keys", RoomController, :create_host_key
     post "/rooms/:room_id/manifest_seal", RoomController, :create_manifest_seal
+    get "/rooms/:room_id/scene", RoomController, :show_scene
   end
 
   scope "/", WorldWeb do

@@ -11,7 +11,7 @@
 //! # Non-guarantees
 //! - Bit-packing / prediction coding, DrawCommand taxonomy, audio/tracking frames.
 //! - Cryptographic verification of `InputEvent.room_token` (host-server JWKS).
-//! - Signed Manifest issuance by world-server (later).
+//! - SceneManifest-driven shared-sim / EntityKind (P4 remainder after x0027).
 //! - Reliable-delivery ACK / event-id channel (edit / inventory); see peer-delivery.md.
 //! - Locomotion module list UI / suppress sources.
 //! - Tenant namespace `alchemy/tenant/...` (dev keys only: `alchemy/dev/room/{room_id}/…`).
@@ -22,7 +22,10 @@ pub use prost::Message;
 pub mod wire_crypto;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.11.0-x0026";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.12.0-x0027";
+
+/// `SceneEntry.flags`: entity may be Grab-held (x0027).
+pub const SCENE_FLAG_GRABBABLE: u32 = 1;
 
 /// Default free-move speed (m/s) when Manifest `move_speed` is 0.
 /// Shared by host Noclip and client Settings display (x000a).
@@ -41,6 +44,26 @@ pub const USER_ROOT_ENTITY_FIRST: u32 = 3;
 /// Inclusive last user_root entity id.
 pub const fn user_root_entity_last() -> u32 {
     USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1
+}
+
+/// True when `flags` includes [`SCENE_FLAG_GRABBABLE`].
+pub const fn scene_entry_grabbable(flags: u32) -> bool {
+    flags & SCENE_FLAG_GRABBABLE != 0
+}
+
+/// True when `entity_id` is in the Presence user_root band.
+pub const fn scene_entry_is_user_root(entity_id: u32) -> bool {
+    entity_id >= USER_ROOT_ENTITY_FIRST && entity_id <= user_root_entity_last()
+}
+
+/// Cuboid draw/collision candidate (x0027).
+///
+/// Classification priority (host + client must match):
+/// 1. user_root id band → Presence spawn (not a box)
+/// 2. `blake3` non-empty → mesh only (`half_extent` / Grab flags ignored for box path)
+/// 3. `half_extent > 0` → cuboid; Grab only when [`scene_entry_grabbable`]
+pub fn scene_entry_is_box(blake3: &str, half_extent: f32, entity_id: u32) -> bool {
+    !scene_entry_is_user_root(entity_id) && blake3.is_empty() && half_extent > 0.0
 }
 
 /// `InputEvent.buttons` bits (mirror of proto `InputButtons`).
@@ -276,13 +299,35 @@ mod tests {
         let manifest = SceneManifest {
             room_id: "local".into(),
             revision: 1,
-            entries: vec![SceneEntry {
-                entity_id: 1,
-                blake3: "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555feb66d4f82ee1e72a".into(),
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            }],
+            entries: vec![
+                SceneEntry {
+                    entity_id: 1,
+                    blake3: "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555feb66d4f82ee1e72a"
+                        .into(),
+                    x: 0.0,
+                    y: 5.0,
+                    z: 0.0,
+                    half_extent: 0.0,
+                    flags: 0,
+                    r: 0.2,
+                    g: 0.9,
+                    b: 0.4,
+                    a: 1.0,
+                },
+                SceneEntry {
+                    entity_id: 10,
+                    blake3: String::new(),
+                    x: 0.0,
+                    y: 0.25,
+                    z: 3.5,
+                    half_extent: 0.25,
+                    flags: SCENE_FLAG_GRABBABLE,
+                    r: 0.9,
+                    g: 0.35,
+                    b: 0.3,
+                    a: 1.0,
+                },
+            ],
             locomotion: Some(LocomotionConfig {
                 mode: LocomotionMode::Noclip.into(),
                 move_speed: 4.0,
@@ -296,12 +341,26 @@ mod tests {
         let decoded = SceneManifest::decode(bytes.as_slice()).expect("decode");
         assert_eq!(decoded.room_id, "local");
         assert_eq!(decoded.revision, 1);
-        assert_eq!(decoded.entries.len(), 1);
+        assert_eq!(decoded.entries.len(), 2);
         assert_eq!(decoded.entries[0].entity_id, 1);
         assert_eq!(
             decoded.entries[0].blake3,
             "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555feb66d4f82ee1e72a"
         );
+        assert!(scene_entry_grabbable(decoded.entries[1].flags));
+        assert!((decoded.entries[1].half_extent - 0.25).abs() < f32::EPSILON);
+        assert!(!scene_entry_is_box(
+            &decoded.entries[0].blake3,
+            decoded.entries[0].half_extent,
+            decoded.entries[0].entity_id
+        ));
+        assert!(scene_entry_is_box(
+            &decoded.entries[1].blake3,
+            decoded.entries[1].half_extent,
+            decoded.entries[1].entity_id
+        ));
+        // blake3 wins over half_extent when both set
+        assert!(!scene_entry_is_box("deadbeef", 0.25, 99));
         let loco = decoded.locomotion.expect("locomotion");
         assert_eq!(loco.mode, i32::from(LocomotionMode::Noclip));
         assert!((loco.move_speed - 4.0).abs() < f32::EPSILON);

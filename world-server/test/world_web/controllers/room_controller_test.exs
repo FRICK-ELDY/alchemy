@@ -178,6 +178,82 @@ defmodule WorldWeb.RoomControllerTest do
              |> json_response(422)
   end
 
+  test "scene returns demo definition for owner host token", %{conn: conn, signer: signer} do
+    sub = "22222222-2222-2222-2222-222222222222"
+
+    conn
+    |> TestAuthHelpers.put_auth(signer, sub)
+    |> post("/api/v1/rooms", %{room_id: "scene-room"})
+    |> json_response(201)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> post("/api/v1/rooms/scene-room/tokens", %{role: "host"})
+      |> json_response(200)
+
+    body =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{host_token}")
+      |> get("/api/v1/rooms/scene-room/scene")
+      |> json_response(200)
+
+    assert body["room_id"] == "scene-room"
+    assert body["revision"] == 1
+    assert is_list(body["entries"])
+    assert length(body["entries"]) == 14
+    assert body["locomotion"]["mode"] == "noclip"
+  end
+
+  test "scene rejects guest token", %{conn: conn, signer: signer} do
+    owner = "22222222-2222-2222-2222-222222222222"
+    guest = "33333333-3333-3333-3333-333333333333"
+
+    conn
+    |> TestAuthHelpers.put_auth(signer, owner)
+    |> post("/api/v1/rooms", %{room_id: "scene-guest"})
+    |> json_response(201)
+
+    %{"token" => guest_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> post("/api/v1/rooms/scene-guest/tokens", %{role: "guest"})
+      |> json_response(200)
+
+    assert %{"error" => "host_role_required"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{guest_token}")
+             |> get("/api/v1/rooms/scene-guest/scene")
+             |> json_response(403)
+  end
+
+  test "scene returns 404 for unknown room", %{signer: signer} do
+    _ = signer
+    owner = "22222222-2222-2222-2222-222222222222"
+    # Token.generate does not require the room registry entry (API create_token does).
+    assert {:ok, ghost_token, _ttl} = World.Token.generate("ghost-scene", "host", owner)
+
+    assert %{"error" => "room_not_found"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{ghost_token}")
+             |> get("/api/v1/rooms/ghost-scene/scene")
+             |> json_response(404)
+  end
+
+  test "scene rejects missing bearer", %{conn: conn, signer: signer} do
+    sub = "22222222-2222-2222-2222-222222222222"
+
+    conn
+    |> TestAuthHelpers.put_auth(signer, sub)
+    |> post("/api/v1/rooms", %{room_id: "scene-nobearer"})
+    |> json_response(201)
+
+    assert %{"error" => "missing_room_token"} =
+             build_conn()
+             |> get("/api/v1/rooms/scene-nobearer/scene")
+             |> json_response(401)
+  end
+
   test "manifest_seal issues seal for owner host token", %{conn: conn, signer: signer} do
     sub = "22222222-2222-2222-2222-222222222222"
     blake3 = String.duplicate("cd", 32)

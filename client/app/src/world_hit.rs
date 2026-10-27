@@ -1,7 +1,9 @@
 //! World-space ray hits against grabbable box AABBs (Desktop + XR).
 //!
-//! Guarantees: nearest AABB entry among entity ids 10..18 within [`MAX_HIT_DISTANCE`].
+//! Guarantees: nearest AABB among caller-supplied grabbable poses within [`MAX_HIT_DISTANCE`].
 //! Non-guarantees: mesh triangles, Slot hierarchy, XR dash quad (stays in surface/xr).
+
+use std::collections::HashMap;
 
 use glam::Vec3;
 
@@ -65,18 +67,25 @@ pub fn ray_hit_aabb(ray: Ray, center: Vec3, half: f32) -> Option<f32> {
     }
 }
 
-/// Nearest grabbable box along `ray` (client-local pose table).
+/// Nearest grabbable box along `ray` (caller pre-filters the set; uniform half-extent).
 pub fn ray_hit_grabbable_boxes(
     ray: Ray,
     boxes: &[(u32, EntityPose)],
     half_extent: f32,
 ) -> Option<BoxHit> {
+    ray_hit_grabbable_boxes_with_extents(ray, boxes, |_| half_extent)
+}
+
+/// Nearest box using per-entity half-extents (`BOX_HALF_EXTENT` fallback).
+pub fn ray_hit_grabbable_boxes_with_extents(
+    ray: Ray,
+    boxes: &[(u32, EntityPose)],
+    half_for: impl Fn(u32) -> f32,
+) -> Option<BoxHit> {
     let mut best: Option<BoxHit> = None;
     for &(id, pose) in boxes {
-        if !EntityPose::is_grabbable_box(id) {
-            continue;
-        }
-        let Some(t) = ray_hit_aabb(ray, pose.position(), half_extent) else {
+        let half = half_for(id);
+        let Some(t) = ray_hit_aabb(ray, pose.position(), half) else {
             continue;
         };
         if t > MAX_HIT_DISTANCE {
@@ -112,8 +121,14 @@ pub fn pick_grabbable(ray: Ray, boxes: &[(u32, EntityPose)]) -> Option<BoxHit> {
 /// Desktop pick pad: floor boxes sit below eye height; slight AABB inflate helps look-aim.
 pub const DESKTOP_PICK_HALF_PAD: f32 = 0.12;
 
-pub fn pick_grabbable_desktop(ray: Ray, boxes: &[(u32, EntityPose)]) -> Option<BoxHit> {
-    ray_hit_grabbable_boxes(ray, boxes, BOX_HALF_EXTENT + DESKTOP_PICK_HALF_PAD)
+pub fn pick_grabbable_desktop(
+    ray: Ray,
+    boxes: &[(u32, EntityPose)],
+    half_extents: &HashMap<u32, f32>,
+) -> Option<BoxHit> {
+    ray_hit_grabbable_boxes_with_extents(ray, boxes, |id| {
+        half_extents.get(&id).copied().unwrap_or(BOX_HALF_EXTENT) + DESKTOP_PICK_HALF_PAD
+    })
 }
 
 #[cfg(test)]
@@ -218,7 +233,8 @@ mod tests {
                 ..Default::default()
             },
         )];
-        let hit = pick_grabbable_desktop(ray, &boxes).expect("look-down should hit");
+        let hit =
+            pick_grabbable_desktop(ray, &boxes, &HashMap::new()).expect("look-down should hit");
         assert_eq!(hit.entity_id, 14);
     }
 }

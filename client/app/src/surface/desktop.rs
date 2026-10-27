@@ -288,8 +288,8 @@ impl App {
         }
         let (eye, look) = self.eye_and_look();
         let ray = desktop_look_ray(eye, look);
-        let boxes = self.grabbable_boxes();
-        pick_grabbable_desktop(ray, &boxes).map(|h| h.entity_id)
+        let (boxes, defs) = self.grabbable_boxes();
+        pick_grabbable_desktop(ray, &boxes, &defs.half_extents).map(|h| h.entity_id)
     }
 
     fn on_cursor_moved_look(&mut self, x: f64, y: f64) {
@@ -337,19 +337,27 @@ impl App {
         (eye, look)
     }
 
-    fn grabbable_boxes(&self) -> Vec<(u32, EntityPose)> {
-        self.shared
+    fn grabbable_boxes(
+        &self,
+    ) -> (
+        Vec<(u32, EntityPose)>,
+        std::sync::Arc<crate::scene::BoxDefs>,
+    ) {
+        let defs = self.shared.box_defs_snapshot();
+        let boxes = self
+            .shared
             .world
             .lock()
             .ok()
             .map(|w| {
                 w.entities
                     .iter()
-                    .filter(|(id, _)| EntityPose::is_grabbable_box(**id))
+                    .filter(|(id, _)| defs.grabbable.contains(*id))
                     .map(|(id, p)| (*id, *p))
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        (boxes, defs)
     }
 
     /// Update held Grab from LMB/RMB/E + look-forward pick (x0013).
@@ -364,8 +372,8 @@ impl App {
             if self.held_grab.is_none() {
                 let (eye, look) = self.eye_and_look();
                 let ray = desktop_look_ray(eye, look);
-                let boxes = self.grabbable_boxes();
-                if let Some(hit) = pick_grabbable_desktop(ray, &boxes) {
+                let (boxes, defs) = self.grabbable_boxes();
+                if let Some(hit) = pick_grabbable_desktop(ray, &boxes, &defs.half_extents) {
                     self.held_grab = Some(hit.entity_id);
                     log::info!("desktop grab begin entity={}", hit.entity_id);
                 } else {

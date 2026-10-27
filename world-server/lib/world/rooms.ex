@@ -4,13 +4,17 @@ defmodule World.Rooms do
 
   x0021: each room has an `owner_sub` set only via `create/2`. Token issuance
   never creates a room (guest/host must not become owner by side effect).
+  x0027: each room stores a DemoScene definition assigned at create.
   """
 
   use GenServer
 
+  alias World.DemoScene
+
   @type room_id :: String.t()
   @type owner_sub :: String.t()
-  @type state :: %{room_id() => owner_sub()}
+  @type room :: %{owner_sub: owner_sub(), scene: map()}
+  @type state :: %{room_id() => room()}
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -67,6 +71,14 @@ defmodule World.Rooms do
 
   def owner?(_, _), do: false
 
+  @doc "Return the scene definition for an existing room (x0027)."
+  @spec scene(room_id()) :: {:ok, map()} | {:error, :invalid_room_id | :not_found}
+  def scene(room_id) when is_binary(room_id) do
+    GenServer.call(__MODULE__, {:scene, room_id})
+  end
+
+  def scene(_), do: {:error, :invalid_room_id}
+
   @impl true
   def init(_opts), do: {:ok, %{}}
 
@@ -77,7 +89,8 @@ defmodule World.Rooms do
         if Map.has_key?(rooms, room_id) do
           {:reply, {:error, :already_exists}, rooms}
         else
-          {:reply, {:ok, room_id}, Map.put(rooms, room_id, owner_sub)}
+          room = %{owner_sub: owner_sub, scene: DemoScene.build()}
+          {:reply, {:ok, room_id}, Map.put(rooms, room_id, room)}
         end
 
       {:error, reason} ->
@@ -107,7 +120,30 @@ defmodule World.Rooms do
 
   @impl true
   def handle_call({:owner, room_id}, _from, rooms) do
-    {:reply, Map.get(rooms, room_id), rooms}
+    owner =
+      case Map.get(rooms, room_id) do
+        %{owner_sub: sub} -> sub
+        _ -> nil
+      end
+
+    {:reply, owner, rooms}
+  end
+
+  @impl true
+  def handle_call({:scene, room_id}, _from, rooms) do
+    reply =
+      case validate_room_id(room_id) do
+        :ok ->
+          case Map.get(rooms, room_id) do
+            %{scene: scene} -> {:ok, scene}
+            nil -> {:error, :not_found}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+
+    {:reply, reply, rooms}
   end
 
   defp validate_room_id(room_id) do

@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0026`**；x0025 done）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0028`**；x0027 done）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -88,8 +88,9 @@ depends_on: [x0006]
 | x0024 | — | done | 配送クラス契約（peer-delivery + frame 欠落→snapshot） | [x0024-delivery-class.md](slices/x0024-delivery-class.md) |
 | x0025 | — | done | host_pub 証明（world attestation + Presence host_sig） | [x0025-host-pub-attestation.md](slices/x0025-host-pub-attestation.md) |
 | x0026 | — | done | Manifest 全体の world seal（本体改ざん検知・P4 なし） | [x0026-manifest-world-seal.md](slices/x0026-manifest-world-seal.md) |
+| x0027 | — | done | SceneManifest 駆動（P4 最小 / D2） | [x0027-manifest-driven.md](slices/x0027-manifest-driven.md) |
 
-**現在の次:** **x0027**（未作成）。候補: SceneManifest 駆動（P4）、または P3 まとめ。
+**現在の次:** P3 まとめ・Room 永続 / shared-sim（P4 残り）は後続。
 
 ## 関連
 

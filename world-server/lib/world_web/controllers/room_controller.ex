@@ -194,6 +194,48 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
+  x0027: return world-authored scene definition. Authorization must be a **host** Room Token.
+  """
+  def show_scene(conn, %{"room_id" => room_id}) do
+    with {:ok, bearer} <- fetch_bearer(conn),
+         {:ok, claims} <- Token.verify(bearer),
+         :ok <- require_host_token(claims, room_id),
+         {:ok, scene} <- Rooms.scene(room_id) do
+      json(conn, Map.put(scene, "room_id", room_id))
+    else
+      {:error, :missing_bearer} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "missing_room_token"})
+
+      {:error, :not_host_token} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "host_role_required"})
+
+      {:error, :room_mismatch} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "room_id_mismatch"})
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "room_not_found"})
+
+      {:error, :invalid_room_id} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_room_id"})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "invalid_room_token", detail: inspect(reason)})
+    end
+  end
+
+  @doc """
   x0026: issue ManifestSeal JWT. Authorization must be a **host** Room Token.
   """
   def create_manifest_seal(conn, %{"room_id" => room_id} = params) do
