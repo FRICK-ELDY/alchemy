@@ -17,6 +17,16 @@ defmodule World.DemoSceneTest do
     assert length(boxes) == 9
     assert Enum.all?(boxes, &(&1["flags"] == 1))
 
+    assert Enum.all?(scene["entries"], fn e ->
+             Map.has_key?(e, "qx") and Map.has_key?(e, "sx")
+           end)
+
+    center = Enum.find(boxes, &(&1["entity_id"] == 14))
+    assert_in_delta center["qy"], 0.3826834323650898, 1.0e-9
+    assert_in_delta center["qw"], 0.9238795325112867, 1.0e-9
+    assert_in_delta center["sx"], 1.5, 1.0e-9
+    assert_in_delta center["sy"], 1.0, 1.0e-9
+
     roots = Enum.filter(scene["entries"], &(&1["entity_id"] in 3..6))
     assert length(roots) == 4
   end

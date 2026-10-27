@@ -690,6 +690,20 @@ struct SceneEntryJson {
     b: f32,
     #[serde(default)]
     a: f32,
+    #[serde(default)]
+    qx: f64,
+    #[serde(default)]
+    qy: f64,
+    #[serde(default)]
+    qz: f64,
+    #[serde(default)]
+    qw: f64,
+    #[serde(default)]
+    sx: f64,
+    #[serde(default)]
+    sy: f64,
+    #[serde(default)]
+    sz: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -738,18 +752,29 @@ pub fn fetch_room_scene(
             let entries = parsed
                 .entries
                 .into_iter()
-                .map(|e| alchemy_protocol::SceneEntry {
-                    entity_id: e.entity_id,
-                    blake3: e.blake3,
-                    x: e.x,
-                    y: e.y,
-                    z: e.z,
-                    half_extent: e.half_extent,
-                    flags: e.flags,
-                    r: e.r,
-                    g: e.g,
-                    b: e.b,
-                    a: e.a,
+                .map(|e| {
+                    let mut entry = alchemy_protocol::SceneEntry {
+                        entity_id: e.entity_id,
+                        blake3: e.blake3,
+                        x: e.x,
+                        y: e.y,
+                        z: e.z,
+                        half_extent: e.half_extent,
+                        flags: e.flags,
+                        r: e.r,
+                        g: e.g,
+                        b: e.b,
+                        a: e.a,
+                        qx: e.qx,
+                        qy: e.qy,
+                        qz: e.qz,
+                        qw: e.qw,
+                        sx: e.sx,
+                        sy: e.sy,
+                        sz: e.sz,
+                    };
+                    alchemy_protocol::normalize_scene_entry_trs(&mut entry);
+                    entry
                 })
                 .collect();
             let locomotion = parsed

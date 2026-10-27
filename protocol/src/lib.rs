@@ -15,6 +15,7 @@
 //! - SceneManifest-driven shared-sim / EntityKind (P4 remainder after x0027).
 //! - Frame scale animation / non-uniform collider resize (x0029 emits unit scale).
 //! - Caps on Presence / JWT claim; invite ACL; reliable-delivery ACK / event-id channel.
+//! - Manifest scale resizing Rapier colliders (half_extent stays definition size).
 //! - Locomotion module list UI / suppress sources.
 //! - Tenant namespace `alchemy/tenant/...` (dev keys only: `alchemy/dev/room/{room_id}/…`).
 //! - 5+ concurrent guests / WAN liveliness ACL / Zenoh ACL.
@@ -25,7 +26,7 @@ pub mod sim_capability;
 pub mod wire_crypto;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.13.0-x0029";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.14.0-x002c";
 
 /// Identity orientation on the wire (`Entity.qx..qw`, xyzw).
 pub const ENTITY_QUAT_IDENTITY: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -323,6 +324,49 @@ include!(concat!(env!("OUT_DIR"), "/alchemy.input.rs"));
 include!(concat!(env!("OUT_DIR"), "/alchemy.scene.rs"));
 include!(concat!(env!("OUT_DIR"), "/alchemy.presence.rs"));
 
+/// Normalized SceneEntry quat xyzw (proto3 zero → identity; x002c).
+pub fn scene_entry_quat_xyzw(entry: &SceneEntry) -> [f64; 4] {
+    let n2 = entry.qx * entry.qx + entry.qy * entry.qy + entry.qz * entry.qz + entry.qw * entry.qw;
+    if !n2.is_finite() || n2 < 1e-24 {
+        return ENTITY_QUAT_IDENTITY;
+    }
+    let inv = 1.0 / n2.sqrt();
+    [
+        entry.qx * inv,
+        entry.qy * inv,
+        entry.qz * inv,
+        entry.qw * inv,
+    ]
+}
+
+/// SceneEntry scale (x002c).
+///
+/// - all-zero → unit `(1,1,1)` (proto3 unset)
+/// - any non-finite component → unit (poisoned JSON must not seed NaN Frames)
+/// - partial zeros / negatives kept (draw may flatten or mirror; host collider ignores scale)
+pub fn scene_entry_scale(entry: &SceneEntry) -> [f64; 3] {
+    if entry.sx == 0.0 && entry.sy == 0.0 && entry.sz == 0.0 {
+        return ENTITY_SCALE_ONE;
+    }
+    if !entry.sx.is_finite() || !entry.sy.is_finite() || !entry.sz.is_finite() {
+        return ENTITY_SCALE_ONE;
+    }
+    [entry.sx, entry.sy, entry.sz]
+}
+
+/// Write identity-or-normalized TRS onto `entry` (for publishers / JSON bridges).
+pub fn normalize_scene_entry_trs(entry: &mut SceneEntry) {
+    let q = scene_entry_quat_xyzw(entry);
+    let s = scene_entry_scale(entry);
+    entry.qx = q[0];
+    entry.qy = q[1];
+    entry.qz = q[2];
+    entry.qw = q[3];
+    entry.sx = s[0];
+    entry.sy = s[1];
+    entry.sz = s[2];
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +420,13 @@ mod tests {
                     g: 0.9,
                     b: 0.4,
                     a: 1.0,
+                    qx: ENTITY_QUAT_IDENTITY[0],
+                    qy: ENTITY_QUAT_IDENTITY[1],
+                    qz: ENTITY_QUAT_IDENTITY[2],
+                    qw: ENTITY_QUAT_IDENTITY[3],
+                    sx: ENTITY_SCALE_ONE[0],
+                    sy: ENTITY_SCALE_ONE[1],
+                    sz: ENTITY_SCALE_ONE[2],
                 },
                 SceneEntry {
                     entity_id: 10,
@@ -389,6 +440,13 @@ mod tests {
                     g: 0.35,
                     b: 0.3,
                     a: 1.0,
+                    qx: 0.0,
+                    qy: 0.3826834323650898,
+                    qz: 0.0,
+                    qw: 0.9238795325112867,
+                    sx: 1.5,
+                    sy: 1.0,
+                    sz: 1.0,
                 },
             ],
             locomotion: Some(LocomotionConfig {
@@ -412,6 +470,32 @@ mod tests {
         );
         assert!(scene_entry_grabbable(decoded.entries[1].flags));
         assert!((decoded.entries[1].half_extent - 0.25).abs() < f32::EPSILON);
+        assert!((decoded.entries[1].qw - 0.9238795325112867).abs() < 1e-9);
+        assert!((decoded.entries[1].sx - 1.5).abs() < f64::EPSILON);
+        assert_eq!(
+            scene_entry_quat_xyzw(&SceneEntry::default()),
+            ENTITY_QUAT_IDENTITY
+        );
+        assert_eq!(scene_entry_scale(&SceneEntry::default()), ENTITY_SCALE_ONE);
+        assert_eq!(
+            scene_entry_scale(&SceneEntry {
+                sx: f64::NAN,
+                sy: 1.0,
+                sz: 1.0,
+                ..Default::default()
+            }),
+            ENTITY_SCALE_ONE
+        );
+        assert_eq!(
+            scene_entry_scale(&SceneEntry {
+                sx: 0.0,
+                sy: 2.0,
+                sz: 0.0,
+                ..Default::default()
+            }),
+            [0.0, 2.0, 0.0],
+            "partial zeros are not identity — only all-zero"
+        );
         assert!(!scene_entry_is_box(
             &decoded.entries[0].blake3,
             decoded.entries[0].half_extent,

@@ -1,12 +1,13 @@
 defmodule World.DemoScene do
   @moduledoc """
-  Default room scene definition (x0027 / P4 minimal).
+  Default room scene definition (x0027 / P4 minimal + x002c initial TRS).
 
   Guarantees: SSoT for demo entries + locomotion assigned at room create.
-  Non-guarantees: UGC editing; shared-sim; EntityKind taxonomy.
+  Non-guarantees: UGC editing; shared-sim; EntityKind taxonomy; collider scale.
 
   Host unit tests mirror this layout in `demo_entries_for_test` (Rust) —
-  keep both in sync manually until a shared fixture exists.
+  keep both in sync manually until a shared fixture exists
+  (x0027 / x002c debt: center box yaw45 + sx=1.5 must match the Rust fixture).
   """
 
   @coin_blake3 "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555feb66d4f82ee1e72a"
@@ -14,6 +15,10 @@ defmodule World.DemoScene do
   @box_half 0.25
   @box_spacing 0.8
   @box_center_z 3.5
+  # 45° yaw (xyzw) for center grabbable box — exercises Manifest→Rapier rotation.
+  # Mirror constants in host-server `demo_entries_for_test` (x002c).
+  @yaw45_qy 0.3826834323650898
+  @yaw45_qw 0.9238795325112867
 
   @box_palette [
     {0.90, 0.35, 0.30},
@@ -54,21 +59,36 @@ defmodule World.DemoScene do
     }
   end
 
+  defp identity_trs do
+    %{
+      "qx" => 0.0,
+      "qy" => 0.0,
+      "qz" => 0.0,
+      "qw" => 1.0,
+      "sx" => 1.0,
+      "sy" => 1.0,
+      "sz" => 1.0
+    }
+  end
+
   defp coin_entry do
     [
-      %{
-        "entity_id" => 1,
-        "blake3" => @coin_blake3,
-        "x" => 0.0,
-        "y" => 5.0,
-        "z" => 0.0,
-        "half_extent" => 0.0,
-        "flags" => 0,
-        "r" => 0.2,
-        "g" => 0.9,
-        "b" => 0.4,
-        "a" => 1.0
-      }
+      Map.merge(
+        %{
+          "entity_id" => 1,
+          "blake3" => @coin_blake3,
+          "x" => 0.0,
+          "y" => 5.0,
+          "z" => 0.0,
+          "half_extent" => 0.0,
+          "flags" => 0,
+          "r" => 0.2,
+          "g" => 0.9,
+          "b" => 0.4,
+          "a" => 1.0
+        },
+        identity_trs()
+      )
     ]
   end
 
@@ -77,19 +97,22 @@ defmodule World.DemoScene do
     |> Enum.map(fn {{x, y, z}, i} ->
       {r, g, b} = Enum.at(@user_colors, i)
 
-      %{
-        "entity_id" => 3 + i,
-        "blake3" => "",
-        "x" => x,
-        "y" => y,
-        "z" => z,
-        "half_extent" => 0.0,
-        "flags" => 0,
-        "r" => r,
-        "g" => g,
-        "b" => b,
-        "a" => 1.0
-      }
+      Map.merge(
+        %{
+          "entity_id" => 3 + i,
+          "blake3" => "",
+          "x" => x,
+          "y" => y,
+          "z" => z,
+          "half_extent" => 0.0,
+          "flags" => 0,
+          "r" => r,
+          "g" => g,
+          "b" => b,
+          "a" => 1.0
+        },
+        identity_trs()
+      )
     end)
   end
 
@@ -101,19 +124,38 @@ defmodule World.DemoScene do
       x = (col - 1) * @box_spacing
       z = @box_center_z + (row - 1) * @box_spacing
 
-      %{
-        "entity_id" => 10 + i,
-        "blake3" => "",
-        "x" => x,
-        "y" => @box_half,
-        "z" => z,
-        "half_extent" => @box_half,
-        "flags" => @flag_grabbable,
-        "r" => r,
-        "g" => g,
-        "b" => b,
-        "a" => 1.0
-      }
+      trs =
+        if i == 4 do
+          # Center box: yaw 45° + mild X scale (visible Manifest TRS demo).
+          %{
+            "qx" => 0.0,
+            "qy" => @yaw45_qy,
+            "qz" => 0.0,
+            "qw" => @yaw45_qw,
+            "sx" => 1.5,
+            "sy" => 1.0,
+            "sz" => 1.0
+          }
+        else
+          identity_trs()
+        end
+
+      Map.merge(
+        %{
+          "entity_id" => 10 + i,
+          "blake3" => "",
+          "x" => x,
+          "y" => @box_half,
+          "z" => z,
+          "half_extent" => @box_half,
+          "flags" => @flag_grabbable,
+          "r" => r,
+          "g" => g,
+          "b" => b,
+          "a" => 1.0
+        },
+        trs
+      )
     end)
   end
 end

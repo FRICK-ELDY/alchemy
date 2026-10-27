@@ -43,6 +43,18 @@ message SceneEntry {
   float g = 9;
   float b = 10;
   float a = 11;
+  // Initial orientation (xyzw). Publishers should send identity (0,0,0,1);
+  // proto3 zeros → consumers treat as identity (x002c).
+  double qx = 12;
+  double qy = 13;
+  double qz = 14;
+  double qw = 15;
+  // Initial Frame scale. Identity (1,1,1); all-zero or non-finite → (1,1,1).
+  // Does not resize Rapier colliders (half_extent remains definition size;
+  // client OBB uses Frame scale — x002c).
+  double sx = 16;
+  double sy = 17;
+  double sz = 18;
 }
 
 // Active locomotion mode for users in this room (world content definition).

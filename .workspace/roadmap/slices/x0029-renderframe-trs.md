@@ -25,7 +25,7 @@
 
 - Grab ヒットの OBB → **x002b で解消**（当時は AABB + 位置×scale）
 - Frame scale アニメ / コライダーの非一様リサイズ
-- Manifest `SceneEntry` への初期 quat（定義側の回転は後続）
+- Manifest `SceneEntry` への初期 quat / scale → **x002c で解消**
 - shared-sim / EntityKind
 - Grab aim への **回転**追従（host は translation のみ）
 
