@@ -1,5 +1,10 @@
 import Config
 
+config :world, World.Repo,
+  database: Path.expand("../priv/data/world_dev.db", __DIR__),
+  pool_size: 5,
+  show_sensitive_data_on_connection_error: true
+
 config :world, WorldWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4003],
   check_origin: false,

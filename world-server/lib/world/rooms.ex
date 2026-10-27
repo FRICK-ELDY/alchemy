@@ -1,27 +1,33 @@
 defmodule World.Rooms do
   @moduledoc """
-  In-process ephemeral room registry (Slice B — no DB).
+  Room ledger facade (x0028).
 
-  x0021: each room has an `owner_sub` set only via `create/2`. Token issuance
-  never creates a room (guest/host must not become owner by side effect).
-  x0027: each room stores a DemoScene definition assigned at create.
+  Guarantees: create / owner / scene backed by Ash + SQLite (survives restart).
+  Non-guarantees: UGC scene edits; multi-node replication; Postgres (swap path documented).
+
+  x0021: `owner_sub` set only via `create/2`. Token issuance never creates a room.
+  x0027: DemoScene assigned at create and returned by `scene/1`.
+
+  Authorization: use `ensure_owner/2` (and `require_existing/1` for existence-only).
+  Do not infer auth from boolean helpers — those APIs are intentionally absent so
+  storage failures cannot collapse to `false` / `nil`.
+
+  Errors: `:invalid_room_id` / `:already_exists` / `:not_found` are client-facing.
+  `:storage_error` is infrastructure (SQLite busy, disk, Repo) → HTTP 5xx.
   """
 
-  use GenServer
+  require Logger
 
   alias World.DemoScene
+  alias World.Rooms.Room
 
   @type room_id :: String.t()
   @type owner_sub :: String.t()
-  @type room :: %{owner_sub: owner_sub(), scene: map()}
-  @type state :: %{room_id() => room()}
-
-  def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
-  end
+  @type storage_error :: :storage_error
 
   @spec create(room_id() | nil, owner_sub()) ::
-          {:ok, room_id()} | {:error, :invalid_room_id | :already_exists | :missing_owner}
+          {:ok, room_id()}
+          | {:error, :invalid_room_id | :already_exists | :missing_owner | storage_error()}
   def create(nil, owner_sub), do: create(random_room_id(), owner_sub)
 
   def create(_room_id, owner_sub)
@@ -30,7 +36,15 @@ defmodule World.Rooms do
   end
 
   def create(room_id, owner_sub) when is_binary(room_id) and is_binary(owner_sub) do
-    GenServer.call(__MODULE__, {:create, room_id, owner_sub})
+    with :ok <- validate_room_id(room_id),
+         {:ok, %Room{room_id: id}} <- insert_room(room_id, owner_sub) do
+      {:ok, id}
+    else
+      {:error, :invalid_room_id} = err -> err
+      {:error, :already_exists} = err -> err
+      {:error, :storage_error} = err -> err
+      {:error, error} -> map_create_error(error)
+    end
   end
 
   def create(_, _), do: {:error, :invalid_room_id}
@@ -43,107 +57,166 @@ defmodule World.Rooms do
   Validate `room_id` and confirm the room was created (owner already assigned).
   Does not create rooms.
   """
-  @spec require_existing(room_id()) :: :ok | {:error, :invalid_room_id | :not_found}
+  @spec require_existing(room_id()) ::
+          :ok | {:error, :invalid_room_id | :not_found | storage_error()}
   def require_existing(room_id) when is_binary(room_id) do
-    GenServer.call(__MODULE__, {:require_existing, room_id})
+    with :ok <- validate_room_id(room_id) do
+      case Room.get_by_room_id(room_id) do
+        {:ok, %Room{}} -> :ok
+        {:ok, nil} -> {:error, :not_found}
+        {:error, error} -> map_read_error(error, :require_existing)
+      end
+    end
   end
 
   def require_existing(_), do: {:error, :invalid_room_id}
 
-  @spec exists?(room_id()) :: boolean()
-  def exists?(room_id) when is_binary(room_id) do
-    GenServer.call(__MODULE__, {:exists?, room_id})
-  end
-
-  def exists?(_), do: false
-
-  @spec owner(room_id()) :: owner_sub() | nil
+  @doc "Return the owner sub for an existing room."
+  @spec owner(room_id()) ::
+          {:ok, owner_sub()} | {:error, :invalid_room_id | :not_found | storage_error()}
   def owner(room_id) when is_binary(room_id) do
-    GenServer.call(__MODULE__, {:owner, room_id})
+    with :ok <- validate_room_id(room_id) do
+      case Room.get_by_room_id(room_id) do
+        {:ok, %Room{owner_sub: sub}} -> {:ok, sub}
+        {:ok, nil} -> {:error, :not_found}
+        {:error, error} -> map_read_error(error, :owner)
+      end
+    end
   end
 
-  def owner(_), do: nil
+  def owner(_), do: {:error, :invalid_room_id}
 
-  @spec owner?(room_id(), owner_sub()) :: boolean()
-  def owner?(room_id, sub) when is_binary(room_id) and is_binary(sub) do
-    owner(room_id) == sub
+  @doc "True when `sub` owns the room. Distinguishes not-found / storage from mismatch."
+  @spec ensure_owner(room_id(), owner_sub()) ::
+          :ok | {:error, :not_found | :forbidden_host | :invalid_room_id | storage_error()}
+  def ensure_owner(room_id, sub) when is_binary(room_id) and is_binary(sub) do
+    with :ok <- validate_room_id(room_id) do
+      case Room.get_by_room_id(room_id) do
+        {:ok, %Room{owner_sub: ^sub}} ->
+          :ok
+
+        {:ok, %Room{}} ->
+          {:error, :forbidden_host}
+
+        {:ok, nil} ->
+          {:error, :not_found}
+
+        {:error, error} ->
+          map_read_error(error, :ensure_owner)
+      end
+    end
   end
 
-  def owner?(_, _), do: false
+  def ensure_owner(_, _), do: {:error, :invalid_room_id}
 
   @doc "Return the scene definition for an existing room (x0027)."
-  @spec scene(room_id()) :: {:ok, map()} | {:error, :invalid_room_id | :not_found}
+  @spec scene(room_id()) ::
+          {:ok, map()} | {:error, :invalid_room_id | :not_found | storage_error()}
   def scene(room_id) when is_binary(room_id) do
-    GenServer.call(__MODULE__, {:scene, room_id})
+    with :ok <- validate_room_id(room_id) do
+      case Room.get_by_room_id(room_id) do
+        {:ok, %Room{scene: scene}} when is_map(scene) -> {:ok, scene}
+        {:ok, nil} -> {:error, :not_found}
+        {:error, error} -> map_read_error(error, :scene)
+      end
+    end
   end
 
   def scene(_), do: {:error, :invalid_room_id}
 
-  @impl true
-  def init(_opts), do: {:ok, %{}}
+  defp insert_room(room_id, owner_sub) do
+    Room.create(%{
+      room_id: room_id,
+      owner_sub: owner_sub,
+      scene: DemoScene.build()
+    })
+  end
 
-  @impl true
-  def handle_call({:create, room_id, owner_sub}, _from, rooms) do
-    case validate_room_id(room_id) do
-      :ok ->
-        if Map.has_key?(rooms, room_id) do
-          {:reply, {:error, :already_exists}, rooms}
-        else
-          room = %{owner_sub: owner_sub, scene: DemoScene.build()}
-          {:reply, {:ok, room_id}, Map.put(rooms, room_id, room)}
-        end
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, rooms}
+  defp map_create_error(error) do
+    if unique_violation?(error) do
+      {:error, :already_exists}
+    else
+      storage_error(error, :create)
     end
   end
 
-  @impl true
-  def handle_call({:require_existing, room_id}, _from, rooms) do
-    case validate_room_id(room_id) do
-      :ok ->
-        if Map.has_key?(rooms, room_id) do
-          {:reply, :ok, rooms}
-        else
-          {:reply, {:error, :not_found}, rooms}
-        end
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, rooms}
+  defp map_read_error(error, where) do
+    if not_found_error?(error) do
+      {:error, :not_found}
+    else
+      storage_error(error, where)
     end
   end
 
-  @impl true
-  def handle_call({:exists?, room_id}, _from, rooms) do
-    {:reply, Map.has_key?(rooms, room_id), rooms}
+  defp storage_error(error, where) do
+    Logger.error("World.Rooms.#{where} storage failure: #{Exception.message(error)}")
+    {:error, :storage_error}
   end
 
-  @impl true
-  def handle_call({:owner, room_id}, _from, rooms) do
-    owner =
-      case Map.get(rooms, room_id) do
-        %{owner_sub: sub} -> sub
-        _ -> nil
-      end
-
-    {:reply, owner, rooms}
+  defp not_found_error?(error) do
+    error
+    |> ash_error_leaves()
+    |> Enum.any?(fn
+      %Ash.Error.Query.NotFound{} -> true
+      _ -> false
+    end) or Exception.message(error) =~ "record not found"
   end
 
-  @impl true
-  def handle_call({:scene, room_id}, _from, rooms) do
-    reply =
-      case validate_room_id(room_id) do
-        :ok ->
-          case Map.get(rooms, room_id) do
-            %{scene: scene} -> {:ok, scene}
-            nil -> {:error, :not_found}
-          end
+  defp unique_violation?(error) do
+    error
+    |> ash_error_leaves()
+    |> Enum.any?(&unique_leaf?/1)
+  end
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+  defp ash_error_leaves(%{errors: errors}) when is_list(errors) do
+    Enum.flat_map(errors, &ash_error_leaves/1)
+  end
 
-    {:reply, reply, rooms}
+  defp ash_error_leaves(error), do: [error]
+
+  defp unique_leaf?(%Ash.Error.Changes.InvalidChanges{fields: fields, message: message})
+       when is_binary(message) do
+    fields = List.wrap(fields)
+    room_id_field?(fields) and taken_message?(message)
+  end
+
+  defp unique_leaf?(%Ash.Error.Changes.InvalidAttribute{field: :room_id, message: message})
+       when is_binary(message) do
+    taken_message?(message)
+  end
+
+  defp unique_leaf?(%{constraint: :unique_constraint, constraint_name: name})
+       when is_binary(name) do
+    room_id_constraint_name?(name)
+  end
+
+  defp unique_leaf?(%{constraint: :unique_constraint, fields: fields}) do
+    room_id_field?(List.wrap(fields))
+  end
+
+  defp unique_leaf?(%{constraint_name: name}) when is_binary(name) do
+    room_id_constraint_name?(name)
+  end
+
+  # SQLite primary-key conflict surfaces as a data-layer / unknown error message.
+  defp unique_leaf?(error) do
+    message = Exception.message(error)
+
+    (String.contains?(message, "UNIQUE constraint failed") or
+       String.contains?(message, "unique constraint")) and
+      (String.contains?(message, "room_id") or String.contains?(message, "rooms"))
+  end
+
+  defp room_id_field?(fields), do: :room_id in fields
+
+  defp room_id_constraint_name?(name) when is_binary(name) do
+    String.contains?(name, "rooms") and
+      (String.contains?(name, "room_id") or String.contains?(name, "unique") or
+         String.contains?(name, "pkey"))
+  end
+
+  defp taken_message?(message) when is_binary(message) do
+    String.contains?(message, "already been taken")
   end
 
   defp validate_room_id(room_id) do

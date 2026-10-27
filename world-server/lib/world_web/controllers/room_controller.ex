@@ -33,6 +33,9 @@ defmodule WorldWeb.RoomController do
             conn
             |> put_status(:unprocessable_entity)
             |> json(%{error: "invalid_room_id"})
+
+          {:error, :storage_error} ->
+            storage_unavailable(conn)
         end
 
       {:error, :anon_disabled} ->
@@ -72,8 +75,7 @@ defmodule WorldWeb.RoomController do
 
   # Token paths never create rooms (x0021): owner is only set by POST /rooms.
   defp issue_token(conn, room_id, role, sub) do
-    with :ok <- Rooms.require_existing(room_id),
-         :ok <- authorize_role(room_id, role, sub),
+    with :ok <- authorize_role(room_id, role, sub),
          {:ok, token, ttl} <- Token.generate(room_id, role, sub) do
       json(conn, %{
         token: token,
@@ -104,6 +106,9 @@ defmodule WorldWeb.RoomController do
         |> put_status(:unprocessable_entity)
         |> json(%{error: "invalid_role"})
 
+      {:error, :storage_error} ->
+        storage_unavailable(conn)
+
       {:error, reason} ->
         conn
         |> put_status(:internal_server_error)
@@ -112,15 +117,10 @@ defmodule WorldWeb.RoomController do
   end
 
   # x0021 P1-4: only the room owner may request role=host.
-  defp authorize_role(_room_id, "guest", _sub), do: :ok
+  # Guest needs existence only; host uses ensure_owner (covers not_found).
+  defp authorize_role(room_id, "guest", _sub), do: Rooms.require_existing(room_id)
 
-  defp authorize_role(room_id, "host", sub) do
-    if Rooms.owner?(room_id, sub) do
-      :ok
-    else
-      {:error, :forbidden_host}
-    end
-  end
+  defp authorize_role(room_id, "host", sub), do: Rooms.ensure_owner(room_id, sub)
 
   defp authorize_role(_room_id, _role, _sub), do: {:error, :invalid_role}
 
@@ -131,8 +131,7 @@ defmodule WorldWeb.RoomController do
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
-         :ok <- Rooms.require_existing(room_id),
-         :ok <- require_owner(room_id, claims["sub"]),
+         :ok <- Rooms.ensure_owner(room_id, claims["sub"]),
          {:ok, host_pub} <- HostAttestation.decode_host_pub(Map.get(params, "host_pub")) do
       case HostAttestation.generate(room_id, host_pub, claims["sub"]) do
         {:ok, attestation, ttl} ->
@@ -186,6 +185,9 @@ defmodule WorldWeb.RoomController do
         |> put_status(:unprocessable_entity)
         |> json(%{error: "invalid_room_id"})
 
+      {:error, :storage_error} ->
+        storage_unavailable(conn)
+
       {:error, reason} ->
         conn
         |> put_status(:unauthorized)
@@ -228,6 +230,9 @@ defmodule WorldWeb.RoomController do
         |> put_status(:unprocessable_entity)
         |> json(%{error: "invalid_room_id"})
 
+      {:error, :storage_error} ->
+        storage_unavailable(conn)
+
       {:error, reason} ->
         conn
         |> put_status(:unauthorized)
@@ -242,8 +247,7 @@ defmodule WorldWeb.RoomController do
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
-         :ok <- Rooms.require_existing(room_id),
-         :ok <- require_owner(room_id, claims["sub"]),
+         :ok <- Rooms.ensure_owner(room_id, claims["sub"]),
          {:ok, revision} <- ManifestSeal.parse_revision(Map.get(params, "revision")),
          {:ok, blake3} <- ManifestSeal.parse_blake3(Map.get(params, "manifest_blake3")) do
       case ManifestSeal.generate(room_id, revision, blake3, claims["sub"]) do
@@ -303,6 +307,9 @@ defmodule WorldWeb.RoomController do
         |> put_status(:unprocessable_entity)
         |> json(%{error: "invalid_room_id"})
 
+      {:error, :storage_error} ->
+        storage_unavailable(conn)
+
       {:error, reason} ->
         conn
         |> put_status(:unauthorized)
@@ -327,11 +334,9 @@ defmodule WorldWeb.RoomController do
 
   defp require_host_token(_, _), do: {:error, :not_host_token}
 
-  defp require_owner(room_id, sub) do
-    if Rooms.owner?(room_id, sub) do
-      :ok
-    else
-      {:error, :forbidden_host}
-    end
+  defp storage_unavailable(conn) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{error: "storage_unavailable"})
   end
 end

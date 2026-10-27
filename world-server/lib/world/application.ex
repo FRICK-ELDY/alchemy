@@ -7,10 +7,10 @@ defmodule World.Application do
   def start(_type, _args) do
     children = [
       WorldWeb.Telemetry,
+      World.Repo,
       {Phoenix.PubSub, name: World.PubSub},
       World.Token.Keys,
       World.Auth.Jwks,
-      World.Rooms,
       WorldWeb.Endpoint
     ]
 

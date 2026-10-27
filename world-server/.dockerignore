@@ -1,0 +1,17 @@
+/_build
+/deps
+/cover
+/doc
+/.fetch
+/.git
+/.elixir_ls
+/tmp
+*.ez
+erl_crash.dump
+world-*.tar
+
+# Secrets and local DBs must not bake into images (x0028).
+priv/room_jwt_*.pem
+priv/test_room_jwt_*.pem
+priv/data/*.db
+priv/data/*.db-*

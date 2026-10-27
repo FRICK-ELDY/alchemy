@@ -23,6 +23,9 @@ world-server/priv/room_jwt_private.pem
 world-server/priv/room_jwt_public.pem
 world-server/priv/test_room_jwt_private.pem
 world-server/priv/test_room_jwt_public.pem
+# world-server SQLite (x0028)
+world-server/priv/data/*.db
+world-server/priv/data/*.db-*
 
 # assets-server local CAS + SQLite + secrets
 assets-server/priv/cas/
