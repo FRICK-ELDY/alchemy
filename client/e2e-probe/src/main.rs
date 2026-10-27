@@ -1,16 +1,19 @@
-//! x001f hermetic E2E probe — no GUI.
+//! x001f / x0023 hermetic E2E probe — no GUI.
 //!
 //! Guarantees: against a running auth/world/assets/zenohd (+ host-server), asserts
-//! login → Room Token → InputEvent put → RenderFrame with upserts + user_root.
-//! Non-guarantees: Token refresh, WAN, R2, GUI client.
+//! login → Room Token → signed InputEvent put → RenderFrame with upserts + user_root.
+//! Non-guarantees: Token refresh, WAN, R2, GUI client, Frame signature check.
 
 use std::env;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use alchemy_protocol::wire_crypto::{
+    generate_signing_key, public_key_bytes, sign_input, SigningKey,
+};
 use alchemy_protocol::{
-    frame_key, input_key, user_root_entity_last, validate_room_id, InputEvent, Message,
-    RenderFrame, PROTOCOL_PIN, USER_ROOT_ENTITY_FIRST,
+    frame_key, input_key, snapshot_key, user_root_entity_last, validate_room_id, InputEvent,
+    Message, RenderFrame, PROTOCOL_PIN, USER_ROOT_ENTITY_FIRST,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
@@ -107,9 +110,9 @@ fn put_input(session: &zenoh::Session, key: &str, event: &InputEvent) -> Result<
     Ok(())
 }
 
-fn move_input(room_token: &str) -> InputEvent {
-    InputEvent {
-        room_token: room_token.to_string(),
+fn move_input(key: &SigningKey, room_token: Option<&str>, seq: u64) -> InputEvent {
+    let mut event = InputEvent {
+        room_token: room_token.unwrap_or("").to_string(),
         client_time_ms: client_time_ms(),
         move_x: 0.1,
         move_y: 0.0,
@@ -120,7 +123,12 @@ fn move_input(room_token: &str) -> InputEvent {
         aim_y: 1.6,
         aim_z: 0.0,
         leave: false,
-    }
+        session_pub: public_key_bytes(key),
+        intent_seq: seq,
+        intent_sig: vec![],
+    };
+    sign_input(key, &mut event);
+    event
 }
 
 fn frame_has_user_root(frame: &RenderFrame) -> bool {
@@ -176,11 +184,18 @@ fn main() -> Result<()> {
 
     thread::sleep(Duration::from_millis(200));
 
-    put_input(&session, &input_k, &move_input(&room_token))?;
-    log::info!("put valid InputEvent on {input_k}");
+    let session_key = generate_signing_key();
+    let mut intent_seq = 1u64;
+    put_input(
+        &session,
+        &input_k,
+        &move_input(&session_key, Some(&room_token), intent_seq),
+    )?;
+    log::info!("put valid signed InputEvent (bind) on {input_k}");
 
     let mut saw_upserts = false;
     let mut saw_user_root = false;
+    let mut saw_host_sig = false;
     let mut frames = 0u32;
 
     while Instant::now() < deadline {
@@ -191,13 +206,16 @@ fn main() -> Result<()> {
                 match RenderFrame::decode(payload.as_ref()) {
                     Ok(frame) => {
                         frames += 1;
+                        if frame.host_sig.len() == 64 {
+                            saw_host_sig = true;
+                        }
                         if !frame.upserts.is_empty() {
                             saw_upserts = true;
                         }
                         if frame_has_user_root(&frame) {
                             saw_user_root = true;
                         }
-                        if saw_upserts && saw_user_root {
+                        if saw_upserts && saw_user_root && saw_host_sig {
                             break;
                         }
                     }
@@ -207,7 +225,13 @@ fn main() -> Result<()> {
             Ok(None) | Err(_) => {
                 // Re-put while waiting so a missed first input still assigns presence.
                 if !saw_user_root {
-                    let _ = put_input(&session, &input_k, &move_input(&room_token));
+                    intent_seq += 1;
+                    // Keep Token on retries until presence assigns (bind may have been missed).
+                    let _ = put_input(
+                        &session,
+                        &input_k,
+                        &move_input(&session_key, Some(&room_token), intent_seq),
+                    );
                 }
                 thread::sleep(Duration::from_millis(50));
             }
@@ -221,6 +245,11 @@ fn main() -> Result<()> {
     }
     log::info!("RenderFrame with upserts ok (frames_seen={frames})");
 
+    if !saw_host_sig {
+        bail!("timeout waiting for RenderFrame.host_sig (64 bytes; x0023)");
+    }
+    log::info!("RenderFrame.host_sig present ok");
+
     if !saw_user_root {
         bail!(
             "timeout waiting for user_root entity ({}..{}) after valid input (frames_seen={frames})",
@@ -230,7 +259,31 @@ fn main() -> Result<()> {
     }
     log::info!("user_root upsert after valid input ok");
 
-    // Invalid token must not kill the host: still receive another frame afterwards.
+    // Snapshot queryable should return a signed full pose set (x0023).
+    let snap_k = snapshot_key(&room_id);
+    let mut saw_snapshot = false;
+    match session.get(&snap_k).wait() {
+        Ok(receiver) => {
+            while let Ok(reply) = receiver.recv() {
+                if let Ok(sample) = reply.result() {
+                    let bytes: ZBytes = sample.payload().clone();
+                    if let Ok(frame) = RenderFrame::decode(bytes.to_bytes().as_ref()) {
+                        if frame.host_sig.len() == 64 && !frame.upserts.is_empty() {
+                            saw_snapshot = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        Err(err) => log::warn!("snapshot get failed: {err}"),
+    }
+    if !saw_snapshot {
+        bail!("snapshot queryable on {snap_k} did not return signed upserts");
+    }
+    log::info!("snapshot queryable ok ({snap_k})");
+
+    // Token without valid session sig must not kill the host.
     let bad = InputEvent {
         room_token: "not-a-valid-jwt".into(),
         client_time_ms: client_time_ms(),
@@ -243,6 +296,9 @@ fn main() -> Result<()> {
         aim_y: 0.0,
         aim_z: 0.0,
         leave: false,
+        session_pub: vec![0u8; 32],
+        intent_seq: 99,
+        intent_sig: vec![0u8; 64],
     };
     put_input(&session, &input_k, &bad)?;
     log::info!("put invalid InputEvent (expect host drop)");

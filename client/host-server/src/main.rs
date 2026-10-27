@@ -1,22 +1,22 @@
-//! Local host-server — x0022 liveliness↔jti + x0019 Leave + ROOM_ID keys / presence / Grab.
+//! Local host-server — x0023 session Intent + snapshot + x0022 liveliness↔jti.
 //!
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
-//! - Input: Room Token verify + `is_finite` (NaN/Inf dropped before physics)
-//! - SceneManifest with default Noclip LocomotionConfig (blake3 refs; no GLB bytes)
-//! - Per-`sub` Intent/Grab → up to 4 user_roots (entity 3..6); first-come slot assign
-//! - PresenceState: Leave by verified `sub`; liveliness Delete schedules jti-matched reclaim with grace (x0022)
+//! - Input: Ed25519 session bind (Token on bind only) + `is_finite` (x0023 / x0021)
+//! - SceneManifest with `protocol_pin` + `host_pub`; Frames signed (x0023)
+//! - `…/snapshot` queryable for late join; pure pose deltas (no box every-tick upsert)
+//! - Per-`sub` Intent/Grab → up to 4 user_roots; Presence Leave / liveliness jti grace (x0022)
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
-//! - Grabbable cuboids entity 10..18; Grab hold kinematic follow; no Steal
 //! - Slice E / x001e: Zenoh `host_control` off by default; `ALCHEMY_HOST_CONTROL=1` to enable
 //!
 //! Non-guarantees:
-//! - Steal / rotation follow / Formula / polished Walk / signed Manifest / verifier
+//! - Steal / rotation follow / Formula / polished Walk / world-signed Manifest / verifier
 //! - Authenticated remote host shutdown (use launcher / `ALCHEMY_HOST_PID`)
 
 mod finite;
 mod host_control;
 mod room_token;
+mod session;
 mod sim;
 
 use std::collections::HashMap;
@@ -24,15 +24,19 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use alchemy_protocol::wire_crypto::{
+    generate_signing_key, public_key_bytes, sign_frame, SigningKey,
+};
 use alchemy_protocol::{
     frame_key, host_control_key, input_buttons, input_key, liveliness_binding_from_key,
-    liveliness_wildcard, manifest_key, presence_key, validate_room_id, Entity, InputEvent,
-    LocomotionConfig, LocomotionMode, Message, PresenceAssignment, PresenceState, RenderFrame,
-    SceneEntry, SceneManifest, PROTOCOL_PIN,
+    liveliness_wildcard, manifest_key, presence_key, snapshot_key, validate_room_id, Entity,
+    InputEvent, LocomotionConfig, LocomotionMode, Message, PresenceAssignment, PresenceState,
+    RenderFrame, SceneEntry, SceneManifest, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
 use room_token::{default_auth_url, fetch_auth_token, fetch_host_token, RoomTokenVerifier};
+use session::SessionTable;
 use sim::{
     box_color, user_root_color, LocoMode, PhysicsWorld, BOX_COUNT, BOX_ENTITY_FIRST,
     DEFAULT_MOVE_SPEED, USER_ROOT_ENTITY_FIRST, USER_ROOT_SLOTS,
@@ -98,8 +102,8 @@ struct PresenceIntents {
     dropped_full: u64,
     /// Bumped on assignment or reclaim (PresenceState.revision).
     revision: u64,
-    /// Entity ids freed off the physics thread (Leave / liveliness); drained each tick.
-    pending_removes: Vec<u32>,
+    /// `(entity_id, sub)` freed off the physics thread (Leave / liveliness); drained each tick.
+    pending_removes: Vec<(u32, String)>,
 }
 
 impl Default for PresenceIntents {
@@ -149,9 +153,9 @@ impl PresenceIntents {
         None
     }
 
-    /// Free one occupied slot. Returns entity id.
-    fn free_slot_at(&mut self, i: usize, reason: &str) -> u32 {
-        let sub = self.occupied_sub[i].take();
+    /// Free one occupied slot. Returns `(entity_id, sub)`.
+    fn free_slot_at(&mut self, i: usize, reason: &str) -> (u32, String) {
+        let sub = self.occupied_sub[i].take().unwrap_or_default();
         self.session_jti[i] = None;
         self.pending_liveliness[i] = None;
         self.last_input[i] = None;
@@ -159,23 +163,19 @@ impl PresenceIntents {
         self.revision = self.revision.saturating_add(1);
         let entity_id = PhysicsWorld::user_root_entity_id(i);
         log::info!(
-            "presence: reclaimed slot={i} entity={entity_id} sub={} reason={reason} (revision={})",
-            sub.as_deref().unwrap_or("?"),
+            "presence: reclaimed slot={i} entity={entity_id} sub={sub} reason={reason} (revision={})",
             self.revision
         );
-        entity_id
+        (entity_id, sub)
     }
 
-    /// Immediate reclaim for verified Leave (queues `pending_removes`).
-    ///
-    /// Leave is authorized by JWT `sub` alone (any unexpired Room Token for that sub).
-    /// Stale-token Leave kick is accepted; revocation feed is out of scope (→ P2-2 / auth).
-    fn reclaim_sub(&mut self, sub: &str, reason: &str) -> Option<u32> {
+    /// Immediate reclaim for verified Leave / session (queues `pending_removes`).
+    fn reclaim_sub(&mut self, sub: &str, reason: &str) -> Option<(u32, String)> {
         for i in 0..USER_ROOT_SLOTS {
             if self.occupied_sub[i].as_deref() == Some(sub) {
-                let entity_id = self.free_slot_at(i, reason);
-                self.pending_removes.push(entity_id);
-                return Some(entity_id);
+                let freed = self.free_slot_at(i, reason);
+                self.pending_removes.push(freed.clone());
+                return Some(freed);
             }
         }
         None
@@ -218,7 +218,7 @@ impl PresenceIntents {
     }
 
     /// Confirm scheduled liveliness reclaim if grace elapsed and `jti` still bound.
-    fn confirm_liveliness_reclaims(&mut self, now: Instant) -> Vec<u32> {
+    fn confirm_liveliness_reclaims(&mut self, now: Instant) -> Vec<(u32, String)> {
         let mut freed = Vec::new();
         for i in 0..USER_ROOT_SLOTS {
             let Some((jti, confirm_at)) = self.pending_liveliness[i].clone() else {
@@ -247,8 +247,8 @@ impl PresenceIntents {
         freed
     }
 
-    /// Drop slots with no Intent for `ttl`. Returns freed user_root entity ids.
-    fn reclaim_stale(&mut self, now: Instant, ttl: Duration) -> Vec<u32> {
+    /// Drop slots with no Intent for `ttl`. Returns freed `(entity_id, sub)`.
+    fn reclaim_stale(&mut self, now: Instant, ttl: Duration) -> Vec<(u32, String)> {
         let mut freed = Vec::new();
         for i in 0..USER_ROOT_SLOTS {
             if self.occupied_sub[i].is_none() {
@@ -266,7 +266,7 @@ impl PresenceIntents {
         freed
     }
 
-    fn drain_reclaims(&mut self, now: Instant, ttl: Duration) -> Vec<u32> {
+    fn drain_reclaims(&mut self, now: Instant, ttl: Duration) -> Vec<(u32, String)> {
         let mut freed = self.reclaim_stale(now, ttl);
         freed.extend(self.confirm_liveliness_reclaims(now));
         freed.append(&mut self.pending_removes);
@@ -286,6 +286,7 @@ impl PresenceIntents {
         PresenceState {
             revision: self.revision,
             assignments,
+            protocol_pin: PROTOCOL_PIN.to_string(),
         }
     }
 }
@@ -409,7 +410,7 @@ fn pose_changed(prev: Pose, next: Pose) -> bool {
         || (prev.z - next.z).abs() > MOVE_EPSILON
 }
 
-fn build_manifest(room_id: &str, blake3: &str) -> SceneManifest {
+fn build_manifest(room_id: &str, blake3: &str, host_pub: Vec<u8>) -> SceneManifest {
     SceneManifest {
         room_id: room_id.to_string(),
         revision: 1,
@@ -424,6 +425,8 @@ fn build_manifest(room_id: &str, blake3: &str) -> SceneManifest {
             mode: LocomotionMode::Noclip.into(),
             move_speed: DEFAULT_MOVE_SPEED,
         }),
+        protocol_pin: PROTOCOL_PIN.to_string(),
+        host_pub,
     }
 }
 
@@ -432,6 +435,7 @@ fn spawn_input_gate(
     input_key_expr: String,
     verifier: Arc<RoomTokenVerifier>,
     presence: Arc<Mutex<PresenceIntents>>,
+    sessions: Arc<Mutex<SessionTable>>,
 ) -> Result<()> {
     let subscriber = session
         .declare_subscriber(input_key_expr.clone())
@@ -443,92 +447,132 @@ fn spawn_input_gate(
         .spawn(move || {
             let _session = session;
             log::info!(
-                "subscribed to {input_key_expr} (Room Token + is_finite + Leave + per-sub gate)"
+                "subscribed to {input_key_expr} (session Ed25519 + optional Room Token bind + is_finite)"
             );
             let mut accepted: u64 = 0;
             let mut leaves: u64 = 0;
-            let mut dropped_token: u64 = 0;
+            let mut dropped_auth: u64 = 0;
             let mut dropped_finite: u64 = 0;
             let mut last_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = bytes.to_bytes();
                 match InputEvent::decode(payload.as_ref()) {
-                    Ok(event) => match verifier.verify(&event.room_token) {
-                        Ok(claims) => {
-                            if claims.jti.is_empty() || claims.jti.contains('/') {
-                                dropped_token += 1;
-                                log::warn!("drop InputEvent: Room Token jti missing or contains '/'");
-                            } else if event.leave {
-                                if let Ok(mut guard) = presence.lock() {
-                                    if guard.reclaim_sub(&claims.sub, "leave").is_some() {
-                                        leaves += 1;
-                                    }
+                    Ok(event) => {
+                        let auth = {
+                            let mut table = match sessions.lock() {
+                                Ok(g) => g,
+                                Err(_) => {
+                                    dropped_auth += 1;
+                                    continue;
                                 }
-                            } else if !input_event_is_finite(&event) {
-                                dropped_finite += 1;
-                                log::warn!(
-                                    "drop InputEvent: non-finite move_*=({:.3},{:.3},{:.3})",
-                                    event.move_x,
-                                    event.move_y,
-                                    event.move_z
-                                );
-                            } else if let Ok(mut guard) = presence.lock() {
-                                match guard.assign_or_lookup(
-                                    &claims.sub,
-                                    &claims.jti,
-                                    Instant::now(),
-                                ) {
-                                    Some(slot) => {
-                                        let overlay = &mut guard.by_slot[slot];
-                                        overlay.x = event.move_x;
-                                        overlay.y = event.move_y;
-                                        overlay.z = event.move_z;
-                                        overlay.active = true;
-                                        overlay.grab = (event.buttons & input_buttons::GRAB) != 0;
-                                        overlay.grab_entity_id = event.grab_entity_id;
-                                        overlay.aim_x = event.aim_x;
-                                        overlay.aim_y = event.aim_y;
-                                        overlay.aim_z = event.aim_z;
-                                        accepted += 1;
+                            };
+                            table.authorize(&event, verifier.as_ref())
+                        };
+                        match auth {
+                            Ok((sub, jti)) => {
+                                if event.leave {
+                                    if let Ok(mut guard) = presence.lock() {
+                                        if guard.reclaim_sub(&sub, "leave").is_some() {
+                                            leaves += 1;
+                                        }
                                     }
-                                    None => {
-                                        guard.dropped_full += 1;
-                                        log::warn!(
-                                            "drop InputEvent: presence full (max {USER_ROOT_SLOTS}); sub={}",
-                                            claims.sub
-                                        );
+                                    if let Ok(mut table) = sessions.lock() {
+                                        table.remove_by_sub(&sub);
+                                    }
+                                } else if !input_event_is_finite(&event) {
+                                    dropped_finite += 1;
+                                    log::warn!(
+                                        "drop InputEvent: non-finite move_*=({:.3},{:.3},{:.3})",
+                                        event.move_x,
+                                        event.move_y,
+                                        event.move_z
+                                    );
+                                } else if let Ok(mut guard) = presence.lock() {
+                                    match guard.assign_or_lookup(&sub, &jti, Instant::now()) {
+                                        Some(slot) => {
+                                            let overlay = &mut guard.by_slot[slot];
+                                            overlay.x = event.move_x;
+                                            overlay.y = event.move_y;
+                                            overlay.z = event.move_z;
+                                            overlay.active = true;
+                                            overlay.grab =
+                                                (event.buttons & input_buttons::GRAB) != 0;
+                                            overlay.grab_entity_id = event.grab_entity_id;
+                                            overlay.aim_x = event.aim_x;
+                                            overlay.aim_y = event.aim_y;
+                                            overlay.aim_z = event.aim_z;
+                                            accepted += 1;
+                                        }
+                                        None => {
+                                            guard.dropped_full += 1;
+                                            log::warn!(
+                                                "drop InputEvent: presence full (max {USER_ROOT_SLOTS}); sub={sub}"
+                                            );
+                                        }
                                     }
                                 }
                             }
+                            Err(err) => {
+                                dropped_auth += 1;
+                                log::warn!("drop InputEvent: session/auth: {err:#}");
+                            }
                         }
-                        Err(err) => {
-                            dropped_token += 1;
-                            log::warn!("drop InputEvent: Room Token invalid: {err:#}");
-                        }
-                    },
+                    }
                     Err(err) => {
-                        dropped_token += 1;
+                        dropped_auth += 1;
                         log::warn!("drop InputEvent: decode failed: {err}");
                     }
                 }
                 if last_log.elapsed() >= Duration::from_secs(5) {
-                    let dropped_full = presence
-                        .lock()
-                        .map(|g| g.dropped_full)
-                        .unwrap_or(0);
+                    let dropped_full = presence.lock().map(|g| g.dropped_full).unwrap_or(0);
                     log::info!(
-                        "input gate: accepted={accepted} leaves={leaves} dropped_token={dropped_token} dropped_non_finite={dropped_finite} dropped_full={dropped_full} (last ~5s)"
+                        "input gate: accepted={accepted} leaves={leaves} dropped_auth={dropped_auth} dropped_non_finite={dropped_finite} dropped_full={dropped_full} (last ~5s)"
                     );
                     accepted = 0;
                     leaves = 0;
-                    dropped_token = 0;
+                    dropped_auth = 0;
                     dropped_finite = 0;
                     last_log = Instant::now();
                 }
             }
         })
         .context("spawn input thread")?;
+    Ok(())
+}
+
+fn spawn_snapshot_queryable(
+    session: zenoh::Session,
+    snapshot_key_expr: String,
+    snapshot: Arc<Mutex<RenderFrame>>,
+    host_key: SigningKey,
+) -> Result<()> {
+    let queryable = session
+        .declare_queryable(snapshot_key_expr.clone())
+        .wait()
+        .map_err(|e| anyhow::anyhow!("declare_queryable snapshot failed: {e}"))?;
+
+    thread::Builder::new()
+        .name("zenoh-snapshot".into())
+        .spawn(move || {
+            log::info!("queryable ready on {snapshot_key_expr}");
+            while let Ok(query) = queryable.recv() {
+                let frame = snapshot.lock().map(|g| g.clone()).ok();
+                let Some(mut frame) = frame.filter(|f| !f.upserts.is_empty()) else {
+                    // Contract: empty = not ready. Do not sign an empty frame as success.
+                    if let Err(err) = query.reply_err("snapshot not ready (no poses yet)").wait() {
+                        log::warn!("snapshot reply_err failed: {err}");
+                    }
+                    continue;
+                };
+                sign_frame(&host_key, &mut frame);
+                let key = snapshot_key_expr.clone();
+                if let Err(err) = query.reply(key, frame.encode_to_vec()).wait() {
+                    log::warn!("snapshot reply failed: {err}");
+                }
+            }
+        })
+        .context("spawn snapshot thread")?;
     Ok(())
 }
 
@@ -584,6 +628,7 @@ fn main() -> Result<()> {
     let frame_key_expr = frame_key(&room_id);
     let input_key_expr = input_key(&room_id);
     let presence_key_expr = presence_key(&room_id);
+    let snapshot_key_expr = snapshot_key(&room_id);
     let host_control_key_expr = host_control_key(&room_id);
     let liveliness_key_expr = liveliness_wildcard(&room_id);
     let host_control_mode = if host_control::zenoh_control_enabled() {
@@ -592,8 +637,11 @@ fn main() -> Result<()> {
         "disabled"
     };
 
+    let host_signing_key = generate_signing_key();
+    let host_pub = public_key_bytes(&host_signing_key);
+
     log::info!(
-        "host-server x0022 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        "host-server x0023 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
     );
@@ -610,6 +658,14 @@ fn main() -> Result<()> {
     log::info!("auth JWT + host Room Token acquired and verified");
 
     let presence = Arc::new(Mutex::new(PresenceIntents::default()));
+    let sessions = Arc::new(Mutex::new(SessionTable::default()));
+    let snapshot_cache = Arc::new(Mutex::new(RenderFrame {
+        tick: 0,
+        host_time_ms: 0,
+        upserts: vec![],
+        removes: vec![],
+        host_sig: vec![],
+    }));
 
     let session = open_zenoh().context("open zenoh session")?;
     spawn_input_gate(
@@ -617,8 +673,15 @@ fn main() -> Result<()> {
         input_key_expr,
         Arc::clone(&verifier),
         Arc::clone(&presence),
+        Arc::clone(&sessions),
     )?;
     spawn_liveliness_watcher(session.clone(), &room_id, Arc::clone(&presence))?;
+    spawn_snapshot_queryable(
+        session.clone(),
+        snapshot_key_expr,
+        Arc::clone(&snapshot_cache),
+        host_signing_key.clone(),
+    )?;
     host_control::spawn_listener(session.clone(), &room_id)?;
 
     let manifest_pub = session
@@ -637,6 +700,7 @@ fn main() -> Result<()> {
     let empty_presence = PresenceState {
         revision: 0,
         assignments: vec![],
+        protocol_pin: PROTOCOL_PIN.to_string(),
     };
     presence_pub
         .put(empty_presence.encode_to_vec())
@@ -646,7 +710,7 @@ fn main() -> Result<()> {
     let mut last_presence_rev = 0u64;
     let mut last_presence = Instant::now();
 
-    let manifest = build_manifest(&room_id, &blob_blake3);
+    let manifest = build_manifest(&room_id, &blob_blake3, host_pub);
     let loco = manifest.locomotion.unwrap_or(LocomotionConfig {
         mode: LocomotionMode::Noclip.into(),
         move_speed: DEFAULT_MOVE_SPEED,
@@ -736,15 +800,21 @@ fn main() -> Result<()> {
                     PresenceState {
                         revision: 0,
                         assignments: vec![],
+                        protocol_pin: PROTOCOL_PIN.to_string(),
                     },
                     Vec::new(),
                 )
             });
 
-        for &entity_id in &reclaimed {
+        for (entity_id, sub) in &reclaimed {
             let slot = (entity_id - USER_ROOT_ENTITY_FIRST) as usize;
             physics.release_slot(slot);
-            last_sent.remove(&entity_id);
+            last_sent.remove(entity_id);
+            if !sub.is_empty() {
+                if let Ok(mut table) = sessions.lock() {
+                    table.remove_by_sub(sub);
+                }
+            }
         }
 
         if presence_rev != last_presence_rev || last_presence.elapsed() >= PRESENCE_REPUBLISH {
@@ -784,15 +854,25 @@ fn main() -> Result<()> {
         physics_steps = physics_steps.wrapping_add(1);
         physics_steps_logged += 1;
 
+        let remove_ids: Vec<u32> = reclaimed.iter().map(|(id, _)| *id).collect();
+
         if !physics_steps.is_multiple_of(PHYSICS_PER_NET) {
             // Still flush removes promptly when reclaim happens between net ticks.
-            if !reclaimed.is_empty() {
-                let frame = RenderFrame {
+            if !remove_ids.is_empty() {
+                if let Ok(mut cache) = snapshot_cache.lock() {
+                    cache.upserts.retain(|e| !remove_ids.contains(&e.id));
+                    cache.tick = net_tick;
+                    cache.host_time_ms = host_time_ms();
+                    cache.host_sig.clear();
+                }
+                let mut frame = RenderFrame {
                     tick: net_tick,
                     host_time_ms: host_time_ms(),
                     upserts: vec![],
-                    removes: reclaimed.clone(),
+                    removes: remove_ids.clone(),
+                    host_sig: vec![],
                 };
+                sign_frame(&host_signing_key, &mut frame);
                 frame_pub
                     .put(frame.encode_to_vec())
                     .wait()
@@ -804,31 +884,39 @@ fn main() -> Result<()> {
             continue;
         }
 
-        let mut poses: Vec<(u32, Pose)> = Vec::with_capacity(2 + USER_ROOT_SLOTS + BOX_COUNT);
-        poses.push((ENTITY_MOVING, moving_pose_from_sim(&physics)));
-        poses.push((ENTITY_STATIC, static_marker_pose()));
+        // Snapshot + delta only on net ticks (avoid every-physics-tick alloc).
+        let mut all_poses: Vec<(u32, Pose)> = Vec::with_capacity(2 + USER_ROOT_SLOTS + BOX_COUNT);
+        all_poses.push((ENTITY_MOVING, moving_pose_from_sim(&physics)));
+        all_poses.push((ENTITY_STATIC, static_marker_pose()));
         for (slot, occupied_sub) in occupied.iter().enumerate() {
             if occupied_sub.is_some() {
-                poses.push((
+                all_poses.push((
                     PhysicsWorld::user_root_entity_id(slot),
                     user_root_pose_from_sim(&physics, slot),
                 ));
             }
         }
         for i in 0..BOX_COUNT {
-            poses.push((physics.boxes.entity_ids[i], box_pose_from_sim(&physics, i)));
+            all_poses.push((physics.boxes.entity_ids[i], box_pose_from_sim(&physics, i)));
+        }
+        if let Ok(mut cache) = snapshot_cache.lock() {
+            cache.tick = net_tick;
+            cache.host_time_ms = host_time_ms();
+            cache.upserts = all_poses
+                .iter()
+                .map(|(id, pose)| to_entity(*id, *pose))
+                .collect();
+            cache.removes.clear();
+            cache.host_sig.clear();
         }
 
         let mut upserts = Vec::new();
-        for (id, next_pose) in poses {
-            // Boxes always upsert: they sleep after settle, and frame is delta-only —
-            // late joiners would otherwise never see entity 10..18 (x0010).
-            let is_box = (BOX_ENTITY_FIRST..BOX_ENTITY_FIRST + BOX_COUNT as u32).contains(&id);
-            let should_send = is_box
-                || match last_sent.get(&id) {
-                    None => true,
-                    Some(prev) => pose_changed(*prev, next_pose),
-                };
+        for (id, next_pose) in all_poses {
+            // Pure delta (x0023): late joiners use `…/snapshot` instead of every-tick box upserts.
+            let should_send = match last_sent.get(&id) {
+                None => true,
+                Some(prev) => pose_changed(*prev, next_pose),
+            };
             if should_send {
                 upserts.push(to_entity(id, next_pose));
                 last_sent.insert(id, next_pose);
@@ -836,18 +924,19 @@ fn main() -> Result<()> {
         }
 
         let upsert_len = upserts.len() as u64;
-        let removes = reclaimed;
-        if upserts.is_empty() && removes.is_empty() {
+        if upserts.is_empty() && remove_ids.is_empty() {
             empty_delta_frames += 1;
             net_tick = net_tick.wrapping_add(1);
         } else {
             upsert_entities += upsert_len;
-            let frame = RenderFrame {
+            let mut frame = RenderFrame {
                 tick: net_tick,
                 host_time_ms: host_time_ms(),
                 upserts,
-                removes,
+                removes: remove_ids,
+                host_sig: vec![],
             };
+            sign_frame(&host_signing_key, &mut frame);
             frame_pub
                 .put(frame.encode_to_vec())
                 .wait()
@@ -908,7 +997,10 @@ mod presence_reclaim_tests {
         assert!(p.occupied_sub[0].is_some());
 
         let freed = p.reclaim_stale(t0 + PRESENCE_SLOT_TTL, PRESENCE_SLOT_TTL);
-        assert_eq!(freed, vec![PhysicsWorld::user_root_entity_id(0)]);
+        assert_eq!(
+            freed,
+            vec![(PhysicsWorld::user_root_entity_id(0), "alice".into())]
+        );
         assert!(p.occupied_sub[0].is_none());
         assert_eq!(p.to_presence_state().assignments.len(), 0);
         assert!(p.revision >= 2);
@@ -947,9 +1039,12 @@ mod presence_reclaim_tests {
         let t0 = Instant::now();
         assert_eq!(p.assign_or_lookup("alice", "j1", t0), Some(0));
         let entity = p.reclaim_sub("alice", "leave").expect("reclaim");
-        assert_eq!(entity, PhysicsWorld::user_root_entity_id(0));
+        assert_eq!(
+            entity,
+            (PhysicsWorld::user_root_entity_id(0), "alice".into())
+        );
         assert!(p.occupied_sub[0].is_none());
-        assert_eq!(p.pending_removes, vec![entity]);
+        assert_eq!(p.pending_removes, vec![entity.clone()]);
         let drained = p.drain_reclaims(t0, PRESENCE_SLOT_TTL);
         assert_eq!(drained, vec![entity]);
         assert!(p.pending_removes.is_empty());
@@ -976,7 +1071,10 @@ mod presence_reclaim_tests {
         assert!(p.occupied_sub[0].is_some());
 
         let freed = p.confirm_liveliness_reclaims(t0 + LIVELINESS_RECLAIM_GRACE);
-        assert_eq!(freed, vec![PhysicsWorld::user_root_entity_id(0)]);
+        assert_eq!(
+            freed,
+            vec![(PhysicsWorld::user_root_entity_id(0), "alice".into())]
+        );
         assert!(p.occupied_sub[0].is_none());
     }
 

@@ -69,6 +69,9 @@ mod tests {
             aim_y: 0.0,
             aim_z: 0.0,
             leave: false,
+            session_pub: vec![],
+            intent_seq: 0,
+            intent_sig: vec![],
         }
     }
 

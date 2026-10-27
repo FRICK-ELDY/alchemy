@@ -14,6 +14,10 @@ message SceneManifest {
   repeated SceneEntry entries = 3;
   // World-defined active locomotion profile (default Noclip when unset / UNSPECIFIED).
   LocomotionConfig locomotion = 4;
+  // Must equal peer `PROTOCOL_PIN` (x0023). Client rejects mismatch.
+  string protocol_pin = 5;
+  // Host Ed25519 public key (32 bytes) for RenderFrame / snapshot signatures (x0023).
+  bytes host_pub = 6;
 }
 
 message SceneEntry {

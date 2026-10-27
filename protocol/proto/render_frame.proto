@@ -15,6 +15,9 @@ message RenderFrame {
   repeated Entity upserts = 3;
   // Entity ids removed from the scene.
   repeated uint32 removes = 4;
+  // Ed25519 signature (64 bytes) over encode with `host_sig` cleared (x0023).
+  // Verified with `SceneManifest.host_pub`.
+  bytes host_sig = 5;
 }
 
 message Entity {
