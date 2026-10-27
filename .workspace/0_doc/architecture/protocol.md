@@ -2,7 +2,7 @@
 
 > **正本**: [`protocol/`](../../../protocol/)  
 > **配送契約**: [`protocol/peer-delivery.md`](../../../protocol/peer-delivery.md)（x0024）  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.11.0-x0026`
+> **PROTOCOL_PIN**: `alchemy-protocol/0.12.0-x0027`
 
 ## 置き場の方針
 
@@ -18,7 +18,8 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | `PROTOCOL_PIN` を Manifest / Presence に載せ、不一致検出可能（x0023） | フル DrawCommand 体系・多世代同時運用 |
 | f64 空間座標（描画境界） | audio / tracking |
 | Intent: Ed25519 `session_pub` / `intent_seq` / `intent_sig` + 任意 `room_token`（bind 時）（x0023） | Token JWKS 検証そのもの（host-server） |
-| Frame / Presence: `host_sig` + Manifest `host_pub`（HostAttestation）+ Manifest **`world_seal`**（x0026） | SceneManifest 駆動（P4）・テナント名前空間 |
+| Frame / Presence: `host_sig` + Manifest `host_pub`（HostAttestation）+ Manifest **`world_seal`**（x0026） | shared-sim / EntityKind（P4 残り）・テナント名前空間 |
+| `SceneEntry` の `half_extent` / `flags`（`SCENE_FLAG_GRABBABLE`）/ rgba — 配置・Grab・mesh の定義正本（x0027） | UGC 編集 UI・Room DB 永続 |
 | 配送クラス表（[`peer-delivery.md`](../../../protocol/peer-delivery.md)）+ `decide_frame_tick` / `FRAME_TICK_GAP_RESYNC`（x0024） | 確実配送 ACK / event ID チャネル・欠落デルタの再送 |
 | Manifest / frame / presence / host_control / snapshot のキー式ヘルパ + `validate_room_id`（x0017） | Zenoh ACL / mTLS |
 | `LocomotionConfig`（World 定義の active mode） | モジュール一覧 UI / 抑制ソース |
@@ -27,14 +28,15 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 
 ## メッセージ
 
-### SceneManifest（`proto/scene_manifest.proto`）— 低頻度 + x0009 loco + x0023 / x0025
+### SceneManifest（`proto/scene_manifest.proto`）— 低頻度 + x0009 loco + x0023 / x0025 / x0027
 
 - `SceneManifest { room_id, revision, entries[], locomotion, protocol_pin, host_pub, host_attestation, world_seal }`
-- `SceneEntry { entity_id, blake3 (hex), x,y,z }`
+- `SceneEntry { entity_id, blake3 (hex), x,y,z, half_extent, flags, r,g,b,a }`
+  - **分類優先（host/client 共通・`scene_entry_is_box`）:** (1) `USER_ROOT_*` ID 帯 → Presence spawn (2) `blake3` 非空 → **mesh のみ**（同居の `half_extent`/Grab flags は box 経路で無視）(3) `half_extent > 0` → 直方体の描画/コリジョン (4) `flags & SCENE_FLAG_GRABBABLE` → Grab 可＝Dynamic、非 Grab box＝Fixed 静的ジオメトリ
 - `LocomotionConfig { mode, move_speed }` — `UNSPECIFIED` → host は **Noclip**
 - `LocomotionMode`: NOCLIP / FLY / WALK
 - `protocol_pin` / `host_pub`（32B Ed25519）+ `host_attestation` + **`world_seal`**（world JWT・body blake3）: client は pin / seal / attestation 失敗で leave；Frame/Presence は attested `host_pub`（x0026）
-- **GLB バイトは載せない**（assets-server CAS 参照のみ）
+- **定義の正本は world 発行 entries**（host は実行・seal、client は描画/Grab）。**GLB バイトは載せない**（assets-server CAS 参照のみ）
 
 ### RenderFrame（`proto/render_frame.proto`）— 高頻度デルタ + 署名（x0023）
 
@@ -44,7 +46,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - Snapshot 成功条件: **`upserts` 非空**（空は未準備。host は `reply_err`）。client は snapshot に tick ゲートをかけない
 - デルタ tick: host は空デルタで `net_tick` を進めない。snapshot キャッシュ tick は **最後に publish した値**（次の未送 `net_tick` 禁止）。client は `FRAME_TICK_GAP_RESYNC`（既定 1）超過で適用せず snapshot（x0024）
 - `host_sig`: encode（sig 空）を host 秘密鍵で署名
-- entity: Coin=`1`、static=`2`、**user_root=`3..6`**（x0015）、**grabbable boxes=`10..18`**（x0010）
+- entity id は Manifest entries 由来（デモ: Coin=`1`、user_root=`3..6`、grabbable boxes=`10..18`）。client/host は ID 帯ハードコードで Grab しない（x0027）
 
 ### InputEvent（`proto/input_events.proto`）— Intent + session（x0023）
 

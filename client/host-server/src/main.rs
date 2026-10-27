@@ -3,7 +3,7 @@
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
 //! - Input: Ed25519 session bind (Token on bind only) + `is_finite` (x0023 / x0021)
-//! - SceneManifest with world `host_attestation` + `world_seal` + `host_pub`; Frames / Presence signed (x0026)
+//! - SceneManifest from world DemoScene + attestation + seal; Frames / Presence signed (x0027)
 //! - `…/snapshot` queryable for late join; pure pose deltas (no box every-tick upsert)
 //! - Empty deltas: **no publish and no `net_tick` advance**; snapshot tick = last published (x0024)
 //! - Per-`sub` Intent/Grab → up to 4 user_roots; Presence Leave / liveliness jti grace (x0022)
@@ -11,8 +11,9 @@
 //! - Slice E / x001e: Zenoh `host_control` off by default; `ALCHEMY_HOST_CONTROL=1` to enable
 //!
 //! Non-guarantees:
-//! - Steal / rotation follow / Formula / polished Walk / SceneManifest-driven content (P4) / verifier
+//! - Steal / rotation follow / Formula / polished Walk / shared-sim / EntityKind / verifier
 //! - Authenticated remote host shutdown (use launcher / `ALCHEMY_HOST_PID`)
+//! - Re-fetch of world `GET …/scene` after boot (room redefinition requires host restart)
 
 mod finite;
 mod host_control;
@@ -34,16 +35,16 @@ use alchemy_protocol::{
     frame_key, host_control_key, input_buttons, input_key, liveliness_binding_from_key,
     liveliness_wildcard, manifest_key, presence_key, snapshot_key, validate_room_id, Entity,
     InputEvent, LocomotionConfig, LocomotionMode, Message, PresenceAssignment, PresenceState,
-    RenderFrame, SceneEntry, SceneManifest, PROTOCOL_PIN,
+    RenderFrame, SceneManifest, DEFAULT_MOVE_SPEED, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
-use room_token::{default_auth_url, HostCredentialChain, ManifestSealCache, RoomTokenVerifier};
-use session::SessionTable;
-use sim::{
-    box_color, user_root_color, LocoMode, PhysicsWorld, BOX_COUNT, BOX_ENTITY_FIRST,
-    DEFAULT_MOVE_SPEED, USER_ROOT_ENTITY_FIRST, USER_ROOT_SLOTS,
+use room_token::{
+    default_auth_url, fetch_room_scene, HostCredentialChain, ManifestSealCache, RoomScene,
+    RoomTokenVerifier,
 };
+use session::SessionTable;
+use sim::{LocoMode, PhysicsWorld, USER_ROOT_ENTITY_FIRST, USER_ROOT_SLOTS};
 use zenoh::bytes::ZBytes;
 use zenoh::sample::SampleKind;
 use zenoh::Wait;
@@ -55,8 +56,6 @@ const PHYSICS_PER_NET: u64 = PHYSICS_HZ / NET_HZ;
 const DEFAULT_ZENOH_CONNECT: &str = "tcp/127.0.0.1:7447";
 const DEFAULT_WORLD_URL: &str = "http://127.0.0.1:4003";
 const DEFAULT_ROOM_ID: &str = "local";
-/// Coin_PolygonalMind.glb (CC0) — same as client fixtures.
-const COIN_BLAKE3_HEX: &str = "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555feb66d4f82ee1e72a";
 /// Pose change below this is treated as static (sleep / omit from upserts).
 const MOVE_EPSILON: f64 = 1e-4;
 /// Republish Manifest so late joiners still see blob refs (still ≪ frame rate).
@@ -65,9 +64,6 @@ const MANIFEST_REPUBLISH: Duration = Duration::from_secs(5);
 const PRESENCE_REPUBLISH: Duration = Duration::from_secs(5);
 /// Intent silence before reclaiming a Presence slot (client INPUT_HZ=30).
 const PRESENCE_SLOT_TTL: Duration = Duration::from_secs(3);
-
-const ENTITY_MOVING: u32 = 1;
-const ENTITY_STATIC: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct PoseOverride {
@@ -342,57 +338,35 @@ fn host_time_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn static_marker_pose() -> Pose {
-    Pose {
-        x: 3.0,
-        y: 0.5,
-        z: 0.0,
-        r: 0.9,
-        g: 0.3,
-        b: 0.2,
-        a: 1.0,
-    }
-}
-
-fn moving_pose_from_sim(world: &PhysicsWorld) -> Pose {
-    let (x, y, z) = world.moving_translation();
+fn pose_with_color(x: f32, y: f32, z: f32, rgba: (f32, f32, f32, f32)) -> Pose {
+    let (r, g, b, a) = rgba;
     Pose {
         x: f64::from(x),
         y: f64::from(y),
         z: f64::from(z),
-        r: 0.2,
-        g: 0.9,
-        b: 0.4,
-        a: 1.0,
+        r,
+        g,
+        b,
+        a,
     }
+}
+
+fn moving_pose_from_sim(world: &PhysicsWorld) -> Option<(u32, Pose)> {
+    let id = world.mesh_entity_id()?;
+    let (x, y, z) = world.moving_translation();
+    Some((id, pose_with_color(x, y, z, world.color_for(id))))
 }
 
 fn user_root_pose_from_sim(world: &PhysicsWorld, slot: usize) -> Pose {
+    let id = PhysicsWorld::user_root_entity_id(slot);
     let (x, y, z) = world.user_root_translation(slot);
-    let (r, g, b, a) = user_root_color(slot);
-    Pose {
-        x: f64::from(x),
-        y: f64::from(y),
-        z: f64::from(z),
-        r,
-        g,
-        b,
-        a,
-    }
+    pose_with_color(x, y, z, world.color_for(id))
 }
 
 fn box_pose_from_sim(world: &PhysicsWorld, index: usize) -> Pose {
+    let id = world.boxes.entity_ids[index];
     let (x, y, z) = world.box_translation(index);
-    let (r, g, b, a) = box_color(index);
-    Pose {
-        x: f64::from(x),
-        y: f64::from(y),
-        z: f64::from(z),
-        r,
-        g,
-        b,
-        a,
-    }
+    pose_with_color(x, y, z, world.color_for(id))
 }
 
 fn to_entity(id: u32, pose: Pose) -> Entity {
@@ -414,27 +388,22 @@ fn pose_changed(prev: Pose, next: Pose) -> bool {
         || (prev.z - next.z).abs() > MOVE_EPSILON
 }
 
-fn build_manifest(
+fn build_manifest_from_scene(
     room_id: &str,
-    blake3: &str,
+    scene: &RoomScene,
     host_pub: Vec<u8>,
     host_attestation: String,
     world_seal: String,
 ) -> SceneManifest {
+    let loco = scene.locomotion.unwrap_or(LocomotionConfig {
+        mode: LocomotionMode::Noclip.into(),
+        move_speed: DEFAULT_MOVE_SPEED,
+    });
     SceneManifest {
         room_id: room_id.to_string(),
-        revision: 1,
-        entries: vec![SceneEntry {
-            entity_id: ENTITY_MOVING,
-            blake3: blake3.to_string(),
-            x: 0.0,
-            y: f64::from(sim::SPAWN_Y),
-            z: 0.0,
-        }],
-        locomotion: Some(LocomotionConfig {
-            mode: LocomotionMode::Noclip.into(),
-            move_speed: DEFAULT_MOVE_SPEED,
-        }),
+        revision: scene.revision,
+        entries: scene.entries.clone(),
+        locomotion: Some(loco),
         protocol_pin: PROTOCOL_PIN.to_string(),
         host_pub,
         host_attestation,
@@ -445,16 +414,16 @@ fn build_manifest(
 /// Build Manifest body (empty seal), obtain/cache world seal, return publishable Manifest.
 fn sealed_manifest(
     room_id: &str,
-    blob_blake3: &str,
+    scene: &RoomScene,
     host_pub: &[u8],
     host_attestation: &str,
     world_url: &str,
     host_token: &str,
     seal_cache: &mut ManifestSealCache,
 ) -> Result<SceneManifest> {
-    let mut manifest = build_manifest(
+    let mut manifest = build_manifest_from_scene(
         room_id,
-        blob_blake3,
+        scene,
         host_pub.to_vec(),
         host_attestation.to_string(),
         String::new(),
@@ -658,9 +627,6 @@ fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("invalid ROOM_ID={room_id_raw:?}: {e}"))?
         .to_string();
     let auth_url = default_auth_url();
-    let blob_blake3 =
-        std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
-
     let manifest_key_expr = manifest_key(&room_id);
     let frame_key_expr = frame_key(&room_id);
     let input_key_expr = input_key(&room_id);
@@ -678,7 +644,7 @@ fn main() -> Result<()> {
     let host_pub = public_key_bytes(&host_signing_key);
 
     log::info!(
-        "host-server x0026 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        "host-server x0027 starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
     );
@@ -696,6 +662,26 @@ fn main() -> Result<()> {
     .context("bootstrap auth → host Room Token → HostAttestation")?;
     log::info!(
         "auth JWT + host Room Token (role=host) + HostAttestation acquired; three-tier refresh enabled (fail-closed)"
+    );
+
+    // Scene is fetched once at boot (x0027 Non-guarantee: no re-fetch on world redefinition).
+    let mut room_scene = fetch_room_scene(&world_url, &room_id, &creds.host_token)
+        .context("fetch world DemoScene (GET …/scene)")?;
+    if let Ok(override_blake3) = std::env::var("ALCHEMY_BLOB_BLAKE3") {
+        if !override_blake3.is_empty() {
+            for entry in &mut room_scene.entries {
+                if !entry.blake3.is_empty() {
+                    entry.blake3 = override_blake3.clone();
+                    break;
+                }
+            }
+            log::info!("ALCHEMY_BLOB_BLAKE3 override applied to first mesh entry");
+        }
+    }
+    log::info!(
+        "world scene loaded revision={} entries={}",
+        room_scene.revision,
+        room_scene.entries.len()
     );
 
     let presence = Arc::new(Mutex::new(PresenceIntents::default()));
@@ -756,7 +742,7 @@ fn main() -> Result<()> {
     let mut seal_cache = ManifestSealCache::empty();
     let mut manifest = sealed_manifest(
         &room_id,
-        &blob_blake3,
+        &room_scene,
         &host_pub,
         &creds.host_attestation,
         &world_url,
@@ -781,21 +767,20 @@ fn main() -> Result<()> {
         .wait()
         .map_err(|e| anyhow::anyhow!("manifest publish failed: {e}"))?;
     log::info!(
-        "published SceneManifest revision={} entries={} blake3={} loco={:?} speed={move_speed} (attested+sealed)",
+        "published SceneManifest revision={} entries={} loco={:?} speed={move_speed} (attested+sealed)",
         manifest.revision,
         manifest.entries.len(),
-        blob_blake3,
         loco_mode
     );
     let mut last_manifest = Instant::now();
 
-    let mut physics = PhysicsWorld::new(loco_mode, move_speed);
+    let mut physics = PhysicsWorld::from_entries(&room_scene.entries, loco_mode, move_speed);
     let grabbable_n = physics.boxes.grabbable.iter().filter(|&&g| g).count();
     log::info!(
-        "Rapier world ready (floor + coin entity {ENTITY_MOVING} + user_roots {USER_ROOT_ENTITY_FIRST}..{} + grabbable boxes {BOX_ENTITY_FIRST}..{} count={BOX_COUNT} grabbable={grabbable_n} half_extent={:.2} mode={:?})",
+        "Rapier world ready (mesh={:?} + user_roots {USER_ROOT_ENTITY_FIRST}..{} + boxes={} grabbable={grabbable_n} mode={:?})",
+        physics.mesh_entity_id(),
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
-        BOX_ENTITY_FIRST + BOX_COUNT as u32 - 1,
-        physics.boxes.half_extent,
+        physics.boxes.len(),
         physics.loco_mode()
     );
 
@@ -847,7 +832,7 @@ fn main() -> Result<()> {
         if attest_rotated || seal_due || last_manifest.elapsed() >= MANIFEST_REPUBLISH {
             manifest = match sealed_manifest(
                 &room_id,
-                &blob_blake3,
+                &room_scene,
                 &host_pub,
                 &creds.host_attestation,
                 &world_url,
@@ -995,9 +980,11 @@ fn main() -> Result<()> {
         }
 
         // Snapshot + delta only on net ticks (avoid every-physics-tick alloc).
-        let mut all_poses: Vec<(u32, Pose)> = Vec::with_capacity(2 + USER_ROOT_SLOTS + BOX_COUNT);
-        all_poses.push((ENTITY_MOVING, moving_pose_from_sim(&physics)));
-        all_poses.push((ENTITY_STATIC, static_marker_pose()));
+        let mut all_poses: Vec<(u32, Pose)> =
+            Vec::with_capacity(1 + USER_ROOT_SLOTS + physics.boxes.len());
+        if let Some((id, pose)) = moving_pose_from_sim(&physics) {
+            all_poses.push((id, pose));
+        }
         for (slot, occupied_sub) in occupied.iter().enumerate() {
             if occupied_sub.is_some() {
                 all_poses.push((
@@ -1006,7 +993,7 @@ fn main() -> Result<()> {
                 ));
             }
         }
-        for i in 0..BOX_COUNT {
+        for i in 0..physics.boxes.len() {
             all_poses.push((physics.boxes.entity_ids[i], box_pose_from_sim(&physics, i)));
         }
 

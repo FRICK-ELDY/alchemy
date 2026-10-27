@@ -658,6 +658,120 @@ impl HostCredentialChain {
     }
 }
 
+/// World-authored scene definition for a room (x0027).
+/// Built from JSON DTOs — prost types are not serde-deserializable.
+#[derive(Debug, Clone)]
+pub struct RoomScene {
+    pub revision: u64,
+    pub entries: Vec<alchemy_protocol::SceneEntry>,
+    pub locomotion: Option<alchemy_protocol::LocomotionConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SceneEntryJson {
+    entity_id: u32,
+    #[serde(default)]
+    blake3: String,
+    #[serde(default)]
+    x: f64,
+    #[serde(default)]
+    y: f64,
+    #[serde(default)]
+    z: f64,
+    #[serde(default)]
+    half_extent: f32,
+    #[serde(default)]
+    flags: u32,
+    #[serde(default)]
+    r: f32,
+    #[serde(default)]
+    g: f32,
+    #[serde(default)]
+    b: f32,
+    #[serde(default)]
+    a: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocomotionJson {
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    move_speed: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct SceneResponseJson {
+    revision: u64,
+    entries: Vec<SceneEntryJson>,
+    locomotion: Option<LocomotionJson>,
+}
+
+fn loco_mode_from_str(mode: &str) -> alchemy_protocol::LocomotionMode {
+    match mode.to_ascii_lowercase().as_str() {
+        "fly" => alchemy_protocol::LocomotionMode::Fly,
+        "walk" => alchemy_protocol::LocomotionMode::Walk,
+        "noclip" | "" => alchemy_protocol::LocomotionMode::Noclip,
+        other => {
+            log::warn!("unknown locomotion mode {other:?}; falling back to Noclip");
+            alchemy_protocol::LocomotionMode::Noclip
+        }
+    }
+}
+
+/// Fetch world DemoScene for this room (host Room Token).
+pub fn fetch_room_scene(
+    world_url: &str,
+    room_id: &str,
+    host_room_token: &str,
+) -> Result<RoomScene> {
+    let base = world_url.trim_end_matches('/');
+    let url = format!("{base}/api/v1/rooms/{room_id}/scene");
+    let authz = format!("Bearer {host_room_token}");
+    match credential_agent()
+        .get(&url)
+        .set("authorization", &authz)
+        .call()
+    {
+        Ok(resp) => {
+            let parsed: SceneResponseJson = resp.into_json().context("parse scene response")?;
+            let entries = parsed
+                .entries
+                .into_iter()
+                .map(|e| alchemy_protocol::SceneEntry {
+                    entity_id: e.entity_id,
+                    blake3: e.blake3,
+                    x: e.x,
+                    y: e.y,
+                    z: e.z,
+                    half_extent: e.half_extent,
+                    flags: e.flags,
+                    r: e.r,
+                    g: e.g,
+                    b: e.b,
+                    a: e.a,
+                })
+                .collect();
+            let locomotion = parsed
+                .locomotion
+                .map(|l| alchemy_protocol::LocomotionConfig {
+                    mode: loco_mode_from_str(&l.mode).into(),
+                    move_speed: l.move_speed,
+                });
+            Ok(RoomScene {
+                revision: parsed.revision,
+                entries,
+                locomotion,
+            })
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(anyhow!("scene fetch failed status={code} body={body}"))
+        }
+        Err(err) => Err(anyhow!("scene fetch request failed: {err:#}")),
+    }
+}
+
 /// Ask world to seal a Manifest body hash; returns ManifestSeal JWT + TTL (x0026).
 pub fn fetch_manifest_seal(
     world_url: &str,

@@ -28,12 +28,21 @@ message SceneManifest {
 
 message SceneEntry {
   uint32 entity_id = 1;
-  // BLAKE3 hex of the blob in assets-server CAS.
+  // BLAKE3 hex of the blob in assets-server CAS (empty = no mesh).
   string blake3 = 2;
   // Optional initial pose (binary64 at the render boundary).
   double x = 3;
   double y = 4;
   double z = 5;
+  // Cuboid half-extent (meters). 0 = not a box collider/draw proxy (x0027).
+  float half_extent = 6;
+  // Bit flags; see `SCENE_FLAG_*` in protocol crate (x0027).
+  uint32 flags = 7;
+  // Initial tint (Frame may overwrite). Unset / zero alpha → peer default.
+  float r = 8;
+  float g = 9;
+  float b = 10;
+  float a = 11;
 }
 
 // Active locomotion mode for users in this room (world content definition).

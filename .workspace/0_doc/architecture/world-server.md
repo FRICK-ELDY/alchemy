@@ -1,7 +1,7 @@
 # world-server
 
 > **正本コード**: [`world-server/`](../../../world-server/)  
-> **ステータス**: x0026（ManifestSeal）+ x0025（HostAttestation）+ Slice B.5（Room Token + auth JWT 必須）
+> **ステータス**: x0027（DemoScene）+ x0026（ManifestSeal）+ x0025（HostAttestation）+ Slice B.5
 
 ## 図上の位置
 
@@ -16,8 +16,9 @@
 | `GET /.well-known/jwks.json`（Room Token 用） | verifier / ホスト死活監視 / S2S 連合 |
 | Room API は auth-server Bearer JWT 必須（`sub` を Room Token に転写） | 匿名 Token（既定 OFF。`WORLD_ALLOW_ANON_TOKENS=true` のみ） |
 | auth JWKS（`AUTH_JWKS_URL`）によるユーザー JWT 検証 | auth の revocation 再確認 |
-| HostAttestation JWT（`typ=host_attestation`）を host Room Token のみ発行（x0025）。発行失敗は 5xx（token 検証失敗は 401） | SceneManifest 駆動（P4）・Room 永続 |
-| ManifestSeal JWT（`typ=manifest_seal` / `aud=alchemy-manifest-seal`）を host Room Token のみ発行（x0026）。body は blake3 のみ受け取る | world が entries を定義して配ること |
+| HostAttestation JWT（`typ=host_attestation`）を host Room Token のみ発行（x0025）。発行失敗は 5xx（token 検証失敗は 401） | Room DB 永続・UGC 編集 |
+| ManifestSeal JWT（`typ=manifest_seal` / `aud=alchemy-manifest-seal`）を host Room Token のみ発行（x0026）。body は blake3 のみ受け取る | seal 時の entries 改変（host が body を組む） |
+| DemoScene（entries + loco）を Room 作成時に紐付け。`GET …/scene` は **host** Room Token のみ（x0027） | guest への scene 配布・複数シーン切替 UI |
 
 ## 契約（Room Token）
 
@@ -43,6 +44,7 @@
 | POST | `/api/v1/rooms/:room_id/tokens` | Bearer（auth JWT） | Token 発行（`sub` は JWT から） |
 | POST | `/api/v1/rooms/:room_id/host_keys` | Bearer（**host Room Token**） | HostAttestation 発行（`host_pub` base64url・x0025） |
 | POST | `/api/v1/rooms/:room_id/manifest_seal` | Bearer（**host Room Token**） | ManifestSeal 発行（`revision` + `manifest_blake3`・x0026） |
+| GET | `/api/v1/rooms/:room_id/scene` | Bearer（**host Room Token**） | DemoScene `{ revision, entries, locomotion }`（x0027） |
 
 ## 起動（Docker）
 

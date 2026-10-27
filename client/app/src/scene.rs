@@ -3,13 +3,22 @@
 //! MoveIntent carries Grab hold fields for x0011 (host kinematic follow).
 //! `CameraLook` is Desktop-local (x0012); not published on Zenoh.
 //!
-//! Guarantees: draw with caller-supplied view/proj; boxes 10..18; remote roots 3..6 (x0015).
+//! Guarantees: draw with caller-supplied view/proj; grabbable boxes from Manifest (x0027);
+//! remote roots 3..6 (x0015).
 //! Non-guarantees: XR swapchain ownership, system_ui layout, avatar GLB.
 //! Leave / liveliness token ownership lives here; put/undeclare is `main::leave_room`.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Manifest cuboid defs shared by draw / Grab (Arc swap on Manifest apply).
+#[derive(Clone, Default)]
+pub struct BoxDefs {
+    pub grabbable: HashSet<u32>,
+    pub half_extents: HashMap<u32, f32>,
+}
 
 use winit::window::Window;
 
@@ -23,15 +32,15 @@ use alchemy_protocol::user_root_entity_last;
 use crate::auth::AuthGate;
 use crate::mesh::CpuMesh;
 
+/// Fallback mesh entity before Manifest arrives (fixture / smoke).
 pub const MESH_ENTITY_ID: u32 = 1;
 /// Host-authoritative player roots (protocol SSoT; x0015 Presence).
 pub use alchemy_protocol::USER_ROOT_ENTITY_FIRST;
 /// Sentinel: Presence has not assigned a local user_root yet.
 pub const LOCAL_USER_ROOT_UNSET: u32 = 0;
-/// First entity id for the 3×3 grabbable grid (matches host x0010).
-pub const BOX_ENTITY_FIRST: u32 = 10;
-pub const BOX_COUNT: usize = 9;
-/// Half-extent of each cuboid (meters). Matches host `BOX_HALF_EXTENT`.
+/// Max cuboid draw UBOs (demo has 9; headroom for Manifest-driven scenes).
+pub const BOX_DRAW_SLOTS: usize = 16;
+/// Default half-extent when Manifest omits per-entity size.
 pub const BOX_HALF_EXTENT: f32 = 0.25;
 /// Placeholder size for remote player (meters half-extent).
 pub const REMOTE_ROOT_HALF_EXTENT: f32 = 0.25;
@@ -76,10 +85,6 @@ impl EntityPose {
 
     pub fn color(self) -> [f32; 4] {
         [self.r, self.g, self.b, self.a]
-    }
-
-    pub fn is_grabbable_box(id: u32) -> bool {
-        (BOX_ENTITY_FIRST..BOX_ENTITY_FIRST + BOX_COUNT as u32).contains(&id)
     }
 
     pub fn is_user_root(id: u32) -> bool {
@@ -160,6 +165,10 @@ pub struct SharedState {
     pub liveliness_prev: Mutex<Option<zenoh::liveliness::LivelinessToken>>,
     /// Entity poses + last applied frame tick (single mutex).
     pub world: Mutex<WorldView>,
+    /// Manifest cuboid defs (Grab flags + half_extents); Arc-swapped on apply (x0027).
+    pub box_defs: Mutex<Arc<BoxDefs>>,
+    /// Primary mesh entity id from Manifest (`blake3` entry); 0 until set.
+    pub mesh_entity_id: AtomicU32,
     pub look: Mutex<CameraLook>,
     pub intent: Mutex<MoveIntent>,
 }
@@ -171,6 +180,38 @@ impl SharedState {
 
     pub fn set_local_user_root(&self, entity_id: u32) {
         self.local_user_root.store(entity_id, Ordering::Relaxed)
+    }
+
+    pub fn is_grabbable(&self, id: u32) -> bool {
+        self.box_defs_snapshot().grabbable.contains(&id)
+    }
+
+    /// Cheap Arc clone of Manifest box defs (draw / Grab hot paths).
+    pub fn box_defs_snapshot(&self) -> Arc<BoxDefs> {
+        self.box_defs
+            .lock()
+            .ok()
+            .map(|d| Arc::clone(&d))
+            .unwrap_or_else(|| Arc::new(BoxDefs::default()))
+    }
+
+    pub fn mesh_entity_id(&self) -> u32 {
+        self.mesh_entity_id.load(Ordering::Relaxed)
+    }
+
+    pub fn apply_manifest_defs(
+        &self,
+        grabbable: HashSet<u32>,
+        half_extents: HashMap<u32, f32>,
+        mesh_id: u32,
+    ) {
+        if let Ok(mut slot) = self.box_defs.lock() {
+            *slot = Arc::new(BoxDefs {
+                grabbable,
+                half_extents,
+            });
+        }
+        self.mesh_entity_id.store(mesh_id, Ordering::Relaxed);
     }
 
     pub fn leave_room_local(&self) {
@@ -193,6 +234,10 @@ impl SharedState {
         if let Ok(mut world) = self.world.lock() {
             *world = WorldView::default();
         }
+        if let Ok(mut slot) = self.box_defs.lock() {
+            *slot = Arc::new(BoxDefs::default());
+        }
+        self.mesh_entity_id.store(0, Ordering::Relaxed);
         if let Ok(mut token) = self.liveliness.lock() {
             *token = None;
         }
@@ -206,6 +251,10 @@ impl SharedState {
         if let Ok(mut world) = self.world.lock() {
             *world = WorldView::default();
         }
+        if let Ok(mut slot) = self.box_defs.lock() {
+            *slot = Arc::new(BoxDefs::default());
+        }
+        self.mesh_entity_id.store(0, Ordering::Relaxed);
         if let Ok(mut sess) = self.intent_session.lock() {
             if sess.is_some() {
                 *sess = Some(crate::intent_session::IntentSession::new());
@@ -395,9 +444,9 @@ impl SceneGpu {
             contents: bytemuck::cast_slice(&box_indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        let mut box_uniform_buffers = Vec::with_capacity(BOX_COUNT);
-        let mut box_bind_groups = Vec::with_capacity(BOX_COUNT);
-        for i in 0..BOX_COUNT {
+        let mut box_uniform_buffers = Vec::with_capacity(BOX_DRAW_SLOTS);
+        let mut box_bind_groups = Vec::with_capacity(BOX_DRAW_SLOTS);
+        for i in 0..BOX_DRAW_SLOTS {
             let buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&format!("box-uniforms-{i}")),
                 size: std::mem::size_of::<Uniforms>() as u64,
@@ -460,11 +509,17 @@ impl SceneGpu {
     }
 
     pub fn coin_pose(&self) -> EntityPose {
+        let mesh_id = self.shared.mesh_entity_id();
+        let id = if mesh_id == 0 {
+            MESH_ENTITY_ID
+        } else {
+            mesh_id
+        };
         self.shared
             .world
             .lock()
             .ok()
-            .and_then(|w| w.entities.get(&MESH_ENTITY_ID).copied())
+            .and_then(|w| w.entities.get(&id).copied())
             .unwrap_or_default()
     }
 
@@ -606,10 +661,12 @@ impl SceneGpu {
             pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.index_count, 0, 0..1);
 
-            // Grabbable boxes (x0010) + remote user_roots (x0014): unit cube mesh.
+            // Cuboid boxes (`half_extent > 0`) + remote user_roots: unit cube mesh.
+            // Grab highlight uses `SCENE_FLAG_GRABBABLE`; draw is independent of flags (x0027).
             // Per-slot UBOs — rewriting one buffer inside the pass would show only the last cube.
             let local_root = self.shared.local_user_root();
             type PoseList = Vec<(u32, EntityPose)>;
+            let box_defs = self.shared.box_defs_snapshot();
             let (boxes, remotes): (PoseList, PoseList) = self
                 .shared
                 .world
@@ -619,14 +676,14 @@ impl SceneGpu {
                     let boxes: PoseList = w
                         .entities
                         .iter()
-                        .filter(|(id, _)| EntityPose::is_grabbable_box(**id))
+                        .filter(|(id, _)| box_defs.half_extents.contains_key(*id))
                         .map(|(id, p)| (*id, *p))
                         .collect();
                     let remotes: PoseList = w
                         .entities
                         .iter()
                         .filter(|(id, _)| {
-                            EntityPose::is_user_root(**id)
+                            is_user_root_entity(**id)
                                 && (local_root == LOCAL_USER_ROOT_UNSET || **id != local_root)
                         })
                         .map(|(id, p)| (*id, *p))
@@ -636,10 +693,21 @@ impl SceneGpu {
                 .unwrap_or_default();
             pass.set_vertex_buffer(0, self.box_vertex_buffer.slice(..));
             pass.set_index_buffer(self.box_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            for (id, pose) in boxes {
-                let slot = (id.saturating_sub(BOX_ENTITY_FIRST) as usize).min(BOX_COUNT - 1);
+            // Reserve UBO slots for all remote roots (max USER_ROOT_SLOTS; local excluded from remotes).
+            let remote_reserve = alchemy_protocol::USER_ROOT_SLOTS.min(BOX_DRAW_SLOTS);
+            let box_slots = BOX_DRAW_SLOTS.saturating_sub(remote_reserve);
+            for (draw_i, (id, pose)) in boxes.into_iter().enumerate() {
+                if draw_i >= box_slots {
+                    break;
+                }
+                let slot = draw_i;
+                let he = box_defs
+                    .half_extents
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(BOX_HALF_EXTENT);
                 let model = Mat4::from_scale_rotation_translation(
-                    Vec3::splat(BOX_HALF_EXTENT * 2.0),
+                    Vec3::splat(he * 2.0),
                     glam::Quat::IDENTITY,
                     pose.position(),
                 );
@@ -665,9 +733,12 @@ impl SceneGpu {
                 pass.set_bind_group(0, &self.box_bind_groups[slot], &[]);
                 pass.draw_indexed(0..self.box_index_count, 0, 0..1);
             }
-            // Remote players: reuse box mesh + last UBO slots (BOX_COUNT-2 / BOX_COUNT-1).
+            // Remote players: reuse box mesh + last UBO slots.
             for (i, (_id, pose)) in remotes.iter().enumerate() {
-                let slot = (BOX_COUNT - 1 - i).min(BOX_COUNT - 1);
+                if i >= remote_reserve || BOX_DRAW_SLOTS <= i {
+                    break;
+                }
+                let slot = BOX_DRAW_SLOTS - 1 - i;
                 let model = Mat4::from_scale_rotation_translation(
                     Vec3::splat(REMOTE_ROOT_HALF_EXTENT * 2.0),
                     glam::Quat::IDENTITY,

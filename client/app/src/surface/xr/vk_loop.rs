@@ -28,7 +28,7 @@ use crate::mesh::{CpuMesh, CpuSubmesh};
 use crate::scene::{EntityPose, MoveIntent, SharedState, BOX_HALF_EXTENT, MESH_ENTITY_ID};
 use crate::system_ui::{SystemUi, UiAction};
 use crate::turn::{update_turn_yaw, TURN_DEADZONE};
-use crate::world_hit::ray_hit_grabbable_boxes;
+use crate::world_hit::ray_hit_grabbable_boxes_with_extents;
 use glam::{Mat4, Quat, Vec3};
 
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
@@ -487,7 +487,7 @@ pub fn run_openxr(
             &mesh_pipe,
             &unit_cube_submesh(),
         )?;
-        log::info!("XR grabbable box mesh ready (entity 10..18)");
+        log::info!("XR grabbable box mesh ready (Manifest-driven)");
 
         let mut event_storage = xr::EventDataBuffer::new();
         let mut session_running = false;
@@ -746,32 +746,41 @@ pub fn run_openxr(
                 yaw_q * Vec3::new(-user_root.x, -user_root.y, -user_root.z),
             );
 
-            let grabbable_boxes: Vec<(u32, EntityPose)> = shared
+            let box_defs = shared.box_defs_snapshot();
+            type PoseList = Vec<(u32, EntityPose)>;
+            let (draw_boxes, grabbable_boxes) = shared
                 .world
                 .lock()
                 .ok()
                 .map(|w| {
-                    w.entities
-                        .iter()
-                        .filter(|(id, _)| EntityPose::is_grabbable_box(**id))
-                        .map(|(id, p)| (*id, *p))
-                        .collect()
+                    let mut draw = PoseList::new();
+                    let mut grab = PoseList::new();
+                    for (id, p) in w.entities.iter() {
+                        if box_defs.half_extents.contains_key(id) {
+                            draw.push((*id, *p));
+                        }
+                        if box_defs.grabbable.contains(id) {
+                            grab.push((*id, *p));
+                        }
+                    }
+                    (draw, grab)
                 })
-                .unwrap_or_default();
-            if logged_box_count != Some(grabbable_boxes.len()) {
-                if grabbable_boxes.is_empty() {
-                    log::warn!("XR: no grabbable boxes in entity map yet (waiting for host frame)");
+                .unwrap_or_else(|| (PoseList::new(), PoseList::new()));
+            if logged_box_count != Some(draw_boxes.len()) {
+                if draw_boxes.is_empty() {
+                    log::warn!("XR: no Manifest boxes in entity map yet (waiting for host frame)");
                 } else {
-                    let p0 = grabbable_boxes[0].1;
+                    let p0 = draw_boxes[0].1;
                     log::info!(
-                        "XR grabbable boxes ready: count={} first=({:.2},{:.2},{:.2})",
+                        "XR boxes ready: draw={} grab={} first=({:.2},{:.2},{:.2})",
+                        draw_boxes.len(),
                         grabbable_boxes.len(),
                         p0.x,
                         p0.y,
                         p0.z
                     );
                 }
-                logged_box_count = Some(grabbable_boxes.len());
+                logged_box_count = Some(draw_boxes.len());
             }
 
             // Menu before canvas upload so open/close applies this frame.
@@ -795,8 +804,14 @@ pub fn run_openxr(
                 aim_pose.and_then(|(aim_pos, aim_orient)| {
                     let stage_ray = pose_to_ray(aim_pos, aim_orient);
                     let world_ray = ray_to_world(stage_ray, floor_model);
-                    ray_hit_grabbable_boxes(world_ray, &grabbable_boxes, BOX_HALF_EXTENT)
-                        .map(|h| h.entity_id)
+                    ray_hit_grabbable_boxes_with_extents(world_ray, &grabbable_boxes, |id| {
+                        box_defs
+                            .half_extents
+                            .get(&id)
+                            .copied()
+                            .unwrap_or(BOX_HALF_EXTENT)
+                    })
+                    .map(|h| h.entity_id)
                 })
             } else {
                 None
@@ -972,11 +987,11 @@ pub fn run_openxr(
             vk_device.cmd_bind_index_buffer(cmd, floor_gpu.ibo, 0, vk::IndexType::UINT32);
             vk_device.cmd_draw_indexed(cmd, floor_gpu.index_count, 1, 0, 0, 0);
 
-            // Grabbable boxes (world space → same floor_model as checker floor).
+            // Cuboid boxes from Manifest half_extent (world space → floor_model).
             bind_mesh_texture(&vk_device, cmd, &mesh_pipe, mesh_pipe.white_set);
             vk_device.cmd_bind_vertex_buffers(cmd, 0, &[box_gpu.vbo], &[0]);
             vk_device.cmd_bind_index_buffer(cmd, box_gpu.ibo, 0, vk::IndexType::UINT32);
-            for &(id, pose) in &grabbable_boxes {
+            for &(id, pose) in &draw_boxes {
                 let mut color = pose.color();
                 if world_hit_id == Some(id) || held_grab == Some(id) {
                     color = [
@@ -986,8 +1001,13 @@ pub fn run_openxr(
                         1.0,
                     ];
                 }
+                let he = box_defs
+                    .half_extents
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(BOX_HALF_EXTENT);
                 let local = Mat4::from_scale_rotation_translation(
-                    Vec3::splat(BOX_HALF_EXTENT * 2.0),
+                    Vec3::splat(he * 2.0),
                     Quat::IDENTITY,
                     pose.position(),
                 );
@@ -1148,8 +1168,16 @@ pub fn run_openxr(
 
             let _ = &mesh;
             if frame_i == 0 {
+                let mesh_id = {
+                    let id = shared.mesh_entity_id();
+                    if id == 0 {
+                        MESH_ENTITY_ID
+                    } else {
+                        id
+                    }
+                };
                 if let Ok(world) = shared.world.lock() {
-                    if let Some(p) = world.entities.get(&MESH_ENTITY_ID) {
+                    if let Some(p) = world.entities.get(&mesh_id) {
                         log::debug!("XR coin pose {:.2},{:.2},{:.2}", p.x, p.y, p.z);
                     }
                 }

@@ -7,6 +7,7 @@
 //! - Intent Ed25519 session (Token on bind only); Frame finite/tick/sig + snapshot (x0023)
 //! - Frame tick gap → do not apply delta; `…/snapshot` replace (x0024 / peer-delivery)
 //! - Manifest `world_seal` + `host_attestation` via world JWKS before adopting `host_pub`; Presence `host_sig` (x0026)
+//! - Manifest entries drive mesh blake3 / Grab flags / box half-extents (x0027)
 //! - PROTOCOL_PIN mismatch on Manifest/Presence rejects apply (x0023)
 //! - CI fallback: `AUTH_USER` or `ALCHEMY_AUTH_TOKEN` skips UI and joins
 //! - Subscribes to SceneManifest / PresenceState / RenderFrame; downloads blob; wgpu mesh
@@ -16,7 +17,7 @@
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
 //!
 //! Non-guarantees: Steal, XR login keyboard, email verify UI, Quest standalone, WSL HMD,
-//! reliable-delivery ACK channel, SceneManifest-driven content (P4)
+//! reliable-delivery ACK channel, shared-sim / EntityKind (P4 remainder)
 
 mod auth;
 mod host_attestation;
@@ -32,6 +33,7 @@ mod turn;
 mod world_hit;
 mod world_jwks;
 
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU32;
@@ -45,15 +47,16 @@ use alchemy_protocol::wire_crypto::{
 };
 use alchemy_protocol::{
     decide_frame_tick, frame_key, input_key, liveliness_key, manifest_key, presence_key,
-    protocol_pin_matches, snapshot_key, validate_room_id, FrameTickDecision, Message,
-    PresenceState, RenderFrame, SceneManifest, FRAME_TICK_GAP_RESYNC, PROTOCOL_PIN,
+    protocol_pin_matches, scene_entry_grabbable, scene_entry_is_box, scene_entry_is_user_root,
+    snapshot_key, validate_room_id, FrameTickDecision, Message, PresenceState, RenderFrame,
+    SceneManifest, FRAME_TICK_GAP_RESYNC, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use auth::AuthGate;
 use host_attestation::HostAttestationVerifier;
 use manifest_seal::ManifestSealVerifier;
 use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, COIN_BLAKE3_HEX};
-use scene::{EntityPose, SharedState, LOCAL_USER_ROOT_UNSET, MESH_ENTITY_ID};
+use scene::{EntityPose, SharedState, LOCAL_USER_ROOT_UNSET};
 use serde::Deserialize;
 use world_jwks::WorldJwks;
 use zenoh::bytes::ZBytes;
@@ -287,24 +290,77 @@ fn spawn_manifest_subscriber(
                             manifest.revision,
                             manifest.entries.len()
                         );
+                        // Classification priority matches host (x0027):
+                        // user_root → mesh (blake3) → box (half_extent); Grab = flags on boxes only.
+                        let mut grabbable = HashSet::new();
+                        let mut half_extents = HashMap::new();
+                        let mut mesh_id = 0u32;
+                        let mut mesh_blake3: Option<String> = None;
                         if let Ok(mut world) = shared.world.lock() {
                             for entry in &manifest.entries {
-                                world.entities.entry(entry.entity_id).or_insert(EntityPose {
-                                    x: entry.x as f32,
-                                    y: entry.y as f32,
-                                    z: entry.z as f32,
-                                    ..Default::default()
-                                });
+                                if scene_entry_is_user_root(entry.entity_id) {
+                                    // spawn pose / tint only
+                                } else if !entry.blake3.is_empty() {
+                                    if entry.half_extent > 0.0 {
+                                        log::warn!(
+                                            "scene entry {} has blake3 + half_extent; mesh wins (box ignored)",
+                                            entry.entity_id
+                                        );
+                                    }
+                                    if mesh_blake3.is_none() {
+                                        mesh_id = entry.entity_id;
+                                        mesh_blake3 = Some(entry.blake3.clone());
+                                    }
+                                } else if scene_entry_is_box(
+                                    &entry.blake3,
+                                    entry.half_extent,
+                                    entry.entity_id,
+                                ) {
+                                    half_extents.insert(entry.entity_id, entry.half_extent);
+                                    if scene_entry_grabbable(entry.flags) {
+                                        grabbable.insert(entry.entity_id);
+                                    }
+                                }
+                                let (r, g, b, a) = if entry.a > 0.0 {
+                                    (entry.r, entry.g, entry.b, entry.a)
+                                } else {
+                                    (1.0, 1.0, 1.0, 1.0)
+                                };
+                                match world.entities.entry(entry.entity_id) {
+                                    std::collections::hash_map::Entry::Vacant(v) => {
+                                        v.insert(EntityPose {
+                                            x: entry.x as f32,
+                                            y: entry.y as f32,
+                                            z: entry.z as f32,
+                                            r,
+                                            g,
+                                            b,
+                                            a,
+                                        });
+                                    }
+                                    std::collections::hash_map::Entry::Occupied(mut o) => {
+                                        // Frame may already own pose; still refresh Manifest tint.
+                                        if entry.a > 0.0 {
+                                            let p = o.get_mut();
+                                            p.r = r;
+                                            p.g = g;
+                                            p.b = b;
+                                            p.a = a;
+                                        }
+                                    }
+                                }
                             }
                         }
-                        if !sent_blake3 {
-                            if let Some(entry) = manifest
-                                .entries
-                                .iter()
-                                .find(|e| e.entity_id == MESH_ENTITY_ID)
-                            {
-                                let _ = blake3_tx.send(entry.blake3.clone());
+                        shared.apply_manifest_defs(grabbable, half_extents, mesh_id);
+                        if let Some(hex) = mesh_blake3 {
+                            if !sent_blake3 {
+                                let _ = blake3_tx.send(hex);
                                 sent_blake3 = true;
+                            } else {
+                                // Boot download already consumed the channel; live mesh swap is out of scope.
+                                log::info!(
+                                    "Manifest mesh blake3 updated after boot download; remount not applied"
+                                );
                             }
                         }
                     }
@@ -961,6 +1017,8 @@ fn main() -> Result<()> {
         liveliness: Mutex::new(None),
         liveliness_prev: Mutex::new(None),
         world: Mutex::new(scene::WorldView::default()),
+        box_defs: Mutex::new(Arc::new(scene::BoxDefs::default())),
+        mesh_entity_id: AtomicU32::new(0),
         look: Mutex::new(Default::default()),
         intent: Mutex::new(Default::default()),
     });
@@ -1021,7 +1079,8 @@ fn main() -> Result<()> {
 
     let blob_blake3 = match blake3_rx.recv_timeout(MANIFEST_WAIT) {
         Ok(hex) => {
-            log::info!("Manifest blake3 for entity {MESH_ENTITY_ID}: {hex}");
+            let mesh_id = shared.mesh_entity_id();
+            log::info!("Manifest blake3 for mesh entity {mesh_id}: {hex}");
             hex
         }
         Err(_) => {
