@@ -1,0 +1,109 @@
+name: Windows release ZIP
+
+# Tag format: v0.0.0-dev.YYYYMMDDHHMM (JST). Pre-release only.
+# Canonical publish path: tag push → this workflow packs + gh release.
+# Pack via pack-windows-zip.ps1 (PowerShell; no Python / make).
+on:
+  push:
+    tags:
+      - "v0.0.0-dev.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional version (v0.0.0-dev.YYYYMMDDHHMM). Empty = generate JST now (artifact only)."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pack:
+    name: Pack Windows x64 ZIP
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            client -> target
+            launcher -> target
+
+      - name: Resolve version
+        id: ver
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -match '^v0\.0\.0-dev\.') {
+            $v = $env:GITHUB_REF_NAME
+          } elseif ($env:VERSION_INPUT -and $env:VERSION_INPUT.Trim().Length -gt 0) {
+            $v = $env:VERSION_INPUT.Trim()
+          } else {
+            $jst = [TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTimeOffset]::UtcNow, 'Tokyo Standard Time')
+            $v = 'v0.0.0-dev.' + $jst.ToString('yyyyMMddHHmm')
+          }
+          if ($v -notmatch '^v0\.0\.0-dev\.[0-9]{12}(\.[0-9]+)?$') {
+            throw "Invalid version: $v"
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "VERSION=$v"
+
+      - name: Pack ZIP
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\.scripts\pack-windows-zip.ps1 -Version $env:VERSION
+          $zip = Join-Path $PWD "dist/alchemy-windows-x64-$($env:VERSION).zip"
+          if (-not (Test-Path -LiteralPath $zip)) { throw "ZIP missing: $zip" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alchemy-windows-x64-${{ steps.ver.outputs.version }}
+          path: dist/alchemy-windows-x64-${{ steps.ver.outputs.version }}.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create GitHub Pre-release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $PWD "dist/alchemy-windows-x64-$($env:VERSION).zip"
+          $notes = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          @(
+            "Alchemy Windows x64 tester build ``$($env:VERSION)`` (JST)."
+            ""
+            "- Commit: ``$($env:SHA)``"
+            "- Pre-release only — no SemVer stability promise"
+            "- Contents: alchemy-launcher + host-server + client (see README-testers.txt inside the ZIP)"
+            "- Not included: auth / world / assets / zenohd"
+            ""
+            "Unpack, copy env.testers.example.cmd to env.local.cmd, set URLs, run Start.cmd."
+          ) | Set-Content -LiteralPath $notes -Encoding utf8
+
+          gh release view $env:VERSION 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:VERSION $zip --clobber
+          } else {
+            gh release create $env:VERSION $zip `
+              --title $env:VERSION `
+              --notes-file $notes `
+              --prerelease `
+              --latest=false `
+              --target $env:SHA
+          }

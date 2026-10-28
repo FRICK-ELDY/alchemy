@@ -43,6 +43,10 @@ assets-server/.env.prod
 # Local private docs (competitor notes etc.; never publish)
 .workspace/0_doc/private/
 
+# Windows tester pack output (pack-windows-zip.ps1)
+/dist/
+/.run/
+
 # IDE / OS
 .idea/
 .vscode/

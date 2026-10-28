@@ -5,11 +5,13 @@ on:
     branches: ["**"]
     paths:
       - "client/**"
+      - "launcher/**"
       - "protocol/**"
       - ".github/workflows/rust-ci.yml"
   pull_request:
     paths:
       - "client/**"
+      - "launcher/**"
       - "protocol/**"
       - ".github/workflows/rust-ci.yml"
 
@@ -95,3 +97,22 @@ jobs:
           libxkbcommon-dev libwayland-dev
           libx11-dev libxcursor-dev libxi-dev libxrandr-dev
       - run: cargo test --workspace
+
+  launcher-check:
+    name: "Launcher — fmt clippy build test"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: launcher
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher -> target
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy -- -D warnings
+      - run: cargo build
+      - run: cargo test

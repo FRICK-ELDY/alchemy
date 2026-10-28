@@ -2,8 +2,9 @@
 
 分散連合型 VR プラットフォーム（目標アーキテクチャ: [`.workspace/0_doc/architecture/overview.md`](.workspace/0_doc/architecture/overview.md)）。
 
-**対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）**  
-ネイティブ Windows での `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。
+**対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）を日常開発の正本**  
+ネイティブ Windows の日常 `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。  
+**テスター配布 ZIP**（ネイティブ Windows x64）は [Releases（Pre-release）](https://github.com/FRICK-ELDY/alchemy/releases) · 手順 [windows-tester-zip.md](.workspace/0_doc/manual/windows-tester-zip.md)。版名は `v0.0.0-dev.YYYYMMDDHHMM`（JST）。
 
 ## 現状（x0020 / Desktop client 手通し）
 
@@ -108,6 +109,11 @@ AUTH_USER=alice AUTH_PASSWORD=Password1 ALCHEMY_FORCE_DESKTOP=1 cargo run -p cli
 
 # 3a') launcher（x0032）: host+client を一括。client 終了後も host 維持。Ctrl+C で IPC stop
 cd launcher && cargo run -p alchemy-launcher
+
+# 3a'') Windows テスター ZIP（正本はタグ push → CI Pre-release）
+#   .\.scripts\publish-windows-release.ps1 -CreateTag -PushTag
+#   ローカル煙: .\.scripts\pack-windows-zip.ps1
+#   手順: .workspace/0_doc/manual/windows-tester-zip.md
 
 # 3b) 機械検証（3a の代替。既存 host を止めてから。スタック未起動は赤）
 #    assert: host Token/Manifest/physics + client build/units（GUI・login→描画はしない）
