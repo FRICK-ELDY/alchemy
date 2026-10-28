@@ -82,6 +82,9 @@ const DEFAULT_ROOM_ID: &str = "local";
 /// Match net frame rate so Grab hold aim stays smooth enough (x0011).
 const INPUT_HZ: u64 = 30;
 const MANIFEST_WAIT: Duration = Duration::from_millis(400);
+/// Auth join: cover host presence-join Manifest put (Intent → assign/jti-rotate → put).
+/// Blake3 is sent before snapshot GET; this wait is not snapshot-bound.
+const MANIFEST_WAIT_AUTH: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
@@ -186,6 +189,10 @@ fn fetch_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<
     Ok(bytes)
 }
 
+fn fixture_fallback_allowed() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("ALCHEMY_ALLOW_FIXTURE_FALLBACK").is_some()
+}
+
 fn load_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<Vec<u8>> {
     match fetch_blob_bytes(assets_url, blake3, auth_token) {
         Ok(bytes) => {
@@ -197,8 +204,16 @@ fn load_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<V
             Ok(bytes)
         }
         Err(err) => {
-            log::warn!("assets download failed ({err:#}); falling back to fixture");
-            load_fixture_bytes()
+            // x003c: authenticated path requires assets. Fixture is debug-only escape hatch.
+            if fixture_fallback_allowed() {
+                log::warn!(
+                    "assets download failed ({err:#}); ALCHEMY_ALLOW_FIXTURE_FALLBACK → fixture"
+                );
+                return load_fixture_bytes();
+            }
+            Err(err).context(
+                "assets blob download required (upload demo coin / ensure CAS; debug: ALCHEMY_ALLOW_FIXTURE_FALLBACK=1)",
+            )
         }
     }
 }
@@ -209,6 +224,27 @@ fn load_fixture_bytes() -> Result<Vec<u8>> {
 }
 
 fn fixture_path() -> Result<PathBuf> {
+    // Used for: (1) ensure-demo-coin seed source beside ZIP, (2) unauthenticated Home UI
+    // placeholder before login, (3) debug `ALCHEMY_ALLOW_FIXTURE_FALLBACK`.
+    // Not the authenticated release mesh path (that is Manifest → assets GET).
+    const REL: &str = "fixtures/Coin_PolygonalMind.glb";
+    if let Ok(p) = std::env::var("ALCHEMY_FIXTURE_GLB") {
+        return Ok(PathBuf::from(p));
+    }
+    if let Ok(mut exe) = std::env::current_exe() {
+        exe.pop();
+        let beside_exe = exe.join(REL);
+        if beside_exe.is_file() {
+            return Ok(beside_exe);
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let beside_cwd = cwd.join(REL);
+        if beside_cwd.is_file() {
+            return Ok(beside_cwd);
+        }
+    }
+    // Dev tree: client/app → ../fixtures
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("../fixtures/Coin_PolygonalMind.glb");
     Ok(path)
@@ -225,7 +261,8 @@ fn spawn_manifest_subscriber(
     session: zenoh::Session,
     key: String,
     shared: Arc<SharedState>,
-    blake3_tx: mpsc::SyncSender<String>,
+    // Ok(hex) = mesh blake3; Err(reason) = sealed Manifest applied but no mesh blake3.
+    blake3_tx: mpsc::SyncSender<Result<String, String>>,
     seal: Arc<ManifestSealVerifier>,
     attest: Arc<HostAttestationVerifier>,
 ) -> Result<()> {
@@ -391,17 +428,9 @@ fn spawn_manifest_subscriber(
                             shared.reset_for_host_generation();
                             snapshot_ok = false;
                         }
-                        if !snapshot_ok {
-                            snapshot_ok =
-                                fetch_snapshot(&session, shared.room_id.as_ref(), &shared);
-                        }
-                        log::info!(
-                            "SceneManifest generation={} revision={} entries={} pin_ok attested snapshot_ok={snapshot_ok}",
-                            manifest.host_generation,
-                            manifest.revision,
-                            manifest.entries.len()
-                        );
                         // Classification: ManifestIndex (shared-sim / x0030; priority = x0027).
+                        // x003c: send mesh blake3 BEFORE snapshot GET — boot wait must not
+                        // depend on snapshot latency (auth path bails on Manifest timeout).
                         let index = ManifestIndex::from_entries(&manifest.entries);
                         let mesh_id = index.mesh_entity_id.unwrap_or(0);
                         let mut mesh_blake3: Option<String> = None;
@@ -461,17 +490,31 @@ fn spawn_manifest_subscriber(
                             index.half_extents,
                             mesh_id,
                         );
-                        if let Some(hex) = mesh_blake3 {
-                            if !sent_blake3 {
-                                let _ = blake3_tx.send(hex);
-                                sent_blake3 = true;
-                            } else {
-                                // Boot download already consumed the channel; live mesh swap is out of scope.
-                                log::info!(
-                                    "Manifest mesh blake3 updated after boot download; remount not applied"
-                                );
-                            }
+                        if !sent_blake3 {
+                            let msg = match mesh_blake3 {
+                                Some(hex) => Ok(hex),
+                                None => Err(
+                                    "SceneManifest has no mesh entity blake3".to_string(),
+                                ),
+                            };
+                            let _ = blake3_tx.send(msg);
+                            sent_blake3 = true;
+                        } else if mesh_blake3.is_some() {
+                            // Boot download already consumed the channel; live mesh swap is out of scope.
+                            log::info!(
+                                "Manifest mesh blake3 updated after boot download; remount not applied"
+                            );
                         }
+                        if !snapshot_ok {
+                            snapshot_ok =
+                                fetch_snapshot(&session, shared.room_id.as_ref(), &shared);
+                        }
+                        log::info!(
+                            "SceneManifest generation={} revision={} entries={} pin_ok attested snapshot_ok={snapshot_ok}",
+                            manifest.host_generation,
+                            manifest.revision,
+                            manifest.entries.len()
+                        );
                     }
                     Err(err) => {
                         dropped_decode += 1;
@@ -1296,7 +1339,7 @@ fn main() -> Result<()> {
         join_room_with_access(&shared, &access).context("silent join room")?;
     }
 
-    let (blake3_tx, blake3_rx) = mpsc::sync_channel::<String>(1);
+    let (blake3_tx, blake3_rx) = mpsc::sync_channel::<Result<String, String>>(1);
 
     spawn_token_refresh(Arc::clone(&shared))?;
 
@@ -1334,27 +1377,47 @@ fn main() -> Result<()> {
     spawn_frame_subscriber(session.clone(), frame_key_expr, Arc::clone(&shared))?;
     spawn_input_publisher(session.clone(), input_key_expr, Arc::clone(&shared))?;
 
-    let blob_blake3 = match blake3_rx.recv_timeout(MANIFEST_WAIT) {
-        Ok(hex) => {
-            let mesh_id = shared.mesh_entity_id();
-            log::info!("Manifest blake3 for mesh entity {mesh_id}: {hex}");
-            hex
-        }
-        Err(_) => {
-            log::warn!(
-                "no SceneManifest within {:?}; using fallback blake3={fallback_blake3}",
-                MANIFEST_WAIT
-            );
-            fallback_blake3
-        }
-    };
-
     let access_for_blob = shared
         .auth
         .lock()
         .ok()
         .and_then(|g| g.access_token.clone())
         .unwrap_or_default();
+    // x003c: silent/auth join must take SceneManifest blake3 → assets GET (no coin fallback).
+    // Host republishes Manifest on presence join so launcher/ZIP late subscribe still receives it.
+    let manifest_wait = if access_for_blob.is_empty() {
+        MANIFEST_WAIT
+    } else {
+        MANIFEST_WAIT_AUTH
+    };
+    let blob_blake3 = match blake3_rx.recv_timeout(manifest_wait) {
+        Ok(Ok(hex)) => {
+            let mesh_id = shared.mesh_entity_id();
+            log::info!("Manifest blake3 for mesh entity {mesh_id}: {hex}");
+            hex
+        }
+        Ok(Err(reason)) if access_for_blob.is_empty() => {
+            log::warn!("{reason}; unauthenticated — fallback blake3={fallback_blake3}");
+            fallback_blake3
+        }
+        Ok(Err(reason)) => {
+            anyhow::bail!("{reason} (auth join requires mesh blake3 for assets GET)");
+        }
+        Err(_) if access_for_blob.is_empty() => {
+            log::warn!(
+                "no SceneManifest within {:?}; unauthenticated — fallback blake3={fallback_blake3}",
+                manifest_wait
+            );
+            fallback_blake3
+        }
+        Err(_) => {
+            anyhow::bail!(
+                "no SceneManifest within {:?} after auth join (need Manifest blake3 for assets mesh; host presence-join republish should cover ZIP/launcher)",
+                manifest_wait
+            );
+        }
+    };
+
     let bytes = {
         let primary = if access_for_blob.is_empty() {
             log::info!("no auth yet — loading fixture mesh (login via Home tab)");
@@ -1364,10 +1427,17 @@ fn main() -> Result<()> {
         };
         match verify_blake3(&primary, &blob_blake3) {
             Ok(()) => primary,
-            Err(_) => {
-                let fixture = load_fixture_bytes()?;
-                verify_blake3(&fixture, COIN_BLAKE3_HEX).context("fixture blake3")?;
-                fixture
+            Err(err) => {
+                if fixture_fallback_allowed() {
+                    log::warn!("blob blake3 mismatch ({err:#}); fixture fallback");
+                    let fixture = load_fixture_bytes()?;
+                    verify_blake3(&fixture, COIN_BLAKE3_HEX).context("fixture blake3")?;
+                    fixture
+                } else if access_for_blob.is_empty() {
+                    return Err(err).context("fixture blake3 mismatch");
+                } else {
+                    return Err(err).context("downloaded blob blake3 mismatch");
+                }
             }
         }
     };

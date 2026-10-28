@@ -4,8 +4,9 @@
   Build and pack Windows x64 tester ZIP (launcher + host-server + client).
 
 .DESCRIPTION
-  Guarantees: release .exe under dist/ with Start.cmd, README-testers.txt, build-info.json.
-  Non-guarantees: auth/world/assets/zenohd; signing; auto-update; Coin fixture offline path.
+  Guarantees: release .exe under dist/ with Start.cmd, ensure-demo-coin.ps1,
+  fixtures/Coin_PolygonalMind.glb (assets seed source), build-info.json.
+  Non-guarantees: auth/world/assets/zenohd running; signing; auto-update.
   No Python. Uses cargo + Compress-Archive.
 
 .EXAMPLE
@@ -96,6 +97,16 @@ $templates = Join-Path $PSScriptRoot 'distribution'
 Copy-Item -LiteralPath (Join-Path $templates 'Start.cmd') -Destination $packageRoot
 Copy-Item -LiteralPath (Join-Path $templates 'README-testers.txt') -Destination $packageRoot
 Copy-Item -LiteralPath (Join-Path $templates 'env.testers.example.cmd') -Destination $packageRoot
+Copy-Item -LiteralPath (Join-Path $templates 'ensure-demo-coin.ps1') -Destination $packageRoot
+
+# Demo Coin for Start.cmd → assets CAS seed (x003c). Not a client runtime fallback path.
+$fixtureSrc = Join-Path $repoRoot 'client/fixtures/Coin_PolygonalMind.glb'
+if (-not (Test-Path -LiteralPath $fixtureSrc)) {
+    throw "Missing fixture: $fixtureSrc"
+}
+$fixtureDir = Join-Path $packageRoot 'fixtures'
+New-Item -ItemType Directory -Force -Path $fixtureDir | Out-Null
+Copy-Item -LiteralPath $fixtureSrc -Destination (Join-Path $fixtureDir 'Coin_PolygonalMind.glb')
 
 $gitSha = (git -C $repoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Could not read git HEAD' }
@@ -116,6 +127,8 @@ $buildInfo = [ordered]@{
         'Start.cmd'
         'README-testers.txt'
         'env.testers.example.cmd'
+        'ensure-demo-coin.ps1'
+        'fixtures/Coin_PolygonalMind.glb'
         'build-info.json'
     )
 }

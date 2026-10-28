@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x003c`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x003d`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -110,10 +110,11 @@ depends_on: [x0006]
 | x0039 | — | done | canonical ManifestSeal（署名 oracle 廃止） | [x0039-canonical-manifest-seal.md](slices/x0039-canonical-manifest-seal.md) |
 | x003a | — | done | generation / revision 単調ゲート（replay 拒否） | [x003a-generation-revision-gate.md](slices/x003a-generation-revision-gate.md) |
 | x003b | — | done | decode limit + prod S2S + world テスト DB 隔離 | [x003b-decode-limits-ops-hygiene.md](slices/x003b-decode-limits-ops-hygiene.md) |
+| x003c | — | done | ZIP/launcher: Coin mesh は assets DL 必須（ensure + Manifest join republish） | [x003c-assets-required-mesh.md](slices/x003c-assets-required-mesh.md) |
 
-**現在の次:** **x003c**（P1: BlobGrant or 文書 / network worker / cnf / ACL など）。
+**現在の次:** **x003d+**（P1: BlobGrant or 文書 / network worker / cnf / ACL など）。
 
-次の空き番号は **`x003c`**。
+次の空き番号は **`x003d`**。
 
 
 ## 関連

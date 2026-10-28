@@ -28,6 +28,7 @@
 | P0-4 | decode byte/count limit | -3 | Zenoh sample 受信時に class 別上限。decode 後 entries/strings 上限。巨大 payload テスト | 巨大 protobuf で OOM しない — **x003b done** |
 | P0-5 | prod compose に S2S env | -3 | `AUTH_INTERNAL_TOKEN` / `AUTH_INTERNAL_URL` を compose と `.env.prod.example` に。CI で `compose config` + `/health` | 手順書どおり prod が起動する — **x003b done** |
 | P0-6 | world テスト DB 隔離 | -2 | test で `WORLD_DATABASE_PATH` 無視 or 一時 path。ci.sh 強制。Sandbox 後始末 | 日常スタック後も `make ci` world 緑 — **x003b done** |
+| P0-7 | ZIP/launcher: Coin は assets DL 必須 | ZIP 煙 | Manifest blake3 → assets GET 成功。fixture は seed ソースのみ | ZIP Start で fixture fallback 無し（release）で mesh 表示 — **[x003c](../../roadmap/slices/x003c-assets-required-mesh.md) done** |
 
 ---
 
@@ -97,10 +98,8 @@
 
 ## 推奨スライス順
 
-1. **[x0038](../../roadmap/slices/x0038-leave-to-discard.md)** — leave→discard + 否定系 E2E（P0-1）
-2. **[x0039](../../roadmap/slices/x0039-canonical-manifest-seal.md)** — canonical ManifestSeal（P0-2）
-3. **[x003a](../../roadmap/slices/x003a-generation-revision-gate.md)** — generation/revision gate（P0-3）
-4. **[x003b](../../roadmap/slices/x003b-decode-limits-ops-hygiene.md)** — decode limits（P0-4）+ world test DB / prod S2S（P0-5/6） — **done**
-5. **x003c+** — BlobGrant or 文書、network worker、cnf、ACL（P1）
+**次:** **x003d+** — BlobGrant or 文書、network worker、cnf、ACL（P1）
+
+最近閉じた P0（参照用）: [x0038](../../roadmap/slices/x0038-leave-to-discard.md) … [x003c](../../roadmap/slices/x003c-assets-required-mesh.md)（P0-7 assets mesh）— いずれも **done**。
 
 スライス完了条件に必ず含める: **prod compose 起動**・**否定系が通る**・**保証表とコード一致**。

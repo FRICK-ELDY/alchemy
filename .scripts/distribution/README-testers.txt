@@ -17,8 +17,15 @@ What is in this folder
 What is NOT included
 --------------------
   auth-server / world-server / assets-server / zenohd
-  client/fixtures (offline Coin GLB fallback) — needs a reachable ASSETS_URL
   installer, auto-update, code signing (SmartScreen may warn)
+
+Assets mesh (required)
+----------------------
+  env.local.cmd MUST set AUTH_USER/AUTH_PASSWORD or ALCHEMY_AUTH_TOKEN (Start fails otherwise).
+  Start.cmd runs ensure-demo-coin.ps1 to POST fixtures/Coin_PolygonalMind.glb into ASSETS_URL.
+  Client then loads mesh via SceneManifest blake3 → GET /api/v1/blobs/... (x003c).
+  Packaged fixtures/ is the seed upload source. Authenticated release does not fall back to it.
+  (Unauthenticated Home UI may still show the local GLB as a placeholder before login.)
 
 Runtime prerequisites (Windows)
 -------------------------------

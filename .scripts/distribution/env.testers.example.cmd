@@ -8,8 +8,9 @@ rem set "WORLD_URL=http://127.0.0.1:4003"
 rem set "ASSETS_URL=http://127.0.0.1:4004"
 rem set "ZENOH_CONNECT=tcp/127.0.0.1:7447"
 
-rem rem --- optional room / silent login (do not commit real passwords) ---
+rem rem --- room / silent login + ensure-demo-coin (do not commit real passwords) ---
+rem rem Local seed account example only — replace for shared/prod-like stacks:
 rem set "ROOM_ID=local"
-rem set "AUTH_USER="
-rem set "AUTH_PASSWORD="
+rem set "AUTH_USER=alice"
+rem set "AUTH_PASSWORD=Password1"
 rem set "ALCHEMY_AUTH_TOKEN="
