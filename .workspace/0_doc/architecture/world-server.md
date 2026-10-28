@@ -66,7 +66,7 @@
 | 項目 | 内容 |
 |:---|:---|
 | 既定 | AshSqlite。DB ファイルは `priv/data/world_dev.db`（test は `world_test.db`） |
-| 上書き | env `WORLD_DATABASE_PATH` |
+| 上書き | env `WORLD_DATABASE_PATH`（**`MIX_ENV=test` では無視**・x003b；assets CAS 隔離と同型） |
 | スキーマ | `rooms(room_id PK, owner_sub, scene JSON, visibility, timestamps)` |
 | Postgres 切替 | 属性は Postgres 互換のみ。運営規模拡大時は `ash_postgres` + `AshPostgres.DataLayer` / `AshPostgres.Repo` に差し替え、`mix ash.codegen` で再生成。API facade（`World.Rooms`）は変えない |
 | 障害 | SQLite / Ash 失敗は `:storage_error` → HTTP 503 `storage_unavailable`（404/422 に潰さない） |
@@ -83,6 +83,9 @@ cd world-server && docker compose up -d
 # AUTH_JWKS_URL 既定: http://host.docker.internal:4002/.well-known/jwks.json
 # mix ash.setup が SQLite migrate を実行
 ```
+
+**prod（x001e / x003b）:** `docker-compose.prod.yml` + `.env.prod`（`.env.prod.example` 参照）。  
+`AUTH_INTERNAL_TOKEN`（auth/world 一致）と world の `AUTH_INTERNAL_URL` が必須。検証: `make smoke-prod-compose`（config）/ `SMOKE_PROD_UP=1 make smoke-prod-compose`（`/health`）。
 
 ## 関連
 

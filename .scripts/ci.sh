@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # GitHub Actions 相当のチェック（macOS / Linux / WSL / Git Bash）。
-# 使い方: ./.scripts/ci.sh [all|rust|protocol|auth|world|assets]
+# 使い方: ./.scripts/ci.sh [all|rust|protocol|auth|world|assets|prod-compose]
 #
 # Elixir 系は既定で Docker（OS 差分・ネイティブ依存を避ける）。
 # ホストの mix で auth を回す場合: AUTH_CI_HOST=1 ./.scripts/ci.sh auth
@@ -104,9 +104,24 @@ run_world_docker() {
     return
   fi
   step "docker compose build world" docker compose -f "$compose" build world
+  # x003b: force MIX_ENV=test; runtime.exs ignores WORLD_DATABASE_PATH in test
+  # (assets CAS isolation と同型). Non-empty pollution path proves isolation test.
   step "world mix checks (Docker)" docker compose -f "$compose" run --rm --entrypoint "" \
     -e MIX_ENV=test \
+    -e WORLD_DATABASE_PATH=/tmp/alchemy-world-test-must-ignore.db \
     world sh -c 'mix deps.get && mix hex.audit && mix format --check-formatted && mix compile --warnings-as-errors && mix credo --strict && mix test'
+}
+
+run_prod_compose_config() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "[SKIP] prod compose config (docker not available)"
+    return
+  fi
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "[SKIP] prod compose config (openssl not available)"
+    return
+  fi
+  step "prod compose config (x003b)" bash .scripts/smoke-prod-compose.sh
 }
 
 run_assets_docker() {
@@ -133,15 +148,17 @@ case "$TARGET" in
   auth) run_auth ;;
   world) run_world_docker ;;
   assets) run_assets_docker ;;
+  prod-compose) run_prod_compose_config ;;
   all)
     run_rust
     run_protocol
     run_auth
     run_world_docker
     run_assets_docker
+    run_prod_compose_config
     ;;
   *)
-    echo "usage: $0 [all|rust|protocol|auth|world|assets]" >&2
+    echo "usage: $0 [all|rust|protocol|auth|world|assets|prod-compose]" >&2
     exit 2
     ;;
 esac

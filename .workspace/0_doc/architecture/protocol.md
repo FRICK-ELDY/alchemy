@@ -2,7 +2,7 @@
 
 > **正本**: [`protocol/`](../../../protocol/)  
 > **配送契約**: [`protocol/peer-delivery.md`](../../../protocol/peer-delivery.md)（x0024）  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.16.0-x003a`
+> **PROTOCOL_PIN**: `alchemy-protocol/0.16.0-x003a`（x003b decode limits は pin 据え置き）
 
 ## 置き場の方針
 
@@ -20,6 +20,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | Intent: Ed25519 `session_pub` / `intent_seq` / `intent_sig` + 任意 `room_token`（bind 時）（x0023） | Token JWKS 検証そのもの（host-server） |
 | Frame / Presence: `host_sig` + Manifest `host_pub`（HostAttestation）+ Manifest **`world_seal`**（x0026） | テナント名前空間 |
 | `(host_generation, revision)` 単調ゲート（x003a）— 後退は discard；同一 gen 内 `host_pub` 固定；generation 上昇は world 証明のみ | 完全な host handoff UX / Wake-on-Join；二重 host の generation フリップフロップ |
+| class 別 decode byte / count 上限（x003b）— 超過は drop（OOM 回避） | router max-payload / per-peer QoS；cargo-fuzz |
 | Scene 分類の薄いヘルパ（`USER_ROOT_*` / `scene_entry_is_*`） | 実行側 SoA・Rapier（→ `alchemy-shared-sim` / host-server・x0030） |
 | `SceneEntry` の `half_extent` / `flags`（`SCENE_FLAG_GRABBABLE`）/ rgba / **初期 quat+scale**（x0027 / x002c）— 配置・Grab・mesh・初期 TRS の定義正本 | UGC 編集 UI・コライダーの非一様リサイズ |
 | 配送クラス表（[`peer-delivery.md`](../../../protocol/peer-delivery.md)）+ `decide_frame_tick` / `FRAME_TICK_GAP_RESYNC`（x0024） | 確実配送 ACK / event ID チャネル・欠落デルタの再送 |

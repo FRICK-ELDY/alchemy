@@ -38,6 +38,7 @@ fn lock_or_fatal<'a, T>(mutex: &'a Mutex<T>, label: &str) -> MutexGuard<'a, T> {
     })
 }
 
+use alchemy_protocol::decode_limits::{check_input, check_payload_bytes, WireClass};
 use alchemy_protocol::wire_crypto::{
     generate_signing_key, manifest_seal_blake3_hex, public_key_bytes, sign_frame, sign_presence,
     SigningKey,
@@ -510,12 +511,26 @@ fn spawn_input_gate(
             let mut leaves: u64 = 0;
             let mut dropped_auth: u64 = 0;
             let mut dropped_finite: u64 = 0;
+            let mut dropped_limits: u64 = 0;
             let mut last_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
+                // x003b: early drops must still reach the interval aggregate log below.
+                'sample: {
                 let bytes: ZBytes = sample.payload().clone();
+                // x003b: length before contiguous copy (`to_bytes`).
+                if let Err(err) = check_payload_bytes(WireClass::Input, bytes.len()) {
+                    dropped_limits += 1;
+                    log::warn!("drop InputEvent: {err}");
+                    break 'sample;
+                }
                 let payload = bytes.to_bytes();
                 match InputEvent::decode(payload.as_ref()) {
                     Ok(event) => {
+                        if let Err(err) = check_input(&event) {
+                            dropped_limits += 1;
+                            log::warn!("drop InputEvent: {err}");
+                            break 'sample;
+                        }
                         let auth = {
                             let mut table = lock_or_fatal(&sessions, "sessions");
                             table.authorize(&event, verifier.as_ref())
@@ -576,15 +591,17 @@ fn spawn_input_gate(
                         log::warn!("drop InputEvent: decode failed: {err}");
                     }
                 }
+                } // 'sample
                 if last_log.elapsed() >= Duration::from_secs(5) {
                     let dropped_full = lock_or_fatal(&presence, "presence").dropped_full;
                     log::info!(
-                        "input gate: accepted={accepted} leaves={leaves} dropped_auth={dropped_auth} dropped_non_finite={dropped_finite} dropped_full={dropped_full} (last ~5s)"
+                        "input gate: accepted={accepted} leaves={leaves} dropped_auth={dropped_auth} dropped_non_finite={dropped_finite} dropped_limits={dropped_limits} dropped_full={dropped_full} (last ~5s)"
                     );
                     accepted = 0;
                     leaves = 0;
                     dropped_auth = 0;
                     dropped_finite = 0;
+                    dropped_limits = 0;
                     last_log = Instant::now();
                 }
             }
@@ -689,7 +706,7 @@ fn main() -> Result<()> {
     let host_pub = public_key_bytes(&host_signing_key);
 
     log::info!(
-        "host-server x003a starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        "host-server x003b starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
     );

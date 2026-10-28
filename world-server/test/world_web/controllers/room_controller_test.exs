@@ -1,6 +1,7 @@
 defmodule WorldWeb.RoomControllerTest do
   use WorldWeb.ConnCase, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias World.TestAuthHelpers
 
   setup do
@@ -592,5 +593,8 @@ defmodule WorldWeb.RoomControllerTest do
       {:error, :running} -> :ok
       other -> flunk("failed to restart World.Repo: #{inspect(other)}")
     end
+
+    # x003b: Repo restart leaves Sandbox in auto; restore manual for later DataCase owners.
+    Sandbox.mode(World.Repo, :manual)
   end
 end

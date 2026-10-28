@@ -7,6 +7,8 @@
 //! - [`wire_crypto`] sign/verify helpers for Intent / Frame (x0023).
 //! - [`sim_capability`] role → Intent/HTTP capability bits (x002a; not a wire schema).
 //! - [`generation_gate`] monotonic `(host_generation, revision)` (x003a).
+//! - [`decode_limits`] class-specific pre/post decode ceilings (x003b; **does not bump** pin —
+//!   local validation, wire-compatible with x003a peers).
 //! - Delivery class table: [`peer-delivery.md`](../peer-delivery.md). Frame tick gap → snapshot
 //!   ([`decide_frame_tick`], [`FRAME_TICK_GAP_RESYNC`]; x0024).
 //!
@@ -21,15 +23,19 @@
 //! - Tenant namespace `alchemy/tenant/...` (dev keys only: `alchemy/dev/room/{room_id}/…`).
 //! - 5+ concurrent guests / WAN liveliness ACL / Zenoh ACL.
 //! - Full host handoff UX / Wake-on-Join (generation advance is the contract only).
+//! - Router max-payload / per-peer QoS (app-level decode limits only; x003b).
 
 pub use prost::Message;
 
+pub mod decode_limits;
 pub mod generation_gate;
 pub mod host_ipc;
 pub mod sim_capability;
 pub mod wire_crypto;
 
 /// Bump when `proto/` has an incompatible wire change.
+///
+/// x003b decode limits are local validation only — pin stays on x003a.
 pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.16.0-x003a";
 
 /// Identity orientation on the wire (`Entity.qx..qw`, xyzw).

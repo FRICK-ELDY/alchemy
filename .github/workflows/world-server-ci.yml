@@ -26,6 +26,8 @@ jobs:
 
     env:
       MIX_ENV: test
+      # x003b: pollution path must be ignored by runtime.exs in test.
+      WORLD_DATABASE_PATH: /tmp/alchemy-world-test-must-ignore.db
 
     steps:
       - uses: actions/checkout@v4

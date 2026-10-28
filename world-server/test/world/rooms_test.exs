@@ -1,6 +1,7 @@
 defmodule World.RoomsTest do
   use World.DataCase, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias World.Rooms
   alias World.Rooms.Room
 
@@ -114,5 +115,8 @@ defmodule World.RoomsTest do
       {:error, :running} -> :ok
       other -> flunk("failed to restart World.Repo: #{inspect(other)}")
     end
+
+    # x003b: Repo restart leaves Sandbox in auto; restore manual for later DataCase owners.
+    Sandbox.mode(World.Repo, :manual)
   end
 end

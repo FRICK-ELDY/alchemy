@@ -8,7 +8,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | 同一マシン / LAN の pub-sub | JWKS / Room Token ACL（検証は host-server） |
-| TCP リスナ `0.0.0.0:7447`（localhost + LAN、x0014） | CCU・帯域 QoS |
+| TCP リスナ `0.0.0.0:7447`（localhost + LAN、x0014） | CCU・帯域 QoS；**router max payload**（アプリ側 decode 上限は [protocol.md](protocol.md) x003b） |
 | WAN: ConoHa 上 zenohd の **TLS** 待受 + IP allowlist（x0022） | mTLS・拠点 zenohd ↔ VPS ブリッジ・マルチテナント隔離 |
 | client/host の `ZENOH_CONNECT`（既定 localhost `tcp`；WAN は `tls/`） | Relay Allocation Token / QoS |
 

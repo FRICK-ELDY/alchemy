@@ -11,13 +11,13 @@
 //! - Forward secrecy, rotation ceremonies, hardware-backed keys.
 //! - SceneManifest-driven content (P4).
 
-use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey, SIGNATURE_LENGTH};
+use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 use prost::Message;
 use rand::rngs::OsRng;
 
 use crate::{InputEvent, PresenceState, RenderFrame, SceneManifest};
 
-pub use ed25519_dalek::SigningKey;
+pub use ed25519_dalek::{SigningKey, SIGNATURE_LENGTH};
 
 pub const PUBLIC_KEY_LENGTH: usize = 32;
 

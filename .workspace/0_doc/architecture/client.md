@@ -26,6 +26,7 @@
 | Manifest の blake3 → assets GET（Bearer + CAS；s3 時は 302 追従・x001d）→ BLAKE3 → wgpu。**GET は認証済み読み取り capability**（所有者 grant は後続 BlobGrant） | LOD / KTX2 / マテリアル本格 / スキン |
 | Frame: `host_sig` 検証・finite・tick 規則。Manifest は **`world_seal`** + **HostAttestation** + **`(generation, revision)` 単調ゲート**後にのみ `host_pub` 採用；検証失敗は **discard**（入室維持・x0038 / x003a） | 予測補間 / jitter buffer・欠落デルタ再送 |
 | Presence: pin + `host_sig` + Manifest generation 一致 / revision 単調（x0025 / x003a）。失敗は適用しない（discard） | Presence の world 署名；Presence 単独での generation 上昇 |
+| Zenoh sample: class 別 **decode byte/count 上限**超過は drop（x003b） | router 側 max payload |
 | Manifest entries → mesh blake3 / box=`half_extent` 描画 / Grab=`SCENE_FLAG_GRABBABLE`（x0027）。分類は `alchemy-shared-sim` `ManifestIndex` / `EntityKind`（x0030）。entity 表 upsert/remove。late join / **tick gap** は snapshot 置換（クールダウン 500ms・x0024） | loco の client 解釈・boot 後の mesh blake3 再取得 |
 | Desktop: WASD/Space/C → Intent（look yaw 相対）。クリックで Confined（失敗時 Locked）→ マウスルック。look 中 RMB → Grab（x0013） | 感度 UI / クロスヘア必須 |
 | Presence で自 entity 解決→カメラ；他 root は色付きボックス（x0015）。欠落で unset（x0016）。Home タブ login/register/logout（x0018）。logout は Leave + liveliness undeclare（x0019）。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` は CI サイレント login。`ZENOH_CONNECT` LAN | 5人以上・アバター GLB・XR 文字入力 |

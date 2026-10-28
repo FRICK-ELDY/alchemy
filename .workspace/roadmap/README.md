@@ -109,9 +109,9 @@ depends_on: [x0006]
 | x0038 | — | done | 検証失敗は破棄（leave→discard）+ 否定系 E2E | [x0038-leave-to-discard.md](slices/x0038-leave-to-discard.md) |
 | x0039 | — | done | canonical ManifestSeal（署名 oracle 廃止） | [x0039-canonical-manifest-seal.md](slices/x0039-canonical-manifest-seal.md) |
 | x003a | — | done | generation / revision 単調ゲート（replay 拒否） | [x003a-generation-revision-gate.md](slices/x003a-generation-revision-gate.md) |
-| x003b | — | planned | decode limit + prod S2S + world テスト DB 隔離 | [x003b-decode-limits-ops-hygiene.md](slices/x003b-decode-limits-ops-hygiene.md) |
+| x003b | — | done | decode limit + prod S2S + world テスト DB 隔離 | [x003b-decode-limits-ops-hygiene.md](slices/x003b-decode-limits-ops-hygiene.md) |
 
-**現在の次:** **x003b**（decode limit + prod S2S + world テスト DB）。
+**現在の次:** **x003c**（P1: BlobGrant or 文書 / network worker / cnf / ACL など）。
 
 次の空き番号は **`x003c`**。
 
