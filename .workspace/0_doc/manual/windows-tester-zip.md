@@ -31,31 +31,31 @@ git tag v0.0.0-dev.…  →  push tag  →  windows-release.yml  →  Pre-releas
 
 ## ローカルで梱包（PowerShell）
 
-リポジトリ根で:
+リポジトリ根で（実行ポリシー回避のため `-File` 経由を推奨）:
 
 ```powershell
-.\.scripts\pack-windows-zip.ps1
-.\.scripts\pack-windows-zip.ps1 -Version v0.0.0-dev.202610281915
-.\.scripts\pack-windows-zip.ps1 -SkipBuild
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\.scripts\pack-windows-zip.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\.scripts\pack-windows-zip.ps1 -Version v0.0.0-dev.202610281915
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\.scripts\pack-windows-zip.ps1 -SkipBuild
 ```
 
 必要ツール: PowerShell 5.1+、`cargo` / `rustc`、`git`。Python / make は不要。
 
 成果物は `dist/` に残るが、**Releases への正本アップロードはしない**。
 
-`make` がある環境では `make pack-windows`（内部で上記 ps1 を呼ぶ）でも可。
+`make` がある環境では `make pack-windows`（内部で Bypass 付き ps1）でも可。
 
 ## タグを切って CI に公開させる
 
 作業ツリーをクリーンにして:
 
 ```powershell
-.\.scripts\publish-windows-release.ps1 -CreateTag -PushTag
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\.scripts\publish-windows-release.ps1 -CreateTag -PushTag
 # ローカル煙も見る:
-.\.scripts\publish-windows-release.ps1 -CreateTag -PushTag -PackLocal
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\.scripts\publish-windows-release.ps1 -CreateTag -PushTag -PackLocal
 ```
 
-手動でも可:
+手動でも可（ExecutionPolicy 不要）:
 
 ```powershell
 $TAG = "v0.0.0-dev.$(([TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTimeOffset]::UtcNow, 'Tokyo Standard Time')).ToString('yyyyMMddHHmm'))"
