@@ -105,10 +105,10 @@ run_world_docker() {
   fi
   step "docker compose build world" docker compose -f "$compose" build world
   # x003b: force MIX_ENV=test; runtime.exs ignores WORLD_DATABASE_PATH in test
-  # (assets CAS isolation と同型). Explicit unset so compose `.env` cannot leak.
+  # (assets CAS isolation と同型). Non-empty pollution path proves isolation test.
   step "world mix checks (Docker)" docker compose -f "$compose" run --rm --entrypoint "" \
     -e MIX_ENV=test \
-    -e WORLD_DATABASE_PATH= \
+    -e WORLD_DATABASE_PATH=/tmp/alchemy-world-test-must-ignore.db \
     world sh -c 'mix deps.get && mix hex.audit && mix format --check-formatted && mix compile --warnings-as-errors && mix credo --strict && mix test'
 }
 

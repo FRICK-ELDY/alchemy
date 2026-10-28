@@ -515,12 +515,13 @@ fn spawn_input_gate(
             let mut last_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
-                let payload = bytes.to_bytes();
-                if let Err(err) = check_payload_bytes(WireClass::Input, payload.len()) {
+                // x003b: length before contiguous copy (`to_bytes`).
+                if let Err(err) = check_payload_bytes(WireClass::Input, bytes.len()) {
                     dropped_limits += 1;
                     log::warn!("drop InputEvent: {err}");
                     continue;
                 }
+                let payload = bytes.to_bytes();
                 match InputEvent::decode(payload.as_ref()) {
                     Ok(event) => {
                         if let Err(err) = check_input(&event) {

@@ -2,7 +2,7 @@
 
 > **正本**: [`protocol/`](../../../protocol/)  
 > **配送契約**: [`protocol/peer-delivery.md`](../../../protocol/peer-delivery.md)（x0024）  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.16.0-x003b`
+> **PROTOCOL_PIN**: `alchemy-protocol/0.16.0-x003a`（x003b decode limits は pin 据え置き）
 
 ## 置き場の方針
 

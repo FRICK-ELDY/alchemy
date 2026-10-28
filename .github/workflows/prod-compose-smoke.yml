@@ -18,6 +18,12 @@ on:
       - "world-server/.env.prod.example"
       - ".scripts/smoke-prod-compose.sh"
       - ".github/workflows/prod-compose-smoke.yml"
+  workflow_dispatch:
+    inputs:
+      up:
+        description: "SMOKE_PROD_UP=1 — build/start auth+world and hit /health (slow)"
+        type: boolean
+        default: false
 
 concurrency:
   group: prod-compose-smoke-${{ github.ref }}
@@ -29,4 +35,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: prod compose config (x003b S2S)
+        run: bash .scripts/smoke-prod-compose.sh
+
+  # Optional full boot — release images are slow; PR default stays config-only.
+  health:
+    if: github.event_name == 'workflow_dispatch' && inputs.up == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: prod compose /health (x003b)
+        env:
+          SMOKE_PROD_UP: "1"
+          HEALTH_WAIT_SECS: "600"
         run: bash .scripts/smoke-prod-compose.sh

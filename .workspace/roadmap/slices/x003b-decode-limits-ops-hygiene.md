@@ -23,7 +23,7 @@
 | 層 | 内容 |
 |:---|:---|
 | compose | `AUTH_INTERNAL_TOKEN` / `AUTH_INTERNAL_URL` を auth / world の **prod** compose と `.env.prod.example` に通す |
-| CI | `compose config`（`.scripts/smoke-prod-compose.sh`）+ 任意 `SMOKE_PROD_UP=1` で `/health` |
+| CI | PR: `compose config`（S2S 欠落検知）。`/health` は `SMOKE_PROD_UP=1` または workflow_dispatch `up=true`（release ビルドが重いため） |
 
 ### P0-6 — world テスト DB 隔離
 
@@ -58,7 +58,8 @@
 ## 成功条件
 
 1. 巨大 protobuf / 過大 entries を投げても host・client が落ちない（drop）  
-2. prod compose（例示 env）で auth / world が `/health` まで到達（`SMOKE_PROD_UP=1`）  
+2. prod compose（例示 env）で auth / world が `/health` まで到達（`SMOKE_PROD_UP=1` / workflow_dispatch）。PR CI は config で S2S 欠落を検知  
+
 3. 日常 `WORLD_DATABASE_PATH` 設定後も `make ci`（world）緑  
 4. 関連単体・否定系テスト緑  
 

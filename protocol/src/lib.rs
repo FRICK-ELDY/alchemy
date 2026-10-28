@@ -7,7 +7,8 @@
 //! - [`wire_crypto`] sign/verify helpers for Intent / Frame (x0023).
 //! - [`sim_capability`] role → Intent/HTTP capability bits (x002a; not a wire schema).
 //! - [`generation_gate`] monotonic `(host_generation, revision)` (x003a).
-//! - [`decode_limits`] class-specific pre/post decode ceilings (x003b).
+//! - [`decode_limits`] class-specific pre/post decode ceilings (x003b; **does not bump** pin —
+//!   local validation, wire-compatible with x003a peers).
 //! - Delivery class table: [`peer-delivery.md`](../peer-delivery.md). Frame tick gap → snapshot
 //!   ([`decide_frame_tick`], [`FRAME_TICK_GAP_RESYNC`]; x0024).
 //!
@@ -33,7 +34,9 @@ pub mod sim_capability;
 pub mod wire_crypto;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.16.0-x003b";
+///
+/// x003b decode limits are local validation only — pin stays on x003a.
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.16.0-x003a";
 
 /// Identity orientation on the wire (`Entity.qx..qw`, xyzw).
 pub const ENTITY_QUAT_IDENTITY: [f64; 4] = [0.0, 0.0, 0.0, 1.0];

@@ -251,12 +251,13 @@ fn spawn_manifest_subscriber(
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
-                let payload = bytes.to_bytes();
-                if let Err(err) = check_payload_bytes(WireClass::Manifest, payload.len()) {
+                // x003b: length before contiguous copy (`to_bytes`).
+                if let Err(err) = check_payload_bytes(WireClass::Manifest, bytes.len()) {
                     dropped_limits += 1;
                     log::warn!("drop SceneManifest: {err}");
                     continue;
                 }
+                let payload = bytes.to_bytes();
                 match SceneManifest::decode(payload.as_ref()) {
                     Ok(manifest) => {
                         if let Err(err) = check_manifest(&manifest) {
@@ -636,20 +637,23 @@ fn apply_frame(
 fn fetch_snapshot(session: &zenoh::Session, room_id: &str, shared: &SharedState) -> bool {
     let key = snapshot_key(room_id);
     let mut applied = false;
+    let mut dropped_limits: u64 = 0;
     match session.get(&key).wait() {
         Ok(receiver) => {
             while let Ok(reply) = receiver.recv() {
                 match reply.result() {
                     Ok(sample) => {
                         let bytes: ZBytes = sample.payload().clone();
-                        let payload = bytes.to_bytes();
-                        if let Err(err) = check_payload_bytes(WireClass::Frame, payload.len()) {
+                        if let Err(err) = check_payload_bytes(WireClass::Frame, bytes.len()) {
+                            dropped_limits += 1;
                             log::warn!("drop snapshot: {err}");
                             continue;
                         }
+                        let payload = bytes.to_bytes();
                         match RenderFrame::decode(payload.as_ref()) {
                             Ok(frame) => {
                                 if let Err(err) = check_frame(&frame) {
+                                    dropped_limits += 1;
                                     log::warn!("drop snapshot: {err}");
                                     continue;
                                 }
@@ -668,6 +672,9 @@ fn fetch_snapshot(session: &zenoh::Session, room_id: &str, shared: &SharedState)
             }
         }
         Err(err) => log::warn!("snapshot get failed: {err}"),
+    }
+    if dropped_limits > 0 {
+        log::info!("snapshot gate: dropped_limits={dropped_limits}");
     }
     if !applied {
         log::warn!("snapshot not applied yet; will retry on next Manifest or frame gap");
@@ -695,16 +702,20 @@ fn spawn_frame_subscriber(
         .spawn(move || {
             log::info!("subscribed to {key} (signed delta upserts/removes)");
             let mut resync_cooldown_until = Instant::now();
+            let mut dropped_limits: u64 = 0;
+            let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
-                let payload = bytes.to_bytes();
-                if let Err(err) = check_payload_bytes(WireClass::Frame, payload.len()) {
+                if let Err(err) = check_payload_bytes(WireClass::Frame, bytes.len()) {
+                    dropped_limits += 1;
                     log::warn!("drop RenderFrame: {err}");
                     continue;
                 }
+                let payload = bytes.to_bytes();
                 match RenderFrame::decode(payload.as_ref()) {
                     Ok(frame) => {
                         if let Err(err) = check_frame(&frame) {
+                            dropped_limits += 1;
                             log::warn!("drop RenderFrame: {err}");
                             continue;
                         }
@@ -722,6 +733,13 @@ fn spawn_frame_subscriber(
                         }
                     }
                     Err(err) => log::warn!("RenderFrame decode failed: {err}"),
+                }
+                if last_gate_log.elapsed() >= GATE_LOG_INTERVAL {
+                    if dropped_limits > 0 {
+                        log::info!("frame gate: dropped_limits={dropped_limits} (last ~5s)");
+                    }
+                    dropped_limits = 0;
+                    last_gate_log = Instant::now();
                 }
             }
         })
@@ -753,12 +771,12 @@ fn spawn_presence_subscriber(
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
-                let payload = bytes.to_bytes();
-                if let Err(err) = check_payload_bytes(WireClass::Presence, payload.len()) {
+                if let Err(err) = check_payload_bytes(WireClass::Presence, bytes.len()) {
                     dropped_limits += 1;
                     log::warn!("drop PresenceState: {err}");
                     continue;
                 }
+                let payload = bytes.to_bytes();
                 match PresenceState::decode(payload.as_ref()) {
                     Ok(state) => {
                         if let Err(err) = check_presence(&state) {
