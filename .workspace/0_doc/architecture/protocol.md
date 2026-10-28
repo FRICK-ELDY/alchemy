@@ -37,7 +37,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
   - **初期 TRS（x002c）:** quat xyzw（全ゼロ／非有限→identity）。scale（全ゼロ／非有限→`(1,1,1)`；一部ゼロは維持）。host は rotation を Rapier spawn に、scale を Frame Pose に載せる。**collider / host Grab 距離は `half_extent` 固定**（client OBB・描画は Frame scale）
 - `LocomotionConfig { mode, move_speed }` — `UNSPECIFIED` → host は **Noclip**
 - `LocomotionMode`: NOCLIP / FLY / WALK
-- `protocol_pin` / `host_pub`（32B Ed25519）+ `host_attestation` + **`world_seal`**（world JWT・body blake3）: client は pin / seal / attestation 失敗で leave；Frame/Presence は attested `host_pub`（x0026）
+- `protocol_pin` / `host_pub`（32B Ed25519）+ `host_attestation` + **`world_seal`**（world JWT・body blake3）: client は pin / seal / attestation 失敗で **discard**（leave しない・x0038）；Frame/Presence は attested `host_pub`（x0026）
 - **定義の正本は world 発行 entries**（host は実行・seal、client は描画/Grab）。**GLB バイトは載せない**（assets-server CAS 参照のみ）
 
 ### RenderFrame（`proto/render_frame.proto`）— 高頻度デルタ + 署名（x0023）+ TRS（x0029）

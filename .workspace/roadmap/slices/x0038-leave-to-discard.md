@@ -1,6 +1,6 @@
 # x0038 — 検証失敗は破棄（leave→discard）+ 否定系 E2E
 
-> **ID:** `x0038` · **slug:** `leave-to-discard` · **status:** `planned` · **area:** `[client, docs, ci]` · **depends_on:** `[x0026, x001f, x0037]`
+> **ID:** `x0038` · **slug:** `leave-to-discard` · **status:** `done` · **area:** `[client, docs, ci]` · **depends_on:** `[x0026, x001f, x0037]`
 
 目標: Manifest / Presence の pin・seal・attest 失敗で `leave_room_local()` しない。到達 peer の偽 1 パケットで部屋が空にならない。失敗は drop + counter。退室は検証済み世代切替（または明示 Leave）のみ。
 
@@ -12,18 +12,18 @@
 
 | 層 | 内容 |
 |:---|:---|
-| client | `protocol_pin` / `room_id` / `world_seal` / `host_attestation` / Presence `host_sig` 失敗 → **apply せず drop**。メトリクス or log counter |
+| client | `protocol_pin` / `room_id` / `world_seal` / `host_attestation` / Presence pin・`host_sig` 失敗 → **apply せず drop**。5s 集約 log counter |
 | 退室 | 明示 Leave（x0019）と、検証済み Manifest 世代切替（x003a 以降）のみ `leave_room_local` |
 | Frame 整合 | 偽 Frame は既に破棄（x0023）。Manifest/Presence を同じ「破棄」契約に揃える |
 | 文書 | trust-boundary の「失敗は leave」を「失敗は discard」に更新 |
-| E2E | e2e-probe（または同等）で偽 Manifest を publish → client/host 生存・部屋非空を assert |
+| E2E | e2e-probe が偽 Manifest を publish → host が Frame 継続。client leave 回避は identity gate unit |
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | Slice + 目次 | planned |
-| 1 | client: leave→discard + counter | planned |
-| 2 | trust-boundary / client 文書 | planned |
-| 3 | 否定系（偽 Manifest）E2E | planned |
+| 0 | Slice + 目次 | done |
+| 1 | client: leave→discard + counter | done |
+| 2 | trust-boundary / client / protocol 文書 | done |
+| 3 | 否定系（偽 Manifest）E2E | done |
 
 ## 保証する / しない
 
