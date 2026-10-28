@@ -282,7 +282,7 @@ impl PresenceIntents {
         freed
     }
 
-    fn to_presence_state(&self) -> PresenceState {
+    fn to_presence_state(&self, host_generation: u64) -> PresenceState {
         let mut assignments = Vec::with_capacity(USER_ROOT_SLOTS);
         for (i, occupied) in self.occupied_sub.iter().enumerate() {
             if let Some(sub) = occupied {
@@ -297,6 +297,7 @@ impl PresenceIntents {
             assignments,
             protocol_pin: PROTOCOL_PIN.to_string(),
             host_sig: vec![],
+            host_generation,
         }
     }
 }
@@ -435,6 +436,7 @@ fn build_manifest_from_scene(
     host_pub: Vec<u8>,
     host_attestation: String,
     world_seal: String,
+    host_generation: u64,
 ) -> SceneManifest {
     let loco = scene.locomotion.unwrap_or(LocomotionConfig {
         mode: LocomotionMode::Noclip.into(),
@@ -449,6 +451,7 @@ fn build_manifest_from_scene(
         host_pub,
         host_attestation,
         world_seal,
+        host_generation,
     }
 }
 
@@ -457,27 +460,27 @@ fn sealed_manifest(
     room_id: &str,
     scene: &RoomScene,
     host_pub: &[u8],
-    host_attestation: &str,
+    creds: &HostCredentialChain,
     world_url: &str,
-    host_token: &str,
     seal_cache: &mut ManifestSealCache,
 ) -> Result<SceneManifest> {
     let mut manifest = build_manifest_from_scene(
         room_id,
         scene,
         host_pub.to_vec(),
-        host_attestation.to_string(),
+        creds.host_attestation.clone(),
         String::new(),
+        creds.host_generation,
     );
     let body_hex = manifest_seal_blake3_hex(&manifest);
     seal_cache
         .ensure(
             world_url,
             room_id,
-            host_token,
+            &creds.host_token,
             manifest.revision,
             &body_hex,
-            host_attestation,
+            &creds.host_attestation,
         )
         .context("ensure ManifestSeal")?;
     manifest.world_seal = seal_cache.seal.clone();
@@ -686,7 +689,7 @@ fn main() -> Result<()> {
     let host_pub = public_key_bytes(&host_signing_key);
 
     log::info!(
-        "host-server x002e starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        "host-server x003a starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
     );
@@ -769,13 +772,17 @@ fn main() -> Result<()> {
         assignments: vec![],
         protocol_pin: PROTOCOL_PIN.to_string(),
         host_sig: vec![],
+        host_generation: creds.host_generation,
     };
     sign_presence(&host_signing_key, &mut empty_presence);
     presence_pub
         .put(empty_presence.encode_to_vec())
         .wait()
         .map_err(|e| anyhow::anyhow!("presence publish failed: {e}"))?;
-    log::info!("published PresenceState revision=0 assignments=0 (signed)");
+    log::info!(
+        "published PresenceState revision=0 assignments=0 generation={} (signed)",
+        creds.host_generation
+    );
     let mut last_presence_rev = 0u64;
     let mut last_presence = Instant::now();
 
@@ -784,9 +791,8 @@ fn main() -> Result<()> {
         &room_id,
         &room_scene,
         &host_pub,
-        &creds.host_attestation,
+        &creds,
         &world_url,
-        &creds.host_token,
         &mut seal_cache,
     )
     .context("initial ManifestSeal")?;
@@ -878,9 +884,8 @@ fn main() -> Result<()> {
                 &room_id,
                 &room_scene,
                 &host_pub,
-                &creds.host_attestation,
+                &creds,
                 &world_url,
-                &creds.host_token,
                 &mut seal_cache,
             ) {
                 Ok(m) => m,
@@ -916,6 +921,7 @@ fn main() -> Result<()> {
         }
 
         let tick_now = Instant::now();
+        let host_generation = creds.host_generation;
         let (by_slot, occupied, presence_rev, mut presence_state, reclaimed) = {
             let mut g = lock_or_fatal(&presence, "presence");
             let freed = g.drain_reclaims(tick_now, PRESENCE_SLOT_TTL);
@@ -923,7 +929,7 @@ fn main() -> Result<()> {
                 g.by_slot,
                 g.occupied_sub.clone(),
                 g.revision,
-                g.to_presence_state(),
+                g.to_presence_state(host_generation),
                 freed,
             )
         };
@@ -1127,7 +1133,8 @@ mod presence_reclaim_tests {
         let t0 = Instant::now();
         let slot = p.assign_or_lookup("alice", "j1", t0).expect("assign");
         assert_eq!(slot, 0);
-        assert_eq!(p.to_presence_state().assignments.len(), 1);
+        assert_eq!(p.to_presence_state(1).assignments.len(), 1);
+        assert_eq!(p.to_presence_state(1).host_generation, 1);
 
         // Still within TTL: no reclaim.
         let freed = p.reclaim_stale(t0 + Duration::from_secs(2), PRESENCE_SLOT_TTL);
@@ -1140,7 +1147,7 @@ mod presence_reclaim_tests {
             vec![(PhysicsWorld::user_root_entity_id(0), "alice".into())]
         );
         assert!(p.occupied_sub[0].is_none());
-        assert_eq!(p.to_presence_state().assignments.len(), 0);
+        assert_eq!(p.to_presence_state(1).assignments.len(), 0);
         assert!(p.revision >= 2);
 
         let slot2 = p
@@ -1151,7 +1158,7 @@ mod presence_reclaim_tests {
             )
             .expect("reuse");
         assert_eq!(slot2, 0);
-        assert_eq!(p.to_presence_state().assignments[0].sub, "bob".to_string());
+        assert_eq!(p.to_presence_state(1).assignments[0].sub, "bob".to_string());
     }
 
     #[test]

@@ -9,8 +9,8 @@ defmodule World.ManifestSealHash do
   @doc """
   Compute lowercase hex blake3 for a seal payload map.
 
-  Payload keys: `room_id`, `revision`, `protocol_pin`, `host_pub_hex`,
-  `host_attestation`, `locomotion`, `entries`.
+  Payload keys: `room_id`, `revision`, `host_generation`, `protocol_pin`,
+  `host_pub_hex`, `host_attestation`, `locomotion`, `entries`.
   """
   @spec blake3_hex(map()) :: {:ok, String.t()} | {:error, term()}
   def blake3_hex(payload) when is_map(payload) do

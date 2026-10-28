@@ -194,6 +194,10 @@ pub struct SharedState {
     pub intent_session: Mutex<Option<crate::intent_session::IntentSession>>,
     /// Host Frame verify key from Manifest `host_pub` (x0023).
     pub host_pub: Mutex<Option<Vec<u8>>>,
+    /// Last accepted Manifest `(host_generation, revision)` watermark (x003a).
+    pub manifest_gen_rev: Mutex<Option<alchemy_protocol::generation_gate::GenRev>>,
+    /// Last accepted Presence watermark (x003a); generation must match Manifest.
+    pub presence_gen_rev: Mutex<Option<alchemy_protocol::generation_gate::GenRev>>,
     /// Zenoh liveliness token while joined (x0022 `sub`+`jti`). Drop/undeclare on leave.
     pub liveliness: Mutex<Option<zenoh::liveliness::LivelinessToken>>,
     /// Previous liveliness key retained one Intent put after refresh rebind (x0022).
@@ -263,8 +267,17 @@ impl SharedState {
         if let Ok(mut session) = self.intent_session.lock() {
             *session = None;
         }
-        if let Ok(mut host_pub) = self.host_pub.lock() {
-            *host_pub = None;
+        // Same lock order as Manifest apply (host_pub → manifest_gen_rev) so leave
+        // cannot interleave with AcceptSameOrForward while watermark still set (x003a).
+        match (self.host_pub.lock(), self.manifest_gen_rev.lock()) {
+            (Ok(mut host_pub), Ok(mut gen_rev)) => {
+                *host_pub = None;
+                *gen_rev = None;
+            }
+            _ => log::error!("leave_room_local: host_pub/manifest_gen_rev lock poisoned"),
+        }
+        if let Ok(mut slot) = self.presence_gen_rev.lock() {
+            *slot = None;
         }
         if let Ok(mut world) = self.world.lock() {
             *world = WorldView::default();
@@ -281,7 +294,7 @@ impl SharedState {
         }
     }
 
-    /// Host generation change: clear world + mint a new Intent session key (x0023).
+    /// Host generation change: clear world + Presence watermark + mint a new Intent session key (x0023 / x003a).
     pub fn reset_for_host_generation(&self) {
         if let Ok(mut world) = self.world.lock() {
             *world = WorldView::default();
@@ -290,6 +303,9 @@ impl SharedState {
             *slot = Arc::new(BoxDefs::default());
         }
         self.mesh_entity_id.store(0, Ordering::Relaxed);
+        if let Ok(mut slot) = self.presence_gen_rev.lock() {
+            *slot = None;
+        }
         if let Ok(mut sess) = self.intent_session.lock() {
             if sess.is_some() {
                 *sess = Some(crate::intent_session::IntentSession::new());

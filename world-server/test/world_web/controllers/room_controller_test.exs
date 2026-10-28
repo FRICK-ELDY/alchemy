@@ -194,6 +194,26 @@ defmodule WorldWeb.RoomControllerTest do
     assert is_binary(body["attestation"])
     assert body["expires_in"] > 0
     assert body["room_id"] == "attest"
+    assert body["host_generation"] == 1
+
+    # Same pub → same generation; different pub → bump (x003a).
+    body2 =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{host_token}")
+      |> post("/api/v1/rooms/attest/host_keys", %{host_pub: host_pub})
+      |> json_response(200)
+
+    assert body2["host_generation"] == 1
+
+    other_pub = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+
+    body3 =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{host_token}")
+      |> post("/api/v1/rooms/attest/host_keys", %{host_pub: other_pub})
+      |> json_response(200)
+
+    assert body3["host_generation"] == 2
   end
 
   test "host_keys rejects guest token", %{conn: conn, signer: signer} do
@@ -351,7 +371,9 @@ defmodule WorldWeb.RoomControllerTest do
       |> json_response(200)
 
     attestation = issue_attestation(host_token, "seal", host_pub_b64())
-    assert {:ok, revision, blake3} = World.CanonicalManifest.canonical_blake3("seal", attestation)
+
+    assert {:ok, revision, host_generation, blake3} =
+             World.CanonicalManifest.canonical_blake3("seal", attestation)
 
     body =
       build_conn()
@@ -368,6 +390,8 @@ defmodule WorldWeb.RoomControllerTest do
     assert body["room_id"] == "seal"
     assert body["manifest_blake3"] == blake3
     assert body["revision"] == revision
+    assert body["host_generation"] == host_generation
+    assert host_generation == 1
   end
 
   test "manifest_seal rejects arbitrary blake3 oracle (x0039)", %{conn: conn, signer: signer} do
@@ -417,7 +441,7 @@ defmodule WorldWeb.RoomControllerTest do
 
     attestation = issue_attestation(host_token, "seal-rev", host_pub_b64())
 
-    assert {:ok, revision, blake3} =
+    assert {:ok, revision, _gen, blake3} =
              World.CanonicalManifest.canonical_blake3("seal-rev", attestation)
 
     assert %{"error" => "revision_mismatch"} =

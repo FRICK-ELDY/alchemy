@@ -1,10 +1,12 @@
 defmodule World.ManifestSeal do
   @moduledoc """
-  Issues short-lived ManifestSeal JWTs (RS256) binding `(room_id, revision, manifest_blake3)`.
+  Issues short-lived ManifestSeal JWTs (RS256) binding
+  `(room_id, revision, host_generation, manifest_blake3)`.
 
   Guarantees: same world JWKS as Room Tokens; distinct `aud` / `typ`.
   x0039: callers must pass a blake3 that matches DB scene + attested host key
   (see `World.CanonicalManifest`); this module only signs an already-canonical hash.
+  x003a: `host_generation` is required (>= 1).
   Non-guarantees: Presence / Frame world signatures.
   """
 
@@ -18,12 +20,13 @@ defmodule World.ManifestSeal do
   Generate a seal JWT for a Manifest body hash.
 
   `manifest_blake3` must be lowercase hex (64 chars) of the canonical protobuf
-  (with `world_seal` empty).
+  (with `world_seal` empty). `host_generation` must be >= 1.
   """
-  @spec generate(String.t(), non_neg_integer(), String.t(), String.t()) ::
+  @spec generate(String.t(), non_neg_integer(), pos_integer(), String.t(), String.t()) ::
           {:ok, String.t(), non_neg_integer()} | {:error, term()}
-  def generate(room_id, revision, manifest_blake3, sub)
+  def generate(room_id, revision, host_generation, manifest_blake3, sub)
       when is_binary(room_id) and is_integer(revision) and revision >= 0 and
+             is_integer(host_generation) and host_generation >= 1 and
              is_binary(manifest_blake3) and
              is_binary(sub) do
     with :ok <- validate_room_id(room_id),
@@ -37,6 +40,7 @@ defmodule World.ManifestSeal do
         "sub" => sub,
         "room_id" => room_id,
         "revision" => revision,
+        "host_generation" => host_generation,
         "manifest_blake3" => String.downcase(manifest_blake3),
         "jti" => jti
       }
@@ -47,6 +51,7 @@ defmodule World.ManifestSeal do
         |> Joken.Config.add_claim("sub", fn -> nil end, &is_binary/1)
         |> Joken.Config.add_claim("room_id", fn -> nil end, &is_binary/1)
         |> Joken.Config.add_claim("revision", fn -> nil end, &is_integer/1)
+        |> Joken.Config.add_claim("host_generation", fn -> nil end, &is_integer/1)
         |> Joken.Config.add_claim("manifest_blake3", fn -> nil end, &is_binary/1)
         |> Joken.Config.add_claim("jti", fn -> nil end, &is_binary/1)
 
@@ -57,7 +62,7 @@ defmodule World.ManifestSeal do
     end
   end
 
-  def generate(_, _, _, _), do: {:error, :invalid_args}
+  def generate(_, _, _, _, _), do: {:error, :invalid_args}
 
   @doc "Parse revision from API body (integer or decimal string)."
   @spec parse_revision(term()) :: {:ok, non_neg_integer()} | {:error, :invalid_revision}

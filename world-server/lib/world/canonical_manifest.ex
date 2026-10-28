@@ -13,33 +13,45 @@ defmodule World.CanonicalManifest do
   @doc """
   Verify attestation for `room_id`, load scene, compute canonical blake3.
 
-  Returns `{:ok, revision, blake3}` or an error atom/tuple for the controller.
+  Returns `{:ok, revision, host_generation, blake3}` or an error atom/tuple for the controller.
   """
   @spec canonical_blake3(String.t(), String.t()) ::
-          {:ok, non_neg_integer(), String.t()} | {:error, term()}
+          {:ok, non_neg_integer(), pos_integer(), String.t()} | {:error, term()}
   def canonical_blake3(room_id, host_attestation)
       when is_binary(room_id) and is_binary(host_attestation) do
-    with {:ok, host_pub, _claims} <- HostAttestation.verify(host_attestation, room_id),
+    with {:ok, host_pub, host_generation, _claims} <-
+           HostAttestation.verify(host_attestation, room_id),
+         :ok <- Rooms.match_claimed_host(room_id, host_pub, host_generation),
          {:ok, scene} <- Rooms.scene(room_id),
          {:ok, revision} <- scene_revision(scene),
-         payload <- build_payload(room_id, revision, scene, host_pub, host_attestation),
+         payload <-
+           build_payload(room_id, revision, host_generation, scene, host_pub, host_attestation),
          {:ok, blake3} <- ManifestSealHash.blake3_hex(payload) do
-      {:ok, revision, blake3}
+      {:ok, revision, host_generation, blake3}
     end
   end
 
   def canonical_blake3(_, _), do: {:error, :invalid_args}
 
   @doc "Assemble CLI JSON payload (also useful in tests)."
-  @spec build_payload(String.t(), non_neg_integer(), map(), binary(), String.t()) :: map()
-  def build_payload(room_id, revision, scene, host_pub, host_attestation)
-      when is_binary(room_id) and is_integer(revision) and is_map(scene) and
-             is_binary(host_pub) and is_binary(host_attestation) do
+  @spec build_payload(
+          String.t(),
+          non_neg_integer(),
+          pos_integer(),
+          map(),
+          binary(),
+          String.t()
+        ) :: map()
+  def build_payload(room_id, revision, host_generation, scene, host_pub, host_attestation)
+      when is_binary(room_id) and is_integer(revision) and is_integer(host_generation) and
+             host_generation >= 1 and is_map(scene) and is_binary(host_pub) and
+             is_binary(host_attestation) do
     pin = Application.fetch_env!(:world, :protocol_pin)
 
     %{
       "room_id" => room_id,
       "revision" => revision,
+      "host_generation" => host_generation,
       "protocol_pin" => pin,
       "host_pub_hex" => Base.encode16(host_pub, case: :lower),
       "host_attestation" => host_attestation,

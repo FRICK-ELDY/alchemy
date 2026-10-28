@@ -8,7 +8,7 @@ defmodule World.ManifestSealTest do
   @sub "11111111-1111-1111-1111-111111111111"
 
   test "generate roundtrip claims" do
-    assert {:ok, token, ttl} = ManifestSeal.generate("local", 1, @blake3, @sub)
+    assert {:ok, token, ttl} = ManifestSeal.generate("local", 1, 2, @blake3, @sub)
     assert ttl > 0
     assert is_binary(token)
 
@@ -19,14 +19,19 @@ defmodule World.ManifestSealTest do
     assert claims["iss"] == "alchemy-world"
     assert claims["room_id"] == "local"
     assert claims["revision"] == 1
+    assert claims["host_generation"] == 2
     assert claims["manifest_blake3"] == @blake3
     assert claims["sub"] == @sub
   end
 
   test "generate rejects invalid room_id and blake3" do
-    assert {:error, :invalid_room_id} = ManifestSeal.generate("", 1, @blake3, @sub)
-    assert {:error, :invalid_room_id} = ManifestSeal.generate("a/b", 1, @blake3, @sub)
-    assert {:error, :invalid_manifest_blake3} = ManifestSeal.generate("local", 1, "short", @sub)
+    assert {:error, :invalid_room_id} = ManifestSeal.generate("", 1, 1, @blake3, @sub)
+    assert {:error, :invalid_room_id} = ManifestSeal.generate("a/b", 1, 1, @blake3, @sub)
+
+    assert {:error, :invalid_manifest_blake3} =
+             ManifestSeal.generate("local", 1, 1, "short", @sub)
+
+    assert {:error, :invalid_args} = ManifestSeal.generate("local", 1, 0, @blake3, @sub)
   end
 
   test "parse_revision and parse_blake3" do

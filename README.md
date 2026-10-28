@@ -15,7 +15,7 @@
 **WAN（x001b）:** ConoHa 上 zenohd + IP allowlist（[`zenoh-router/config.wan.json5`](zenoh-router/config.wan.json5) · [手順書](.workspace/0_doc/manual/zenoh-wan-conoha.md)）。  
 **Assets（x001c/x001d）:** CAS を local / **R2** 切替。s3 時 GET は **署名 URL 302**（client → R2 直 DL）。  
 **Hermetic E2E（x001f）:** `docker-compose.e2e.yml`（`:4102` 系 / Zenoh `:7547`）。Desktop をそちらへ向ける場合は env 例のコメントを参照。  
-空き ID = **`x0021`**。[roadmap](.workspace/roadmap/README.md)。
+空き ID = **`x003c`**（次スライス = **x003b**）。[roadmap](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|

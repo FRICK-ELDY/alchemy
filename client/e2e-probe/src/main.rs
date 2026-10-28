@@ -1,8 +1,9 @@
-//! x001f / x0023 / x0038 hermetic E2E probe — no GUI.
+//! x001f / x0023 / x0038 / x003a hermetic E2E probe — no GUI.
 //!
 //! Guarantees: against a running auth/world/assets/zenohd (+ host-server), asserts
 //! login → Room Token → signed InputEvent put → RenderFrame with upserts + user_root;
-//! invalid Input and fake Manifest do not stop host Frame publish (x0038).
+//! invalid Input, fake Manifest, and stale-revision Manifest do not stop host Frame publish
+//! (x0038 / x003a). Client monotonic gen/rev gate is unit-tested in alchemy-protocol.
 //! Non-guarantees: Token refresh, WAN, R2, GUI client leave path, Frame signature check.
 
 use std::env;
@@ -131,6 +132,26 @@ fn fake_manifest(room_id: &str) -> SceneManifest {
         host_pub: vec![0u8; 32],
         host_attestation: String::new(),
         world_seal: String::new(),
+        host_generation: 0,
+    }
+}
+
+/// x003a adversarial assist: seal-less "stale revision" Manifest.
+///
+/// Does **not** prove client discard of a cryptographically valid old seal (that is
+/// covered by `alchemy-protocol::generation_gate` + client unit tests). This only
+/// asserts the host Frame path keeps publishing after junk on `…/manifest`.
+fn stale_revision_manifest(room_id: &str) -> SceneManifest {
+    SceneManifest {
+        room_id: room_id.into(),
+        revision: 0,
+        entries: vec![],
+        locomotion: None,
+        protocol_pin: PROTOCOL_PIN.into(),
+        host_pub: vec![0u8; 32],
+        host_attestation: String::new(),
+        world_seal: String::new(),
+        host_generation: 1,
     }
 }
 
@@ -372,6 +393,32 @@ fn main() -> Result<()> {
     }
     log::info!("host still publishing after fake Manifest ok");
 
-    println!("e2e-probe: ok (login→token→input→frame+user_root; adversarial input+manifest)");
+    // x003a: stale revision Manifest (seal-less) must not stop host Frame path.
+    put_manifest(&session, &manifest_k, &stale_revision_manifest(&room_id))?;
+    log::info!("put stale-revision SceneManifest (expect peer discard; host keep publishing)");
+
+    let mut post_stale_manifest = false;
+    let remain = deadline.saturating_duration_since(Instant::now());
+    let post_deadline = Instant::now() + remain.min(Duration::from_secs(10));
+    while Instant::now() < post_deadline {
+        match subscriber.try_recv() {
+            Ok(Some(sample)) => {
+                let bytes: ZBytes = sample.payload().clone();
+                if RenderFrame::decode(bytes.to_bytes().as_ref()).is_ok() {
+                    post_stale_manifest = true;
+                    break;
+                }
+            }
+            Ok(None) | Err(_) => thread::sleep(Duration::from_millis(50)),
+        }
+    }
+    if !post_stale_manifest {
+        bail!("host stopped publishing frames after stale-revision Manifest");
+    }
+    log::info!("host still publishing after stale-revision Manifest ok");
+
+    println!(
+        "e2e-probe: ok (login→token→input→frame+user_root; adversarial input+manifest+stale-rev)"
+    );
     Ok(())
 }

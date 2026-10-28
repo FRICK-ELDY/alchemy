@@ -7,6 +7,7 @@
 //! - Intent Ed25519 session (Token on bind only); Frame finite/tick/sig + snapshot (x0023)
 //! - Frame tick gap → do not apply delta; `…/snapshot` replace (x0024 / peer-delivery)
 //! - Manifest `world_seal` + `host_attestation` via world JWKS before adopting `host_pub`; Presence `host_sig` (x0026)
+//! - Manifest / Presence `(host_generation, revision)` monotonic gate; regression → discard (x003a)
 //! - Manifest / Presence verify failure → discard (keep joined); leave only on explicit Leave (x0038)
 //! - Manifest entries drive mesh blake3 / Grab flags / box half-extents (x0027)
 //! - RenderFrame Entity carries quat + scale; client applies TRS (x0029)
@@ -45,6 +46,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use alchemy_protocol::generation_gate::{
+    decide_gen_rev, decide_presence_gen_rev, GenRev, GenRevDecision,
+};
 use alchemy_protocol::wire_crypto::{
     frame_entities_finite, manifest_seal_blake3_hex, verify_frame, verify_presence,
 };
@@ -237,6 +241,7 @@ fn spawn_manifest_subscriber(
             let mut dropped_identity: u64 = 0;
             let mut dropped_seal: u64 = 0;
             let mut dropped_attest: u64 = 0;
+            let mut dropped_gen_rev: u64 = 0;
             let mut dropped_decode: u64 = 0;
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
@@ -261,17 +266,22 @@ fn spawn_manifest_subscriber(
                             continue;
                         }
                         let body_hex = manifest_seal_blake3_hex(&manifest);
-                        if let Err(err) =
-                            seal.verify(&manifest.world_seal, manifest.revision, &body_hex)
-                        {
+                        if let Err(err) = seal.verify(
+                            &manifest.world_seal,
+                            manifest.revision,
+                            manifest.host_generation,
+                            &body_hex,
+                        ) {
                             dropped_seal += 1;
                             log::warn!("drop SceneManifest: world_seal rejected: {err:#}");
                             continue;
                         }
-                        let attested_pub = match attest
-                            .verify_and_host_pub(&manifest.host_attestation, &manifest.host_pub)
-                        {
-                            Ok(pub_bytes) => pub_bytes,
+                        let (attested_pub, attested_gen) = match attest.verify_and_host_pub(
+                            &manifest.host_attestation,
+                            &manifest.host_pub,
+                            manifest.host_generation,
+                        ) {
+                            Ok(pair) => pair,
                             Err(err) => {
                                 dropped_attest += 1;
                                 log::warn!(
@@ -280,30 +290,85 @@ fn spawn_manifest_subscriber(
                                 continue;
                             }
                         };
-                        // Only Some→different Some is a host generation change.
-                        // None→Some is first install (do not renew IntentSession).
-                        let generation_changed = match shared.host_pub.lock() {
-                            Ok(mut slot) => match slot.as_ref() {
-                                None => {
-                                    *slot = Some(attested_pub.clone());
-                                    false
+                        let incoming = GenRev {
+                            host_generation: attested_gen,
+                            revision: manifest.revision,
+                        };
+                        // Hold both locks while gating + applying so poison / same-gen
+                        // host_pub mismatch cannot leave host_pub updated alone (x003a).
+                        let apply_outcome = match (
+                            shared.host_pub.lock(),
+                            shared.manifest_gen_rev.lock(),
+                        ) {
+                            (Ok(mut host_slot), Ok(mut gen_slot)) => {
+                                let known = *gen_slot;
+                                let decision = decide_gen_rev(known, incoming);
+                                match decision {
+                                    GenRevDecision::RejectRegression
+                                    | GenRevDecision::RejectInvalidGeneration => {
+                                        Err((
+                                            "gen/rev gate",
+                                            format!(
+                                                "{decision:?} (incoming gen={} rev={} known={known:?})",
+                                                incoming.host_generation, incoming.revision
+                                            ),
+                                        ))
+                                    }
+                                    GenRevDecision::AcceptSameOrForward => {
+                                        // Same generation ⇒ host_pub is frozen (no swap, no
+                                        // reinstall if leave cleared the key mid-flight).
+                                        match host_slot.as_ref() {
+                                            Some(prev) if prev == &attested_pub => {
+                                                *gen_slot = Some(incoming);
+                                                Ok(false)
+                                            }
+                                            Some(_) => Err((
+                                                "same-generation host_pub mismatch",
+                                                format!(
+                                                    "gen={} (Frame key must not swap without generation bump)",
+                                                    incoming.host_generation
+                                                ),
+                                            )),
+                                            None => Err((
+                                                "same-generation host_pub missing",
+                                                format!(
+                                                    "gen={} (watermark set but key cleared; reject reinstall)",
+                                                    incoming.host_generation
+                                                ),
+                                            )),
+                                        }
+                                    }
+                                    GenRevDecision::AcceptFirst => {
+                                        *host_slot = Some(attested_pub.clone());
+                                        *gen_slot = Some(incoming);
+                                        Ok(false)
+                                    }
+                                    GenRevDecision::AcceptNewGeneration => {
+                                        *host_slot = Some(attested_pub.clone());
+                                        *gen_slot = Some(incoming);
+                                        Ok(true)
+                                    }
                                 }
-                                Some(prev) if prev != &attested_pub => {
-                                    *slot = Some(attested_pub.clone());
-                                    true
-                                }
-                                Some(_) => false,
-                            },
-                            Err(err) => {
+                            }
+                            _ => {
                                 log::error!(
-                                    "host_pub lock poisoned; skip generation reset: {err}"
+                                    "host_pub/manifest_gen_rev lock poisoned; skip Manifest apply"
                                 );
-                                false
+                                continue;
+                            }
+                        };
+                        let generation_changed = match apply_outcome {
+                            Ok(changed) => changed,
+                            Err((reason, detail)) => {
+                                dropped_gen_rev += 1;
+                                log::warn!("drop SceneManifest: {reason}: {detail}");
+                                continue;
                             }
                         };
                         if generation_changed {
                             log::info!(
-                                "SceneManifest host_pub changed; reset world + renew Intent session for new host"
+                                "SceneManifest host_generation advanced to {}; reset world + renew Intent session",
+                                incoming.host_generation
                             );
                             shared.reset_for_host_generation();
                             snapshot_ok = false;
@@ -313,7 +378,8 @@ fn spawn_manifest_subscriber(
                                 fetch_snapshot(&session, shared.room_id.as_ref(), &shared);
                         }
                         log::info!(
-                            "SceneManifest revision={} entries={} pin_ok attested snapshot_ok={snapshot_ok}",
+                            "SceneManifest generation={} revision={} entries={} pin_ok attested snapshot_ok={snapshot_ok}",
+                            manifest.host_generation,
                             manifest.revision,
                             manifest.entries.len()
                         );
@@ -395,14 +461,21 @@ fn spawn_manifest_subscriber(
                     }
                 }
                 if last_gate_log.elapsed() >= GATE_LOG_INTERVAL {
-                    if dropped_identity + dropped_seal + dropped_attest + dropped_decode > 0 {
+                    if dropped_identity
+                        + dropped_seal
+                        + dropped_attest
+                        + dropped_gen_rev
+                        + dropped_decode
+                        > 0
+                    {
                         log::info!(
-                            "manifest gate: dropped_identity={dropped_identity} dropped_seal={dropped_seal} dropped_attest={dropped_attest} dropped_decode={dropped_decode} (last ~5s)"
+                            "manifest gate: dropped_identity={dropped_identity} dropped_seal={dropped_seal} dropped_attest={dropped_attest} dropped_gen_rev={dropped_gen_rev} dropped_decode={dropped_decode} (last ~5s)"
                         );
                     }
                     dropped_identity = 0;
                     dropped_seal = 0;
                     dropped_attest = 0;
+                    dropped_gen_rev = 0;
                     dropped_decode = 0;
                     last_gate_log = Instant::now();
                 }
@@ -638,6 +711,7 @@ fn spawn_presence_subscriber(
             let mut dropped_pin: u64 = 0;
             let mut dropped_no_host: u64 = 0;
             let mut dropped_sig: u64 = 0;
+            let mut dropped_gen_rev: u64 = 0;
             let mut dropped_decode: u64 = 0;
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
@@ -663,6 +737,36 @@ fn spawn_presence_subscriber(
                             dropped_sig += 1;
                             log::warn!("drop PresenceState: bad host_sig: {err}");
                             continue;
+                        }
+                        let manifest_gen = shared
+                            .manifest_gen_rev
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.map(|gr| gr.host_generation));
+                        let known_presence = shared.presence_gen_rev.lock().ok().and_then(|g| *g);
+                        let incoming = GenRev {
+                            host_generation: state.host_generation,
+                            revision: state.revision,
+                        };
+                        match decide_presence_gen_rev(manifest_gen, known_presence, incoming) {
+                            GenRevDecision::AcceptFirst
+                            | GenRevDecision::AcceptSameOrForward => {
+                                if let Ok(mut slot) = shared.presence_gen_rev.lock() {
+                                    *slot = Some(incoming);
+                                }
+                            }
+                            other => {
+                                dropped_gen_rev += 1;
+                                log::warn!(
+                                    "drop PresenceState: gen/rev gate {:?} (incoming gen={} rev={} manifest_gen={:?} known={:?})",
+                                    other,
+                                    incoming.host_generation,
+                                    incoming.revision,
+                                    manifest_gen,
+                                    known_presence
+                                );
+                                continue;
+                            }
                         }
                         let local_sub = shared
                             .auth
@@ -721,14 +825,21 @@ fn spawn_presence_subscriber(
                     }
                 }
                 if last_gate_log.elapsed() >= GATE_LOG_INTERVAL {
-                    if dropped_pin + dropped_no_host + dropped_sig + dropped_decode > 0 {
+                    if dropped_pin
+                        + dropped_no_host
+                        + dropped_sig
+                        + dropped_gen_rev
+                        + dropped_decode
+                        > 0
+                    {
                         log::info!(
-                            "presence gate: dropped_pin={dropped_pin} dropped_no_host={dropped_no_host} dropped_sig={dropped_sig} dropped_decode={dropped_decode} (last ~5s)"
+                            "presence gate: dropped_pin={dropped_pin} dropped_no_host={dropped_no_host} dropped_sig={dropped_sig} dropped_gen_rev={dropped_gen_rev} dropped_decode={dropped_decode} (last ~5s)"
                         );
                     }
                     dropped_pin = 0;
                     dropped_no_host = 0;
                     dropped_sig = 0;
+                    dropped_gen_rev = 0;
                     dropped_decode = 0;
                     last_gate_log = Instant::now();
                 }
@@ -1066,7 +1177,7 @@ fn main() -> Result<()> {
     let silent = auth::try_silent_session(&auth_url).context("silent auth")?;
     let auth_mode = if silent.is_some() { "silent" } else { "ui" };
     log::info!(
-        "client x002e starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
+        "client x003a starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
     );
 
     let mut gate = AuthGate::default();
@@ -1083,6 +1194,8 @@ fn main() -> Result<()> {
         auth: Mutex::new(gate),
         intent_session: Mutex::new(None),
         host_pub: Mutex::new(None),
+        manifest_gen_rev: Mutex::new(None),
+        presence_gen_rev: Mutex::new(None),
         liveliness: Mutex::new(None),
         liveliness_prev: Mutex::new(None),
         world: Mutex::new(scene::WorldView::default()),
@@ -1329,5 +1442,47 @@ mod tests {
     fn presence_pin_gate_rejects_mismatch() {
         assert!(gate_presence_pin(PROTOCOL_PIN).is_ok());
         assert_eq!(gate_presence_pin("bogus-pin"), Err("protocol_pin mismatch"));
+    }
+
+    /// x003a: old signed Manifest replay must not roll back accepted watermark.
+    #[test]
+    fn manifest_gen_rev_gate_rejects_revision_regression() {
+        let known = Some(GenRev {
+            host_generation: 1,
+            revision: 5,
+        });
+        let older = GenRev {
+            host_generation: 1,
+            revision: 3,
+        };
+        assert_eq!(
+            decide_gen_rev(known, older),
+            GenRevDecision::RejectRegression
+        );
+        let handoff = GenRev {
+            host_generation: 2,
+            revision: 0,
+        };
+        assert_eq!(
+            decide_gen_rev(known, handoff),
+            GenRevDecision::AcceptNewGeneration
+        );
+    }
+
+    /// Same generation keeps AcceptSameOrForward; caller must still reject host_pub swap.
+    #[test]
+    fn same_generation_forward_does_not_imply_host_pub_handoff() {
+        let known = Some(GenRev {
+            host_generation: 1,
+            revision: 1,
+        });
+        let forward = GenRev {
+            host_generation: 1,
+            revision: 2,
+        };
+        assert_eq!(
+            decide_gen_rev(known, forward),
+            GenRevDecision::AcceptSameOrForward
+        );
     }
 }

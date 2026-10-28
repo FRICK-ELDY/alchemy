@@ -207,13 +207,15 @@ defmodule WorldWeb.RoomController do
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
          :ok <- Rooms.ensure_owner(room_id, claims["sub"]),
-         {:ok, host_pub} <- HostAttestation.decode_host_pub(Map.get(params, "host_pub")) do
-      case HostAttestation.generate(room_id, host_pub, claims["sub"]) do
+         {:ok, host_pub} <- HostAttestation.decode_host_pub(Map.get(params, "host_pub")),
+         {:ok, host_generation} <- Rooms.claim_host_generation(room_id, host_pub) do
+      case HostAttestation.generate(room_id, host_pub, claims["sub"], host_generation) do
         {:ok, attestation, ttl} ->
           json(conn, %{
             attestation: attestation,
             expires_in: ttl,
             room_id: room_id,
+            host_generation: host_generation,
             token_type: "Bearer"
           })
 
@@ -330,17 +332,18 @@ defmodule WorldWeb.RoomController do
          {:ok, host_attestation} <- require_host_attestation(params),
          {:ok, host_revision} <- ManifestSeal.parse_revision(Map.get(params, "revision")),
          {:ok, host_blake3} <- ManifestSeal.parse_blake3(Map.get(params, "manifest_blake3")),
-         {:ok, revision, blake3} <-
+         {:ok, revision, host_generation, blake3} <-
            CanonicalManifest.canonical_blake3(room_id, host_attestation),
          :ok <- match_revision(host_revision, revision),
          :ok <- match_blake3(host_blake3, blake3) do
-      case ManifestSeal.generate(room_id, revision, blake3, claims["sub"]) do
+      case ManifestSeal.generate(room_id, revision, host_generation, blake3, claims["sub"]) do
         {:ok, seal, ttl} ->
           json(conn, %{
             seal: seal,
             expires_in: ttl,
             room_id: room_id,
             revision: revision,
+            host_generation: host_generation,
             manifest_blake3: blake3,
             token_type: "Bearer"
           })
@@ -412,6 +415,11 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:forbidden)
         |> json(%{error: "attestation_room_mismatch"})
+
+      {:error, :stale_host_attestation} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "stale_host_attestation"})
 
       {:error, :invalid_scene_revision} ->
         conn

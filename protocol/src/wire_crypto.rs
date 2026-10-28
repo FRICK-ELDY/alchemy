@@ -264,6 +264,7 @@ mod tests {
             assignments: vec![],
             protocol_pin: crate::PROTOCOL_PIN.into(),
             host_sig: vec![],
+            host_generation: 1,
         };
         sign_presence(&key, &mut state);
         assert!(verify_presence(&public_key_bytes(&key), &state).is_ok());

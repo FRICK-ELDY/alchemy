@@ -14,6 +14,9 @@ message PresenceState {
   string protocol_pin = 3;
   // Host Ed25519 over encode with `host_sig` cleared (x0025). Verified with attested `host_pub`.
   bytes host_sig = 4;
+  // Same generation as the accepted SceneManifest (x003a). Client discards mismatch /
+  // regression; does not advance generation from Presence alone.
+  uint64 host_generation = 5;
 }
 
 message PresenceAssignment {
