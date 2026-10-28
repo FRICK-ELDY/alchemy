@@ -47,9 +47,9 @@ defmodule World.CanonicalManifestTest do
              CanonicalManifest.canonical_blake3("room-b", attestation)
   end
 
-  test "protocol_pin config matches alchemy-protocol PROTOCOL_PIN (x0039/x003a)" do
+  test "protocol_pin config matches alchemy-protocol PROTOCOL_PIN (x0039/x003b)" do
     # Keep in lockstep with protocol/src/lib.rs `PROTOCOL_PIN` — drift → seal mismatch.
     assert Application.fetch_env!(:world, :protocol_pin) ==
-             "alchemy-protocol/0.16.0-x003a"
+             "alchemy-protocol/0.16.0-x003b"
   end
 end

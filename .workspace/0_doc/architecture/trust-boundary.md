@@ -39,12 +39,12 @@ flowchart TB
 
 | Zenoh key 族 | 偽 publish の被害 | 現状の防御 | 保証しない |
 |:---|:---|:---|:---|
-| `…/input` | なりすまし操作・物理発散 | host: Room Token（bind）+ Ed25519 session（x0023）+ `is_finite` / magnitude / Grab 距離（x0021） | zenohd ACL・帯域上限 |
-| `…/frame` | 偽描画・NaN | client: `host_sig` + Manifest `host_pub`（attestation）+ finite / tick / snapshot（x0023–x0024） | 確実配送 ACK |
-| `…/presence` | 偽スロット・偽退室表示・旧 Presence replay | client: pin + `host_sig` + generation/revision ゲート（x0025 / x003a） | Presence の world 署名 |
-| `…/manifest` | 改ざん配置・偽 host_pub・旧 seal replay・同一 gen 鍵すり替え | `world_seal` + HostAttestation + **`(generation, revision)` 単調ゲート** + **同一 gen 内 `host_pub` 固定**（x0026 / x003a）；失敗は **discard**（x0038） | UGC 編集 ACL；完全な handoff UX；二重 host の generation フリップフロップ |
+| `…/input` | なりすまし操作・物理発散・巨大 payload | host: Room Token（bind）+ Ed25519 session（x0023）+ `is_finite` / magnitude / Grab 距離（x0021）+ **decode 上限**（x003b） | zenohd ACL・帯域上限 |
+| `…/frame` | 偽描画・NaN・巨大 payload | client: `host_sig` + Manifest `host_pub`（attestation）+ finite / tick / snapshot（x0023–x0024）+ **decode 上限**（x003b） | 確実配送 ACK |
+| `…/presence` | 偽スロット・偽退室表示・旧 Presence replay | client: pin + `host_sig` + generation/revision ゲート（x0025 / x003a）+ **decode 上限**（x003b） | Presence の world 署名 |
+| `…/manifest` | 改ざん配置・偽 host_pub・旧 seal replay・同一 gen 鍵すり替え・巨大 payload | `world_seal` + HostAttestation + **`(generation, revision)` 単調ゲート** + **同一 gen 内 `host_pub` 固定**（x0026 / x003a）；失敗は **discard**（x0038）；**decode 上限**（x003b） | UGC 編集 ACL；完全な handoff UX；二重 host の generation フリップフロップ |
 | `…/alive` | 偽 Delete で退室 | host: liveliness を検証済み jti に紐付け（x0022） | WAN liveliness ACL |
-| `…/snapshot` | 偽全置換 | client: Frame と同じ host_sig / finite 前提で適用 | queryable 認証の別チャネル |
+| `…/snapshot` | 偽全置換・巨大 payload | client: Frame と同じ host_sig / finite + **decode 上限**（x003b）で適用 | queryable 認証の別チャネル |
 | `…/host_control` | 遠隔プロセス停止 | **既定オフ**（x001e）。launcher 経路は localhost IPC（x0032） | WAN 上の無認証 Zenoh control |
 
 キー式の一覧は [zenoh-router.md](zenoh-router.md) の MVP 表および protocol の `*_key` ヘルパ。
@@ -79,3 +79,4 @@ flowchart TB
 | x0038 | Manifest / Presence 検証失敗は discard（leave しない） |
 | x0039 | canonical ManifestSeal（署名 oracle 廃止） |
 | x003a | `(host_generation, revision)` 単調ゲート（replay 拒否） |
+| x003b | decode byte/count 上限 + prod S2S env + world test DB 隔離 |

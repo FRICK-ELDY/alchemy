@@ -27,6 +27,9 @@ services:
       ROOM_TOKEN_GENERATE_KEY: "true"
       WORLD_ALLOW_ANON_TOKENS: "false"
       AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://host.docker.internal:4002/.well-known/jwks.json}
+      # x003b: S2S — must match auth-server AUTH_INTERNAL_TOKEN.
+      AUTH_INTERNAL_URL: ${AUTH_INTERNAL_URL:-http://host.docker.internal:4002}
+      AUTH_INTERNAL_TOKEN: ${AUTH_INTERNAL_TOKEN:?set AUTH_INTERNAL_TOKEN in .env.prod}
       WORLD_DATABASE_PATH: /var/lib/world/world.db
     volumes:
       - world_prod_keys:/var/lib/world

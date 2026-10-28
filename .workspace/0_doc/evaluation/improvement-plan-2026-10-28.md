@@ -25,9 +25,9 @@
 | P0-1 | 検証失敗は破棄（leave しない） | -3 | Manifest/Presence の pin・seal・attest 失敗は drop+counter。退室は検証済み世代切替のみ。trust-boundary.md 更新 | 偽 Manifest 1 パケットで部屋が空にならない。否定系 E2E 緑 |
 | P0-2 | ManifestSeal を canonical に | -4 | world が DB scene から Manifest body/hash を構築し署名。host 指定 hash は照合必須または廃止 | owner host が任意 hash で正規 seal を取れないテスト |
 | P0-3 | generation + revision 単調ゲート | -4 | ManifestSeal/Presence に host_generation・monotonic revision。client は後退拒否。handoff のみ新 generation | 古い署名 Manifest の replay で Frame が止まらない — **x003a done** |
-| P0-4 | decode byte/count limit | -3 | Zenoh sample 受信時に class 別上限。decode 後 entries/strings 上限。巨大 payload テスト | 巨大 protobuf で OOM しない |
-| P0-5 | prod compose に S2S env | -3 | `AUTH_INTERNAL_TOKEN` / `AUTH_INTERNAL_URL` を compose と `.env.prod.example` に。CI で `compose config` + `/health` | 手順書どおり prod が起動する |
-| P0-6 | world テスト DB 隔離 | -2 | test で `WORLD_DATABASE_PATH` 無視 or 一時 path。ci.sh 強制。Sandbox 後始末 | 日常スタック後も `make ci` world 緑 |
+| P0-4 | decode byte/count limit | -3 | Zenoh sample 受信時に class 別上限。decode 後 entries/strings 上限。巨大 payload テスト | 巨大 protobuf で OOM しない — **x003b done** |
+| P0-5 | prod compose に S2S env | -3 | `AUTH_INTERNAL_TOKEN` / `AUTH_INTERNAL_URL` を compose と `.env.prod.example` に。CI で `compose config` + `/health` | 手順書どおり prod が起動する — **x003b done** |
+| P0-6 | world テスト DB 隔離 | -2 | test で `WORLD_DATABASE_PATH` 無視 or 一時 path。ci.sh 強制。Sandbox 後始末 | 日常スタック後も `make ci` world 緑 — **x003b done** |
 
 ---
 
@@ -100,7 +100,7 @@
 1. **[x0038](../../roadmap/slices/x0038-leave-to-discard.md)** — leave→discard + 否定系 E2E（P0-1）
 2. **[x0039](../../roadmap/slices/x0039-canonical-manifest-seal.md)** — canonical ManifestSeal（P0-2）
 3. **[x003a](../../roadmap/slices/x003a-generation-revision-gate.md)** — generation/revision gate（P0-3）
-4. **[x003b](../../roadmap/slices/x003b-decode-limits-ops-hygiene.md)** — decode limits（P0-4）+ world test DB / prod S2S（P0-5/6）
+4. **[x003b](../../roadmap/slices/x003b-decode-limits-ops-hygiene.md)** — decode limits（P0-4）+ world test DB / prod S2S（P0-5/6） — **done**
 5. **x003c+** — BlobGrant or 文書、network worker、cnf、ACL（P1）
 
 スライス完了条件に必ず含める: **prod compose 起動**・**否定系が通る**・**保証表とコード一致**。

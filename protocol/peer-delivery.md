@@ -24,12 +24,12 @@
 
 | キー / 経路 | クラス | 保証する | 保証しない |
 |:---|:---|:---|:---|
-| `…/frame` | **latest**（デルタ） | 届いたデルタを `host_sig` 検証・finite（TRS 含む・x0029）・tick 規則の後に適用できる。**publish された tick は連番**（空は未送かつ未加算）。回転/scale 変化も upsert | 物理 Hz ごとの空 tick・欠落の再送 |
-| `…/snapshot` | **request/response**（フル pose） | late join / 再同期で entity 表を置換収束（`upserts` 非空・TRS 同スキーマ） | 連続 query のレート・空応答時の即時成功 |
-| `…/manifest` | **latest**（低頻度＋再送） | 届いた最新を **`protocol_pin` → `room_id` → `world_seal`（blake3）→ `host_attestation` → `(host_generation, revision)` 単調ゲート** の順で検証後に採用（x0026 / x003a）。**同一 generation 内は `host_pub` 固定**（不一致・鍵欠落は discard）。entries が配置・Grab・mesh・**初期 TRS** の定義正本（x0027 / x002c）。host は seal / attestation を TTL 80% で更新し、失敗時は公開停止 | shared-sim / EntityKind・欠落再送・適用完了 ACK・stale seal の継続公開・二重 host の generation フリップフロップ UX |
+| `…/frame` | **latest**（デルタ） | 届いたデルタを **byte/count 上限**（x003b）→ `host_sig` 検証・finite（TRS 含む・x0029）・tick 規則の後に適用できる。**publish された tick は連番**（空は未送かつ未加算）。回転/scale 変化も upsert | 物理 Hz ごとの空 tick・欠落の再送 |
+| `…/snapshot` | **request/response**（フル pose） | late join / 再同期で entity 表を置換収束（`upserts` 非空・TRS 同スキーマ；**decode 上限** x003b） | 連続 query のレート・空応答時の即時成功 |
+| `…/manifest` | **latest**（低頻度＋再送） | 届いた最新を **byte 上限 → decode → count/string 上限 → `protocol_pin` → `room_id` → `world_seal`（blake3）→ `host_attestation` → `(host_generation, revision)` 単調ゲート** の順で検証後に採用（x0026 / x003a / **x003b**）。**同一 generation 内は `host_pub` 固定**（不一致・鍵欠落は discard）。entries が配置・Grab・mesh・**初期 TRS** の定義正本（x0027 / x002c）。host は seal / attestation を TTL 80% で更新し、失敗時は公開停止 | shared-sim / EntityKind・欠落再送・適用完了 ACK・stale seal の継続公開・二重 host の generation フリップフロップ UX；router max-payload |
 | world `GET …/scene` | **request/response**（HTTP） | host が Room 作成後に DemoScene（初期 quat/scale 含む）を取得し Rapier / Manifest の入力にする（x0027 / x002c） | guest 取得・シーン編集・collider の非一様リサイズ |
-| `…/presence` | **latest**（低頻度） | 届いた割当表を pin + **`host_sig`**（attested `host_pub`）+ **Manifest `host_generation` 一致 / revision 単調** 後に採用（x0025 / x003a）。Presence 単独で generation を上げない | world 署名・途中欠落の補完 |
-| `…/input` | **best-effort Intent** | host が受理した Intent について `intent_seq` 単調。bind 時 `role`→caps で move/grab/leave をマスク（x002a） | put 成功＝適用成功、ACK、確実配送、caps のワイヤ明示 |
+| `…/presence` | **latest**（低頻度） | 届いた割当表を **byte/count 上限**（x003b）+ pin + **`host_sig`**（attested `host_pub`）+ **Manifest `host_generation` 一致 / revision 単調** 後に採用（x0025 / x003a）。Presence 単独で generation を上げない | world 署名・途中欠落の補完 |
+| `…/input` | **best-effort Intent** | host が **byte/token 上限**（x003b）後に受理した Intent について `intent_seq` 単調。bind 時 `role`→caps で move/grab/leave をマスク（x002a） | put 成功＝適用成功、ACK、確実配送、caps のワイヤ明示 |
 | `…/host_control` | **best-effort command**（既定 OFF） | `ALCHEMY_HOST_CONTROL=1` のとき到達は best-effort | 認証・ACK |
 | `…/alive/{sub}/{jti}` | liveliness | Delete で host が jti 一致時 reclaim（x0022） | WAN ACL・他人 Delete の完全防御 |
 | assets HTTP CAS | **Blob（参照）** | blake3 参照の取得は assets 層の契約 | Zenoh 上の Blob 配送 |

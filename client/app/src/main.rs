@@ -9,6 +9,7 @@
 //! - Manifest `world_seal` + `host_attestation` via world JWKS before adopting `host_pub`; Presence `host_sig` (x0026)
 //! - Manifest / Presence `(host_generation, revision)` monotonic gate; regression → discard (x003a)
 //! - Manifest / Presence verify failure → discard (keep joined); leave only on explicit Leave (x0038)
+//! - Class-specific Zenoh decode byte/count limits → drop (x003b)
 //! - Manifest entries drive mesh blake3 / Grab flags / box half-extents (x0027)
 //! - RenderFrame Entity carries quat + scale; client applies TRS (x0029)
 //! - PROTOCOL_PIN mismatch on Manifest/Presence rejects apply (x0023 / x0038 discard)
@@ -46,6 +47,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use alchemy_protocol::decode_limits::{
+    check_frame, check_manifest, check_payload_bytes, check_presence, WireClass,
+};
 use alchemy_protocol::generation_gate::{
     decide_gen_rev, decide_presence_gen_rev, GenRev, GenRevDecision,
 };
@@ -243,12 +247,23 @@ fn spawn_manifest_subscriber(
             let mut dropped_attest: u64 = 0;
             let mut dropped_gen_rev: u64 = 0;
             let mut dropped_decode: u64 = 0;
+            let mut dropped_limits: u64 = 0;
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = bytes.to_bytes();
+                if let Err(err) = check_payload_bytes(WireClass::Manifest, payload.len()) {
+                    dropped_limits += 1;
+                    log::warn!("drop SceneManifest: {err}");
+                    continue;
+                }
                 match SceneManifest::decode(payload.as_ref()) {
                     Ok(manifest) => {
+                        if let Err(err) = check_manifest(&manifest) {
+                            dropped_limits += 1;
+                            log::warn!("drop SceneManifest: {err}");
+                            continue;
+                        }
                         if let Err(reason) = gate_manifest_identity(
                             &manifest.protocol_pin,
                             &manifest.room_id,
@@ -466,10 +481,11 @@ fn spawn_manifest_subscriber(
                         + dropped_attest
                         + dropped_gen_rev
                         + dropped_decode
+                        + dropped_limits
                         > 0
                     {
                         log::info!(
-                            "manifest gate: dropped_identity={dropped_identity} dropped_seal={dropped_seal} dropped_attest={dropped_attest} dropped_gen_rev={dropped_gen_rev} dropped_decode={dropped_decode} (last ~5s)"
+                            "manifest gate: dropped_identity={dropped_identity} dropped_seal={dropped_seal} dropped_attest={dropped_attest} dropped_gen_rev={dropped_gen_rev} dropped_decode={dropped_decode} dropped_limits={dropped_limits} (last ~5s)"
                         );
                     }
                     dropped_identity = 0;
@@ -477,6 +493,7 @@ fn spawn_manifest_subscriber(
                     dropped_attest = 0;
                     dropped_gen_rev = 0;
                     dropped_decode = 0;
+                    dropped_limits = 0;
                     last_gate_log = Instant::now();
                 }
             }
@@ -625,8 +642,17 @@ fn fetch_snapshot(session: &zenoh::Session, room_id: &str, shared: &SharedState)
                 match reply.result() {
                     Ok(sample) => {
                         let bytes: ZBytes = sample.payload().clone();
-                        match RenderFrame::decode(bytes.to_bytes().as_ref()) {
+                        let payload = bytes.to_bytes();
+                        if let Err(err) = check_payload_bytes(WireClass::Frame, payload.len()) {
+                            log::warn!("drop snapshot: {err}");
+                            continue;
+                        }
+                        match RenderFrame::decode(payload.as_ref()) {
                             Ok(frame) => {
+                                if let Err(err) = check_frame(&frame) {
+                                    log::warn!("drop snapshot: {err}");
+                                    continue;
+                                }
                                 if apply_frame(shared, frame, /* replace */ true)
                                     == ApplyFrameOutcome::Applied
                                 {
@@ -672,19 +698,29 @@ fn spawn_frame_subscriber(
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = bytes.to_bytes();
+                if let Err(err) = check_payload_bytes(WireClass::Frame, payload.len()) {
+                    log::warn!("drop RenderFrame: {err}");
+                    continue;
+                }
                 match RenderFrame::decode(payload.as_ref()) {
-                    Ok(frame) => match apply_frame(&shared, frame, /* replace */ false) {
-                        ApplyFrameOutcome::Applied | ApplyFrameOutcome::Dropped => {}
-                        ApplyFrameOutcome::NeedResync => {
-                            // x0024: missing deltas are not retransmitted — resync via snapshot.
-                            let now = Instant::now();
-                            if now < resync_cooldown_until {
-                                continue;
-                            }
-                            resync_cooldown_until = now + SNAPSHOT_GAP_RESYNC_COOLDOWN;
-                            let _ = fetch_snapshot(&session, shared.room_id.as_ref(), &shared);
+                    Ok(frame) => {
+                        if let Err(err) = check_frame(&frame) {
+                            log::warn!("drop RenderFrame: {err}");
+                            continue;
                         }
-                    },
+                        match apply_frame(&shared, frame, /* replace */ false) {
+                            ApplyFrameOutcome::Applied | ApplyFrameOutcome::Dropped => {}
+                            ApplyFrameOutcome::NeedResync => {
+                                // x0024: missing deltas are not retransmitted — resync via snapshot.
+                                let now = Instant::now();
+                                if now < resync_cooldown_until {
+                                    continue;
+                                }
+                                resync_cooldown_until = now + SNAPSHOT_GAP_RESYNC_COOLDOWN;
+                                let _ = fetch_snapshot(&session, shared.room_id.as_ref(), &shared);
+                            }
+                        }
+                    }
                     Err(err) => log::warn!("RenderFrame decode failed: {err}"),
                 }
             }
@@ -713,12 +749,23 @@ fn spawn_presence_subscriber(
             let mut dropped_sig: u64 = 0;
             let mut dropped_gen_rev: u64 = 0;
             let mut dropped_decode: u64 = 0;
+            let mut dropped_limits: u64 = 0;
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = bytes.to_bytes();
+                if let Err(err) = check_payload_bytes(WireClass::Presence, payload.len()) {
+                    dropped_limits += 1;
+                    log::warn!("drop PresenceState: {err}");
+                    continue;
+                }
                 match PresenceState::decode(payload.as_ref()) {
                     Ok(state) => {
+                        if let Err(err) = check_presence(&state) {
+                            dropped_limits += 1;
+                            log::warn!("drop PresenceState: {err}");
+                            continue;
+                        }
                         if let Err(reason) = gate_presence_pin(&state.protocol_pin) {
                             dropped_pin += 1;
                             log::warn!(
@@ -830,16 +877,18 @@ fn spawn_presence_subscriber(
                         + dropped_sig
                         + dropped_gen_rev
                         + dropped_decode
+                        + dropped_limits
                         > 0
                     {
                         log::info!(
-                            "presence gate: dropped_pin={dropped_pin} dropped_no_host={dropped_no_host} dropped_sig={dropped_sig} dropped_gen_rev={dropped_gen_rev} dropped_decode={dropped_decode} (last ~5s)"
+                            "presence gate: dropped_pin={dropped_pin} dropped_no_host={dropped_no_host} dropped_sig={dropped_sig} dropped_gen_rev={dropped_gen_rev} dropped_decode={dropped_decode} dropped_limits={dropped_limits} (last ~5s)"
                         );
                     }
                     dropped_pin = 0;
                     dropped_no_host = 0;
                     dropped_sig = 0;
                     dropped_gen_rev = 0;
+                    dropped_limits = 0;
                     dropped_decode = 0;
                     last_gate_log = Instant::now();
                 }
@@ -1177,7 +1226,7 @@ fn main() -> Result<()> {
     let silent = auth::try_silent_session(&auth_url).context("silent auth")?;
     let auth_mode = if silent.is_some() { "silent" } else { "ui" };
     log::info!(
-        "client x003a starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
+        "client x003b starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
     );
 
     let mut gate = AuthGate::default();

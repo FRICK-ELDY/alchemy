@@ -58,7 +58,8 @@ docker compose up -d
 # http://localhost:4002/.well-known/jwks.json
 ```
 
-**公開 / Tunnel（x001e）:** `docker-compose.prod.yml`（release）のみ。`MIX_ENV=dev` を Cloudflare の後ろに置かない（`/dev/mailbox` 乗っ取り経路）。手順: [`edge/cloudflared/README.md`](../../../edge/cloudflared/README.md)。
+**公開 / Tunnel（x001e）:** `docker-compose.prod.yml`（release）のみ。`MIX_ENV=dev` を Cloudflare の後ろに置かない（`/dev/mailbox` 乗っ取り経路）。手順: [`edge/cloudflared/README.md`](../../../edge/cloudflared/README.md)。  
+**prod S2S（x003b）:** `.env.prod` に `AUTH_INTERNAL_TOKEN`（world と一致）。`make smoke-prod-compose` で compose config を検証。
 
 シードアカウント（`priv/repo/seeds.exs`・**dev のみ**）: `alice` / `bob` / `carol` / `admin`、パスワード `Password1`。prod compose は seed しない。
 
