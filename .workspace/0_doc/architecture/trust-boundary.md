@@ -42,7 +42,7 @@ flowchart TB
 | `…/input` | なりすまし操作・物理発散 | host: Room Token（bind）+ Ed25519 session（x0023）+ `is_finite` / magnitude / Grab 距離（x0021） | zenohd ACL・帯域上限 |
 | `…/frame` | 偽描画・NaN | client: `host_sig` + Manifest `host_pub`（attestation）+ finite / tick / snapshot（x0023–x0024） | 確実配送 ACK |
 | `…/presence` | 偽スロット・偽退室表示 | client: pin + `host_sig`（x0025） | Presence の world 署名 |
-| `…/manifest` | 改ざん配置・偽 host_pub | `world_seal` + HostAttestation（x0026）；失敗は leave | UGC 編集 ACL |
+| `…/manifest` | 改ざん配置・偽 host_pub | `world_seal` + HostAttestation（x0026）；失敗は **discard**（x0038；退室しない） | UGC 編集 ACL；seal oracle / revision replay（→ x0039 / x003a） |
 | `…/alive` | 偽 Delete で退室 | host: liveliness を検証済み jti に紐付け（x0022） | WAN liveliness ACL |
 | `…/snapshot` | 偽全置換 | client: Frame と同じ host_sig / finite 前提で適用 | queryable 認証の別チャネル |
 | `…/host_control` | 遠隔プロセス停止 | **既定オフ**（x001e）。launcher 経路は localhost IPC（x0032） | WAN 上の無認証 Zenoh control |
@@ -76,3 +76,4 @@ flowchart TB
 | x0023–x0026 | session / Frame 検証 / snapshot / attestation / seal |
 | x0030 | shared-sim（分類の単一正本；信頼境界の変更なし） |
 | x0032 | launcher localhost IPC（実装済み） |
+| x0038 | Manifest / Presence 検証失敗は discard（leave しない） |

@@ -1,8 +1,9 @@
-//! x001f / x0023 hermetic E2E probe — no GUI.
+//! x001f / x0023 / x0038 hermetic E2E probe — no GUI.
 //!
 //! Guarantees: against a running auth/world/assets/zenohd (+ host-server), asserts
-//! login → Room Token → signed InputEvent put → RenderFrame with upserts + user_root.
-//! Non-guarantees: Token refresh, WAN, R2, GUI client, Frame signature check.
+//! login → Room Token → signed InputEvent put → RenderFrame with upserts + user_root;
+//! invalid Input and fake Manifest do not stop host Frame publish (x0038).
+//! Non-guarantees: Token refresh, WAN, R2, GUI client leave path, Frame signature check.
 
 use std::env;
 use std::thread;
@@ -12,8 +13,8 @@ use alchemy_protocol::wire_crypto::{
     generate_signing_key, public_key_bytes, sign_input, SigningKey,
 };
 use alchemy_protocol::{
-    frame_key, input_key, snapshot_key, user_root_entity_last, validate_room_id, InputEvent,
-    Message, RenderFrame, PROTOCOL_PIN, USER_ROOT_ENTITY_FIRST,
+    frame_key, input_key, manifest_key, snapshot_key, user_root_entity_last, validate_room_id,
+    InputEvent, Message, RenderFrame, SceneManifest, PROTOCOL_PIN, USER_ROOT_ENTITY_FIRST,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
@@ -108,6 +109,29 @@ fn put_input(session: &zenoh::Session, key: &str, event: &InputEvent) -> Result<
         .wait()
         .map_err(|e| anyhow!("zenoh put input: {e}"))?;
     Ok(())
+}
+
+fn put_manifest(session: &zenoh::Session, key: &str, manifest: &SceneManifest) -> Result<()> {
+    let bytes = manifest.encode_to_vec();
+    session
+        .put(key, bytes)
+        .wait()
+        .map_err(|e| anyhow!("zenoh put manifest: {e}"))?;
+    Ok(())
+}
+
+/// Adversarial Manifest: wrong pin so any verifying peer must discard (x0038).
+fn fake_manifest(room_id: &str) -> SceneManifest {
+    SceneManifest {
+        room_id: room_id.into(),
+        revision: 0,
+        entries: vec![],
+        locomotion: None,
+        protocol_pin: "bogus-pin-x0038".into(),
+        host_pub: vec![0u8; 32],
+        host_attestation: String::new(),
+        world_seal: String::new(),
+    }
 }
 
 fn move_input(key: &SigningKey, room_token: Option<&str>, seq: u64) -> InputEvent {
@@ -323,6 +347,31 @@ fn main() -> Result<()> {
     }
     log::info!("host still publishing after invalid token ok");
 
-    println!("e2e-probe: ok (login→token→input→frame+user_root)");
+    // x0038: fake Manifest must not stop the host Frame path (GUI client leave is unit-tested).
+    let manifest_k = manifest_key(&room_id);
+    put_manifest(&session, &manifest_k, &fake_manifest(&room_id))?;
+    log::info!("put fake SceneManifest (expect peer discard; host keep publishing)");
+
+    let mut post_fake_manifest = false;
+    let remain = deadline.saturating_duration_since(Instant::now());
+    let post_deadline = Instant::now() + remain.min(Duration::from_secs(10));
+    while Instant::now() < post_deadline {
+        match subscriber.try_recv() {
+            Ok(Some(sample)) => {
+                let bytes: ZBytes = sample.payload().clone();
+                if RenderFrame::decode(bytes.to_bytes().as_ref()).is_ok() {
+                    post_fake_manifest = true;
+                    break;
+                }
+            }
+            Ok(None) | Err(_) => thread::sleep(Duration::from_millis(50)),
+        }
+    }
+    if !post_fake_manifest {
+        bail!("host stopped publishing frames after fake Manifest");
+    }
+    log::info!("host still publishing after fake Manifest ok");
+
+    println!("e2e-probe: ok (login→token→input→frame+user_root; adversarial input+manifest)");
     Ok(())
 }

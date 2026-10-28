@@ -106,12 +106,12 @@ depends_on: [x0006]
 | x0035 | — | done | friends_plus / followers / followers_plus（2hop） | [x0035-visibility-hops.md](slices/x0035-visibility-hops.md) |
 | x0036 | — | done | lan 公開範囲（外部・Tunnel 拒否） | [x0036-lan-visibility.md](slices/x0036-lan-visibility.md) |
 | x0037 | — | done | client アクセスレベル UI（新規ワールド作成・仮置き） | [x0037-client-access-level-ui.md](slices/x0037-client-access-level-ui.md) |
-| x0038 | — | planned | 検証失敗は破棄（leave→discard）+ 否定系 E2E | [x0038-leave-to-discard.md](slices/x0038-leave-to-discard.md) |
+| x0038 | — | done | 検証失敗は破棄（leave→discard）+ 否定系 E2E | [x0038-leave-to-discard.md](slices/x0038-leave-to-discard.md) |
 | x0039 | — | planned | canonical ManifestSeal（署名 oracle 廃止） | [x0039-canonical-manifest-seal.md](slices/x0039-canonical-manifest-seal.md) |
 | x003a | — | planned | generation / revision 単調ゲート（replay 拒否） | [x003a-generation-revision-gate.md](slices/x003a-generation-revision-gate.md) |
 | x003b | — | planned | decode limit + prod S2S + world テスト DB 隔離 | [x003b-decode-limits-ops-hygiene.md](slices/x003b-decode-limits-ops-hygiene.md) |
 
-**現在の次:** **x0038**（P0 暗号契約・運用継ぎ目）。続けて x0039 → x003a → x003b。
+**現在の次:** **x0039**（canonical ManifestSeal）。続けて x003a → x003b。
 
 次の空き番号は **`x003c`**。
 

@@ -7,9 +7,10 @@
 //! - Intent Ed25519 session (Token on bind only); Frame finite/tick/sig + snapshot (x0023)
 //! - Frame tick gap → do not apply delta; `…/snapshot` replace (x0024 / peer-delivery)
 //! - Manifest `world_seal` + `host_attestation` via world JWKS before adopting `host_pub`; Presence `host_sig` (x0026)
+//! - Manifest / Presence verify failure → discard (keep joined); leave only on explicit Leave (x0038)
 //! - Manifest entries drive mesh blake3 / Grab flags / box half-extents (x0027)
 //! - RenderFrame Entity carries quat + scale; client applies TRS (x0029)
-//! - PROTOCOL_PIN mismatch on Manifest/Presence rejects apply (x0023)
+//! - PROTOCOL_PIN mismatch on Manifest/Presence rejects apply (x0023 / x0038 discard)
 //! - CI fallback: `AUTH_USER` or `ALCHEMY_AUTH_TOKEN` skips UI and joins
 //! - Subscribes to SceneManifest / PresenceState / RenderFrame; downloads blob; wgpu mesh
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
@@ -88,6 +89,34 @@ pub struct GuestToken {
 }
 
 const TOKEN_REFRESH_POLL: Duration = Duration::from_secs(5);
+const GATE_LOG_INTERVAL: Duration = Duration::from_secs(5);
+
+/// x0038: Manifest identity checks. Failure → discard sample (never leave).
+fn gate_manifest_identity(
+    protocol_pin: &str,
+    room_id: &str,
+    host_pub_len: usize,
+    expected_room: &str,
+) -> Result<(), &'static str> {
+    if !protocol_pin_matches(protocol_pin) {
+        return Err("protocol_pin mismatch");
+    }
+    if room_id != expected_room {
+        return Err("room_id mismatch");
+    }
+    if host_pub_len != 32 {
+        return Err("host_pub length");
+    }
+    Ok(())
+}
+
+/// x0038: Presence pin check. Failure → discard sample (never leave).
+fn gate_presence_pin(protocol_pin: &str) -> Result<(), &'static str> {
+    if !protocol_pin_matches(protocol_pin) {
+        return Err("protocol_pin mismatch");
+    }
+    Ok(())
+}
 
 fn zenoh_connect_endpoint() -> String {
     std::env::var("ZENOH_CONNECT").unwrap_or_else(|_| DEFAULT_ZENOH_CONNECT.to_string())
@@ -204,44 +233,39 @@ fn spawn_manifest_subscriber(
             let mut sent_blake3 = false;
             // `true` only after a successful snapshot apply for the current `host_pub`.
             let mut snapshot_ok = false;
+            // x0038: drop counters (host input-gate style); never leave on verify fail.
+            let mut dropped_identity: u64 = 0;
+            let mut dropped_seal: u64 = 0;
+            let mut dropped_attest: u64 = 0;
+            let mut dropped_decode: u64 = 0;
+            let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = bytes.to_bytes();
                 match SceneManifest::decode(payload.as_ref()) {
                     Ok(manifest) => {
-                        if !protocol_pin_matches(&manifest.protocol_pin) {
-                            log::error!(
-                                "SceneManifest protocol_pin mismatch: got {:?} want {PROTOCOL_PIN}; leaving room",
-                                manifest.protocol_pin
-                            );
-                            shared.leave_room_local();
-                            continue;
-                        }
-                        if manifest.room_id != shared.room_id.as_ref() {
-                            log::error!(
-                                "SceneManifest room_id mismatch: got {:?} want {}; leaving room",
+                        if let Err(reason) = gate_manifest_identity(
+                            &manifest.protocol_pin,
+                            &manifest.room_id,
+                            manifest.host_pub.len(),
+                            shared.room_id.as_ref(),
+                        ) {
+                            dropped_identity += 1;
+                            log::warn!(
+                                "drop SceneManifest: {reason} (pin={:?} room={:?} host_pub_len={} want_pin={PROTOCOL_PIN} want_room={})",
+                                manifest.protocol_pin,
                                 manifest.room_id,
+                                manifest.host_pub.len(),
                                 shared.room_id
                             );
-                            shared.leave_room_local();
-                            continue;
-                        }
-                        if manifest.host_pub.len() != 32 {
-                            log::error!(
-                                "SceneManifest host_pub length {} (want 32); leaving room",
-                                manifest.host_pub.len()
-                            );
-                            shared.leave_room_local();
                             continue;
                         }
                         let body_hex = manifest_seal_blake3_hex(&manifest);
                         if let Err(err) =
                             seal.verify(&manifest.world_seal, manifest.revision, &body_hex)
                         {
-                            log::error!(
-                                "SceneManifest world_seal rejected: {err:#}; leaving room"
-                            );
-                            shared.leave_room_local();
+                            dropped_seal += 1;
+                            log::warn!("drop SceneManifest: world_seal rejected: {err:#}");
                             continue;
                         }
                         let attested_pub = match attest
@@ -249,10 +273,10 @@ fn spawn_manifest_subscriber(
                         {
                             Ok(pub_bytes) => pub_bytes,
                             Err(err) => {
-                                log::error!(
-                                    "SceneManifest host_attestation rejected: {err:#}; leaving room"
+                                dropped_attest += 1;
+                                log::warn!(
+                                    "drop SceneManifest: host_attestation rejected: {err:#}"
                                 );
-                                shared.leave_room_local();
                                 continue;
                             }
                         };
@@ -365,7 +389,22 @@ fn spawn_manifest_subscriber(
                             }
                         }
                     }
-                    Err(err) => log::warn!("SceneManifest decode failed: {err}"),
+                    Err(err) => {
+                        dropped_decode += 1;
+                        log::warn!("drop SceneManifest: decode failed: {err}");
+                    }
+                }
+                if last_gate_log.elapsed() >= GATE_LOG_INTERVAL {
+                    if dropped_identity + dropped_seal + dropped_attest + dropped_decode > 0 {
+                        log::info!(
+                            "manifest gate: dropped_identity={dropped_identity} dropped_seal={dropped_seal} dropped_attest={dropped_attest} dropped_decode={dropped_decode} (last ~5s)"
+                        );
+                    }
+                    dropped_identity = 0;
+                    dropped_seal = 0;
+                    dropped_attest = 0;
+                    dropped_decode = 0;
+                    last_gate_log = Instant::now();
                 }
             }
         })
@@ -596,25 +635,32 @@ fn spawn_presence_subscriber(
         .spawn(move || {
             let _session = session;
             log::info!("subscribed to {key} (Presence; local_sub from AuthGate)");
+            let mut dropped_pin: u64 = 0;
+            let mut dropped_no_host: u64 = 0;
+            let mut dropped_sig: u64 = 0;
+            let mut dropped_decode: u64 = 0;
+            let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = bytes.to_bytes();
                 match PresenceState::decode(payload.as_ref()) {
                     Ok(state) => {
-                        if !protocol_pin_matches(&state.protocol_pin) {
-                            log::error!(
-                                "PresenceState protocol_pin mismatch: got {:?} want {PROTOCOL_PIN}; leaving room",
+                        if let Err(reason) = gate_presence_pin(&state.protocol_pin) {
+                            dropped_pin += 1;
+                            log::warn!(
+                                "drop PresenceState: {reason} (pin={:?} want={PROTOCOL_PIN})",
                                 state.protocol_pin
                             );
-                            shared.leave_room_local();
                             continue;
                         }
                         let host_pub = shared.host_pub.lock().ok().and_then(|g| g.clone());
                         let Some(host_pub) = host_pub else {
+                            dropped_no_host += 1;
                             log::warn!("drop PresenceState: host_pub not yet attested");
                             continue;
                         };
                         if let Err(err) = verify_presence(&host_pub, &state) {
+                            dropped_sig += 1;
                             log::warn!("drop PresenceState: bad host_sig: {err}");
                             continue;
                         }
@@ -669,7 +715,22 @@ fn spawn_presence_subscriber(
                             }
                         }
                     }
-                    Err(err) => log::warn!("PresenceState decode failed: {err}"),
+                    Err(err) => {
+                        dropped_decode += 1;
+                        log::warn!("drop PresenceState: decode failed: {err}");
+                    }
+                }
+                if last_gate_log.elapsed() >= GATE_LOG_INTERVAL {
+                    if dropped_pin + dropped_no_host + dropped_sig + dropped_decode > 0 {
+                        log::info!(
+                            "presence gate: dropped_pin={dropped_pin} dropped_no_host={dropped_no_host} dropped_sig={dropped_sig} dropped_decode={dropped_decode} (last ~5s)"
+                        );
+                    }
+                    dropped_pin = 0;
+                    dropped_no_host = 0;
+                    dropped_sig = 0;
+                    dropped_decode = 0;
+                    last_gate_log = Instant::now();
                 }
             }
         })
@@ -1244,5 +1305,29 @@ mod tests {
         assert_eq!(next, ApplyFrameOutcome::Applied);
         assert_eq!(world.last_frame_tick, Some(6));
         assert!((world.entities.get(&1).unwrap().x - 9.0).abs() < f32::EPSILON);
+    }
+
+    /// x0038: identity / pin failures are discard reasons (Err), never a leave signal.
+    #[test]
+    fn manifest_identity_gate_rejects_bad_pin_room_and_host_pub_len() {
+        assert!(gate_manifest_identity(PROTOCOL_PIN, "local", 32, "local").is_ok());
+        assert_eq!(
+            gate_manifest_identity("bogus-pin", "local", 32, "local"),
+            Err("protocol_pin mismatch")
+        );
+        assert_eq!(
+            gate_manifest_identity(PROTOCOL_PIN, "other", 32, "local"),
+            Err("room_id mismatch")
+        );
+        assert_eq!(
+            gate_manifest_identity(PROTOCOL_PIN, "local", 16, "local"),
+            Err("host_pub length")
+        );
+    }
+
+    #[test]
+    fn presence_pin_gate_rejects_mismatch() {
+        assert!(gate_presence_pin(PROTOCOL_PIN).is_ok());
+        assert_eq!(gate_presence_pin("bogus-pin"), Err("protocol_pin mismatch"));
     }
 }
