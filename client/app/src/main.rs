@@ -250,12 +250,14 @@ fn spawn_manifest_subscriber(
             let mut dropped_limits: u64 = 0;
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
+                // x003b: early drops must still reach the interval aggregate log below.
+                'sample: {
                 let bytes: ZBytes = sample.payload().clone();
                 // x003b: length before contiguous copy (`to_bytes`).
                 if let Err(err) = check_payload_bytes(WireClass::Manifest, bytes.len()) {
                     dropped_limits += 1;
                     log::warn!("drop SceneManifest: {err}");
-                    continue;
+                    break 'sample;
                 }
                 let payload = bytes.to_bytes();
                 match SceneManifest::decode(payload.as_ref()) {
@@ -263,7 +265,7 @@ fn spawn_manifest_subscriber(
                         if let Err(err) = check_manifest(&manifest) {
                             dropped_limits += 1;
                             log::warn!("drop SceneManifest: {err}");
-                            continue;
+                            break 'sample;
                         }
                         if let Err(reason) = gate_manifest_identity(
                             &manifest.protocol_pin,
@@ -279,7 +281,7 @@ fn spawn_manifest_subscriber(
                                 manifest.host_pub.len(),
                                 shared.room_id
                             );
-                            continue;
+                            break 'sample;
                         }
                         let body_hex = manifest_seal_blake3_hex(&manifest);
                         if let Err(err) = seal.verify(
@@ -290,7 +292,7 @@ fn spawn_manifest_subscriber(
                         ) {
                             dropped_seal += 1;
                             log::warn!("drop SceneManifest: world_seal rejected: {err:#}");
-                            continue;
+                            break 'sample;
                         }
                         let (attested_pub, attested_gen) = match attest.verify_and_host_pub(
                             &manifest.host_attestation,
@@ -303,7 +305,7 @@ fn spawn_manifest_subscriber(
                                 log::warn!(
                                     "drop SceneManifest: host_attestation rejected: {err:#}"
                                 );
-                                continue;
+                                break 'sample;
                             }
                         };
                         let incoming = GenRev {
@@ -370,7 +372,7 @@ fn spawn_manifest_subscriber(
                                 log::error!(
                                     "host_pub/manifest_gen_rev lock poisoned; skip Manifest apply"
                                 );
-                                continue;
+                                break 'sample;
                             }
                         };
                         let generation_changed = match apply_outcome {
@@ -378,7 +380,7 @@ fn spawn_manifest_subscriber(
                             Err((reason, detail)) => {
                                 dropped_gen_rev += 1;
                                 log::warn!("drop SceneManifest: {reason}: {detail}");
-                                continue;
+                                break 'sample;
                             }
                         };
                         if generation_changed {
@@ -476,6 +478,7 @@ fn spawn_manifest_subscriber(
                         log::warn!("drop SceneManifest: decode failed: {err}");
                     }
                 }
+                } // 'sample
                 if last_gate_log.elapsed() >= GATE_LOG_INTERVAL {
                     if dropped_identity
                         + dropped_seal
@@ -705,11 +708,12 @@ fn spawn_frame_subscriber(
             let mut dropped_limits: u64 = 0;
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
+                'sample: {
                 let bytes: ZBytes = sample.payload().clone();
                 if let Err(err) = check_payload_bytes(WireClass::Frame, bytes.len()) {
                     dropped_limits += 1;
                     log::warn!("drop RenderFrame: {err}");
-                    continue;
+                    break 'sample;
                 }
                 let payload = bytes.to_bytes();
                 match RenderFrame::decode(payload.as_ref()) {
@@ -717,7 +721,7 @@ fn spawn_frame_subscriber(
                         if let Err(err) = check_frame(&frame) {
                             dropped_limits += 1;
                             log::warn!("drop RenderFrame: {err}");
-                            continue;
+                            break 'sample;
                         }
                         match apply_frame(&shared, frame, /* replace */ false) {
                             ApplyFrameOutcome::Applied | ApplyFrameOutcome::Dropped => {}
@@ -725,7 +729,7 @@ fn spawn_frame_subscriber(
                                 // x0024: missing deltas are not retransmitted — resync via snapshot.
                                 let now = Instant::now();
                                 if now < resync_cooldown_until {
-                                    continue;
+                                    break 'sample;
                                 }
                                 resync_cooldown_until = now + SNAPSHOT_GAP_RESYNC_COOLDOWN;
                                 let _ = fetch_snapshot(&session, shared.room_id.as_ref(), &shared);
@@ -734,6 +738,7 @@ fn spawn_frame_subscriber(
                     }
                     Err(err) => log::warn!("RenderFrame decode failed: {err}"),
                 }
+                } // 'sample
                 if last_gate_log.elapsed() >= GATE_LOG_INTERVAL {
                     if dropped_limits > 0 {
                         log::info!("frame gate: dropped_limits={dropped_limits} (last ~5s)");
@@ -770,11 +775,12 @@ fn spawn_presence_subscriber(
             let mut dropped_limits: u64 = 0;
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
+                'sample: {
                 let bytes: ZBytes = sample.payload().clone();
                 if let Err(err) = check_payload_bytes(WireClass::Presence, bytes.len()) {
                     dropped_limits += 1;
                     log::warn!("drop PresenceState: {err}");
-                    continue;
+                    break 'sample;
                 }
                 let payload = bytes.to_bytes();
                 match PresenceState::decode(payload.as_ref()) {
@@ -782,7 +788,7 @@ fn spawn_presence_subscriber(
                         if let Err(err) = check_presence(&state) {
                             dropped_limits += 1;
                             log::warn!("drop PresenceState: {err}");
-                            continue;
+                            break 'sample;
                         }
                         if let Err(reason) = gate_presence_pin(&state.protocol_pin) {
                             dropped_pin += 1;
@@ -790,18 +796,18 @@ fn spawn_presence_subscriber(
                                 "drop PresenceState: {reason} (pin={:?} want={PROTOCOL_PIN})",
                                 state.protocol_pin
                             );
-                            continue;
+                            break 'sample;
                         }
                         let host_pub = shared.host_pub.lock().ok().and_then(|g| g.clone());
                         let Some(host_pub) = host_pub else {
                             dropped_no_host += 1;
                             log::warn!("drop PresenceState: host_pub not yet attested");
-                            continue;
+                            break 'sample;
                         };
                         if let Err(err) = verify_presence(&host_pub, &state) {
                             dropped_sig += 1;
                             log::warn!("drop PresenceState: bad host_sig: {err}");
-                            continue;
+                            break 'sample;
                         }
                         let manifest_gen = shared
                             .manifest_gen_rev
@@ -830,7 +836,7 @@ fn spawn_presence_subscriber(
                                     manifest_gen,
                                     known_presence
                                 );
-                                continue;
+                                break 'sample;
                             }
                         }
                         let local_sub = shared
@@ -843,7 +849,7 @@ fn spawn_presence_subscriber(
                             if shared.local_user_root() != LOCAL_USER_ROOT_UNSET {
                                 shared.set_local_user_root(LOCAL_USER_ROOT_UNSET);
                             }
-                            continue;
+                            break 'sample;
                         }
                         let mine = state
                             .assignments
@@ -889,6 +895,7 @@ fn spawn_presence_subscriber(
                         log::warn!("drop PresenceState: decode failed: {err}");
                     }
                 }
+                } // 'sample
                 if last_gate_log.elapsed() >= GATE_LOG_INTERVAL {
                     if dropped_pin
                         + dropped_no_host

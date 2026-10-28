@@ -15,13 +15,13 @@
 
 use prost::Message;
 
-use crate::wire_crypto::PUBLIC_KEY_LENGTH;
+use crate::wire_crypto::{PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
 use crate::{
     InputEvent, PresenceState, RenderFrame, SceneManifest, ROOM_ID_MAX_BYTES, USER_ROOT_SLOTS,
 };
 
-/// Ed25519 signature wire length (`ed25519_dalek::SIGNATURE_LENGTH`).
-pub const MAX_INTENT_SIG_BYTES: usize = 64;
+/// Ed25519 signature wire length ceiling (aligned with [`SIGNATURE_LENGTH`]).
+pub const MAX_INTENT_SIG_BYTES: usize = SIGNATURE_LENGTH;
 
 /// Wire message class for pre-decode sizing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +82,11 @@ pub enum DecodeLimitError {
         len: usize,
         max: usize,
     },
+    BytesTooLong {
+        field: &'static str,
+        len: usize,
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for DecodeLimitError {
@@ -98,6 +103,9 @@ impl std::fmt::Display for DecodeLimitError {
                 write!(f, "too many {field}: {count} > {max}")
             }
             Self::StringTooLong { field, len, max } => {
+                write!(f, "{field} too long: {len} > {max} bytes")
+            }
+            Self::BytesTooLong { field, len, max } => {
                 write!(f, "{field} too long: {len} > {max} bytes")
             }
         }
@@ -138,7 +146,7 @@ fn check_str(field: &'static str, value: &str, max: usize) -> Result<(), DecodeL
 fn check_bytes(field: &'static str, value: &[u8], max: usize) -> Result<(), DecodeLimitError> {
     let len = value.len();
     if len > max {
-        Err(DecodeLimitError::StringTooLong { field, len, max })
+        Err(DecodeLimitError::BytesTooLong { field, len, max })
     } else {
         Ok(())
     }
@@ -202,7 +210,7 @@ pub fn check_input(event: &InputEvent) -> Result<(), DecodeLimitError> {
     Ok(())
 }
 
-/// Decode + post-check after a successful [`check_payload_bytes`] (wiring / regression helper).
+/// Payload byte gate → decode → post-decode count check (wiring / regression helper).
 pub fn decode_frame_checked(payload: &[u8]) -> Result<RenderFrame, FrameDecodeLimitError> {
     check_payload_bytes(WireClass::Frame, payload.len()).map_err(FrameDecodeLimitError::Limit)?;
     let frame = RenderFrame::decode(payload).map_err(FrameDecodeLimitError::Decode)?;
@@ -302,7 +310,7 @@ mod tests {
         );
         assert!(matches!(
             decode_input_checked(&bytes),
-            Err(InputDecodeLimitError::Limit(DecodeLimitError::StringTooLong {
+            Err(InputDecodeLimitError::Limit(DecodeLimitError::BytesTooLong {
                 field: "session_pub",
                 ..
             }))
@@ -425,7 +433,7 @@ mod tests {
         };
         assert!(matches!(
             check_input(&event),
-            Err(DecodeLimitError::StringTooLong {
+            Err(DecodeLimitError::BytesTooLong {
                 field: "intent_sig",
                 ..
             })

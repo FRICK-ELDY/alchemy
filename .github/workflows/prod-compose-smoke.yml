@@ -39,7 +39,10 @@ jobs:
 
   # Optional full boot — release images are slow; PR default stays config-only.
   health:
-    if: github.event_name == 'workflow_dispatch' && inputs.up == true
+    # boolean input may arrive as true or the string "true" depending on runner/UI.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.up == true || inputs.up == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

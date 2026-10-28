@@ -514,12 +514,14 @@ fn spawn_input_gate(
             let mut dropped_limits: u64 = 0;
             let mut last_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
+                // x003b: early drops must still reach the interval aggregate log below.
+                'sample: {
                 let bytes: ZBytes = sample.payload().clone();
                 // x003b: length before contiguous copy (`to_bytes`).
                 if let Err(err) = check_payload_bytes(WireClass::Input, bytes.len()) {
                     dropped_limits += 1;
                     log::warn!("drop InputEvent: {err}");
-                    continue;
+                    break 'sample;
                 }
                 let payload = bytes.to_bytes();
                 match InputEvent::decode(payload.as_ref()) {
@@ -527,7 +529,7 @@ fn spawn_input_gate(
                         if let Err(err) = check_input(&event) {
                             dropped_limits += 1;
                             log::warn!("drop InputEvent: {err}");
-                            continue;
+                            break 'sample;
                         }
                         let auth = {
                             let mut table = lock_or_fatal(&sessions, "sessions");
@@ -589,6 +591,7 @@ fn spawn_input_gate(
                         log::warn!("drop InputEvent: decode failed: {err}");
                     }
                 }
+                } // 'sample
                 if last_log.elapsed() >= Duration::from_secs(5) {
                     let dropped_full = lock_or_fatal(&presence, "presence").dropped_full;
                     log::info!(
