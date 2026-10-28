@@ -13,7 +13,8 @@
 |:---|:---|
 | Room の作成（Ash + SQLite。`owner_sub` + DemoScene + `visibility`・x0028/x0034） | World 一覧 UI / Group |
 | 短命 Room Token（RS256）の発行 | Friendship 正本（auth）。Token 前に S2S 照会 |
-| 7段階公開範囲 ACL（Token 発行時・x0034–x0036） | client 公開範囲ピッカー UI；unfollow / visibility 変更時の既発行 Token 即時失効（TTL まで有効） |
+| 7段階公開範囲 ACL（Token 発行時・x0034–x0036） | unfollow / visibility 変更時の既発行 Token 即時失効（TTL まで有効） |
+| client Home「新規ワールド作成」仮 UI でアクセスレベル選択→ create/PUT + 入室（x0037） | UI デザイン最終化；`room_id` 動的切替；テンプレ複数；入室中の途中変更 UI |
 | `GET /.well-known/jwks.json`（Room Token 用） | verifier / ホスト死活監視 / S2S 連合 |
 | Room API は auth-server Bearer JWT 必須（`sub` を Room Token に転写） | 匿名 Token（既定 OFF。`WORLD_ALLOW_ANON_TOKENS=true` のみ） |
 | auth JWKS（`AUTH_JWKS_URL`）によるユーザー JWT 検証 | auth の revocation 再確認 |

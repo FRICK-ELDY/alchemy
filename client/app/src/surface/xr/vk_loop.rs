@@ -415,6 +415,9 @@ pub fn run_openxr(
             .collect::<std::result::Result<_, _>>()?;
 
         let mut ui = SystemUi::new();
+        // x0037: Start/Join HTTP is Desktop-wired; XR may browse the create panel only.
+        ui.state.home_session_actions_enabled = false;
+        ui.state.home_room_id = shared.room_id.to_string();
         ui.init_cpu_canvas(UI_CANVAS_W, UI_CANVAS_H)?;
         ui.rebuild();
         log::info!(
@@ -1158,8 +1161,15 @@ pub fn run_openxr(
                                     gate.clear_session();
                                 }
                                 ui.state.home_logged_in_as = None;
+                                ui.state.home_create_open = false;
                                 ui.state.home_status =
                                     "Signed out — Leave sent (host reclaim immediate)".into();
+                                ui.rebuild();
+                            }
+                            UiAction::StartSession | UiAction::JoinRoom => {
+                                // Full HTTP start/join is Desktop-wired (x0037); XR uses silent login + Join.
+                                ui.state.home_status =
+                                    "Start/Join session HTTP is Desktop-only this Slice (use silent login or Desktop)".into();
                                 ui.rebuild();
                             }
                             UiAction::None => {}

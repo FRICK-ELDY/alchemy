@@ -36,6 +36,8 @@
 | launcher（x0032）: host/client 分離 spawn・IPC shutdown。Exit Host は `ALCHEMY_HOST_IPC_*` 優先 | deep link / トレイ / handoff |
 | host: world `GET …/scene` → Rapier `from_entries` + sealed Manifest 公開（x0027）。60Hz + session gate + `is_finite` + Presence + Leave / jti liveliness / TTL（x0022）+ signed 30Hz 純デルタ + snapshot + attestation / seal refresh（x0026）。`ALCHEMY_AUTH_TOKEN` は長命前提 | Formula / 予測補間 / verifier / 本格 Walk / Steal / floor Manifest 化 / refresh 失敗後の自動復旧 / 短命静的 auth JWT の自動更新 |
 | ESC（Desktop）/ Menu（OpenXR）ダッシュ・下タブ Home/Settings/Exit・Pinned Exit・Home アカウント殻（x0018）・Button hover・client 終了・host 終了は `ALCHEMY_HOST_PID`（Zenoh `host_control` は opt-in・x001e）。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 / XR 仮想キーボード / 認証付きリモート shutdown |
+| Home ログイン後: 新規ワールド作成パネル（仮 UI）でセッション名 + **アクセスレベル**（=`visibility`）→ Start で create/PUT + guest 入室（x0037）。owner 同一アカウント時のみ選択レベルが載る；非 owner は既存 ACL のまま入室し status で区別。`ROOM_ID` 固定。ログインは自動入室しない（CI サイレントは従来どおり入室） | UI アート最終化 / テンプレ本実装 / XR Start HTTP / 表示名の永続 |
+| visibility 正本は world DB。host `ROOM_VISIBILITY` は **初回 create 既定**；owner の client PUT が後勝ち。起動順は host 先（同一アカウント）を前提 | 異アカウントが先に create したときの host 昇格 |
 | OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD |
 
 ## チャネル分離（C-C + E + x0009）

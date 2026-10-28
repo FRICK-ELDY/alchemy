@@ -415,9 +415,45 @@ fn resolve_with_optional_seed(
     ))
 }
 
+/// Keep in sync with `client` `access_level::AccessLevel` and world `World.Visibility`.
+const ROOM_VISIBILITY_ALLOWED: &[&str] = &[
+    "lan",
+    "private",
+    "friends",
+    "friends_plus",
+    "followers",
+    "followers_plus",
+    "public",
+];
+
+/// Allowlist parse; unknown → `None` (fail-closed at env boundary).
+fn parse_room_visibility(raw: &str) -> Option<&'static str> {
+    let v = raw.trim();
+    ROOM_VISIBILITY_ALLOWED
+        .iter()
+        .copied()
+        .find(|allowed| *allowed == v)
+}
+
+/// `ROOM_VISIBILITY` env → allowlisted wire value.
+/// Unset → `public`. Set but invalid → error (avoid silently widening ACL).
+fn room_visibility_from_env() -> Result<String> {
+    match std::env::var("ROOM_VISIBILITY") {
+        Ok(raw) => match parse_room_visibility(&raw) {
+            Some(v) => Ok(v.to_string()),
+            None => Err(anyhow!(
+                "ROOM_VISIBILITY={raw:?} invalid; expected one of {ROOM_VISIBILITY_ALLOWED:?}"
+            )),
+        },
+        Err(_) => Ok("public".into()),
+    }
+}
+
 /// Create room as owner (if needed) and return host Room Token + TTL (requires auth Bearer).
 ///
-/// x0021: only `POST /rooms` assigns `owner_sub`. Guest clients must not create.
+/// x0021: `POST /rooms` assigns `owner_sub`. Prefer **host creates first** (launcher order).
+/// x0037: client create panel may also `POST` / `PUT` when signed in as the **same** account;
+/// if a different sub creates first, this host Token path returns 403.
 /// x0025: `ALCHEMY_ROOM_TOKEN` bypass is **debug-only** (release fail-closed).
 pub fn fetch_host_token(world_url: &str, room_id: &str, auth_token: &str) -> Result<(String, u64)> {
     if let Some(token) = room_token_env_bypass() {
@@ -428,13 +464,17 @@ pub fn fetch_host_token(world_url: &str, room_id: &str, auth_token: &str) -> Res
     let authz = format!("Bearer {auth_token}");
     let agent = credential_agent();
     let create_url = format!("{base}/api/v1/rooms");
+    // Optional initial ACL (x0037). Invalid env fails closed (no silent widen to public).
+    let visibility = room_visibility_from_env()?;
     match agent
         .post(&create_url)
         .set("content-type", "application/json")
         .set("authorization", &authz)
-        .send_json(serde_json::json!({ "room_id": room_id }))
-    {
-        Ok(_) => log::info!("created room={room_id} as owner"),
+        .send_json(serde_json::json!({
+            "room_id": room_id,
+            "visibility": visibility,
+        })) {
+        Ok(_) => log::info!("created room={room_id} as owner visibility={visibility}"),
         Err(ureq::Error::Status(409, _)) => {
             log::info!("room={room_id} already exists; requesting host Token as owner");
         }
@@ -959,6 +999,34 @@ pub fn default_auth_url() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_room_visibility_allowlist() {
+        assert_eq!(parse_room_visibility("friends_plus"), Some("friends_plus"));
+        assert_eq!(parse_room_visibility("  lan "), Some("lan"));
+        assert_eq!(parse_room_visibility("nope"), None);
+        assert_eq!(parse_room_visibility(""), None);
+        assert_eq!(parse_room_visibility("public"), Some("public"));
+    }
+
+    #[test]
+    fn room_visibility_allowlist_matches_client_access_level_set() {
+        // Drift guard vs client `access_level::AccessLevel::ALL` / world Visibility.
+        // Order here is env allowlist (unsorted membership); set equality matters.
+        let mut got: Vec<&str> = ROOM_VISIBILITY_ALLOWED.to_vec();
+        got.sort_unstable();
+        let mut want = vec![
+            "followers",
+            "followers_plus",
+            "friends",
+            "friends_plus",
+            "lan",
+            "private",
+            "public",
+        ];
+        want.sort_unstable();
+        assert_eq!(got, want);
+    }
 
     #[test]
     fn verify_rejects_empty_token() {

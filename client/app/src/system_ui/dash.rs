@@ -1,11 +1,18 @@
-//! Official default Facet set layout (x000f + x0018 Home). Personal DashRoot only.
+//! Official default Facet set layout (x000f + x0018 Home + x0037 create panel).
 //!
 //! Facets: Chrome (top) · Home · Settings · Exit (Pinned). Button colors react to hover/press.
-//! Home holds account form strings only — no auth-server HTTP here.
+//! Home holds account / create-world form strings only — no auth/world HTTP here.
+//! Create panel visuals are placeholders (swap later).
 
 use super::facet::{facet_of, DashRoot, FacetId};
 use super::layout::{Color, LayoutTree, Rect, WidgetId};
+use crate::access_level::AccessLevel;
 use crate::turn::{TurnSettings, DEFAULT_SMOOTH_TURN_DEG_PER_SEC, DEFAULT_SNAP_DEGREES};
+
+/// Session display-name cap (input + status; keep in sync with desktop join status).
+pub const SESSION_NAME_MAX: usize = 48;
+/// Login / register field cap (identifier, password, email, …).
+const HOME_ACCOUNT_FIELD_MAX: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DashTab {
@@ -30,6 +37,8 @@ pub enum HomeField {
     Username,
     Email,
     Birthday,
+    /// Create-world session display name (x0037).
+    SessionName,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +71,14 @@ pub struct DashState {
     pub home_remember_me: bool,
     pub home_status: String,
     pub home_logged_in_as: Option<String>,
+    /// When true, Home shows create-world placeholder panel (x0037).
+    pub home_create_open: bool,
+    pub home_session_name: String,
+    pub home_access_level: AccessLevel,
+    /// Zenoh / world `room_id` (from env); shown read-only on create panel.
+    pub home_room_id: String,
+    /// When false (XR), Start/Join hits are omitted — Desktop HTTP only (x0037).
+    pub home_session_actions_enabled: bool,
 }
 
 impl Default for DashState {
@@ -91,8 +108,13 @@ impl Default for DashState {
             home_email: String::new(),
             home_birthday: "2000-01-01".into(),
             home_remember_me: true,
-            home_status: "Sign in to join the room".into(),
+            home_status: "Sign in to create or join a world".into(),
             home_logged_in_as: None,
+            home_create_open: false,
+            home_session_name: "FRICK World".into(),
+            home_access_level: AccessLevel::Public,
+            home_room_id: "local".into(),
+            home_session_actions_enabled: true,
         }
     }
 }
@@ -144,15 +166,32 @@ impl DashState {
             HomeField::Username => &mut self.home_username,
             HomeField::Email => &mut self.home_email,
             HomeField::Birthday => &mut self.home_birthday,
+            HomeField::SessionName => &mut self.home_session_name,
+        };
+        let max = match field {
+            HomeField::SessionName => SESSION_NAME_MAX,
+            _ => HOME_ACCOUNT_FIELD_MAX,
         };
         for ch in text.chars() {
-            if !ch.is_control() && target.len() < 64 {
+            // Count Unicode scalars (same unit as desktop `.chars().take(SESSION_NAME_MAX)`).
+            if !ch.is_control() && target.chars().count() < max {
                 target.push(ch);
             }
         }
     }
 
     pub fn home_backspace(&mut self) {
+        // Logged-in hub: no account fields visible — ignore.
+        if self.home_logged_in_as.is_some() && !self.home_create_open {
+            return;
+        }
+        // Create panel: only session name is editable.
+        if self.home_logged_in_as.is_some()
+            && self.home_create_open
+            && self.home_focus != Some(HomeField::SessionName)
+        {
+            return;
+        }
         let Some(field) = self.home_focus else {
             return;
         };
@@ -162,11 +201,19 @@ impl DashState {
             HomeField::Username => &mut self.home_username,
             HomeField::Email => &mut self.home_email,
             HomeField::Birthday => &mut self.home_birthday,
+            HomeField::SessionName => &mut self.home_session_name,
         };
         target.pop();
     }
 
     pub fn cycle_home_focus(&mut self) {
+        if self.home_logged_in_as.is_some() {
+            if self.home_create_open {
+                self.home_focus = Some(HomeField::SessionName);
+            }
+            // Hub: no focus cycle (would walk invisible login fields).
+            return;
+        }
         let fields: &[HomeField] = match self.home_mode {
             HomeMode::Login => &[HomeField::Identifier, HomeField::Password],
             HomeMode::Register => &[
@@ -210,7 +257,26 @@ fn field_value(state: &DashState, field: HomeField) -> String {
         HomeField::Username => state.home_username.clone(),
         HomeField::Email => state.home_email.clone(),
         HomeField::Birthday => state.home_birthday.clone(),
+        HomeField::SessionName => state.home_session_name.clone(),
     }
+}
+
+pub fn access_widget(level: AccessLevel) -> WidgetId {
+    match level {
+        AccessLevel::Private => WidgetId::HomeAccessPrivate,
+        AccessLevel::Lan => WidgetId::HomeAccessLan,
+        AccessLevel::Friends => WidgetId::HomeAccessFriends,
+        AccessLevel::FriendsPlus => WidgetId::HomeAccessFriendsPlus,
+        AccessLevel::Followers => WidgetId::HomeAccessFollowers,
+        AccessLevel::FollowersPlus => WidgetId::HomeAccessFollowersPlus,
+        AccessLevel::Public => WidgetId::HomeAccessPublic,
+    }
+}
+
+pub fn access_level_from_widget(id: WidgetId) -> Option<AccessLevel> {
+    AccessLevel::ALL
+        .into_iter()
+        .find(|level| access_widget(*level) == id)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -247,7 +313,12 @@ fn push_field(
 }
 
 fn rebuild_home(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
-    let panel = Rect::new(cx, cy0, cw, ch.min(380.0));
+    if state.home_logged_in_as.is_some() && state.home_create_open {
+        rebuild_home_create(tree, state, cx, cy0, cw, ch);
+        return;
+    }
+
+    let panel = Rect::new(cx, cy0, cw, ch.min(420.0));
     tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
     tree.push_label(
         Rect::new(cx + 24.0, cy0 + 16.0, cw - 48.0, 24.0),
@@ -274,6 +345,55 @@ fn rebuild_home(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw:
             1.5,
         );
         y += 36.0;
+
+        let new_w = Rect::new(x, y, 240.0, 48.0);
+        tree.push_rect(new_w, state.interact(WidgetId::HomeNewWorld, ACCENT));
+        tree.push_label(
+            Rect::new(x + 16.0, y + 14.0, 208.0, 22.0),
+            "Create new world",
+            TEXT,
+            1.5,
+        );
+        tree.register_hit(WidgetId::HomeNewWorld, new_w);
+
+        let join = Rect::new(x + 256.0, y, 180.0, 48.0);
+        if state.home_session_actions_enabled {
+            tree.push_rect(join, state.interact(WidgetId::HomeJoinRoom, BTN));
+            tree.push_label(
+                Rect::new(x + 272.0, y + 14.0, 148.0, 22.0),
+                "Join room",
+                TEXT,
+                1.5,
+            );
+            tree.register_hit(WidgetId::HomeJoinRoom, join);
+        } else {
+            tree.push_rect(join, BTN);
+            tree.push_label(
+                Rect::new(x + 272.0, y + 14.0, 148.0, 22.0),
+                "Join (Desktop)",
+                MUTED,
+                1.5,
+            );
+        }
+        y += 64.0;
+        if !state.home_session_actions_enabled {
+            tree.push_label(
+                Rect::new(x, y, fw, 16.0),
+                "Start/Join HTTP is Desktop-only (XR can browse panel only)",
+                MUTED,
+                1.0,
+            );
+            y += 24.0;
+        }
+
+        tree.push_label(
+            Rect::new(x, y, fw, 18.0),
+            format!("room_id={} (ROOM_ID / Zenoh)", state.home_room_id),
+            MUTED,
+            1.0,
+        );
+        y += 36.0;
+
         let logout = Rect::new(x, y, 200.0, 44.0);
         tree.push_rect(logout, state.interact(WidgetId::HomeLogout, BTN_DANGER));
         tree.push_icon(Rect::new(x + 12.0, y + 8.0, 28.0, 28.0), "logout");
@@ -422,6 +542,191 @@ fn rebuild_home(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw:
         MUTED,
         1.0,
     );
+}
+
+/// Placeholder create-world panel (Resonite-like information structure only).
+///
+/// Layout guarantee (960×540 default): all 7 access levels + Start are hit-registered.
+/// Start lives on the left column so the right column can hold the full ACL list.
+fn rebuild_home_create(
+    tree: &mut LayoutTree,
+    state: &DashState,
+    cx: f32,
+    cy0: f32,
+    cw: f32,
+    ch: f32,
+) {
+    let panel_h = ch.min(460.0);
+    let panel = Rect::new(cx, cy0, cw, panel_h);
+    tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
+
+    let back = Rect::new(cx + 16.0, cy0 + 12.0, 88.0, 32.0);
+    tree.push_rect(back, state.interact(WidgetId::HomeCreateBack, BTN));
+    tree.push_label(
+        Rect::new(back.x + 16.0, back.y + 8.0, 56.0, 18.0),
+        "Back",
+        TEXT,
+        1.2,
+    );
+    tree.register_hit(WidgetId::HomeCreateBack, back);
+
+    tree.push_label(
+        Rect::new(cx + 120.0, cy0 + 16.0, cw - 140.0, 24.0),
+        "Create new world (placeholder UI)",
+        TEXT,
+        2.0,
+    );
+    tree.push_label(
+        Rect::new(cx + 24.0, cy0 + 48.0, cw - 48.0, 16.0),
+        &state.home_status,
+        MUTED,
+        1.0,
+    );
+
+    let gap = 16.0;
+    let left_w = (cw - 48.0 - gap) * 0.38;
+    let right_w = (cw - 48.0 - gap) - left_w;
+    let left_x = cx + 24.0;
+    let right_x = left_x + left_w + gap;
+    let body_y = cy0 + 72.0;
+    let body_h = panel_h - 88.0;
+    let start_h = 40.0;
+
+    // Left: template (Grid only) + Start (bottom) so right column can fit all 7 levels.
+    tree.push_rect(
+        Rect::new(left_x, body_y, left_w, body_h),
+        Color::rgba(0.10, 0.11, 0.14, 1.0),
+    );
+    tree.push_label(
+        Rect::new(left_x + 12.0, body_y + 12.0, left_w - 24.0, 20.0),
+        "Template",
+        TEXT,
+        1.5,
+    );
+    let templates = [
+        ("Grid", true, Some(WidgetId::HomeTemplateGrid)),
+        ("Platform", false, None),
+        ("Blank", false, None),
+        ("DebugWorld", false, None),
+    ];
+    let mut ty = body_y + 40.0;
+    for (label, selected, hit) in templates {
+        let row = Rect::new(left_x + 12.0, ty, left_w - 24.0, 28.0);
+        let base = if selected { ACCENT } else { BTN };
+        tree.push_rect(
+            row,
+            if let Some(id) = hit {
+                state.interact(id, base)
+            } else {
+                base
+            },
+        );
+        let mark = if selected { "(*)" } else { "( )" };
+        let color = if selected { TEXT } else { MUTED };
+        tree.push_label(
+            Rect::new(row.x + 10.0, row.y + 6.0, row.w - 20.0, 18.0),
+            format!("{mark} {label}"),
+            color,
+            1.1,
+        );
+        if let Some(id) = hit {
+            tree.register_hit(id, row);
+        }
+        ty += 34.0;
+    }
+    tree.push_label(
+        Rect::new(left_x + 12.0, ty + 4.0, left_w - 24.0, 32.0),
+        "Only Grid is wired (DemoScene).",
+        MUTED,
+        1.0,
+    );
+
+    let start_y = body_y + body_h - start_h - 8.0;
+    let start = Rect::new(left_x + 12.0, start_y, left_w - 24.0, start_h);
+    if state.home_session_actions_enabled {
+        tree.push_rect(start, state.interact(WidgetId::HomeStartSession, ACCENT));
+        tree.push_label(
+            Rect::new(start.x + 12.0, start.y + 10.0, start.w - 24.0, 22.0),
+            "Start session",
+            TEXT,
+            1.5,
+        );
+        tree.register_hit(WidgetId::HomeStartSession, start);
+    } else {
+        tree.push_rect(start, BTN);
+        tree.push_label(
+            Rect::new(start.x + 12.0, start.y + 10.0, start.w - 24.0, 22.0),
+            "Start (Desktop)",
+            MUTED,
+            1.5,
+        );
+    }
+
+    // Right: session name + full 7-level access list (no clipping).
+    tree.push_rect(
+        Rect::new(right_x, body_y, right_w, body_h),
+        Color::rgba(0.10, 0.11, 0.14, 1.0),
+    );
+    tree.push_label(
+        Rect::new(right_x + 12.0, body_y + 10.0, right_w - 24.0, 18.0),
+        "Session",
+        TEXT,
+        1.4,
+    );
+
+    let mut ry = push_field(
+        tree,
+        state,
+        right_x + 12.0,
+        body_y + 32.0,
+        right_w - 24.0,
+        "Session name (display)",
+        HomeField::SessionName,
+        WidgetId::HomeCreateName,
+    );
+    tree.push_label(
+        Rect::new(right_x + 12.0, ry, right_w - 24.0, 14.0),
+        format!("room_id={} (fixed)", state.home_room_id),
+        MUTED,
+        1.0,
+    );
+    ry += 20.0;
+
+    tree.push_label(
+        Rect::new(right_x + 12.0, ry, right_w - 24.0, 16.0),
+        "Access level (who can enter)",
+        TEXT,
+        1.1,
+    );
+    ry += 18.0;
+
+    let access_rows = AccessLevel::ALL.len().div_ceil(2);
+    let avail = (body_y + body_h - 8.0 - ry).max(24.0 * access_rows as f32);
+    let row_step = (avail / access_rows as f32).clamp(22.0, 28.0);
+    let row_h = (row_step - 2.0).max(20.0);
+    let col_w = (right_w - 24.0 - 8.0) * 0.5;
+    for (i, level) in AccessLevel::ALL.iter().copied().enumerate() {
+        let id = access_widget(level);
+        let selected = state.home_access_level == level;
+        let col = i % 2;
+        let row_i = i / 2;
+        let row = Rect::new(
+            right_x + 12.0 + col as f32 * (col_w + 8.0),
+            ry + row_i as f32 * row_step,
+            col_w,
+            row_h,
+        );
+        let base = if selected { ACCENT } else { BTN };
+        tree.push_rect(row, state.interact(id, base));
+        let mark = if selected { "(*)" } else { "( )" };
+        tree.push_label(
+            Rect::new(row.x + 6.0, row.y + 4.0, row.w - 12.0, 16.0),
+            format!("{mark} {}", level.label()),
+            TEXT,
+            0.9,
+        );
+        tree.register_hit(id, row);
+    }
 }
 
 pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
@@ -759,6 +1064,95 @@ mod tests {
         rebuild(&mut tree, &state);
         assert!(tree.hits.iter().any(|(id, _)| *id == WidgetId::HomeSubmit));
         assert!(tree.hits.iter().any(|(id, _)| *id == WidgetId::TabHome));
+    }
+
+    #[test]
+    fn logged_in_hub_has_new_world() {
+        let mut tree = LayoutTree::default();
+        let state = DashState {
+            open: true,
+            tab: DashTab::Home,
+            canvas_w: 960.0,
+            canvas_h: 540.0,
+            home_logged_in_as: Some("alice".into()),
+            ..Default::default()
+        };
+        rebuild(&mut tree, &state);
+        assert!(tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::HomeNewWorld));
+        assert!(tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::HomeJoinRoom));
+    }
+
+    #[test]
+    fn create_panel_has_all_access_levels_and_start_at_default_canvas() {
+        let mut tree = LayoutTree::default();
+        let state = DashState {
+            open: true,
+            tab: DashTab::Home,
+            canvas_w: 960.0,
+            canvas_h: 540.0,
+            home_logged_in_as: Some("alice".into()),
+            home_create_open: true,
+            home_access_level: AccessLevel::Friends,
+            ..Default::default()
+        };
+        rebuild(&mut tree, &state);
+        assert!(tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::HomeStartSession));
+        assert!(tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::HomeCreateBack));
+        for level in AccessLevel::ALL {
+            let id = access_widget(level);
+            assert!(
+                tree.hits.iter().any(|(hid, _)| *hid == id),
+                "missing hit for {level:?} ({})",
+                level.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn create_panel_xr_omits_start_hit() {
+        let mut tree = LayoutTree::default();
+        let state = DashState {
+            open: true,
+            tab: DashTab::Home,
+            canvas_w: 960.0,
+            canvas_h: 540.0,
+            home_logged_in_as: Some("alice".into()),
+            home_create_open: true,
+            home_session_actions_enabled: false,
+            ..Default::default()
+        };
+        rebuild(&mut tree, &state);
+        assert!(!tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::HomeStartSession));
+    }
+
+    #[test]
+    fn logged_in_hub_focus_cycle_does_not_touch_login_fields() {
+        let mut state = DashState {
+            home_logged_in_as: Some("alice".into()),
+            home_create_open: false,
+            home_focus: Some(HomeField::Identifier),
+            home_identifier: "keep".into(),
+            ..Default::default()
+        };
+        state.cycle_home_focus();
+        assert_eq!(state.home_focus, Some(HomeField::Identifier));
+        state.home_backspace();
+        assert_eq!(state.home_identifier, "keep");
     }
 
     #[test]

@@ -80,7 +80,20 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::HomeModeLogin
         | WidgetId::HomeModeRegister
         | WidgetId::HomeSubmit
-        | WidgetId::HomeLogout => FacetId::Home,
+        | WidgetId::HomeLogout
+        | WidgetId::HomeNewWorld
+        | WidgetId::HomeJoinRoom
+        | WidgetId::HomeCreateBack
+        | WidgetId::HomeCreateName
+        | WidgetId::HomeTemplateGrid
+        | WidgetId::HomeAccessPrivate
+        | WidgetId::HomeAccessLan
+        | WidgetId::HomeAccessFriends
+        | WidgetId::HomeAccessFriendsPlus
+        | WidgetId::HomeAccessFollowers
+        | WidgetId::HomeAccessFollowersPlus
+        | WidgetId::HomeAccessPublic
+        | WidgetId::HomeStartSession => FacetId::Home,
         WidgetId::Mic
         | WidgetId::MicOff
         | WidgetId::Volume

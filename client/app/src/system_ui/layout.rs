@@ -34,6 +34,21 @@ pub enum WidgetId {
     HomeModeRegister,
     HomeSubmit,
     HomeLogout,
+    /// Logged-in hub (x0037).
+    HomeNewWorld,
+    HomeJoinRoom,
+    /// Create-world panel (placeholder UI).
+    HomeCreateBack,
+    HomeCreateName,
+    HomeTemplateGrid,
+    HomeAccessPrivate,
+    HomeAccessLan,
+    HomeAccessFriends,
+    HomeAccessFriendsPlus,
+    HomeAccessFollowers,
+    HomeAccessFollowersPlus,
+    HomeAccessPublic,
+    HomeStartSession,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
