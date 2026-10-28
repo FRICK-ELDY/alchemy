@@ -41,12 +41,12 @@ goto :fail_code
 if exist "ensure-demo-coin.ps1" (
   powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CD%\ensure-demo-coin.ps1" -PackageRoot "%CD%"
   if errorlevel 1 (
-    echo ensure-demo-coin.ps1 failed — Coin must exist in assets for mesh download
+    echo ensure-demo-coin.ps1 failed - Coin must exist in assets for mesh download
     set "EXITCODE=1"
     goto :fail_code
   )
 ) else (
-  echo WARNING: ensure-demo-coin.ps1 missing — assets must already hold the demo Coin blake3
+  echo WARNING: ensure-demo-coin.ps1 missing - assets must already hold the demo Coin blake3
 )
 
 alchemy-launcher.exe
