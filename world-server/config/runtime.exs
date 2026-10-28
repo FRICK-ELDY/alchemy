@@ -57,8 +57,12 @@ if System.get_env("BIND_ALL") in ~w(true 1) do
     server: true
 end
 
-if db_path = System.get_env("WORLD_DATABASE_PATH") do
-  config :world, World.Repo, database: db_path
+# x0039/x003b: test uses config/test.exs path; ignore developer WORLD_DATABASE_PATH
+# so compose `.env` / day-to-day DB cannot pollute ExUnit (assets CAS isolation と同型).
+if config_env() != :test do
+  if db_path = System.get_env("WORLD_DATABASE_PATH") do
+    config :world, World.Repo, database: db_path
+  end
 end
 
 if config_env() == :prod do

@@ -10,6 +10,13 @@ prost = "0.14"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
 blake3 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+
+[[bin]]
+name = "manifest-seal-hash"
+path = "src/bin/manifest_seal_hash.rs"
 
 [build-dependencies]
 prost-build = "0.14"

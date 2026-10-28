@@ -64,11 +64,64 @@ defmodule World.HostAttestation do
 
   def decode_host_pub(_), do: {:error, :invalid_host_pub}
 
+  @doc """
+  Verify a HostAttestation JWT for `expected_room_id` (x0039).
+
+  Returns raw 32-byte `host_pub` and claims map.
+  """
+  @spec verify(String.t(), String.t()) ::
+          {:ok, binary(), map()} | {:error, term()}
+  def verify(token, expected_room_id)
+      when is_binary(token) and is_binary(expected_room_id) and byte_size(token) > 0 do
+    with {:ok, kid} <- peek_kid(token),
+         {:ok, signer} <- Keys.signer_for_kid(kid),
+         {:ok, claims} <- verify_jwt(token, signer),
+         :ok <- match_room(claims, expected_room_id),
+         {:ok, host_pub} <- decode_host_pub(claims["host_pub"]) do
+      {:ok, host_pub, claims}
+    else
+      {:error, :room_mismatch} -> {:error, :attestation_room_mismatch}
+      {:error, _} -> {:error, :invalid_host_attestation}
+    end
+  end
+
+  def verify(_, _), do: {:error, :invalid_host_attestation}
+
+  defp verify_jwt(token, signer) do
+    case Joken.verify_and_validate(verify_config(), token, signer) do
+      {:ok, claims} -> {:ok, claims}
+      {:error, _} -> {:error, :invalid_host_attestation}
+    end
+  end
+
   @doc "Audience claim for HostAttestation JWTs."
   def audience, do: @aud
 
   @doc "typ claim value."
   def typ, do: @typ
+
+  defp verify_config do
+    issuer = Application.fetch_env!(:world, :room_token_issuer)
+
+    Joken.Config.default_claims(skip: [:aud, :iss])
+    |> Joken.Config.add_claim("iss", fn -> nil end, &(&1 == issuer))
+    |> Joken.Config.add_claim("aud", fn -> nil end, &(&1 == @aud))
+    |> Joken.Config.add_claim("typ", fn -> nil end, &(&1 == @typ))
+    |> Joken.Config.add_claim("sub", fn -> nil end, &is_binary/1)
+    |> Joken.Config.add_claim("room_id", fn -> nil end, &is_binary/1)
+    |> Joken.Config.add_claim("host_pub", fn -> nil end, &is_binary/1)
+    |> Joken.Config.add_claim("jti", fn -> nil end, &is_binary/1)
+  end
+
+  defp match_room(%{"room_id" => room}, expected) when room == expected, do: :ok
+  defp match_room(_, _), do: {:error, :room_mismatch}
+
+  defp peek_kid(token) do
+    case Joken.peek_header(token) do
+      {:ok, %{"kid" => kid}} when is_binary(kid) and kid != "" -> {:ok, kid}
+      _ -> {:error, :missing_kid}
+    end
+  end
 
   defp validate_host_pub(bin) when byte_size(bin) == @host_pub_bytes, do: :ok
   defp validate_host_pub(_), do: {:error, :invalid_host_pub}

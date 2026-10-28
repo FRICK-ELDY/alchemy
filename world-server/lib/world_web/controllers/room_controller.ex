@@ -3,6 +3,7 @@ defmodule WorldWeb.RoomController do
 
   require Logger
 
+  alias World.CanonicalManifest
   alias World.HostAttestation
   alias World.ManifestSeal
   alias World.RoomAccess
@@ -315,21 +316,32 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
-  x0026: issue ManifestSeal JWT. Authorization must be a **host** Room Token.
+  x0026 / x0039: issue ManifestSeal JWT for **canonical** DB scene body.
+
+  Authorization must be a **host** Room Token. Body requires `host_attestation`
+  plus host-computed `revision` / `manifest_blake3` for mismatch rejection
+  (oracle abolished — world recomputes hash from scene + attestation).
   """
   def create_manifest_seal(conn, %{"room_id" => room_id} = params) do
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
          :ok <- Rooms.ensure_owner(room_id, claims["sub"]),
-         {:ok, revision} <- ManifestSeal.parse_revision(Map.get(params, "revision")),
-         {:ok, blake3} <- ManifestSeal.parse_blake3(Map.get(params, "manifest_blake3")) do
+         {:ok, host_attestation} <- require_host_attestation(params),
+         {:ok, host_revision} <- ManifestSeal.parse_revision(Map.get(params, "revision")),
+         {:ok, host_blake3} <- ManifestSeal.parse_blake3(Map.get(params, "manifest_blake3")),
+         {:ok, revision, blake3} <-
+           CanonicalManifest.canonical_blake3(room_id, host_attestation),
+         :ok <- match_revision(host_revision, revision),
+         :ok <- match_blake3(host_blake3, blake3) do
       case ManifestSeal.generate(room_id, revision, blake3, claims["sub"]) do
         {:ok, seal, ttl} ->
           json(conn, %{
             seal: seal,
             expires_in: ttl,
             room_id: room_id,
+            revision: revision,
+            manifest_blake3: blake3,
             token_type: "Bearer"
           })
 
@@ -371,10 +383,61 @@ defmodule WorldWeb.RoomController do
         |> put_status(:unprocessable_entity)
         |> json(%{error: "invalid_revision"})
 
+      {:error, :revision_mismatch} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "revision_mismatch"})
+
       {:error, :invalid_manifest_blake3} ->
         conn
         |> put_status(:unprocessable_entity)
         |> json(%{error: "invalid_manifest_blake3"})
+
+      {:error, :manifest_blake3_mismatch} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "manifest_blake3_mismatch"})
+
+      {:error, :missing_host_attestation} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "missing_host_attestation"})
+
+      {:error, :invalid_host_attestation} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_host_attestation"})
+
+      {:error, :attestation_room_mismatch} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "attestation_room_mismatch"})
+
+      {:error, :invalid_scene_revision} ->
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{error: "invalid_scene_revision"})
+
+      {:error, {:cli_missing, _} = reason} ->
+        Logger.error("manifest-seal-hash missing: #{inspect(reason)}")
+
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{error: "manifest_seal_hash_unavailable"})
+
+      {:error, {:cli_failed, _, _} = reason} ->
+        Logger.error("manifest-seal-hash failed: #{inspect(reason)}")
+
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{error: "manifest_seal_hash_failed"})
+
+      {:error, {:unexpected_hash_output, _} = reason} ->
+        Logger.error("manifest-seal-hash bad output: #{inspect(reason)}")
+
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{error: "manifest_seal_hash_failed"})
 
       {:error, :invalid_room_id} ->
         conn
@@ -384,12 +447,25 @@ defmodule WorldWeb.RoomController do
       {:error, :storage_error} ->
         storage_unavailable(conn)
 
+      # Token.verify / auth failures only — CanonicalManifest/CLI errors must not land here.
       {:error, reason} ->
         conn
         |> put_status(:unauthorized)
         |> json(%{error: "invalid_room_token", detail: inspect(reason)})
     end
   end
+
+  defp require_host_attestation(%{"host_attestation" => token})
+       when is_binary(token) and byte_size(token) > 0,
+       do: {:ok, token}
+
+  defp require_host_attestation(_), do: {:error, :missing_host_attestation}
+
+  defp match_revision(host, canon) when host == canon, do: :ok
+  defp match_revision(_, _), do: {:error, :revision_mismatch}
+
+  defp match_blake3(host, canon) when host == canon, do: :ok
+  defp match_blake3(_, _), do: {:error, :manifest_blake3_mismatch}
 
   defp fetch_bearer(conn) do
     case get_req_header(conn, "authorization") do

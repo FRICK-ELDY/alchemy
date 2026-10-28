@@ -4,6 +4,7 @@
 //! x0021: verify never does HTTP on the input path (SWR + background refresh).
 //! Long-running host: `HostCredentialChain` (auth → Room Token → HostAttestation) plus
 //! `ManifestSealCache` (body blake3 → world seal); refresh failure is fail-closed (x0025 / x0026).
+//! x0039: seal request includes `host_attestation`; world rejects non-canonical blake3.
 //! Credential HTTP uses a shared connect/read timeout; when multiple layers are due on the same
 //! physics tick, requests run serially (bounded by that timeout each).
 //! Non-guarantees: auth UI, session MAC (P2); async / background credential refresh.
@@ -837,18 +838,27 @@ pub fn fetch_room_scene(
     }
 }
 
-/// Ask world to seal a Manifest body hash; returns ManifestSeal JWT + TTL (x0026).
+/// Ask world to seal a Manifest body hash; returns ManifestSeal JWT + TTL (x0026 / x0039).
+///
+/// World recomputes the canonical blake3 from DB scene + `host_attestation` and
+/// rejects mismatch (`manifest_blake3_mismatch`) — signing oracle abolished.
 pub fn fetch_manifest_seal(
     world_url: &str,
     room_id: &str,
     host_room_token: &str,
     revision: u64,
     manifest_blake3_hex: &str,
+    host_attestation: &str,
 ) -> Result<(String, u64)> {
     if !is_blake3_hex(manifest_blake3_hex) {
         return Err(anyhow!(
             "manifest_blake3 must be 64 lowercase/uppercase hex chars (got len={})",
             manifest_blake3_hex.len()
+        ));
+    }
+    if host_attestation.is_empty() {
+        return Err(anyhow!(
+            "host_attestation required for ManifestSeal (x0039)"
         ));
     }
     let base = world_url.trim_end_matches('/');
@@ -866,6 +876,7 @@ pub fn fetch_manifest_seal(
         .send_json(serde_json::json!({
             "revision": revision,
             "manifest_blake3": manifest_blake3_hex,
+            "host_attestation": host_attestation,
         })) {
         Ok(resp) => {
             let parsed: SealResponse = resp.into_json().context("parse manifest_seal response")?;
@@ -900,6 +911,7 @@ impl ManifestSealCache {
         host_room_token: &str,
         revision: u64,
         body_blake3: &str,
+        host_attestation: &str,
     ) -> Result<bool> {
         let body_changed =
             self.body_blake3 != body_blake3 || self.revision != revision || self.seal.is_empty();
@@ -907,9 +919,15 @@ impl ManifestSealCache {
         if !body_changed && !due {
             return Ok(false);
         }
-        let (seal, ttl) =
-            fetch_manifest_seal(world_url, room_id, host_room_token, revision, body_blake3)
-                .context("fetch ManifestSeal")?;
+        let (seal, ttl) = fetch_manifest_seal(
+            world_url,
+            room_id,
+            host_room_token,
+            revision,
+            body_blake3,
+            host_attestation,
+        )
+        .context("fetch ManifestSeal")?;
         let changed = seal != self.seal;
         self.seal = seal;
         self.body_blake3 = body_blake3.to_string();
