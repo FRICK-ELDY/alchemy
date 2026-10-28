@@ -105,10 +105,11 @@ depends_on: [x0006]
 | x0034 | — | done | Room visibility + Token 門番（private/friends/public + S2S） | [x0034-visibility-token-gate.md](slices/x0034-visibility-token-gate.md) |
 | x0035 | — | done | friends_plus / followers / followers_plus（2hop） | [x0035-visibility-hops.md](slices/x0035-visibility-hops.md) |
 | x0036 | — | done | lan 公開範囲（外部・Tunnel 拒否） | [x0036-lan-visibility.md](slices/x0036-lan-visibility.md) |
+| x0037 | — | done | client アクセスレベル UI（新規ワールド作成・仮置き） | [x0037-client-access-level-ui.md](slices/x0037-client-access-level-ui.md) |
 
-**現在の次:** Group / client 公開範囲 UI / BlobGrant、または次評価までの残り提案。
+**現在の次:** Group / BlobGrant、または次評価までの残り提案。
 
-次の空き番号は **`x0037`**。
+次の空き番号は **`x0038`**。
 
 
 ## 関連

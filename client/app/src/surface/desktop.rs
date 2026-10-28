@@ -5,8 +5,8 @@
 //! `CameraLook`; WASD projected from current yaw; look-capture + aim-down then
 //! LMB/RMB/E hold → Grab via look-forward ray (x0013). Floor boxes need pitch down.
 //! Look is never on Zenoh.
-//! Auth login/register/logout HTTP (+ room join HTTP) runs on a worker thread; the UI
-//! thread only polls the outcome (x002e / P3-9).
+//! Auth login/register/logout and room start/join HTTP run on a worker thread; the UI
+//! thread only polls the outcome (x002e / P3-9 / x0037).
 //!
 //! Linux/WSL: prefer Confined + `CursorMoved` (recenter). `Locked` often succeeds but
 //! yields no `DeviceEvent::MouseMotion`, so look appears dead.
@@ -33,6 +33,7 @@ use crate::scene::{
     SharedState,
 };
 use crate::system_ui::{DashTab, SystemUi, UiAction};
+use crate::world_api;
 use crate::world_hit::{desktop_look_ray, pick_grabbable_desktop};
 use crate::{declare_room_alive, join_room_with_access, leave_room};
 
@@ -166,18 +167,25 @@ struct App {
     auth_job: Option<Receiver<AuthJobOutcome>>,
 }
 
-/// Outcome of Auth HTTP / join work off the UI thread (x002e / P3-9).
+/// Outcome of Auth / world HTTP work off the UI thread (x002e / P3-9 / x0037).
 enum AuthJobOutcome {
-    Login {
+    /// Session only (no auto-join).
+    LoginOk {
         username: String,
-        join: Result<(), String>,
     },
-    Register {
+    RegisterOk {
         username: String,
-        join: Result<(), String>,
     },
     LoginFailed(String),
     RegisterFailed(String),
+    /// visibility ensure + guest join (`visibility` says whether the chosen level was applied).
+    StartSession {
+        visibility: Result<world_api::VisibilityEnsure, String>,
+        join: Result<(), String>,
+    },
+    JoinRoom {
+        result: Result<(), String>,
+    },
 }
 
 fn spawn_auth_http<F>(f: F)
@@ -229,27 +237,21 @@ impl App {
 
     fn apply_auth_outcome(&mut self, outcome: AuthJobOutcome) {
         match outcome {
-            AuthJobOutcome::Login { username, join } => {
-                apply_auth_join_result(
-                    &mut self.ui,
-                    &self.shared,
-                    self.zenoh.as_ref(),
-                    username,
-                    join,
-                    "Joined room",
-                    "auth login + join ok",
-                );
+            AuthJobOutcome::LoginOk { username } => {
+                self.ui.state.home_logged_in_as = Some(username);
+                self.ui.state.home_password.clear();
+                self.ui.state.home_create_open = false;
+                self.ui.state.home_status = "Signed in — create or join a world".into();
+                self.ui.rebuild();
+                log::info!("auth login ok (no auto-join)");
             }
-            AuthJobOutcome::Register { username, join } => {
-                apply_auth_join_result(
-                    &mut self.ui,
-                    &self.shared,
-                    self.zenoh.as_ref(),
-                    username,
-                    join,
-                    "Account created — joined room",
-                    "auth register + join ok",
-                );
+            AuthJobOutcome::RegisterOk { username } => {
+                self.ui.state.home_logged_in_as = Some(username);
+                self.ui.state.home_password.clear();
+                self.ui.state.home_create_open = false;
+                self.ui.state.home_status = "Account created — create or join a world".into();
+                self.ui.rebuild();
+                log::info!("auth register ok (no auto-join)");
             }
             AuthJobOutcome::LoginFailed(err) => {
                 self.ui.state.home_status = format!("Login failed: {err}");
@@ -260,6 +262,25 @@ impl App {
                 self.ui.state.home_status = format!("Register failed: {err}");
                 self.ui.rebuild();
                 log::warn!("register failed: {err}");
+            }
+            AuthJobOutcome::StartSession { visibility, join } => {
+                apply_start_session_result(
+                    &mut self.ui,
+                    &self.shared,
+                    self.zenoh.as_ref(),
+                    visibility,
+                    join,
+                );
+            }
+            AuthJobOutcome::JoinRoom { result } => {
+                apply_join_result(
+                    &mut self.ui,
+                    &self.shared,
+                    self.zenoh.as_ref(),
+                    result,
+                    "Joined room",
+                    "join room ok",
+                );
             }
         }
     }
@@ -778,11 +799,83 @@ impl ApplicationHandler for App {
     }
 }
 
-fn apply_auth_join_result(
+fn apply_start_session_result(
     ui: &mut SystemUi,
     shared: &SharedState,
     zenoh: Option<&zenoh::Session>,
-    username: String,
+    visibility: Result<world_api::VisibilityEnsure, String>,
+    join: Result<(), String>,
+) {
+    let wanted = ui.state.home_access_level.as_str();
+    let name = ui
+        .state
+        .home_session_name
+        .trim()
+        .chars()
+        .take(crate::system_ui::SESSION_NAME_MAX)
+        .collect::<String>();
+    match (&visibility, join) {
+        (Ok(world_api::VisibilityEnsure::Applied), Ok(())) => {
+            if let Some(session) = zenoh {
+                if let Err(err) = declare_room_alive(shared, session, false) {
+                    log::warn!("liveliness after start failed: {err:#}");
+                }
+            }
+            ui.state.home_create_open = false;
+            ui.state.home_status = if name.is_empty() {
+                format!("Session started — access level applied ({wanted})")
+            } else {
+                format!("Session started: {name} — access level applied ({wanted})")
+            };
+            ui.state.open = false;
+            log::info!("start session ok; visibility applied={wanted}");
+        }
+        (Ok(world_api::VisibilityEnsure::LeftExisting), Ok(())) => {
+            if let Some(session) = zenoh {
+                if let Err(err) = declare_room_alive(shared, session, false) {
+                    log::warn!("liveliness after start failed: {err:#}");
+                }
+            }
+            ui.state.home_create_open = false;
+            ui.state.home_status = format!(
+                "Joined — visibility not updated (not owner); existing ACL kept (wanted {wanted})"
+            );
+            ui.state.open = false;
+            log::info!("start session joined; visibility left existing (wanted {wanted})");
+        }
+        (Err(vis_err), Ok(())) => {
+            // Should not happen with current worker (join only after ensure Ok), but be honest.
+            if let Some(session) = zenoh {
+                let _ = declare_room_alive(shared, session, false);
+            }
+            ui.state.home_create_open = false;
+            ui.state.home_status =
+                format!("Joined — visibility step failed ({vis_err}); existing ACL");
+            ui.state.open = false;
+            log::warn!("joined after visibility error: {vis_err}");
+        }
+        (vis, Err(err)) => {
+            ui.state.home_status = match vis {
+                Ok(world_api::VisibilityEnsure::Applied) => {
+                    format!("Access level applied ({wanted}) but join failed: {err}")
+                }
+                Ok(world_api::VisibilityEnsure::LeftExisting) => {
+                    format!("Visibility unchanged (not owner); join failed: {err}")
+                }
+                Err(vis_err) => {
+                    format!("Start failed: visibility={vis_err}; join={err}")
+                }
+            };
+            log::warn!("start session join failed: {err}");
+        }
+    }
+    ui.rebuild();
+}
+
+fn apply_join_result(
+    ui: &mut SystemUi,
+    shared: &SharedState,
+    zenoh: Option<&zenoh::Session>,
     join: Result<(), String>,
     ok_status: &str,
     ok_log: &str,
@@ -791,21 +884,17 @@ fn apply_auth_join_result(
         Ok(()) => {
             if let Some(session) = zenoh {
                 if let Err(err) = declare_room_alive(shared, session, false) {
-                    log::warn!("liveliness after auth failed: {err:#}");
+                    log::warn!("liveliness after join failed: {err:#}");
                 }
             }
-            ui.state.home_logged_in_as = Some(username);
-            ui.state.home_password.clear();
+            ui.state.home_create_open = false;
             ui.state.home_status = ok_status.into();
             ui.state.open = false;
             log::info!("{ok_log}");
         }
         Err(err) => {
-            // Keep AuthGate session; surface "signed in, not joined" so UI matches gate.
-            ui.state.home_logged_in_as = Some(username);
-            ui.state.home_password.clear();
-            ui.state.home_status = format!("Signed in — join failed: {err}");
-            log::warn!("join after auth failed (session kept): {err}");
+            ui.state.home_status = format!("Join failed: {err}");
+            log::warn!("join failed (session kept): {err}");
         }
     }
     ui.rebuild();
@@ -850,13 +939,10 @@ fn handle_ui_action(
                 match auth::login(&auth_url, &identifier, &password, remember) {
                     Ok(session) => {
                         let username = session.user.username.clone();
-                        let access = session.access_token.clone();
                         if let Ok(mut gate) = shared_job.auth.lock() {
                             gate.apply_auth_session(session);
                         }
-                        let join = join_room_with_access(&shared_job, &access)
-                            .map_err(|e| format!("{e:#}"));
-                        let _ = tx.send(AuthJobOutcome::Login { username, join });
+                        let _ = tx.send(AuthJobOutcome::LoginOk { username });
                     }
                     Err(err) => {
                         let _ = tx.send(AuthJobOutcome::LoginFailed(format!("{err:#}")));
@@ -885,13 +971,10 @@ fn handle_ui_action(
                 match auth::register(&auth_url, &username, &email, &password, &birthday, remember) {
                     Ok(session) => {
                         let username = session.user.username.clone();
-                        let access = session.access_token.clone();
                         if let Ok(mut gate) = shared_job.auth.lock() {
                             gate.apply_auth_session(session);
                         }
-                        let join = join_room_with_access(&shared_job, &access)
-                            .map_err(|e| format!("{e:#}"));
-                        let _ = tx.send(AuthJobOutcome::Register { username, join });
+                        let _ = tx.send(AuthJobOutcome::RegisterOk { username });
                     }
                     Err(err) => {
                         let _ = tx.send(AuthJobOutcome::RegisterFailed(format!("{err:#}")));
@@ -917,6 +1000,7 @@ fn handle_ui_action(
                 gate.clear_session();
             }
             ui.state.home_logged_in_as = None;
+            ui.state.home_create_open = false;
             ui.state.home_status = "Signed out — Leave sent (host reclaim immediate)".into();
             ui.state.tab = DashTab::Home;
             ui.rebuild();
@@ -928,6 +1012,64 @@ fn handle_ui_action(
                 });
             }
         }
+        UiAction::StartSession => {
+            if auth_job.is_some() {
+                ui.state.home_status = "Auth busy…".into();
+                ui.rebuild();
+                return;
+            }
+            let level = ui.state.home_access_level;
+            let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+            let Some(access) = access else {
+                ui.state.home_status = "Sign in before starting a session".into();
+                ui.rebuild();
+                return;
+            };
+            let shared_job = Arc::clone(shared);
+            ui.state.home_status = format!("Starting session ({})…", level.as_str());
+            ui.rebuild();
+            let (tx, rx) = mpsc::channel();
+            *auth_job = Some(rx);
+            spawn_auth_http(move || {
+                let visibility = world_api::ensure_room_visibility(
+                    &shared_job.world_url,
+                    &shared_job.room_id,
+                    &access,
+                    level,
+                )
+                .map_err(|e| format!("{e:#}"));
+                let join = match &visibility {
+                    Ok(_) => {
+                        join_room_with_access(&shared_job, &access).map_err(|e| format!("{e:#}"))
+                    }
+                    Err(_) => Err("skipped join (visibility step failed)".into()),
+                };
+                let _ = tx.send(AuthJobOutcome::StartSession { visibility, join });
+            });
+        }
+        UiAction::JoinRoom => {
+            if auth_job.is_some() {
+                ui.state.home_status = "Auth busy…".into();
+                ui.rebuild();
+                return;
+            }
+            let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+            let Some(access) = access else {
+                ui.state.home_status = "Sign in before joining".into();
+                ui.rebuild();
+                return;
+            };
+            let shared_job = Arc::clone(shared);
+            ui.state.home_status = "Joining room…".into();
+            ui.rebuild();
+            let (tx, rx) = mpsc::channel();
+            *auth_job = Some(rx);
+            spawn_auth_http(move || {
+                let result =
+                    join_room_with_access(&shared_job, &access).map_err(|e| format!("{e:#}"));
+                let _ = tx.send(AuthJobOutcome::JoinRoom { result });
+            });
+        }
         UiAction::None => {}
     }
 }
@@ -936,21 +1078,24 @@ pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut ui = SystemUi::new();
-    let joined = shared
+    ui.state.home_room_id = shared.room_id.to_string();
+    let (joined, authenticated, username) = shared
         .auth
         .lock()
         .ok()
-        .map(|g| g.is_joined())
-        .unwrap_or(false);
+        .map(|g| (g.is_joined(), g.is_authenticated(), g.username.clone()))
+        .unwrap_or((false, false, None));
     if joined {
-        if let Ok(gate) = shared.auth.lock() {
-            ui.state.home_logged_in_as = gate.username.clone();
-            ui.state.home_status = "Signed in (silent / CI)".into();
-        }
+        ui.state.home_logged_in_as = username;
+        ui.state.home_status = "Signed in (silent / CI)".into();
     } else {
-        // Prompt for Home login before joining.
+        // Prompt for Home login / create before joining.
         ui.state.open = true;
         ui.state.tab = DashTab::Home;
+        if authenticated {
+            ui.state.home_logged_in_as = username;
+            ui.state.home_status = "Signed in — create or join a world".into();
+        }
     }
     let mut app = App {
         mesh,

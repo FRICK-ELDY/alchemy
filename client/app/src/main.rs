@@ -1,7 +1,7 @@
 //! Alchemy client — x0029 Frame TRS + x0026 Manifest seal + x0025 attestation.
 //!
 //! Guarantees:
-//! - Home tab login / register / logout; Room Token only after auth (x0018)
+//! - Home tab login / register / logout; create-world access level + join (x0018 / x0037)
 //! - Explicit Leave + Zenoh liveliness on join/logout (x0019); Intent TTL is host fallback
 //! - Access + Room Token auto-refresh at ~80% TTL while joined (x0021 P1-1)
 //! - Intent Ed25519 session (Token on bind only); Frame finite/tick/sig + snapshot (x0023)
@@ -20,6 +20,7 @@
 //! Non-guarantees: Steal, XR login keyboard, email verify UI, Quest standalone, WSL HMD,
 //! reliable-delivery ACK channel
 
+mod access_level;
 mod auth;
 mod host_attestation;
 mod host_control;
@@ -31,6 +32,7 @@ mod scene;
 mod surface;
 mod system_ui;
 mod turn;
+mod world_api;
 mod world_hit;
 mod world_jwks;
 

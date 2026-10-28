@@ -1,11 +1,11 @@
-//! system_ui — personal DashRoot + retained Canvas (x000f + x0018 Home).
+//! system_ui — personal DashRoot + retained Canvas (x000f + x0018 Home + x0037 create).
 //!
 //! Guarantees: ESC/Menu toggle (via surface), hit-tested chrome, Exit Pinned Facet,
-//! Home tab account form (Desktop text input), Button hover/press color,
-//! client exit / auth action plumbing, Settings defaults (read-only).
+//! Home tab account / create-world form (Desktop text input), Button hover/press color,
+//! client exit / auth / start-session action plumbing, Settings defaults (read-only).
 //! Dash is personal — never published on Room `frame`.
 //! Non-guarantees: OpenXR types inside this module, user Facet rearrange, Vault layout
-//! persist, WorldRoot, XR virtual keyboard, auth HTTP (surface / auth module).
+//! persist, WorldRoot, XR virtual keyboard, auth/world HTTP (surface modules), final UI art.
 
 mod dash;
 pub mod facet;
@@ -14,7 +14,9 @@ mod gpu;
 mod icons;
 mod layout;
 
-pub use dash::{DashState, DashTab, HomeField, HomeMode};
+pub use dash::{
+    access_level_from_widget, DashState, DashTab, HomeField, HomeMode, SESSION_NAME_MAX,
+};
 pub use gpu::UiGpu;
 pub use layout::{LayoutTree, WidgetId};
 
@@ -147,95 +149,165 @@ impl SystemUi {
             return UiAction::None;
         }
         // Hit against current tree (hover rebuild already applied this frame when wired).
-        match self.tree.hit_test(px, py) {
-            Some(WidgetId::TabExit) | Some(WidgetId::CloseSession) => {
+        let Some(hit) = self.tree.hit_test(px, py) else {
+            return UiAction::None;
+        };
+        if let Some(level) = access_level_from_widget(hit) {
+            self.state.home_access_level = level;
+            self.rebuild();
+            return UiAction::None;
+        }
+        match hit {
+            WidgetId::TabExit | WidgetId::CloseSession => {
                 self.state.tab = DashTab::Exit;
                 self.rebuild();
                 UiAction::None
             }
-            Some(WidgetId::TabSettings) => {
+            WidgetId::TabSettings => {
                 self.state.tab = DashTab::Settings;
                 self.rebuild();
                 UiAction::None
             }
-            Some(WidgetId::TabHome) => {
+            WidgetId::TabHome => {
                 self.state.tab = DashTab::Home;
                 self.rebuild();
                 UiAction::None
             }
-            Some(WidgetId::ExitClientOnly) => UiAction::ExitClientOnly,
-            Some(WidgetId::ExitClientAndHost) => UiAction::ExitClientAndHost,
-            Some(WidgetId::TurnModeToggle) => {
+            WidgetId::ExitClientOnly => UiAction::ExitClientOnly,
+            WidgetId::ExitClientAndHost => UiAction::ExitClientAndHost,
+            WidgetId::TurnModeToggle => {
                 self.state.toggle_turn_mode();
                 self.rebuild();
                 log::info!("turn mode → {}", self.state.turn.mode.label());
                 UiAction::None
             }
-            Some(WidgetId::HomeFieldIdentifier) => {
+            WidgetId::HomeFieldIdentifier => {
                 self.state.home_focus = Some(HomeField::Identifier);
                 self.rebuild();
                 UiAction::None
             }
-            Some(WidgetId::HomeFieldPassword) => {
+            WidgetId::HomeFieldPassword => {
                 self.state.home_focus = Some(HomeField::Password);
                 self.rebuild();
                 UiAction::None
             }
-            Some(WidgetId::HomeFieldUsername) => {
+            WidgetId::HomeFieldUsername => {
                 self.state.home_focus = Some(HomeField::Username);
                 self.rebuild();
                 UiAction::None
             }
-            Some(WidgetId::HomeFieldEmail) => {
+            WidgetId::HomeFieldEmail => {
                 self.state.home_focus = Some(HomeField::Email);
                 self.rebuild();
                 UiAction::None
             }
-            Some(WidgetId::HomeFieldBirthday) => {
+            WidgetId::HomeFieldBirthday => {
                 self.state.home_focus = Some(HomeField::Birthday);
                 self.rebuild();
                 UiAction::None
             }
-            Some(WidgetId::HomeRememberMe) => {
+            WidgetId::HomeRememberMe => {
                 self.state.home_remember_me = !self.state.home_remember_me;
                 self.rebuild();
                 UiAction::None
             }
-            Some(WidgetId::HomeModeLogin) => {
+            WidgetId::HomeModeLogin => {
                 self.state.home_mode = HomeMode::Login;
                 self.state.home_focus = Some(HomeField::Identifier);
                 self.rebuild();
                 UiAction::None
             }
-            Some(WidgetId::HomeModeRegister) => {
+            WidgetId::HomeModeRegister => {
                 self.state.home_mode = HomeMode::Register;
                 self.state.home_focus = Some(HomeField::Username);
                 self.rebuild();
                 UiAction::None
             }
-            Some(WidgetId::HomeSubmit) => match self.state.home_mode {
+            WidgetId::HomeSubmit => match self.state.home_mode {
                 HomeMode::Login => UiAction::AuthLogin,
                 HomeMode::Register => UiAction::AuthRegister,
             },
-            Some(WidgetId::HomeLogout) => UiAction::AuthLogout,
-            Some(WidgetId::Mic)
-            | Some(WidgetId::MicOff)
-            | Some(WidgetId::Volume)
-            | Some(WidgetId::Hearing)
-            | Some(WidgetId::SyncBadge)
-            | Some(WidgetId::SettingsPlaceholder) => {
+            WidgetId::HomeLogout => {
+                self.state.home_create_open = false;
+                UiAction::AuthLogout
+            }
+            WidgetId::HomeNewWorld => {
+                self.state.home_create_open = true;
+                self.state.home_focus = Some(HomeField::SessionName);
+                self.state.home_status = if self.state.home_session_actions_enabled {
+                    "Pick access level, then Start session (placeholder UI)".into()
+                } else {
+                    "Create panel (browse only) — Start/Join HTTP is Desktop-only".into()
+                };
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::HomeCreateBack => {
+                self.state.home_create_open = false;
+                self.state.home_focus = None;
+                self.state.home_status = "Signed in — create or join a world".into();
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::HomeCreateName => {
+                self.state.home_focus = Some(HomeField::SessionName);
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::HomeTemplateGrid => {
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::HomeStartSession => {
+                if self.state.home_session_actions_enabled {
+                    UiAction::StartSession
+                } else {
+                    self.state.home_status = "Start session HTTP is Desktop-only this Slice".into();
+                    self.rebuild();
+                    UiAction::None
+                }
+            }
+            WidgetId::HomeJoinRoom => {
+                if self.state.home_session_actions_enabled {
+                    UiAction::JoinRoom
+                } else {
+                    self.state.home_status = "Join room HTTP is Desktop-only this Slice".into();
+                    self.rebuild();
+                    UiAction::None
+                }
+            }
+            // Access-level widgets handled above via `access_level_from_widget`.
+            WidgetId::HomeAccessPrivate
+            | WidgetId::HomeAccessLan
+            | WidgetId::HomeAccessFriends
+            | WidgetId::HomeAccessFriendsPlus
+            | WidgetId::HomeAccessFollowers
+            | WidgetId::HomeAccessFollowersPlus
+            | WidgetId::HomeAccessPublic => UiAction::None,
+            WidgetId::Mic
+            | WidgetId::MicOff
+            | WidgetId::Volume
+            | WidgetId::Hearing
+            | WidgetId::SyncBadge
+            | WidgetId::SettingsPlaceholder => {
                 log::info!("system_ui stub click");
                 UiAction::None
             }
-            None => UiAction::None,
         }
     }
 
     /// Desktop text into focused Home field (ignored when dash closed / not Home).
     pub fn on_text_input(&mut self, text: &str) {
-        if !self.state.open
-            || self.state.tab != DashTab::Home
-            || self.state.home_logged_in_as.is_some()
+        if !self.state.open || self.state.tab != DashTab::Home {
+            return;
+        }
+        // Logged-in hub: no editable fields. Create panel: session name only.
+        if self.state.home_logged_in_as.is_some() && !self.state.home_create_open {
+            return;
+        }
+        if self.state.home_logged_in_as.is_some()
+            && self.state.home_create_open
+            && self.state.home_focus != Some(HomeField::SessionName)
         {
             return;
         }
@@ -255,16 +327,24 @@ impl SystemUi {
         if !self.state.open || self.state.tab != DashTab::Home {
             return;
         }
+        // Hub: cycle is a no-op (see DashState::cycle_home_focus).
         self.state.cycle_home_focus();
         self.rebuild();
     }
 
-    /// Enter on Home submits login/register when not signed in.
+    /// Enter on Home: login/register when signed out; Start session on create panel.
     pub fn on_home_enter(&mut self) -> UiAction {
-        if !self.state.open
-            || self.state.tab != DashTab::Home
-            || self.state.home_logged_in_as.is_some()
-        {
+        if !self.state.open || self.state.tab != DashTab::Home {
+            return UiAction::None;
+        }
+        if self.state.home_logged_in_as.is_some() {
+            if self.state.home_create_open {
+                if self.state.home_session_actions_enabled {
+                    return UiAction::StartSession;
+                }
+                self.state.home_status = "Start session HTTP is Desktop-only this Slice".into();
+                self.rebuild();
+            }
             return UiAction::None;
         }
         match self.state.home_mode {
@@ -338,12 +418,16 @@ pub enum UiAction {
     None,
     ExitClientOnly,
     ExitClientAndHost,
-    /// Home tab: POST login then join room (x0018).
+    /// Home tab: POST login (session only; no auto-join · x0037).
     AuthLogin,
-    /// Home tab: POST register then join room (x0018).
+    /// Home tab: POST register (session only; no auto-join · x0037).
     AuthRegister,
     /// Home tab: logout + leave room locally (x0018).
     AuthLogout,
+    /// Create panel: ensure visibility + guest join (x0037).
+    StartSession,
+    /// Hub: guest join current `ROOM_ID` without create (x0037).
+    JoinRoom,
 }
 
 fn chrono_lite_now() -> String {
