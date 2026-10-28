@@ -191,7 +191,7 @@ fn spawn_host(client_dir: &Path, ipc_token: &str, ready_path: &Path) -> Result<C
     // Host binds 127.0.0.1:0; do not pass a pre-picked ADDR (TOCTOU).
     cmd.env_remove(ENV_ADDR);
     cmd.env_remove("ALCHEMY_HOST_CONTROL");
-    Ok(cmd.spawn().context("spawn host process")?)
+    cmd.spawn().context("spawn host process")
 }
 
 fn spawn_client(client_dir: &Path, ipc_addr: &str, ipc_token: &str) -> Result<Child> {
@@ -205,7 +205,7 @@ fn spawn_client(client_dir: &Path, ipc_addr: &str, ipc_token: &str) -> Result<Ch
         .stderr(Stdio::inherit());
     cmd.env_remove("ALCHEMY_HOST_PID");
     cmd.env_remove("ALCHEMY_HOST_CONTROL");
-    Ok(cmd.spawn().context("spawn client process")?)
+    cmd.spawn().context("spawn client process")
 }
 
 fn host_command(client_dir: &Path) -> Command {

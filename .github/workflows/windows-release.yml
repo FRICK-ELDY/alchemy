@@ -1,0 +1,107 @@
+name: Windows release ZIP
+
+# Tag format: v0.0.0-dev.YYYYMMDDHHMM (JST). Pre-release only.
+# Canonical publish path: tag push → this workflow packs + gh release.
+# Call pack-windows-zip.sh directly (do not use make: MinGW make may invoke WSL bash).
+on:
+  push:
+    tags:
+      - "v0.0.0-dev.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional version (v0.0.0-dev.YYYYMMDDHHMM). Empty = generate JST now (artifact only)."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pack:
+    name: Pack Windows x64 ZIP
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            client -> target
+            launcher -> target
+
+      - name: Resolve version
+        id: ver
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v0.0.0-dev.* ]]; then
+            v="${GITHUB_REF_NAME}"
+          elif [[ -n "${VERSION_INPUT:-}" ]]; then
+            v="${VERSION_INPUT}"
+          else
+            v="v0.0.0-dev.$(TZ=Asia/Tokyo date +%Y%m%d%H%M)"
+          fi
+          if [[ ! "$v" =~ ^v0\.0\.0-dev\.[0-9]{12}(\.[0-9]+)?$ ]]; then
+            echo "Invalid version: $v" >&2
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$v"
+
+      - name: Pack ZIP
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          ./.scripts/pack-windows-zip.sh
+          zip="dist/alchemy-windows-x64-${VERSION}.zip"
+          test -f "$zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alchemy-windows-x64-${{ steps.ver.outputs.version }}
+          path: dist/alchemy-windows-x64-${{ steps.ver.outputs.version }}.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create GitHub Pre-release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          zip="dist/alchemy-windows-x64-${VERSION}.zip"
+          notes="$(mktemp)"
+          {
+            echo "Alchemy Windows x64 tester build \`${VERSION}\` (JST)."
+            echo
+            echo "- Commit: \`${SHA}\`"
+            echo "- Pre-release only — no SemVer stability promise"
+            echo "- Contents: alchemy-launcher + host-server + client (see README-testers.txt inside the ZIP)"
+            echo "- Not included: auth / world / assets / zenohd"
+            echo
+            echo "Unpack, copy env.testers.example.cmd to env.local.cmd, set URLs, run Start.cmd."
+          } >"$notes"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release upload "$VERSION" "$zip" --clobber
+          else
+            gh release create "$VERSION" "$zip" \
+              --title "$VERSION" \
+              --notes-file "$notes" \
+              --prerelease \
+              --latest=false \
+              --target "$SHA"
+          fi

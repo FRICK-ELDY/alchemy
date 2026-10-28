@@ -1,7 +1,8 @@
 # Entry points (macOS / Linux / WSL / Git Bash).
+# pack-windows / publish-windows: native Windows Git Bash or windows-latest only.
 .PHONY: ci ci-rust ci-protocol ci-auth ci-world ci-assets ci-e2e ci-prod-compose \
 	smoke-assets smoke-assets-r2 smoke-compose-e2e smoke-desktop-handthrough \
-	smoke-prod-compose help
+	smoke-prod-compose pack-windows publish-windows help
 
 help:
 	@echo "Targets:"
@@ -18,6 +19,8 @@ help:
 	@echo "  make smoke-compose-e2e # alias of ci-e2e"
 	@echo "  make smoke-prod-compose # x003b config; SMOKE_PROD_UP=1 for auth/world /health"
 	@echo "  make smoke-desktop-handthrough  # x0020 host Token/Manifest/physics + client build (no GUI; stop other host first)"
+	@echo "  make pack-windows      # Windows x64 tester ZIP → dist/ (native Windows / CI only)"
+	@echo "  make publish-windows   # tag + push; CI creates Pre-release (CREATE_TAG=1 PUSH_TAG=1)"
 	@echo ""
 	@echo "Dev: see README.md"
 
@@ -56,3 +59,12 @@ smoke-prod-compose:
 
 smoke-desktop-handthrough:
 	./.scripts/smoke-desktop-handthrough.sh
+
+# VERSION=v0.0.0-dev.YYYYMMDDHHMM SKIP_BUILD=1  (native Windows / CI bash only)
+pack-windows:
+	./.scripts/pack-windows-zip.sh
+
+# Canonical: CREATE_TAG=1 PUSH_TAG=1 → CI packs + gh release.
+# SKIP_PACK=0 on native Windows for optional local smoke pack (still no local gh release).
+publish-windows:
+	./.scripts/publish-windows-release.sh
