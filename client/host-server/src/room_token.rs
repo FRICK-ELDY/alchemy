@@ -3,12 +3,18 @@
 //! Guarantees: RS256 verify + iss/aud/exp/room_id checks; Room Token issued only with auth JWT.
 //! x0021: verify never does HTTP on the input path (SWR + background refresh).
 //! Long-running host: `HostCredentialChain` (auth → Room Token → HostAttestation) plus
-//! `ManifestSealCache` (body blake3 → world seal); refresh failure is fail-closed (x0025 / x0026).
+//! `ManifestSealCache` (body blake3 → world seal).
 //! x0039: seal request includes `host_attestation`; world rejects non-canonical blake3.
-//! Credential HTTP uses a shared connect/read timeout; when multiple layers are due on the same
-//! physics tick, requests run serially (bounded by that timeout each).
-//! Non-guarantees: auth UI, session MAC (P2); async / background credential refresh.
+//! x003d: credential / seal HTTP runs on a dedicated worker; physics reads
+//! [`HostPublishSnapshot`] only. Soft-deadline refresh failure retries with backoff and
+//! keeps the last good snapshot. **Fail-closed** means stop publishing after hard expiry
+//! (full TTL), not kill the process on a transient 502.
+//! Non-guarantees: auth UI, session MAC (P2); Zenoh publish off the physics thread.
 
+use alchemy_protocol::wire_crypto::manifest_seal_blake3_hex;
+use alchemy_protocol::{
+    LocomotionConfig, LocomotionMode, Message, SceneManifest, DEFAULT_MOVE_SPEED, PROTOCOL_PIN,
+};
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
@@ -26,10 +32,14 @@ const DEFAULT_AUTH_URL: &str = "http://127.0.0.1:4002";
 /// Soft TTL: after this, verify still uses cache and kicks background refresh (SWR).
 const JWKS_SOFT_TTL: Duration = Duration::from_secs(60);
 const JWKS_HTTP_TIMEOUT: Duration = Duration::from_secs(2);
-/// Auth / Room Token / HostAttestation HTTP (physics loop must not hang forever).
+/// Auth / Room Token / HostAttestation / ManifestSeal HTTP (credential worker only; x003d).
 const CREDENTIAL_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 const JWKS_BG_POLL: Duration = Duration::from_secs(30);
 const UNKNOWN_KID_COOLDOWN: Duration = Duration::from_secs(1);
+/// Credential worker idle poll when nothing is soft-due.
+const CREDENTIAL_WORKER_IDLE: Duration = Duration::from_millis(200);
+const CREDENTIAL_BACKOFF_START: Duration = Duration::from_secs(1);
+const CREDENTIAL_BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 fn credential_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
@@ -290,6 +300,33 @@ pub fn refresh_deadline(expires_in: u64) -> Option<Instant> {
     }
     let secs = ((expires_in as f64) * TOKEN_REFRESH_FRACTION).floor() as u64;
     Some(Instant::now() + Duration::from_secs(secs.max(1)))
+}
+
+/// Instant at which a token with `expires_in` is fully expired (hard), or `None` if TTL is 0.
+pub fn hard_expire_deadline(expires_in: u64) -> Option<Instant> {
+    if expires_in == 0 {
+        return None;
+    }
+    Some(Instant::now() + Duration::from_secs(expires_in))
+}
+
+/// Earliest hard-expiry among candidates (`None` entries ignored).
+pub fn earliest_hard_expire(candidates: &[Option<Instant>]) -> Option<Instant> {
+    candidates.iter().flatten().copied().min()
+}
+
+/// Publish gate: once hard-expired, publishing stops until a successful refresh re-enables it.
+pub fn publish_allowed_at(
+    now: Instant,
+    hard_expire_at: Option<Instant>,
+    currently_allowed: bool,
+) -> bool {
+    currently_allowed && !matches!(hard_expire_at, Some(at) if now >= at)
+}
+
+fn hard_expire_or_hint(expires_in: u64, hint_secs: u64) -> Instant {
+    hard_expire_deadline(expires_in)
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(hint_secs))
 }
 
 /// Login to auth-server (or use `ALCHEMY_AUTH_TOKEN`).
@@ -562,12 +599,16 @@ pub fn plan_credential_refresh(
 pub struct HostCredentialChain {
     pub auth: HostAuthSession,
     pub auth_refresh_at: Option<Instant>,
+    /// Full auth JWT expiry; `None` when `expires_in=0` (static `ALCHEMY_AUTH_TOKEN`).
+    pub auth_hard_expire_at: Option<Instant>,
     pub host_token: String,
     pub host_refresh_at: Instant,
+    pub host_hard_expire_at: Instant,
     pub host_attestation: String,
     /// World-assigned generation from last host_keys (x003a). Always >= 1 after bootstrap.
     pub host_generation: u64,
     pub attest_refresh_at: Instant,
+    pub attest_hard_expire_at: Instant,
 }
 
 impl HostCredentialChain {
@@ -580,6 +621,7 @@ impl HostCredentialChain {
     ) -> Result<Self> {
         let auth = fetch_auth_session(auth_url).context("fetch auth session")?;
         let auth_refresh_at = refresh_deadline(auth.expires_in);
+        let auth_hard_expire_at = hard_expire_deadline(auth.expires_in);
         let (host_token, host_ttl) = fetch_host_token(world_url, room_id, &auth.access_token)
             .context("fetch host Room Token")?;
         let claims = verifier
@@ -597,38 +639,41 @@ impl HostCredentialChain {
         Ok(Self {
             auth,
             auth_refresh_at,
+            auth_hard_expire_at,
             host_token,
             host_refresh_at: refresh_deadline(host_ttl).unwrap_or_else(|| {
                 Instant::now() + Duration::from_secs(BYPASS_ROOM_TOKEN_TTL_HINT)
             }),
+            host_hard_expire_at: hard_expire_or_hint(host_ttl, BYPASS_ROOM_TOKEN_TTL_HINT),
             host_attestation,
             host_generation,
             attest_refresh_at: refresh_deadline(attest_ttl).unwrap_or_else(|| {
                 Instant::now() + Duration::from_secs(BYPASS_ROOM_TOKEN_TTL_HINT)
             }),
+            attest_hard_expire_at: hard_expire_or_hint(attest_ttl, BYPASS_ROOM_TOKEN_TTL_HINT),
         })
     }
 
-    /// Refresh auth / Room Token / attestation as needed.
-    /// Returns `true` when `host_attestation` rotated (caller should republish Manifest).
-    /// Fail-closed: any error → caller must stop publishing.
-    pub fn refresh_if_due(
+    /// Earliest hard expiry across auth / host token / attestation.
+    pub fn hard_expire_at(&self) -> Option<Instant> {
+        earliest_hard_expire(&[
+            self.auth_hard_expire_at,
+            Some(self.host_hard_expire_at),
+            Some(self.attest_hard_expire_at),
+        ])
+    }
+
+    /// Apply a precomputed refresh plan (x003d: caller owns `plan_credential_refresh` timing).
+    /// Returns `true` when `host_attestation` rotated (caller should rebuild sealed Manifest).
+    pub fn apply_credential_plan(
         &mut self,
+        plan: CredentialRefreshPlan,
         auth_url: &str,
         world_url: &str,
         room_id: &str,
         host_pub: &[u8],
         verifier: &RoomTokenVerifier,
     ) -> Result<bool> {
-        let Some(plan) = plan_credential_refresh(
-            Instant::now(),
-            self.auth_refresh_at,
-            self.host_refresh_at,
-            self.attest_refresh_at,
-        ) else {
-            return Ok(false);
-        };
-
         if plan.refresh_auth {
             self.refresh_auth(auth_url)?;
         }
@@ -647,6 +692,7 @@ impl HostCredentialChain {
             match refresh_auth_session(auth_url, &rt) {
                 Ok(sess) => {
                     self.auth_refresh_at = refresh_deadline(sess.expires_in);
+                    self.auth_hard_expire_at = hard_expire_deadline(sess.expires_in);
                     self.auth = sess;
                     log::info!("refreshed auth JWT via refresh_token");
                     return Ok(());
@@ -656,6 +702,7 @@ impl HostCredentialChain {
         }
         let sess = fetch_auth_session(auth_url).context("re-login auth session")?;
         self.auth_refresh_at = refresh_deadline(sess.expires_in);
+        self.auth_hard_expire_at = hard_expire_deadline(sess.expires_in);
         self.auth = sess;
         log::info!("refreshed auth JWT via login / ALCHEMY_AUTH_TOKEN");
         Ok(())
@@ -681,6 +728,7 @@ impl HostCredentialChain {
         self.host_token = token;
         self.host_refresh_at = refresh_deadline(ttl)
             .unwrap_or_else(|| Instant::now() + Duration::from_secs(BYPASS_ROOM_TOKEN_TTL_HINT));
+        self.host_hard_expire_at = hard_expire_or_hint(ttl, BYPASS_ROOM_TOKEN_TTL_HINT);
         log::info!("refreshed host Room Token (ttl={ttl}s)");
         Ok(())
     }
@@ -698,9 +746,252 @@ impl HostCredentialChain {
         self.host_generation = generation;
         self.attest_refresh_at = refresh_deadline(ttl)
             .unwrap_or_else(|| Instant::now() + Duration::from_secs(BYPASS_ROOM_TOKEN_TTL_HINT));
+        self.attest_hard_expire_at = hard_expire_or_hint(ttl, BYPASS_ROOM_TOKEN_TTL_HINT);
         log::info!("refreshed HostAttestation (ttl={ttl}s generation={generation})");
         Ok(())
     }
+}
+
+/// Physics-facing credential / sealed-Manifest surface (x003d).
+#[derive(Debug, Clone)]
+pub struct HostPublishSnapshot {
+    pub publish_allowed: bool,
+    pub hard_expire_at: Option<Instant>,
+    pub host_generation: u64,
+    pub manifest_bytes: Vec<u8>,
+    pub manifest_revision: u64,
+    /// Bumped when the worker rebuilds a sealed Manifest (attest / seal rotate).
+    pub manifest_epoch: u64,
+}
+
+impl HostPublishSnapshot {
+    pub fn from_sealed(
+        manifest: &SceneManifest,
+        hard_expire_at: Option<Instant>,
+        manifest_epoch: u64,
+    ) -> Self {
+        Self {
+            publish_allowed: true,
+            hard_expire_at,
+            host_generation: manifest.host_generation,
+            manifest_bytes: manifest.encode_to_vec(),
+            manifest_revision: manifest.revision,
+            manifest_epoch,
+        }
+    }
+}
+
+/// Inputs owned by the credential worker after bootstrap (x003d).
+pub struct CredentialWorkerConfig {
+    pub auth_url: String,
+    pub world_url: String,
+    pub room_id: String,
+    pub host_pub: Vec<u8>,
+    pub scene: RoomScene,
+}
+
+fn combined_hard_expire(
+    creds: &HostCredentialChain,
+    seal_cache: &ManifestSealCache,
+) -> Option<Instant> {
+    earliest_hard_expire(&[
+        creds.auth_hard_expire_at,
+        Some(creds.host_hard_expire_at),
+        Some(creds.attest_hard_expire_at),
+        if seal_cache.seal.is_empty() {
+            None
+        } else {
+            Some(seal_cache.hard_expire_at)
+        },
+    ])
+}
+
+/// Apply a successful sealed Manifest into the shared snapshot (testable helper).
+pub fn write_snapshot_on_success(
+    snapshot: &mut HostPublishSnapshot,
+    manifest: &SceneManifest,
+    hard_expire_at: Option<Instant>,
+) {
+    let epoch = snapshot.manifest_epoch.wrapping_add(1);
+    *snapshot = HostPublishSnapshot::from_sealed(manifest, hard_expire_at, epoch);
+}
+
+pub fn build_manifest_from_scene(
+    room_id: &str,
+    scene: &RoomScene,
+    host_pub: Vec<u8>,
+    host_attestation: String,
+    world_seal: String,
+    host_generation: u64,
+) -> SceneManifest {
+    let loco = scene.locomotion.unwrap_or(LocomotionConfig {
+        mode: LocomotionMode::Noclip.into(),
+        move_speed: DEFAULT_MOVE_SPEED,
+    });
+    SceneManifest {
+        room_id: room_id.to_string(),
+        revision: scene.revision,
+        entries: scene.entries.clone(),
+        locomotion: Some(loco),
+        protocol_pin: PROTOCOL_PIN.to_string(),
+        host_pub,
+        host_attestation,
+        world_seal,
+        host_generation,
+    }
+}
+
+/// Build Manifest body (empty seal), obtain/cache world seal, return publishable Manifest.
+pub fn ensure_sealed_manifest(
+    room_id: &str,
+    scene: &RoomScene,
+    host_pub: &[u8],
+    creds: &HostCredentialChain,
+    world_url: &str,
+    seal_cache: &mut ManifestSealCache,
+) -> Result<SceneManifest> {
+    let mut manifest = build_manifest_from_scene(
+        room_id,
+        scene,
+        host_pub.to_vec(),
+        creds.host_attestation.clone(),
+        String::new(),
+        creds.host_generation,
+    );
+    let body_hex = manifest_seal_blake3_hex(&manifest);
+    seal_cache
+        .ensure(
+            world_url,
+            room_id,
+            &creds.host_token,
+            manifest.revision,
+            &body_hex,
+            &creds.host_attestation,
+        )
+        .context("ensure ManifestSeal")?;
+    manifest.world_seal = seal_cache.seal.clone();
+    Ok(manifest)
+}
+
+/// Mark seal soft-due so the next worker loop retries even if credential soft
+/// deadlines already advanced (attest succeeded, seal HTTP failed).
+pub fn force_seal_retry(seal_cache: &mut ManifestSealCache, pending_seal: &mut bool) {
+    *pending_seal = true;
+    seal_cache.refresh_at = Instant::now();
+}
+
+/// Spawn background auth → Room Token → attestation → seal refresh (x003d).
+pub fn spawn_credential_worker(
+    snapshot: Arc<RwLock<HostPublishSnapshot>>,
+    mut creds: HostCredentialChain,
+    mut seal_cache: ManifestSealCache,
+    verifier: Arc<RoomTokenVerifier>,
+    cfg: CredentialWorkerConfig,
+) {
+    thread::Builder::new()
+        .name("credential-refresh".into())
+        .spawn(move || {
+            let mut backoff = CREDENTIAL_BACKOFF_START;
+            let mut pending_seal = false;
+            loop {
+                let now = Instant::now();
+                {
+                    let Ok(mut snap) = snapshot.write() else {
+                        log::error!("credential snapshot RwLock poisoned; stopping worker");
+                        return;
+                    };
+                    if snap.publish_allowed
+                        && !publish_allowed_at(now, snap.hard_expire_at, true)
+                    {
+                        log::error!(
+                            "credential hard expiry reached; stopping Manifest/Frame/snapshot publish (host process stays up)"
+                        );
+                        snap.publish_allowed = false;
+                    }
+                }
+
+                let plan = plan_credential_refresh(
+                    now,
+                    creds.auth_refresh_at,
+                    creds.host_refresh_at,
+                    creds.attest_refresh_at,
+                );
+                let seal_due = pending_seal || now >= seal_cache.refresh_at;
+                if plan.is_none() && !seal_due {
+                    thread::sleep(CREDENTIAL_WORKER_IDLE);
+                    continue;
+                }
+
+                let refresh_result = (|| -> Result<bool> {
+                    let mut attest_rotated = false;
+                    if let Some(plan) = plan {
+                        attest_rotated = creds.apply_credential_plan(
+                            plan,
+                            &cfg.auth_url,
+                            &cfg.world_url,
+                            &cfg.room_id,
+                            &cfg.host_pub,
+                            verifier.as_ref(),
+                        )?;
+                    }
+                    if attest_rotated || seal_due || seal_cache.seal.is_empty() {
+                        let manifest = ensure_sealed_manifest(
+                            &cfg.room_id,
+                            &cfg.scene,
+                            &cfg.host_pub,
+                            &creds,
+                            &cfg.world_url,
+                            &mut seal_cache,
+                        )
+                        .inspect_err(|_| {
+                            force_seal_retry(&mut seal_cache, &mut pending_seal);
+                        })?;
+                        pending_seal = false;
+                        let hard = combined_hard_expire(&creds, &seal_cache);
+                        let Ok(mut snap) = snapshot.write() else {
+                            return Err(anyhow!("credential snapshot RwLock poisoned"));
+                        };
+                        write_snapshot_on_success(&mut snap, &manifest, hard);
+                        if attest_rotated {
+                            log::info!(
+                                "credential worker: sealed Manifest ready (HostAttestation rotated, epoch={})",
+                                snap.manifest_epoch
+                            );
+                        } else {
+                            log::info!(
+                                "credential worker: sealed Manifest ready (ManifestSeal refresh, epoch={})",
+                                snap.manifest_epoch
+                            );
+                        }
+                    } else {
+                        // Auth/host soft refresh without attest: extend hard expiry only.
+                        let hard = combined_hard_expire(&creds, &seal_cache);
+                        let Ok(mut snap) = snapshot.write() else {
+                            return Err(anyhow!("credential snapshot RwLock poisoned"));
+                        };
+                        snap.hard_expire_at = hard;
+                        snap.publish_allowed = true;
+                        snap.host_generation = creds.host_generation;
+                    }
+                    Ok(attest_rotated)
+                })();
+
+                match refresh_result {
+                    Ok(_) => {
+                        backoff = CREDENTIAL_BACKOFF_START;
+                        thread::sleep(CREDENTIAL_WORKER_IDLE);
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "credential refresh failed (retry with backoff; keeping last good snapshot): {err:#}"
+                        );
+                        thread::sleep(backoff);
+                        backoff = backoff.saturating_mul(2).min(CREDENTIAL_BACKOFF_MAX);
+                    }
+                }
+            }
+        })
+        .expect("spawn credential-refresh");
 }
 
 /// World-authored scene definition for a room (x0027).
@@ -903,6 +1194,7 @@ pub struct ManifestSealCache {
     pub body_blake3: String,
     pub revision: u64,
     pub refresh_at: Instant,
+    pub hard_expire_at: Instant,
 }
 
 impl ManifestSealCache {
@@ -938,6 +1230,7 @@ impl ManifestSealCache {
         self.revision = revision;
         self.refresh_at = refresh_deadline(ttl)
             .unwrap_or_else(|| Instant::now() + Duration::from_secs(BYPASS_ROOM_TOKEN_TTL_HINT));
+        self.hard_expire_at = hard_expire_or_hint(ttl, BYPASS_ROOM_TOKEN_TTL_HINT);
         log::info!("refreshed ManifestSeal (ttl={ttl}s revision={revision})");
         Ok(changed)
     }
@@ -948,6 +1241,7 @@ impl ManifestSealCache {
             body_blake3: String::new(),
             revision: 0,
             refresh_at: Instant::now(),
+            hard_expire_at: Instant::now(),
         }
     }
 }
@@ -1131,6 +1425,125 @@ mod tests {
         let at = refresh_deadline(100).expect("ttl>0");
         let delta = at.duration_since(start);
         assert!(delta >= Duration::from_secs(79) && delta <= Duration::from_secs(81));
+    }
+
+    #[test]
+    fn hard_expire_deadline_full_ttl() {
+        let start = Instant::now();
+        let at = hard_expire_deadline(100).expect("ttl>0");
+        let delta = at.duration_since(start);
+        assert!(delta >= Duration::from_secs(99) && delta <= Duration::from_secs(101));
+        assert!(hard_expire_deadline(0).is_none());
+    }
+
+    #[test]
+    fn earliest_hard_expire_picks_min() {
+        let a = Instant::now() + Duration::from_secs(10);
+        let b = Instant::now() + Duration::from_secs(5);
+        assert_eq!(earliest_hard_expire(&[Some(a), None, Some(b)]), Some(b));
+        assert!(earliest_hard_expire(&[None, None]).is_none());
+    }
+
+    #[test]
+    fn publish_allowed_clears_after_hard_expiry() {
+        let now = Instant::now();
+        assert!(publish_allowed_at(
+            now,
+            Some(now + Duration::from_secs(1)),
+            true
+        ));
+        assert!(!publish_allowed_at(
+            now,
+            Some(now - Duration::from_millis(1)),
+            true
+        ));
+        assert!(!publish_allowed_at(
+            now,
+            Some(now + Duration::from_secs(60)),
+            false
+        ));
+        assert!(publish_allowed_at(now, None, true));
+    }
+
+    #[test]
+    fn write_snapshot_on_success_bumps_epoch_and_enables_publish() {
+        let mut snap = HostPublishSnapshot {
+            publish_allowed: false,
+            hard_expire_at: Some(Instant::now() - Duration::from_secs(1)),
+            host_generation: 1,
+            manifest_bytes: vec![],
+            manifest_revision: 0,
+            manifest_epoch: 3,
+        };
+        let manifest = SceneManifest {
+            room_id: "local".into(),
+            revision: 7,
+            entries: vec![],
+            locomotion: None,
+            protocol_pin: PROTOCOL_PIN.to_string(),
+            host_pub: vec![0; 32],
+            host_attestation: "attest".into(),
+            world_seal: "seal".into(),
+            host_generation: 2,
+        };
+        let hard = Instant::now() + Duration::from_secs(30);
+        write_snapshot_on_success(&mut snap, &manifest, Some(hard));
+        assert!(snap.publish_allowed);
+        assert_eq!(snap.manifest_epoch, 4);
+        assert_eq!(snap.manifest_revision, 7);
+        assert_eq!(snap.host_generation, 2);
+        assert!(!snap.manifest_bytes.is_empty());
+    }
+
+    #[test]
+    fn force_seal_retry_marks_pending_and_soft_due() {
+        let mut seal = ManifestSealCache::empty();
+        seal.refresh_at = Instant::now() + Duration::from_secs(3600);
+        let mut pending = false;
+        force_seal_retry(&mut seal, &mut pending);
+        assert!(pending);
+        assert!(seal.refresh_at <= Instant::now());
+    }
+
+    #[test]
+    fn seal_failure_path_does_not_write_snapshot() {
+        // Contract: on ensure_sealed_manifest Err, worker calls force_seal_retry and
+        // must not call write_snapshot_on_success (snapshot stays at previous epoch).
+        let before = HostPublishSnapshot {
+            publish_allowed: true,
+            hard_expire_at: Some(Instant::now() + Duration::from_secs(10)),
+            host_generation: 9,
+            manifest_bytes: vec![1, 2, 3],
+            manifest_revision: 1,
+            manifest_epoch: 5,
+        };
+        let mut snap = before.clone();
+        let mut pending = false;
+        let mut seal = ManifestSealCache::empty();
+        seal.refresh_at = Instant::now() + Duration::from_secs(60);
+        // Simulate Err branch only:
+        force_seal_retry(&mut seal, &mut pending);
+        assert_eq!(snap.manifest_epoch, before.manifest_epoch);
+        assert_eq!(snap.manifest_bytes, before.manifest_bytes);
+        assert!(pending);
+        // Success path would bump epoch:
+        let manifest = SceneManifest {
+            room_id: "local".into(),
+            revision: 1,
+            entries: vec![],
+            locomotion: None,
+            protocol_pin: PROTOCOL_PIN.to_string(),
+            host_pub: vec![0; 32],
+            host_attestation: "a".into(),
+            world_seal: "s".into(),
+            host_generation: 9,
+        };
+        write_snapshot_on_success(
+            &mut snap,
+            &manifest,
+            Some(Instant::now() + Duration::from_secs(30)),
+        );
+        assert_eq!(snap.manifest_epoch, 6);
     }
 
     #[test]

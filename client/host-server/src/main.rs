@@ -4,7 +4,11 @@
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
 //! - Input: Ed25519 session bind (Token on bind only) + `is_finite` (x0023 / x0021)
 //! - SceneManifest from world DemoScene + attestation + seal; Frames / Presence signed (x0027)
-//! - `…/snapshot` queryable for late join; pure pose deltas (no box every-tick upsert)
+//! - x003d: credential / ManifestSeal HTTP on a background worker; physics evaluates
+//!   hard expiry each tick. Transient refresh failure keeps last good creds; hard expiry
+//!   stops Manifest/Presence/Frame/**snapshot queryable** without exiting the process.
+//!   Resume synthesizes wire `removes` + full upserts from the last `last_sent` view
+//! - `…/snapshot` queryable for late join (refused while gated); pure pose deltas
 //! - Empty deltas: **no publish and no `net_tick` advance**; snapshot tick = last published (x0024)
 //! - Per-`sub` Intent/Grab → up to 4 user_roots; Presence Leave / liveliness jti grace (x0022)
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
@@ -15,6 +19,7 @@
 //! - Steal / rotation follow / Formula / polished Walk / verifier
 //! - Authenticated remote (WAN) host shutdown
 //! - Re-fetch of world `GET …/scene` after boot (room redefinition requires host restart)
+//! - Zenoh `put().wait()` off the physics thread (credential worker only in x003d)
 
 mod finite;
 mod host_control;
@@ -25,8 +30,8 @@ mod session;
 mod sim;
 mod wire_tick;
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -40,20 +45,20 @@ fn lock_or_fatal<'a, T>(mutex: &'a Mutex<T>, label: &str) -> MutexGuard<'a, T> {
 
 use alchemy_protocol::decode_limits::{check_input, check_payload_bytes, WireClass};
 use alchemy_protocol::wire_crypto::{
-    generate_signing_key, manifest_seal_blake3_hex, public_key_bytes, sign_frame, sign_presence,
-    SigningKey,
+    generate_signing_key, public_key_bytes, sign_frame, sign_presence, SigningKey,
 };
 use alchemy_protocol::{
     frame_key, host_control_key, input_buttons, input_key, liveliness_binding_from_key,
     liveliness_wildcard, manifest_key, presence_key, snapshot_key, validate_room_id, Entity,
     InputEvent, LocomotionConfig, LocomotionMode, Message, PresenceAssignment, PresenceState,
-    RenderFrame, SceneManifest, DEFAULT_MOVE_SPEED, PROTOCOL_PIN,
+    RenderFrame, DEFAULT_MOVE_SPEED, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
 use room_token::{
-    default_auth_url, fetch_room_scene, HostCredentialChain, ManifestSealCache, RoomScene,
-    RoomTokenVerifier,
+    default_auth_url, earliest_hard_expire, ensure_sealed_manifest, fetch_room_scene,
+    publish_allowed_at, spawn_credential_worker, CredentialWorkerConfig, HostCredentialChain,
+    HostPublishSnapshot, ManifestSealCache, RoomTokenVerifier,
 };
 use session::SessionTable;
 use sim::{LocoMode, PhysicsWorld, USER_ROOT_ENTITY_FIRST, USER_ROOT_SLOTS};
@@ -317,7 +322,7 @@ impl PresenceIntents {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct Pose {
     x: f64,
     y: f64,
@@ -445,61 +450,76 @@ fn pose_changed(prev: Pose, next: Pose) -> bool {
         || pose_delta::scale_changed([prev.sx, prev.sy, prev.sz], [next.sx, next.sy, next.sz])
 }
 
-fn build_manifest_from_scene(
-    room_id: &str,
-    scene: &RoomScene,
-    host_pub: Vec<u8>,
-    host_attestation: String,
-    world_seal: String,
+/// Physics-facing gate fields (no `manifest_bytes` clone).
+#[derive(Clone, Copy, Debug)]
+struct PublishGateView {
+    publish_allowed: bool,
     host_generation: u64,
-) -> SceneManifest {
-    let loco = scene.locomotion.unwrap_or(LocomotionConfig {
-        mode: LocomotionMode::Noclip.into(),
-        move_speed: DEFAULT_MOVE_SPEED,
-    });
-    SceneManifest {
-        room_id: room_id.to_string(),
-        revision: scene.revision,
-        entries: scene.entries.clone(),
-        locomotion: Some(loco),
-        protocol_pin: PROTOCOL_PIN.to_string(),
-        host_pub,
-        host_attestation,
-        world_seal,
-        host_generation,
+}
+
+fn read_publish_gate(snapshot: &RwLock<HostPublishSnapshot>, now: Instant) -> PublishGateView {
+    match snapshot.read() {
+        Ok(guard) => PublishGateView {
+            // Physics evaluates hard expiry itself so HTTP-bound worker cannot lag the gate.
+            publish_allowed: publish_allowed_at(now, guard.hard_expire_at, guard.publish_allowed),
+            host_generation: guard.host_generation,
+        },
+        Err(_) => {
+            log::error!("publish snapshot RwLock poisoned; aborting host-server");
+            std::process::exit(78);
+        }
     }
 }
 
-/// Build Manifest body (empty seal), obtain/cache world seal, return publishable Manifest.
-fn sealed_manifest(
-    room_id: &str,
-    scene: &RoomScene,
-    host_pub: &[u8],
-    creds: &HostCredentialChain,
-    world_url: &str,
-    seal_cache: &mut ManifestSealCache,
-) -> Result<SceneManifest> {
-    let mut manifest = build_manifest_from_scene(
-        room_id,
-        scene,
-        host_pub.to_vec(),
-        creds.host_attestation.clone(),
-        String::new(),
-        creds.host_generation,
-    );
-    let body_hex = manifest_seal_blake3_hex(&manifest);
-    seal_cache
-        .ensure(
-            world_url,
-            room_id,
-            &creds.host_token,
-            manifest.revision,
-            &body_hex,
-            &creds.host_attestation,
-        )
-        .context("ensure ManifestSeal")?;
-    manifest.world_seal = seal_cache.seal.clone();
-    Ok(manifest)
+/// One locked read: `(epoch, revision, bytes)` when worker advanced past `current_epoch`.
+fn take_manifest_if_newer(
+    snapshot: &RwLock<HostPublishSnapshot>,
+    current_epoch: u64,
+) -> Option<(u64, u64, Vec<u8>)> {
+    match snapshot.read() {
+        Ok(guard) => {
+            if guard.manifest_epoch != current_epoch {
+                Some((
+                    guard.manifest_epoch,
+                    guard.manifest_revision,
+                    guard.manifest_bytes.clone(),
+                ))
+            } else {
+                None
+            }
+        }
+        Err(_) => {
+            log::error!("publish snapshot RwLock poisoned; aborting host-server");
+            std::process::exit(78);
+        }
+    }
+}
+
+/// Wire catch-up after publish gate: removes for ids last sent but no longer live,
+/// plus full upserts of current poses. Updates `last_sent` to the live set.
+fn catchup_after_publish_gate(
+    last_sent: &mut HashMap<u32, Pose>,
+    all_poses: &[(u32, Pose)],
+    remove_ids: &mut Vec<u32>,
+) -> Vec<Entity> {
+    let live: HashSet<u32> = all_poses.iter().map(|(id, _)| *id).collect();
+    let mut synthesized: Vec<u32> = last_sent
+        .keys()
+        .copied()
+        .filter(|id| !live.contains(id) && !remove_ids.contains(id))
+        .collect();
+    // Stable order for logs / tests (HashMap key order is otherwise non-deterministic).
+    synthesized.sort_unstable();
+    remove_ids.extend(synthesized);
+    let upserts: Vec<_> = all_poses
+        .iter()
+        .map(|(id, pose)| to_entity(*id, *pose))
+        .collect();
+    last_sent.clear();
+    for &(id, pose) in all_poses {
+        last_sent.insert(id, pose);
+    }
+    upserts
 }
 
 fn spawn_input_gate(
@@ -628,6 +648,7 @@ fn spawn_snapshot_queryable(
     session: zenoh::Session,
     snapshot_key_expr: String,
     snapshot: Arc<Mutex<RenderFrame>>,
+    publish_snapshot: Arc<RwLock<HostPublishSnapshot>>,
     host_key: SigningKey,
 ) -> Result<()> {
     let queryable = session
@@ -640,6 +661,17 @@ fn spawn_snapshot_queryable(
         .spawn(move || {
             log::info!("queryable ready on {snapshot_key_expr}");
             while let Ok(query) = queryable.recv() {
+                // x003d: hard-expiry fail-closed includes snapshot (same as Frame).
+                let gate = read_publish_gate(&publish_snapshot, Instant::now());
+                if !gate.publish_allowed {
+                    if let Err(err) = query
+                        .reply_err("snapshot unavailable (credential hard expiry)")
+                        .wait()
+                    {
+                        log::warn!("snapshot reply_err failed: {err}");
+                    }
+                    continue;
+                }
                 let mut frame = lock_or_fatal(&snapshot, "snapshot").clone();
                 // Contract: empty = not ready. Do not sign an empty frame as success.
                 if frame.upserts.is_empty() {
@@ -720,7 +752,7 @@ fn main() -> Result<()> {
     let host_pub = public_key_bytes(&host_signing_key);
 
     log::info!(
-        "host-server x003b starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        "host-server x003d starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
     );
@@ -728,7 +760,7 @@ fn main() -> Result<()> {
     let verifier = Arc::new(RoomTokenVerifier::new(&world_url, &room_id));
     verifier.refresh_jwks().context("initial JWKS fetch")?;
     verifier.spawn_background_refresh();
-    let mut creds = HostCredentialChain::bootstrap(
+    let creds = HostCredentialChain::bootstrap(
         &auth_url,
         &world_url,
         &room_id,
@@ -737,7 +769,7 @@ fn main() -> Result<()> {
     )
     .context("bootstrap auth → host Room Token → HostAttestation")?;
     log::info!(
-        "auth JWT + host Room Token (role=host) + HostAttestation acquired; three-tier refresh enabled (fail-closed)"
+        "auth JWT + host Room Token (role=host) + HostAttestation acquired; credential worker refresh enabled (fail-closed on hard expiry)"
     );
 
     // Scene is fetched once at boot (x0027 Non-guarantee: no re-fetch on world redefinition).
@@ -776,12 +808,6 @@ fn main() -> Result<()> {
         Arc::clone(&sessions),
     )?;
     spawn_liveliness_watcher(session.clone(), &room_id, Arc::clone(&presence))?;
-    spawn_snapshot_queryable(
-        session.clone(),
-        snapshot_key_expr,
-        Arc::clone(&snapshot_cache),
-        host_signing_key.clone(),
-    )?;
     host_control::spawn_listener(session.clone(), &room_id)?;
     host_ipc::spawn_listener().context("launcher IPC listener")?;
 
@@ -818,7 +844,7 @@ fn main() -> Result<()> {
     let mut last_presence = Instant::now();
 
     let mut seal_cache = ManifestSealCache::empty();
-    let mut manifest = sealed_manifest(
+    let manifest = ensure_sealed_manifest(
         &room_id,
         &room_scene,
         &host_pub,
@@ -838,18 +864,50 @@ fn main() -> Result<()> {
         DEFAULT_MOVE_SPEED
     };
 
+    let hard_expire =
+        earliest_hard_expire(&[creds.hard_expire_at(), Some(seal_cache.hard_expire_at)]);
+    let publish_snapshot = Arc::new(RwLock::new(HostPublishSnapshot::from_sealed(
+        &manifest,
+        hard_expire,
+        0,
+    )));
+    spawn_snapshot_queryable(
+        session.clone(),
+        snapshot_key_expr,
+        Arc::clone(&snapshot_cache),
+        Arc::clone(&publish_snapshot),
+        host_signing_key.clone(),
+    )?;
+    spawn_credential_worker(
+        Arc::clone(&publish_snapshot),
+        creds,
+        seal_cache,
+        Arc::clone(&verifier),
+        CredentialWorkerConfig {
+            auth_url: auth_url.clone(),
+            world_url: world_url.clone(),
+            room_id: room_id.clone(),
+            host_pub: host_pub.clone(),
+            scene: room_scene.clone(),
+        },
+    );
+    log::info!("credential worker spawned (HTTP refresh off physics thread)");
+
     let mut manifest_bytes = manifest.encode_to_vec();
+    let mut manifest_revision = manifest.revision;
+    let mut manifest_epoch = 0u64;
     manifest_pub
         .put(manifest_bytes.clone())
         .wait()
         .map_err(|e| anyhow::anyhow!("manifest publish failed: {e}"))?;
     log::info!(
         "published SceneManifest revision={} entries={} loco={:?} speed={move_speed} (attested+sealed)",
-        manifest.revision,
+        manifest_revision,
         manifest.entries.len(),
         loco_mode
     );
     let mut last_manifest = Instant::now();
+    let mut last_publish_denied_log = Instant::now() - Duration::from_secs(60);
 
     let mut physics = PhysicsWorld::from_entries(&room_scene.entries, loco_mode, move_speed);
     let grabbable_n = physics.boxes.grabbable.iter().filter(|&&g| g).count();
@@ -875,6 +933,8 @@ fn main() -> Result<()> {
     let mut empty_delta_frames: u64 = 0;
     let mut physics_steps_logged: u64 = 0;
     let mut last_sent: HashMap<u32, Pose> = HashMap::new();
+    // Whether the previous tick was allowed to publish (for resume catch-up).
+    let mut was_publishing = true;
     // E2E ready = input gate + frame publisher live AND at least one frame put (x001f).
     let mut host_ready_signaled = false;
 
@@ -889,70 +949,46 @@ fn main() -> Result<()> {
         }
         next_physics += physics_period;
 
-        // Credential refresh runs every physics tick (cheap until due) so Room Token /
-        // auth TTL cannot silently expire between Manifest republishes. Fail-closed.
-        // Note: due layers use sync ureq with CREDENTIAL_HTTP_TIMEOUT; multiple dues
-        // on one tick stack serially (auth/host/attest then seal).
-        let attest_rotated = match creds.refresh_if_due(
-            &auth_url,
-            &world_url,
-            &room_id,
-            &host_pub,
-            verifier.as_ref(),
-        ) {
-            Ok(rotated) => rotated,
-            Err(err) => {
-                log::error!(
-                    "credential refresh failed (fail-closed): {err:#}; stopping Manifest publish"
+        // x003d: credentials / seal live on the worker; physics reads gate + hard expiry.
+        let pub_snap = read_publish_gate(&publish_snapshot, now);
+        if !pub_snap.publish_allowed {
+            // Keep `last_sent` as last wire view so resume can synthesize removes.
+            was_publishing = false;
+            if last_publish_denied_log.elapsed() >= Duration::from_secs(5) {
+                log::warn!(
+                    "publish paused (credential hard expiry or gate); physics continues, waiting for refresh"
                 );
-                return Err(err).context("host credential refresh failed");
+                last_publish_denied_log = Instant::now();
             }
-        };
-        // Seal may be due even when attestation is not; fail-closed on seal refresh.
-        let seal_due = Instant::now() >= seal_cache.refresh_at;
-        if attest_rotated || seal_due || last_manifest.elapsed() >= MANIFEST_REPUBLISH {
-            manifest = match sealed_manifest(
-                &room_id,
-                &room_scene,
-                &host_pub,
-                &creds,
-                &world_url,
-                &mut seal_cache,
-            ) {
-                Ok(m) => m,
-                Err(err) => {
-                    log::error!(
-                        "ManifestSeal refresh failed (fail-closed): {err:#}; stopping Manifest publish"
-                    );
-                    return Err(err).context("host ManifestSeal refresh failed");
-                }
-            };
-            manifest_bytes = manifest.encode_to_vec();
+        } else if let Some((epoch, rev, bytes)) =
+            take_manifest_if_newer(&publish_snapshot, manifest_epoch)
+        {
+            manifest_bytes = bytes;
+            manifest_revision = rev;
+            manifest_epoch = epoch;
             manifest_pub
                 .put(manifest_bytes.clone())
                 .wait()
                 .map_err(|e| anyhow::anyhow!("manifest republish failed: {e}"))?;
             last_manifest = Instant::now();
-            if attest_rotated {
-                log::info!(
-                    "published SceneManifest revision={} (HostAttestation rotated)",
-                    manifest.revision
-                );
-            } else if seal_due {
-                log::info!(
-                    "published SceneManifest revision={} (ManifestSeal rotated)",
-                    manifest.revision
-                );
-            } else {
-                log::info!(
-                    "republished SceneManifest revision={} (late-joiner assist)",
-                    manifest.revision
-                );
-            }
+            log::info!(
+                "published SceneManifest revision={manifest_revision} (credential worker epoch={manifest_epoch})"
+            );
+        } else if last_manifest.elapsed() >= MANIFEST_REPUBLISH {
+            manifest_pub
+                .put(manifest_bytes.clone())
+                .wait()
+                .map_err(|e| anyhow::anyhow!("manifest republish failed: {e}"))?;
+            last_manifest = Instant::now();
+            log::info!(
+                "republished SceneManifest revision={manifest_revision} (late-joiner assist)"
+            );
         }
+        // Stays true across non-net ticks until catch-up runs on a net tick.
+        let resume_catchup = pub_snap.publish_allowed && !was_publishing;
 
         let tick_now = Instant::now();
-        let host_generation = creds.host_generation;
+        let host_generation = pub_snap.host_generation;
         let (by_slot, occupied, presence_rev, mut presence_state, reclaimed, join_assist) = {
             let mut g = lock_or_fatal(&presence, "presence");
             let freed = g.drain_reclaims(tick_now, PRESENCE_SLOT_TTL);
@@ -970,13 +1006,16 @@ fn main() -> Result<()> {
         for (entity_id, sub) in &reclaimed {
             let slot = (entity_id - USER_ROOT_ENTITY_FIRST) as usize;
             physics.release_slot(slot);
-            last_sent.remove(entity_id);
+            // Do not mutate `last_sent` here: it is the last wire view. Removals are
+            // applied when removes are published, or wholesale on resume catch-up.
             if !sub.is_empty() {
                 lock_or_fatal(&sessions, "sessions").remove_by_sub(sub);
             }
         }
 
-        if presence_rev != last_presence_rev || last_presence.elapsed() >= PRESENCE_REPUBLISH {
+        if pub_snap.publish_allowed
+            && (presence_rev != last_presence_rev || last_presence.elapsed() >= PRESENCE_REPUBLISH)
+        {
             sign_presence(&host_signing_key, &mut presence_state);
             let n = presence_state.assignments.len();
             let rev = presence_state.revision;
@@ -996,15 +1035,14 @@ fn main() -> Result<()> {
         }
 
         // New assign or session jti rotate (reconnect) — not reclaim/leave (x003c).
-        if join_assist {
+        if pub_snap.publish_allowed && join_assist {
             manifest_pub
                 .put(manifest_bytes.clone())
                 .wait()
                 .map_err(|e| anyhow::anyhow!("manifest republish on join failed: {e}"))?;
             last_manifest = Instant::now();
             log::info!(
-                "republished SceneManifest revision={} (presence join assist)",
-                manifest.revision
+                "republished SceneManifest revision={manifest_revision} (presence join assist)"
             );
         }
 
@@ -1027,11 +1065,12 @@ fn main() -> Result<()> {
         physics_steps = physics_steps.wrapping_add(1);
         physics_steps_logged += 1;
 
-        let remove_ids: Vec<u32> = reclaimed.iter().map(|(id, _)| *id).collect();
+        let mut remove_ids: Vec<u32> = reclaimed.iter().map(|(id, _)| *id).collect();
 
         if !physics_steps.is_multiple_of(PHYSICS_PER_NET) {
             // Still flush removes promptly when reclaim happens between net ticks.
-            if !remove_ids.is_empty() {
+            // Resume catch-up (with synthesized removes) waits for a net tick below.
+            if !remove_ids.is_empty() && pub_snap.publish_allowed && !resume_catchup {
                 let mut cache = lock_or_fatal(&snapshot_cache, "snapshot");
                 cache.upserts.retain(|e| !remove_ids.contains(&e.id));
                 cache.tick = net_tick;
@@ -1049,6 +1088,9 @@ fn main() -> Result<()> {
                     .put(frame.encode_to_vec())
                     .wait()
                     .map_err(|e| anyhow::anyhow!("frame publish failed: {e}"))?;
+                for id in &remove_ids {
+                    last_sent.remove(id);
+                }
                 last_published_tick = Some(net_tick);
                 net_tick = net_tick.wrapping_add(1);
                 publishes += 1;
@@ -1076,20 +1118,41 @@ fn main() -> Result<()> {
         }
 
         let mut upserts = Vec::new();
-        for &(id, next_pose) in &all_poses {
-            // Pure delta (x0023): late joiners use `…/snapshot` instead of every-tick box upserts.
-            let should_send = match last_sent.get(&id) {
-                None => true,
-                Some(prev) => pose_changed(*prev, next_pose),
-            };
-            if should_send {
-                upserts.push(to_entity(id, next_pose));
-                last_sent.insert(id, next_pose);
+        if pub_snap.publish_allowed {
+            if resume_catchup {
+                log::info!("publish resumed; synthesizing catch-up upserts+removes");
+                upserts = catchup_after_publish_gate(&mut last_sent, &all_poses, &mut remove_ids);
+            } else {
+                for &(id, next_pose) in &all_poses {
+                    // Pure delta (x0023): late joiners use `…/snapshot`.
+                    // Gated ticks must not advance `last_sent` (wire view).
+                    let should_send = match last_sent.get(&id) {
+                        None => true,
+                        Some(prev) => pose_changed(*prev, next_pose),
+                    };
+                    if should_send {
+                        upserts.push(to_entity(id, next_pose));
+                        last_sent.insert(id, next_pose);
+                    }
+                }
             }
         }
 
         let upsert_len = upserts.len() as u64;
-        if upserts.is_empty() && remove_ids.is_empty() {
+        if !pub_snap.publish_allowed {
+            // Local cache may stay warm for host diagnostics; queryable refuses while gated.
+            let mut cache = lock_or_fatal(&snapshot_cache, "snapshot");
+            if let Some(tick) = wire_tick::snapshot_tick_on_empty_hold(last_published_tick) {
+                cache.tick = tick;
+            }
+            cache.host_time_ms = host_time_ms();
+            cache.upserts = all_poses
+                .iter()
+                .map(|(id, pose)| to_entity(*id, *pose))
+                .collect();
+            cache.removes.clear();
+            cache.host_sig.clear();
+        } else if upserts.is_empty() && remove_ids.is_empty() {
             // x0024: no publish / no `net_tick` advance. Refresh poses only under last
             // published tick — never stamp the next unpublished `net_tick` (DropStale trap).
             empty_delta_frames += 1;
@@ -1103,6 +1166,9 @@ fn main() -> Result<()> {
                     .collect();
                 cache.removes.clear();
                 cache.host_sig.clear();
+            }
+            if resume_catchup {
+                was_publishing = true;
             }
         } else {
             upsert_entities += upsert_len;
@@ -1121,7 +1187,7 @@ fn main() -> Result<()> {
                 tick: net_tick,
                 host_time_ms: host_time_ms(),
                 upserts,
-                removes: remove_ids,
+                removes: remove_ids.clone(),
                 host_sig: vec![],
             };
             sign_frame(&host_signing_key, &mut frame);
@@ -1129,10 +1195,20 @@ fn main() -> Result<()> {
                 .put(frame.encode_to_vec())
                 .wait()
                 .map_err(|e| anyhow::anyhow!("frame publish failed: {e}"))?;
+            // Normal delta path: drop removed ids from the wire view.
+            // After resume catch-up this is a no-op (last_sent was already replaced by live).
+            if !resume_catchup {
+                for id in &remove_ids {
+                    last_sent.remove(id);
+                }
+            }
             last_published_tick = Some(net_tick);
             net_tick = net_tick.wrapping_add(1);
             publishes += 1;
             signal_host_ready_once(&mut host_ready_signaled);
+            if resume_catchup {
+                was_publishing = true;
+            }
         }
 
         if last_log.elapsed() >= Duration::from_secs(1) {
@@ -1167,6 +1243,36 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod publish_gate_catchup_tests {
+    use super::*;
+
+    #[test]
+    fn catchup_synthesizes_removes_and_full_upserts() {
+        let mut last_sent = HashMap::new();
+        last_sent.insert(3, Pose::default()); // vanished user_root
+        last_sent.insert(10, Pose::default()); // still live but stale pose
+        let live = vec![
+            (
+                10,
+                Pose {
+                    x: 1.0,
+                    ..Pose::default()
+                },
+            ),
+            (11, Pose::default()),
+        ];
+        let mut remove_ids = vec![];
+        let upserts = catchup_after_publish_gate(&mut last_sent, &live, &mut remove_ids);
+        assert_eq!(remove_ids, vec![3]);
+        assert_eq!(upserts.len(), 2);
+        assert!(last_sent.contains_key(&10));
+        assert!(last_sent.contains_key(&11));
+        assert!(!last_sent.contains_key(&3));
+        assert!((last_sent[&10].x - 1.0).abs() < f64::EPSILON);
+    }
 }
 
 #[cfg(test)]
