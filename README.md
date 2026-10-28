@@ -111,8 +111,8 @@ AUTH_USER=alice AUTH_PASSWORD=Password1 ALCHEMY_FORCE_DESKTOP=1 cargo run -p cli
 cd launcher && cargo run -p alchemy-launcher
 
 # 3a'') Windows テスター ZIP（正本はタグ push → CI Pre-release）
-#   make publish-windows CREATE_TAG=1 PUSH_TAG=1
-#   ローカル煙: make pack-windows（native Windows のみ）
+#   .\.scripts\publish-windows-release.ps1 -CreateTag -PushTag
+#   ローカル煙: .\.scripts\pack-windows-zip.ps1
 #   手順: .workspace/0_doc/manual/windows-tester-zip.md
 
 # 3b) 機械検証（3a の代替。既存 host を止めてから。スタック未起動は赤）

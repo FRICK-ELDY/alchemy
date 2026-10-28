@@ -50,5 +50,5 @@ Windows / Unix 共通。詳細手順の日常正本は [README Desktop 手通し
 ## 配布 ZIP（Windows x64）
 
 テスター向けは `ALCHEMY_HOST_BIN` / `ALCHEMY_CLIENT_BIN` を同梱 exe に向けた ZIP。  
-手順: [windows-tester-zip.md](../manual/windows-tester-zip.md)。`make pack-windows` はローカル煙、`make publish-windows` はタグ push のみ。Pre-release 作成は CI（`windows-release.yml`）。  
+手順: [windows-tester-zip.md](../manual/windows-tester-zip.md)。ローカル煙は `pack-windows-zip.ps1`、タグ push は `publish-windows-release.ps1`。Pre-release 作成は CI（`windows-release.yml`）。  
 `Start.cmd` が bin パスをセットして `alchemy-launcher.exe` を起動する。

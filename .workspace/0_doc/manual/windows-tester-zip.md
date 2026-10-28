@@ -1,8 +1,8 @@
 # Windows テスター ZIP（配布）
 
 > **正本公開**: タグ push → [`.github/workflows/windows-release.yml`](../../../.github/workflows/windows-release.yml) が梱包して Pre-release を作成  
-> **ローカル入口**: `make pack-windows` / `make publish-windows`  
-> **スクリプト**: [`.scripts/pack-windows-zip.sh`](../../../.scripts/pack-windows-zip.sh) · [`.scripts/publish-windows-release.sh`](../../../.scripts/publish-windows-release.sh)  
+> **ローカル入口**: PowerShell（Python / make 不要）  
+> **スクリプト**: [`.scripts/pack-windows-zip.ps1`](../../../.scripts/pack-windows-zip.ps1) · [`.scripts/publish-windows-release.ps1`](../../../.scripts/publish-windows-release.ps1)  
 > **公開先**: https://github.com/FRICK-ELDY/alchemy/releases （Pre-release）
 
 ## 保証 / 非保証
@@ -27,39 +27,39 @@
 git tag v0.0.0-dev.…  →  push tag  →  windows-release.yml  →  Pre-release ZIP
 ```
 
-ローカル `publish-windows` は **タグ作成と push だけ**する。`gh release create/upload` は呼ばない（CI とレースしない）。
+ローカル `publish-windows-release.ps1` は **タグ作成と push だけ**する。`gh release create/upload` は呼ばない。
 
-## 実行環境
+## ローカルで梱包（PowerShell）
 
-`pack-windows` は **ネイティブ Windows**（Git Bash）または **windows-latest CI** 専用。  
-CI は `make` を使わず `.scripts/pack-windows-zip.sh` を直接実行する（MinGW make → WSL bash 問題を避ける）。  
-WSL からはタグ push のみ。
+リポジトリ根で:
 
-## ローカルで梱包（Windows + Git Bash・任意の煙）
-
-```bash
-make pack-windows
-VERSION=v0.0.0-dev.202610281915 make pack-windows
-SKIP_BUILD=1 make pack-windows
+```powershell
+.\.scripts\pack-windows-zip.ps1
+.\.scripts\pack-windows-zip.ps1 -Version v0.0.0-dev.202610281915
+.\.scripts\pack-windows-zip.ps1 -SkipBuild
 ```
+
+必要ツール: PowerShell 5.1+、`cargo` / `rustc`、`git`。Python / make は不要。
 
 成果物は `dist/` に残るが、**Releases への正本アップロードはしない**。
 
+`make` がある環境では `make pack-windows`（内部で上記 ps1 を呼ぶ）でも可。
+
 ## タグを切って CI に公開させる
 
-作業ツリーをクリーンにして（WSL 可）:
+作業ツリーをクリーンにして:
 
-```bash
-make publish-windows CREATE_TAG=1 PUSH_TAG=1
-# 既定 SKIP_PACK=1。ネイティブで煙を見たいときだけ:
-# SKIP_PACK=0 make publish-windows CREATE_TAG=1 PUSH_TAG=1
+```powershell
+.\.scripts\publish-windows-release.ps1 -CreateTag -PushTag
+# ローカル煙も見る:
+.\.scripts\publish-windows-release.ps1 -CreateTag -PushTag -PackLocal
 ```
 
 手動でも可:
 
-```bash
-TAG="v0.0.0-dev.$(TZ=Asia/Tokyo date +%Y%m%d%H%M)"
-git tag -a "$TAG" -m "Alchemy Windows tester $TAG"
+```powershell
+$TAG = "v0.0.0-dev.$(([TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTimeOffset]::UtcNow, 'Tokyo Standard Time')).ToString('yyyyMMddHHmm'))"
+git tag -a $TAG -m "Alchemy Windows tester $TAG"
 git push origin "refs/tags/$TAG"
 ```
 
