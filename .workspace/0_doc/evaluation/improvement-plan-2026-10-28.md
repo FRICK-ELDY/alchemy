@@ -95,12 +95,12 @@
 
 ---
 
-## 推奨スライス順（案）
+## 推奨スライス順
 
-1. **x0038** — leave→discard + 否定系 E2E（P0-1）
-2. **x0039** — canonical ManifestSeal（P0-2）
-3. **x0040** — generation/revision gate（P0-3）
-4. **x0041** — decode limits（P0-4）+ world test DB / prod S2S（P0-5/6）同梱可
-5. **x0042+** — BlobGrant or 文書、network worker、cnf、ACL
+1. **[x0038](../../roadmap/slices/x0038-leave-to-discard.md)** — leave→discard + 否定系 E2E（P0-1）
+2. **[x0039](../../roadmap/slices/x0039-canonical-manifest-seal.md)** — canonical ManifestSeal（P0-2）
+3. **[x003a](../../roadmap/slices/x003a-generation-revision-gate.md)** — generation/revision gate（P0-3）
+4. **[x003b](../../roadmap/slices/x003b-decode-limits-ops-hygiene.md)** — decode limits（P0-4）+ world test DB / prod S2S（P0-5/6）
+5. **x003c+** — BlobGrant or 文書、network worker、cnf、ACL（P1）
 
 スライス完了条件に必ず含める: **prod compose 起動**・**否定系が通る**・**保証表とコード一致**。
