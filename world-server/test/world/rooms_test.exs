@@ -1,6 +1,7 @@
 defmodule World.RoomsTest do
   use World.DataCase, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias World.Rooms
   alias World.Rooms.Room
 
@@ -116,6 +117,6 @@ defmodule World.RoomsTest do
     end
 
     # x003b: Repo restart leaves Sandbox in auto; restore manual for later DataCase owners.
-    Ecto.Adapters.SQL.Sandbox.mode(World.Repo, :manual)
+    Sandbox.mode(World.Repo, :manual)
   end
 end

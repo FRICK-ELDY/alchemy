@@ -1,6 +1,7 @@
 defmodule WorldWeb.RoomControllerTest do
   use WorldWeb.ConnCase, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias World.TestAuthHelpers
 
   setup do
@@ -594,6 +595,6 @@ defmodule WorldWeb.RoomControllerTest do
     end
 
     # x003b: Repo restart leaves Sandbox in auto; restore manual for later DataCase owners.
-    Ecto.Adapters.SQL.Sandbox.mode(World.Repo, :manual)
+    Sandbox.mode(World.Repo, :manual)
   end
 end

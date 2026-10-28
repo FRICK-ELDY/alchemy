@@ -293,7 +293,9 @@ mod tests {
         let junk = vec![0u8; MAX_FRAME_BYTES + 1];
         assert!(matches!(
             decode_frame_checked(&junk),
-            Err(FrameDecodeLimitError::Limit(DecodeLimitError::PayloadTooLarge { .. }))
+            Err(FrameDecodeLimitError::Limit(
+                DecodeLimitError::PayloadTooLarge { .. }
+            ))
         ));
     }
 
@@ -310,10 +312,12 @@ mod tests {
         );
         assert!(matches!(
             decode_input_checked(&bytes),
-            Err(InputDecodeLimitError::Limit(DecodeLimitError::BytesTooLong {
-                field: "session_pub",
-                ..
-            }))
+            Err(InputDecodeLimitError::Limit(
+                DecodeLimitError::BytesTooLong {
+                    field: "session_pub",
+                    ..
+                }
+            ))
         ));
     }
 

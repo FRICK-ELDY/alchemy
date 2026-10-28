@@ -709,35 +709,36 @@ fn spawn_frame_subscriber(
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 'sample: {
-                let bytes: ZBytes = sample.payload().clone();
-                if let Err(err) = check_payload_bytes(WireClass::Frame, bytes.len()) {
-                    dropped_limits += 1;
-                    log::warn!("drop RenderFrame: {err}");
-                    break 'sample;
-                }
-                let payload = bytes.to_bytes();
-                match RenderFrame::decode(payload.as_ref()) {
-                    Ok(frame) => {
-                        if let Err(err) = check_frame(&frame) {
-                            dropped_limits += 1;
-                            log::warn!("drop RenderFrame: {err}");
-                            break 'sample;
-                        }
-                        match apply_frame(&shared, frame, /* replace */ false) {
-                            ApplyFrameOutcome::Applied | ApplyFrameOutcome::Dropped => {}
-                            ApplyFrameOutcome::NeedResync => {
-                                // x0024: missing deltas are not retransmitted — resync via snapshot.
-                                let now = Instant::now();
-                                if now < resync_cooldown_until {
-                                    break 'sample;
+                    let bytes: ZBytes = sample.payload().clone();
+                    if let Err(err) = check_payload_bytes(WireClass::Frame, bytes.len()) {
+                        dropped_limits += 1;
+                        log::warn!("drop RenderFrame: {err}");
+                        break 'sample;
+                    }
+                    let payload = bytes.to_bytes();
+                    match RenderFrame::decode(payload.as_ref()) {
+                        Ok(frame) => {
+                            if let Err(err) = check_frame(&frame) {
+                                dropped_limits += 1;
+                                log::warn!("drop RenderFrame: {err}");
+                                break 'sample;
+                            }
+                            match apply_frame(&shared, frame, /* replace */ false) {
+                                ApplyFrameOutcome::Applied | ApplyFrameOutcome::Dropped => {}
+                                ApplyFrameOutcome::NeedResync => {
+                                    // x0024: missing deltas are not retransmitted — resync via snapshot.
+                                    let now = Instant::now();
+                                    if now < resync_cooldown_until {
+                                        break 'sample;
+                                    }
+                                    resync_cooldown_until = now + SNAPSHOT_GAP_RESYNC_COOLDOWN;
+                                    let _ =
+                                        fetch_snapshot(&session, shared.room_id.as_ref(), &shared);
                                 }
-                                resync_cooldown_until = now + SNAPSHOT_GAP_RESYNC_COOLDOWN;
-                                let _ = fetch_snapshot(&session, shared.room_id.as_ref(), &shared);
                             }
                         }
+                        Err(err) => log::warn!("RenderFrame decode failed: {err}"),
                     }
-                    Err(err) => log::warn!("RenderFrame decode failed: {err}"),
-                }
                 } // 'sample
                 if last_gate_log.elapsed() >= GATE_LOG_INTERVAL {
                     if dropped_limits > 0 {
