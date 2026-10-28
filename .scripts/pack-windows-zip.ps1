@@ -94,9 +94,16 @@ foreach ($bin in $bins) {
 }
 
 $templates = Join-Path $PSScriptRoot 'distribution'
-Copy-Item -LiteralPath (Join-Path $templates 'Start.cmd') -Destination $packageRoot
+function Copy-WindowsTextFile([string]$Src, [string]$Dst) {
+    # cmd.exe requires CRLF; LF-only .cmd is misparsed (commands lose leading chars).
+    $enc = New-Object System.Text.UTF8Encoding $false
+    $text = [System.IO.File]::ReadAllText($Src) -replace "`r`n", "`n" -replace "`n", "`r`n"
+    if (-not $text.EndsWith("`r`n")) { $text += "`r`n" }
+    [System.IO.File]::WriteAllText($Dst, $text, $enc)
+}
+Copy-WindowsTextFile (Join-Path $templates 'Start.cmd') (Join-Path $packageRoot 'Start.cmd')
+Copy-WindowsTextFile (Join-Path $templates 'env.testers.example.cmd') (Join-Path $packageRoot 'env.testers.example.cmd')
 Copy-Item -LiteralPath (Join-Path $templates 'README-testers.txt') -Destination $packageRoot
-Copy-Item -LiteralPath (Join-Path $templates 'env.testers.example.cmd') -Destination $packageRoot
 Copy-Item -LiteralPath (Join-Path $templates 'ensure-demo-coin.ps1') -Destination $packageRoot
 
 # Demo Coin for Start.cmd → assets CAS seed (x003c). Not a client runtime fallback path.
