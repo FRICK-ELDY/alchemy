@@ -3,7 +3,9 @@ defmodule World.ManifestSeal do
   Issues short-lived ManifestSeal JWTs (RS256) binding `(room_id, revision, manifest_blake3)`.
 
   Guarantees: same world JWKS as Room Tokens; distinct `aud` / `typ`.
-  Non-guarantees: SceneManifest-driven content (P4); Presence / Frame world signatures.
+  x0039: callers must pass a blake3 that matches DB scene + attested host key
+  (see `World.CanonicalManifest`); this module only signs an already-canonical hash.
+  Non-guarantees: Presence / Frame world signatures.
   """
 
   alias World.Token.Keys

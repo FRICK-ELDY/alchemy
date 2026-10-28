@@ -38,7 +38,8 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - `LocomotionConfig { mode, move_speed }` — `UNSPECIFIED` → host は **Noclip**
 - `LocomotionMode`: NOCLIP / FLY / WALK
 - `protocol_pin` / `host_pub`（32B Ed25519）+ `host_attestation` + **`world_seal`**（world JWT・body blake3）: client は pin / seal / attestation 失敗で **discard**（leave しない・x0038）；Frame/Presence は attested `host_pub`（x0026）
-- **定義の正本は world 発行 entries**（host は実行・seal、client は描画/Grab）。**GLB バイトは載せない**（assets-server CAS 参照のみ）
+- **ManifestSeal の hash 正本は world DB scene + attested host key**（x0039）。host 提出 `manifest_blake3` は照合のみ；不一致は seal 不可（署名 oracle 廃止）
+- **定義の正本は world 発行 entries**（host は実行・配信、client は描画/Grab）。**GLB バイトは載せない**（assets-server CAS 参照のみ）
 
 ### RenderFrame（`proto/render_frame.proto`）— 高頻度デルタ + 署名（x0023）+ TRS（x0029）
 

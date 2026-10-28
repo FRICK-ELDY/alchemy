@@ -1,10 +1,21 @@
 ARG ELIXIR_IMAGE=elixir:1.19-otp-28-alpine
 ARG ALPINE_VERSION=3.23
+ARG RUST_IMAGE=rust:1-alpine
+
+# x0039: canonical ManifestSeal hash (same encode path as peers).
+FROM ${RUST_IMAGE} AS seal-hash
+RUN apk add --no-cache musl-dev
+WORKDIR /src
+COPY protocol /src/protocol
+WORKDIR /src/protocol
+RUN cargo build --release --bin manifest-seal-hash \
+ && cp target/release/manifest-seal-hash /manifest-seal-hash
 
 # Build context: repository root (shared/alchemy_auth_client path dep).
 FROM ${ELIXIR_IMAGE} AS dev
 
 RUN apk add --no-cache build-base git wget
+COPY --from=seal-hash /manifest-seal-hash /usr/local/bin/manifest-seal-hash
 
 WORKDIR /app
 
@@ -29,6 +40,7 @@ CMD ["mix", "phx.server"]
 FROM ${ELIXIR_IMAGE} AS build
 
 RUN apk add --no-cache build-base git
+COPY --from=seal-hash /manifest-seal-hash /usr/local/bin/manifest-seal-hash
 
 WORKDIR /app
 
@@ -57,6 +69,7 @@ RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates su-exec \
 
 WORKDIR /app
 
+COPY --from=seal-hash /manifest-seal-hash /usr/local/bin/manifest-seal-hash
 COPY --from=build --chown=world:world /app/_build/prod/rel/world ./
 COPY world-server/docker-entrypoint.release.sh /docker-entrypoint.release.sh
 RUN chmod 755 /docker-entrypoint.release.sh

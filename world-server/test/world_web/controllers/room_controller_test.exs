@@ -322,9 +322,22 @@ defmodule WorldWeb.RoomControllerTest do
              |> json_response(401)
   end
 
-  test "manifest_seal issues seal for owner host token", %{conn: conn, signer: signer} do
+  defp host_pub_b64 do
+    Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+  end
+
+  defp issue_attestation(host_token, room_id, host_pub_b64) do
+    %{"attestation" => attestation} =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{host_token}")
+      |> post("/api/v1/rooms/#{room_id}/host_keys", %{host_pub: host_pub_b64})
+      |> json_response(200)
+
+    attestation
+  end
+
+  test "manifest_seal issues seal for canonical scene hash", %{conn: conn, signer: signer} do
     sub = "22222222-2222-2222-2222-222222222222"
-    blake3 = String.duplicate("cd", 32)
 
     conn
     |> TestAuthHelpers.put_auth(signer, sub)
@@ -337,15 +350,95 @@ defmodule WorldWeb.RoomControllerTest do
       |> post("/api/v1/rooms/seal/tokens", %{role: "host"})
       |> json_response(200)
 
-    conn =
+    attestation = issue_attestation(host_token, "seal", host_pub_b64())
+    assert {:ok, revision, blake3} = World.CanonicalManifest.canonical_blake3("seal", attestation)
+
+    body =
       build_conn()
       |> put_req_header("authorization", "Bearer #{host_token}")
-      |> post("/api/v1/rooms/seal/manifest_seal", %{revision: 1, manifest_blake3: blake3})
+      |> post("/api/v1/rooms/seal/manifest_seal", %{
+        revision: revision,
+        manifest_blake3: blake3,
+        host_attestation: attestation
+      })
+      |> json_response(200)
 
-    body = json_response(conn, 200)
     assert is_binary(body["seal"])
     assert body["expires_in"] > 0
     assert body["room_id"] == "seal"
+    assert body["manifest_blake3"] == blake3
+    assert body["revision"] == revision
+  end
+
+  test "manifest_seal rejects arbitrary blake3 oracle (x0039)", %{conn: conn, signer: signer} do
+    owner = "22222222-2222-2222-2222-222222222222"
+    oracle = String.duplicate("cd", 32)
+
+    conn
+    |> TestAuthHelpers.put_auth(signer, owner)
+    |> post("/api/v1/rooms", %{room_id: "seal-oracle"})
+    |> json_response(201)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post("/api/v1/rooms/seal-oracle/tokens", %{role: "host"})
+      |> json_response(200)
+
+    attestation = issue_attestation(host_token, "seal-oracle", host_pub_b64())
+
+    assert %{"error" => "manifest_blake3_mismatch"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> post("/api/v1/rooms/seal-oracle/manifest_seal", %{
+               revision: 1,
+               manifest_blake3: oracle,
+               host_attestation: attestation
+             })
+             |> json_response(422)
+  end
+
+  test "manifest_seal rejects revision_mismatch and invalid_host_attestation", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "22222222-2222-2222-2222-222222222222"
+
+    conn
+    |> TestAuthHelpers.put_auth(signer, owner)
+    |> post("/api/v1/rooms", %{room_id: "seal-rev"})
+    |> json_response(201)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post("/api/v1/rooms/seal-rev/tokens", %{role: "host"})
+      |> json_response(200)
+
+    attestation = issue_attestation(host_token, "seal-rev", host_pub_b64())
+
+    assert {:ok, revision, blake3} =
+             World.CanonicalManifest.canonical_blake3("seal-rev", attestation)
+
+    assert %{"error" => "revision_mismatch"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> post("/api/v1/rooms/seal-rev/manifest_seal", %{
+               revision: revision + 1,
+               manifest_blake3: blake3,
+               host_attestation: attestation
+             })
+             |> json_response(422)
+
+    assert %{"error" => "invalid_host_attestation"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> post("/api/v1/rooms/seal-rev/manifest_seal", %{
+               revision: revision,
+               manifest_blake3: blake3,
+               host_attestation: "not.a.jwt"
+             })
+             |> json_response(422)
   end
 
   test "manifest_seal rejects guest token and bad blake3", %{conn: conn, signer: signer} do
@@ -369,7 +462,8 @@ defmodule WorldWeb.RoomControllerTest do
              |> put_req_header("authorization", "Bearer #{guest_token}")
              |> post("/api/v1/rooms/seal-deny/manifest_seal", %{
                revision: 1,
-               manifest_blake3: blake3
+               manifest_blake3: blake3,
+               host_attestation: "eyJ.fake"
              })
              |> json_response(403)
 
@@ -379,12 +473,24 @@ defmodule WorldWeb.RoomControllerTest do
       |> post("/api/v1/rooms/seal-deny/tokens", %{role: "host"})
       |> json_response(200)
 
+    attestation = issue_attestation(host_token, "seal-deny", host_pub_b64())
+
     assert %{"error" => "invalid_manifest_blake3"} =
              build_conn()
              |> put_req_header("authorization", "Bearer #{host_token}")
              |> post("/api/v1/rooms/seal-deny/manifest_seal", %{
                revision: 1,
-               manifest_blake3: "nope"
+               manifest_blake3: "nope",
+               host_attestation: attestation
+             })
+             |> json_response(422)
+
+    assert %{"error" => "missing_host_attestation"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> post("/api/v1/rooms/seal-deny/manifest_seal", %{
+               revision: 1,
+               manifest_blake3: blake3
              })
              |> json_response(422)
   end
@@ -409,12 +515,15 @@ defmodule WorldWeb.RoomControllerTest do
       |> post("/api/v1/rooms/seal-a/tokens", %{role: "host"})
       |> json_response(200)
 
+    attestation = issue_attestation(token_a, "seal-a", host_pub_b64())
+
     assert %{"error" => "room_id_mismatch"} =
              build_conn()
              |> put_req_header("authorization", "Bearer #{token_a}")
              |> post("/api/v1/rooms/seal-b/manifest_seal", %{
                revision: 1,
-               manifest_blake3: blake3
+               manifest_blake3: blake3,
+               host_attestation: attestation
              })
              |> json_response(403)
 
@@ -426,7 +535,8 @@ defmodule WorldWeb.RoomControllerTest do
              |> put_req_header("authorization", "Bearer #{ghost_token}")
              |> post("/api/v1/rooms/ghost-seal/manifest_seal", %{
                revision: 1,
-               manifest_blake3: blake3
+               manifest_blake3: blake3,
+               host_attestation: attestation
              })
              |> json_response(404)
   end

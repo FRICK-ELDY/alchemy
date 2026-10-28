@@ -471,7 +471,14 @@ fn sealed_manifest(
     );
     let body_hex = manifest_seal_blake3_hex(&manifest);
     seal_cache
-        .ensure(world_url, room_id, host_token, manifest.revision, &body_hex)
+        .ensure(
+            world_url,
+            room_id,
+            host_token,
+            manifest.revision,
+            &body_hex,
+            host_attestation,
+        )
         .context("ensure ManifestSeal")?;
     manifest.world_seal = seal_cache.seal.clone();
     Ok(manifest)
@@ -700,17 +707,14 @@ fn main() -> Result<()> {
     );
 
     // Scene is fetched once at boot (x0027 Non-guarantee: no re-fetch on world redefinition).
-    let mut room_scene = fetch_room_scene(&world_url, &room_id, &creds.host_token)
+    let room_scene = fetch_room_scene(&world_url, &room_id, &creds.host_token)
         .context("fetch world DemoScene (GET …/scene)")?;
+    // x0039: scene body is sealed against world DB — local blake3 override cannot get a seal.
     if let Ok(override_blake3) = std::env::var("ALCHEMY_BLOB_BLAKE3") {
         if !override_blake3.is_empty() {
-            for entry in &mut room_scene.entries {
-                if !entry.blake3.is_empty() {
-                    entry.blake3 = override_blake3.clone();
-                    break;
-                }
-            }
-            log::info!("ALCHEMY_BLOB_BLAKE3 override applied to first mesh entry");
+            anyhow::bail!(
+                "ALCHEMY_BLOB_BLAKE3 is incompatible with canonical ManifestSeal (x0039); unset it or change the world DemoScene"
+            );
         }
     }
     log::info!(
