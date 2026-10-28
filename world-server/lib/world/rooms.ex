@@ -191,6 +191,149 @@ defmodule World.Rooms do
 
   def set_visibility(_, _, _), do: {:error, :invalid_room_id}
 
+  # Concurrent host_keys (owner dual-start overlap) must not mint the same generation
+  # for two different pubs — optimistic CAS + retry (x003a).
+  @claim_host_generation_attempts 8
+
+  @doc """
+  x003a: assign / reuse `host_generation` for an attested host_pub.
+
+  Same pub → keep generation (CAS confirm). Different pub (or first claim) → bump via CAS.
+  Returns generation >= 1. Safe under concurrent `host_keys` for the same room.
+  """
+  @spec claim_host_generation(room_id(), binary()) ::
+          {:ok, pos_integer()}
+          | {:error, :invalid_room_id | :not_found | :invalid_host_pub | storage_error()}
+  def claim_host_generation(room_id, host_pub)
+      when is_binary(room_id) and is_binary(host_pub) and byte_size(host_pub) == 32 do
+    with :ok <- validate_room_id(room_id) do
+      encoded = Base.url_encode64(host_pub, padding: false)
+      claim_host_generation_cas(room_id, encoded, @claim_host_generation_attempts)
+    end
+  end
+
+  def claim_host_generation(_, host_pub) when is_binary(host_pub), do: {:error, :invalid_host_pub}
+  def claim_host_generation(_, _), do: {:error, :invalid_room_id}
+
+  @doc """
+  x003a: seal path — attestation `(host_pub, host_generation)` must match Room ledger.
+  Rejects TTL-valid but superseded attestations.
+  """
+  @spec match_claimed_host(room_id(), binary(), pos_integer()) ::
+          :ok
+          | {:error,
+             :invalid_room_id
+             | :not_found
+             | :invalid_host_pub
+             | :stale_host_attestation
+             | storage_error()}
+  def match_claimed_host(room_id, host_pub, host_generation)
+      when is_binary(room_id) and is_binary(host_pub) and byte_size(host_pub) == 32 and
+             is_integer(host_generation) and host_generation >= 1 do
+    with :ok <- validate_room_id(room_id),
+         {:ok, %Room{} = room} <- get(room_id) do
+      encoded = Base.url_encode64(host_pub, padding: false)
+
+      if room.attested_host_pub == encoded and room.host_generation == host_generation do
+        :ok
+      else
+        {:error, :stale_host_attestation}
+      end
+    end
+  end
+
+  def match_claimed_host(_, host_pub, _) when is_binary(host_pub), do: {:error, :invalid_host_pub}
+  def match_claimed_host(_, _, _), do: {:error, :invalid_room_id}
+
+  defp claim_host_generation_cas(_room_id, _encoded, 0) do
+    Logger.error("World.Rooms.claim_host_generation CAS exhausted")
+    {:error, :storage_error}
+  end
+
+  defp claim_host_generation_cas(room_id, encoded, attempts_left) do
+    case get(room_id) do
+      {:ok, %Room{} = room} ->
+        case try_claim_once(room_id, room, encoded) do
+          {:ok, gen} ->
+            {:ok, gen}
+
+          :conflict ->
+            claim_host_generation_cas(room_id, encoded, attempts_left - 1)
+
+          {:error, error} ->
+            storage_error(error, :claim_host_generation)
+        end
+
+      other ->
+        other
+    end
+  end
+
+  defp try_claim_once(room_id, %Room{} = room, encoded) do
+    gen = room.host_generation || 0
+
+    if same_claimed_host?(room, encoded, gen) do
+      map_cas_result(cas_confirm_same_host(room_id, gen, encoded), gen)
+    else
+      next = max(gen, 0) + 1
+      map_cas_result(cas_bump_host(room_id, gen, room.attested_host_pub, next, encoded), next)
+    end
+  end
+
+  defp same_claimed_host?(%Room{attested_host_pub: pub}, encoded, gen)
+       when pub == encoded and is_integer(gen) and gen >= 1,
+       do: true
+
+  defp same_claimed_host?(_, _, _), do: false
+
+  defp map_cas_result(:ok, gen), do: {:ok, gen}
+  defp map_cas_result(:conflict, _gen), do: :conflict
+  defp map_cas_result({:error, error}, _gen), do: {:error, error}
+
+  # Touch-update only succeeds while (generation, pub) still match — concurrent bump loses.
+  defp cas_confirm_same_host(room_id, expected_gen, encoded) do
+    sql = """
+    UPDATE rooms
+    SET updated_at = CURRENT_TIMESTAMP
+    WHERE room_id = ?
+      AND host_generation = ?
+      AND attested_host_pub = ?
+    """
+
+    case World.Repo.query(sql, [room_id, expected_gen, encoded]) do
+      {:ok, %{num_rows: 1}} -> :ok
+      {:ok, %{num_rows: 0}} -> :conflict
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp cas_bump_host(room_id, expected_gen, expected_pub, next_gen, new_pub) do
+    {sql, params} =
+      if is_nil(expected_pub) do
+        {"""
+         UPDATE rooms
+         SET host_generation = ?, attested_host_pub = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE room_id = ?
+           AND host_generation = ?
+           AND attested_host_pub IS NULL
+         """, [next_gen, new_pub, room_id, expected_gen]}
+      else
+        {"""
+         UPDATE rooms
+         SET host_generation = ?, attested_host_pub = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE room_id = ?
+           AND host_generation = ?
+           AND attested_host_pub = ?
+         """, [next_gen, new_pub, room_id, expected_gen, expected_pub]}
+      end
+
+    case World.Repo.query(sql, params) do
+      {:ok, %{num_rows: 1}} -> :ok
+      {:ok, %{num_rows: 0}} -> :conflict
+      {:error, error} -> {:error, error}
+    end
+  end
+
   defp owner_matches(%Room{owner_sub: owner}, sub) when owner == sub, do: :ok
   defp owner_matches(%Room{}, _), do: {:error, :forbidden_host}
 

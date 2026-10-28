@@ -8,7 +8,7 @@ defmodule World.HostAttestationTest do
   @sub "11111111-1111-1111-1111-111111111111"
 
   test "generate roundtrip claims" do
-    assert {:ok, token, ttl} = HostAttestation.generate("local", @host_pub, @sub)
+    assert {:ok, token, ttl} = HostAttestation.generate("local", @host_pub, @sub, 1)
     assert ttl > 0
     assert is_binary(token)
 
@@ -20,18 +20,22 @@ defmodule World.HostAttestationTest do
     assert claims["room_id"] == "local"
     assert claims["sub"] == @sub
     assert claims["host_pub"] == Base.url_encode64(@host_pub, padding: false)
+    assert claims["host_generation"] == 1
+
+    assert {:ok, @host_pub, 1, _} = HostAttestation.verify(token, "local")
   end
 
   test "generate rejects invalid room_id" do
-    assert {:error, :invalid_room_id} = HostAttestation.generate("", @host_pub, @sub)
-    assert {:error, :invalid_room_id} = HostAttestation.generate("a/b", @host_pub, @sub)
+    assert {:error, :invalid_room_id} = HostAttestation.generate("", @host_pub, @sub, 1)
+    assert {:error, :invalid_room_id} = HostAttestation.generate("a/b", @host_pub, @sub, 1)
 
     too_long = String.duplicate("r", 65)
-    assert {:error, :invalid_room_id} = HostAttestation.generate(too_long, @host_pub, @sub)
+    assert {:error, :invalid_room_id} = HostAttestation.generate(too_long, @host_pub, @sub, 1)
   end
 
-  test "generate rejects wrong host_pub length" do
-    assert {:error, :invalid_host_pub} = HostAttestation.generate("local", <<1, 2, 3>>, @sub)
+  test "generate rejects wrong host_pub length and generation 0" do
+    assert {:error, :invalid_host_pub} = HostAttestation.generate("local", <<1, 2, 3>>, @sub, 1)
+    assert {:error, :invalid_args} = HostAttestation.generate("local", @host_pub, @sub, 0)
   end
 
   test "decode_host_pub accepts 32-byte base64url" do

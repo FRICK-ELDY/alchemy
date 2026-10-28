@@ -1,6 +1,6 @@
-//! Verify world-issued HostAttestation JWTs (x0025).
+//! Verify world-issued HostAttestation JWTs (x0025 / x003a).
 //!
-//! Guarantees: RS256 via shared [`WorldJwks`]; typ/aud/room_id/host_pub match.
+//! Guarantees: RS256 via shared [`WorldJwks`]; typ/aud/room_id/host_pub/host_generation match.
 //! Non-guarantees: Manifest body integrity (see ManifestSeal); offline JWKS beyond soft TTL.
 
 use crate::world_jwks::WorldJwks;
@@ -21,6 +21,7 @@ pub struct HostAttestationClaims {
     pub room_id: String,
     /// base64url (no pad) of 32-byte Ed25519 pub.
     pub host_pub: String,
+    pub host_generation: u64,
     pub exp: i64,
 }
 
@@ -38,12 +39,13 @@ impl HostAttestationVerifier {
         }
     }
 
-    /// Verify JWT and return raw 32-byte `host_pub` if it matches `manifest_host_pub`.
+    /// Verify JWT and return `(host_pub, host_generation)` if `host_pub` matches Manifest.
     pub fn verify_and_host_pub(
         &self,
         attestation: &str,
         manifest_host_pub: &[u8],
-    ) -> Result<Vec<u8>> {
+        manifest_host_generation: u64,
+    ) -> Result<(Vec<u8>, u64)> {
         if attestation.is_empty() {
             return Err(anyhow!("empty host_attestation"));
         }
@@ -56,7 +58,12 @@ impl HostAttestationVerifier {
             .jwks
             .decode_claims(attestation, &validation)
             .context("verify HostAttestation")?;
-        apply_attestation_claims(&claims, &self.expected_room_id, manifest_host_pub)
+        apply_attestation_claims(
+            &claims,
+            &self.expected_room_id,
+            manifest_host_pub,
+            manifest_host_generation,
+        )
     }
 }
 
@@ -65,7 +72,8 @@ pub fn apply_attestation_claims(
     claims: &HostAttestationClaims,
     expected_room_id: &str,
     manifest_host_pub: &[u8],
-) -> Result<Vec<u8>> {
+    manifest_host_generation: u64,
+) -> Result<(Vec<u8>, u64)> {
     if claims.typ != TYP {
         return Err(anyhow!("attestation typ mismatch: {}", claims.typ));
     }
@@ -74,6 +82,16 @@ pub fn apply_attestation_claims(
             "attestation room_id mismatch: {} expected {}",
             claims.room_id,
             expected_room_id
+        ));
+    }
+    if claims.host_generation == 0 {
+        return Err(anyhow!("attestation host_generation must be > 0"));
+    }
+    if claims.host_generation != manifest_host_generation {
+        return Err(anyhow!(
+            "attestation host_generation mismatch: {} expected {}",
+            claims.host_generation,
+            manifest_host_generation
         ));
     }
     let host_pub = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -92,7 +110,7 @@ pub fn apply_attestation_claims(
     }
     let _ = claims.sub;
     let _ = claims.exp;
-    Ok(host_pub)
+    Ok((host_pub, claims.host_generation))
 }
 
 #[cfg(test)]
@@ -105,7 +123,7 @@ mod tests {
     fn empty_attestation_rejected() {
         let jwks = Arc::new(WorldJwks::new("http://127.0.0.1:4003"));
         let v = HostAttestationVerifier::new(jwks, "local");
-        assert!(v.verify_and_host_pub("", &[0u8; 32]).is_err());
+        assert!(v.verify_and_host_pub("", &[0u8; 32], 1).is_err());
     }
 
     #[test]
@@ -117,7 +135,7 @@ mod tests {
         jwks.insert_decoding_key_for_test("t", DecodingKey::from_rsa_components(&n, &e).unwrap());
         let v = HostAttestationVerifier::new(jwks, "local");
         let fake = "eyJhbGciOiJSUzI1NiIsImtpZCI6InQiLCJ0eXAiOiJKV1QifQ.e30.e30";
-        assert!(v.verify_and_host_pub(fake, &[0u8; 32]).is_err());
+        assert!(v.verify_and_host_pub(fake, &[0u8; 32], 1).is_err());
     }
 
     #[test]
@@ -129,9 +147,26 @@ mod tests {
             sub: "s".into(),
             room_id: "local".into(),
             host_pub: encoded,
+            host_generation: 1,
             exp: 9_999_999_999,
         };
-        let err = apply_attestation_claims(&claims, "local", &[0u8; 32]).unwrap_err();
+        let err = apply_attestation_claims(&claims, "local", &[0u8; 32], 1).unwrap_err();
         assert!(err.to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn claims_reject_generation_mismatch() {
+        let host_pub = [7u8; 32];
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(host_pub);
+        let claims = HostAttestationClaims {
+            typ: TYP.into(),
+            sub: "s".into(),
+            room_id: "local".into(),
+            host_pub: encoded,
+            host_generation: 2,
+            exp: 9_999_999_999,
+        };
+        let err = apply_attestation_claims(&claims, "local", &host_pub, 1).unwrap_err();
+        assert!(err.to_string().contains("host_generation"));
     }
 }

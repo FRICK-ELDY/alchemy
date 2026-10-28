@@ -6,6 +6,7 @@
 //!   `InputEvent` (session Ed25519), `PresenceState` (`sub`→entity) encode/decode.
 //! - [`wire_crypto`] sign/verify helpers for Intent / Frame (x0023).
 //! - [`sim_capability`] role → Intent/HTTP capability bits (x002a; not a wire schema).
+//! - [`generation_gate`] monotonic `(host_generation, revision)` (x003a).
 //! - Delivery class table: [`peer-delivery.md`](../peer-delivery.md). Frame tick gap → snapshot
 //!   ([`decide_frame_tick`], [`FRAME_TICK_GAP_RESYNC`]; x0024).
 //!
@@ -19,15 +20,17 @@
 //! - Locomotion module list UI / suppress sources.
 //! - Tenant namespace `alchemy/tenant/...` (dev keys only: `alchemy/dev/room/{room_id}/…`).
 //! - 5+ concurrent guests / WAN liveliness ACL / Zenoh ACL.
+//! - Full host handoff UX / Wake-on-Join (generation advance is the contract only).
 
 pub use prost::Message;
 
+pub mod generation_gate;
 pub mod host_ipc;
 pub mod sim_capability;
 pub mod wire_crypto;
 
 /// Bump when `proto/` has an incompatible wire change.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.15.0-x002e";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.16.0-x003a";
 
 /// Identity orientation on the wire (`Entity.qx..qw`, xyzw).
 pub const ENTITY_QUAT_IDENTITY: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -471,6 +474,7 @@ mod tests {
             host_pub: vec![1, 2, 3],
             host_attestation: "eyJ.test.attestation".into(),
             world_seal: "eyJ.test.seal".into(),
+            host_generation: 1,
         };
         let bytes = manifest.encode_to_vec();
         let decoded = SceneManifest::decode(bytes.as_slice()).expect("decode");
@@ -528,6 +532,7 @@ mod tests {
         assert_eq!(decoded.protocol_pin, PROTOCOL_PIN);
         assert_eq!(decoded.host_pub, vec![1, 2, 3]);
         assert_eq!(decoded.world_seal, "eyJ.test.seal");
+        assert_eq!(decoded.host_generation, 1);
         let seal_hex = wire_crypto::manifest_seal_blake3_hex(&decoded);
         assert_eq!(seal_hex.len(), 64);
         let mut cleared = decoded.clone();
@@ -610,6 +615,7 @@ mod tests {
             ],
             protocol_pin: PROTOCOL_PIN.into(),
             host_sig: vec![],
+            host_generation: 1,
         };
         let bytes = state.encode_to_vec();
         let decoded = PresenceState::decode(bytes.as_slice()).expect("decode");
@@ -618,6 +624,7 @@ mod tests {
         assert_eq!(decoded.assignments[0].entity_id, 3);
         assert_eq!(decoded.assignments[1].sub, "bob-uuid");
         assert_eq!(decoded.protocol_pin, PROTOCOL_PIN);
+        assert_eq!(decoded.host_generation, 1);
     }
 
     #[test]

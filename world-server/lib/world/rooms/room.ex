@@ -42,6 +42,19 @@ defmodule World.Rooms.Room do
       constraints match: ~r/^(lan|private|friends|friends_plus|followers|followers_plus|public)$/
     end
 
+    # x003a: host generation. 0 = none yet; bumps when attested host_pub changes.
+    attribute :host_generation, :integer do
+      allow_nil? false
+      public? true
+      default 0
+    end
+
+    # base64url (no pad) of last attested 32-byte host_pub; nil until first host_keys.
+    attribute :attested_host_pub, :string do
+      allow_nil? true
+      public? true
+    end
+
     create_timestamp :inserted_at
     update_timestamp :updated_at
   end
@@ -59,6 +72,9 @@ defmodule World.Rooms.Room do
     update :set_visibility do
       accept [:visibility]
     end
+
+    # host_generation / attested_host_pub: only via Rooms.claim_host_generation CAS SQL
+    # (x003a). No Ash update action — avoids a non-CAS write path.
 
     read :get_by_room_id do
       get? true

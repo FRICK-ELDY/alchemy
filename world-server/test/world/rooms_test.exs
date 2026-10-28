@@ -52,6 +52,40 @@ defmodule World.RoomsTest do
     assert {:error, :already_exists} = Rooms.create("pk-dup", @owner)
   end
 
+  test "claim_host_generation reuses same pub and bumps on handoff (x003a)" do
+    assert {:ok, "gen-room", _} = Rooms.create("gen-room", @owner)
+    pub_a = :crypto.strong_rand_bytes(32)
+    pub_b = :crypto.strong_rand_bytes(32)
+
+    assert {:ok, 1} = Rooms.claim_host_generation("gen-room", pub_a)
+    assert {:ok, 1} = Rooms.claim_host_generation("gen-room", pub_a)
+    assert {:ok, 2} = Rooms.claim_host_generation("gen-room", pub_b)
+    assert {:ok, 2} = Rooms.claim_host_generation("gen-room", pub_b)
+
+    assert :ok = Rooms.match_claimed_host("gen-room", pub_b, 2)
+    assert {:error, :stale_host_attestation} = Rooms.match_claimed_host("gen-room", pub_a, 1)
+  end
+
+  test "claim_host_generation CAS rejects stale expected row (x003a dual-host race)" do
+    assert {:ok, "cas-room", _} = Rooms.create("cas-room", @owner)
+    pub_a = :crypto.strong_rand_bytes(32)
+    pub_b = :crypto.strong_rand_bytes(32)
+    assert {:ok, 1} = Rooms.claim_host_generation("cas-room", pub_a)
+
+    # Lost race: UPDATE still expecting gen=0 / nil pub must not overwrite gen=1.
+    encoded_b = Base.url_encode64(pub_b, padding: false)
+
+    sql = """
+    UPDATE rooms
+    SET host_generation = 99, attested_host_pub = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE room_id = ? AND host_generation = 0 AND attested_host_pub IS NULL
+    """
+
+    assert {:ok, %{num_rows: 0}} = World.Repo.query(sql, [encoded_b, "cas-room"])
+    assert {:ok, 1} = Rooms.claim_host_generation("cas-room", pub_a)
+    assert {:ok, 2} = Rooms.claim_host_generation("cas-room", pub_b)
+  end
+
   test "create and reads return storage_error when repo is down" do
     assert {:ok, _, _} = Rooms.create("before-down", @owner)
     stop_repo!()

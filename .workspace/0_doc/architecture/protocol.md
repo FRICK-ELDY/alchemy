@@ -2,7 +2,7 @@
 
 > **正本**: [`protocol/`](../../../protocol/)  
 > **配送契約**: [`protocol/peer-delivery.md`](../../../protocol/peer-delivery.md)（x0024）  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.15.0-x002e`
+> **PROTOCOL_PIN**: `alchemy-protocol/0.16.0-x003a`
 
 ## 置き場の方針
 
@@ -19,6 +19,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | f64 空間座標（描画境界） | audio / tracking |
 | Intent: Ed25519 `session_pub` / `intent_seq` / `intent_sig` + 任意 `room_token`（bind 時）（x0023） | Token JWKS 検証そのもの（host-server） |
 | Frame / Presence: `host_sig` + Manifest `host_pub`（HostAttestation）+ Manifest **`world_seal`**（x0026） | テナント名前空間 |
+| `(host_generation, revision)` 単調ゲート（x003a）— 後退は discard；同一 gen 内 `host_pub` 固定；generation 上昇は world 証明のみ | 完全な host handoff UX / Wake-on-Join；二重 host の generation フリップフロップ |
 | Scene 分類の薄いヘルパ（`USER_ROOT_*` / `scene_entry_is_*`） | 実行側 SoA・Rapier（→ `alchemy-shared-sim` / host-server・x0030） |
 | `SceneEntry` の `half_extent` / `flags`（`SCENE_FLAG_GRABBABLE`）/ rgba / **初期 quat+scale**（x0027 / x002c）— 配置・Grab・mesh・初期 TRS の定義正本 | UGC 編集 UI・コライダーの非一様リサイズ |
 | 配送クラス表（[`peer-delivery.md`](../../../protocol/peer-delivery.md)）+ `decide_frame_tick` / `FRAME_TICK_GAP_RESYNC`（x0024） | 確実配送 ACK / event ID チャネル・欠落デルタの再送 |
@@ -31,14 +32,15 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 
 ### SceneManifest（`proto/scene_manifest.proto`）— 低頻度 + x0009 loco + x0023 / x0025 / x0027 / x002c
 
-- `SceneManifest { room_id, revision, entries[], locomotion, protocol_pin, host_pub, host_attestation, world_seal }`
+- `SceneManifest { room_id, revision, entries[], locomotion, protocol_pin, host_pub, host_attestation, world_seal, host_generation }`
 - `SceneEntry { entity_id, blake3 (hex), x,y,z, half_extent, flags, r,g,b,a, qx..qw, sx,sy,sz }`
   - **分類優先（host/client 共通・`scene_entry_is_box`）:** (1) `USER_ROOT_*` ID 帯 → Presence spawn (2) `blake3` 非空 → **mesh のみ**（同居の `half_extent`/Grab flags は box 経路で無視）(3) `half_extent > 0` → 直方体の描画/コリジョン (4) `flags & SCENE_FLAG_GRABBABLE` → Grab 可＝Dynamic、非 Grab box＝Fixed 静的ジオメトリ
   - **初期 TRS（x002c）:** quat xyzw（全ゼロ／非有限→identity）。scale（全ゼロ／非有限→`(1,1,1)`；一部ゼロは維持）。host は rotation を Rapier spawn に、scale を Frame Pose に載せる。**collider / host Grab 距離は `half_extent` 固定**（client OBB・描画は Frame scale）
 - `LocomotionConfig { mode, move_speed }` — `UNSPECIFIED` → host は **Noclip**
 - `LocomotionMode`: NOCLIP / FLY / WALK
-- `protocol_pin` / `host_pub`（32B Ed25519）+ `host_attestation` + **`world_seal`**（world JWT・body blake3）: client は pin / seal / attestation 失敗で **discard**（leave しない・x0038）；Frame/Presence は attested `host_pub`（x0026）
-- **ManifestSeal の hash 正本は world DB scene + attested host key**（x0039）。host 提出 `manifest_blake3` は照合のみ；不一致は seal 不可（署名 oracle 廃止）
+- `protocol_pin` / `host_pub`（32B Ed25519）+ `host_attestation` + **`world_seal`**（world JWT・body blake3）+ **`host_generation`**: client は pin / seal / attestation / **gen·rev 後退**で **discard**（leave しない・x0038 / x003a）；Frame/Presence は attested `host_pub`（x0026）
+- **ManifestSeal の hash 正本は world DB scene + attested host key + host_generation**（x0039 / x003a）。host 提出 `manifest_blake3` は照合のみ；不一致は seal 不可（署名 oracle 廃止）
+- **host_generation**: HostAttestation / ManifestSeal claim とワイヤ一致。同一 generation 内は revision 単調非減少かつ **`host_pub` 固定**（不一致は discard）。generation 切替は world が認めた新鍵（handoff）のみ。world `claim_host_generation` は CAS（二重 host 起動を脅威に含む）
 - **定義の正本は world 発行 entries**（host は実行・配信、client は描画/Grab）。**GLB バイトは載せない**（assets-server CAS 参照のみ）
 
 ### RenderFrame（`proto/render_frame.proto`）— 高頻度デルタ + 署名（x0023）+ TRS（x0029）
@@ -78,9 +80,9 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 
 ### PresenceState（`proto/presence.proto`）— x0015・低頻度（解放は x0016 / x0019 / x0022 / x0025）
 
-- `PresenceState { revision, assignments[], protocol_pin, host_sig }`
+- `PresenceState { revision, assignments[], protocol_pin, host_sig, host_generation }`
 - `PresenceAssignment { sub, entity_id }` — occupied のみ
-- client は pin 不一致・`host_sig` 失敗を拒否；自 `sub` で `entity_id` を解決（x0025）
+- client は pin 不一致・`host_sig` 失敗・**Manifest generation 不一致 / revision 後退**を拒否（x0025 / x003a）；自 `sub` で `entity_id` を解決。Presence 単独で generation を上げない
 - host 解放: **Leave** / **liveliness Delete（`sub`+`jti`）** + Intent TTL 3s
 
 ## キー式ヘルパ（x0017 + x0022 liveliness + x0023 snapshot）

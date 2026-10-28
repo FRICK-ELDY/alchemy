@@ -21,6 +21,8 @@ use serde::Deserialize;
 struct Input {
     room_id: String,
     revision: u64,
+    /// World-assigned host generation (x003a). Required (>0) for canonical seal.
+    host_generation: u64,
     #[serde(default)]
     protocol_pin: Option<String>,
     /// 64-char hex of 32-byte Ed25519 host_pub.
@@ -138,6 +140,10 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if input.host_generation == 0 {
+        eprintln!("manifest-seal-hash: host_generation must be > 0");
+        std::process::exit(2);
+    }
     let pin = input
         .protocol_pin
         .unwrap_or_else(|| PROTOCOL_PIN.to_string());
@@ -183,6 +189,7 @@ fn main() {
         host_pub,
         host_attestation: input.host_attestation,
         world_seal: String::new(),
+        host_generation: input.host_generation,
     };
     println!("{}", manifest_seal_blake3_hex(&manifest));
 }

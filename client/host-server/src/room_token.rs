@@ -565,6 +565,8 @@ pub struct HostCredentialChain {
     pub host_token: String,
     pub host_refresh_at: Instant,
     pub host_attestation: String,
+    /// World-assigned generation from last host_keys (x003a). Always >= 1 after bootstrap.
+    pub host_generation: u64,
     pub attest_refresh_at: Instant,
 }
 
@@ -589,7 +591,7 @@ impl HostCredentialChain {
                 claims.role
             ));
         }
-        let (host_attestation, attest_ttl) =
+        let (host_attestation, host_generation, attest_ttl) =
             fetch_host_attestation(world_url, room_id, &host_token, host_pub)
                 .context("fetch HostAttestation")?;
         Ok(Self {
@@ -600,6 +602,7 @@ impl HostCredentialChain {
                 Instant::now() + Duration::from_secs(BYPASS_ROOM_TOKEN_TTL_HINT)
             }),
             host_attestation,
+            host_generation,
             attest_refresh_at: refresh_deadline(attest_ttl).unwrap_or_else(|| {
                 Instant::now() + Duration::from_secs(BYPASS_ROOM_TOKEN_TTL_HINT)
             }),
@@ -688,13 +691,14 @@ impl HostCredentialChain {
         room_id: &str,
         host_pub: &[u8],
     ) -> Result<()> {
-        let (attestation, ttl) =
+        let (attestation, generation, ttl) =
             fetch_host_attestation(world_url, room_id, &self.host_token, host_pub)
                 .context("refresh HostAttestation")?;
         self.host_attestation = attestation;
+        self.host_generation = generation;
         self.attest_refresh_at = refresh_deadline(ttl)
             .unwrap_or_else(|| Instant::now() + Duration::from_secs(BYPASS_ROOM_TOKEN_TTL_HINT));
-        log::info!("refreshed HostAttestation (ttl={ttl}s)");
+        log::info!("refreshed HostAttestation (ttl={ttl}s generation={generation})");
         Ok(())
     }
 }
@@ -952,13 +956,13 @@ fn is_blake3_hex(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Register host Ed25519 pub with world; returns HostAttestation JWT + TTL (x0025).
+/// Register host Ed25519 pub with world; returns HostAttestation JWT + generation + TTL (x0025 / x003a).
 pub fn fetch_host_attestation(
     world_url: &str,
     room_id: &str,
     host_room_token: &str,
     host_pub: &[u8],
-) -> Result<(String, u64)> {
+) -> Result<(String, u64, u64)> {
     if host_pub.len() != 32 {
         return Err(anyhow!("host_pub length {} (want 32)", host_pub.len()));
     }
@@ -970,6 +974,7 @@ pub fn fetch_host_attestation(
     struct AttestResponse {
         attestation: String,
         expires_in: u64,
+        host_generation: u64,
     }
     match credential_agent()
         .post(&url)
@@ -982,7 +987,14 @@ pub fn fetch_host_attestation(
             if parsed.attestation.is_empty() || parsed.expires_in == 0 {
                 return Err(anyhow!("host_keys response missing attestation/expires_in"));
             }
-            Ok((parsed.attestation, parsed.expires_in))
+            if parsed.host_generation == 0 {
+                return Err(anyhow!("host_keys response missing host_generation (>0)"));
+            }
+            Ok((
+                parsed.attestation,
+                parsed.host_generation,
+                parsed.expires_in,
+            ))
         }
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();

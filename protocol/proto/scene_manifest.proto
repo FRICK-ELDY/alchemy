@@ -24,6 +24,9 @@ message SceneManifest {
   // World-issued ManifestSeal JWT (RS256). Client verifies via world JWKS and checks
   // `manifest_blake3` against the protobuf body with this field cleared (x0026).
   string world_seal = 8;
+  // World-assigned host generation (x003a). Bumps only on host handoff (new attested key).
+  // Must match HostAttestation + ManifestSeal `host_generation` claims. 0 = invalid.
+  uint64 host_generation = 9;
 }
 
 message SceneEntry {
