@@ -13,7 +13,7 @@
 | CI が上げた ZIP に launcher / host-server / client の release exe | auth / world / assets / zenohd の同梱 |
 | GitHub Pre-release（`--latest=false`）は **CI のみ**が作成 | ローカル `gh release`（レース防止のため廃止） |
 | `build-info.json` に version / gitSha / builtAt / **rustcHost** | SmartScreen・インストーラ・自動更新 |
-| | assets 不通時の Coin fixture フォールバック（ZIP 外・ビルドマシンパス） |
+| `ensure-demo-coin.ps1` + fixture を ZIP に同梱（Start が assets へ seed） | fixture を client 実行時フォールバックにすること（release は assets 必須 / **[x003c](../../roadmap/slices/x003c-assets-required-mesh.md)**） |
 
 ## 版付け
 
@@ -69,4 +69,4 @@ git push origin "refs/tags/$TAG"
 2. VC++ x64 再頒布が無い環境では起動に失敗しうる（README-testers.txt 参照）
 3. `env.testers.example.cmd` → `env.local.cmd` に URL / `ZENOH_CONNECT` を設定（着信ポート開放は不要）
 4. `Start.cmd` を実行（失敗時は pause）
-5. assets 不通時のローカル Coin fixture は **壊れてもよい**（将来同梱・埋め込みは別スライス）
+5. `env.local.cmd` に `AUTH_USER` / `AUTH_PASSWORD` **必須**（無いと Start が失敗）。mesh は Manifest → assets GET（[x003c](../../roadmap/slices/x003c-assets-required-mesh.md)）

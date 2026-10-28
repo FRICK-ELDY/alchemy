@@ -114,6 +114,9 @@ struct PresenceIntents {
     revision: u64,
     /// `(entity_id, sub)` freed off the physics thread (Leave / liveliness); drained each tick.
     pending_removes: Vec<(u32, String)>,
+    /// Set on new slot assign or session `jti` rotate; main loop takes for Manifest join assist (x003c).
+    /// Not set on reclaim/leave (those bump `revision` but are not joiners).
+    manifest_join_assist: bool,
 }
 
 impl Default for PresenceIntents {
@@ -127,19 +130,29 @@ impl Default for PresenceIntents {
             dropped_full: 0,
             revision: 0,
             pending_removes: Vec::new(),
+            manifest_join_assist: false,
         }
     }
 }
 
 impl PresenceIntents {
+    fn take_manifest_join_assist(&mut self) -> bool {
+        let v = self.manifest_join_assist;
+        self.manifest_join_assist = false;
+        v
+    }
+
     fn assign_or_lookup(&mut self, sub: &str, jti: &str, now: Instant) -> Option<usize> {
         for (i, occupied) in self.occupied_sub.iter().enumerate() {
             if occupied.as_deref() == Some(sub) {
                 self.last_input[i] = Some(now);
                 // Cancel pending Delete only on jti rotate (refresh). Same-jti Intent leaves
                 // the schedule so crash/undeclare still confirms after grace.
-                if self.session_jti[i].as_deref() != Some(jti) {
+                let jti_rotated = self.session_jti[i].as_deref() != Some(jti);
+                if jti_rotated {
                     self.pending_liveliness[i] = None;
+                    // Reconnect / Token refresh: same sub, new jti — late subscribe needs Manifest.
+                    self.manifest_join_assist = true;
                 }
                 self.session_jti[i] = Some(jti.to_string());
                 return Some(i);
@@ -152,6 +165,7 @@ impl PresenceIntents {
                 self.pending_liveliness[i] = None;
                 self.last_input[i] = Some(now);
                 self.revision = self.revision.saturating_add(1);
+                self.manifest_join_assist = true;
                 log::info!(
                     "presence: assigned sub={sub} → user_root entity {} (revision={})",
                     PhysicsWorld::user_root_entity_id(i),
@@ -939,15 +953,17 @@ fn main() -> Result<()> {
 
         let tick_now = Instant::now();
         let host_generation = creds.host_generation;
-        let (by_slot, occupied, presence_rev, mut presence_state, reclaimed) = {
+        let (by_slot, occupied, presence_rev, mut presence_state, reclaimed, join_assist) = {
             let mut g = lock_or_fatal(&presence, "presence");
             let freed = g.drain_reclaims(tick_now, PRESENCE_SLOT_TTL);
+            let join_assist = g.take_manifest_join_assist();
             (
                 g.by_slot,
                 g.occupied_sub.clone(),
                 g.revision,
                 g.to_presence_state(host_generation),
                 freed,
+                join_assist,
             )
         };
 
@@ -977,6 +993,19 @@ fn main() -> Result<()> {
             }
             last_presence_rev = presence_rev;
             last_presence = Instant::now();
+        }
+
+        // New assign or session jti rotate (reconnect) — not reclaim/leave (x003c).
+        if join_assist {
+            manifest_pub
+                .put(manifest_bytes.clone())
+                .wait()
+                .map_err(|e| anyhow::anyhow!("manifest republish on join failed: {e}"))?;
+            last_manifest = Instant::now();
+            log::info!(
+                "republished SceneManifest revision={} (presence join assist)",
+                manifest.revision
+            );
         }
 
         for (slot, occupied_sub) in occupied.iter().enumerate() {
@@ -1193,6 +1222,23 @@ mod presence_reclaim_tests {
         );
         // last_input refreshed at +2s; at +4s still within 3s TTL from last touch.
         assert!(freed.is_empty());
+    }
+
+    #[test]
+    fn manifest_join_assist_on_assign_and_jti_rotate_not_same_jti_or_reclaim() {
+        let mut p = PresenceIntents::default();
+        let t0 = Instant::now();
+        assert!(!p.take_manifest_join_assist());
+        assert_eq!(p.assign_or_lookup("alice", "j1", t0), Some(0));
+        assert!(p.take_manifest_join_assist());
+        assert!(!p.take_manifest_join_assist());
+        assert_eq!(p.assign_or_lookup("alice", "j1", t0), Some(0));
+        assert!(!p.take_manifest_join_assist());
+        assert_eq!(p.assign_or_lookup("alice", "j2", t0), Some(0));
+        assert!(p.take_manifest_join_assist());
+        let _ = p.reclaim_sub("alice", "leave").expect("leave");
+        assert!(!p.take_manifest_join_assist());
+        assert!(p.revision >= 2);
     }
 
     #[test]

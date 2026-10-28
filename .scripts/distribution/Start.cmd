@@ -26,6 +26,29 @@ set "ALCHEMY_FORCE_DESKTOP=1"
 
 if exist "env.local.cmd" call "env.local.cmd"
 
+rem x003c: seed demo Coin into assets CAS (AUTH_USER+AUTH_PASSWORD or ALCHEMY_AUTH_TOKEN required).
+if defined ALCHEMY_AUTH_TOKEN goto :auth_ok
+if not defined AUTH_USER goto :auth_missing
+if not defined AUTH_PASSWORD goto :auth_missing
+if "%AUTH_PASSWORD%"=="" goto :auth_missing
+goto :auth_ok
+:auth_missing
+echo ERROR: set AUTH_USER and AUTH_PASSWORD, or ALCHEMY_AUTH_TOKEN, in env.local.cmd
+echo         ensure-demo-coin needs them to POST the Coin GLB into assets.
+set "EXITCODE=1"
+goto :fail_code
+:auth_ok
+if exist "ensure-demo-coin.ps1" (
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CD%\ensure-demo-coin.ps1" -PackageRoot "%CD%"
+  if errorlevel 1 (
+    echo ensure-demo-coin.ps1 failed — Coin must exist in assets for mesh download
+    set "EXITCODE=1"
+    goto :fail_code
+  )
+) else (
+  echo WARNING: ensure-demo-coin.ps1 missing — assets must already hold the demo Coin blake3
+)
+
 alchemy-launcher.exe
 set "EXITCODE=%ERRORLEVEL%"
 if not "%EXITCODE%"=="0" (
