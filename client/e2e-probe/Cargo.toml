@@ -3,7 +3,7 @@ name = "e2e-probe"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Hermetic Compose E2E probe (x001f): login → Room Token → input → frame"
+description = "Hermetic Compose E2E probe (x001f/x0046): login→frame + adversarial fake/replay/oversize"
 
 [lints]
 workspace = true

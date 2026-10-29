@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0043`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0047`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -120,10 +120,11 @@ depends_on: [x0006]
 | x0043 | — | done | `/internal/*` ingress 404 + Social rate limit（P2-2） | [x0043-internal-ingress-social-rl.md](slices/x0043-internal-ingress-social-rl.md) |
 | x0044 | — | done | client world_jwks SWR / hard / unknown-kid（P2-3） | [x0044-client-world-jwks-cooldown.md](slices/x0044-client-world-jwks-cooldown.md) |
 | x0045 | — | done | host Room Token 否定系テスト（P3-8） | [x0045-room-token-negative-tests.md](slices/x0045-room-token-negative-tests.md) |
+| x0046 | — | done | adversarial E2E（偽 Manifest / stale-rev / oversize・P3-1） | [x0046-adversarial-e2e.md](slices/x0046-adversarial-e2e.md) |
 
-**現在の次:** **P3-1** adversarial E2E、または **P2-1 deferred**（Zenoh mTLS / Relay）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
+**現在の次:** **P3-2** launcher CI / clippy / 再起動ポリシー、または **P2-1 deferred**（Zenoh mTLS / Relay）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
 
-次の空き番号は **`x0046`**。
+次の空き番号は **`x0047`**。
 
 
 ## 関連
