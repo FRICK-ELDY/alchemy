@@ -47,7 +47,7 @@
 
 | | 内容 |
 |:---|:---|
-| **現状の防御** | 同一 blake3 の再 PUT は既存 `BlobRef` を返し **owner_sub を付け替えない**（[assets-server.md](assets-server.md)）。ただし GET は認証済み capability のため、**hash を知る認証主体は読める**（confidentiality 非保証） |
+| **現状の防御** | 同一 owner の再 PUT は自 `BlobRef` で `:existing`（Quota 非加算）。別 owner は実バイト再送で自 ref + Quota（owner 付け替えなし・x003f）。hash-only 登録 API は無い。GET は認証済み capability のため、**hash を知る認証主体は読める**（confidentiality 非保証） |
 | **目標の防御** | (1) **Proof of Possession**: 既存 hash でも別 vault が `:owned` を得るには実バイト再送＋サーバ側 blake3 再計算、またはチャンク範囲 PoP を必須にする。(2) **先願原産地ロック**: Origin Cert / `is_locked_by_sale` 付き hash は、`parent_origin_id` なしの「新規オリジナル」Commit・署名を DB で拒否。(3) 頂点ずらし等は出品時 **3D 指紋（pgvector 等）** で隔離（Optional ワーカー） |
 | **保証しない** | hash 秘匿そのもの（部屋内配布で hash は見える）。指紋照合の完全再現率 |
 
@@ -60,8 +60,8 @@
 
 | | 内容 |
 |:---|:---|
-| **現状の防御** | PUT 代理時に Quota の条件付き更新（x002d）。**Upload 用署名 URL 直 PUT は未実装**（保証しない側）。並列競合の厳密な予約枠は未文書化・要検証 |
-| **目標の防御** | `StorageVault.reserved_bytes` を URL/受付 TX 内で **行ロック（`FOR UPDATE` 相当）** 付き加算。完了で `used_bytes` へ振替、期限切れはジョブで予約破棄。Presigned PUT は **Content-Length（と可能なら checksum）を署名に固定**。バケットは **未完了 multipart のライフサイクル削除**（例: 24h） |
+| **現状の防御** | PUT 代理時に `reserved_bytes` 条件付き予約 → TX 外 CAS put → `used_bytes` 振替（x003f）。失敗時は**予約解放のみ**（CAS.delete しない＝並行同一 hash / cross-owner PoP と安全に両立）。**Upload 用署名 URL 直 PUT は未実装**（保証しない側） |
+| **目標の防御** | 受付 TX 内の予約を StorageVault へ昇格。期限切れはジョブで予約破棄。Presigned PUT は **Content-Length（と可能なら checksum）を署名に固定**。バケットは **未完了 multipart のライフサイクル削除**（例: 24h） |
 | **保証しない** | クライアント側の帯域枯渇 DoS 全般；CDN 課金のゼロ化 |
 
 ### ③ ショップ販売後の Git Tag すり替え（Rug Pull）と Git Bomb
@@ -192,8 +192,8 @@ flowchart TB
 | 項目 | 現行 assets |
 |:---|:---|
 | GET | Bearer 必須・owner 照合なし（①⑥の confidentiality は非保証として文書化済み） |
-| PUT / Quota | サーバ代理アップロード + 条件付き Quota；直 PUT・`reserved_bytes` は未 |
-| Dedup | 既存 blake3 は既存行を返す（owner 付け替えなし）。**Grant 層が無い**ため①の本格面は draft 以降 |
+| PUT / Quota | サーバ代理 + `reserved_bytes` 同期予約／振替。補償は予約解放のみ・CAS 非削除（x003f）；直 PUT・期限切れジョブ・orphan GC は未 |
+| Dedup | CasObject は共有。cross-owner は実バイト再送で自 BlobRef + 自 Quota（owner 付け替えなし）。**Grant 層が無い**ため①の本格面は draft 以降 |
 | Drive / Vcs / Shop / 連合 / billing | 未（③④⑤⑥⑦の目標列） |
 
 スライス化するときは、本表の **目標の防御** を完了条件に写し、保証表とコードを一致させてから「現状の防御」へ昇格する。

@@ -16,7 +16,7 @@
 | 単一 DB トランザクション境界で Drive / Comms / Vcs / Shop → Grant を結ぶ方針 | Stage 2+ PostgreSQL・Ash Domain 分割のスケジュール |
 | auth / market+billing / world+zenoh / client(+盗難特徴量) を **別プロセス境界** に切る | それらのサーバーが既に存在する／本リポジトリに揃っていること |
 
-**現行との関係**: GET = Bearer 済みの読み取り capability（所有者照合なし）は [assets-server.md](assets-server.md) に文書化済みで閉じた。本 draft は目標の **CasObject(=AssetBlob) / BlobGrant** 二層化案。採用時は保証表とコードを揃えてから正本へ昇格する。
+**現行との関係**: GET capability 文書化（P1-1）と **CasObject / BlobRef + reserved put**（x003f / P1-2）は正本済み。本 draft は残る **BlobGrant / StorageVault / 5 層** の目標像。Grant 採用時は保証表とコードを揃えてから正本へ昇格する。
 
 ---
 
@@ -24,8 +24,8 @@
 
 | 現行（assets-server.md） | 本 draft |
 |:---|:---|
-| `BlobRef`（blake3 + owner_sub） | `AssetBlob`（物理）+ `BlobGrant`（権利・Quota 単位）に分離 |
-| `QuotaLedger`（owner_sub） | `StorageVault`（Personal / Group）+ Grant の `quota_exempt` |
+| `CasObject`（物理）+ `BlobRef` UNIQUE(owner_sub, blake3)（x003f） | `AssetBlob`（=CasObject）+ `BlobGrant`（権利・Quota 単位）に昇格 |
+| `QuotaLedger`（used + reserved） | `StorageVault`（Personal / Group）+ Grant の `quota_exempt` |
 | GET: Bearer 存在のみ（所有者照合なし） | Grant 有無で GET 可否（購入・メール一時・出品ロックを含む） |
 | Vault / Folder / Commit は「保証しない」 | Drive / Vcs / Shop を同一 TX 境界の上位層として置く |
 | 課金・Ash・Origin Cert は後続 | market/billing・Origin Cert・client LOD を外部境界へ明示 |
@@ -174,7 +174,7 @@ flowchart TB
 
 ## 未決・次の問い
 
-- 現行 `BlobRef.owner_sub` から `UNIQUE (vault_id, blob_hash)` への移行単位（CAS object/ref 分離との順序）
+- `BlobRef(owner_sub, blake3)` から `UNIQUE (vault_id, blob_hash)` / BlobGrant への移行単位
 - `:free_direct` の GET を「Grant 必須」とするか「公開 Tag は読み取り capability のみ」とするか
 - Stage 1 SQLite で Shop/Drive/Vcs を同じ TX に載せる範囲（最初は Vault + Blob のみか）
 - 脅威モデル目標列（PoP / Immutable Tag / Safe HTTP 等）のスライス分割順 — [assets-threat-model.md](assets-threat-model.md)
