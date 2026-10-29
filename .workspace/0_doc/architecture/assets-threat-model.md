@@ -107,9 +107,9 @@
 
 | | 内容 |
 |:---|:---|
-| **現状の防御** | Drive / Comms 未実装。blob GET は owner 照合なし（認証済みなら hash 既知で読める） |
-| **目標の防御** | Ash Policy（または同等）で Read/Action すべてに **actor が owner または有効 BlobGrant 保有** をクエリに注入。書き忘れで公開に落ちないこと |
-| **保証しない** | hash が既に部屋・公開フィードで配布済みのオブジェクトの「秘密性」 |
+| **現状の防御** | Drive / Comms 未実装。`access=authenticated`（既定）は認証済みなら hash 既知で読める。`access=grant_required` は BlobGrant 必須。**未知 `access` は fail-closed（403）**（x004f / 案 A） |
+| **目標の防御** | GET 既定も Grant 必須（案 B）+ Ash Policy（または同等）で Read/Action すべてに **actor が有効 BlobGrant 保有** をクエリに注入。書き忘れで公開に落ちないこと |
+| **保証しない** | `authenticated` かつ hash が既に部屋・公開フィードで配布済みのオブジェクトの「秘密性」。GET の 403/404 による存在オラクル |
 
 ### ⑦ 決済・購入トークンのリプレイと偽造
 

@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x004e`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0050`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -129,11 +129,12 @@ depends_on: [x0006]
 | x004c | — | done | cargo-fuzz protobuf / JWT（P3-9） | [x004c-cargo-fuzz-protobuf-jwt.md](slices/x004c-cargo-fuzz-protobuf-jwt.md) |
 | x004d | — | done | USER_ROOT_SLOTS → Manifest（P3-10・帯は protocol） | [x004d-user-root-slots-manifest.md](slices/x004d-user-root-slots-manifest.md) |
 | x004e | — | done | Relay Agent MVP（P2-1: mTLS + Allocation + wire_cap） | [x004e-relay-agent-mvp.md](slices/x004e-relay-agent-mvp.md) |
+| x004f | — | done | BlobGrant MVP（P4-5 案 A: 台帳 + grant_required。目標は案 B） | [x004f-blob-grant-mvp.md](slices/x004f-blob-grant-mvp.md) |
 
-**現在の次:** BlobGrant（[assets-server-draft.md](../0_doc/architecture/assets-server-draft.md) / P4-5）。  
+**現在の次:** 案 B（GET 常時 Grant + room 連動読取）または P4 他（描画統合 / launcher / verifier）。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
-次の空き番号は **`x004f`**。
+次の空き番号は **`x0050`**。
 
 
 ## 関連
