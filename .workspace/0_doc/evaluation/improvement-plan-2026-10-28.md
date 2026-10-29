@@ -63,7 +63,7 @@
 | P3-2 | launcher を CI に・clippy 修正・再起動ポリシー単体テスト | -1 | workflow + `make ci-launcher` — **[x0047](../../roadmap/slices/x0047-launcher-ci-restart-policy.md) done** |
 | P3-3 | fixture fallback を debug 限定 + HTTP timeout/cancel | -2 | placeholder UI — **[x0048](../../roadmap/slices/x0048-asset-placeholder-http-timeout.md) done** |
 | P3-4 | metrics（tick lateness / frame age / JWKS stale / CAS） | -2 | localhost Prometheus text（依存なし）— **[x0049](../../roadmap/slices/x0049-minimal-metrics.md) done** |
-| P3-5 | README / roadmap / vision 鮮度 | -1 | 現状を x0049 まで反映（本帯で一部閉じ） |
+| P3-5 | README / roadmap / vision 鮮度 | -1 | 現状を x0049 まで反映 — **[x004a](../../roadmap/slices/x004a-docs-freshness.md) done** |
 | P3-6 | ClientIp 共有化・`inspect(reason)` 除去 | -1 | alchemy_auth_client 拡張 |
 | P3-7 | BLAKE3 ストリーミング・Room 作成上限 | -1 | NIF / rate limit |
 | P3-8 | host Room Token 否定系テスト | -1 | alg/iss/aud/exp/room — **[x0045](../../roadmap/slices/x0045-room-token-negative-tests.md) done** |
@@ -98,8 +98,8 @@
 
 ## 推奨スライス順
 
-**次:** **P3-5** README / roadmap 鮮度、または **P2-1 deferred**（mTLS / Relay）再開。BlobGrant は draft 目標（P4-5）
+**次:** **P3-6** ClientIp 共有化・`inspect(reason)` 除去、または **P2-1 deferred**（mTLS / Relay）再開。BlobGrant は draft 目標（P4-5）
 
-最近閉じた: **[x0049](../../roadmap/slices/x0049-minimal-metrics.md)**（P3-4）、**[x0048](../../roadmap/slices/x0048-asset-placeholder-http-timeout.md)**（P3-3）、**[x0047](../../roadmap/slices/x0047-launcher-ci-restart-policy.md)**（P3-2）。
+最近閉じた: **[x004a](../../roadmap/slices/x004a-docs-freshness.md)**（P3-5）、**[x0049](../../roadmap/slices/x0049-minimal-metrics.md)**（P3-4）、**[x0048](../../roadmap/slices/x0048-asset-placeholder-http-timeout.md)**（P3-3）。
 
 スライス完了条件に必ず含める: **prod compose 起動**・**否定系が通る**・**保証表とコード一致**。
