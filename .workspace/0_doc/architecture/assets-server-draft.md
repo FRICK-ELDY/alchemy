@@ -3,7 +3,7 @@
 > **ステータス**: **draft** — 目標アーキテクチャのたたき台。実装正本ではない。  
 > **現行正本**: [assets-server.md](assets-server.md)（GET capability モデル含む。x0003 / x001c / x001d）  
 > **動機**: 現行 GET（認証済み読み取り capability）の先にある **BlobGrant / 5 層 + 外部境界** の目標像。課金・市場連動は改善計画の billing / market 帯（評価版で ID が変わりうる）  
-> **関連**: [trust-boundary.md](trust-boundary.md)、[overview.md](overview.md)
+> **関連**: [trust-boundary.md](trust-boundary.md)、[assets-threat-model.md](assets-threat-model.md)（手口×対策）、[overview.md](overview.md)
 
 ---
 
@@ -177,5 +177,6 @@ flowchart TB
 - 現行 `BlobRef.owner_sub` から `UNIQUE (vault_id, blob_hash)` への移行単位（CAS object/ref 分離との順序）
 - `:free_direct` の GET を「Grant 必須」とするか「公開 Tag は読み取り capability のみ」とするか
 - Stage 1 SQLite で Shop/Drive/Vcs を同じ TX に載せる範囲（最初は Vault + Blob のみか）
+- 脅威モデル目標列（PoP / Immutable Tag / Safe HTTP 等）のスライス分割順 — [assets-threat-model.md](assets-threat-model.md)
 
-採用して正本化するときは、本ファイルを昇格するか [assets-server.md](assets-server.md) へ取り込み、保証表とコードを一致させる。
+採用して正本化するときは、本ファイルを昇格するか [assets-server.md](assets-server.md) へ取り込み、保証表とコードを一致させる。セキュリティ完了条件は脅威モデルの **目標の防御** を写す。

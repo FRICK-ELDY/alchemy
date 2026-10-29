@@ -1,7 +1,8 @@
 # Trust boundary（脅威モデル）
 
 > **正本**: 本ファイル（x0031 / P4-3）  
-> 関連: [overview](overview.md) · [protocol](protocol.md) · [zenoh-router](zenoh-router.md) · [client](client.md) · [auth-server](auth-server.md)
+> 関連: [overview](overview.md) · [protocol](protocol.md) · [zenoh-router](zenoh-router.md) · [client](client.md) · [auth-server](auth-server.md)  
+> **assets 深掘り**: [assets-threat-model.md](assets-threat-model.md)（CAS / Quota / BlobGrant 手口×対策）
 
 目的: **未認証の publisher が各経路に到達したとき、誰が何を防ぐか**を一箇所に固定する。  
 「保証しない」一覧の繰り返しではなく、**脅威 → 防御責任 → 非保証**の対応表とする。
@@ -56,7 +57,7 @@ flowchart TB
 | auth `/api/*` | 資格情報窃取・なりすまし JWT | TLS（Tunnel prod）+ 認証フロー；release シード fail-closed（x001e） | `/dev/*` を公網に出すこと |
 | world Room Token / scene / seal | 不正入室・偽 scene | Bearer + host role（x0021）+ owner 系 + visibility ACL（x0034–x0036） | Group ACL / 一覧 UI；client アクセスレベル仮 UI（x0037）は門番ではない |
 
-| assets GET/PUT | 容量食い・他人 blob 読み | Bearer + Quota 原子更新（x002d）；GET は認証済み読み取り capability（owner 照合なし・[assets-server.md](assets-server.md)） | BlobGrant（所有者/license・[assets-server-draft.md](assets-server-draft.md)） |
+| assets GET/PUT | 容量食い・他人 blob 読み・（将来）所有権ロンダリング / Rug Pull / SSRF 等 | Bearer + Quota 原子更新（x002d）；GET は認証済み読み取り capability（owner 照合なし・[assets-server.md](assets-server.md)）。詳細は [assets-threat-model.md](assets-threat-model.md) | BlobGrant・PoP・Immutable Tag 等（[assets-server-draft.md](assets-server-draft.md) / 脅威モデル目標列） |
 
 ## ホスト端末プロセス境界
 

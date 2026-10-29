@@ -2,7 +2,8 @@
 
 > **正本コード**: [`assets-server/`](../../../assets-server/)  
 > **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）  
-> **目標たたき台**: [assets-server-draft.md](assets-server-draft.md)（BlobGrant / 5 層。実装正本ではない）
+> **目標たたき台**: [assets-server-draft.md](assets-server-draft.md)（BlobGrant / 5 層。実装正本ではない）  
+> **脅威（手口×対策）**: [assets-threat-model.md](assets-threat-model.md)
 
 ## 図上の位置
 
@@ -32,9 +33,9 @@
 | License / 購入証明 | **しない** | [assets-server-draft.md](assets-server-draft.md) の BlobGrant 後続 |
 | 公開バケット直リンク | **しない** | s3 でも API 経由の短命 presigned GET（302） |
 
-意図する運用前提: Manifest 等で blake3 を渡された **入室済み・認証済み client** がメッシュを取る経路。hash 秘匿や owner 限定配信は現行 API の保証外（[trust-boundary.md](trust-boundary.md)）。
+意図する運用前提: Manifest 等で blake3 を渡された **入室済み・認証済み client** がメッシュを取る経路。hash 秘匿や owner 限定配信は現行 API の保証外（[trust-boundary.md](trust-boundary.md)）。所有権ロンダリング・Quota TOCTOU 等は [assets-threat-model.md](assets-threat-model.md)。
 
-PUT（`POST /api/v1/blobs`）は `auth_sub` で Quota 消費・`BlobRef.owner_sub` 記録。同一 BLAKE3 の再アップロードは CAS 再書込なし・Quota 非加算。
+PUT（`POST /api/v1/blobs`）は `auth_sub` で Quota 消費・`BlobRef.owner_sub` 記録。同一 BLAKE3 の再アップロードは CAS 再書込なし・Quota 非加算（**owner_sub は付け替えない**）。
 
 ## 層の境界
 
@@ -87,7 +88,8 @@ bash .scripts/smoke-assets-glb.sh   # Coin fixture → CAS
 ## 後続
 
 - BlobGrant / CasObject 分離（[assets-server-draft.md](assets-server-draft.md)）— 非公開・購入品の GET 認可
+- [assets-threat-model.md](assets-threat-model.md) 目標列（PoP・`reserved_bytes`・Immutable Tag・配信ドメイン分離・Safe HTTP・jti 等）
 - カスタムドメイン / CDN キャッシュ本配信
-- 署名付き Upload（client → R2 直 PUT）
+- 署名付き Upload（client → R2 直 PUT）— Content-Length 固定署名を必須に
 - Vault / Folder / Commit
 - Ash、pgvector、Origin Cert
