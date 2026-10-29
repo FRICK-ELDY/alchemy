@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x003e`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0042`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -115,10 +115,11 @@ depends_on: [x0006]
 | x003e | — | done | Room Token `cnf.spk`（session_pub 束縛・P1-4） | [x003e-room-token-cnf.md](slices/x003e-room-token-cnf.md) |
 | x003f | — | done | CAS object/ref 分離 + reserved_bytes put 補償（P1-2） | [x003f-cas-object-ref-reserve.md](slices/x003f-cas-object-ref-reserve.md) |
 | x0040 | — | done | Intent rate limit + JWKS hard stale（P1-5） | [x0040-intent-rate-jwks-hard-stale.md](slices/x0040-intent-rate-jwks-hard-stale.md) |
+| x0041 | — | done | Grab 保持中 aim / offset 距離クランプ（P1-6） | [x0041-grab-hold-aim-clamp.md](slices/x0041-grab-hold-aim-clamp.md) |
 
-**現在の次:** **x0041+**（ACL / Zenoh network worker / P1-6 など）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
+**現在の次:** **x0042+**（ACL / Zenoh network worker など）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
 
-次の空き番号は **`x0041`**。
+次の空き番号は **`x0042`**。
 
 
 ## 関連

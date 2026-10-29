@@ -40,7 +40,7 @@ flowchart TB
 
 | Zenoh key 族 | 偽 publish の被害 | 現状の防御 | 保証しない |
 |:---|:---|:---|:---|
-| `…/input` | なりすまし操作・物理発散・巨大 payload | host: Room Token（bind）+ **`cnf.spk`==`session_pub`（x003e）** + Ed25519 session（x0023）+ `is_finite` / magnitude / Grab 距離（x0021）+ **decode 上限**（x003b）+ **Intent rate**（x0040: steady per-sub 60/30s・Leave 免除；bind **host-global 20/10s + per-pub 5/2s** 原子消費・Leave 非免除；偽 sig は bucket 非消費）+ JWKS **hard stale**（x0040） | zenohd ACL・帯域上限；同一鍵の後勝ち rebind；端末秘密鍵窃取；Intent strike；未 bind steady の Ed25519 洪水 |
+| `…/input` | なりすまし操作・物理発散・巨大 payload | host: Room Token（bind）+ **`cnf.spk`==`session_pub`（x003e）** + Ed25519 session（x0023）+ `is_finite` / magnitude / Grab 開始距離（x0021）+ **hold aim/offset クランプ**（x0041・`MAX_GRAB_HIT_DISTANCE`）+ **decode 上限**（x003b）+ **Intent rate**（x0040: steady per-sub 60/30s・Leave 免除；bind **host-global 20/10s + per-pub 5/2s** 原子消費・Leave 非免除；偽 sig は bucket 非消費）+ JWKS **hard stale**（x0040） | zenohd ACL・帯域上限；同一鍵の後勝ち rebind；端末秘密鍵窃取；Intent strike；未 bind steady の Ed25519 洪水 |
 | `…/frame` | 偽描画・NaN・巨大 payload | client: `host_sig` + Manifest `host_pub`（attestation）+ finite / tick / snapshot（x0023–x0024）+ **decode 上限**（x003b） | 確実配送 ACK |
 | `…/presence` | 偽スロット・偽退室表示・旧 Presence replay | client: pin + `host_sig` + generation/revision ゲート（x0025 / x003a）+ **decode 上限**（x003b） | Presence の world 署名 |
 | `…/manifest` | 改ざん配置・偽 host_pub・旧 seal replay・同一 gen 鍵すり替え・巨大 payload | `world_seal` + HostAttestation + **`(generation, revision)` 単調ゲート** + **同一 gen 内 `host_pub` 固定**（x0026 / x003a）；失敗は **discard**（x0038）；**decode 上限**（x003b） | UGC 編集 ACL；完全な handoff UX；二重 host の generation フリップフロップ |
@@ -73,6 +73,7 @@ flowchart TB
 |:---|:---|
 | x001e | Tunnel prod / host_control off / seed / assets CI |
 | x0021 | Token refresh / clamp / host role |
+| x0041 | Grab hold aim / offset 距離クランプ（開始と同一定数・実体 ≤~2·MAX） |
 | x0022 | liveliness jti / WAN TLS |
 | x0023–x0026 | session / Frame 検証 / snapshot / attestation / seal |
 | x0030 | shared-sim（分類の単一正本；信頼境界の変更なし） |
