@@ -1,8 +1,9 @@
-//! Rapier world driven by SceneManifest entries (x0027 / x002c / x0030).
+//! Rapier world driven by SceneManifest entries (x0027 / x002c / x0030 / x0041).
 //!
 //! Guarantees: floor (host-local) + mesh ball + boxes + user_roots from Manifest;
 //! Manifest initial **rotation** → Rapier spawn; Manifest **scale** → Frame Pose seed
 //! (`scales` map; collider stays `half_extent`); per-slot Grab; no Steal;
+//! hold aim / offset capped by [`alchemy_shared_sim::MAX_GRAB_HIT_DISTANCE`] (x0041);
 //! `release_slot` resets translation+rotation to Manifest spawn.
 //! Classification via `alchemy-shared-sim` [`EntityKind`] (x0030).
 //! Non-guarantees: Grab aim **rotation** follow (translation only); throw impulse;
@@ -310,11 +311,13 @@ impl PhysicsWorld {
         if slot >= USER_ROOT_SLOTS {
             return;
         }
-        let aim_v = vector![aim.0, aim.1, aim.2];
         if !want_grab {
             self.release_grab(slot);
             return;
         }
+        let (ux, uy, uz) = self.user_root_translation(slot);
+        let (ax, ay, az) = crate::finite::clamp_hold_aim((ux, uy, uz), aim);
+        let aim_v = vector![ax, ay, az];
         if let Some(g) = self.grabs[slot] {
             self.follow_grab(g, aim_v);
             return;
@@ -326,7 +329,6 @@ impl PhysicsWorld {
             return;
         }
         let handle = self.boxes.handles[index];
-        let (ux, uy, uz) = self.user_root_translation(slot);
         let Some(body) = self.rigid_body_set.get_mut(handle) else {
             return;
         };
@@ -334,7 +336,9 @@ impl PhysicsWorld {
         if !crate::finite::within_grab_start_distance((ux, uy, uz), (t.x, t.y, t.z)) {
             return;
         }
-        let offset = t - aim_v;
+        let raw = t - aim_v;
+        let (ox, oy, oz) = crate::finite::clamp_hold_offset(raw.x, raw.y, raw.z);
+        let offset = vector![ox, oy, oz];
         body.set_body_type(RigidBodyType::KinematicPositionBased, true);
         body.set_linvel(vector![0.0, 0.0, 0.0], true);
         body.set_angvel(vector![0.0, 0.0, 0.0], true);
@@ -866,6 +870,100 @@ mod tests {
         ));
         world.apply_grab(0, true, id, (bx, by, bz));
         assert!(world.grab_entity_id(0).is_none());
+    }
+
+    #[test]
+    fn grab_hold_far_aim_does_not_teleport_beyond_budget() {
+        let mut world = test_world();
+        for _ in 0..120 {
+            world.step();
+        }
+        let id = 14u32;
+        let (bx, by, bz) = world.box_pose(4).0;
+        let (ux0, uy0, uz0) = world.user_root_translation(0);
+        // offset≈0 path: aim at box, then yank +X
+        world.apply_grab(0, true, id, (bx, by, bz));
+        assert_eq!(world.grab_entity_id(0), Some(id));
+        let far = (ux0 + 1e6, uy0, uz0);
+        for _ in 0..10 {
+            world.apply_grab(0, true, id, far);
+            world.step();
+        }
+        let (x, y, z) = world.box_pose(4).0;
+        let (ux, uy, uz) = world.user_root_translation(0);
+        let dx = x - ux;
+        let dy = y - uy;
+        let dz = z - uz;
+        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+        let max = crate::finite::MAX_GRAB_START_DISTANCE;
+        assert!(
+            dist <= 2.0 * max + 0.05,
+            "box teleported too far: dist={dist} pos=({x},{y},{z}) root=({ux},{uy},{uz})"
+        );
+        assert!(x.is_finite() && y.is_finite() && z.is_finite());
+        assert!(
+            dx > 0.0,
+            "far +X aim should keep box on +X side of root, dx={dx}"
+        );
+    }
+
+    /// Start aim on the sphere opposite the box (raw |offset| > MAX), then hold-yank
+    /// toward the box so aim球+offset が同符号で積む。`clamp_hold_offset` 欠落なら >2·MAX。
+    #[test]
+    fn grab_hold_opposite_aim_offset_clamp_keeps_two_max_budget() {
+        let mut world = test_world();
+        for _ in 0..120 {
+            world.step();
+        }
+        let id = 14u32;
+        let (bx, by, bz) = world.box_pose(4).0;
+        let (ux, uy, uz) = world.user_root_translation(0);
+        let vx = bx - ux;
+        let vy = by - uy;
+        let vz = bz - uz;
+        let vlen = (vx * vx + vy * vy + vz * vz).sqrt();
+        assert!(
+            vlen > 0.05 && vlen < crate::finite::MAX_GRAB_START_DISTANCE,
+            "need box inside start gate but not on root, vlen={vlen}"
+        );
+        let max = crate::finite::MAX_GRAB_START_DISTANCE;
+        let inv = max / vlen;
+        // Sphere point opposite the box (root-centered).
+        let aim0 = (ux - vx * inv, uy - vy * inv, uz - vz * inv);
+        let raw_ox = bx - aim0.0;
+        let raw_oy = by - aim0.1;
+        let raw_oz = bz - aim0.2;
+        let raw_olen = (raw_ox * raw_ox + raw_oy * raw_oy + raw_oz * raw_oz).sqrt();
+        assert!(
+            raw_olen > max + 0.05,
+            "fixture must exercise offset clamp: raw_olen={raw_olen} max={max}"
+        );
+        world.apply_grab(0, true, id, aim0);
+        assert_eq!(world.grab_entity_id(0), Some(id));
+        // Far aim along box/offset direction so clamped aim and offset stack.
+        let far = (ux + vx * 1e6, uy + vy * 1e6, uz + vz * 1e6);
+        for _ in 0..10 {
+            world.apply_grab(0, true, id, far);
+            world.step();
+        }
+        let (x, y, z) = world.box_pose(4).0;
+        let (ux1, uy1, uz1) = world.user_root_translation(0);
+        let dx = x - ux1;
+        let dy = y - uy1;
+        let dz = z - uz1;
+        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+        assert!(x.is_finite() && y.is_finite() && z.is_finite());
+        assert!(
+            dist <= 2.0 * max + 0.05,
+            "offset clamp regression? dist={dist} (>2·MAX) pos=({x},{y},{z}) root=({ux1},{uy1},{uz1})"
+        );
+        // Stacked path should sit near the outer budget (not the offset≈0 case).
+        assert!(
+            dist > max,
+            "expected stacked aim+offset near outer shell, dist={dist}"
+        );
+        let along = dx * vx + dy * vy + dz * vz;
+        assert!(along > 0.0, "box should remain on the box side of root");
     }
 
     #[test]

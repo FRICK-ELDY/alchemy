@@ -12,7 +12,8 @@ use alchemy_protocol::{scene_entry_grabbable, scene_entry_is_user_root, SceneEnt
 
 pub mod demo;
 
-/// Max Grab start / client pick ray distance (meters). Host `finite` + client `world_hit`.
+/// Max Grab start / client pick / hold aim·offset distance (meters).
+/// Host `finite` (start gate + hold clamp x0041) + client `world_hit`.
 pub const MAX_GRAB_HIT_DISTANCE: f32 = 5.0;
 
 /// Host mesh ball collider radius (client visual scale pairs with this).

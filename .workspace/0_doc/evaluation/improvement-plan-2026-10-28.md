@@ -41,7 +41,7 @@
 | P1-3 | credential/network worker 分離 | -2 | 物理は最新 cred を読むだけ。更新は専用スレッドで失効までリトライ。プロセスは一時 502 で殺さない | auth 一時障害で部屋が消えない — **[x003d](../../roadmap/slices/x003d-credential-worker.md) done**（credential/seal worker。Zenoh put 分離は後続） |
 | P1-4 | Room Token `cnf`（session_pub） | -2 | Token 要求時に鍵を送り claim に埋め込み。bind で一致確認 | 盗聴 JWT だけでは別鍵 bind 不可 — **[x003e](../../roadmap/slices/x003e-room-token-cnf.md) done** |
 | P1-5 | Intent rate limit + JWKS hard stale | -2 | per-sub token bucket。JWKS 最大 stale TTL | 合法高頻度で飽和しない / 撤去鍵で無限受理しない — **[x0040](../../roadmap/slices/x0040-intent-rate-jwks-hard-stale.md) done** |
-| P1-6 | Grab 保持中 aim 距離クランプ | -1 | shared-sim 定数を保持オフセットにも適用 | 箱の瞬間遠方移動不可 |
+| P1-6 | Grab 保持中 aim 距離クランプ | -1 | shared-sim 定数を保持オフセットにも適用 | 箱の瞬間遠方移動不可 — **[x0041](../../roadmap/slices/x0041-grab-hold-aim-clamp.md) done** |
 
 ---
 
@@ -98,8 +98,8 @@
 
 ## 推奨スライス順
 
-**次:** **x0041+** — ACL、Zenoh network worker、P1-6 など。BlobGrant は draft 目標（P4-5）
+**次:** **x0042+** — ACL、Zenoh network worker など。BlobGrant は draft 目標（P4-5）
 
-最近閉じた: [x0038](../../roadmap/slices/x0038-leave-to-discard.md) … [x003f](../../roadmap/slices/x003f-cas-object-ref-reserve.md)（P1-2）、**[x0040](../../roadmap/slices/x0040-intent-rate-jwks-hard-stale.md)**（P1-5 Intent rate + JWKS hard）— いずれも **done**。
+最近閉じた: [x0038](../../roadmap/slices/x0038-leave-to-discard.md) … [x0040](../../roadmap/slices/x0040-intent-rate-jwks-hard-stale.md)（P1-5）、**[x0041](../../roadmap/slices/x0041-grab-hold-aim-clamp.md)**（P1-6 Grab hold aim clamp）— いずれも **done**。P1 帯は完了。
 
 スライス完了条件に必ず含める: **prod compose 起動**・**否定系が通る**・**保証表とコード一致**。
