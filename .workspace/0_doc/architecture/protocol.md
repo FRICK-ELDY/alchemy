@@ -59,9 +59,9 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 ### InputEvent（`proto/input_events.proto`）— Intent + session（x0023）+ capability（x002a）
 
 - `InputEvent { room_token, client_time_ms, move_*, buttons, grab_*, aim_*, leave, session_pub, intent_seq, intent_sig }`
-- **Bind**: 有効 JWT + `session_pub`(32) + 単調 `intent_seq` + `intent_sig`(64)。host は **同一 `sub` の他 pub を破棄**して pubkey→`(sub,jti,caps)` を記録（後勝ち・1 session/sub）
+- **Bind**: 有効 JWT（`cnf.spk` 必須・x003e）+ `session_pub`(32) が `cnf.spk` と一致 + 単調 `intent_seq` + `intent_sig`(64)。host は **同一 `sub` の他 pub を破棄**して pubkey→`(sub,jti,caps)` を記録（同一鍵の後勝ち・1 session/sub）
 - **Steady**: `room_token` 空。同じ `session_pub` + 進んだ `seq` + 有効 sig のみ受理（バスで拾った JWT だけではなりすませない）
-- **再 bind**: host 世代交代 → client は鍵ごと作り直し；Presence reclaim → 同じ鍵で Token 付き Intent を再開
+- **再 bind**: host 世代交代 → 新鍵は pending に保持し、旧鍵+旧 Token で Intent 継続 → Token 到着後に鍵+Token を一括 swap（x003e）；Presence reclaim → 同じ鍵で Token 付き Intent を再開
 - `leave=true`: セッション検証後に即 `reclaim_sub`（`INTENT_LEAVE` が無い caps では無視）
 - `move_*` は正規化 Intent（~-1..1）。host が `move_speed` でスケール
 - `DEFAULT_MOVE_SPEED = 4.0`

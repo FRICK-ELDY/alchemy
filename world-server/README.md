@@ -26,10 +26,12 @@ curl -s -X POST http://127.0.0.1:4003/api/v1/rooms \
   -H "authorization: Bearer $ACCESS" \
   -d '{"room_id":"local"}'
 
+# x003e: session_pub (Ed25519 32B, base64url no pad) required — embeds as JWT cnf.spk
+SPK=$(openssl rand 32 | openssl base64 -A | tr '+/' '-_' | tr -d '=')
 curl -s -X POST http://127.0.0.1:4003/api/v1/rooms/local/tokens \
   -H 'content-type: application/json' \
   -H "authorization: Bearer $ACCESS" \
-  -d '{"role":"host"}'
+  -d "{\"role\":\"host\",\"session_pub\":\"${SPK}\"}"
 ```
 
 設計の正本: [`.workspace/0_doc/architecture/world-server.md`](../.workspace/0_doc/architecture/world-server.md)

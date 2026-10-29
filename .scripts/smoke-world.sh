@@ -27,11 +27,17 @@ curl -sf -X POST "$WORLD/api/v1/rooms" \
   -d '{"room_id":"local"}'
 echo
 
+# x003e: session_pub required (32B base64url). Smoke uses a fixed dummy key.
+SPK="$(printf '%s' 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')"
+# Prefer openssl if available for a random 32B; fall back to fixed.
+if command -v openssl >/dev/null 2>&1; then
+  SPK="$(openssl rand 32 | openssl base64 -A | tr '+/' '-_' | tr -d '=')"
+fi
 echo "token:"
 curl -sf -X POST "$WORLD/api/v1/rooms/local/tokens" \
   -H 'content-type: application/json' \
   -H "authorization: Bearer ${ACCESS}" \
-  -d '{"role":"host"}' | head -c 200
+  -d "{\"role\":\"host\",\"session_pub\":\"${SPK}\"}" | head -c 200
 echo
 
 echo "reject without auth:"

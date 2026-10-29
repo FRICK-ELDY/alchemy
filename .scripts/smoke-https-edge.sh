@@ -44,10 +44,12 @@ curl -sf --max-time 30 -X POST "${WORLD_URL}/api/v1/rooms" \
   -H "authorization: Bearer ${ACCESS}" \
   -d "{\"room_id\":\"${ROOM_ID}\"}" >/dev/null || true
 
+# x003e: session_pub required (32B base64url).
+SPK="$(openssl rand 32 | openssl base64 -A | tr '+/' '-_' | tr -d '=')"
 TOKEN_JSON="$(curl -sf --max-time 30 -X POST "${WORLD_URL}/api/v1/rooms/${ROOM_ID}/tokens" \
   -H 'content-type: application/json' \
   -H "authorization: Bearer ${ACCESS}" \
-  -d '{"role":"host"}')"
+  -d "{\"role\":\"host\",\"session_pub\":\"${SPK}\"}")"
 ROOM_TOKEN="$(printf '%s' "$TOKEN_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("token") or d.get("room_token") or "")')"
 if [[ -z "$ROOM_TOKEN" ]]; then
   echo "smoke-https-edge: room token response missing token field: ${TOKEN_JSON}"

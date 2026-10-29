@@ -9,6 +9,17 @@ defmodule WorldWeb.RoomControllerTest do
     %{signer: signer}
   end
 
+  # x003e: every Room Token request must carry session_pub (base64url 32B).
+  defp token_params(extra) when is_map(extra) do
+    Map.put(
+      extra,
+      :session_pub,
+      Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+    )
+  end
+
+  defp sample_session_pub_bytes, do: :crypto.strong_rand_bytes(32)
+
   test "rejects room create without auth", %{conn: conn} do
     conn = post(conn, "/api/v1/rooms", %{room_id: "noauth"})
     assert %{"error" => "missing_auth_token"} = json_response(conn, 401)
@@ -23,7 +34,10 @@ defmodule WorldWeb.RoomControllerTest do
     conn =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, sub)
-      |> post("/api/v1/rooms/local/tokens", %{role: "host", sub: "ignored-body-sub"})
+      |> post(
+        "/api/v1/rooms/local/tokens",
+        token_params(%{role: "host", sub: "ignored-body-sub"})
+      )
 
     body = json_response(conn, 200)
     assert is_binary(body["token"])
@@ -31,6 +45,27 @@ defmodule WorldWeb.RoomControllerTest do
     assert body["role"] == "host"
     assert body["sub"] == sub
     assert body["expires_in"] > 0
+
+    assert {:ok, claims} = World.Token.verify(body["token"])
+    assert is_binary(claims["cnf"]["spk"])
+  end
+
+  test "token without session_pub is rejected", %{conn: conn, signer: signer} do
+    sub = "22222222-2222-2222-2222-222222222222"
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> post("/api/v1/rooms", %{room_id: "nocnf"})
+
+    assert %{"room_id" => "nocnf"} = json_response(conn, 201)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> post("/api/v1/rooms/nocnf/tokens", %{role: "host"})
+
+    assert %{"error" => "invalid_session_pub"} = json_response(conn, 422)
   end
 
   test "token on missing room does not create or grant host", %{signer: signer} do
@@ -39,14 +74,14 @@ defmodule WorldWeb.RoomControllerTest do
     conn =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, guest)
-      |> post("/api/v1/rooms/ghost/tokens", %{role: "guest"})
+      |> post("/api/v1/rooms/ghost/tokens", token_params(%{role: "guest"}))
 
     assert %{"error" => "room_not_found"} = json_response(conn, 404)
 
     conn =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, guest)
-      |> post("/api/v1/rooms/ghost/tokens", %{role: "host"})
+      |> post("/api/v1/rooms/ghost/tokens", token_params(%{role: "host"}))
 
     assert %{"error" => "room_not_found"} = json_response(conn, 404)
   end
@@ -65,14 +100,14 @@ defmodule WorldWeb.RoomControllerTest do
     conn =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, guest)
-      |> post("/api/v1/rooms/owned/tokens", %{role: "host"})
+      |> post("/api/v1/rooms/owned/tokens", token_params(%{role: "host"}))
 
     assert %{"error" => "host_role_owner_only"} = json_response(conn, 403)
 
     conn =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, guest)
-      |> post("/api/v1/rooms/owned/tokens", %{role: "guest"})
+      |> post("/api/v1/rooms/owned/tokens", token_params(%{role: "guest"}))
 
     body = json_response(conn, 200)
     assert body["role"] == "guest"
@@ -122,7 +157,7 @@ defmodule WorldWeb.RoomControllerTest do
     conn =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, guest)
-      |> post("/api/v1/rooms/friends-room/tokens", %{role: "guest"})
+      |> post("/api/v1/rooms/friends-room/tokens", token_params(%{role: "guest"}))
 
     assert %{"error" => "visibility_forbidden"} = json_response(conn, 403)
   end
@@ -140,13 +175,13 @@ defmodule WorldWeb.RoomControllerTest do
     assert %{"role" => "host"} =
              build_conn()
              |> TestAuthHelpers.put_auth(signer, owner)
-             |> post("/api/v1/rooms/priv/tokens", %{role: "host"})
+             |> post("/api/v1/rooms/priv/tokens", token_params(%{role: "host"}))
              |> json_response(200)
 
     assert %{"error" => "visibility_forbidden"} =
              build_conn()
              |> TestAuthHelpers.put_auth(signer, guest)
-             |> post("/api/v1/rooms/priv/tokens", %{role: "guest"})
+             |> post("/api/v1/rooms/priv/tokens", token_params(%{role: "guest"}))
              |> json_response(403)
   end
 
@@ -165,7 +200,7 @@ defmodule WorldWeb.RoomControllerTest do
              |> Map.put(:remote_ip, {192, 168, 0, 5})
              |> Plug.Conn.put_req_header("cf-connecting-ip", "203.0.113.1")
              |> TestAuthHelpers.put_auth(signer, guest)
-             |> post("/api/v1/rooms/lan1/tokens", %{role: "guest"})
+             |> post("/api/v1/rooms/lan1/tokens", token_params(%{role: "guest"}))
              |> json_response(403)
   end
 
@@ -183,7 +218,7 @@ defmodule WorldWeb.RoomControllerTest do
     %{"token" => host_token} =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, sub)
-      |> post("/api/v1/rooms/attest/tokens", %{role: "host"})
+      |> post("/api/v1/rooms/attest/tokens", token_params(%{role: "host"}))
       |> json_response(200)
 
     conn =
@@ -230,7 +265,7 @@ defmodule WorldWeb.RoomControllerTest do
     %{"token" => guest_token} =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, guest)
-      |> post("/api/v1/rooms/guest-deny/tokens", %{role: "guest"})
+      |> post("/api/v1/rooms/guest-deny/tokens", token_params(%{role: "guest"}))
       |> json_response(200)
 
     conn =
@@ -252,7 +287,7 @@ defmodule WorldWeb.RoomControllerTest do
     %{"token" => host_token} =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, sub)
-      |> post("/api/v1/rooms/badpub/tokens", %{role: "host"})
+      |> post("/api/v1/rooms/badpub/tokens", token_params(%{role: "host"}))
       |> json_response(200)
 
     assert %{"error" => "missing_room_token"} =
@@ -278,7 +313,7 @@ defmodule WorldWeb.RoomControllerTest do
     %{"token" => host_token} =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, sub)
-      |> post("/api/v1/rooms/scene-room/tokens", %{role: "host"})
+      |> post("/api/v1/rooms/scene-room/tokens", token_params(%{role: "host"}))
       |> json_response(200)
 
     body =
@@ -306,7 +341,7 @@ defmodule WorldWeb.RoomControllerTest do
     %{"token" => guest_token} =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, guest)
-      |> post("/api/v1/rooms/scene-guest/tokens", %{role: "guest"})
+      |> post("/api/v1/rooms/scene-guest/tokens", token_params(%{role: "guest"}))
       |> json_response(200)
 
     assert %{"error" => "host_role_required"} =
@@ -320,7 +355,8 @@ defmodule WorldWeb.RoomControllerTest do
     _ = signer
     owner = "22222222-2222-2222-2222-222222222222"
     # Token.generate does not require the room registry entry (API create_token does).
-    assert {:ok, ghost_token, _ttl} = World.Token.generate("ghost-scene", "host", owner)
+    assert {:ok, ghost_token, _ttl} =
+             World.Token.generate("ghost-scene", "host", owner, sample_session_pub_bytes())
 
     assert %{"error" => "room_not_found"} =
              build_conn()
@@ -368,7 +404,7 @@ defmodule WorldWeb.RoomControllerTest do
     %{"token" => host_token} =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, sub)
-      |> post("/api/v1/rooms/seal/tokens", %{role: "host"})
+      |> post("/api/v1/rooms/seal/tokens", token_params(%{role: "host"}))
       |> json_response(200)
 
     attestation = issue_attestation(host_token, "seal", host_pub_b64())
@@ -407,7 +443,7 @@ defmodule WorldWeb.RoomControllerTest do
     %{"token" => host_token} =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, owner)
-      |> post("/api/v1/rooms/seal-oracle/tokens", %{role: "host"})
+      |> post("/api/v1/rooms/seal-oracle/tokens", token_params(%{role: "host"}))
       |> json_response(200)
 
     attestation = issue_attestation(host_token, "seal-oracle", host_pub_b64())
@@ -437,7 +473,7 @@ defmodule WorldWeb.RoomControllerTest do
     %{"token" => host_token} =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, owner)
-      |> post("/api/v1/rooms/seal-rev/tokens", %{role: "host"})
+      |> post("/api/v1/rooms/seal-rev/tokens", token_params(%{role: "host"}))
       |> json_response(200)
 
     attestation = issue_attestation(host_token, "seal-rev", host_pub_b64())
@@ -479,7 +515,7 @@ defmodule WorldWeb.RoomControllerTest do
     %{"token" => guest_token} =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, guest)
-      |> post("/api/v1/rooms/seal-deny/tokens", %{role: "guest"})
+      |> post("/api/v1/rooms/seal-deny/tokens", token_params(%{role: "guest"}))
       |> json_response(200)
 
     assert %{"error" => "host_role_required"} =
@@ -495,7 +531,7 @@ defmodule WorldWeb.RoomControllerTest do
     %{"token" => host_token} =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, owner)
-      |> post("/api/v1/rooms/seal-deny/tokens", %{role: "host"})
+      |> post("/api/v1/rooms/seal-deny/tokens", token_params(%{role: "host"}))
       |> json_response(200)
 
     attestation = issue_attestation(host_token, "seal-deny", host_pub_b64())
@@ -537,7 +573,7 @@ defmodule WorldWeb.RoomControllerTest do
     %{"token" => token_a} =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, owner)
-      |> post("/api/v1/rooms/seal-a/tokens", %{role: "host"})
+      |> post("/api/v1/rooms/seal-a/tokens", token_params(%{role: "host"}))
       |> json_response(200)
 
     attestation = issue_attestation(token_a, "seal-a", host_pub_b64())
@@ -553,7 +589,8 @@ defmodule WorldWeb.RoomControllerTest do
              |> json_response(403)
 
     # Token.generate does not require the room registry entry (API create_token does).
-    assert {:ok, ghost_token, _ttl} = World.Token.generate("ghost-seal", "host", owner)
+    assert {:ok, ghost_token, _ttl} =
+             World.Token.generate("ghost-seal", "host", owner, sample_session_pub_bytes())
 
     assert %{"error" => "room_not_found"} =
              build_conn()

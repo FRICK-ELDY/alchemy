@@ -56,14 +56,26 @@ defmodule WorldWeb.RoomController do
   def create_token(conn, %{"room_id" => room_id} = params) do
     role = Map.get(params, "role", "guest")
 
-    case resolve_sub(conn, params) do
-      {:ok, sub} ->
-        issue_token(conn, room_id, role, sub)
-
+    with {:ok, sub} <- resolve_sub(conn, params),
+         {:ok, session_pub} <- decode_token_session_pub(params) do
+      issue_token(conn, room_id, role, sub, session_pub)
+    else
       {:error, :anon_disabled} ->
         conn
         |> put_status(:unauthorized)
         |> json(%{error: "anon_tokens_disabled"})
+
+      {:error, :invalid_session_pub} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_session_pub"})
+    end
+  end
+
+  defp decode_token_session_pub(params) do
+    case Map.get(params, "session_pub") do
+      pub when is_binary(pub) and pub != "" -> Token.decode_session_pub(pub)
+      _ -> {:error, :invalid_session_pub}
     end
   end
 
@@ -130,11 +142,12 @@ defmodule WorldWeb.RoomController do
   end
 
   # Token paths never create rooms (x0021): owner is only set by POST /rooms.
-  defp issue_token(conn, room_id, role, sub) do
+  # x003e: session_pub (32B) is required and embedded as cnf.spk.
+  defp issue_token(conn, room_id, role, sub, session_pub) do
     with {:ok, room} <- Rooms.get(room_id),
          :ok <- RoomAccess.authorize(conn, room.owner_sub, sub, room.visibility),
          :ok <- authorize_role_cached(room, role, sub),
-         {:ok, token, ttl} <- Token.generate(room_id, role, sub) do
+         {:ok, token, ttl} <- Token.generate(room_id, role, sub, session_pub) do
       json(conn, %{
         token: token,
         expires_in: ttl,

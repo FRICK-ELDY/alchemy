@@ -67,6 +67,13 @@ struct Jwk {
     e: Option<String>,
 }
 
+/// Confirmation claim (RFC 7800 `cnf`) — Alchemy binds Intent session_pub (x003e).
+#[derive(Debug, Clone, Deserialize)]
+pub struct RoomCnf {
+    /// base64url (no pad) of 32-byte Ed25519 session public key.
+    pub spk: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RoomClaims {
     /// Auth user id (UUID). Host routes Intent/Grab per `sub` (x0014).
@@ -78,6 +85,8 @@ pub struct RoomClaims {
     /// Present for JWT exp validation / serde; not read by host logic.
     #[allow(dead_code)]
     pub exp: i64,
+    /// Intent session key binding (x003e). Required on bind; HTTP credential paths ignore.
+    pub cnf: RoomCnf,
 }
 
 pub struct RoomTokenVerifier {
@@ -222,6 +231,9 @@ impl RoomTokenVerifier {
         if data.claims.role != "host" && data.claims.role != "guest" {
             return Err(anyhow!("invalid role: {}", data.claims.role));
         }
+        // x003e: reject malformed cnf.spk at verify (HTTP credential paths ignore the bytes).
+        crate::session::decode_cnf_spk(&data.claims.cnf.spk)
+            .context("Room Token cnf.spk invalid")?;
         Ok(data.claims)
     }
 
@@ -527,13 +539,20 @@ pub fn fetch_host_token(world_url: &str, room_id: &str, auth_token: &str) -> Res
         }
     }
 
+    // x003e: API requires session_pub; HTTP credential paths do not check cnf.
+    // Ephemeral key binds the JWT claim only (not used for Intent).
+    let ephemeral = alchemy_protocol::wire_crypto::generate_signing_key();
+    let session_pub_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(alchemy_protocol::wire_crypto::public_key_bytes(&ephemeral));
     let token_url = format!("{base}/api/v1/rooms/{room_id}/tokens");
     match agent
         .post(&token_url)
         .set("content-type", "application/json")
         .set("authorization", &authz)
-        .send_json(serde_json::json!({ "role": "host" }))
-    {
+        .send_json(serde_json::json!({
+            "role": "host",
+            "session_pub": session_pub_b64,
+        })) {
         Ok(resp) => {
             let parsed: TokenResponse = resp.into_json().context("parse token response")?;
             let ttl = if parsed.expires_in == 0 {

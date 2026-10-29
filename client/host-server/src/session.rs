@@ -1,9 +1,10 @@
-//! Intent session binding (x0023 P2-2) + role→capability (x002a).
+//! Intent session binding (x0023 P2-2) + role→capability (x002a) + cnf (x003e).
 //!
 //! Guarantees: Room Token alone cannot forge steady Intent; seq must advance;
-//! bind requires JWT + matching Ed25519 sig; bind stores Intent caps from `role`
-//! (frozen until re-bind — mid-session role change is non-goal).
-//! Non-guarantees: Zenoh ACL; client private-key theft; Token eavesdropping on bind;
+//! bind requires JWT + matching Ed25519 sig + `cnf.spk` == `session_pub`;
+//! bind stores Intent caps from `role` (frozen until re-bind — mid-session role
+//! change is non-goal). Stolen JWT cannot bind with a different session key.
+//! Non-guarantees: Zenoh ACL; client private-key theft; same-key last-wins rebind;
 //! HTTP caps (world-server enforces `role == "host"`; table in `sim_capability`).
 
 use std::collections::HashMap;
@@ -11,9 +12,23 @@ use std::collections::HashMap;
 use alchemy_protocol::sim_capability::intent_caps_for_role;
 use alchemy_protocol::wire_crypto::{self, PUBLIC_KEY_LENGTH};
 use alchemy_protocol::InputEvent;
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use base64::Engine;
 
 use crate::room_token::{RoomClaims, RoomTokenVerifier};
+
+pub(crate) fn decode_cnf_spk(spk: &str) -> Result<Vec<u8>> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(spk)
+        .context("cnf.spk base64url decode")?;
+    if bytes.len() != PUBLIC_KEY_LENGTH {
+        bail!(
+            "cnf.spk length {}, expected {PUBLIC_KEY_LENGTH}",
+            bytes.len()
+        );
+    }
+    Ok(bytes)
+}
 
 #[derive(Debug, Clone)]
 pub struct SessionBinding {
@@ -61,6 +76,10 @@ impl SessionTable {
             }
             if claims.sub.contains('/') {
                 bail!("Room Token sub contains '/'");
+            }
+            let cnf_pub = decode_cnf_spk(&claims.cnf.spk)?;
+            if cnf_pub.as_slice() != event.session_pub.as_slice() {
+                return Err(anyhow!("cnf.spk does not match Intent session_pub (x003e)"));
             }
             let caps = intent_caps_for_role(&claims.role);
             // Defense in depth: verifier already rejects unknown roles; keeps
@@ -122,6 +141,7 @@ mod tests {
         has_any, mask_intent, INTENT_GRAB, INTENT_LEAVE, INTENT_MOVE,
     };
     use alchemy_protocol::wire_crypto::{generate_signing_key, public_key_bytes, sign_input};
+    use base64::Engine;
     use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
     use pkcs1::EncodeRsaPrivateKey;
     use pkcs8::EncodePublicKey;
@@ -175,7 +195,18 @@ mod tests {
             Self { encoding, verifier }
         }
 
-        fn token(&self, sub: &str, jti: &str, role: &str, room_id: &str) -> String {
+        fn token(
+            &self,
+            sub: &str,
+            jti: &str,
+            role: &str,
+            room_id: &str,
+            session_pub: &[u8],
+        ) -> String {
+            #[derive(Serialize)]
+            struct Cnf {
+                spk: String,
+            }
             #[derive(Serialize)]
             struct Claims {
                 sub: String,
@@ -186,6 +217,7 @@ mod tests {
                 iat: usize,
                 iss: String,
                 aud: String,
+                cnf: Cnf,
             }
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -193,6 +225,7 @@ mod tests {
                 .as_secs() as usize;
             let mut header = Header::new(Algorithm::RS256);
             header.kid = Some("test-kid".into());
+            let spk = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(session_pub);
             encode(
                 &header,
                 &Claims {
@@ -204,6 +237,7 @@ mod tests {
                     iat: now,
                     iss: "alchemy-world".into(),
                     aud: "alchemy-room".into(),
+                    cnf: Cnf { spk },
                 },
                 &self.encoding,
             )
@@ -269,7 +303,6 @@ mod tests {
     #[test]
     fn bind_via_authorize_replaces_other_pub_for_same_sub() {
         let jwt = TestJwt::new("local");
-        let token = jwt.token("alice", "jti-new", "guest", "local");
 
         let mut table = SessionTable::default();
         let old_key = generate_signing_key();
@@ -285,7 +318,9 @@ mod tests {
         );
 
         let new_key = generate_signing_key();
-        let mut event = unsigned_intent(public_key_bytes(&new_key), 1);
+        let new_pub = public_key_bytes(&new_key);
+        let token = jwt.token("alice", "jti-new", "guest", "local", &new_pub);
+        let mut event = unsigned_intent(new_pub, 1);
         event.room_token = token;
         sign_input(&new_key, &mut event);
 
@@ -307,16 +342,39 @@ mod tests {
     #[test]
     fn bind_host_role_stores_intent_caps_without_http_bits() {
         let jwt = TestJwt::new("local");
-        let token = jwt.token("owner", "j-host", "host", "local");
         let mut table = SessionTable::default();
         let key = generate_signing_key();
-        let mut event = unsigned_intent(public_key_bytes(&key), 1);
+        let pub_bytes = public_key_bytes(&key);
+        let token = jwt.token("owner", "j-host", "host", "local", &pub_bytes);
+        let mut event = unsigned_intent(pub_bytes, 1);
         event.room_token = token;
         sign_input(&key, &mut event);
 
         let (_sub, _jti, caps) = table.authorize(&event, &jwt.verifier).expect("host bind");
         assert_eq!(caps, guest_caps());
         assert!(!has_any(caps, alchemy_protocol::sim_capability::HTTP_SCENE));
+    }
+
+    #[test]
+    fn bind_rejects_stolen_jwt_with_different_session_pub() {
+        let jwt = TestJwt::new("local");
+        let victim_key = generate_signing_key();
+        let victim_pub = public_key_bytes(&victim_key);
+        let stolen = jwt.token("alice", "jti-stolen", "guest", "local", &victim_pub);
+
+        let attacker_key = generate_signing_key();
+        let mut event = unsigned_intent(public_key_bytes(&attacker_key), 1);
+        event.room_token = stolen;
+        sign_input(&attacker_key, &mut event);
+
+        let mut table = SessionTable::default();
+        let err = table
+            .authorize(&event, &jwt.verifier)
+            .expect_err("stolen jwt + attacker key must fail");
+        assert!(
+            err.to_string().contains("cnf.spk"),
+            "expected cnf mismatch, got: {err:#}"
+        );
     }
 
     /// Mirrors main.rs: authorize → mask_intent. Restricted caps must not be a no-op.
