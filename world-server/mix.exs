@@ -33,6 +33,7 @@ defmodule World.MixProject do
       {:bandit, "~> 1.14"},
       {:jason, "~> 1.2"},
       {:alchemy_auth_client, path: "../shared/alchemy_auth_client"},
+      {:alchemy_client_ip, path: "../shared/alchemy_client_ip"},
       {:joken, "~> 2.6"},
       {:jose, "~> 1.11.13"},
       {:req, "~> 0.5"},

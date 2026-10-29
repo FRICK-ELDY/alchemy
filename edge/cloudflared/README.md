@@ -120,7 +120,7 @@ Tunnel / Cloudflare 背後では `conn.remote_ip` が edge（cloudflared）に�
    # TRUSTED_PROXIES=172.18.0.5
    ```
 
-2. auth を再起動後、信頼プロキシからの要求では **`CF-Connecting-IP` を優先**し、無ければ `X-Forwarded-For`（`AuthWeb.ClientIp`）。信頼外 peer の CF / XFF ヘッダは無視する。
+2. auth を再起動後、信頼プロキシからの要求では **`CF-Connecting-IP` を優先**し、無ければ `X-Forwarded-For`（`AlchemyClientIp` / `AuthWeb.ClientIp` 委譲・x004b）。信頼外 peer の CF / XFF ヘッダは無視する。
 3. `TRUSTED_PROXIES` が空のままでは peer IP のみを使う（Tunnel 経由でも edge IP にレート制限が寄る）。
 
 未設定のまま公開しないこと。

@@ -23,8 +23,8 @@ services:
 
   auth:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: auth-server/Dockerfile
       target: dev
     ports:
       - "4002:4002"
@@ -41,6 +41,7 @@ services:
       AUTH_INTERNAL_TOKEN: dev-internal-token
     volumes:
       - .:/app
+      - ../shared/alchemy_client_ip:/shared/alchemy_client_ip
       - auth_deps:/app/deps
       - auth_build:/app/_build
     depends_on:

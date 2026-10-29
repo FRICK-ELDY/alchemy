@@ -23,6 +23,7 @@ services:
     volumes:
       - .:/app
       - ../shared/alchemy_auth_client:/shared/alchemy_auth_client
+      - ../shared/alchemy_client_ip:/shared/alchemy_client_ip
       - world_deps:/app/deps
       - world_build:/app/_build
       - world_data:/app/priv/data

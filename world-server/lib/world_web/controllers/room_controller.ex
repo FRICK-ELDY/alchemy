@@ -197,9 +197,11 @@ defmodule WorldWeb.RoomController do
         storage_unavailable(conn)
 
       {:error, reason} ->
+        Logger.error("Room Token issue failed: #{inspect(reason)}")
+
         conn
         |> put_status(:internal_server_error)
-        |> json(%{error: "token_issue_failed", detail: inspect(reason)})
+        |> json(%{error: "token_issue_failed"})
     end
   end
 
@@ -237,7 +239,7 @@ defmodule WorldWeb.RoomController do
 
           conn
           |> put_status(:internal_server_error)
-          |> json(%{error: "attestation_issue_failed", detail: inspect(reason)})
+          |> json(%{error: "attestation_issue_failed"})
       end
     else
       {:error, :missing_bearer} ->
@@ -279,9 +281,11 @@ defmodule WorldWeb.RoomController do
         storage_unavailable(conn)
 
       {:error, reason} ->
+        Logger.warning("invalid Room Token (attestation path): #{inspect(reason)}")
+
         conn
         |> put_status(:unauthorized)
-        |> json(%{error: "invalid_room_token", detail: inspect(reason)})
+        |> json(%{error: "invalid_room_token"})
     end
   end
 
@@ -324,9 +328,11 @@ defmodule WorldWeb.RoomController do
         storage_unavailable(conn)
 
       {:error, reason} ->
+        Logger.warning("invalid Room Token (scene path): #{inspect(reason)}")
+
         conn
         |> put_status(:unauthorized)
-        |> json(%{error: "invalid_room_token", detail: inspect(reason)})
+        |> json(%{error: "invalid_room_token"})
     end
   end
 
@@ -366,7 +372,7 @@ defmodule WorldWeb.RoomController do
 
           conn
           |> put_status(:internal_server_error)
-          |> json(%{error: "manifest_seal_issue_failed", detail: inspect(reason)})
+          |> json(%{error: "manifest_seal_issue_failed"})
       end
     else
       {:error, :missing_bearer} ->
@@ -470,9 +476,11 @@ defmodule WorldWeb.RoomController do
 
       # Token.verify / auth failures only — CanonicalManifest/CLI errors must not land here.
       {:error, reason} ->
+        Logger.warning("invalid Room Token (manifest-seal path): #{inspect(reason)}")
+
         conn
         |> put_status(:unauthorized)
-        |> json(%{error: "invalid_room_token", detail: inspect(reason)})
+        |> json(%{error: "invalid_room_token"})
     end
   end
 

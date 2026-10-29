@@ -37,8 +37,8 @@ services:
 
   auth:
     build:
-      context: ./auth-server
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: auth-server/Dockerfile
       target: dev
     ports:
       - "4102:4002"
@@ -52,6 +52,7 @@ services:
       AUTH_FRONTEND_URL: http://localhost:4000
     volumes:
       - ./auth-server:/app
+      - ./shared/alchemy_client_ip:/shared/alchemy_client_ip
       - e2e_auth_deps:/app/deps
       - e2e_auth_build:/app/_build
     depends_on:
@@ -99,6 +100,7 @@ services:
     volumes:
       - ./world-server:/app
       - ./shared/alchemy_auth_client:/shared/alchemy_auth_client
+      - ./shared/alchemy_client_ip:/shared/alchemy_client_ip
       - e2e_world_deps:/app/deps
       - e2e_world_build:/app/_build
     depends_on:

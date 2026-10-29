@@ -5,6 +5,8 @@ Shared auth-server JWKS cache + user JWT verify for Alchemy **world** / **assets
 Path dependency from `world-server` and `assets-server` (`../shared/alchemy_auth_client`).
 Not published to Hex.
 
+Client IP / trusted proxies live in [`alchemy_client_ip`](../alchemy_client_ip/) (x004b) — not here.
+
 ```elixir
 {AlchemyAuthClient.Jwks, otp_app: :world, name: World.Auth.Jwks}
 AlchemyAuthClient.Verify.verify(token, otp_app: :world, jwks: World.Auth.Jwks)
