@@ -130,11 +130,14 @@ depends_on: [x0006]
 | x004d | — | done | USER_ROOT_SLOTS → Manifest（P3-10・帯は protocol） | [x004d-user-root-slots-manifest.md](slices/x004d-user-root-slots-manifest.md) |
 | x004e | — | done | Relay Agent MVP（P2-1: mTLS + Allocation + wire_cap） | [x004e-relay-agent-mvp.md](slices/x004e-relay-agent-mvp.md) |
 | x004f | — | done | BlobGrant MVP（P4-5 案 A: 台帳 + grant_required。目標は案 B） | [x004f-blob-grant-mvp.md](slices/x004f-blob-grant-mvp.md) |
+| x0050 | — | planned | XR swapchain → wgpu（P4-1 / 1/3・clear-only） | [x0050-xr-swapchain-wgpu.md](slices/x0050-xr-swapchain-wgpu.md) |
+| x0051 | — | planned | XR SceneGpu 一本化（P4-1 / 2/3・dual-eye） | [x0051-xr-scene-gpu-unify.md](slices/x0051-xr-scene-gpu-unify.md) |
+| x0052 | — | planned | XR vk_loop GPU 削除（P4-1 / 3/3） | [x0052-xr-vk-loop-gpu-remove.md](slices/x0052-xr-vk-loop-gpu-remove.md) |
 
-**現在の次:** 案 B（GET 常時 Grant + room 連動読取）または P4 他（描画統合 / launcher / verifier）。  
+**現在の次:** **[x0050](slices/x0050-xr-swapchain-wgpu.md)**（P4-1 描画統合 1/3）。並行候補: 案 B（GET 常時 Grant）/ launcher / verifier（保留）。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
-次の空き番号は **`x0050`**。
+次の空き番号は **`x0053`**。
 
 
 ## 関連
