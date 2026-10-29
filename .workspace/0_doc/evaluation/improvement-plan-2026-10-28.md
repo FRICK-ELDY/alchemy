@@ -36,7 +36,7 @@
 
 | ID | 項目 | 根拠 | 作業イメージ | 完了条件 |
 |:---|:---|:---|:---|:---|
-| P1-1 | assets GET 方針の文書化 **または** BlobGrant | -3 | 短期: architecture に capability モデル明記。中期: CasObject/BlobRef/BlobGrant | 保証表とコード一致 |
+| P1-1 | assets GET 方針の文書化 **または** BlobGrant | -3 | 短期: architecture に capability モデル明記。中期: CasObject/BlobRef/BlobGrant | 保証表とコード一致 — **文書化で閉じた**（[assets-server.md](../architecture/assets-server.md) GET capability）。BlobGrant 実装は [assets-server-draft.md](../architecture/assets-server-draft.md) / P4-5 |
 | P1-2 | CAS object/ref 分離 + put 補償 | -2 | Quota 予約→TX 外 put→メタ確定。cross-owner ref | orphan/quota 不整合テスト |
 | P1-3 | credential/network worker 分離 | -2 | 物理は最新 cred を読むだけ。更新は専用スレッドで失効までリトライ。プロセスは一時 502 で殺さない | auth 一時障害で部屋が消えない — **[x003d](../../roadmap/slices/x003d-credential-worker.md) done**（credential/seal worker。Zenoh put 分離は後続） |
 | P1-4 | Room Token `cnf`（session_pub） | -2 | Token 要求時に鍵を送り claim に埋め込み。bind で一致確認 | 盗聴 JWT だけでは別鍵 bind 不可 |
@@ -89,7 +89,7 @@
 | 前回帯 | 状態 |
 |:---|:---|
 | P0 Tunnel / host_control / seed / assets CI | **ほぼ完了** |
-| P1 Token refresh / JWKS SWR / magnitude / host role / GET 文書 | refresh・JWKS・role・clamp **完了**。GET は **未** |
+| P1 Token refresh / JWKS SWR / magnitude / host role / GET 文書 | refresh・JWKS・role・clamp **完了**。GET capability 文書も **完了**（BlobGrant 実装は未・P4-5） |
 | P2 liveliness / Token バス / WAN TLS / Frame 検証 / PIN | **ほぼ完了**（bind JWT・ACL 残） |
 | P3 衛生一式 | **大半完了**（world test DB は同型再発） |
 | P4 Manifest 駆動 / shared-sim / launcher | **最小完了**。canonical seal・generation は今回 P0 へ昇格 |
@@ -98,8 +98,8 @@
 
 ## 推奨スライス順
 
-**次:** **x003e+** — BlobGrant or 文書、cnf、ACL、Zenoh network worker（P1 / 提案）
+**次:** **x003e+** — cnf、ACL、Zenoh network worker（P1 残り / 提案）。BlobGrant は draft 目標（P4-5）
 
-最近閉じた: [x0038](../../roadmap/slices/x0038-leave-to-discard.md) … [x003c](../../roadmap/slices/x003c-assets-required-mesh.md)（P0）、[x003d](../../roadmap/slices/x003d-credential-worker.md)（P1-3 credential worker）— いずれも **done**。
+最近閉じた: [x0038](../../roadmap/slices/x0038-leave-to-discard.md) … [x003c](../../roadmap/slices/x003c-assets-required-mesh.md)（P0）、[x003d](../../roadmap/slices/x003d-credential-worker.md)（P1-3）、**assets GET capability 文書**（P1-1 文書化）— いずれも **done**。
 
 スライス完了条件に必ず含める: **prod compose 起動**・**否定系が通る**・**保証表とコード一致**。
