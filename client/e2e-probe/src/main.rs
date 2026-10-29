@@ -1,15 +1,21 @@
-//! x001f / x0023 / x0038 / x003a hermetic E2E probe — no GUI.
+//! x001f / x0023 / x0038 / x003a / x0046 hermetic E2E probe — no GUI.
 //!
 //! Guarantees: against a running auth/world/assets/zenohd (+ host-server), asserts
 //! login → Room Token → signed InputEvent put → RenderFrame with upserts + user_root;
-//! invalid Input, fake Manifest, and stale-revision Manifest do not stop host Frame publish
-//! (x0038 / x003a). Client monotonic gen/rev gate is unit-tested in alchemy-protocol.
-//! Non-guarantees: Token refresh, WAN, R2, GUI client leave path, Frame signature check.
+//! adversarial suite (invalid Input, fake Manifest, seal-less stale-rev, oversize
+//! Input, oversize Manifest on the wire) does not stop host Frame publish
+//! (x0038 / x003a / x0046). Oversize Input exercises host `check_payload_bytes`;
+//! oversize Manifest only asserts host survival after large Zenoh traffic (host does
+//! not subscribe to peer Manifest). Client gen/rev gate / GUI discard / signed replay
+//! are unit-tested in alchemy-protocol / client.
+//! Non-guarantees: Token refresh, WAN, R2, GUI client leave path, Frame signature check,
+//! peer Manifest discard, cryptographically valid old-seal replay.
 
 use std::env;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use alchemy_protocol::decode_limits::{MAX_INPUT_BYTES, MAX_MANIFEST_BYTES};
 use alchemy_protocol::wire_crypto::{
     generate_signing_key, public_key_bytes, sign_input, SigningKey,
 };
@@ -158,6 +164,41 @@ fn put_manifest(session: &zenoh::Session, key: &str, manifest: &SceneManifest) -
         .wait()
         .map_err(|e| anyhow!("zenoh put manifest: {e}"))?;
     Ok(())
+}
+
+fn put_raw(session: &zenoh::Session, key: &str, bytes: Vec<u8>) -> Result<()> {
+    session
+        .put(key, bytes)
+        .wait()
+        .map_err(|e| anyhow!("zenoh put raw on {key}: {e}"))?;
+    Ok(())
+}
+
+/// Per adversarial put: independent of happy-path `deadline` so a slow login/frame
+/// phase does not starve later oversize asserts (x0046 review).
+const ADVERSARIAL_STEP_WAIT: Duration = Duration::from_secs(10);
+
+/// Drop Frames already queued so the next wait observes a **new** publish after put.
+fn drain_pending_frames(try_recv: &mut impl FnMut() -> Option<ZBytes>) {
+    while try_recv().is_some() {}
+}
+
+/// Wait for a decodable RenderFrame that arrives **after** a prior drain + put.
+fn expect_new_frame(
+    try_recv: &mut impl FnMut() -> Option<ZBytes>,
+    context: &str,
+) -> Result<()> {
+    let post_deadline = Instant::now() + ADVERSARIAL_STEP_WAIT;
+    while Instant::now() < post_deadline {
+        if let Some(bytes) = try_recv() {
+            if RenderFrame::decode(bytes.to_bytes().as_ref()).is_ok() {
+                return Ok(());
+            }
+        } else {
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+    bail!("{context}");
 }
 
 /// Adversarial Manifest: wrong pin so any verifying peer must discard (x0038).
@@ -374,7 +415,15 @@ fn main() -> Result<()> {
     }
     log::info!("snapshot queryable ok ({snap_k})");
 
-    // Token without valid session sig must not kill the host.
+    // --- adversarial suite (x0038 / x003a / x0046): host Frame path must survive ---
+    // Each step: drain → put → wait for a *new* Frame (not a pre-put buffered one).
+    // Per-step wait is independent of happy-path `deadline`.
+    let mut poll_frame = || match subscriber.try_recv() {
+        Ok(Some(sample)) => Some(sample.payload().clone()),
+        Ok(None) | Err(_) => None,
+    };
+
+    // Invalid Input must not kill the host.
     let bad = InputEvent {
         room_token: "not-a-valid-jwt".into(),
         client_time_ms: client_time_ms(),
@@ -391,80 +440,65 @@ fn main() -> Result<()> {
         intent_seq: 99,
         intent_sig: vec![0u8; 64],
     };
+    drain_pending_frames(&mut poll_frame);
     put_input(&session, &input_k, &bad)?;
     log::info!("put invalid InputEvent (expect host drop)");
-
-    let mut post_bad_frame = false;
-    let remain = deadline.saturating_duration_since(Instant::now());
-    let post_deadline = Instant::now() + remain.min(Duration::from_secs(10));
-    while Instant::now() < post_deadline {
-        match subscriber.try_recv() {
-            Ok(Some(sample)) => {
-                let bytes: ZBytes = sample.payload().clone();
-                if RenderFrame::decode(bytes.to_bytes().as_ref()).is_ok() {
-                    post_bad_frame = true;
-                    break;
-                }
-            }
-            Ok(None) | Err(_) => thread::sleep(Duration::from_millis(50)),
-        }
-    }
-    if !post_bad_frame {
-        bail!("host stopped publishing frames after invalid token input");
-    }
+    expect_new_frame(
+        &mut poll_frame,
+        "host stopped publishing frames after invalid token input",
+    )?;
     log::info!("host still publishing after invalid token ok");
 
     // x0038: fake Manifest must not stop the host Frame path (GUI client leave is unit-tested).
     let manifest_k = manifest_key(&room_id);
+    drain_pending_frames(&mut poll_frame);
     put_manifest(&session, &manifest_k, &fake_manifest(&room_id))?;
-    log::info!("put fake SceneManifest (expect peer discard; host keep publishing)");
-
-    let mut post_fake_manifest = false;
-    let remain = deadline.saturating_duration_since(Instant::now());
-    let post_deadline = Instant::now() + remain.min(Duration::from_secs(10));
-    while Instant::now() < post_deadline {
-        match subscriber.try_recv() {
-            Ok(Some(sample)) => {
-                let bytes: ZBytes = sample.payload().clone();
-                if RenderFrame::decode(bytes.to_bytes().as_ref()).is_ok() {
-                    post_fake_manifest = true;
-                    break;
-                }
-            }
-            Ok(None) | Err(_) => thread::sleep(Duration::from_millis(50)),
-        }
-    }
-    if !post_fake_manifest {
-        bail!("host stopped publishing frames after fake Manifest");
-    }
+    log::info!("put fake SceneManifest (host keep publishing; GUI discard is unit-tested)");
+    expect_new_frame(
+        &mut poll_frame,
+        "host stopped publishing frames after fake Manifest",
+    )?;
     log::info!("host still publishing after fake Manifest ok");
 
-    // x003a: stale revision Manifest (seal-less) must not stop host Frame path.
+    // x003a: seal-less stale-rev Manifest must not stop host Frame path.
+    drain_pending_frames(&mut poll_frame);
     put_manifest(&session, &manifest_k, &stale_revision_manifest(&room_id))?;
-    log::info!("put stale-revision SceneManifest (expect peer discard; host keep publishing)");
-
-    let mut post_stale_manifest = false;
-    let remain = deadline.saturating_duration_since(Instant::now());
-    let post_deadline = Instant::now() + remain.min(Duration::from_secs(10));
-    while Instant::now() < post_deadline {
-        match subscriber.try_recv() {
-            Ok(Some(sample)) => {
-                let bytes: ZBytes = sample.payload().clone();
-                if RenderFrame::decode(bytes.to_bytes().as_ref()).is_ok() {
-                    post_stale_manifest = true;
-                    break;
-                }
-            }
-            Ok(None) | Err(_) => thread::sleep(Duration::from_millis(50)),
-        }
-    }
-    if !post_stale_manifest {
-        bail!("host stopped publishing frames after stale-revision Manifest");
-    }
+    log::info!("put stale-revision SceneManifest (host keep publishing; signed replay is unit-tested)");
+    expect_new_frame(
+        &mut poll_frame,
+        "host stopped publishing frames after stale-revision Manifest",
+    )?;
     log::info!("host still publishing after stale-revision Manifest ok");
 
+    // x0046: oversize Input hits host pre-decode byte gate; host must keep publishing.
+    drain_pending_frames(&mut poll_frame);
+    put_raw(&session, &input_k, vec![0u8; MAX_INPUT_BYTES + 1])?;
+    log::info!(
+        "put oversize Input payload ({} bytes; expect host drop)",
+        MAX_INPUT_BYTES + 1
+    );
+    expect_new_frame(
+        &mut poll_frame,
+        "host stopped publishing frames after oversize Input",
+    )?;
+    log::info!("host still publishing after oversize Input ok");
+
+    // x0046: oversize Manifest on Zenoh — host does not subscribe to peer Manifest
+    // (publisher only). Assert host process still publishes Frames after large wire traffic.
+    drain_pending_frames(&mut poll_frame);
+    put_raw(&session, &manifest_k, vec![0u8; MAX_MANIFEST_BYTES + 1])?;
+    log::info!(
+        "put oversize Manifest payload ({} bytes; host survival after large wire put)",
+        MAX_MANIFEST_BYTES + 1
+    );
+    expect_new_frame(
+        &mut poll_frame,
+        "host stopped publishing frames after oversize Manifest",
+    )?;
+    log::info!("host still publishing after oversize Manifest ok");
+
     println!(
-        "e2e-probe: ok (login→token→input→frame+user_root; adversarial input+manifest+stale-rev)"
+        "e2e-probe: ok (login→token→input→frame+user_root; adversarial: fake+stale-rev+oversize)"
     );
     Ok(())
 }
