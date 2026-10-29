@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - "auth-server/**"
+      - "shared/alchemy_client_ip/**"
       - ".github/workflows/auth-server-ci.yml"
   pull_request:
     paths:
       - "auth-server/**"
+      - "shared/alchemy_client_ip/**"
       - ".github/workflows/auth-server-ci.yml"
 
 concurrency:
@@ -55,7 +57,7 @@ jobs:
           path: |
             auth-server/deps
             auth-server/_build
-          key: ${{ runner.os }}-auth-mix-${{ hashFiles('auth-server/mix.lock') }}
+          key: ${{ runner.os }}-auth-mix-${{ hashFiles('auth-server/mix.lock', 'shared/alchemy_client_ip/mix.lock', 'shared/alchemy_client_ip/lib/**/*.ex', 'shared/alchemy_client_ip/mix.exs') }}
           restore-keys: |
             ${{ runner.os }}-auth-mix-
 

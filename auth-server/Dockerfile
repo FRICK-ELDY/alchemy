@@ -2,7 +2,7 @@
 ARG ELIXIR_IMAGE=elixir:1.19-otp-28-alpine
 ARG ALPINE_VERSION=3.23
 
-# Development image for alchemy-auth (hot reload via bind mount).
+# Build context: repository root (shared/alchemy_client_ip path dep · x004b).
 FROM ${ELIXIR_IMAGE} AS dev
 
 # wget: hermetic compose healthcheck (x001f); not relying on busybox alone.
@@ -12,18 +12,18 @@ WORKDIR /app
 
 RUN mix local.hex --force && mix local.rebar --force
 
-# Warm dependency cache when building the image (source is bind-mounted at runtime).
-COPY mix.exs mix.lock ./
-RUN mix deps.get
+COPY shared/alchemy_client_ip /shared/alchemy_client_ip
+COPY auth-server/mix.exs auth-server/mix.lock ./
+RUN mix deps.get || true
 
-COPY config config
-COPY lib lib
-COPY priv priv
-COPY test test
-COPY .formatter.exs ./
-COPY AGENTS.md ./
+COPY auth-server/config config
+COPY auth-server/lib lib
+COPY auth-server/priv priv
+COPY auth-server/test test
+COPY auth-server/.formatter.exs ./
+COPY auth-server/AGENTS.md ./
 
-RUN mix compile
+RUN mix deps.get && mix compile
 
 EXPOSE 4002
 
@@ -40,13 +40,14 @@ RUN mix local.hex --force && mix local.rebar --force
 
 ENV MIX_ENV=prod
 
-COPY mix.exs mix.lock ./
+COPY shared/alchemy_client_ip /shared/alchemy_client_ip
+COPY auth-server/mix.exs auth-server/mix.lock ./
 RUN mix deps.get --only prod
 
-COPY config config
-COPY lib lib
-COPY priv priv
-COPY .formatter.exs ./
+COPY auth-server/config config
+COPY auth-server/lib lib
+COPY auth-server/priv priv
+COPY auth-server/.formatter.exs ./
 
 RUN mix compile
 RUN mix release

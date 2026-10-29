@@ -11,7 +11,7 @@ WORKDIR /src/protocol
 RUN cargo build --release --bin manifest-seal-hash \
  && cp target/release/manifest-seal-hash /manifest-seal-hash
 
-# Build context: repository root (shared/alchemy_auth_client path dep).
+# Build context: repository root (shared path deps · x002f / x004b).
 FROM ${ELIXIR_IMAGE} AS dev
 
 RUN apk add --no-cache build-base git wget
@@ -22,6 +22,7 @@ WORKDIR /app
 RUN mix local.hex --force && mix local.rebar --force
 
 COPY shared/alchemy_auth_client /shared/alchemy_auth_client
+COPY shared/alchemy_client_ip /shared/alchemy_client_ip
 COPY world-server/mix.exs world-server/mix.lock ./
 RUN mix deps.get || true
 
@@ -49,6 +50,7 @@ RUN mix local.hex --force && mix local.rebar --force
 ENV MIX_ENV=prod
 
 COPY shared/alchemy_auth_client /shared/alchemy_auth_client
+COPY shared/alchemy_client_ip /shared/alchemy_client_ip
 COPY world-server/mix.exs world-server/mix.lock ./
 RUN mix deps.get --only prod
 

@@ -30,8 +30,8 @@ services:
 
   auth:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: auth-server/Dockerfile
       target: release
     ports:
       - "4002:4002"
