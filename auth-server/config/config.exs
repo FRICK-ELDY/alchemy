@@ -63,6 +63,10 @@ config :auth, Auth.RateLimit,
     },
     verify_email: %{
       ip: %{limit: 30, period_ms: 3_600_000}
+    },
+    social_mutate: %{
+      ip: %{limit: 60, period_ms: 60_000},
+      user: %{limit: 30, period_ms: 60_000}
     }
   }
 

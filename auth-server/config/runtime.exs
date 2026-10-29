@@ -224,6 +224,16 @@ if config_env() == :prod do
         limit: rate_limit_env_integer.("AUTH_RATE_LIMIT_VERIFY_EMAIL_IP_LIMIT", 30),
         period_ms: rate_limit_env_integer.("AUTH_RATE_LIMIT_VERIFY_EMAIL_IP_PERIOD_MS", 3_600_000)
       }
+    },
+    social_mutate: %{
+      ip: %{
+        limit: rate_limit_env_integer.("AUTH_RATE_LIMIT_SOCIAL_MUTATE_IP_LIMIT", 60),
+        period_ms: rate_limit_env_integer.("AUTH_RATE_LIMIT_SOCIAL_MUTATE_IP_PERIOD_MS", 60_000)
+      },
+      user: %{
+        limit: rate_limit_env_integer.("AUTH_RATE_LIMIT_SOCIAL_MUTATE_USER_LIMIT", 30),
+        period_ms: rate_limit_env_integer.("AUTH_RATE_LIMIT_SOCIAL_MUTATE_USER_PERIOD_MS", 60_000)
+      }
     }
   }
 

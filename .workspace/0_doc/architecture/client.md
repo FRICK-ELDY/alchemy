@@ -24,7 +24,7 @@
 |:---|:---|
 | Zenoh: Manifest / Presence / frame Subscribe、snapshot get、input Publish（`ROOM_ID`・x0017 / x0023） | ルーター機能（他人の通信の中継は禁止）・テナント名前空間 |
 | Manifest の blake3 → assets GET（Bearer + CAS；s3 時は 302 追従・x001d）→ BLAKE3 → wgpu。**GET は認証済み読み取り capability**（owner 照合なし・[assets-server.md](assets-server.md)；所有者 grant は [assets-server-draft.md](assets-server-draft.md)） | LOD / KTX2 / マテリアル本格 / スキン |
-| Frame: `host_sig` 検証・finite・tick 規則。Manifest は **`world_seal`** + **HostAttestation** + **`(generation, revision)` 単調ゲート**後にのみ `host_pub` 採用；検証失敗は **discard**（入室維持・x0038 / x003a） | 予測補間 / jitter buffer・欠落デルタ再送 |
+| Frame: `host_sig` 検証・finite・tick 規則。Manifest は **`world_seal`** + **HostAttestation** + **`(generation, revision)` 単調ゲート**後にのみ `host_pub` 採用；検証失敗は **discard**（入室維持・x0038 / x003a）。world JWKS は soft SWR + **hard stale 300s** + unknown-kid 冷却（受信パス HTTP なし・x0044） | 予測補間 / jitter buffer・欠落デルタ再送 |
 | Presence: pin + `host_sig` + Manifest generation 一致 / revision 単調（x0025 / x003a）。失敗は適用しない（discard） | Presence の world 署名；Presence 単独での generation 上昇 |
 | Zenoh sample: class 別 **decode byte/count 上限**超過は drop（x003b） | router 側 max payload |
 | Manifest entries → mesh blake3 / box=`half_extent` 描画 / Grab=`SCENE_FLAG_GRABBABLE`（x0027）。分類は `alchemy-shared-sim` `ManifestIndex` / `EntityKind`（x0030）。entity 表 upsert/remove。late join / **tick gap** は snapshot 置換（クールダウン 500ms・x0024） | loco の client 解釈・boot 後の mesh blake3 再取得 |

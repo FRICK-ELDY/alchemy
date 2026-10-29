@@ -9,6 +9,7 @@ defmodule AuthWeb.Plugs.RateLimit do
   - `forgot_password`: IP and email
   - `reset_password`: IP
   - `verify_email`: IP
+  - `social_mutate`: IP and authenticated user (Follow / Friendship mutates · x0043)
   """
 
   import Plug.Conn
@@ -102,6 +103,8 @@ defmodule AuthWeb.Plugs.RateLimit do
   defp action_for(%{path_info: ["api", "v1", "auth", "reset-password"]}),
     do: :reset_password
 
+  defp action_for(%{path_info: ["api", "v1", "social" | _rest]}), do: :social_mutate
+
   defp action_for(_conn), do: nil
 
   defp rate_limit_keys(conn, :login) do
@@ -164,6 +167,18 @@ defmodule AuthWeb.Plugs.RateLimit do
     with_ip(conn, fn ip -> [{:ip, ip}] end)
   end
 
+  defp rate_limit_keys(conn, :social_mutate) do
+    with_ip(conn, fn ip ->
+      case conn.assigns[:current_user_id] do
+        id when is_binary(id) and id != "" ->
+          [{:ip, ip}, {:user, id}]
+
+        _ ->
+          [{:ip, ip}]
+      end
+    end)
+  end
+
   defp with_ip(conn, fun) do
     fun.(AuthWeb.ClientIp.from_conn(conn))
   end
@@ -197,6 +212,8 @@ defmodule AuthWeb.Plugs.RateLimit do
   defp bucket(:forgot_password, :email), do: :forgot_password_email
   defp bucket(:reset_password, :ip), do: :reset_password_ip
   defp bucket(:verify_email, :ip), do: :verify_email_ip
+  defp bucket(:social_mutate, :ip), do: :social_mutate_ip
+  defp bucket(:social_mutate, :user), do: :social_mutate_user
 
   defp limits_for(action) do
     Application.get_env(:auth, RateLimit, [])

@@ -41,3 +41,10 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+
+[dev-dependencies]
+# x0044: world_jwks soft/hard/unknown-kid unit tests (same stack as host-server)
+rsa = { version = "0.9", features = ["pem"] }
+pkcs1 = { version = "0.7", features = ["std"] }
+pkcs8 = { version = "0.10", features = ["pem", "std"] }
+rand = "0.8"

@@ -16,8 +16,9 @@
 | 登録・ログイン・Refresh・ログアウト | グループ / Block / フォロー承認制 |
 | Follow（有向）+ Friendship（相互フォロー時のみ申請→accept）（x0033） | 関係グラフを JWT に載せること |
 | unfollow は同一トランザクションで Follow 削除＋Friendship 解除 | Room Token の即時失効（world TTL） |
-| S2S `GET /internal/v1/access`（visibility 判定・x0034/x0035） | Room の `visibility` 永続（world） |
+| S2S `GET /internal/v1/access`（visibility 判定・x0034/x0035）。**公網 Tunnel では `/internal/*` を 404**（x0043・LAN S2S は対象外） | Room の `visibility` 永続（world） |
 | prod は `AUTH_INTERNAL_TOKEN` 必須（未設定は起動失敗） | 既定 `"dev-internal-token"` を prod に残すこと |
+| Social mutate は IP + user の rate limit（x0043・429） | アクション別細粒度バケット |
 
 
 ## 契約

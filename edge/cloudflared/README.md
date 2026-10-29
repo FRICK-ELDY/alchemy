@@ -3,7 +3,7 @@
 拠点の **auth / world / assets**（`127.0.0.1:4002` / `4003` / `4004`）を、ルーターのポート開放なしで HTTPS 公開する。
 
 **Windows 初回〜常用の手順書:** [`.workspace/0_doc/manual/cloudflare-tunnel-windows.md`](../../.workspace/0_doc/manual/cloudflare-tunnel-windows.md)  
-正本 Slice: [`.workspace/roadmap/slices/x001a-https-edge-tunnel.md`](../../.workspace/roadmap/slices/x001a-https-edge-tunnel.md) · [x001e](../../.workspace/roadmap/slices/x001e-p0-trust-boundary.md)
+正本 Slice: [`.workspace/roadmap/slices/x001a-https-edge-tunnel.md`](../../.workspace/roadmap/slices/x001a-https-edge-tunnel.md) · [x001e](../../.workspace/roadmap/slices/x001e-p0-trust-boundary.md) · [x0043](../../.workspace/roadmap/slices/x0043-internal-ingress-social-rl.md)
 
 ## 保証する / しない
 
@@ -14,6 +14,7 @@
 | credentials / 実 `config.yml` をリポに入れない | DNS / Zone の完全自動化 |
 | **公開 origin は release / `MIX_ENV=prod` のみ**（x001e） | cloudflared HA・複数拠点 |
 | auth `/dev/*` は ingress で 404（mailbox 二重封鎖） | Cloudflare Access のフル構成 |
+| auth `/internal/*` は ingress で 404（x0043・LAN S2S は対象外） | world 側 `/internal` 公開・Access ポリシー |
 
 ## 前提（重要・x001e）
 
@@ -56,6 +57,9 @@ cp edge/cloudflared/config.yml.example edge/cloudflared/config.yml
 - `tunnel: <TUNNEL_ID>`
 - `hostname:` の `example.tld` → 自分の Zone
 - `credentials-file` は相対パス `./credentials.json` のまま（`cloudflared` 起動時の cwd に注意。下記「起動」参照）
+
+**運用注意（x0043）:** リポの `config.yml.example` 更新だけでは稼働中 Tunnel は変わらない。  
+既存 `edge/cloudflared/config.yml` に `/internal/*` → `http_status:404` を手で取り込み、`cloudflared` を再起動したうえで、下記 Health の `/internal/v1/access` が **404** になることを確認すること。
 
 任意: [`.env.example`](.env.example) を `.env` にコピーしてホスト名メモ用。
 
@@ -135,8 +139,9 @@ cd edge/cloudflared && cloudflared tunnel --config config.yml run
 curl -sf https://auth.example.tld/health
 curl -sf https://world.example.tld/health
 curl -sf https://assets.example.tld/health
-# mailbox は 404 であること
+# mailbox / internal は 404 であること（x001e / x0043）
 curl -o /dev/null -w "%{http_code}\n" https://auth.example.tld/dev/mailbox
+curl -o /dev/null -w "%{http_code}\n" https://auth.example.tld/internal/v1/access
 ```
 
 縦通し（login → Room Token → assets）:

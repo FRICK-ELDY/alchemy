@@ -83,6 +83,13 @@ tunnel: <TUNNEL_ID>
 credentials-file: ./credentials.json
 
 ingress:
+  # x001e / x0043: catch-all より前に path 404（config.yml.example と同型）
+  - hostname: auth.example.tld
+    path: /dev/*
+    service: http_status:404
+  - hostname: auth.example.tld
+    path: /internal/*
+    service: http_status:404
   - hostname: auth.example.tld
     service: http://127.0.0.1:4002
   - hostname: world.example.tld
@@ -168,8 +175,9 @@ cloudflared tunnel --config config.yml --protocol http2 run
 curl.exe -sf https://auth.example.tld/health
 curl.exe -sf https://world.example.tld/health
 curl.exe -sf https://assets.example.tld/health
-# mailbox は 404（x001e ingress + prod で /dev なし）
+# mailbox / internal は 404（x001e / x0043 ingress + prod で /dev なし）
 curl.exe -o NUL -w "%{http_code}`n" https://auth.example.tld/dev/mailbox
+curl.exe -o NUL -w "%{http_code}`n" https://auth.example.tld/internal/v1/access
 ```
 
 縦通し（login → Room Token → assets）:

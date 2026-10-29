@@ -11,8 +11,8 @@
 //! [`HostPublishSnapshot`] only. Soft-deadline refresh failure retries with backoff and
 //! keeps the last good snapshot. **Fail-closed** means stop publishing after hard expiry
 //! (full TTL), not kill the process on a transient 502.
-//! Non-guarantees: auth UI, session MAC (P2); Zenoh put path is x0042 network worker;
-//! client `world_jwks` hard TTL (P2-3).
+//! Non-guarantees: auth UI, session MAC (P2); Zenoh put path is x0042 network worker.
+//! client `world_jwks` soft/hard + unknown-kid cooldown: x0044 (parity with this module).
 
 use alchemy_protocol::wire_crypto::manifest_seal_blake3_hex;
 use alchemy_protocol::{
@@ -1706,8 +1706,36 @@ mod tests {
         assert!(!is_blake3_hex(&format!("{}!", "a".repeat(63))));
     }
 
-    fn test_rsa_jwt(room_id: &str) -> (RoomTokenVerifier, String) {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    #[derive(Clone)]
+    struct TestJwtOpts {
+        expected_room: String,
+        token_room: String,
+        kid: String,
+        iss: String,
+        aud: String,
+        role: String,
+        /// Seconds relative to now for `exp` (negative = already expired).
+        exp_offset_secs: i64,
+        alg: Algorithm,
+    }
+
+    impl Default for TestJwtOpts {
+        fn default() -> Self {
+            Self {
+                expected_room: "local".into(),
+                token_room: "local".into(),
+                kid: "hard-kid".into(),
+                iss: "alchemy-world".into(),
+                aud: "alchemy-room".into(),
+                role: "guest".into(),
+                exp_offset_secs: 600,
+                alg: Algorithm::RS256,
+            }
+        }
+    }
+
+    fn test_rsa_jwt_with(opts: TestJwtOpts) -> (RoomTokenVerifier, String) {
+        use jsonwebtoken::{encode, EncodingKey, Header};
         use pkcs1::EncodeRsaPrivateKey;
         use pkcs8::EncodePublicKey;
         use rsa::RsaPrivateKey;
@@ -1725,7 +1753,7 @@ mod tests {
             .expect("pub pem");
         let encoding = EncodingKey::from_rsa_pem(priv_pem.as_bytes()).expect("enc");
         let decoding = DecodingKey::from_rsa_pem(pub_pem.as_bytes()).expect("dec");
-        let verifier = RoomTokenVerifier::new("http://127.0.0.1:9", room_id);
+        let verifier = RoomTokenVerifier::new("http://127.0.0.1:9", &opts.expected_room);
         verifier.insert_decoding_key_for_test("hard-kid", decoding);
 
         #[derive(Serialize)]
@@ -1747,27 +1775,36 @@ mod tests {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_secs() as usize;
-        let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some("hard-kid".into());
+            .as_secs() as i64;
+        let exp = (now + opts.exp_offset_secs).max(0) as usize;
+        let mut header = Header::new(opts.alg);
+        header.kid = Some(opts.kid.clone());
         let spk = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7u8; 32]);
         let token = encode(
             &header,
             &Claims {
                 sub: "u-hard".into(),
                 jti: "j-hard".into(),
-                room_id: room_id.into(),
-                role: "guest".into(),
-                exp: now + 600,
-                iat: now,
-                iss: "alchemy-world".into(),
-                aud: "alchemy-room".into(),
+                room_id: opts.token_room,
+                role: opts.role,
+                exp,
+                iat: now as usize,
+                iss: opts.iss,
+                aud: opts.aud,
                 cnf: Cnf { spk },
             },
             &encoding,
         )
         .expect("jwt");
         (verifier, token)
+    }
+
+    fn test_rsa_jwt(room_id: &str) -> (RoomTokenVerifier, String) {
+        test_rsa_jwt_with(TestJwtOpts {
+            expected_room: room_id.into(),
+            token_room: room_id.into(),
+            ..TestJwtOpts::default()
+        })
     }
 
     #[test]
@@ -1784,5 +1821,233 @@ mod tests {
         assert!(err.to_string().contains("hard-stale"), "got: {err:#}");
         verifier.set_fetched_at_age_for_test(Duration::from_secs(0));
         assert!(verifier.verify(&token).is_ok());
+    }
+
+    // --- x0045 / P3-8: Room Token claim negative tests (shared RSA fixture) ---
+
+    struct SharedRsaFixture {
+        verifier: RoomTokenVerifier,
+        encoding: jsonwebtoken::EncodingKey,
+    }
+
+    fn shared_rsa_fixture() -> SharedRsaFixture {
+        use jsonwebtoken::{DecodingKey, EncodingKey};
+        use pkcs1::EncodeRsaPrivateKey;
+        use pkcs8::EncodePublicKey;
+        use rsa::RsaPrivateKey;
+
+        let mut rng = rand::thread_rng();
+        let private = RsaPrivateKey::new(&mut rng, 2048).expect("rsa");
+        let priv_pem = private
+            .to_pkcs1_pem(pkcs1::LineEnding::LF)
+            .expect("priv pem");
+        let pub_pem = private
+            .to_public_key()
+            .to_public_key_pem(pkcs8::LineEnding::LF)
+            .expect("pub pem");
+        let encoding = EncodingKey::from_rsa_pem(priv_pem.as_bytes()).expect("enc");
+        let decoding = DecodingKey::from_rsa_pem(pub_pem.as_bytes()).expect("dec");
+        let verifier = RoomTokenVerifier::new("http://127.0.0.1:9", "local");
+        verifier.insert_decoding_key_for_test("hard-kid", decoding);
+        SharedRsaFixture { verifier, encoding }
+    }
+
+    fn encode_room_token(encoding: &jsonwebtoken::EncodingKey, opts: &TestJwtOpts) -> String {
+        use jsonwebtoken::{encode, Header};
+        use serde::Serialize;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        #[derive(Serialize)]
+        struct Cnf {
+            spk: String,
+        }
+        #[derive(Serialize)]
+        struct Claims {
+            sub: String,
+            jti: String,
+            room_id: String,
+            role: String,
+            exp: usize,
+            iat: usize,
+            iss: String,
+            aud: String,
+            cnf: Cnf,
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let exp = (now + opts.exp_offset_secs).max(0) as usize;
+        let mut header = Header::new(opts.alg);
+        header.kid = Some(opts.kid.clone());
+        let spk = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7u8; 32]);
+        encode(
+            &header,
+            &Claims {
+                sub: "u-hard".into(),
+                jti: "j-hard".into(),
+                room_id: opts.token_room.clone(),
+                role: opts.role.clone(),
+                exp,
+                iat: now as usize,
+                iss: opts.iss.clone(),
+                aud: opts.aud.clone(),
+                cnf: Cnf { spk },
+            },
+            encoding,
+        )
+        .expect("jwt")
+    }
+
+    fn assert_err_chain_contains(err: &anyhow::Error, needle: &str) {
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(needle),
+            "expected chain to contain `{needle}`, got: {chain}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_claim_negatives_x0045() {
+        // One RSA 2048 for the whole matrix (CI time).
+        let SharedRsaFixture { verifier, encoding } = shared_rsa_fixture();
+
+        // alg=none (unsigned) with cached kid
+        {
+            let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(br#"{"alg":"none","kid":"hard-kid"}"#);
+            let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+                br#"{"sub":"u","jti":"j","room_id":"local","role":"guest","exp":9999999999,"iat":1,"iss":"alchemy-world","aud":"alchemy-room","cnf":{"spk":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}"#,
+            );
+            let token = format!("{header}.{payload}.");
+            let err = verifier.verify(&token).expect_err("alg none");
+            let chain = format!("{err:#}");
+            // jsonwebtoken rejects `alg:none` at header deserialize (not at RS256 verify).
+            assert!(
+                chain.contains("unknown variant `none`")
+                    || chain.contains("decode JWT header")
+                    || chain.contains("InvalidAlgorithm"),
+                "alg none: {chain}"
+            );
+        }
+
+        // alg=HS256 against RS256 validation
+        {
+            use jsonwebtoken::{encode, EncodingKey, Header};
+            use serde::Serialize;
+            use std::time::{SystemTime, UNIX_EPOCH};
+            #[derive(Serialize)]
+            struct Cnf {
+                spk: String,
+            }
+            #[derive(Serialize)]
+            struct Claims {
+                sub: String,
+                jti: String,
+                room_id: String,
+                role: String,
+                exp: usize,
+                iat: usize,
+                iss: String,
+                aud: String,
+                cnf: Cnf,
+            }
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as usize;
+            let mut header = Header::new(Algorithm::HS256);
+            header.kid = Some("hard-kid".into());
+            let hs = EncodingKey::from_secret(b"not-an-rsa-key");
+            let spk = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7u8; 32]);
+            let token = encode(
+                &header,
+                &Claims {
+                    sub: "u".into(),
+                    jti: "j".into(),
+                    room_id: "local".into(),
+                    role: "guest".into(),
+                    exp: now + 600,
+                    iat: now,
+                    iss: "alchemy-world".into(),
+                    aud: "alchemy-room".into(),
+                    cnf: Cnf { spk },
+                },
+                &hs,
+            )
+            .expect("hs256 jwt");
+            let err = verifier.verify(&token).expect_err("hs256");
+            let chain = format!("{err:#}");
+            assert!(
+                chain.contains("InvalidAlgorithm") || chain.contains("Algorithm"),
+                "hs256: {chain}"
+            );
+        }
+
+        let err = verifier
+            .verify(&encode_room_token(
+                &encoding,
+                &TestJwtOpts {
+                    iss: "evil-issuer".into(),
+                    ..TestJwtOpts::default()
+                },
+            ))
+            .expect_err("wrong iss");
+        assert_err_chain_contains(&err, "InvalidIssuer");
+
+        let err = verifier
+            .verify(&encode_room_token(
+                &encoding,
+                &TestJwtOpts {
+                    aud: "alchemy-user".into(),
+                    ..TestJwtOpts::default()
+                },
+            ))
+            .expect_err("wrong aud");
+        assert_err_chain_contains(&err, "InvalidAudience");
+
+        let err = verifier
+            .verify(&encode_room_token(
+                &encoding,
+                &TestJwtOpts {
+                    exp_offset_secs: -120,
+                    ..TestJwtOpts::default()
+                },
+            ))
+            .expect_err("expired");
+        assert_err_chain_contains(&err, "ExpiredSignature");
+
+        let err = verifier
+            .verify(&encode_room_token(
+                &encoding,
+                &TestJwtOpts {
+                    token_room: "other".into(),
+                    ..TestJwtOpts::default()
+                },
+            ))
+            .expect_err("room mismatch");
+        assert_err_chain_contains(&err, "room_id mismatch");
+
+        let err = verifier
+            .verify(&encode_room_token(
+                &encoding,
+                &TestJwtOpts {
+                    kid: "no-such-kid".into(),
+                    ..TestJwtOpts::default()
+                },
+            ))
+            .expect_err("unknown kid");
+        assert_err_chain_contains(&err, "unknown kid");
+
+        let err = verifier
+            .verify(&encode_room_token(
+                &encoding,
+                &TestJwtOpts {
+                    role: "admin".into(),
+                    ..TestJwtOpts::default()
+                },
+            ))
+            .expect_err("bad role");
+        assert_err_chain_contains(&err, "invalid role");
     }
 }
