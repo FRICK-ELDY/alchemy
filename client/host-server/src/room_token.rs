@@ -11,7 +11,7 @@
 //! [`HostPublishSnapshot`] only. Soft-deadline refresh failure retries with backoff and
 //! keeps the last good snapshot. **Fail-closed** means stop publishing after hard expiry
 //! (full TTL), not kill the process on a transient 502.
-//! Non-guarantees: auth UI, session MAC (P2); Zenoh publish off the physics thread;
+//! Non-guarantees: auth UI, session MAC (P2); Zenoh put path is x0042 network worker;
 //! client `world_jwks` hard TTL (P2-3).
 
 use alchemy_protocol::wire_crypto::manifest_seal_blake3_hex;

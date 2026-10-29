@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0042`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0043`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -116,10 +116,11 @@ depends_on: [x0006]
 | x003f | — | done | CAS object/ref 分離 + reserved_bytes put 補償（P1-2） | [x003f-cas-object-ref-reserve.md](slices/x003f-cas-object-ref-reserve.md) |
 | x0040 | — | done | Intent rate limit + JWKS hard stale（P1-5） | [x0040-intent-rate-jwks-hard-stale.md](slices/x0040-intent-rate-jwks-hard-stale.md) |
 | x0041 | — | done | Grab 保持中 aim / offset 距離クランプ（P1-6） | [x0041-grab-hold-aim-clamp.md](slices/x0041-grab-hold-aim-clamp.md) |
+| x0042 | — | done | Zenoh network worker（物理から put 分離・P1-3 残り） | [x0042-zenoh-network-worker.md](slices/x0042-zenoh-network-worker.md) |
 
-**現在の次:** **x0042+**（ACL / Zenoh network worker など）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
+**現在の次:** **x0043+**（ACL / mTLS など）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
 
-次の空き番号は **`x0042`**。
+次の空き番号は **`x0043`**。
 
 
 ## 関連
