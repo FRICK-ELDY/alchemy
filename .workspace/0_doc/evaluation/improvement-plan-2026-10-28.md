@@ -49,7 +49,7 @@
 
 | ID | 項目 | 根拠 | 作業イメージ | 完了条件 |
 |:---|:---|:---|:---|:---|
-| P2-1 | Zenoh mTLS + room/tenant ACL | -2 | キー族 publish 権分離。allocation token | 任意 peer が他 room の manifest に書けない — **deferred**（Relay Agent 要否を検討中） |
+| P2-1 | Zenoh mTLS + room/tenant ACL | -2 | キー族 publish 権分離。allocation token | 任意 peer が他 room の manifest に書けない — **[x004e](../../roadmap/slices/x004e-relay-agent-mvp.md) done** |
 | P2-2 | `/internal/*` ingress 404 + Social RL | -1 | `/dev/*` と同型。Follow API に rate_limited | 公網から internal に届かない — **[x0043](../../roadmap/slices/x0043-internal-ingress-social-rl.md) done** |
 | P2-3 | client world_jwks クールダウン | -1 | host と同型 SWR + 未知 kid 冷却 | 偽 kid 連打で受信スレッドが詰まらない — **[x0044](../../roadmap/slices/x0044-client-world-jwks-cooldown.md) done** |
 
@@ -98,9 +98,9 @@
 
 ## 推奨スライス順
 
-**次:** **P2-1 deferred**（mTLS / Relay）。BlobGrant は draft 目標（P4-5）。  
+**次:** BlobGrant draft 目標（P4-5）。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は試行したが **CI が完了しなくなるためマージしない**（再開時は CI 完走を先行条件に）。
 
-最近閉じた: **[x004d](../../roadmap/slices/x004d-user-root-slots-manifest.md)**（P3-10）、**[x004c](../../roadmap/slices/x004c-cargo-fuzz-protobuf-jwt.md)**（P3-9）、**[x004b](../../roadmap/slices/x004b-client-ip-shared-inspect.md)**（P3-6）。
+最近閉じた: **[x004e](../../roadmap/slices/x004e-relay-agent-mvp.md)**（P2-1 Relay Agent MVP）、**[x004d](../../roadmap/slices/x004d-user-root-slots-manifest.md)**（P3-10）。
 
 スライス完了条件に必ず含める: **prod compose 起動**・**否定系が通る**・**保証表とコード一致**。

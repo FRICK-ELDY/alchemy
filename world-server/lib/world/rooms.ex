@@ -6,7 +6,7 @@ defmodule World.Rooms do
   Non-guarantees: UGC scene edits; multi-node replication; Postgres (swap path documented);
   Room Token revocation on visibility / friendship change (TTL-only; see RoomAccess).
 
-  x0021: `owner_sub` set only via `create/3` (`{:ok, room_id, visibility}`).
+  x0021: `owner_sub` set only via `create/3` (`{:ok, room_id, visibility, wire_cap}` · x004e).
   Token issuance never creates a room.
   x0027: DemoScene assigned at create and returned by `scene/1`.
 
@@ -30,7 +30,7 @@ defmodule World.Rooms do
   @type storage_error :: :storage_error
 
   @spec create(room_id() | nil, owner_sub(), String.t()) ::
-          {:ok, room_id(), String.t()}
+          {:ok, room_id(), String.t(), String.t()}
           | {:error,
              :invalid_room_id
              | :already_exists
@@ -50,8 +50,9 @@ defmodule World.Rooms do
       when is_binary(room_id) and is_binary(owner_sub) and is_binary(visibility) do
     with :ok <- validate_room_id(room_id),
          {:ok, vis} <- World.Visibility.parse(visibility),
-         {:ok, %Room{room_id: id, visibility: stored}} <- insert_room(room_id, owner_sub, vis) do
-      {:ok, id, stored}
+         {:ok, %Room{room_id: id, visibility: stored, wire_cap: wire_cap}} <-
+           insert_room(room_id, owner_sub, vis) do
+      {:ok, id, stored, wire_cap}
     else
       {:error, :invalid_room_id} = err -> err
       {:error, :invalid_visibility} = err -> err
@@ -342,8 +343,14 @@ defmodule World.Rooms do
       room_id: room_id,
       owner_sub: owner_sub,
       scene: DemoScene.build(),
-      visibility: visibility
+      visibility: visibility,
+      wire_cap: generate_wire_cap()
     })
+  end
+
+  # 16 random bytes → 32 hex chars; matches protocol `[A-Za-z0-9_-]+` / ≤64B.
+  defp generate_wire_cap do
+    Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
   end
 
   defp map_create_error(error) do

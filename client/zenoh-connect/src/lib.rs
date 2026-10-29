@@ -1,7 +1,13 @@
-//! Shared Zenoh session open helpers for host / client / e2e-probe (x0022).
+//! Shared Zenoh session open helpers for host / client / e2e-probe (x0022 / x004e).
 //!
-//! Guarantees: `ZENOH_CONNECT` endpoint + optional `ZENOH_TLS_ROOT_CA` via JSON5 insert.
-//! Non-guarantees: mTLS client certs, endpoint validation beyond string insert.
+//! Guarantees: `ZENOH_CONNECT` endpoint + optional `ZENOH_TLS_ROOT_CA` via JSON5 insert;
+//! optional mTLS client cert/key (`ZENOH_TLS_CONNECT_CERT` / `ZENOH_TLS_CONNECT_KEY`) when set;
+//! optional Relay allocate (`RELAY_ALLOCATE_URL`).
+//! Non-guarantees: endpoint validation beyond string insert.
+
+mod allocate;
+
+pub use allocate::{allocate, allocate_if_configured, require_wire_cap, AllocatedIdentity};
 
 use anyhow::{anyhow, Result};
 use zenoh::Config;
@@ -36,12 +42,63 @@ pub fn apply_tls_root_ca_from_env(config: &mut Config) -> Result<()> {
     Ok(())
 }
 
-/// Open a client session for `endpoint` (applies TLS root CA env when set).
+/// Apply mTLS client identity when cert/key paths are provided (x004e).
+pub fn apply_mtls_client_identity(
+    config: &mut Config,
+    connect_cert: &str,
+    connect_key: &str,
+) -> Result<()> {
+    if connect_cert.is_empty() || connect_key.is_empty() {
+        return Ok(());
+    }
+    config
+        .insert_json5("transport/link/tls/enable_mtls", "true")
+        .map_err(|e| anyhow!("zenoh enable_mtls: {e}"))?;
+    let cert = serde_json::to_string(connect_cert).map_err(|e| anyhow!("cert json: {e}"))?;
+    let key = serde_json::to_string(connect_key).map_err(|e| anyhow!("key json: {e}"))?;
+    config
+        .insert_json5("transport/link/tls/connect_certificate", &cert)
+        .map_err(|e| anyhow!("zenoh connect_certificate: {e}"))?;
+    config
+        .insert_json5("transport/link/tls/connect_private_key", &key)
+        .map_err(|e| anyhow!("zenoh connect_private_key: {e}"))?;
+    log::info!("zenoh mTLS client identity cert={connect_cert}");
+    Ok(())
+}
+
+/// Apply mTLS from `ZENOH_TLS_CONNECT_CERT` / `ZENOH_TLS_CONNECT_KEY` when both are set.
+pub fn apply_mtls_from_env(config: &mut Config) -> Result<()> {
+    let cert = std::env::var("ZENOH_TLS_CONNECT_CERT").unwrap_or_default();
+    let key = std::env::var("ZENOH_TLS_CONNECT_KEY").unwrap_or_default();
+    if cert.is_empty() || key.is_empty() {
+        return Ok(());
+    }
+    apply_mtls_client_identity(config, &cert, &key)
+}
+
+/// Open a client session for `endpoint` (applies TLS root CA + optional mTLS env).
 pub fn open_client(endpoint: &str) -> Result<zenoh::Session> {
     let mut config = Config::default();
     apply_connect_endpoint(&mut config, endpoint)?;
     apply_tls_root_ca_from_env(&mut config)?;
+    apply_mtls_from_env(&mut config)?;
     log::info!("zenoh connect={endpoint}");
+    zenoh::open(config)
+        .wait()
+        .map_err(|e| anyhow!("zenoh open failed: {e}"))
+}
+
+/// Open with explicit mTLS cert/key paths (after Relay allocate).
+pub fn open_client_mtls(
+    endpoint: &str,
+    connect_cert: &str,
+    connect_key: &str,
+) -> Result<zenoh::Session> {
+    let mut config = Config::default();
+    apply_connect_endpoint(&mut config, endpoint)?;
+    apply_tls_root_ca_from_env(&mut config)?;
+    apply_mtls_client_identity(&mut config, connect_cert, connect_key)?;
+    log::info!("zenoh connect={endpoint} (mTLS)");
     zenoh::open(config)
         .wait()
         .map_err(|e| anyhow!("zenoh open failed: {e}"))

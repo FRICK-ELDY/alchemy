@@ -345,6 +345,21 @@ struct TokenResponse {
     token: String,
     #[serde(default)]
     expires_in: u64,
+    /// Zenoh key channel secret (x004e). Empty on pre-x004e world → `require_wire_cap` / WIRE_CAP.
+    #[serde(default)]
+    wire_cap: String,
+    /// Relay Allocation Token (x004e); empty when Relay unused or world older than x004e.
+    #[serde(default)]
+    allocation_token: String,
+}
+
+/// Host Room Token bootstrap payload (x004e includes wire_cap + allocation).
+#[derive(Debug, Clone)]
+pub struct HostTokenBundle {
+    pub token: String,
+    pub expires_in: u64,
+    pub wire_cap: String,
+    pub allocation_token: String,
 }
 
 /// Auth session for long-running host (x0025 three-tier refresh).
@@ -573,9 +588,20 @@ fn room_visibility_from_env() -> Result<String> {
 /// x0037: client create panel may also `POST` / `PUT` when signed in as the **same** account;
 /// if a different sub creates first, this host Token path returns 403.
 /// x0025: `ALCHEMY_ROOM_TOKEN` bypass is **debug-only** (release fail-closed).
-pub fn fetch_host_token(world_url: &str, room_id: &str, auth_token: &str) -> Result<(String, u64)> {
+pub fn fetch_host_token(
+    world_url: &str,
+    room_id: &str,
+    auth_token: &str,
+) -> Result<HostTokenBundle> {
     if let Some(token) = room_token_env_bypass() {
-        return Ok((token, BYPASS_ROOM_TOKEN_TTL_HINT));
+        let wire_cap = zenoh_connect::require_wire_cap(None)
+            .unwrap_or_else(|_| alchemy_protocol::LOCAL_WIRE_CAP.to_string());
+        return Ok(HostTokenBundle {
+            token,
+            expires_in: BYPASS_ROOM_TOKEN_TTL_HINT,
+            wire_cap,
+            allocation_token: String::new(),
+        });
     }
 
     let base = world_url.trim_end_matches('/');
@@ -628,7 +654,14 @@ pub fn fetch_host_token(world_url: &str, room_id: &str, auth_token: &str) -> Res
             } else {
                 parsed.expires_in
             };
-            Ok((parsed.token, ttl))
+            let wire_cap = zenoh_connect::require_wire_cap(Some(parsed.wire_cap.as_str()))
+                .context("host token wire_cap")?;
+            Ok(HostTokenBundle {
+                token: parsed.token,
+                expires_in: ttl,
+                wire_cap,
+                allocation_token: parsed.allocation_token,
+            })
         }
         Err(ureq::Error::Status(403, resp)) => {
             let body = resp.into_string().unwrap_or_default();
@@ -696,6 +729,10 @@ pub struct HostCredentialChain {
     pub host_generation: u64,
     pub attest_refresh_at: Instant,
     pub attest_hard_expire_at: Instant,
+    /// Zenoh key channel secret (x004e); stable for room lifetime.
+    pub wire_cap: String,
+    /// Latest Allocation Token for Relay mTLS refresh (x004e).
+    pub allocation_token: String,
 }
 
 impl HostCredentialChain {
@@ -709,10 +746,10 @@ impl HostCredentialChain {
         let auth = fetch_auth_session(auth_url).context("fetch auth session")?;
         let auth_refresh_at = refresh_deadline(auth.expires_in);
         let auth_hard_expire_at = hard_expire_deadline(auth.expires_in);
-        let (host_token, host_ttl) = fetch_host_token(world_url, room_id, &auth.access_token)
+        let bundle = fetch_host_token(world_url, room_id, &auth.access_token)
             .context("fetch host Room Token")?;
         let claims = verifier
-            .verify(&host_token)
+            .verify(&bundle.token)
             .context("host Room Token self-check")?;
         if claims.role != "host" {
             return Err(anyhow!(
@@ -721,23 +758,25 @@ impl HostCredentialChain {
             ));
         }
         let (host_attestation, host_generation, attest_ttl) =
-            fetch_host_attestation(world_url, room_id, &host_token, host_pub)
+            fetch_host_attestation(world_url, room_id, &bundle.token, host_pub)
                 .context("fetch HostAttestation")?;
         Ok(Self {
             auth,
             auth_refresh_at,
             auth_hard_expire_at,
-            host_token,
-            host_refresh_at: refresh_deadline(host_ttl).unwrap_or_else(|| {
+            host_token: bundle.token,
+            host_refresh_at: refresh_deadline(bundle.expires_in).unwrap_or_else(|| {
                 Instant::now() + Duration::from_secs(BYPASS_ROOM_TOKEN_TTL_HINT)
             }),
-            host_hard_expire_at: hard_expire_or_hint(host_ttl, BYPASS_ROOM_TOKEN_TTL_HINT),
+            host_hard_expire_at: hard_expire_or_hint(bundle.expires_in, BYPASS_ROOM_TOKEN_TTL_HINT),
             host_attestation,
             host_generation,
             attest_refresh_at: refresh_deadline(attest_ttl).unwrap_or_else(|| {
                 Instant::now() + Duration::from_secs(BYPASS_ROOM_TOKEN_TTL_HINT)
             }),
             attest_hard_expire_at: hard_expire_or_hint(attest_ttl, BYPASS_ROOM_TOKEN_TTL_HINT),
+            wire_cap: bundle.wire_cap,
+            allocation_token: bundle.allocation_token,
         })
     }
 
@@ -801,10 +840,10 @@ impl HostCredentialChain {
         room_id: &str,
         verifier: &RoomTokenVerifier,
     ) -> Result<()> {
-        let (token, ttl) = fetch_host_token(world_url, room_id, &self.auth.access_token)
+        let bundle = fetch_host_token(world_url, room_id, &self.auth.access_token)
             .context("refresh host Room Token")?;
         let claims = verifier
-            .verify(&token)
+            .verify(&bundle.token)
             .context("refreshed host Room Token verify")?;
         if claims.role != "host" {
             return Err(anyhow!(
@@ -812,10 +851,34 @@ impl HostCredentialChain {
                 claims.role
             ));
         }
-        self.host_token = token;
+        self.host_token = bundle.token;
+        // wire_cap is room-lifetime stable; Zenoh key exprs were fixed at boot — do not rewrite.
+        if self.wire_cap.is_empty() {
+            self.wire_cap = bundle.wire_cap;
+        } else if !bundle.wire_cap.is_empty() && bundle.wire_cap != self.wire_cap {
+            log::warn!("host Token refresh wire_cap changed (ignored; keys stay on boot cap)");
+        }
+        self.allocation_token = bundle.allocation_token;
+        let ttl = bundle.expires_in;
         self.host_refresh_at = refresh_deadline(ttl)
             .unwrap_or_else(|| Instant::now() + Duration::from_secs(BYPASS_ROOM_TOKEN_TTL_HINT));
         self.host_hard_expire_at = hard_expire_or_hint(ttl, BYPASS_ROOM_TOKEN_TTL_HINT);
+        // Refresh mTLS files for the next Zenoh open/reopen (running session keeps boot cert
+        // until process recreate; openssl NotAfter is ~1d — see relay-agent CERT_TTL_SECS).
+        if !self.allocation_token.is_empty() {
+            match zenoh_connect::allocate_if_configured(&self.allocation_token) {
+                Ok(Some(id)) => {
+                    std::env::set_var("ZENOH_TLS_CONNECT_CERT", id.cert_path.display().to_string());
+                    std::env::set_var("ZENOH_TLS_CONNECT_KEY", id.key_path.display().to_string());
+                    log::info!(
+                        "refreshed host mTLS cert files cn={} (apply on next Zenoh open)",
+                        id.cn
+                    );
+                }
+                Ok(None) => {}
+                Err(err) => log::warn!("host allocate refresh failed: {err:#}"),
+            }
+        }
         log::info!("refreshed host Room Token (ttl={ttl}s)");
         Ok(())
     }

@@ -1,9 +1,9 @@
 # Zenoh WAN 手順（ConoHa / Ubuntu 22.04・24.04）
 
-ConoHa VPS 上の **zenohd だけ**を公網 **TLS**（`7447`）で待受し、拠点 host と外 client が `ZENOH_CONNECT` で同じ `ROOM_ID` に入る。
+ConoHa VPS 上の **zenohd**（**TLS+mTLS**・`7447`）と **Relay Agent**（Allocation → 短命 client cert）を待受し、拠点 host と外 client が同じ `ROOM_ID` / `wire_cap` に入る。
 
-前提 Slice: [x001a HTTPS](../../roadmap/slices/x001a-https-edge-tunnel.md) · [x001b](../../roadmap/slices/x001b-zenoh-wan-conoha.md) · **TLS: [x0022](../../roadmap/slices/x0022-liveliness-wan-tls.md)**  
-config: [`zenoh-router/config.wan.json5`](../../../zenoh-router/config.wan.json5)
+前提 Slice: [x001a HTTPS](../../roadmap/slices/x001a-https-edge-tunnel.md) · [x001b](../../roadmap/slices/x001b-zenoh-wan-conoha.md) · **TLS: [x0022](../../roadmap/slices/x0022-liveliness-wan-tls.md)** · **mTLS/Relay: [x004e](../../roadmap/slices/x004e-relay-agent-mvp.md)**  
+config: [`zenoh-router/config.wan.json5`](../../../zenoh-router/config.wan.json5) · agent: [`relay-agent/`](../../../relay-agent/)
 
 想定スペック: **Ubuntu 22.04 または 24.04**、4Core / 4GB RAM（手順は両 LTS で同じ）。
 
@@ -12,11 +12,12 @@ config: [`zenoh-router/config.wan.json5`](../../../zenoh-router/config.wan.json5
 | 役割 | 配置 |
 |:---|:---|
 | auth / world / assets | 拠点（x001a Tunnel 可） |
-| host-server | 拠点。`ZENOH_CONNECT=tls/<VPS_HOST>:7447` |
-| 外 client | x001a の `https://…` + 同じ `ZENOH_CONNECT` |
-| zenohd | **VPS のみ**（拠点のローカル zenohd は使わない） |
+| host-server | 拠点。`ZENOH_CONNECT=tls/<VPS_HOST>:7447` + `RELAY_ALLOCATE_URL` |
+| 外 client | x001a の `https://…` + 同じ Zenoh / Relay env |
+| zenohd | **VPS**（mTLS + role ACL） |
+| Relay Agent | **VPS**（`POST /v1/allocate`、例 `:7450`） |
 
-zenohd は **JWT を見ない**。平文 TCP は待受しない（x0022）。覗き見の追加抑止は **ufw IP allowlist**。
+zenohd は **JWT を見ない**。Allocation Token は Relay Agent が検証する（x004e）。平文 TCP は待受しない。
 
 ---
 
@@ -47,10 +48,23 @@ zenohd --help | head
 # リポジトリから
 bash zenoh-router/scripts/gen-wan-dev-certs.sh <VPS_IP_or_DNS> /tmp/alchemy-tls
 sudo mkdir -p /etc/alchemy/tls
-sudo cp /tmp/alchemy-tls/server-cert.pem /tmp/alchemy-tls/server-key.pem /etc/alchemy/tls/
-sudo chmod 600 /etc/alchemy/tls/server-key.pem
+sudo cp /tmp/alchemy-tls/server-cert.pem /tmp/alchemy-tls/server-key.pem \
+  /tmp/alchemy-tls/client-ca-cert.pem /tmp/alchemy-tls/client-ca-key.pem /etc/alchemy/tls/
+sudo chmod 600 /etc/alchemy/tls/server-key.pem /etc/alchemy/tls/client-ca-key.pem
 # ca-cert.pem を拠点・外 client に渡し ZENOH_TLS_ROOT_CA に設定
 ```
+
+### 3b. Relay Agent
+
+```bash
+cd relay-agent
+cargo build --release
+# WORLD_JWKS_URL=https://world…/.well-known/jwks.json
+# RELAY_TLS_DIR=/etc/alchemy/tls
+# RELAY_AGENT_LISTEN=0.0.0.0:7450   # ufw で allowlist
+./target/release/alchemy-relay-agent
+```
+
 
 **B. 本番寄り（Let's Encrypt）** — 公開 DNS 名があるとき。`listen_certificate` / `listen_private_key` を certbot の fullchain/privkey に合わせる。client 側の `ZENOH_TLS_ROOT_CA` は不要（webpki 既定）。
 
@@ -171,7 +185,9 @@ bash .scripts/smoke-zenoh-wan.sh
 
 | 保証する | 保証しない |
 |:---|:---|
-| WAN 待受が TLS（平文 TCP のみの公開をしない） | mTLS / Zenoh JWT ACL / Relay Agent |
+| WAN 待受が TLS+mTLS（平文 TCP のみの公開をしない） | Billing / 第三者リレー発見 |
+| Relay Agent が Allocation Token 検証後にだけ client cert を発行 | CCU / 帯域 QoS enforcement |
+| role CN ACL + `wire_cap` による他 room キー到達拒否 | UI 後付け join のセッション再 open |
 | IP allowlist による公開面の最小化 | QUIC / WebTransport / P2P |
-| x001a HTTPS と併用した外からの入室手順 | CCU / 帯域 QoS・Relay Allocation Token |
-| liveliness Delete が検証済み jti に紐付く（x0022） | 盗聴 Token の jti なりすまし（→ 後続 P2-2） |
+| x001a HTTPS と併用した外からの入室手順 | ACL ホットリロード |
+| liveliness Delete が検証済み jti に紐付く（x0022） | 端末秘密鍵窃取 |

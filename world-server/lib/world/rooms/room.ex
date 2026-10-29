@@ -2,7 +2,7 @@ defmodule World.Rooms.Room do
   @moduledoc """
   Persistent room ledger row (x0028).
 
-  Guarantees: `room_id` + `owner_sub` + DemoScene `scene` + `visibility` survive restart.
+  Guarantees: `room_id` + `owner_sub` + DemoScene `scene` + `visibility` + `wire_cap` (x004e) survive restart.
   Non-guarantees: Presence / physics pose; UGC edit history.
   """
 
@@ -42,6 +42,12 @@ defmodule World.Rooms.Room do
       constraints match: ~r/^(lan|private|friends|friends_plus|followers|followers_plus|public)$/
     end
 
+    # x004e: Zenoh key segment secret (base64url-ish [A-Za-z0-9_-]+).
+    attribute :wire_cap, :string do
+      allow_nil? false
+      public? true
+    end
+
     # x003a: host generation. 0 = none yet; bumps when attested host_pub changes.
     attribute :host_generation, :integer do
       allow_nil? false
@@ -66,7 +72,7 @@ defmodule World.Rooms.Room do
 
     create :create do
       primary? true
-      accept [:room_id, :owner_sub, :scene, :visibility]
+      accept [:room_id, :owner_sub, :scene, :visibility, :wire_cap]
     end
 
     update :set_visibility do

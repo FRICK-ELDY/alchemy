@@ -8,7 +8,8 @@ defmodule World.RoomsTest do
   @owner "22222222-2222-2222-2222-222222222222"
 
   test "create persists owner and demo scene" do
-    assert {:ok, "persist-a", "public"} = Rooms.create("persist-a", @owner)
+    assert {:ok, "persist-a", "public", wire_cap} = Rooms.create("persist-a", @owner)
+    assert is_binary(wire_cap) and wire_cap != ""
     assert {:ok, @owner} = Rooms.owner("persist-a")
     assert {:ok, scene} = Rooms.scene("persist-a")
     assert scene["revision"] == 1
@@ -17,7 +18,7 @@ defmodule World.RoomsTest do
   end
 
   test "create rejects duplicate room_id" do
-    assert {:ok, _, _} = Rooms.create("dup-room", @owner)
+    assert {:ok, _, _, _} = Rooms.create("dup-room", @owner)
     assert {:error, :already_exists} = Rooms.create("dup-room", @owner)
   end
 
@@ -34,13 +35,13 @@ defmodule World.RoomsTest do
   end
 
   test "ensure_owner distinguishes forbidden from not_found" do
-    assert {:ok, _, _} = Rooms.create("owned-room", @owner)
+    assert {:ok, _, _, _} = Rooms.create("owned-room", @owner)
     assert :ok = Rooms.ensure_owner("owned-room", @owner)
     assert {:error, :forbidden_host} = Rooms.ensure_owner("owned-room", "other-sub")
   end
 
   test "room survives beyond in-memory process lifetime (DB read)" do
-    assert {:ok, "survive", _} = Rooms.create("survive", @owner)
+    assert {:ok, "survive", _, _} = Rooms.create("survive", @owner)
 
     # Direct Ash read proves the row is in SQLite, not a GenServer map.
     assert {:ok, %Room{owner_sub: @owner, scene: scene}} = Room.get_by_room_id("survive")
@@ -48,13 +49,13 @@ defmodule World.RoomsTest do
   end
 
   test "duplicate create maps to already_exists via primary key" do
-    assert {:ok, _, _} = Rooms.create("pk-dup", @owner)
+    assert {:ok, _, _, _} = Rooms.create("pk-dup", @owner)
     # Bypass ensure_absent-style races: second Ash insert hits PK uniqueness.
     assert {:error, :already_exists} = Rooms.create("pk-dup", @owner)
   end
 
   test "claim_host_generation reuses same pub and bumps on handoff (x003a)" do
-    assert {:ok, "gen-room", _} = Rooms.create("gen-room", @owner)
+    assert {:ok, "gen-room", _, _} = Rooms.create("gen-room", @owner)
     pub_a = :crypto.strong_rand_bytes(32)
     pub_b = :crypto.strong_rand_bytes(32)
 
@@ -68,7 +69,7 @@ defmodule World.RoomsTest do
   end
 
   test "claim_host_generation CAS rejects stale expected row (x003a dual-host race)" do
-    assert {:ok, "cas-room", _} = Rooms.create("cas-room", @owner)
+    assert {:ok, "cas-room", _, _} = Rooms.create("cas-room", @owner)
     pub_a = :crypto.strong_rand_bytes(32)
     pub_b = :crypto.strong_rand_bytes(32)
     assert {:ok, 1} = Rooms.claim_host_generation("cas-room", pub_a)
@@ -88,7 +89,7 @@ defmodule World.RoomsTest do
   end
 
   test "create and reads return storage_error when repo is down" do
-    assert {:ok, _, _} = Rooms.create("before-down", @owner)
+    assert {:ok, _, _, _} = Rooms.create("before-down", @owner)
     stop_repo!()
 
     assert {:error, :storage_error} = Rooms.create("during-down", @owner)

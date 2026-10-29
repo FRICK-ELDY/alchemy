@@ -20,9 +20,9 @@
 //! - Caps on Presence / JWT claim; invite ACL; reliable-delivery ACK / event-id channel.
 //! - Manifest scale resizing Rapier colliders (half_extent stays definition size).
 //! - Locomotion module list UI / suppress sources.
-//! - Tenant namespace `alchemy/tenant/...` (dev keys only: `alchemy/dev/room/{room_id}/…`).
+//! - Tenant namespace `alchemy/tenant/...` (dev keys: `alchemy/dev/room/{room_id}/{wire_cap}/…` · x004e).
 //! - Room capacity beyond [`USER_ROOT_SLOTS_MAX`] / non-contiguous user_root ids (x004d).
-//! - 5+ concurrent guests / WAN liveliness ACL / Zenoh ACL.
+//! - 5+ concurrent guests / WAN liveliness ACL beyond Relay Agent MVP (x004e).
 //! - Full host handoff UX / Wake-on-Join (generation advance is the contract only).
 //! - Router max-payload / per-peer QoS (app-level decode limits only; x003b).
 //! - Long-running fuzz campaigns (x004c ships short CI smoke + seed corpus only).
@@ -37,8 +37,8 @@ pub mod wire_crypto;
 
 /// Bump when `proto/` has an incompatible wire change.
 ///
-/// x003b decode limits are local validation only — pin stays on x003a.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.16.0-x003a";
+/// x004e: Zenoh keys include `wire_cap` (incompatible with x003a peers).
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.17.0-x004e";
 
 /// Identity orientation on the wire (`Entity.qx..qw`, xyzw).
 pub const ENTITY_QUAT_IDENTITY: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -176,23 +176,29 @@ pub mod input_buttons {
     pub const JUMP: u32 = 16;
 }
 
+/// Fixture `wire_cap` for unit tests / `ROOM_ID=local` key constants (x004e).
+///
+/// Real rooms get a random cap from world-server; this value is **not** a WAN secret.
+pub const LOCAL_WIRE_CAP: &str = "localdevwirecap00000001";
+
 /// Default Zenoh key for local room frames (high-frequency pose delta).
-pub const FRAME_KEY_LOCAL: &str = "alchemy/dev/room/local/frame";
+pub const FRAME_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/frame";
 
 /// Default Zenoh key for local room inputs.
-pub const INPUT_KEY_LOCAL: &str = "alchemy/dev/room/local/input";
+pub const INPUT_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/input";
 
 /// Default Zenoh key for local room scene manifest (low-frequency blob refs).
-pub const MANIFEST_KEY_LOCAL: &str = "alchemy/dev/room/local/manifest";
+pub const MANIFEST_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/manifest";
 
 /// Default Zenoh key for local host control (Slice E stub: shutdown).
-pub const HOST_CONTROL_KEY_LOCAL: &str = "alchemy/dev/room/local/host_control";
+pub const HOST_CONTROL_KEY_LOCAL: &str =
+    "alchemy/dev/room/local/localdevwirecap00000001/host_control";
 
 /// Default Zenoh key for local room presence (low-frequency sub→entity; x0015).
-pub const PRESENCE_KEY_LOCAL: &str = "alchemy/dev/room/local/presence";
+pub const PRESENCE_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/presence";
 
 /// Default Zenoh key for local room snapshot queryable (x0023).
-pub const SNAPSHOT_KEY_LOCAL: &str = "alchemy/dev/room/local/snapshot";
+pub const SNAPSHOT_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/snapshot";
 
 /// Payload accepted by host-server on `host_control_key(room_id)` (Slice E stub).
 pub const HOST_CONTROL_SHUTDOWN: &[u8] = b"shutdown";
@@ -267,34 +273,85 @@ pub fn validate_room_id(room_id: &str) -> Result<&str, RoomIdError> {
     Ok(room_id)
 }
 
-/// Build a frame key for an arbitrary room id (caller should [`validate_room_id`]).
-pub fn frame_key(room_id: &str) -> String {
-    format!("alchemy/dev/room/{room_id}/frame")
+/// Why [`validate_wire_cap`] rejected a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireCapError {
+    Empty,
+    ContainsSlash,
+    TooLong,
+    InvalidCharset,
 }
 
-/// Build an input key for an arbitrary room id (caller should [`validate_room_id`]).
-pub fn input_key(room_id: &str) -> String {
-    format!("alchemy/dev/room/{room_id}/input")
+impl std::fmt::Display for WireCapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "wire_cap must not be empty"),
+            Self::ContainsSlash => write!(f, "wire_cap must not contain '/'"),
+            Self::TooLong => write!(f, "wire_cap must be at most 64 bytes"),
+            Self::InvalidCharset => {
+                write!(f, "wire_cap must match [A-Za-z0-9_-]+")
+            }
+        }
+    }
 }
 
-/// Build a manifest key for an arbitrary room id (caller should [`validate_room_id`]).
-pub fn manifest_key(room_id: &str) -> String {
-    format!("alchemy/dev/room/{room_id}/manifest")
+impl std::error::Error for WireCapError {}
+
+/// Max byte length for [`validate_wire_cap`] (x004e; Zenoh key segment).
+pub const WIRE_CAP_MAX_BYTES: usize = 64;
+
+/// Validate `wire_cap` for Zenoh key segments (same charset as [`validate_room_id`]).
+pub fn validate_wire_cap(wire_cap: &str) -> Result<&str, WireCapError> {
+    if wire_cap.is_empty() {
+        return Err(WireCapError::Empty);
+    }
+    if wire_cap.contains('/') {
+        return Err(WireCapError::ContainsSlash);
+    }
+    if wire_cap.len() > WIRE_CAP_MAX_BYTES {
+        return Err(WireCapError::TooLong);
+    }
+    if !wire_cap
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(WireCapError::InvalidCharset);
+    }
+    Ok(wire_cap)
 }
 
-/// Build a host-control key for an arbitrary room id (caller should [`validate_room_id`]).
-pub fn host_control_key(room_id: &str) -> String {
-    format!("alchemy/dev/room/{room_id}/host_control")
+fn room_prefix(room_id: &str, wire_cap: &str) -> String {
+    format!("alchemy/dev/room/{room_id}/{wire_cap}")
 }
 
-/// Build a presence key for an arbitrary room id (caller should [`validate_room_id`]).
-pub fn presence_key(room_id: &str) -> String {
-    format!("alchemy/dev/room/{room_id}/presence")
+/// Build a frame key (caller should [`validate_room_id`] + [`validate_wire_cap`]).
+pub fn frame_key(room_id: &str, wire_cap: &str) -> String {
+    format!("{}/frame", room_prefix(room_id, wire_cap))
 }
 
-/// Build a snapshot queryable key for an arbitrary room id (x0023).
-pub fn snapshot_key(room_id: &str) -> String {
-    format!("alchemy/dev/room/{room_id}/snapshot")
+/// Build an input key (caller should [`validate_room_id`] + [`validate_wire_cap`]).
+pub fn input_key(room_id: &str, wire_cap: &str) -> String {
+    format!("{}/input", room_prefix(room_id, wire_cap))
+}
+
+/// Build a manifest key (caller should [`validate_room_id`] + [`validate_wire_cap`]).
+pub fn manifest_key(room_id: &str, wire_cap: &str) -> String {
+    format!("{}/manifest", room_prefix(room_id, wire_cap))
+}
+
+/// Build a host-control key (caller should [`validate_room_id`] + [`validate_wire_cap`]).
+pub fn host_control_key(room_id: &str, wire_cap: &str) -> String {
+    format!("{}/host_control", room_prefix(room_id, wire_cap))
+}
+
+/// Build a presence key (caller should [`validate_room_id`] + [`validate_wire_cap`]).
+pub fn presence_key(room_id: &str, wire_cap: &str) -> String {
+    format!("{}/presence", room_prefix(room_id, wire_cap))
+}
+
+/// Build a snapshot queryable key (x0023 / x004e).
+pub fn snapshot_key(room_id: &str, wire_cap: &str) -> String {
+    format!("{}/snapshot", room_prefix(room_id, wire_cap))
 }
 
 /// True when wire `protocol_pin` matches this crate's [`PROTOCOL_PIN`].
@@ -341,20 +398,21 @@ pub fn decide_frame_tick(last: Option<u64>, tick: u64, max_gap: u64) -> FrameTic
     }
 }
 
-/// Default Zenoh liveliness key prefix for local room (x0019; `sub` appended).
-pub const LIVELINESS_KEY_LOCAL_PREFIX: &str = "alchemy/dev/room/local/alive";
+/// Default Zenoh liveliness key prefix for local room (x0019 / x004e; `sub` appended).
+pub const LIVELINESS_KEY_LOCAL_PREFIX: &str =
+    "alchemy/dev/room/local/localdevwirecap00000001/alive";
 
-/// Build a liveliness token key bound to Room Token `jti` (x0022).
+/// Build a liveliness token key bound to Room Token `jti` (x0022 / x004e).
 ///
 /// `sub` / `jti` must not contain `/`. Host reclaims on Delete only when `jti` matches
 /// the last verified Input for that `sub`.
-pub fn liveliness_key(room_id: &str, sub: &str, jti: &str) -> String {
-    format!("alchemy/dev/room/{room_id}/alive/{sub}/{jti}")
+pub fn liveliness_key(room_id: &str, wire_cap: &str, sub: &str, jti: &str) -> String {
+    format!("{}/alive/{sub}/{jti}", room_prefix(room_id, wire_cap))
 }
 
-/// Host wildcard subscribe key for room liveliness (x0019 / x0022).
-pub fn liveliness_wildcard(room_id: &str) -> String {
-    format!("alchemy/dev/room/{room_id}/alive/**")
+/// Host wildcard subscribe key for room liveliness (x0019 / x0022 / x004e).
+pub fn liveliness_wildcard(room_id: &str, wire_cap: &str) -> String {
+    format!("{}/alive/**", room_prefix(room_id, wire_cap))
 }
 
 /// Parse `(sub, jti)` from `…/alive/{sub}/{jti}`. Returns `None` if shape mismatches.
@@ -701,34 +759,44 @@ mod tests {
 
     #[test]
     fn key_helpers() {
-        assert_eq!(frame_key("local"), FRAME_KEY_LOCAL);
-        assert_eq!(input_key("local"), INPUT_KEY_LOCAL);
-        assert_eq!(manifest_key("local"), MANIFEST_KEY_LOCAL);
-        assert_eq!(host_control_key("local"), HOST_CONTROL_KEY_LOCAL);
-        assert_eq!(presence_key("local"), PRESENCE_KEY_LOCAL);
-        assert_eq!(snapshot_key("local"), SNAPSHOT_KEY_LOCAL);
-        assert_eq!(presence_key("alpha"), "alchemy/dev/room/alpha/presence");
-        assert_ne!(presence_key("alpha"), presence_key("beta"));
+        let cap = LOCAL_WIRE_CAP;
+        assert_eq!(frame_key("local", cap), FRAME_KEY_LOCAL);
+        assert_eq!(input_key("local", cap), INPUT_KEY_LOCAL);
+        assert_eq!(manifest_key("local", cap), MANIFEST_KEY_LOCAL);
+        assert_eq!(host_control_key("local", cap), HOST_CONTROL_KEY_LOCAL);
+        assert_eq!(presence_key("local", cap), PRESENCE_KEY_LOCAL);
+        assert_eq!(snapshot_key("local", cap), SNAPSHOT_KEY_LOCAL);
         assert_eq!(
-            liveliness_key("local", "alice-uuid", "jti-1"),
+            presence_key("alpha", cap),
+            format!("alchemy/dev/room/alpha/{cap}/presence")
+        );
+        assert_ne!(
+            presence_key("alpha", "cap-a"),
+            presence_key("alpha", "cap-b")
+        );
+        assert_eq!(
+            liveliness_key("local", cap, "alice-uuid", "jti-1"),
             format!("{LIVELINESS_KEY_LOCAL_PREFIX}/alice-uuid/jti-1")
         );
         assert_eq!(
-            liveliness_wildcard("alpha"),
-            "alchemy/dev/room/alpha/alive/**"
+            liveliness_wildcard("alpha", cap),
+            format!("alchemy/dev/room/alpha/{cap}/alive/**")
         );
         assert_eq!(
-            liveliness_binding_from_key("alchemy/dev/room/local/alive/alice-uuid/jti-1"),
+            liveliness_binding_from_key(&format!(
+                "alchemy/dev/room/local/{cap}/alive/alice-uuid/jti-1"
+            )),
             Some(("alice-uuid", "jti-1"))
         );
         assert_eq!(
-            liveliness_binding_from_key("alchemy/dev/room/local/alive/alice-uuid"),
+            liveliness_binding_from_key(&format!("alchemy/dev/room/local/{cap}/alive/alice-uuid")),
             None
         );
         assert_eq!(
-            liveliness_binding_from_key("alchemy/dev/room/local/alive/a/b/c"),
+            liveliness_binding_from_key(&format!("alchemy/dev/room/local/{cap}/alive/a/b/c")),
             None
         );
+        assert!(validate_wire_cap(LOCAL_WIRE_CAP).is_ok());
         assert!(protocol_pin_matches(PROTOCOL_PIN));
         assert!(!protocol_pin_matches("alchemy-protocol/0.9.0-x0022"));
     }

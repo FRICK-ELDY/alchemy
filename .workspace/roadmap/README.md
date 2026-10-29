@@ -128,11 +128,12 @@ depends_on: [x0006]
 | x004b | — | done | ClientIp 共有化 + HTTP inspect 除去（P3-6） | [x004b-client-ip-shared-inspect.md](slices/x004b-client-ip-shared-inspect.md) |
 | x004c | — | done | cargo-fuzz protobuf / JWT（P3-9） | [x004c-cargo-fuzz-protobuf-jwt.md](slices/x004c-cargo-fuzz-protobuf-jwt.md) |
 | x004d | — | done | USER_ROOT_SLOTS → Manifest（P3-10・帯は protocol） | [x004d-user-root-slots-manifest.md](slices/x004d-user-root-slots-manifest.md) |
+| x004e | — | done | Relay Agent MVP（P2-1: mTLS + Allocation + wire_cap） | [x004e-relay-agent-mvp.md](slices/x004e-relay-agent-mvp.md) |
 
-**現在の次:** **P2-1 deferred**（Zenoh mTLS / Relay）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。  
+**現在の次:** BlobGrant（[assets-server-draft.md](../0_doc/architecture/assets-server-draft.md) / P4-5）。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
-次の空き番号は **`x004e`**。
+次の空き番号は **`x004f`**。
 
 
 ## 関連

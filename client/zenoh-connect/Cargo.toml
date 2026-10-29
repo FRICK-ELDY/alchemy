@@ -3,13 +3,16 @@ name = "zenoh-connect"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Shared Zenoh client open helpers (ZENOH_CONNECT + optional TLS root CA)"
+description = "Shared Zenoh client open helpers (ZENOH_CONNECT + TLS / mTLS / Relay allocate)"
 
 [lints]
 workspace = true
 
 [dependencies]
+alchemy-protocol = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
+serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
 zenoh = { workspace = true }

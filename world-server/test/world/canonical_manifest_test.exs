@@ -9,7 +9,7 @@ defmodule World.CanonicalManifestTest do
   @host_pub :crypto.strong_rand_bytes(32)
 
   test "canonical_blake3 is stable for demo scene + attestation" do
-    assert {:ok, "canon", _vis} = Rooms.create("canon", @sub)
+    assert {:ok, "canon", _vis, _cap} = Rooms.create("canon", @sub)
     assert {:ok, gen} = Rooms.claim_host_generation("canon", @host_pub)
 
     assert {:ok, attestation, _ttl} =
@@ -22,7 +22,7 @@ defmodule World.CanonicalManifestTest do
   end
 
   test "rejects TTL-valid attestation after host_pub handoff (x003a)" do
-    assert {:ok, "stale-seal", _vis} = Rooms.create("stale-seal", @sub)
+    assert {:ok, "stale-seal", _vis, _cap} = Rooms.create("stale-seal", @sub)
     assert {:ok, gen1} = Rooms.claim_host_generation("stale-seal", @host_pub)
 
     assert {:ok, old_attestation, _} =
@@ -37,8 +37,8 @@ defmodule World.CanonicalManifestTest do
   end
 
   test "verify rejects attestation for wrong room" do
-    assert {:ok, "room-a", _vis} = Rooms.create("room-a", @sub)
-    assert {:ok, "room-b", _vis} = Rooms.create("room-b", @sub)
+    assert {:ok, "room-a", _vis, _cap} = Rooms.create("room-a", @sub)
+    assert {:ok, "room-b", _vis, _cap} = Rooms.create("room-b", @sub)
     assert {:ok, gen} = Rooms.claim_host_generation("room-a", @host_pub)
 
     assert {:ok, attestation, _} = HostAttestation.generate("room-a", @host_pub, @sub, gen)
@@ -51,6 +51,6 @@ defmodule World.CanonicalManifestTest do
     # Keep in lockstep with protocol/src/lib.rs `PROTOCOL_PIN` — drift → seal mismatch.
     # x003b decode limits do not bump the pin (wire-compatible).
     assert Application.fetch_env!(:world, :protocol_pin) ==
-             "alchemy-protocol/0.16.0-x003a"
+             "alchemy-protocol/0.17.0-x004e"
   end
 end

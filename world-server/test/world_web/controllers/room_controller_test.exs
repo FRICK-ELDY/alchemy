@@ -112,6 +112,13 @@ defmodule WorldWeb.RoomControllerTest do
     body = json_response(conn, 200)
     assert body["role"] == "guest"
     assert body["sub"] == guest
+    # x004e: wire_cap + Allocation Token for Relay Agent
+    assert is_binary(body["wire_cap"]) and body["wire_cap"] != ""
+    assert is_binary(body["allocation_token"]) and body["allocation_token"] != ""
+    assert {:ok, alloc_claims} = World.AllocationToken.verify(body["allocation_token"])
+    assert alloc_claims["aud"] == "alchemy-relay"
+    assert alloc_claims["wire_cap"] == body["wire_cap"]
+    assert alloc_claims["role"] == "guest"
   end
 
   test "health and jwks", %{conn: conn} do
