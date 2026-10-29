@@ -184,10 +184,7 @@ fn drain_pending_frames(try_recv: &mut impl FnMut() -> Option<ZBytes>) {
 }
 
 /// Wait for a decodable RenderFrame that arrives **after** a prior drain + put.
-fn expect_new_frame(
-    try_recv: &mut impl FnMut() -> Option<ZBytes>,
-    context: &str,
-) -> Result<()> {
+fn expect_new_frame(try_recv: &mut impl FnMut() -> Option<ZBytes>, context: &str) -> Result<()> {
     let post_deadline = Instant::now() + ADVERSARIAL_STEP_WAIT;
     while Instant::now() < post_deadline {
         if let Some(bytes) = try_recv() {
@@ -463,7 +460,9 @@ fn main() -> Result<()> {
     // x003a: seal-less stale-rev Manifest must not stop host Frame path.
     drain_pending_frames(&mut poll_frame);
     put_manifest(&session, &manifest_k, &stale_revision_manifest(&room_id))?;
-    log::info!("put stale-revision SceneManifest (host keep publishing; signed replay is unit-tested)");
+    log::info!(
+        "put stale-revision SceneManifest (host keep publishing; signed replay is unit-tested)"
+    );
     expect_new_frame(
         &mut poll_frame,
         "host stopped publishing frames after stale-revision Manifest",

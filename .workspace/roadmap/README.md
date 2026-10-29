@@ -120,9 +120,9 @@ depends_on: [x0006]
 | x0043 | — | done | `/internal/*` ingress 404 + Social rate limit（P2-2） | [x0043-internal-ingress-social-rl.md](slices/x0043-internal-ingress-social-rl.md) |
 | x0044 | — | done | client world_jwks SWR / hard / unknown-kid（P2-3） | [x0044-client-world-jwks-cooldown.md](slices/x0044-client-world-jwks-cooldown.md) |
 | x0045 | — | done | host Room Token 否定系テスト（P3-8） | [x0045-room-token-negative-tests.md](slices/x0045-room-token-negative-tests.md) |
-| x0046 | — | in_progress | adversarial E2E（偽 Manifest / stale-rev / oversize・P3-1） | [x0046-adversarial-e2e.md](slices/x0046-adversarial-e2e.md) |
+| x0046 | — | done | adversarial E2E（偽 Manifest / stale-rev / oversize・P3-1） | [x0046-adversarial-e2e.md](slices/x0046-adversarial-e2e.md) |
 
-**現在の次:** **x0046** compose smoke（P3-1）を閉じる、または **P3-2** launcher CI。**P2-1 deferred**（Zenoh mTLS / Relay）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
+**現在の次:** **P3-2** launcher CI / clippy / 再起動ポリシー、または **P2-1 deferred**（Zenoh mTLS / Relay）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
 
 次の空き番号は **`x0047`**。
 

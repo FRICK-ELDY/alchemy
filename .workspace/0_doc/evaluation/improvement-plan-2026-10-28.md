@@ -59,7 +59,7 @@
 
 | ID | 項目 | 根拠 | 作業イメージ |
 |:---|:---|:---|:---|
-| P3-1 | adversarial E2E（偽 Manifest / stale-rev / oversize） | -2 | e2e-probe + compose fault — **[x0046](../../roadmap/slices/x0046-adversarial-e2e.md) in_progress**（probe 実装済・compose smoke 未） |
+| P3-1 | adversarial E2E（偽 Manifest / stale-rev / oversize） | -2 | e2e-probe + compose fault — **[x0046](../../roadmap/slices/x0046-adversarial-e2e.md) done** |
 | P3-2 | launcher を CI に・clippy 修正・再起動ポリシー単体テスト | -1 | workflow 追加 |
 | P3-3 | fixture fallback を debug 限定 + HTTP timeout/cancel | -2 | placeholder UI |
 | P3-4 | metrics（tick lateness / frame age / JWKS stale / CAS） | -2 | Prometheus or OTLP 最小 |
@@ -98,8 +98,8 @@
 
 ## 推奨スライス順
 
-**次:** **[x0046](../../roadmap/slices/x0046-adversarial-e2e.md)** compose smoke で P3-1 を閉じる、または **P3-2** launcher CI。**P2-1 deferred**（mTLS / Relay）は保留。BlobGrant は draft 目標（P4-5）
+**次:** **P3-2** launcher CI / clippy / 再起動ポリシー、または **P2-1 deferred**（mTLS / Relay）再開。BlobGrant は draft 目標（P4-5）
 
-最近閉じた: **[x0045](../../roadmap/slices/x0045-room-token-negative-tests.md)**（P3-8）、**[x0044](../../roadmap/slices/x0044-client-world-jwks-cooldown.md)**（P2-3）、**[x0043](../../roadmap/slices/x0043-internal-ingress-social-rl.md)**（P2-2）。
+最近閉じた: **[x0046](../../roadmap/slices/x0046-adversarial-e2e.md)**（P3-1）、**[x0045](../../roadmap/slices/x0045-room-token-negative-tests.md)**（P3-8）、**[x0044](../../roadmap/slices/x0044-client-world-jwks-cooldown.md)**（P2-3）。
 
 スライス完了条件に必ず含める: **prod compose 起動**・**否定系が通る**・**保証表とコード一致**。

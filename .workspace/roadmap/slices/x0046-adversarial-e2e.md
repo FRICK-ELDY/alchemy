@@ -1,6 +1,6 @@
 # x0046 — adversarial E2E（偽 Manifest / stale-rev / oversize）
 
-> **ID:** `x0046` · **slug:** `adversarial-e2e` · **status:** `in_progress` · **area:** `[ci, host, protocol, docs]` · **depends_on:** `[x0038, x003a, x003b, x001f]`  
+> **ID:** `x0046` · **slug:** `adversarial-e2e` · **status:** `done` · **area:** `[ci, host, protocol, docs]` · **depends_on:** `[x0038, x003a, x003b, x001f]`  
 > **優先度:** **P3-1**
 
 目標: hermetic compose 上で偽 Manifest・seal 無し stale-rev・oversize payload を Zenoh に投げても host が Frame を出し続けることを e2e-probe で固定する。
@@ -20,6 +20,6 @@
 ## 完了条件
 
 - `e2e-probe` が drain→put→新規 Frame で fake + stale-rev + oversize を assert
-- compose smoke 経路で緑（既存 `.scripts/smoke-compose-e2e.sh`）— **未実行なら status は `in_progress`**
+- compose smoke 経路で緑（既存 `.scripts/smoke-compose-e2e.sh`）
 
 ← [目次](../README.md)
