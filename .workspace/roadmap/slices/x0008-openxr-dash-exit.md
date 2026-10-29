@@ -51,7 +51,7 @@ cargo run -p client                           # 検出して XR 可なら XR
 
 ## 実機確認（Windows + SteamVR）
 
-README はネイティブ Windows の `cargo` を原則非推奨（os error 4551）としている。  
+日常開発はネイティブ Windows 可（Smart App Control OFF）。WSL は実 HMD 非保証。  
 XR 手動確認だけ Windows ホストで行う。
 
 1. SteamVR を起動し、OpenXR ランタイムを SteamVR にする  

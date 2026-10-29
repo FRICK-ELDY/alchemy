@@ -2,8 +2,8 @@
 
 分散連合型 VR プラットフォーム（目標アーキテクチャ: [`.workspace/0_doc/architecture/overview.md`](.workspace/0_doc/architecture/overview.md)）。
 
-**対応 OS:** macOS / Linux / **Windows は WSL2（Ubuntu 26.04 LTS）を日常開発の正本**  
-ネイティブ Windows の日常 `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。  
+**対応 OS:** macOS / Linux / **Windows（ネイティブ）**  
+日常開発はネイティブ Windows の `cargo` で問題ない（かつて Smart App Control が ON だと os error 4551 で阻害されたが、現環境では OFF）。WSL2 は任意の代替。  
 **テスター配布 ZIP**（ネイティブ Windows x64）は [Releases（Pre-release）](https://github.com/FRICK-ELDY/alchemy/releases) · 手順 [windows-tester-zip.md](.workspace/0_doc/manual/windows-tester-zip.md)。版名は `v0.0.0-dev.YYYYMMDDHHMM`（JST）。
 
 ## 現状（〜x004d）
@@ -29,53 +29,37 @@
 
 ルートに Cargo workspace は置きません。Rust のビルド根は `client/`、契約クレートは独立した `protocol/` です。
 
-## Windows: WSL2 + Ubuntu 26.04 LTS
+## Windows（ネイティブ）
 
-### 1. ディストロの導入（PowerShell・管理者推奨）
+1. [rustup](https://rustup.rs/) で Rust stable
+2. Docker Desktop（auth / world / assets）
+3. `cargo install zenohd`（または同等の zenohd）
+4. XR 手通しは Windows + SteamVR / OpenXR（WSL は実 HMD 非保証）
+
+PowerShell から `make` / `bash .scripts/*.sh` を使う場合は Git Bash 等の bash が必要。Elixir 系 CI は Docker 既定のためホストの `mix` は不要。
+
+### 任意: WSL2（Ubuntu 26.04 LTS）
+
+Linux 寄りのシェル／CI 再現が欲しいときの代替。主軸ではない。
 
 ```powershell
 wsl --install -d Ubuntu-26.04
-# すでに取得済みなら初回起動だけ:
 wsl -d Ubuntu-26.04
 ```
 
-初回起動で UNIX ユーザー名とパスワードを作成する。
+WSL 内で `bash .scripts/wsl-setup.sh`（build-essential / wgpu 用ライブラリ / rustup / zenohd）。Docker Desktop の **WSL Integration** で当該ディストロを有効化。リポジトリは WSL 側パス（`\\wsl$\...`）の方が I/O が速い。
 
-既定ディストロにする（任意）:
-
-```powershell
-wsl --set-default Ubuntu-26.04
-```
-
-### 2. Docker Desktop 連携
-
-Docker Desktop → Settings → Resources → **WSL Integration** で `Ubuntu-26.04` を有効化。
-
-### 3. 開発ツール
-
-WSL 内:
-
-```bash
-bash .scripts/wsl-setup.sh
-```
-
-`wsl-setup.sh` は build-essential / wgpu 用ライブラリ / rustup / zenohd を入れます。
-
-### 4. Cursor / VS Code
-
-リモート先を WSL の `Ubuntu-26.04` にし、リポジトリを WSL 側パスで開く（`\\wsl$\Ubuntu-26.04\home\...` へ clone する方が I/O は速い。`/mnt/d/...` でも可）。
-
-## 前提ツール（WSL / macOS / Linux）
+## 前提ツール（macOS / Linux / Windows）
 
 | ツール | 用途 | 備考 |
 |:---|:---|:---|
-| Rust (stable) | client / host-server / protocol | [rustup](https://rustup.rs/) または `wsl-setup.sh` |
-| Docker / Docker Compose | auth / world / assets | Desktop + WSL Integration、または Linux ネイティブ |
+| Rust (stable) | client / host-server / protocol | [rustup](https://rustup.rs/)（任意で `wsl-setup.sh`） |
+| Docker / Docker Compose | auth / world / assets | Desktop、または Linux ネイティブ |
 | zenohd | ローカルルーター | `cargo install zenohd` |
 
 任意: Elixir 1.19 / OTP 28（ホスト直実行したい場合のみ）。
 
-Linux / WSL で `client` をビルドする場合の例（`wsl-setup.sh` に含む）:
+Linux（および任意の WSL）で `client` をビルドする場合の例（`wsl-setup.sh` に含む）:
 
 ```bash
 sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev \
