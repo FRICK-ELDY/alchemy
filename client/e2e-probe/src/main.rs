@@ -74,15 +74,54 @@ fn login(auth_url: &str, user: &str, password: &str) -> Result<String> {
     Ok(resp.access_token)
 }
 
-fn fetch_room_token(world_url: &str, room_id: &str, access: &str, role: &str) -> Result<String> {
+/// base64url (no pad) for **exactly** 32-byte Ed25519 pub.
+/// Must match world `Base.url_encode64(..., padding: false)` / client `URL_SAFE_NO_PAD`.
+/// Hand-rolled to avoid a new Hex/Cargo dep in e2e-probe; do not reuse for other lengths.
+fn session_pub_b64(pub_bytes: &[u8]) -> Result<String> {
+    if pub_bytes.len() != 32 {
+        bail!("session_pub must be 32 bytes");
+    }
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(43);
+    let mut i = 0;
+    while i + 3 <= pub_bytes.len() {
+        let n = (u32::from(pub_bytes[i]) << 16)
+            | (u32::from(pub_bytes[i + 1]) << 8)
+            | u32::from(pub_bytes[i + 2]);
+        out.push(T[((n >> 18) & 63) as usize] as char);
+        out.push(T[((n >> 12) & 63) as usize] as char);
+        out.push(T[((n >> 6) & 63) as usize] as char);
+        out.push(T[(n & 63) as usize] as char);
+        i += 3;
+    }
+    // 32 ≡ 2 (mod 3): one leftover pair → 3 chars, no pad.
+    let n = (u32::from(pub_bytes[30]) << 16) | (u32::from(pub_bytes[31]) << 8);
+    out.push(T[((n >> 18) & 63) as usize] as char);
+    out.push(T[((n >> 12) & 63) as usize] as char);
+    out.push(T[((n >> 6) & 63) as usize] as char);
+    Ok(out)
+}
+
+fn fetch_room_token(
+    world_url: &str,
+    room_id: &str,
+    access: &str,
+    role: &str,
+    session_pub: &[u8],
+) -> Result<String> {
     let base = world_url.trim_end_matches('/');
     let authz = format!("Bearer {access}");
+    let session_pub_b64 = session_pub_b64(session_pub)?;
     // x0021: do not create rooms here — host-server owns create/owner_sub.
+    // x003e: session_pub required for cnf.spk.
     let resp: TokenResponse = ureq::post(&format!("{base}/api/v1/rooms/{room_id}/tokens"))
         .set("content-type", "application/json")
         .set("authorization", &authz)
         .timeout(Duration::from_secs(15))
-        .send_json(serde_json::json!({ "role": role }))
+        .send_json(serde_json::json!({
+            "role": role,
+            "session_pub": session_pub_b64,
+        }))
         .context("issue Room Token (is host-server up and room created?)")?
         .into_json()
         .context("parse Room Token")?;
@@ -214,7 +253,15 @@ fn main() -> Result<()> {
     let access = login(&auth_url, &user, &password)?;
     log::info!("login ok");
 
-    let room_token = fetch_room_token(&world_url, &room_id, &access, "guest")?;
+    // x003e: mint session key before Token so cnf.spk matches bind Intent.
+    let session_key = generate_signing_key();
+    let room_token = fetch_room_token(
+        &world_url,
+        &room_id,
+        &access,
+        "guest",
+        &public_key_bytes(&session_key),
+    )?;
     log::info!("Room Token ok (role=guest, len={})", room_token.len());
 
     let session = open_zenoh(&zenoh_connect).context("open zenoh (is zenohd up?)")?;
@@ -229,7 +276,6 @@ fn main() -> Result<()> {
 
     thread::sleep(Duration::from_millis(200));
 
-    let session_key = generate_signing_key();
     let mut intent_seq = 1u64;
     put_input(
         &session,

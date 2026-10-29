@@ -1,13 +1,13 @@
-//! Client Intent session key (x0023).
+//! Client Intent session key (x0023 / x003e).
 //!
 //! Guarantees: bind Intent carries Room Token until enough successful puts; steady
-//! Intents are Ed25519-signed thereafter.
+//! Intents are Ed25519-signed thereafter. Room Token must be issued for this
+//! session_pub (`cnf.spk`, x003e).
 //! Non-guarantees: host acceptance ack (Zenoh put ≠ verify); key persistence across restart.
 
-use alchemy_protocol::wire_crypto::{
-    generate_signing_key, public_key_bytes, sign_input, SigningKey,
-};
+use alchemy_protocol::wire_crypto::{generate_signing_key, sign_input, SigningKey};
 use alchemy_protocol::InputEvent;
+use base64::Engine;
 
 /// Successful Zenoh puts that must still include `room_token` after join / refresh.
 /// Covers put failure retries and brief host reject windows without an ack channel.
@@ -53,6 +53,16 @@ impl IntentSession {
         self.bind_puts_remaining > 0
     }
 
+    /// Raw 32-byte Ed25519 public key (Intent `session_pub`).
+    pub fn session_pub(&self) -> [u8; 32] {
+        self.key.verifying_key().to_bytes()
+    }
+
+    /// base64url (no pad) for `POST …/tokens` `session_pub` / JWT `cnf.spk` (x003e).
+    pub fn session_pub_b64(&self) -> String {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(self.session_pub())
+    }
+
     /// Call only after Zenoh `put` succeeded for an Intent that included `room_token`.
     pub fn note_bind_put_ok(&mut self) {
         self.bind_puts_remaining = self.bind_puts_remaining.saturating_sub(1);
@@ -79,7 +89,7 @@ impl IntentSession {
             aim_y: body.aim_y,
             aim_z: body.aim_z,
             leave: body.leave,
-            session_pub: public_key_bytes(&self.key),
+            session_pub: self.session_pub().to_vec(),
             intent_seq: self.seq,
             intent_sig: vec![],
         };

@@ -33,7 +33,7 @@
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
 | OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose + 埋め込み baseColor + animatable node） | SteamVR パス直読み／PBR（MR/normal 等）／手トラ |
 | OpenXR: ダッシュ開→UI レーザー；閉→ワールドレーザー＋ Grab hold（squeeze／Select）（x0011） | Steal／回転追従／Facet 並べ替え／WorldRoot／CompositionLayerQuad |
-| auth login → Room Token は **bind Intent のみ**。以降は Ed25519 session（x0023） | OSC / Dual Editor |
+| auth login → Room Token は **bind Intent のみ**（Token 発行時に `session_pub`→`cnf.spk`・x003e）。以降は Ed25519 session（x0023）。host generation 交代は新鍵を pending に置き、Token 到着後に鍵+Token 一括 swap（取得中は旧鍵+旧 Token） | OSC / Dual Editor；debug `ALCHEMY_ROOM_TOKEN` bypass は **cnf 無しだと bind 失敗**（本物 Token を使う） |
 | launcher（x0032）: host/client 分離 spawn・IPC shutdown。Exit Host は `ALCHEMY_HOST_IPC_*` 優先 | deep link / トレイ / handoff |
 | host: world `GET …/scene` → Rapier `from_entries` + sealed Manifest 公開（x0027）。60Hz + session gate + `is_finite` + Presence + Leave / jti liveliness / TTL（x0022）+ signed 30Hz 純デルタ + snapshot。attestation / seal refresh は **credential worker**（x003d / x0026）；物理は gate + `hard_expire_at` を毎 tick 評価。一時 HTTP 失敗ではプロセスを殺さず、hard expiry 後は Manifest/Presence/Frame/**snapshot queryable** を停止。再開時は wire 上の `last_sent` から `removes` を合成し現存は full upsert。`ALCHEMY_AUTH_TOKEN` は長命前提 | Formula / 予測補間 / verifier / 本格 Walk / Steal / floor Manifest 化 / Zenoh put の network worker 分離 / 短命静的 auth JWT の自動更新 |
 | ESC（Desktop）/ Menu（OpenXR）ダッシュ・下タブ Home/Settings/Exit・Pinned Exit・Home アカウント殻（x0018）・Button hover・client 終了・host 終了は `ALCHEMY_HOST_PID`（Zenoh `host_control` は opt-in・x001e）。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 / XR 仮想キーボード / 認証付きリモート shutdown |

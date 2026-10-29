@@ -39,7 +39,7 @@
 | P1-1 | assets GET 方針の文書化 **または** BlobGrant | -3 | 短期: architecture に capability モデル明記。中期: CasObject/BlobRef/BlobGrant | 保証表とコード一致 — **文書化で閉じた**（[assets-server.md](../architecture/assets-server.md) GET capability）。BlobGrant 実装は [assets-server-draft.md](../architecture/assets-server-draft.md) / P4-5 |
 | P1-2 | CAS object/ref 分離 + put 補償 | -2 | Quota 予約→TX 外 put→メタ確定。cross-owner ref | orphan/quota 不整合テスト |
 | P1-3 | credential/network worker 分離 | -2 | 物理は最新 cred を読むだけ。更新は専用スレッドで失効までリトライ。プロセスは一時 502 で殺さない | auth 一時障害で部屋が消えない — **[x003d](../../roadmap/slices/x003d-credential-worker.md) done**（credential/seal worker。Zenoh put 分離は後続） |
-| P1-4 | Room Token `cnf`（session_pub） | -2 | Token 要求時に鍵を送り claim に埋め込み。bind で一致確認 | 盗聴 JWT だけでは別鍵 bind 不可 |
+| P1-4 | Room Token `cnf`（session_pub） | -2 | Token 要求時に鍵を送り claim に埋め込み。bind で一致確認 | 盗聴 JWT だけでは別鍵 bind 不可 — **[x003e](../../roadmap/slices/x003e-room-token-cnf.md) done** |
 | P1-5 | Intent rate limit + JWKS hard stale | -2 | per-sub token bucket。JWKS 最大 stale TTL | 合法高頻度で飽和しない / 撤去鍵で無限受理しない |
 | P1-6 | Grab 保持中 aim 距離クランプ | -1 | shared-sim 定数を保持オフセットにも適用 | 箱の瞬間遠方移動不可 |
 
@@ -98,8 +98,8 @@
 
 ## 推奨スライス順
 
-**次:** **x003e+** — cnf、ACL、Zenoh network worker（P1 残り / 提案）。BlobGrant は draft 目標（P4-5）
+**次:** **x003f+** — ACL、Zenoh network worker、P1-2/P1-5 など。BlobGrant は draft 目標（P4-5）
 
-最近閉じた: [x0038](../../roadmap/slices/x0038-leave-to-discard.md) … [x003c](../../roadmap/slices/x003c-assets-required-mesh.md)（P0）、[x003d](../../roadmap/slices/x003d-credential-worker.md)（P1-3）、**assets GET capability 文書**（P1-1 文書化）— いずれも **done**。
+最近閉じた: [x0038](../../roadmap/slices/x0038-leave-to-discard.md) … [x003d](../../roadmap/slices/x003d-credential-worker.md)、**[x003e](../../roadmap/slices/x003e-room-token-cnf.md)**（P1-4 cnf）、**assets GET capability 文書**（P1-1 文書化）— いずれも **done**。
 
 スライス完了条件に必ず含める: **prod compose 起動**・**否定系が通る**・**保証表とコード一致**。

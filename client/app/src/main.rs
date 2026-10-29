@@ -38,6 +38,7 @@ mod turn;
 mod world_api;
 mod world_hit;
 mod world_jwks;
+mod world_token;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -69,7 +70,6 @@ use host_attestation::HostAttestationVerifier;
 use manifest_seal::ManifestSealVerifier;
 use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, COIN_BLAKE3_HEX};
 use scene::{EntityPose, SharedState, LOCAL_USER_ROOT_UNSET};
-use serde::Deserialize;
 use world_jwks::WorldJwks;
 use zenoh::bytes::ZBytes;
 use zenoh::Wait;
@@ -85,19 +85,6 @@ const MANIFEST_WAIT: Duration = Duration::from_millis(400);
 /// Auth join: cover host presence-join Manifest put (Intent → assign/jti-rotate → put).
 /// Blake3 is sent before snapshot GET; this wait is not snapshot-bound.
 const MANIFEST_WAIT_AUTH: Duration = Duration::from_secs(2);
-
-#[derive(Debug, Deserialize)]
-struct TokenResponse {
-    token: String,
-    /// Required from world-server; missing field fails deserialize (no silent `0`).
-    expires_in: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct GuestToken {
-    pub token: String,
-    pub expires_in: u64,
-}
 
 const TOKEN_REFRESH_POLL: Duration = Duration::from_secs(5);
 const GATE_LOG_INTERVAL: Duration = Duration::from_secs(5);
@@ -135,40 +122,6 @@ fn zenoh_connect_endpoint() -> String {
 
 fn open_zenoh() -> Result<zenoh::Session> {
     zenoh_connect::open_client(&zenoh_connect_endpoint())
-}
-
-pub fn fetch_guest_token(world_url: &str, room_id: &str, auth_token: &str) -> Result<GuestToken> {
-    // x0025: env bypass is debug-only (release fail-closed).
-    if cfg!(debug_assertions) {
-        if let Ok(token) = std::env::var("ALCHEMY_ROOM_TOKEN") {
-            if !token.is_empty() {
-                return Ok(GuestToken {
-                    token,
-                    // Env override: no TTL → skip auto-refresh.
-                    expires_in: 0,
-                });
-            }
-        }
-    }
-
-    // x0021: do not POST /rooms — owner is claimed only by host create.
-    let base = world_url.trim_end_matches('/');
-    let authz = format!("Bearer {auth_token}");
-    let token_url = format!("{base}/api/v1/rooms/{room_id}/tokens");
-    let resp: TokenResponse = ureq::post(&token_url)
-        .set("content-type", "application/json")
-        .set("authorization", &authz)
-        .send_json(serde_json::json!({ "role": "guest" }))
-        .context("issue guest Room Token (is host up and room created?)")?
-        .into_json()
-        .context("parse token response")?;
-    if resp.expires_in == 0 {
-        anyhow::bail!("guest Room Token response missing positive expires_in");
-    }
-    Ok(GuestToken {
-        token: resp.token,
-        expires_in: resp.expires_in,
-    })
 }
 
 fn fetch_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<Vec<u8>> {
@@ -1070,16 +1023,31 @@ fn spawn_input_publisher(
 }
 
 /// Apply auth session + guest Room Token into SharedState (x0018 join).
+/// x003e: mint Intent session first so Token `cnf.spk` matches bind `session_pub`.
 pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result<()> {
-    let guest = fetch_guest_token(&shared.world_url, &shared.room_id, access_token)
-        .context("fetch guest Room Token")?;
+    let session = intent_session::IntentSession::new();
+    let session_pub_b64 = session.session_pub_b64();
+    let guest = world_token::fetch_guest_token(
+        &shared.world_url,
+        &shared.room_id,
+        access_token,
+        &session_pub_b64,
+    )
+    .context("fetch guest Room Token")?;
     let local_sub = jwt_sub::sub_unverified(&guest.token)
         .context("read Room Token sub (unverified payload)")?;
+    // Lock order: auth → intent_session → pending (same as generation commit).
     if let Ok(mut gate) = shared.auth.lock() {
         gate.apply_room(guest.token, local_sub.clone(), guest.expires_in);
-    }
-    if let Ok(mut session) = shared.intent_session.lock() {
-        *session = Some(intent_session::IntentSession::new());
+        if let Ok(mut slot) = shared.intent_session.lock() {
+            *slot = Some(session);
+            if let Ok(mut pending) = shared.pending_intent_session.lock() {
+                *pending = None;
+            }
+        }
+        if let Ok(mut retry) = shared.pending_retry.lock() {
+            *retry = None;
+        }
     }
     log::info!(
         "joined room={} sub={local_sub} expires_in={}",
@@ -1089,14 +1057,46 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     Ok(())
 }
 
+/// Sleep until the next access/room deadline, capped at [`TOKEN_REFRESH_POLL`].
+/// Joined+pending wakes at `pending_retry` (backoff) or soon if unset.
+fn token_refresh_wait(shared: &SharedState) -> Duration {
+    let now = Instant::now();
+    if shared.has_pending_intent_session_joined() {
+        return match shared.pending_retry_not_before() {
+            Some(t) if t > now => t
+                .saturating_duration_since(now)
+                .min(TOKEN_REFRESH_POLL)
+                .max(Duration::from_millis(50)),
+            _ => Duration::from_millis(50),
+        };
+    }
+    let Ok(gate) = shared.auth.lock() else {
+        return TOKEN_REFRESH_POLL;
+    };
+    let mut wait = TOKEN_REFRESH_POLL;
+    for deadline in [gate.access_deadline, gate.room_deadline]
+        .into_iter()
+        .flatten()
+    {
+        if deadline <= now {
+            return Duration::from_millis(50);
+        }
+        wait = wait.min(deadline.saturating_duration_since(now));
+    }
+    wait.max(Duration::from_millis(50))
+}
+
 /// Background access + Room Token refresh at ~80% TTL (x0021 P1-1).
 fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
     thread::Builder::new()
         .name("token-refresh".into())
         .spawn(move || {
-            log::info!("token refresh loop every {}s", TOKEN_REFRESH_POLL.as_secs());
+            log::info!(
+                "token refresh loop (poll cap {}s; due deadlines wake sooner)",
+                TOKEN_REFRESH_POLL.as_secs()
+            );
             loop {
-                thread::sleep(TOKEN_REFRESH_POLL);
+                thread::sleep(token_refresh_wait(&shared));
                 let now = Instant::now();
 
                 let need_access = shared
@@ -1136,54 +1136,124 @@ fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                     }
                 }
 
-                let need_room = shared
+                shared.clear_pending_if_not_joined();
+
+                let joined = shared
                     .auth
                     .lock()
                     .ok()
-                    .map(|g| g.is_joined() && g.room_deadline.map(|d| now >= d).unwrap_or(false))
+                    .map(|g| g.is_joined())
                     .unwrap_or(false);
+                let pending_rotate = joined && shared.has_pending_intent_session_joined();
+                let pending_due = pending_rotate
+                    && shared
+                        .pending_retry_not_before()
+                        .map(|t| now >= t)
+                        .unwrap_or(true);
+                let room_due = joined
+                    && shared
+                        .auth
+                        .lock()
+                        .ok()
+                        .map(|g| g.room_deadline.map(|d| now >= d).unwrap_or(false))
+                        .unwrap_or(false);
+                // pending backoff must not be bypassed by TTL; during backoff only live refresh.
+                let need_room = pending_due || room_due;
                 if need_room {
-                    let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+                    let access = shared.auth.lock().ok().and_then(|g| {
+                        if g.is_joined() {
+                            g.access_token.clone()
+                        } else {
+                            None
+                        }
+                    });
                     let Some(access) = access else {
+                        if pending_due {
+                            shared.note_pending_token_failure();
+                        } else if let Ok(mut gate) = shared.auth.lock() {
+                            gate.room_deadline = Some(now + TOKEN_REFRESH_POLL);
+                        }
+                        continue;
+                    };
+                    // Lock order for pub reads: auth → intent → pending (helpers).
+                    // pending_due → pending key; else (TTL during backoff) → live key only.
+                    let (session_pub_b64, for_pending) = if pending_due {
+                        if let Some(b64) = shared.pending_session_pub_b64_if_joined() {
+                            (b64, true)
+                        } else if let Some(b64) = shared.live_session_pub_b64_if_joined() {
+                            (b64, false)
+                        } else {
+                            if let Ok(mut gate) = shared.auth.lock() {
+                                gate.room_deadline = Some(now + TOKEN_REFRESH_POLL);
+                            }
+                            continue;
+                        }
+                    } else if let Some(b64) = shared.live_session_pub_b64_if_joined() {
+                        (b64, false)
+                    } else {
                         if let Ok(mut gate) = shared.auth.lock() {
                             gate.room_deadline = Some(now + TOKEN_REFRESH_POLL);
                         }
                         continue;
                     };
-                    match fetch_guest_token(&shared.world_url, &shared.room_id, &access) {
+                    match world_token::fetch_guest_token(
+                        &shared.world_url,
+                        &shared.room_id,
+                        &access,
+                        &session_pub_b64,
+                    ) {
                         Ok(guest) => {
                             let local_sub = match jwt_sub::sub_unverified(&guest.token) {
                                 Ok(s) => s,
                                 Err(err) => {
                                     log::warn!("Room Token refresh: bad sub: {err:#}");
-                                    if let Ok(mut gate) = shared.auth.lock() {
+                                    if for_pending {
+                                        shared.note_pending_token_failure();
+                                    } else if let Ok(mut gate) = shared.auth.lock() {
                                         gate.room_deadline = Some(now + TOKEN_REFRESH_POLL);
                                     }
                                     continue;
                                 }
                             };
-                            if let Ok(mut gate) = shared.auth.lock() {
-                                if gate.is_joined() {
-                                    gate.apply_room_refresh(
-                                        guest.token,
-                                        local_sub,
-                                        guest.expires_in,
-                                    );
-                                    if let Ok(mut sess) = shared.intent_session.lock() {
-                                        if let Some(s) = sess.as_mut() {
-                                            s.mark_bind_pending();
-                                        }
+                            let applied = if for_pending {
+                                shared.commit_pending_session_with_token(
+                                    &session_pub_b64,
+                                    guest,
+                                    local_sub,
+                                )
+                            } else {
+                                shared.apply_room_token_if_session_matches(
+                                    &session_pub_b64,
+                                    guest,
+                                    local_sub,
+                                )
+                            };
+                            if applied {
+                                log::info!(
+                                    "Room Token {} (pending_rotate={for_pending})",
+                                    if for_pending {
+                                        "committed for host generation"
+                                    } else {
+                                        "refreshed; session rebind + liveliness pending"
                                     }
-                                    log::info!(
-                                        "Room Token refreshed expires_in={} (session rebind + liveliness pending)",
-                                        guest.expires_in
-                                    );
+                                );
+                            } else {
+                                log::info!(
+                                    "discard Room Token fetch (session_pub no longer expected; pending={for_pending})"
+                                );
+                                shared.clear_pending_if_not_joined();
+                                if for_pending && shared.has_pending_intent_session_joined() {
+                                    shared.note_pending_token_failure();
+                                } else if !for_pending {
+                                    shared.force_room_token_refresh_soon();
                                 }
                             }
                         }
                         Err(err) => {
                             log::warn!("Room Token refresh failed: {err:#}");
-                            if let Ok(mut gate) = shared.auth.lock() {
+                            if for_pending {
+                                shared.note_pending_token_failure();
+                            } else if let Ok(mut gate) = shared.auth.lock() {
                                 gate.room_deadline = Some(now + TOKEN_REFRESH_POLL);
                             }
                         }
@@ -1311,6 +1381,8 @@ fn main() -> Result<()> {
         assets_url: Arc::<str>::from(assets_url.clone()),
         auth: Mutex::new(gate),
         intent_session: Mutex::new(None),
+        pending_intent_session: Mutex::new(None),
+        pending_retry: Mutex::new(None),
         host_pub: Mutex::new(None),
         manifest_gen_rev: Mutex::new(None),
         presence_gen_rev: Mutex::new(None),

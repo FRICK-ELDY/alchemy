@@ -192,6 +192,12 @@ pub struct SharedState {
     pub auth: Mutex<AuthGate>,
     /// Ed25519 Intent session while joined (x0023).
     pub intent_session: Mutex<Option<crate::intent_session::IntentSession>>,
+    /// Host-generation rotate: new key held here until Room Token arrives (x003e).
+    /// Live publisher keeps `intent_session` (old key + old Token) until atomic commit.
+    /// Install / clear only under lock order auth → intent_session → pending.
+    pub pending_intent_session: Mutex<Option<crate::intent_session::IntentSession>>,
+    /// Earliest time + last wait for pending Token fetch backoff (world outage).
+    pub pending_retry: Mutex<Option<(Instant, Duration)>>,
     /// Host Frame verify key from Manifest `host_pub` (x0023).
     pub host_pub: Mutex<Option<Vec<u8>>>,
     /// Last accepted Manifest `(host_generation, revision)` watermark (x003a).
@@ -261,11 +267,18 @@ impl SharedState {
                 ..Default::default()
             };
         }
+        // Lock order: auth → intent_session → pending (matches Token commit paths).
         if let Ok(mut auth) = self.auth.lock() {
             auth.clear_room();
-        }
-        if let Ok(mut session) = self.intent_session.lock() {
-            *session = None;
+            if let Ok(mut session) = self.intent_session.lock() {
+                *session = None;
+                if let Ok(mut pending) = self.pending_intent_session.lock() {
+                    *pending = None;
+                }
+            }
+            if let Ok(mut retry) = self.pending_retry.lock() {
+                *retry = None;
+            }
         }
         // Same lock order as Manifest apply (host_pub → manifest_gen_rev) so leave
         // cannot interleave with AcceptSameOrForward while watermark still set (x003a).
@@ -294,7 +307,9 @@ impl SharedState {
         }
     }
 
-    /// Host generation change: clear world + Presence watermark + mint a new Intent session key (x0023 / x003a).
+    /// Host generation change: clear world + Presence watermark (x0023 / x003a).
+    /// x003e: mint new Intent key into `pending_intent_session` only; live publisher keeps
+    /// old key + old Token until Room Token for the new pub arrives, then **atomic** swap.
     pub fn reset_for_host_generation(&self) {
         if let Ok(mut world) = self.world.lock() {
             *world = WorldView::default();
@@ -306,10 +321,275 @@ impl SharedState {
         if let Ok(mut slot) = self.presence_gen_rev.lock() {
             *slot = None;
         }
-        if let Ok(mut sess) = self.intent_session.lock() {
-            if sess.is_some() {
-                *sess = Some(crate::intent_session::IntentSession::new());
-                log::info!("intent session renewed (new Ed25519 key) for host generation change");
+
+        let Some((session_pub_b64, access)) = self.try_install_pending_for_generation() else {
+            return;
+        };
+
+        let Some(access) = access else {
+            log::warn!(
+                "host generation: joined with live session but no access_token; pending kept, schedule retry"
+            );
+            self.note_pending_token_failure();
+            return;
+        };
+
+        match crate::world_token::fetch_guest_token(
+            &self.world_url,
+            &self.room_id,
+            &access,
+            &session_pub_b64,
+        ) {
+            Ok(guest) => {
+                let local_sub = match crate::jwt_sub::sub_unverified(&guest.token) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        log::warn!(
+                            "host generation Room Token: bad sub: {err:#}; schedule refresh retry"
+                        );
+                        if self.has_pending_intent_session_joined() {
+                            self.note_pending_token_failure();
+                        }
+                        return;
+                    }
+                };
+                if self.commit_pending_session_with_token(&session_pub_b64, guest, local_sub) {
+                    log::info!(
+                        "Room Token + Intent session swapped for new host generation (cnf aligned)"
+                    );
+                } else {
+                    log::warn!(
+                        "host generation commit skipped (leave/newer pending); schedule retry if still joined"
+                    );
+                    if self.has_pending_intent_session_joined() {
+                        self.note_pending_token_failure();
+                    }
+                }
+            }
+            Err(err) => {
+                log::warn!(
+                    "host generation Room Token sync fetch failed: {err:#}; keep old key, retry via refresh"
+                );
+                if self.has_pending_intent_session_joined() {
+                    self.note_pending_token_failure();
+                }
+            }
+        }
+    }
+
+    /// Install pending Intent key only while joined with a live session.
+    /// Lock order: auth → intent_session → pending → pending_retry.
+    /// Returns `(session_pub_b64, access_token)` or `None` if not eligible / lock failure.
+    fn try_install_pending_for_generation(&self) -> Option<(String, Option<String>)> {
+        let Ok(auth) = self.auth.lock() else {
+            log::warn!("host generation: auth lock failed; skip pending install");
+            return None;
+        };
+        let Ok(sess) = self.intent_session.lock() else {
+            log::warn!("host generation: intent_session lock failed; skip pending install");
+            return None;
+        };
+        let Ok(mut pending) = self.pending_intent_session.lock() else {
+            log::warn!("host generation: pending lock failed; skip pending install");
+            return None;
+        };
+        if !auth.is_joined() || sess.is_none() {
+            return None;
+        }
+        let new_session = crate::intent_session::IntentSession::new();
+        let session_pub_b64 = new_session.session_pub_b64();
+        *pending = Some(new_session);
+        if let Ok(mut retry) = self.pending_retry.lock() {
+            *retry = None;
+        }
+        let access = auth.access_token.clone();
+        log::info!("pending Intent session for host generation (live key unchanged until Token)");
+        Some((session_pub_b64, access))
+    }
+
+    /// True when a host-generation Intent key awaits matching Room Token **and** still joined.
+    /// Lock order: auth → intent_session → pending.
+    pub fn has_pending_intent_session_joined(&self) -> bool {
+        let Ok(auth) = self.auth.lock() else {
+            return false;
+        };
+        if !auth.is_joined() {
+            return false;
+        }
+        let Ok(_sess) = self.intent_session.lock() else {
+            return false;
+        };
+        self.pending_intent_session
+            .lock()
+            .ok()
+            .map(|p| p.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Pending session_pub while joined, else `None`. Lock order: auth → intent → pending.
+    pub fn pending_session_pub_b64_if_joined(&self) -> Option<String> {
+        let Ok(auth) = self.auth.lock() else {
+            return None;
+        };
+        if !auth.is_joined() {
+            return None;
+        }
+        let Ok(_sess) = self.intent_session.lock() else {
+            return None;
+        };
+        let Ok(pending) = self.pending_intent_session.lock() else {
+            return None;
+        };
+        pending.as_ref().map(|s| s.session_pub_b64())
+    }
+
+    /// Live session_pub while joined (no pending install). Lock order: auth → intent → pending.
+    pub fn live_session_pub_b64_if_joined(&self) -> Option<String> {
+        let Ok(auth) = self.auth.lock() else {
+            return None;
+        };
+        if !auth.is_joined() {
+            return None;
+        }
+        let Ok(sess) = self.intent_session.lock() else {
+            return None;
+        };
+        let Ok(_pending) = self.pending_intent_session.lock() else {
+            return None;
+        };
+        sess.as_ref().map(|s| s.session_pub_b64())
+    }
+
+    /// Drop orphan pending after leave (lock order: auth → intent → pending → retry).
+    pub fn clear_pending_if_not_joined(&self) {
+        let Ok(auth) = self.auth.lock() else {
+            return;
+        };
+        if auth.is_joined() {
+            return;
+        }
+        let Ok(_sess) = self.intent_session.lock() else {
+            return;
+        };
+        let Ok(mut pending) = self.pending_intent_session.lock() else {
+            return;
+        };
+        if pending.is_some() {
+            log::info!("clear orphan pending Intent session (not joined)");
+            *pending = None;
+        }
+        if let Ok(mut retry) = self.pending_retry.lock() {
+            *retry = None;
+        }
+    }
+
+    /// Back off pending Token retries (1s → 2s → … → 30s).
+    pub fn note_pending_token_failure(&self) {
+        const BACKOFF_START: Duration = Duration::from_secs(1);
+        const BACKOFF_MAX: Duration = Duration::from_secs(30);
+        let now = Instant::now();
+        let Ok(mut retry) = self.pending_retry.lock() else {
+            return;
+        };
+        let last_wait = retry.map(|(_, w)| w).unwrap_or(Duration::ZERO);
+        let wait = if last_wait.is_zero() {
+            BACKOFF_START
+        } else {
+            last_wait.saturating_mul(2).min(BACKOFF_MAX)
+        };
+        *retry = Some((now + wait, wait));
+    }
+
+    /// Clear pending fetch backoff after a successful commit.
+    pub fn clear_pending_token_backoff(&self) {
+        if let Ok(mut retry) = self.pending_retry.lock() {
+            *retry = None;
+        }
+    }
+
+    /// When to next attempt a pending Token fetch (`None` = immediately if pending).
+    pub fn pending_retry_not_before(&self) -> Option<Instant> {
+        self.pending_retry
+            .lock()
+            .ok()
+            .and_then(|g| g.map(|(t, _)| t))
+    }
+
+    /// Commit pending Intent key + Room Token together.
+    /// Lock order: auth → intent_session → pending_intent_session.
+    pub fn commit_pending_session_with_token(
+        &self,
+        expected_pub_b64: &str,
+        guest: crate::world_token::GuestToken,
+        local_sub: String,
+    ) -> bool {
+        let Ok(mut auth) = self.auth.lock() else {
+            return false;
+        };
+        let Ok(mut sess) = self.intent_session.lock() else {
+            return false;
+        };
+        let Ok(mut pending) = self.pending_intent_session.lock() else {
+            return false;
+        };
+        if !auth.is_joined() {
+            return false;
+        }
+        let Some(pending_sess) = pending.as_ref() else {
+            return false;
+        };
+        if pending_sess.session_pub_b64() != expected_pub_b64 {
+            return false;
+        }
+        let Some(mut new_sess) = pending.take() else {
+            return false;
+        };
+        new_sess.mark_bind_pending();
+        auth.apply_room_refresh(guest.token, local_sub, guest.expires_in);
+        *sess = Some(new_sess);
+        drop(pending);
+        drop(sess);
+        drop(auth);
+        self.clear_pending_token_backoff();
+        true
+    }
+
+    /// Refresh current live session Token only if `session_pub` still matches.
+    /// Lock order: auth → intent_session → pending_intent_session.
+    pub fn apply_room_token_if_session_matches(
+        &self,
+        expected_pub_b64: &str,
+        guest: crate::world_token::GuestToken,
+        local_sub: String,
+    ) -> bool {
+        let Ok(mut auth) = self.auth.lock() else {
+            return false;
+        };
+        let Ok(mut sess) = self.intent_session.lock() else {
+            return false;
+        };
+        let Ok(_pending) = self.pending_intent_session.lock() else {
+            return false;
+        };
+        if !auth.is_joined() {
+            return false;
+        }
+        let Some(s) = sess.as_mut() else {
+            return false;
+        };
+        if s.session_pub_b64() != expected_pub_b64 {
+            return false;
+        }
+        auth.apply_room_refresh(guest.token, local_sub, guest.expires_in);
+        s.mark_bind_pending();
+        true
+    }
+
+    /// Wake the background refresh loop without waiting a full poll interval.
+    pub fn force_room_token_refresh_soon(&self) {
+        if let Ok(mut auth) = self.auth.lock() {
+            if auth.is_joined() {
+                auth.room_deadline = Some(Instant::now());
             }
         }
     }
