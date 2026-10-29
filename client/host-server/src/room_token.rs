@@ -2,6 +2,8 @@
 //!
 //! Guarantees: RS256 verify + iss/aud/exp/room_id checks; Room Token issued only with auth JWT.
 //! x0021: verify never does HTTP on the input path (SWR + background refresh).
+//! x0040: JWKS soft TTL (SWR) + **hard stale TTL** — beyond hard, bind verify fails closed
+//! until background refresh succeeds (revoked world keys cannot be used forever).
 //! Long-running host: `HostCredentialChain` (auth → Room Token → HostAttestation) plus
 //! `ManifestSealCache` (body blake3 → world seal).
 //! x0039: seal request includes `host_attestation`; world rejects non-canonical blake3.
@@ -9,7 +11,8 @@
 //! [`HostPublishSnapshot`] only. Soft-deadline refresh failure retries with backoff and
 //! keeps the last good snapshot. **Fail-closed** means stop publishing after hard expiry
 //! (full TTL), not kill the process on a transient 502.
-//! Non-guarantees: auth UI, session MAC (P2); Zenoh publish off the physics thread.
+//! Non-guarantees: auth UI, session MAC (P2); Zenoh publish off the physics thread;
+//! client `world_jwks` hard TTL (P2-3).
 
 use alchemy_protocol::wire_crypto::manifest_seal_blake3_hex;
 use alchemy_protocol::{
@@ -31,6 +34,8 @@ const AUDIENCE: &str = "alchemy-room";
 const DEFAULT_AUTH_URL: &str = "http://127.0.0.1:4002";
 /// Soft TTL: after this, verify still uses cache and kicks background refresh (SWR).
 const JWKS_SOFT_TTL: Duration = Duration::from_secs(60);
+/// Hard stale: beyond this, Room Token verify fails until refresh (x0040 / P1-5).
+const JWKS_HARD_TTL: Duration = Duration::from_secs(300);
 const JWKS_HTTP_TIMEOUT: Duration = Duration::from_secs(2);
 /// Auth / Room Token / HostAttestation / ManifestSeal HTTP (credential worker only; x003d).
 const CREDENTIAL_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -101,6 +106,7 @@ struct KeyCache {
     keys: HashMap<String, DecodingKey>,
     fetched_at: Instant,
     last_unknown_kid_kick: Option<Instant>,
+    last_hard_stale_kick: Option<Instant>,
 }
 
 impl RoomTokenVerifier {
@@ -113,6 +119,7 @@ impl RoomTokenVerifier {
                 keys: HashMap::new(),
                 fetched_at: Instant::now() - Duration::from_secs(3600),
                 last_unknown_kid_kick: None,
+                last_hard_stale_kick: None,
             }),
             refresh_tx: Mutex::new(None),
             bg_started: AtomicBool::new(false),
@@ -183,7 +190,8 @@ impl RoomTokenVerifier {
         Ok(())
     }
 
-    /// Verify using cached keys only (no HTTP). Soft-stale cache still accepts (SWR).
+    /// Verify using cached keys only (no HTTP). Soft-stale cache still accepts (SWR);
+    /// hard-stale cache rejects until background refresh (x0040).
     pub fn verify(&self, token: &str) -> Result<RoomClaims> {
         if token.is_empty() {
             return Err(anyhow!("empty room token"));
@@ -199,7 +207,16 @@ impl RoomTokenVerifier {
             if cache.keys.is_empty() {
                 return Err(anyhow!("JWKS cache empty; call refresh_jwks before verify"));
             }
-            if cache.fetched_at.elapsed() > JWKS_SOFT_TTL {
+            let age = cache.fetched_at.elapsed();
+            if age > JWKS_HARD_TTL {
+                drop(cache);
+                self.kick_refresh_hard_stale();
+                return Err(anyhow!(
+                    "JWKS cache hard-stale (age > {}s); refresh required (x0040)",
+                    JWKS_HARD_TTL.as_secs()
+                ));
+            }
+            if age > JWKS_SOFT_TTL {
                 drop(cache);
                 self.kick_refresh();
             }
@@ -263,12 +280,34 @@ impl RoomTokenVerifier {
         self.kick_refresh();
     }
 
+    fn kick_refresh_hard_stale(&self) {
+        {
+            let mut cache = self.cache.write().expect("jwks cache lock");
+            if let Some(last) = cache.last_hard_stale_kick {
+                if last.elapsed() < UNKNOWN_KID_COOLDOWN {
+                    return;
+                }
+            }
+            cache.last_hard_stale_kick = Some(Instant::now());
+        }
+        self.kick_refresh();
+    }
+
     /// Test-only: inject a DecodingKey so `verify` works without HTTP JWKS.
     #[cfg(test)]
     pub fn insert_decoding_key_for_test(&self, kid: &str, key: DecodingKey) {
         let mut cache = self.cache.write().expect("jwks cache lock");
         cache.keys.insert(kid.to_string(), key);
         cache.fetched_at = Instant::now();
+    }
+
+    /// Test-only: age the JWKS cache (for soft/hard stale tests).
+    #[cfg(test)]
+    pub fn set_fetched_at_age_for_test(&self, age: Duration) {
+        let mut cache = self.cache.write().expect("jwks cache lock");
+        cache.fetched_at = Instant::now()
+            .checked_sub(age)
+            .expect("fetched_at age within Instant range");
     }
 }
 
@@ -1665,5 +1704,85 @@ mod tests {
         assert!(!is_blake3_hex("short"));
         assert!(!is_blake3_hex(&"zz".repeat(32)));
         assert!(!is_blake3_hex(&format!("{}!", "a".repeat(63))));
+    }
+
+    fn test_rsa_jwt(room_id: &str) -> (RoomTokenVerifier, String) {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        use pkcs1::EncodeRsaPrivateKey;
+        use pkcs8::EncodePublicKey;
+        use rsa::RsaPrivateKey;
+        use serde::Serialize;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let mut rng = rand::thread_rng();
+        let private = RsaPrivateKey::new(&mut rng, 2048).expect("rsa");
+        let priv_pem = private
+            .to_pkcs1_pem(pkcs1::LineEnding::LF)
+            .expect("priv pem");
+        let pub_pem = private
+            .to_public_key()
+            .to_public_key_pem(pkcs8::LineEnding::LF)
+            .expect("pub pem");
+        let encoding = EncodingKey::from_rsa_pem(priv_pem.as_bytes()).expect("enc");
+        let decoding = DecodingKey::from_rsa_pem(pub_pem.as_bytes()).expect("dec");
+        let verifier = RoomTokenVerifier::new("http://127.0.0.1:9", room_id);
+        verifier.insert_decoding_key_for_test("hard-kid", decoding);
+
+        #[derive(Serialize)]
+        struct Cnf {
+            spk: String,
+        }
+        #[derive(Serialize)]
+        struct Claims {
+            sub: String,
+            jti: String,
+            room_id: String,
+            role: String,
+            exp: usize,
+            iat: usize,
+            iss: String,
+            aud: String,
+            cnf: Cnf,
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as usize;
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("hard-kid".into());
+        let spk = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7u8; 32]);
+        let token = encode(
+            &header,
+            &Claims {
+                sub: "u-hard".into(),
+                jti: "j-hard".into(),
+                room_id: room_id.into(),
+                role: "guest".into(),
+                exp: now + 600,
+                iat: now,
+                iss: "alchemy-world".into(),
+                aud: "alchemy-room".into(),
+                cnf: Cnf { spk },
+            },
+            &encoding,
+        )
+        .expect("jwt");
+        (verifier, token)
+    }
+
+    #[test]
+    fn jwks_soft_accepts_hard_rejects_until_fresh() {
+        // One RSA fixture covers soft SWR + hard fail-closed (avoid dual 2048 gen).
+        let (verifier, token) = test_rsa_jwt("local");
+        verifier.set_fetched_at_age_for_test(Duration::from_secs(61));
+        assert!(
+            verifier.verify(&token).is_ok(),
+            "soft-stale must still accept (SWR)"
+        );
+        verifier.set_fetched_at_age_for_test(Duration::from_secs(301));
+        let err = verifier.verify(&token).expect_err("hard-stale");
+        assert!(err.to_string().contains("hard-stale"), "got: {err:#}");
+        verifier.set_fetched_at_age_for_test(Duration::from_secs(0));
+        assert!(verifier.verify(&token).is_ok());
     }
 }

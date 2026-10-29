@@ -2,7 +2,8 @@
 //!
 //! Guarantees: non-finite move_* / aim_* never reach physics; move magnitude
 //! capped to unit ball; Grab start requires player↔entity within [`MAX_GRAB_START_DISTANCE`].
-//! Non-guarantees: rate limits; aim still drives hold offset after a valid start.
+//! Non-guarantees: Intent Hz (see `intent_rate` / x0040); aim still drives hold offset
+//! after a valid start.
 
 use alchemy_protocol::InputEvent;
 
