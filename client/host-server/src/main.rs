@@ -1056,11 +1056,15 @@ fn main() -> Result<()> {
             last_manifest = Instant::now();
         }
 
-        for slot in 0..slot_count {
-            if occupied[slot].is_none() {
+        for (slot, (occupied_sub, &overlay)) in occupied
+            .iter()
+            .zip(by_slot.iter())
+            .take(slot_count)
+            .enumerate()
+        {
+            if occupied_sub.is_none() {
                 continue;
             }
-            let overlay = by_slot[slot];
             if overlay.active {
                 physics.apply_user_intent(slot, overlay.x, overlay.y, overlay.z, dt);
             }
@@ -1105,8 +1109,8 @@ fn main() -> Result<()> {
         if let Some((id, pose)) = moving_pose_from_sim(&physics) {
             all_poses.push((id, pose));
         }
-        for slot in 0..slot_count {
-            if occupied[slot].is_some() {
+        for (slot, occupied_sub) in occupied.iter().enumerate().take(slot_count) {
+            if occupied_sub.is_some() {
                 all_poses.push((
                     PhysicsWorld::user_root_entity_id(slot),
                     user_root_pose_from_sim(&physics, slot),
@@ -1138,8 +1142,8 @@ fn main() -> Result<()> {
         if last_log.elapsed() >= Duration::from_secs(1) {
             let (mx, my, mz) = physics.moving_translation();
             let mut roots = String::new();
-            for slot in 0..slot_count {
-                if occupied[slot].is_none() {
+            for (slot, occupied_sub) in occupied.iter().enumerate().take(slot_count) {
+                if occupied_sub.is_none() {
                     continue;
                 }
                 let (ux, uy, uz) = physics.user_root_translation(slot);
