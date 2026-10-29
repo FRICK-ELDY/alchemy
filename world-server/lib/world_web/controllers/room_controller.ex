@@ -6,6 +6,7 @@ defmodule WorldWeb.RoomController do
   alias World.CanonicalManifest
   alias World.HostAttestation
   alias World.ManifestSeal
+  alias World.RateLimit
   alias World.RoomAccess
   alias World.Rooms
   alias World.Token
@@ -14,44 +15,50 @@ defmodule WorldWeb.RoomController do
     room_id = Map.get(params, "room_id")
     visibility = Map.get(params, "visibility", "public")
 
-    case resolve_sub(conn, params) do
-      {:ok, owner_sub} ->
-        case Rooms.create(room_id, owner_sub, visibility) do
-          {:ok, id, stored_visibility} ->
-            conn
-            |> put_status(:created)
-            |> json(%{room_id: id, owner_sub: owner_sub, visibility: stored_visibility})
-
-          {:error, :already_exists} ->
-            conn
-            |> put_status(:conflict)
-            |> json(%{error: "room_already_exists"})
-
-          {:error, :missing_owner} ->
-            conn
-            |> put_status(:unprocessable_entity)
-            |> json(%{error: "missing_owner"})
-
-          {:error, :invalid_room_id} ->
-            conn
-            |> put_status(:unprocessable_entity)
-            |> json(%{error: "invalid_room_id"})
-
-          {:error, :invalid_visibility} ->
-            conn
-            |> put_status(:unprocessable_entity)
-            |> json(%{error: "invalid_visibility"})
-
-          {:error, :storage_error} ->
-            storage_unavailable(conn)
-        end
-
+    with {:ok, owner_sub} <- resolve_sub(conn, params),
+         {:ok, id, stored_visibility} <- Rooms.create(room_id, owner_sub, visibility) do
+      conn
+      |> put_status(:created)
+      |> json(%{room_id: id, owner_sub: owner_sub, visibility: stored_visibility})
+    else
       {:error, :anon_disabled} ->
         conn
         |> put_status(:unauthorized)
         |> json(%{error: "anon_tokens_disabled"})
+
+      {:error, reason} ->
+        render_create_error(conn, reason)
     end
   end
+
+  defp render_create_error(conn, :already_exists) do
+    conn |> put_status(:conflict) |> json(%{error: "room_already_exists"})
+  end
+
+  defp render_create_error(conn, :missing_owner) do
+    conn |> put_status(:unprocessable_entity) |> json(%{error: "missing_owner"})
+  end
+
+  defp render_create_error(conn, :invalid_room_id) do
+    conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_room_id"})
+  end
+
+  defp render_create_error(conn, :invalid_visibility) do
+    conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_visibility"})
+  end
+
+  defp render_create_error(conn, :owner_room_limit) do
+    conn |> put_status(:forbidden) |> json(%{error: "owner_room_limit"})
+  end
+
+  defp render_create_error(conn, :rate_limited) do
+    conn
+    |> put_resp_header("retry-after", Integer.to_string(room_create_retry_after_seconds()))
+    |> put_status(:too_many_requests)
+    |> json(%{error: "rate_limited"})
+  end
+
+  defp render_create_error(conn, :storage_error), do: storage_unavailable(conn)
 
   def create_token(conn, %{"room_id" => room_id} = params) do
     role = Map.get(params, "role", "guest")
@@ -515,6 +522,18 @@ defmodule WorldWeb.RoomController do
   end
 
   defp require_host_token(_, _), do: {:error, :not_host_token}
+
+  defp room_create_retry_after_seconds do
+    period_ms =
+      Application.get_env(:world, RateLimit, [])
+      |> Keyword.get(:limits, %{})
+      |> get_in([:room_create, :owner, :period_ms])
+
+    case period_ms do
+      ms when is_integer(ms) and ms > 0 -> RateLimit.retry_after_seconds(ms)
+      _ -> 60
+    end
+  end
 
   defp storage_unavailable(conn) do
     conn

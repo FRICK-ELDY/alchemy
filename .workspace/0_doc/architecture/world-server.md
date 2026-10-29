@@ -11,7 +11,7 @@
 
 | 保証する | 保証しない |
 |:---|:---|
-| Room の作成（Ash + SQLite。`owner_sub` + DemoScene + `visibility`・x0028/x0034） | World 一覧 UI / Group |
+| Room の作成（Ash + SQLite。`owner_sub` + DemoScene + `visibility`・x0028/x0034）。**per-owner 件数上限**（既定 32）+ **作成レート制限**（既定 10/60s・**insert 前消費**・429 `Retry-After`・x004c） | World 一覧 UI / Group；厳密な並行 cap；削除履歴の課金；成功時のみの rate 課金 |
 | 短命 Room Token（RS256）の発行（**`cnf.spk` = session_pub・x003e**） | Friendship 正本（auth）。Token 前に S2S 照会；`jkt` 互換 |
 | 7段階公開範囲 ACL（Token 発行時・x0034–x0036） | unfollow / visibility 変更時の既発行 Token 即時失効（TTL まで有効） |
 | client Home「新規ワールド作成」仮 UI でアクセスレベル選択→ create/PUT + 入室（x0037） | UI デザイン最終化；`room_id` 動的切替；テンプレ複数；入室中の途中変更 UI |
@@ -55,7 +55,7 @@
 |:---|:---|:---|:---|
 | GET | `/health` | 不要 | 生存確認 |
 | GET | `/.well-known/jwks.json` | 不要 | Room Token 検証用公開鍵 |
-| POST | `/api/v1/rooms` | Bearer（auth JWT） | Room 作成（任意 `visibility`） |
+| POST | `/api/v1/rooms` | Bearer（auth JWT） | Room 作成（任意 `visibility`）。超過は `owner_room_limit` 403 / `rate_limited` 429（x004c） |
 | PUT | `/api/v1/rooms/:room_id/visibility` | Bearer（auth JWT） | owner のみ更新 |
 | POST | `/api/v1/rooms/:room_id/tokens` | Bearer（auth JWT） | Token 発行（visibility ACL 後） |
 | POST | `/api/v1/rooms/:room_id/host_keys` | Bearer（**host Room Token**） | HostAttestation 発行（`host_pub` base64url・`host_generation`・x0025 / x003a） |

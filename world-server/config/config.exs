@@ -22,7 +22,15 @@ config :world,
   # x0034 S2S — auth_internal_token: dev/test only; prod requires AUTH_INTERNAL_TOKEN
   auth_internal_url: "http://127.0.0.1:4002",
   auth_access_mode: :http,
-  trusted_proxies: []
+  trusted_proxies: [],
+  # x004c: soft per-owner room cap (check-then-insert).
+  max_rooms_per_owner: 32
+
+config :world, World.RateLimit,
+  enabled: true,
+  limits: %{
+    room_create: %{owner: %{limit: 10, period_ms: 60_000}}
+  }
 
 config :world, WorldWeb.Endpoint,
   url: [host: "localhost"],

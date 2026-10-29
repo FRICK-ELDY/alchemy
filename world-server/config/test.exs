@@ -24,7 +24,15 @@ config :world,
   auth_access_mode: :stub,
   auth_access_stub: fn _owner, _viewer, _vis -> false end,
   auth_internal_token: "dev-internal-token",
-  trusted_proxies: []
+  trusted_proxies: [],
+  # Headroom for suite; dedicated tests lower via Application.put_env.
+  max_rooms_per_owner: 10_000
+
+config :world, World.RateLimit,
+  enabled: false,
+  limits: %{
+    room_create: %{owner: %{limit: 10, period_ms: 60_000}}
+  }
 
 config :logger, level: :warning
 config :phoenix, :plug_init_mode, :runtime

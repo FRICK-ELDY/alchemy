@@ -14,7 +14,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | メタ（CasObject / BlobRef / QuotaLedger）を SQLite に置く | GLB/KTX2 本体を DB に置く |
-| 不変バイナリを CAS（BLAKE3 キー）に置く | Vault / Folder / Commit（Spatial VCS） |
+| 不変バイナリを CAS（BLAKE3 キー）に置く。digest は `b3sum`（Unix=FIFO・**内容 tempfile なし** / Windows=短命 content tempfile・x004c） | Vault / Folder / Commit（Spatial VCS）；Rustler NIF（Hex 承認後）；FIFO ノード非作成；timeout 時 OS 子の一瞬 orphan |
 | `CasObject`（物理・所有者なし）と `BlobRef`（owner×blake3）を分離（x003f） | BlobGrant / StorageVault（→ draft / P4-5） |
 | PUT: `reserved_bytes` 予約 → TX 外 CAS put → used 振替。失敗時は**予約解放のみ**（CAS は消さない＝並行同一 hash 安全） | Oban・予約期限切れジョブ・署名 URL 直 PUT・orphan CAS の定期 GC |
 | `ASSETS_CAS_BACKEND=local\|s3` で置き場切替（x001c）。**test では runtime が CAS env を無視**（x001e） | 公開バケット・CDN カスタムドメイン |

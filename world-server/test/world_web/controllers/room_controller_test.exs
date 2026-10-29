@@ -25,6 +25,67 @@ defmodule WorldWeb.RoomControllerTest do
     assert %{"error" => "missing_auth_token"} = json_response(conn, 401)
   end
 
+  test "create returns owner_room_limit when capped (x004c)", %{conn: conn, signer: signer} do
+    previous = Application.get_env(:world, :max_rooms_per_owner)
+    Application.put_env(:world, :max_rooms_per_owner, 1)
+    sub = "44444444-4444-4444-4444-444444444444"
+
+    on_exit(fn ->
+      if is_nil(previous) do
+        Application.delete_env(:world, :max_rooms_per_owner)
+      else
+        Application.put_env(:world, :max_rooms_per_owner, previous)
+      end
+    end)
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> post("/api/v1/rooms", %{room_id: "cap-http-a"})
+
+    assert %{"room_id" => "cap-http-a"} = json_response(conn, 201)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> post("/api/v1/rooms", %{room_id: "cap-http-b"})
+
+    assert %{"error" => "owner_room_limit"} = json_response(conn, 403)
+  end
+
+  test "create returns rate_limited when window exceeded (x004c)", %{conn: conn, signer: signer} do
+    previous = Application.get_env(:world, World.RateLimit, [])
+
+    Application.put_env(:world, World.RateLimit,
+      enabled: true,
+      limits: %{room_create: %{owner: %{limit: 1, period_ms: 60_000}}}
+    )
+
+    World.RateLimit.reset()
+    sub = "55555555-5555-5555-5555-555555555555"
+
+    on_exit(fn ->
+      Application.put_env(:world, World.RateLimit, previous)
+      World.RateLimit.reset()
+    end)
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> post("/api/v1/rooms", %{room_id: "rl-http-a"})
+
+    assert %{"room_id" => "rl-http-a"} = json_response(conn, 201)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> post("/api/v1/rooms", %{room_id: "rl-http-b"})
+
+    assert %{"error" => "rate_limited"} = json_response(conn, 429)
+    [retry_after] = get_resp_header(conn, "retry-after")
+    assert String.to_integer(retry_after) in 1..60
+  end
+
   test "creates room and issues host token to owner", %{conn: conn, signer: signer} do
     sub = "22222222-2222-2222-2222-222222222222"
     conn = TestAuthHelpers.put_auth(conn, signer, sub)

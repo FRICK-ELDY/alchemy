@@ -26,6 +26,43 @@ defmodule World.RoomsTest do
     assert {:error, :missing_owner} = Rooms.create("ok-id", "")
   end
 
+  test "create rejects when owner hits max_rooms_per_owner (x004c)" do
+    previous = Application.get_env(:world, :max_rooms_per_owner)
+    Application.put_env(:world, :max_rooms_per_owner, 2)
+
+    on_exit(fn ->
+      if is_nil(previous) do
+        Application.delete_env(:world, :max_rooms_per_owner)
+      else
+        Application.put_env(:world, :max_rooms_per_owner, previous)
+      end
+    end)
+
+    assert {:ok, _, _} = Rooms.create("cap-a", @owner)
+    assert {:ok, _, _} = Rooms.create("cap-b", @owner)
+    assert {:error, :owner_room_limit} = Rooms.create("cap-c", @owner)
+  end
+
+  test "create rate-limits per owner when enabled (x004c)" do
+    previous = Application.get_env(:world, World.RateLimit, [])
+
+    Application.put_env(:world, World.RateLimit,
+      enabled: true,
+      limits: %{room_create: %{owner: %{limit: 2, period_ms: 60_000}}}
+    )
+
+    World.RateLimit.reset()
+
+    on_exit(fn ->
+      Application.put_env(:world, World.RateLimit, previous)
+      World.RateLimit.reset()
+    end)
+
+    assert {:ok, _, _} = Rooms.create("rl-a", @owner)
+    assert {:ok, _, _} = Rooms.create("rl-b", @owner)
+    assert {:error, :rate_limited} = Rooms.create("rl-c", @owner)
+  end
+
   test "require_existing and scene return not_found for missing rooms" do
     assert {:error, :not_found} = Rooms.require_existing("ghost-room")
     assert {:error, :not_found} = Rooms.scene("ghost-room")

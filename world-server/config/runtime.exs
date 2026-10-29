@@ -51,6 +51,32 @@ if audience = System.get_env("AUTH_JWT_AUDIENCE") do
   config :world, auth_jwt_audience: audience
 end
 
+# x004c: optional ops overrides for room create caps.
+if max = System.get_env("WORLD_MAX_ROOMS_PER_OWNER") do
+  config :world, max_rooms_per_owner: String.to_integer(max)
+end
+
+# x004c: override room_create.owner only — other RateLimit keys (enabled / future axes)
+# stay from config.exs unless WORLD_RATE_LIMIT_ENABLED is set.
+# WORLD_ROOM_CREATE_PERIOD_MS is honored only together with WORLD_ROOM_CREATE_LIMIT
+# (period-only override is intentionally out of contract).
+if limit = System.get_env("WORLD_ROOM_CREATE_LIMIT") do
+  period_ms =
+    case System.get_env("WORLD_ROOM_CREATE_PERIOD_MS") do
+      nil -> 60_000
+      ms -> String.to_integer(ms)
+    end
+
+  config :world, World.RateLimit,
+    limits: %{
+      room_create: %{owner: %{limit: String.to_integer(limit), period_ms: period_ms}}
+    }
+end
+
+if enabled = System.get_env("WORLD_RATE_LIMIT_ENABLED") do
+  config :world, World.RateLimit, enabled: enabled in ~w(true 1)
+end
+
 if System.get_env("BIND_ALL") in ~w(true 1) do
   config :world, WorldWeb.Endpoint,
     http: [ip: {0, 0, 0, 0}, port: port],

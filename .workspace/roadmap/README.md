@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x004c`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x004d`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -126,10 +126,11 @@ depends_on: [x0006]
 | x0049 | — | done | metrics 最小（localhost Prometheus text・P3-4） | [x0049-minimal-metrics.md](slices/x0049-minimal-metrics.md) |
 | x004a | — | done | README / roadmap 鮮度（P3-5・vision 本文は未） | [x004a-docs-freshness.md](slices/x004a-docs-freshness.md) |
 | x004b | — | done | ClientIp 共有化 + HTTP inspect 除去（P3-6） | [x004b-client-ip-shared-inspect.md](slices/x004b-client-ip-shared-inspect.md) |
+| x004c | — | done | BLAKE3 FIFO ストリーム + Room 作成上限（P3-7） | [x004c-blake3-stream-room-limits.md](slices/x004c-blake3-stream-room-limits.md) |
 
-**現在の次:** **P3-7** BLAKE3 ストリーミング・Room 作成上限、または **P2-1 deferred**（Zenoh mTLS / Relay）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
+**現在の次:** **P3-8** は done（x0045）。残り P3 は **P3-9** cargo-fuzz / **P3-10** USER_ROOT_SLOTS、または **P2-1 deferred**（Zenoh mTLS / Relay）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
 
-次の空き番号は **`x004c`**。
+次の空き番号は **`x004d`**。
 
 
 ## 関連

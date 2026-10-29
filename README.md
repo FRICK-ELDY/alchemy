@@ -6,16 +6,16 @@
 ネイティブ Windows の日常 `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。  
 **テスター配布 ZIP**（ネイティブ Windows x64）は [Releases（Pre-release）](https://github.com/FRICK-ELDY/alchemy/releases) · 手順 [windows-tester-zip.md](.workspace/0_doc/manual/windows-tester-zip.md)。版名は `v0.0.0-dev.YYYYMMDDHHMM`（JST）。
 
-## 現状（〜x0049）
+## 現状（〜x004c）
 
 手通し正本は **Desktop（x0020）**: 日常スタック（`:4002/:4003/:4004` + zenohd `:7447`）。手順は下記、env 例は [`client/env.desktop.example`](client/env.desktop.example)、機械検証は `make smoke-desktop-handthrough`。
 
 `host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（最大 **4**・`cnf.spk`）・**Presence / Leave / liveliness**・**30Hz 署名デルタ**・credential / Zenoh put worker。`client` は Home login・canonical **ManifestSeal**・**generation/revision** ゲート・decode 上限・Desktop/XR Grab。  
 **暗号・門番（〜x0045）:** 検証失敗は discard、Intent rate + JWKS hard stale、Grab hold 距離クランプ。  
-**運用・品質（x0046–x0049）:** adversarial E2E、launcher CI + 再起動ポリシー、asset error placeholder + HTTP timeout、**localhost 専用 `/metrics`**（公網・Tunnel に出さない）。  
+**運用・品質（x0046–x004c）:** adversarial E2E、launcher CI、asset placeholder + HTTP timeout、localhost `/metrics`、ClientIp 共有、**BLAKE3 FIFO（内容 tempfile なし）+ Room 作成上限**。  
 **LAN / HTTPS / WAN:** zenohd + `ZENOH_CONNECT`；Tunnel（[`edge/cloudflared/`](edge/cloudflared/)）；WAN は **TLS**（x0022 · [手順書](.workspace/0_doc/manual/zenoh-wan-conoha.md)）。  
 **Assets:** CAS local / **R2**（GET は署名 URL 302）。**Hermetic E2E（x001f）:** `docker-compose.e2e.yml`。  
-次の空き ID = **`x004c`**。次帯は **P3-7**（または P2-1 mTLS deferred）。[roadmap](.workspace/roadmap/README.md)。
+次の空き ID = **`x004d`**。次帯は **P3-9/P3-10** または **P2-1 mTLS deferred**。[roadmap](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|

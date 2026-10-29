@@ -9,6 +9,7 @@ defmodule World.Application do
       WorldWeb.Telemetry,
       World.Repo,
       {Phoenix.PubSub, name: World.PubSub},
+      World.RateLimit,
       World.Token.Keys,
       World.Auth.Jwks,
       WorldWeb.Endpoint

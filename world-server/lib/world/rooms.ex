@@ -4,25 +4,28 @@ defmodule World.Rooms do
 
   Guarantees: create / owner / scene / visibility backed by Ash + SQLite (survives restart).
   Non-guarantees: UGC scene edits; multi-node replication; Postgres (swap path documented);
-  Room Token revocation on visibility / friendship change (TTL-only; see RoomAccess).
+  Room Token revocation on visibility / friendship change (TTL-only; see RoomAccess);
+  strict concurrent owner-cap under race (soft check-then-insert · x004c).
 
   x0021: `owner_sub` set only via `create/3` (`{:ok, room_id, visibility}`).
   Token issuance never creates a room.
   x0027: DemoScene assigned at create and returned by `scene/1`.
-
-
+  x004c: per-owner room count cap + create rate limit.
+  Rate limit is consumed **before** insert (already_exists / cap / storage 失敗でも枠を焼く · anti-abuse)。
 
   Authorization: use `ensure_owner/2` (and `require_existing/1` for existence-only).
   Do not infer auth from boolean helpers — those APIs are intentionally absent so
   storage failures cannot collapse to `false` / `nil`.
 
-  Errors: `:invalid_room_id` / `:already_exists` / `:not_found` are client-facing.
+  Errors: `:invalid_room_id` / `:already_exists` / `:not_found` /
+  `:owner_room_limit` / `:rate_limited` are client-facing.
   `:storage_error` is infrastructure (SQLite busy, disk, Repo) → HTTP 5xx.
   """
 
   require Logger
 
   alias World.DemoScene
+  alias World.RateLimit
   alias World.Rooms.Room
 
   @type room_id :: String.t()
@@ -36,6 +39,8 @@ defmodule World.Rooms do
              | :already_exists
              | :missing_owner
              | :invalid_visibility
+             | :owner_room_limit
+             | :rate_limited
              | storage_error()}
   def create(room_id, owner_sub, visibility \\ "public")
 
@@ -50,12 +55,16 @@ defmodule World.Rooms do
       when is_binary(room_id) and is_binary(owner_sub) and is_binary(visibility) do
     with :ok <- validate_room_id(room_id),
          {:ok, vis} <- World.Visibility.parse(visibility),
+         :ok <- hit_create_rate_limit(owner_sub),
+         :ok <- ensure_under_owner_cap(owner_sub),
          {:ok, %Room{room_id: id, visibility: stored}} <- insert_room(room_id, owner_sub, vis) do
       {:ok, id, stored}
     else
       {:error, :invalid_room_id} = err -> err
       {:error, :invalid_visibility} = err -> err
       {:error, :already_exists} = err -> err
+      {:error, :owner_room_limit} = err -> err
+      {:error, :rate_limited} = err -> err
       {:error, :storage_error} = err -> err
       {:error, error} -> map_create_error(error)
     end
@@ -336,6 +345,50 @@ defmodule World.Rooms do
 
   defp owner_matches(%Room{owner_sub: owner}, sub) when owner == sub, do: :ok
   defp owner_matches(%Room{}, _), do: {:error, :forbidden_host}
+
+  defp hit_create_rate_limit(owner_sub) do
+    limits =
+      Application.get_env(:world, RateLimit, [])
+      |> Keyword.get(:limits, %{})
+
+    case get_in(limits, [:room_create, :owner]) do
+      %{limit: limit, period_ms: period_ms} = cfg
+      when is_integer(limit) and is_integer(period_ms) ->
+        RateLimit.hit(:room_create_owner, owner_sub, cfg)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp ensure_under_owner_cap(owner_sub) do
+    max = Application.get_env(:world, :max_rooms_per_owner, 32)
+
+    case count_owned(owner_sub) do
+      {:ok, count} when count >= max -> {:error, :owner_room_limit}
+      {:ok, _} -> :ok
+      {:error, :storage_error} = err -> err
+    end
+  end
+
+  defp count_owned(owner_sub) do
+    case World.Repo.query(
+           "SELECT COUNT(*) FROM rooms WHERE owner_sub = ?",
+           [owner_sub]
+         ) do
+      {:ok, %{rows: [[count]]}} when is_integer(count) ->
+        {:ok, count}
+
+      {:ok, other} ->
+        Logger.error("World.Rooms.count_owned unexpected rows: #{inspect(other)}")
+        {:error, :storage_error}
+
+      {:error, error} ->
+        storage_error(error, :count_owned)
+    end
+  rescue
+    error -> storage_error(error, :count_owned)
+  end
 
   defp insert_room(room_id, owner_sub, visibility) do
     Room.create(%{
