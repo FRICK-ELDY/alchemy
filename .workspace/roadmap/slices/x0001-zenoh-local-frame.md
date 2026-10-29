@@ -3,7 +3,7 @@
 > **ID:** `x0001` · **旧称:** Slice A · **slug:** `zenoh-local-frame` · **status:** done · **area:** `[zenoh, client, host, auth, protocol]`
 
 目標: ローカル `zenohd` + `host-server` Publish + `client` Subscribe 描画 + `auth-server` JWT/JWKS。  
-**OS:** macOS / Linux / Windows は **WSL2（Ubuntu 26.04 LTS）**（Docker + Rust）
+**OS:** macOS / Linux / Windows（ネイティブ。WSL2 は任意）
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
@@ -26,7 +26,7 @@
 ## 起動手順
 
 ```bash
-# macOS / Linux / WSL2 (Ubuntu-26.04)
+# macOS / Linux / Windows（任意で WSL2）
 cd auth-server && docker compose up -d && cd ..
 zenohd -c zenoh-router/config.json5
 cd client
