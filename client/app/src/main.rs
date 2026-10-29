@@ -15,13 +15,16 @@
 //! - PROTOCOL_PIN mismatch on Manifest/Presence rejects apply (x0023 / x0038 discard)
 //! - CI fallback: `AUTH_USER` or `ALCHEMY_AUTH_TOKEN` skips UI and joins
 //! - Subscribes to SceneManifest / PresenceState / RenderFrame; downloads blob; wgpu mesh
+//! - Authenticated assets GET: connect/read timeout; failure → error placeholder mesh + dash
+//!   status (not Coin fixture). Fixture fallback only with debug + `ALCHEMY_ALLOW_FIXTURE_FALLBACK`
+//!   (x0048 / P3-3)
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
 //! - Desktop WASD/Space/C → Intent; Grab / OpenXR paths unchanged when joined
 //! - Camera follows Presence-assigned local user_root; remotes as colored boxes
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
 //!
 //! Non-guarantees: Steal, XR login keyboard, email verify UI, Quest standalone, WSL HMD,
-//! reliable-delivery ACK channel
+//! reliable-delivery ACK channel, live mesh swap / cancel mid-stream beyond HTTP timeout
 
 mod access_level;
 mod auth;
@@ -68,7 +71,9 @@ use anyhow::{Context, Result};
 use auth::AuthGate;
 use host_attestation::HostAttestationVerifier;
 use manifest_seal::ManifestSealVerifier;
-use mesh::{blake3_hex, load_mesh_from_glb, verify_blake3, COIN_BLAKE3_HEX};
+use mesh::{
+    blake3_hex, load_mesh_from_glb, placeholder_error_mesh, verify_blake3, CpuMesh, COIN_BLAKE3_HEX,
+};
 use scene::{EntityPose, SharedState, LOCAL_USER_ROOT_UNSET};
 use world_jwks::WorldJwks;
 use zenoh::bytes::ZBytes;
@@ -88,6 +93,10 @@ const MANIFEST_WAIT_AUTH: Duration = Duration::from_secs(2);
 
 const TOKEN_REFRESH_POLL: Duration = Duration::from_secs(5);
 const GATE_LOG_INTERVAL: Duration = Duration::from_secs(5);
+/// Assets blob GET: connect bound (hung TCP / dead assets).
+const ASSETS_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Assets blob GET: read bound (cancels stalled body / R2 transfer — x0048).
+const ASSETS_HTTP_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// x0038: Manifest identity checks. Failure → discard sample (never leave).
 fn gate_manifest_identity(
@@ -124,13 +133,42 @@ fn open_zenoh() -> Result<zenoh::Session> {
     zenoh_connect::open_client(&zenoh_connect_endpoint())
 }
 
+fn assets_http_agent() -> ureq::Agent {
+    // Follow 302 → R2 presigned GET (x001d). ureq strips Authorization on cross-host redirect.
+    // `timeout_read` is per-read / idle stall (not a wall-clock cap on chunked transfer).
+    // Hung connect or stalled body is cancelled; cooperative mid-stream cancel is non-goal.
+    ureq::AgentBuilder::new()
+        .timeout_connect(ASSETS_HTTP_CONNECT_TIMEOUT)
+        .timeout_read(ASSETS_HTTP_READ_TIMEOUT)
+        .redirects(5)
+        .build()
+}
+
+/// Short Home-facing line (top-level `Display` only — full chain stays in logs).
+fn asset_status_line(kind: &str, err: &anyhow::Error) -> String {
+    format!("{kind} — placeholder ({err})")
+}
+
+fn try_coin_fixture_mesh() -> Result<CpuMesh> {
+    let fixture = load_fixture_bytes()?;
+    verify_blake3(&fixture, COIN_BLAKE3_HEX).context("fixture blake3")?;
+    load_mesh_from_glb(&fixture).context("decode fixture GLB")
+}
+
+fn placeholder_from_err(kind: &str, err: &anyhow::Error) -> AuthMeshLoad {
+    let status = asset_status_line(kind, err);
+    log::error!("{status}; detail={err:#}");
+    AuthMeshLoad::Placeholder {
+        mesh: placeholder_error_mesh(),
+        status,
+    }
+}
+
 fn fetch_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<Vec<u8>> {
     let base = assets_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/blobs/{blake3}");
     let authz = format!("Bearer {auth_token}");
-    // Follow 302 → R2 presigned GET (x001d). ureq strips Authorization on cross-host redirect.
-    let agent = ureq::AgentBuilder::new().redirects(5).build();
-    let resp = agent
+    let resp = assets_http_agent()
         .get(&url)
         .set("authorization", &authz)
         .call()
@@ -142,6 +180,7 @@ fn fetch_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<
     Ok(bytes)
 }
 
+/// Debug-only Coin fixture escape hatch (x003c / x0048). Release never returns true.
 fn fixture_fallback_allowed() -> bool {
     cfg!(debug_assertions) && std::env::var_os("ALCHEMY_ALLOW_FIXTURE_FALLBACK").is_some()
 }
@@ -157,7 +196,7 @@ fn load_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<V
             Ok(bytes)
         }
         Err(err) => {
-            // x003c: authenticated path requires assets. Fixture is debug-only escape hatch.
+            // x003c / x0048: authenticated path requires assets. Fixture is debug-only escape hatch.
             if fixture_fallback_allowed() {
                 log::warn!(
                     "assets download failed ({err:#}); ALCHEMY_ALLOW_FIXTURE_FALLBACK → fixture"
@@ -168,6 +207,56 @@ fn load_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<V
                 "assets blob download required (upload demo coin / ensure CAS; debug: ALCHEMY_ALLOW_FIXTURE_FALLBACK=1)",
             )
         }
+    }
+}
+
+/// Authenticated mesh resolution: assets GET success, debug fixture, or error placeholder.
+enum AuthMeshLoad {
+    Ready(CpuMesh),
+    /// Distinct cube + dash status — never Coin fixture (x0048).
+    Placeholder {
+        mesh: CpuMesh,
+        status: String,
+    },
+}
+
+fn debug_fixture_or_placeholder(kind: &str, err: &anyhow::Error) -> AuthMeshLoad {
+    if fixture_fallback_allowed() {
+        log::warn!("{kind} ({err:#}); ALCHEMY_ALLOW_FIXTURE_FALLBACK → fixture");
+        match try_coin_fixture_mesh() {
+            Ok(mesh) => AuthMeshLoad::Ready(mesh),
+            Err(fix_err) => {
+                placeholder_from_err(&format!("{kind}; fixture fallback failed"), &fix_err)
+            }
+        }
+    } else {
+        placeholder_from_err(kind, err)
+    }
+}
+
+fn load_auth_mesh(assets_url: &str, blake3: &str, auth_token: &str) -> AuthMeshLoad {
+    let primary = match load_blob_bytes(assets_url, blake3, auth_token) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            // load_blob_bytes already applied debug fixture escape on download failure.
+            return placeholder_from_err("Asset download failed", &err);
+        }
+    };
+    match verify_blake3(&primary, blake3) {
+        Ok(()) => match load_mesh_from_glb(&primary) {
+            Ok(mesh) => AuthMeshLoad::Ready(mesh),
+            Err(err) => debug_fixture_or_placeholder("Asset GLB decode failed", &err),
+        },
+        Err(err) => debug_fixture_or_placeholder("Asset blake3 mismatch", &err),
+    }
+}
+
+/// Unauthenticated Home: Coin fixture is the intentional mesh (not Manifest blake3).
+/// Missing/corrupt fixture → placeholder (debug env cannot invent bytes).
+fn load_unauth_home_mesh() -> AuthMeshLoad {
+    match try_coin_fixture_mesh() {
+        Ok(mesh) => AuthMeshLoad::Ready(mesh),
+        Err(err) => placeholder_from_err("Home fixture unavailable", &err),
     }
 }
 
@@ -1391,6 +1480,7 @@ fn main() -> Result<()> {
         world: Mutex::new(scene::WorldView::default()),
         box_defs: Mutex::new(Arc::new(scene::BoxDefs::default())),
         mesh_entity_id: AtomicU32::new(0),
+        asset_status: Mutex::new(None),
         look: Mutex::new(Default::default()),
         intent: Mutex::new(Default::default()),
     });
@@ -1491,30 +1581,23 @@ fn main() -> Result<()> {
         }
     };
 
-    let bytes = {
-        let primary = if access_for_blob.is_empty() {
-            log::info!("no auth yet — loading fixture mesh (login via Home tab)");
-            load_fixture_bytes()?
+    let mesh = {
+        let outcome = if access_for_blob.is_empty() {
+            // Unauthenticated Home always intends Coin fixture; do not verify against
+            // Manifest blake3 (may differ before login). x0048 review.
+            log::info!("no auth yet — loading Coin fixture for Home (login via Home tab)");
+            load_unauth_home_mesh()
         } else {
-            load_blob_bytes(&assets_url, &blob_blake3, &access_for_blob)?
+            load_auth_mesh(&assets_url, &blob_blake3, &access_for_blob)
         };
-        match verify_blake3(&primary, &blob_blake3) {
-            Ok(()) => primary,
-            Err(err) => {
-                if fixture_fallback_allowed() {
-                    log::warn!("blob blake3 mismatch ({err:#}); fixture fallback");
-                    let fixture = load_fixture_bytes()?;
-                    verify_blake3(&fixture, COIN_BLAKE3_HEX).context("fixture blake3")?;
-                    fixture
-                } else if access_for_blob.is_empty() {
-                    return Err(err).context("fixture blake3 mismatch");
-                } else {
-                    return Err(err).context("downloaded blob blake3 mismatch");
-                }
+        match outcome {
+            AuthMeshLoad::Ready(mesh) => mesh,
+            AuthMeshLoad::Placeholder { mesh, status } => {
+                shared.store_asset_status(status);
+                mesh
             }
         }
     };
-    let mesh = load_mesh_from_glb(&bytes).context("decode GLB")?;
     log::info!(
         "mesh ready: {} verts, {} indices, radius={:.3}",
         mesh.positions.len(),

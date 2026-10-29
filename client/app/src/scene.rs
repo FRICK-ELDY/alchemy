@@ -4,8 +4,10 @@
 //! `CameraLook` is Desktop-local (x0012); not published on Zenoh.
 //!
 //! Guarantees: draw with caller-supplied view/proj; grabbable boxes from Manifest (x0027);
-//! remote roots 3..6 (x0015); Frame TRS on draw (x0029).
-//! Non-guarantees: XR swapchain ownership, system_ui layout, avatar GLB.
+//! remote roots 3..6 (x0015); Frame TRS on draw (x0029);
+//! [`SharedState::asset_status`] sticky Home overlay for auth asset failure (x0048).
+//! Non-guarantees: XR swapchain ownership, system_ui layout, avatar GLB;
+//! live mesh swap after boot.
 //! Grab hits use OBB in `world_hit` (x002b; draw TRS aligned).
 //! Leave / liveliness token ownership lives here; put/undeclare is `main::leave_room`.
 
@@ -214,11 +216,43 @@ pub struct SharedState {
     pub box_defs: Mutex<Arc<BoxDefs>>,
     /// Primary mesh entity id from Manifest (`blake3` entry); 0 until set.
     pub mesh_entity_id: AtomicU32,
+    /// Authenticated asset-load failure message for dash Home status (x0048).
+    /// `None` when mesh came from assets GET or unauthenticated Coin Home fixture.
+    pub asset_status: Mutex<Option<String>>,
     pub look: Mutex<CameraLook>,
     pub intent: Mutex<MoveIntent>,
 }
 
 impl SharedState {
+    /// Sticky Home status: if an asset failure is recorded, overwrite `home_status` and
+    /// return `true` (caller should keep Home tab open). Skips while status looks busy
+    /// (`…` / `...`) so "Signing in…" is not clobbered mid-flight.
+    pub fn overlay_asset_home_status(&self, home_status: &mut String) -> bool {
+        if home_status.ends_with('…') || home_status.ends_with("...") {
+            return false;
+        }
+        let guard = self
+            .asset_status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(msg) = guard.as_ref() else {
+            return false;
+        };
+        if home_status.as_str() == msg.as_str() {
+            return true;
+        }
+        *home_status = msg.clone();
+        true
+    }
+
+    pub fn store_asset_status(&self, status: String) {
+        let mut guard = self
+            .asset_status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = Some(status);
+    }
+
     pub fn local_user_root(&self) -> u32 {
         self.local_user_root.load(Ordering::Relaxed)
     }
