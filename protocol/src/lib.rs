@@ -383,9 +383,7 @@ include!(concat!(env!("OUT_DIR"), "/alchemy.presence.rs"));
 /// Guarantees: counts ids in the protocol band; requires contiguous
 /// `FIRST..FIRST+n-1` with `1 <= n <= USER_ROOT_SLOTS_MAX`; rejects duplicates.
 /// Non-guarantees: spawn pose validity; color; runtime resize after host boot.
-pub fn user_root_slots_from_entries(
-    entries: &[SceneEntry],
-) -> Result<usize, UserRootSlotsError> {
+pub fn user_root_slots_from_entries(entries: &[SceneEntry]) -> Result<usize, UserRootSlotsError> {
     let mut seen = [false; USER_ROOT_SLOTS_MAX];
     let mut max_slot: Option<usize> = None;
     for entry in entries {
