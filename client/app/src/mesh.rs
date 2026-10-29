@@ -1,10 +1,12 @@
-//! GLB → CPU mesh (Slice C-B / x000b flatten / x000c baseColor / x000d rig).
+//! GLB → CPU mesh (Slice C-B / x000b flatten / x000c baseColor / x000d rig / x0048).
 //!
 //! Guarantees: BLAKE3 verify before decode; first mesh positions (+ indices if present);
 //! `load_flattened_mesh_from_glb` bakes node transforms across primitives;
 //! `load_flattened_textured_from_glb` adds TEXCOORD_0 + optional baseColor RGBA + factor;
-//! `load_textured_rigged_from_glb` keeps a node hierarchy for runtime-replaced locals.
-//! Non-guarantees: PBR maps, skins, morphs, external URI textures, Coin textured draw.
+//! `load_textured_rigged_from_glb` keeps a node hierarchy for runtime-replaced locals;
+//! [`placeholder_error_mesh`] is visually distinct from the Coin fixture (auth asset failure).
+//! Non-guarantees: PBR maps, skins, morphs, external URI textures, Coin textured draw;
+//! live mesh swap after boot.
 
 use std::collections::HashMap;
 
@@ -80,6 +82,35 @@ pub fn verify_blake3(bytes: &[u8], expected_hex: &str) -> Result<()> {
         bail!("BLAKE3 mismatch: expected {expected_hex}, got {got}");
     }
     Ok(())
+}
+
+/// Unit cube (half-extent 0.5) used when authenticated assets GET / blake3 fails (x0048).
+///
+/// Guarantees: never the Coin fixture bytes — failure stays visually obvious.
+pub fn placeholder_error_mesh() -> CpuMesh {
+    let positions = [
+        [-0.5, -0.5, -0.5],
+        [0.5, -0.5, -0.5],
+        [0.5, 0.5, -0.5],
+        [-0.5, 0.5, -0.5],
+        [-0.5, -0.5, 0.5],
+        [0.5, -0.5, 0.5],
+        [0.5, 0.5, 0.5],
+        [-0.5, 0.5, 0.5],
+    ];
+    let indices = [
+        0, 1, 2, 0, 2, 3, // -Z
+        4, 6, 5, 4, 7, 6, // +Z
+        0, 4, 5, 0, 5, 1, // -Y
+        3, 2, 6, 3, 6, 7, // +Y
+        0, 3, 7, 0, 7, 4, // -X
+        1, 5, 6, 1, 6, 2, // +X
+    ];
+    CpuMesh {
+        positions: positions.to_vec(),
+        indices: indices.to_vec(),
+        radius: (0.5_f32 * 3.0_f32.sqrt()),
+    }
 }
 
 pub fn load_mesh_from_glb(bytes: &[u8]) -> Result<CpuMesh> {
@@ -524,5 +555,16 @@ mod tests {
         let rigged = load_textured_rigged_from_glb(FIXTURE, &[]).unwrap();
         assert_eq!(flat.submeshes.len(), rigged.submeshes.len());
         assert_eq!(flat.vertex_count(), rigged.vertex_count());
+    }
+
+    #[test]
+    fn placeholder_error_mesh_is_not_empty_and_not_coin() {
+        let mesh = placeholder_error_mesh();
+        assert_eq!(mesh.positions.len(), 8);
+        assert_eq!(mesh.indices.len(), 36);
+        assert!(mesh.radius > 0.0);
+        // Distinct from Coin fixture vertex count (smoke: not a silent Coin swap).
+        let coin = load_mesh_from_glb(FIXTURE).unwrap();
+        assert_ne!(mesh.positions.len(), coin.positions.len());
     }
 }

@@ -418,6 +418,11 @@ pub fn run_openxr(
         // x0037: Start/Join HTTP is Desktop-wired; XR may browse the create panel only.
         ui.state.home_session_actions_enabled = false;
         ui.state.home_room_id = shared.room_id.to_string();
+        // x0048: sticky asset failure → Home status (shared with Desktop).
+        if shared.overlay_asset_home_status(&mut ui.state.home_status) {
+            ui.state.open = true;
+            ui.state.tab = crate::system_ui::DashTab::Home;
+        }
         ui.init_cpu_canvas(UI_CANVAS_W, UI_CANVAS_H)?;
         ui.rebuild();
         log::info!(
@@ -829,6 +834,11 @@ pub fn run_openxr(
             let squeeze_r = grab_action.state(&session, hands[1])?.current_state;
             let grip_down =
                 squeeze_l >= GRAB_SQUEEZE_THRESHOLD || squeeze_r >= GRAB_SQUEEZE_THRESHOLD;
+            // x0048: sticky asset failure after other Home status updates (skips "…").
+            if shared.overlay_asset_home_status(&mut ui.state.home_status) {
+                ui.state.open = true;
+                ui.state.tab = crate::system_ui::DashTab::Home;
+            }
             if ui.state.open {
                 held_grab = None;
             } else {

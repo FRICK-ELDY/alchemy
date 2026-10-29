@@ -793,6 +793,14 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         self.poll_auth_job();
+        // x0048: re-apply sticky asset failure after Login/Start/Join settle (skips "…").
+        if self
+            .shared
+            .overlay_asset_home_status(&mut self.ui.state.home_status)
+        {
+            self.ui.state.open = true;
+            self.ui.state.tab = DashTab::Home;
+        }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -1096,6 +1104,11 @@ pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session
             ui.state.home_logged_in_as = username;
             ui.state.home_status = "Signed in — create or join a world".into();
         }
+    }
+    // x0048: sticky asset failure → Home status (not Coin fixture).
+    if shared.overlay_asset_home_status(&mut ui.state.home_status) {
+        ui.state.open = true;
+        ui.state.tab = DashTab::Home;
     }
     let mut app = App {
         mesh,

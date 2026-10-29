@@ -28,7 +28,7 @@
 |:---|:---|:---|
 | 0 | Slice + 目次 + P0-7 記載 | done |
 | 1 | host presence-join Manifest + client assets 必須 + ensure-demo-coin | done |
-| 2 | fixture fallback を debug 限定と文書一致（P3-3 合流） | done（release 禁止 / debug は `ALCHEMY_ALLOW_FIXTURE_FALLBACK`） |
+| 2 | fixture fallback を debug 限定と文書一致（P3-3 合流） | done（release 禁止 / debug は `ALCHEMY_ALLOW_FIXTURE_FALLBACK`；placeholder+timeout は → [x0048](x0048-asset-placeholder-http-timeout.md)） |
 
 ## 完了条件
 
