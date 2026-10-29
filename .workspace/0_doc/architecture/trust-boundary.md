@@ -54,7 +54,8 @@ flowchart TB
 
 | 経路 | 偽 / 不正リクエストの被害 | 現状の防御 | 保証しない |
 |:---|:---|:---|:---|
-| auth `/api/*` | 資格情報窃取・なりすまし JWT | TLS（Tunnel prod）+ 認証フロー；release シード fail-closed（x001e） | `/dev/*` を公網に出すこと |
+| auth `/api/*` | 資格情報窃取・なりすまし JWT | TLS（Tunnel prod）+ 認証フロー；release シード fail-closed（x001e）；Social mutate rate limit（x0043） | `/dev/*` を公網に出すこと |
+| auth `/internal/*` | S2S 門番の公網露出 | Tunnel ingress 404（x0043・`/dev/*` と同型）；LAN は `x-alchemy-internal-token` | Cloudflare Access |
 | world Room Token / scene / seal | 不正入室・偽 scene | Bearer + host role（x0021）+ owner 系 + visibility ACL（x0034–x0036） | Group ACL / 一覧 UI；client アクセスレベル仮 UI（x0037）は門番ではない |
 
 | assets GET/PUT | 容量食い・他人 blob 読み・（将来）所有権ロンダリング / Rug Pull / SSRF 等 | Bearer + Quota 原子更新（x002d）；GET は認証済み読み取り capability（owner 照合なし・[assets-server.md](assets-server.md)）。詳細は [assets-threat-model.md](assets-threat-model.md) | BlobGrant・PoP・Immutable Tag 等（[assets-server-draft.md](assets-server-draft.md) / 脅威モデル目標列） |
@@ -82,3 +83,6 @@ flowchart TB
 | x0039 | canonical ManifestSeal（署名 oracle 廃止） |
 | x003a | `(host_generation, revision)` 単調ゲート（replay 拒否） |
 | x003b | decode byte/count 上限 + prod S2S env + world test DB 隔離 |
+| x0043 | auth `/internal/*` ingress 404 + Social rate limit |
+| x0044 | client world_jwks soft/hard + unknown-kid cooldown |
+| x0045 | host Room Token alg/iss/aud/exp/room 否定系テスト |

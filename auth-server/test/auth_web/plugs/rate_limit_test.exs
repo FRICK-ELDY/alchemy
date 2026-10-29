@@ -17,6 +17,10 @@ defmodule AuthWeb.Plugs.RateLimitTest do
     refresh: %{
       ip: %{limit: 2, period_ms: 60_000},
       token: %{limit: 2, period_ms: 60_000}
+    },
+    social_mutate: %{
+      ip: %{limit: 2, period_ms: 60_000},
+      user: %{limit: 2, period_ms: 60_000}
     }
   }
 
@@ -228,6 +232,127 @@ defmodule AuthWeb.Plugs.RateLimitTest do
         |> post(~p"/api/v1/auth/refresh", %{"refresh_token" => current_token})
 
       assert json_response(conn, 429)
+    end
+  end
+
+  describe "POST /api/v1/social/follows/:user_id (x0043)" do
+    defp put_social_limits(limits) do
+      previous = Application.get_env(:auth, RateLimit)
+      Application.put_env(:auth, RateLimit, Keyword.put(previous, :limits, limits))
+      RateLimit.reset()
+
+      on_exit(fn ->
+        case previous do
+          nil -> Application.delete_env(:auth, RateLimit)
+          value -> Application.put_env(:auth, RateLimit, value)
+        end
+      end)
+    end
+
+    defp social_base_limits(social_mutate) do
+      %{
+        login: %{
+          ip: %{limit: 10_000, period_ms: 60_000},
+          identifier: %{limit: 10_000, period_ms: 60_000}
+        },
+        register: %{
+          ip: %{limit: 10_000, period_ms: 60_000},
+          email: %{limit: 10_000, period_ms: 60_000}
+        },
+        refresh: %{
+          ip: %{limit: 10_000, period_ms: 60_000},
+          token: %{limit: 10_000, period_ms: 60_000}
+        },
+        social_mutate: social_mutate
+      }
+    end
+
+    setup do
+      alice = user_fixture(%{username: "social_rate_alice"})
+      bob = user_fixture(%{username: "social_rate_bob"})
+      carol = user_fixture(%{username: "social_rate_carol"})
+      dave = user_fixture(%{username: "social_rate_dave"})
+      eve = user_fixture(%{username: "social_rate_eve"})
+      {:ok, alice_session} = Auth.Accounts.issue_session(alice, false)
+      {:ok, bob_session} = Auth.Accounts.issue_session(bob, false)
+
+      %{
+        alice_token: alice_session.access_token,
+        bob_token: bob_session.access_token,
+        targets: [carol, dave, eve]
+      }
+    end
+
+    test "returns 429 when the user limit is exceeded", %{
+      conn: conn,
+      alice_token: token,
+      targets: [carol, dave, eve]
+    } do
+      put_social_limits(
+        social_base_limits(%{
+          ip: %{limit: 10_000, period_ms: 60_000},
+          user: %{limit: 2, period_ms: 60_000}
+        })
+      )
+
+      for target <- [carol, dave] do
+        conn =
+          conn
+          |> with_ip("10.3.0.1")
+          |> put_req_header("authorization", "Bearer #{token}")
+          |> post("/api/v1/social/follows/#{target.id}")
+
+        assert %{"ok" => true} = json_response(conn, 200)
+      end
+
+      conn =
+        conn
+        |> with_ip("10.3.0.1")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> post("/api/v1/social/follows/#{eve.id}")
+
+      assert %{"errors" => %{"detail" => "Too many requests"}} = json_response(conn, 429)
+      [retry_after] = get_resp_header(conn, "retry-after")
+      assert String.to_integer(retry_after) in 1..60
+    end
+
+    test "returns 429 when the IP limit is exceeded across users", %{
+      conn: conn,
+      alice_token: alice_token,
+      bob_token: bob_token,
+      targets: [carol, dave, eve]
+    } do
+      # NAT-shared IP: different Bearer users still share the IP bucket.
+      put_social_limits(
+        social_base_limits(%{
+          ip: %{limit: 2, period_ms: 60_000},
+          user: %{limit: 10_000, period_ms: 60_000}
+        })
+      )
+
+      assert %{"ok" => true} =
+               conn
+               |> with_ip("10.3.0.50")
+               |> put_req_header("authorization", "Bearer #{alice_token}")
+               |> post("/api/v1/social/follows/#{carol.id}")
+               |> json_response(200)
+
+      assert %{"ok" => true} =
+               conn
+               |> with_ip("10.3.0.50")
+               |> put_req_header("authorization", "Bearer #{bob_token}")
+               |> post("/api/v1/social/follows/#{dave.id}")
+               |> json_response(200)
+
+      conn =
+        conn
+        |> with_ip("10.3.0.50")
+        |> put_req_header("authorization", "Bearer #{alice_token}")
+        |> post("/api/v1/social/follows/#{eve.id}")
+
+      assert %{"errors" => %{"detail" => "Too many requests"}} = json_response(conn, 429)
+      [retry_after] = get_resp_header(conn, "retry-after")
+      assert String.to_integer(retry_after) in 1..60
     end
   end
 end

@@ -49,9 +49,9 @@
 
 | ID | 項目 | 根拠 | 作業イメージ | 完了条件 |
 |:---|:---|:---|:---|:---|
-| P2-1 | Zenoh mTLS + room/tenant ACL | -2 | キー族 publish 権分離。allocation token | 任意 peer が他 room の manifest に書けない |
-| P2-2 | `/internal/*` ingress 404 + Social RL | -1 | `/dev/*` と同型。Follow API に rate_limited | 公網から internal に届かない |
-| P2-3 | client world_jwks クールダウン | -1 | host と同型 SWR + 未知 kid 冷却 | 偽 kid 連打で受信スレッドが詰まらない |
+| P2-1 | Zenoh mTLS + room/tenant ACL | -2 | キー族 publish 権分離。allocation token | 任意 peer が他 room の manifest に書けない — **deferred**（Relay Agent 要否を検討中） |
+| P2-2 | `/internal/*` ingress 404 + Social RL | -1 | `/dev/*` と同型。Follow API に rate_limited | 公網から internal に届かない — **[x0043](../../roadmap/slices/x0043-internal-ingress-social-rl.md) done** |
+| P2-3 | client world_jwks クールダウン | -1 | host と同型 SWR + 未知 kid 冷却 | 偽 kid 連打で受信スレッドが詰まらない — **[x0044](../../roadmap/slices/x0044-client-world-jwks-cooldown.md) done** |
 
 ---
 
@@ -63,10 +63,10 @@
 | P3-2 | launcher を CI に・clippy 修正・再起動ポリシー単体テスト | -1 | workflow 追加 |
 | P3-3 | fixture fallback を debug 限定 + HTTP timeout/cancel | -2 | placeholder UI |
 | P3-4 | metrics（tick lateness / frame age / JWKS stale / CAS） | -2 | Prometheus or OTLP 最小 |
-| P3-5 | README / roadmap / vision 鮮度 | -1 | 現状を x0037 以降に |
+| P3-5 | README / roadmap / vision 鮮度 | -1 | 現状を x0045 まで反映（本帯で一部閉じ） |
 | P3-6 | ClientIp 共有化・`inspect(reason)` 除去 | -1 | alchemy_auth_client 拡張 |
 | P3-7 | BLAKE3 ストリーミング・Room 作成上限 | -1 | NIF / rate limit |
-| P3-8 | host Room Token 否定系テスト | -1 | alg/iss/aud/exp/room |
+| P3-8 | host Room Token 否定系テスト | -1 | alg/iss/aud/exp/room — **[x0045](../../roadmap/slices/x0045-room-token-negative-tests.md) done** |
 | P3-9 | cargo-fuzz（protobuf/JWT） | 提案 | protocol / host |
 | P3-10 | USER_ROOT_SLOTS を Manifest へ | -1 | protocol は帯規則のみ |
 
@@ -98,8 +98,8 @@
 
 ## 推奨スライス順
 
-**次:** **x0043+** — Zenoh mTLS / room ACL（P2-1）など。BlobGrant は draft 目標（P4-5）
+**次:** **P3-1** adversarial E2E、または **P2-1 deferred**（mTLS / Relay）再開。BlobGrant は draft 目標（P4-5）
 
-最近閉じた: [x0041](../../roadmap/slices/x0041-grab-hold-aim-clamp.md)（P1-6）、**[x0042](../../roadmap/slices/x0042-zenoh-network-worker.md)**（P1-3 残り Zenoh network worker）— P1 帯は完了。
+最近閉じた: **[x0043](../../roadmap/slices/x0043-internal-ingress-social-rl.md)**（P2-2）、**[x0044](../../roadmap/slices/x0044-client-world-jwks-cooldown.md)**（P2-3）、**[x0045](../../roadmap/slices/x0045-room-token-negative-tests.md)**（P3-8）。P2-1 は保留。
 
 スライス完了条件に必ず含める: **prod compose 起動**・**否定系が通る**・**保証表とコード一致**。

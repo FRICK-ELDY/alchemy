@@ -1,7 +1,7 @@
 //! Verify world-issued ManifestSeal JWTs (x0026 / x003a).
 //!
 //! Guarantees: RS256 via shared [`WorldJwks`]; typ/aud/room_id/revision/host_generation/manifest_blake3 match.
-//! Non-guarantees: SceneManifest-driven content (P4); offline JWKS beyond soft TTL.
+//! Non-guarantees: SceneManifest-driven content (P4); offline JWKS beyond hard TTL (x0044).
 
 use crate::world_jwks::WorldJwks;
 use anyhow::{anyhow, Context, Result};

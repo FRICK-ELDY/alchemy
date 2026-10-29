@@ -39,8 +39,9 @@ defmodule AuthWeb.Router do
   end
 
   # x0033: Follow / Friendship (Bearer user JWT)
+  # x0043: rate_limited after authenticate (user + IP buckets)
   scope "/api/v1/social", AuthWeb do
-    pipe_through [:api, :authenticated]
+    pipe_through [:api, :authenticated, :rate_limited]
 
     post "/follows/:user_id", SocialController, :follow
     delete "/follows/:user_id", SocialController, :unfollow

@@ -1418,6 +1418,7 @@ fn main() -> Result<()> {
     let jwks = Arc::new(WorldJwks::new(shared.world_url.as_ref()));
     jwks.refresh()
         .context("initial world JWKS (ManifestSeal + HostAttestation)")?;
+    jwks.spawn_background_refresh();
     let seal = Arc::new(ManifestSealVerifier::new(
         Arc::clone(&jwks),
         shared.room_id.as_ref(),

@@ -117,10 +117,13 @@ depends_on: [x0006]
 | x0040 | — | done | Intent rate limit + JWKS hard stale（P1-5） | [x0040-intent-rate-jwks-hard-stale.md](slices/x0040-intent-rate-jwks-hard-stale.md) |
 | x0041 | — | done | Grab 保持中 aim / offset 距離クランプ（P1-6） | [x0041-grab-hold-aim-clamp.md](slices/x0041-grab-hold-aim-clamp.md) |
 | x0042 | — | done | Zenoh network worker（物理から put 分離・P1-3 残り） | [x0042-zenoh-network-worker.md](slices/x0042-zenoh-network-worker.md) |
+| x0043 | — | done | `/internal/*` ingress 404 + Social rate limit（P2-2） | [x0043-internal-ingress-social-rl.md](slices/x0043-internal-ingress-social-rl.md) |
+| x0044 | — | done | client world_jwks SWR / hard / unknown-kid（P2-3） | [x0044-client-world-jwks-cooldown.md](slices/x0044-client-world-jwks-cooldown.md) |
+| x0045 | — | done | host Room Token 否定系テスト（P3-8） | [x0045-room-token-negative-tests.md](slices/x0045-room-token-negative-tests.md) |
 
-**現在の次:** **x0043+**（ACL / mTLS など）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
+**現在の次:** **P3-1** adversarial E2E、または **P2-1 deferred**（Zenoh mTLS / Relay）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
 
-次の空き番号は **`x0043`**。
+次の空き番号は **`x0046`**。
 
 
 ## 関連
