@@ -11,6 +11,10 @@
 //! - `…/snapshot` queryable for late join (refused while gated); pure pose deltas
 //! - Empty deltas: **no publish and no `net_tick` advance**; snapshot tick = last published (x0024)
 //! - Per-`sub` Intent/Grab → up to 4 user_roots; Presence Leave / liveliness jti grace (x0022)
+//! - x0040: Intent rate after Ed25519 (steady: after seq eval, before `last_seq` commit,
+//!   Leave-exempt; bind: atomic global 20/10s + per-pub 5/2s before JWT, Leave **not**
+//!   exempt; failed bind drops unbound per-pub; rebind GC skips the new pub).
+//!   JWKS hard stale on Room Token verify
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
 //! - Slice E / x001e: Zenoh `host_control` off by default; `ALCHEMY_HOST_CONTROL=1` to enable
 //! - x0032: localhost IPC shutdown when `ALCHEMY_HOST_IPC_*` set (alchemy-launcher)
@@ -20,10 +24,13 @@
 //! - Authenticated remote (WAN) host shutdown
 //! - Re-fetch of world `GET …/scene` after boot (room redefinition requires host restart)
 //! - Zenoh `put().wait()` off the physics thread (credential worker only in x003d)
+//! - Intent temporary ban / Zenoh peer ACL
+//! - Unlimited Ed25519 cost on unbound steady floods (no sub bucket until bind)
 
 mod finite;
 mod host_control;
 mod host_ipc;
+mod intent_rate;
 mod pose_delta;
 mod room_token;
 mod session;
@@ -55,6 +62,7 @@ use alchemy_protocol::{
 };
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
+use intent_rate::IntentRateLimiter;
 use room_token::{
     default_auth_url, earliest_hard_expire, ensure_sealed_manifest, fetch_room_scene,
     publish_allowed_at, spawn_credential_worker, CredentialWorkerConfig, HostCredentialChain,
@@ -528,6 +536,7 @@ fn spawn_input_gate(
     verifier: Arc<RoomTokenVerifier>,
     presence: Arc<Mutex<PresenceIntents>>,
     sessions: Arc<Mutex<SessionTable>>,
+    rate_limiter: Arc<Mutex<IntentRateLimiter>>,
 ) -> Result<()> {
     let subscriber = session
         .declare_subscriber(input_key_expr.clone())
@@ -546,6 +555,7 @@ fn spawn_input_gate(
             let mut dropped_auth: u64 = 0;
             let mut dropped_finite: u64 = 0;
             let mut dropped_limits: u64 = 0;
+            let mut dropped_rate: u64 = 0;
             let mut last_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 // x003b: early drops must still reach the interval aggregate log below.
@@ -565,9 +575,70 @@ fn spawn_input_gate(
                             log::warn!("drop InputEvent: {err}");
                             break 'sample;
                         }
-                        let auth = {
-                            let mut table = lock_or_fatal(&sessions, "sessions");
-                            table.authorize(&event, verifier.as_ref())
+                        let now = Instant::now();
+                        let is_bind = !event.room_token.is_empty();
+                        // x0040: Ed25519 first; rate never runs on forged sig.
+                        // Bind: rates alone → JWT/sessions → rates again for forget.
+                        // Steady: sessions (evaluate) → rates → sessions (commit).
+                        // Leave/reclaim later: sessions then rates (never rates→sessions).
+                        if let Err(err) = SessionTable::verify_intent_sig(&event) {
+                            dropped_auth += 1;
+                            log::warn!("drop InputEvent: session/auth: {err:#}");
+                            break 'sample;
+                        }
+                        let auth = if is_bind {
+                            // rates-only: atomic global+per-pub (Leave NOT exempt).
+                            {
+                                let mut rates = lock_or_fatal(&rate_limiter, "intent_rate");
+                                if !rates.allow_bind(&event.session_pub, now) {
+                                    dropped_rate += 1;
+                                    break 'sample;
+                                }
+                            }
+                            let evaluated = {
+                                let table = lock_or_fatal(&sessions, "sessions");
+                                table.evaluate_bind(&event, verifier.as_ref())
+                            };
+                            match evaluated {
+                                Ok(pending) => {
+                                    let (sub, jti, caps, removed) = {
+                                        let mut table = lock_or_fatal(&sessions, "sessions");
+                                        // `removed` excludes the pub just bound.
+                                        table.commit_bind(&event, pending)
+                                    };
+                                    // sessions then rates (GC other pubs only).
+                                    let mut rates = lock_or_fatal(&rate_limiter, "intent_rate");
+                                    rates.forget_session_pubs(&removed);
+                                    Ok((sub, jti, caps))
+                                }
+                                Err(err) => {
+                                    let mut rates = lock_or_fatal(&rate_limiter, "intent_rate");
+                                    rates.forget_session_pub(&event.session_pub);
+                                    Err(err)
+                                }
+                            }
+                        } else {
+                            // sessions → rates → sessions (rate drop skips commit).
+                            let evaluated = {
+                                let table = lock_or_fatal(&sessions, "sessions");
+                                table.evaluate_steady(&event)
+                            };
+                            match evaluated {
+                                Ok(pending) => {
+                                    {
+                                        let mut rates =
+                                            lock_or_fatal(&rate_limiter, "intent_rate");
+                                        if !rates.allow_steady(event.leave, &pending.sub, now)
+                                        {
+                                            dropped_rate += 1;
+                                            break 'sample;
+                                        }
+                                    }
+                                    let mut table = lock_or_fatal(&sessions, "sessions");
+                                    table.commit_steady(&event, pending)
+                                }
+                                Err(err) => Err(err),
+                            }
                         };
                         match auth {
                             Ok((sub, jti, caps)) => {
@@ -579,7 +650,13 @@ fn spawn_input_gate(
                                         leaves += 1;
                                     }
                                     drop(guard);
-                                    lock_or_fatal(&sessions, "sessions").remove_by_sub(&sub);
+                                    let removed = {
+                                        let mut table = lock_or_fatal(&sessions, "sessions");
+                                        table.remove_by_sub(&sub)
+                                    };
+                                    let mut rates = lock_or_fatal(&rate_limiter, "intent_rate");
+                                    rates.forget_sub(&sub);
+                                    rates.forget_session_pubs(&removed);
                                 } else if !input_event_is_finite(&event) {
                                     dropped_finite += 1;
                                     log::warn!(
@@ -629,13 +706,14 @@ fn spawn_input_gate(
                 if last_log.elapsed() >= Duration::from_secs(5) {
                     let dropped_full = lock_or_fatal(&presence, "presence").dropped_full;
                     log::info!(
-                        "input gate: accepted={accepted} leaves={leaves} dropped_auth={dropped_auth} dropped_non_finite={dropped_finite} dropped_limits={dropped_limits} dropped_full={dropped_full} (last ~5s)"
+                        "input gate: accepted={accepted} leaves={leaves} dropped_auth={dropped_auth} dropped_non_finite={dropped_finite} dropped_limits={dropped_limits} dropped_rate={dropped_rate} dropped_full={dropped_full} (last ~5s)"
                     );
                     accepted = 0;
                     leaves = 0;
                     dropped_auth = 0;
                     dropped_finite = 0;
                     dropped_limits = 0;
+                    dropped_rate = 0;
                     last_log = Instant::now();
                 }
             }
@@ -791,6 +869,7 @@ fn main() -> Result<()> {
 
     let presence = Arc::new(Mutex::new(PresenceIntents::default()));
     let sessions = Arc::new(Mutex::new(SessionTable::default()));
+    let intent_rates = Arc::new(Mutex::new(IntentRateLimiter::new()));
     let snapshot_cache = Arc::new(Mutex::new(RenderFrame {
         tick: 0,
         host_time_ms: 0,
@@ -806,6 +885,7 @@ fn main() -> Result<()> {
         Arc::clone(&verifier),
         Arc::clone(&presence),
         Arc::clone(&sessions),
+        Arc::clone(&intent_rates),
     )?;
     spawn_liveliness_watcher(session.clone(), &room_id, Arc::clone(&presence))?;
     host_control::spawn_listener(session.clone(), &room_id)?;
@@ -1009,7 +1089,10 @@ fn main() -> Result<()> {
             // Do not mutate `last_sent` here: it is the last wire view. Removals are
             // applied when removes are published, or wholesale on resume catch-up.
             if !sub.is_empty() {
-                lock_or_fatal(&sessions, "sessions").remove_by_sub(sub);
+                let removed = lock_or_fatal(&sessions, "sessions").remove_by_sub(sub);
+                let mut rates = lock_or_fatal(&intent_rates, "intent_rate");
+                rates.forget_sub(sub);
+                rates.forget_session_pubs(&removed);
             }
         }
 

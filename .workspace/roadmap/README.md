@@ -114,10 +114,11 @@ depends_on: [x0006]
 | x003d | — | done | host credential worker 分離（物理ループから HTTP 除去・hard expiry で配信停止） | [x003d-credential-worker.md](slices/x003d-credential-worker.md) |
 | x003e | — | done | Room Token `cnf.spk`（session_pub 束縛・P1-4） | [x003e-room-token-cnf.md](slices/x003e-room-token-cnf.md) |
 | x003f | — | done | CAS object/ref 分離 + reserved_bytes put 補償（P1-2） | [x003f-cas-object-ref-reserve.md](slices/x003f-cas-object-ref-reserve.md) |
+| x0040 | — | done | Intent rate limit + JWKS hard stale（P1-5） | [x0040-intent-rate-jwks-hard-stale.md](slices/x0040-intent-rate-jwks-hard-stale.md) |
 
-**現在の次:** **x0040+**（ACL / Zenoh network worker / P1-5 など）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
+**現在の次:** **x0041+**（ACL / Zenoh network worker / P1-6 など）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
 
-次の空き番号は **`x0040`**。
+次の空き番号は **`x0041`**。
 
 
 ## 関連
