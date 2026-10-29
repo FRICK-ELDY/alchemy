@@ -12,7 +12,8 @@
 //!   submits wire-agnostic pose samples / jobs (encode+sign stay in the worker)
 //! - `…/snapshot` queryable for late join (refused while gated); pure pose deltas
 //! - Empty deltas: **no publish and no `net_tick` advance**; snapshot tick = last published (x0024)
-//! - Per-`sub` Intent/Grab → up to 4 user_roots; Presence Leave / liveliness jti grace (x0022)
+//! - Per-`sub` Intent/Grab → Manifest user_root slots (≤ `USER_ROOT_SLOTS_MAX`; x004d);
+//!   Presence Leave / liveliness jti grace (x0022)
 //! - x0040: Intent rate after Ed25519 (steady: after seq eval, before `last_seq` commit,
 //!   Leave-exempt; bind: atomic global 20/10s + per-pub 5/2s before JWT, Leave **not**
 //!   exempt; failed bind drops unbound per-pub; rebind GC skips the new pub).
@@ -57,9 +58,9 @@ use alchemy_protocol::wire_crypto::{
 };
 use alchemy_protocol::{
     frame_key, host_control_key, input_buttons, input_key, liveliness_binding_from_key,
-    liveliness_wildcard, manifest_key, presence_key, snapshot_key, validate_room_id, InputEvent,
-    LocomotionConfig, LocomotionMode, Message, PresenceAssignment, PresenceState, RenderFrame,
-    DEFAULT_MOVE_SPEED, PROTOCOL_PIN,
+    liveliness_wildcard, manifest_key, presence_key, snapshot_key, user_root_slots_from_entries,
+    validate_room_id, InputEvent, LocomotionConfig, LocomotionMode, Message, PresenceAssignment,
+    PresenceState, RenderFrame, DEFAULT_MOVE_SPEED, PROTOCOL_PIN, USER_ROOT_SLOTS_MAX,
 };
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
@@ -74,7 +75,7 @@ use room_token::{
     HostPublishSnapshot, ManifestSealCache, RoomTokenVerifier,
 };
 use session::SessionTable;
-use sim::{LocoMode, PhysicsWorld, USER_ROOT_ENTITY_FIRST, USER_ROOT_SLOTS};
+use sim::{LocoMode, PhysicsWorld, USER_ROOT_ENTITY_FIRST};
 use zenoh::bytes::ZBytes;
 use zenoh::sample::SampleKind;
 use zenoh::Wait;
@@ -116,17 +117,22 @@ struct PoseOverride {
 const LIVELINESS_RECLAIM_GRACE: Duration = Duration::from_millis(1_500);
 
 /// Per-sub input slots (x0015) + Leave / jti-bound liveliness / Intent TTL reclaim (x0022).
+///
+/// Storage is `[T; USER_ROOT_SLOTS_MAX]` + [`slot_count`] (Manifest-derived `n`, x004d).
+/// `by_slot` stays `Copy` so the physics tick can snapshot without a heap alloc.
 #[derive(Debug)]
 struct PresenceIntents {
-    by_slot: [PoseOverride; USER_ROOT_SLOTS],
-    /// Occupied slots: Some(sub) when assigned.
-    occupied_sub: [Option<String>; USER_ROOT_SLOTS],
+    by_slot: [PoseOverride; USER_ROOT_SLOTS_MAX],
+    /// Occupied slots: Some(sub) when assigned. Only indices `0..slot_count` are live.
+    occupied_sub: [Option<String>; USER_ROOT_SLOTS_MAX],
     /// Last verified Room Token `jti` per occupied slot (x0022). None until first verify.
-    session_jti: [Option<String>; USER_ROOT_SLOTS],
+    session_jti: [Option<String>; USER_ROOT_SLOTS_MAX],
     /// Scheduled liveliness reclaim: `(deleted_jti, confirm_after)`. Cancelled if `session_jti` rotates.
-    pending_liveliness: [Option<(String, Instant)>; USER_ROOT_SLOTS],
+    pending_liveliness: [Option<(String, Instant)>; USER_ROOT_SLOTS_MAX],
     /// Last accepted Intent time per slot (None when free).
-    last_input: [Option<Instant>; USER_ROOT_SLOTS],
+    last_input: [Option<Instant>; USER_ROOT_SLOTS_MAX],
+    /// Manifest-derived live capacity (`1..=USER_ROOT_SLOTS_MAX`).
+    slot_count: usize,
     dropped_full: u64,
     /// Bumped on assignment or reclaim (PresenceState.revision).
     revision: u64,
@@ -137,23 +143,30 @@ struct PresenceIntents {
     manifest_join_assist: bool,
 }
 
-impl Default for PresenceIntents {
-    fn default() -> Self {
+impl PresenceIntents {
+    fn with_slots(n: usize) -> Self {
+        assert!(
+            (1..=USER_ROOT_SLOTS_MAX).contains(&n),
+            "Presence slots must be 1..={USER_ROOT_SLOTS_MAX}, got {n}"
+        );
         Self {
-            by_slot: [PoseOverride::default(); USER_ROOT_SLOTS],
+            by_slot: [PoseOverride::default(); USER_ROOT_SLOTS_MAX],
             occupied_sub: std::array::from_fn(|_| None),
             session_jti: std::array::from_fn(|_| None),
             pending_liveliness: std::array::from_fn(|_| None),
-            last_input: [None; USER_ROOT_SLOTS],
+            last_input: [None; USER_ROOT_SLOTS_MAX],
+            slot_count: n,
             dropped_full: 0,
             revision: 0,
             pending_removes: Vec::new(),
             manifest_join_assist: false,
         }
     }
-}
 
-impl PresenceIntents {
+    fn slot_count(&self) -> usize {
+        self.slot_count
+    }
+
     fn take_manifest_join_assist(&mut self) -> bool {
         let v = self.manifest_join_assist;
         self.manifest_join_assist = false;
@@ -161,8 +174,9 @@ impl PresenceIntents {
     }
 
     fn assign_or_lookup(&mut self, sub: &str, jti: &str, now: Instant) -> Option<usize> {
-        for (i, occupied) in self.occupied_sub.iter().enumerate() {
-            if occupied.as_deref() == Some(sub) {
+        let n = self.slot_count;
+        for i in 0..n {
+            if self.occupied_sub[i].as_deref() == Some(sub) {
                 self.last_input[i] = Some(now);
                 // Cancel pending Delete only on jti rotate (refresh). Same-jti Intent leaves
                 // the schedule so crash/undeclare still confirms after grace.
@@ -176,9 +190,9 @@ impl PresenceIntents {
                 return Some(i);
             }
         }
-        for (i, occupied) in self.occupied_sub.iter_mut().enumerate() {
-            if occupied.is_none() {
-                *occupied = Some(sub.to_string());
+        for i in 0..n {
+            if self.occupied_sub[i].is_none() {
+                self.occupied_sub[i] = Some(sub.to_string());
                 self.session_jti[i] = Some(jti.to_string());
                 self.pending_liveliness[i] = None;
                 self.last_input[i] = Some(now);
@@ -213,7 +227,7 @@ impl PresenceIntents {
 
     /// Immediate reclaim for verified Leave / session (queues `pending_removes`).
     fn reclaim_sub(&mut self, sub: &str, reason: &str) -> Option<(u32, String)> {
-        for i in 0..USER_ROOT_SLOTS {
+        for i in 0..self.slot_count() {
             if self.occupied_sub[i].as_deref() == Some(sub) {
                 let freed = self.free_slot_at(i, reason);
                 self.pending_removes.push(freed.clone());
@@ -228,7 +242,7 @@ impl PresenceIntents {
     /// Does **not** free immediately: grace lets a refresh Intent with a new `jti` cancel the
     /// pending Delete when liveliness arrives before the Intent (no cross-key order).
     fn schedule_liveliness_reclaim(&mut self, sub: &str, jti: &str, now: Instant) -> bool {
-        for i in 0..USER_ROOT_SLOTS {
+        for i in 0..self.slot_count() {
             if self.occupied_sub[i].as_deref() != Some(sub) {
                 continue;
             }
@@ -262,7 +276,7 @@ impl PresenceIntents {
     /// Confirm scheduled liveliness reclaim if grace elapsed and `jti` still bound.
     fn confirm_liveliness_reclaims(&mut self, now: Instant) -> Vec<(u32, String)> {
         let mut freed = Vec::new();
-        for i in 0..USER_ROOT_SLOTS {
+        for i in 0..self.slot_count() {
             let Some((jti, confirm_at)) = self.pending_liveliness[i].clone() else {
                 continue;
             };
@@ -292,7 +306,7 @@ impl PresenceIntents {
     /// Drop slots with no Intent for `ttl`. Returns freed `(entity_id, sub)`.
     fn reclaim_stale(&mut self, now: Instant, ttl: Duration) -> Vec<(u32, String)> {
         let mut freed = Vec::new();
-        for i in 0..USER_ROOT_SLOTS {
+        for i in 0..self.slot_count() {
             if self.occupied_sub[i].is_none() {
                 continue;
             }
@@ -316,9 +330,9 @@ impl PresenceIntents {
     }
 
     fn to_presence_state(&self, host_generation: u64) -> PresenceState {
-        let mut assignments = Vec::with_capacity(USER_ROOT_SLOTS);
-        for (i, occupied) in self.occupied_sub.iter().enumerate() {
-            if let Some(sub) = occupied {
+        let mut assignments = Vec::with_capacity(self.slot_count);
+        for i in 0..self.slot_count {
+            if let Some(sub) = &self.occupied_sub[i] {
                 assignments.push(PresenceAssignment {
                     sub: sub.clone(),
                     entity_id: PhysicsWorld::user_root_entity_id(i),
@@ -596,8 +610,9 @@ fn spawn_input_gate(
                                         }
                                         None => {
                                             guard.dropped_full += 1;
+                                            let max = guard.slot_count();
                                             log::warn!(
-                                                "drop InputEvent: presence full (max {USER_ROOT_SLOTS}); sub={sub}"
+                                                "drop InputEvent: presence full (max {max}); sub={sub}"
                                             );
                                         }
                                     }
@@ -742,8 +757,8 @@ fn main() -> Result<()> {
     let host_pub = public_key_bytes(&host_signing_key);
 
     log::info!(
-        "host-server x003d starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_roots={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
-        USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
+        "host-server x004d starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_root_band={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS_MAX as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
     );
 
@@ -776,13 +791,15 @@ fn main() -> Result<()> {
             );
         }
     }
+    let user_root_slots = user_root_slots_from_entries(&room_scene.entries)
+        .context("invalid user_root entries in world scene (x004d)")?;
     log::info!(
-        "world scene loaded revision={} entries={}",
+        "world scene loaded revision={} entries={} user_root_slots={user_root_slots} (band max={USER_ROOT_SLOTS_MAX})",
         room_scene.revision,
         room_scene.entries.len()
     );
 
-    let presence = Arc::new(Mutex::new(PresenceIntents::default()));
+    let presence = Arc::new(Mutex::new(PresenceIntents::with_slots(user_root_slots)));
     let sessions = Arc::new(Mutex::new(SessionTable::default()));
     let intent_rates = Arc::new(Mutex::new(IntentRateLimiter::new()));
     let snapshot_cache = Arc::new(Mutex::new(RenderFrame {
@@ -916,11 +933,12 @@ fn main() -> Result<()> {
     let publish_stats = net.stats;
 
     let mut physics = PhysicsWorld::from_entries(&room_scene.entries, loco_mode, move_speed);
+    debug_assert_eq!(physics.user_root_slot_count(), user_root_slots);
     let grabbable_n = physics.boxes.grabbable.iter().filter(|&&g| g).count();
+    let last_root = USER_ROOT_ENTITY_FIRST + physics.user_root_slot_count() as u32 - 1;
     log::info!(
-        "Rapier world ready (mesh={:?} + user_roots {USER_ROOT_ENTITY_FIRST}..{} + boxes={} grabbable={grabbable_n} mode={:?})",
+        "Rapier world ready (mesh={:?} + user_roots {USER_ROOT_ENTITY_FIRST}..{last_root} + boxes={} grabbable={grabbable_n} mode={:?})",
         physics.mesh_entity_id(),
-        USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1,
         physics.boxes.len(),
         physics.loco_mode()
     );
@@ -987,13 +1005,14 @@ fn main() -> Result<()> {
 
         let tick_now = Instant::now();
         let host_generation = pub_snap.host_generation;
-        let (by_slot, occupied, presence_rev, presence_state, reclaimed, join_assist) = {
+        let (by_slot, occupied, slot_count, presence_rev, presence_state, reclaimed, join_assist) = {
             let mut g = lock_or_fatal(&presence, "presence");
             let freed = g.drain_reclaims(tick_now, PRESENCE_SLOT_TTL);
             let join_assist = g.take_manifest_join_assist();
             (
-                g.by_slot,
+                g.by_slot, // Copy — avoid per-tick Vec heap alloc (x004d review)
                 g.occupied_sub.clone(),
+                g.slot_count,
                 g.revision,
                 g.to_presence_state(host_generation),
                 freed,
@@ -1037,11 +1056,15 @@ fn main() -> Result<()> {
             last_manifest = Instant::now();
         }
 
-        for (slot, occupied_sub) in occupied.iter().enumerate() {
+        for (slot, (occupied_sub, &overlay)) in occupied
+            .iter()
+            .zip(by_slot.iter())
+            .take(slot_count)
+            .enumerate()
+        {
             if occupied_sub.is_none() {
                 continue;
             }
-            let overlay = by_slot[slot];
             if overlay.active {
                 physics.apply_user_intent(slot, overlay.x, overlay.y, overlay.z, dt);
             }
@@ -1082,11 +1105,11 @@ fn main() -> Result<()> {
 
         // Pose sample only on net ticks (delta/encode/put live on zenoh-publish).
         let mut all_poses: Vec<(u32, Pose)> =
-            Vec::with_capacity(1 + USER_ROOT_SLOTS + physics.boxes.len());
+            Vec::with_capacity(1 + physics.user_root_slot_count() + physics.boxes.len());
         if let Some((id, pose)) = moving_pose_from_sim(&physics) {
             all_poses.push((id, pose));
         }
-        for (slot, occupied_sub) in occupied.iter().enumerate() {
+        for (slot, occupied_sub) in occupied.iter().enumerate().take(slot_count) {
             if occupied_sub.is_some() {
                 all_poses.push((
                     PhysicsWorld::user_root_entity_id(slot),
@@ -1119,7 +1142,7 @@ fn main() -> Result<()> {
         if last_log.elapsed() >= Duration::from_secs(1) {
             let (mx, my, mz) = physics.moving_translation();
             let mut roots = String::new();
-            for (slot, occupied_sub) in occupied.iter().enumerate() {
+            for (slot, occupied_sub) in occupied.iter().enumerate().take(slot_count) {
                 if occupied_sub.is_none() {
                     continue;
                 }
@@ -1156,7 +1179,7 @@ mod presence_reclaim_tests {
 
     #[test]
     fn reclaim_stale_frees_slot_for_reuse() {
-        let mut p = PresenceIntents::default();
+        let mut p = PresenceIntents::with_slots(USER_ROOT_SLOTS_MAX);
         let t0 = Instant::now();
         let slot = p.assign_or_lookup("alice", "j1", t0).expect("assign");
         assert_eq!(slot, 0);
@@ -1190,7 +1213,7 @@ mod presence_reclaim_tests {
 
     #[test]
     fn same_sub_before_ttl_keeps_slot() {
-        let mut p = PresenceIntents::default();
+        let mut p = PresenceIntents::with_slots(USER_ROOT_SLOTS_MAX);
         let t0 = Instant::now();
         assert_eq!(p.assign_or_lookup("alice", "j1", t0), Some(0));
         assert_eq!(
@@ -1207,7 +1230,7 @@ mod presence_reclaim_tests {
 
     #[test]
     fn manifest_join_assist_on_assign_and_jti_rotate_not_same_jti_or_reclaim() {
-        let mut p = PresenceIntents::default();
+        let mut p = PresenceIntents::with_slots(USER_ROOT_SLOTS_MAX);
         let t0 = Instant::now();
         assert!(!p.take_manifest_join_assist());
         assert_eq!(p.assign_or_lookup("alice", "j1", t0), Some(0));
@@ -1224,7 +1247,7 @@ mod presence_reclaim_tests {
 
     #[test]
     fn reclaim_sub_frees_immediately() {
-        let mut p = PresenceIntents::default();
+        let mut p = PresenceIntents::with_slots(USER_ROOT_SLOTS_MAX);
         let t0 = Instant::now();
         assert_eq!(p.assign_or_lookup("alice", "j1", t0), Some(0));
         let entity = p.reclaim_sub("alice", "leave").expect("reclaim");
@@ -1242,7 +1265,7 @@ mod presence_reclaim_tests {
 
     #[test]
     fn schedule_liveliness_requires_matching_jti() {
-        let mut p = PresenceIntents::default();
+        let mut p = PresenceIntents::with_slots(USER_ROOT_SLOTS_MAX);
         let t0 = Instant::now();
         assert_eq!(p.assign_or_lookup("alice", "jti-real", t0), Some(0));
 
@@ -1269,14 +1292,28 @@ mod presence_reclaim_tests {
 
     #[test]
     fn schedule_liveliness_ignores_unknown_sub() {
-        let mut p = PresenceIntents::default();
+        let mut p = PresenceIntents::with_slots(USER_ROOT_SLOTS_MAX);
         assert!(!p.schedule_liveliness_reclaim("nobody", "jti", Instant::now()));
+    }
+
+    #[test]
+    fn narrowed_slot_count_rejects_overflow() {
+        let mut p = PresenceIntents::with_slots(2);
+        let t0 = Instant::now();
+        assert_eq!(p.assign_or_lookup("alice", "j1", t0), Some(0));
+        assert_eq!(p.assign_or_lookup("bob", "j2", t0), Some(1));
+        assert_eq!(p.assign_or_lookup("carol", "j3", t0), None);
+        assert_eq!(p.slot_count(), 2);
+        // Slot indices beyond Manifest capacity must stay unused even though the
+        // backing array is USER_ROOT_SLOTS_MAX wide.
+        assert!(p.occupied_sub[2].is_none());
+        assert!(p.occupied_sub[3].is_none());
     }
 
     #[test]
     fn refresh_intent_cancels_pending_liveliness_delete() {
         // Race: Delete(old_jti) arrives before Intent(new_jti). Grace + jti rotate must not reclaim.
-        let mut p = PresenceIntents::default();
+        let mut p = PresenceIntents::with_slots(USER_ROOT_SLOTS_MAX);
         let t0 = Instant::now();
         assert_eq!(p.assign_or_lookup("alice", "jti-old", t0), Some(0));
         assert!(p.schedule_liveliness_reclaim("alice", "jti-old", t0));

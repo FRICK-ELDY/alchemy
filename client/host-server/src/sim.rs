@@ -1,10 +1,11 @@
-//! Rapier world driven by SceneManifest entries (x0027 / x002c / x0030 / x0041).
+//! Rapier world driven by SceneManifest entries (x0027 / x002c / x0030 / x0041 / x004d).
 //!
 //! Guarantees: floor (host-local) + mesh ball + boxes + user_roots from Manifest;
 //! Manifest initial **rotation** → Rapier spawn; Manifest **scale** → Frame Pose seed
 //! (`scales` map; collider stays `half_extent`); per-slot Grab; no Steal;
 //! hold aim / offset capped by [`alchemy_shared_sim::MAX_GRAB_HIT_DISTANCE`] (x0041);
-//! `release_slot` resets translation+rotation to Manifest spawn.
+//! `release_slot` resets translation+rotation to Manifest spawn;
+//! Presence capacity = contiguous Manifest user_root entries (x004d).
 //! Classification via `alchemy-shared-sim` [`EntityKind`] (x0030).
 //! Non-guarantees: Grab aim **rotation** follow (translation only); throw impulse;
 //! non-uniform collider scale (client OBB uses Frame scale,
@@ -12,8 +13,8 @@
 //! rotation + Manifest scale (x0029 / x002c).
 
 use alchemy_protocol::{
-    scene_entry_grabbable, scene_entry_quat_xyzw, scene_entry_scale, LocomotionMode, SceneEntry,
-    DEFAULT_MOVE_SPEED,
+    scene_entry_grabbable, scene_entry_quat_xyzw, scene_entry_scale, user_root_slots_from_entries,
+    LocomotionMode, SceneEntry, DEFAULT_MOVE_SPEED,
 };
 use alchemy_shared_sim::{
     classify_scene_entry, scene_entry_color_rgba, EntityKind, PHYS_BALL_RADIUS,
@@ -22,7 +23,7 @@ use rapier3d::na::{Isometry3, Quaternion, Translation3, UnitQuaternion};
 use rapier3d::prelude::*;
 use std::collections::HashMap;
 
-pub use alchemy_protocol::{USER_ROOT_ENTITY_FIRST, USER_ROOT_SLOTS};
+pub use alchemy_protocol::{USER_ROOT_ENTITY_FIRST, USER_ROOT_SLOTS_MAX};
 
 const FLOOR_HALF_H: f32 = 0.5;
 const DEMO_GRAVITY_Y: f32 = -2.2;
@@ -88,16 +89,19 @@ pub struct PhysicsWorld {
     ccd_solver: CCDSolver,
     /// Primary mesh entity (dynamic ball), if any.
     mesh: Option<(u32, RigidBodyHandle)>,
-    user_roots: [RigidBodyHandle; USER_ROOT_SLOTS],
-    user_root_spawns: [(f32, f32, f32); USER_ROOT_SLOTS],
-    user_root_quats: [[f32; 4]; USER_ROOT_SLOTS],
+    /// Live indices are `0..slot_count` (Manifest-derived; x004d). Rest stay `None`.
+    user_roots: [Option<RigidBodyHandle>; USER_ROOT_SLOTS_MAX],
+    user_root_spawns: [(f32, f32, f32); USER_ROOT_SLOTS_MAX],
+    user_root_quats: [[f32; 4]; USER_ROOT_SLOTS_MAX],
+    /// Manifest-derived Presence / user_root capacity (`1..=USER_ROOT_SLOTS_MAX`).
+    slot_count: usize,
     /// Manifest initial scale (Frame seed; not a Rapier collider size; x002c).
     scales: HashMap<u32, [f32; 3]>,
     pub boxes: CuboidBoxes,
     colors: HashMap<u32, (f32, f32, f32, f32)>,
     loco_mode: LocoMode,
     move_speed: f32,
-    grabs: [Option<ActiveGrab>; USER_ROOT_SLOTS],
+    grabs: [Option<ActiveGrab>; USER_ROOT_SLOTS_MAX],
 }
 
 fn entry_unit_quat(entry: &SceneEntry) -> UnitQuaternion<f32> {
@@ -118,8 +122,13 @@ fn entry_scale_f32(entry: &SceneEntry) -> [f32; 3] {
 }
 
 impl PhysicsWorld {
-    /// Build physics from world-authored Manifest entries (x0027).
+    /// Build physics from world-authored Manifest entries (x0027 / x004d).
+    ///
+    /// Panics if user_root entries are missing / non-contiguous / beyond
+    /// [`USER_ROOT_SLOTS_MAX`] (host validates via [`user_root_slots_from_entries`] at boot).
     pub fn from_entries(entries: &[SceneEntry], loco_mode: LocoMode, move_speed: f32) -> Self {
+        let slots = user_root_slots_from_entries(entries)
+            .unwrap_or_else(|e| panic!("invalid Manifest user_roots: {e}"));
         let mut rigid_body_set = RigidBodySet::new();
         let mut collider_set = ColliderSet::new();
         let mut colors = HashMap::new();
@@ -136,10 +145,10 @@ impl PhysicsWorld {
 
         let mut mesh: Option<(u32, RigidBodyHandle)> = None;
         let mut boxes = CuboidBoxes::empty();
-        let mut user_root_spawns = [(0.0_f32, 1.6_f32, 6.0_f32); USER_ROOT_SLOTS];
-        let mut user_root_quats = [[0.0_f32, 0.0, 0.0, 1.0]; USER_ROOT_SLOTS];
+        let mut user_root_spawns = [(0.0_f32, 1.6_f32, 6.0_f32); USER_ROOT_SLOTS_MAX];
+        let mut user_root_quats = [[0.0_f32, 0.0, 0.0, 1.0]; USER_ROOT_SLOTS_MAX];
         let mut scales: HashMap<u32, [f32; 3]> = HashMap::new();
-        let mut roots_seen = [false; USER_ROOT_SLOTS];
+        let mut roots_seen = [false; USER_ROOT_SLOTS_MAX];
 
         for entry in entries {
             let color = scene_entry_color_rgba(entry);
@@ -150,7 +159,7 @@ impl PhysicsWorld {
             match classify_scene_entry(entry) {
                 EntityKind::UserRoot => {
                     let slot = (entry.entity_id - USER_ROOT_ENTITY_FIRST) as usize;
-                    if slot < USER_ROOT_SLOTS {
+                    if slot < slots {
                         user_root_spawns[slot] = (entry.x as f32, entry.y as f32, entry.z as f32);
                         let [qx, qy, qz, qw] = scene_entry_quat_xyzw(entry);
                         user_root_quats[slot] = [qx as f32, qy as f32, qz as f32, qw as f32];
@@ -208,8 +217,8 @@ impl PhysicsWorld {
             }
         }
 
-        let mut user_root_handles = Vec::with_capacity(USER_ROOT_SLOTS);
-        for slot in 0..USER_ROOT_SLOTS {
+        let mut user_roots = [None; USER_ROOT_SLOTS_MAX];
+        for slot in 0..slots {
             let (ux, uy, uz) = user_root_spawns[slot];
             let [qx, qy, qz, qw] = user_root_quats[slot];
             let rot = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
@@ -222,14 +231,11 @@ impl PhysicsWorld {
                 handle,
                 &mut rigid_body_set,
             );
-            user_root_handles.push(handle);
+            user_roots[slot] = Some(handle);
             if !roots_seen[slot] {
                 colors.insert(USER_ROOT_ENTITY_FIRST + slot as u32, user_root_color(slot));
             }
         }
-        let user_roots: [RigidBodyHandle; USER_ROOT_SLOTS] = user_root_handles
-            .try_into()
-            .expect("USER_ROOT_SLOTS handles");
 
         let speed = if move_speed > 0.0 {
             move_speed
@@ -254,13 +260,19 @@ impl PhysicsWorld {
             user_roots,
             user_root_spawns,
             user_root_quats,
+            slot_count: slots,
             scales,
             boxes,
             colors,
             loco_mode,
             move_speed: speed,
-            grabs: [None; USER_ROOT_SLOTS],
+            grabs: [None; USER_ROOT_SLOTS_MAX],
         }
+    }
+
+    /// Manifest-derived Presence / user_root capacity (x004d).
+    pub fn user_root_slot_count(&self) -> usize {
+        self.slot_count
     }
 
     pub fn mesh_entity_id(&self) -> Option<u32> {
@@ -295,7 +307,7 @@ impl PhysicsWorld {
     }
 
     fn box_held_by_other(&self, slot: usize, box_index: usize) -> bool {
-        self.grabs
+        self.grabs[..self.slot_count]
             .iter()
             .enumerate()
             .any(|(s, g)| s != slot && g.map(|ag| ag.index == box_index).unwrap_or(false))
@@ -308,7 +320,7 @@ impl PhysicsWorld {
         entity_id: u32,
         aim: (f32, f32, f32),
     ) {
-        if slot >= USER_ROOT_SLOTS {
+        if slot >= self.user_root_slot_count() {
             return;
         }
         if !want_grab {
@@ -373,14 +385,17 @@ impl PhysicsWorld {
     }
 
     pub fn release_slot(&mut self, slot: usize) {
-        if slot >= USER_ROOT_SLOTS {
+        if slot >= self.user_root_slot_count() {
             return;
         }
         self.release_grab(slot);
         let (sx, sy, sz) = self.user_root_spawns[slot];
         let [qx, qy, qz, qw] = self.user_root_quats[slot];
         let rot = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
-        let Some(body) = self.rigid_body_set.get_mut(self.user_roots[slot]) else {
+        let Some(handle) = self.user_roots[slot] else {
+            return;
+        };
+        let Some(body) = self.rigid_body_set.get_mut(handle) else {
             return;
         };
         body.set_next_kinematic_translation(vector![sx, sy, sz]);
@@ -390,9 +405,10 @@ impl PhysicsWorld {
     }
 
     pub fn grab_entity_id(&self, slot: usize) -> Option<u32> {
-        self.grabs
-            .get(slot)
-            .and_then(|g| g.map(|ag| self.boxes.entity_ids[ag.index]))
+        if slot >= self.slot_count {
+            return None;
+        }
+        self.grabs[slot].map(|ag| self.boxes.entity_ids[ag.index])
     }
 
     pub fn loco_mode(&self) -> LocoMode {
@@ -418,12 +434,15 @@ impl PhysicsWorld {
     }
 
     pub fn apply_user_intent(&mut self, slot: usize, mx: f32, my: f32, mz: f32, dt: f32) {
-        if slot >= USER_ROOT_SLOTS {
+        if slot >= self.user_root_slot_count() {
             return;
         }
         let (mx, my, mz) = crate::finite::clamp_move_vector(mx, my, mz);
         let speed = self.move_speed;
-        let Some(body) = self.rigid_body_set.get_mut(self.user_roots[slot]) else {
+        let Some(handle) = self.user_roots[slot] else {
+            return;
+        };
+        let Some(body) = self.rigid_body_set.get_mut(handle) else {
             return;
         };
         let t = *body.translation();
@@ -455,17 +474,18 @@ impl PhysicsWorld {
 
     pub fn user_root_pose(&self, slot: usize) -> ((f32, f32, f32), [f32; 4]) {
         let fallback = (
-            self.user_root_spawns
-                .get(slot)
-                .copied()
-                .unwrap_or((0.0, 1.6, 6.0)),
+            if slot < USER_ROOT_SLOTS_MAX {
+                self.user_root_spawns[slot]
+            } else {
+                (0.0, 1.6, 6.0)
+            },
             [0.0, 0.0, 0.0, 1.0],
         );
-        if slot >= USER_ROOT_SLOTS {
+        if slot >= self.slot_count {
             return fallback;
         }
-        self.rigid_body_set
-            .get(self.user_roots[slot])
+        self.user_roots[slot]
+            .and_then(|h| self.rigid_body_set.get(h))
             .map(body_translation_quat)
             .unwrap_or(fallback)
     }
@@ -497,13 +517,13 @@ fn body_translation_quat(body: &RigidBody) -> ((f32, f32, f32), [f32; 4]) {
 
 /// Distinct tint per user_root slot when Manifest omits color.
 pub fn user_root_color(slot: usize) -> (f32, f32, f32, f32) {
-    const PALETTE: [(f32, f32, f32); USER_ROOT_SLOTS] = [
+    const PALETTE: [(f32, f32, f32); USER_ROOT_SLOTS_MAX] = [
         (0.4, 0.7, 1.0),
         (1.0, 0.55, 0.25),
         (0.45, 0.9, 0.5),
         (0.9, 0.45, 0.85),
     ];
-    let (r, g, b) = PALETTE[slot % USER_ROOT_SLOTS];
+    let (r, g, b) = PALETTE[slot % USER_ROOT_SLOTS_MAX];
     (r, g, b, 1.0)
 }
 
@@ -679,10 +699,12 @@ mod tests {
     #[test]
     fn four_slots_have_distinct_spawns() {
         let world = test_world();
-        assert_eq!(USER_ROOT_SLOTS, 4);
+        assert_eq!(world.user_root_slot_count(), 4);
+        assert_eq!(USER_ROOT_SLOTS_MAX, 4);
         assert_eq!(PhysicsWorld::user_root_entity_id(3), 6);
-        let mut xs = Vec::with_capacity(USER_ROOT_SLOTS);
-        for slot in 0..USER_ROOT_SLOTS {
+        let n = world.user_root_slot_count();
+        let mut xs = Vec::with_capacity(n);
+        for slot in 0..n {
             let (x, y, z) = world.user_root_translation(slot);
             assert!((y - 1.6).abs() < 0.01 && (z - 6.0).abs() < 0.01);
             xs.push(x);
@@ -694,6 +716,17 @@ mod tests {
                 "spawns should differ on X: {xs:?}"
             );
         }
+    }
+
+    #[test]
+    fn slots_follow_manifest_entry_count() {
+        let mut entries = demo_entries_for_test();
+        entries.retain(|e| {
+            !alchemy_protocol::scene_entry_is_user_root(e.entity_id) || e.entity_id <= 4
+        });
+        let world = PhysicsWorld::from_entries(&entries, LocoMode::Noclip, DEFAULT_MOVE_SPEED);
+        assert_eq!(world.user_root_slot_count(), 2);
+        assert_eq!(PhysicsWorld::user_root_entity_id(1), 4);
     }
 
     #[test]
@@ -737,20 +770,27 @@ mod tests {
 
     #[test]
     fn non_grabbable_box_is_fixed() {
-        let entries = vec![SceneEntry {
-            entity_id: 20,
-            blake3: String::new(),
-            x: 0.0,
-            y: 0.25,
-            z: 0.0,
-            half_extent: 0.25,
-            flags: 0,
-            r: 1.0,
-            g: 1.0,
-            b: 1.0,
-            a: 1.0,
-            ..Default::default()
-        }];
+        // x004d: from_entries requires ≥1 contiguous user_root in the protocol band.
+        let entries = vec![
+            SceneEntry {
+                entity_id: USER_ROOT_ENTITY_FIRST,
+                ..Default::default()
+            },
+            SceneEntry {
+                entity_id: 20,
+                blake3: String::new(),
+                x: 0.0,
+                y: 0.25,
+                z: 0.0,
+                half_extent: 0.25,
+                flags: 0,
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+                ..Default::default()
+            },
+        ];
         let mut world = PhysicsWorld::from_entries(&entries, LocoMode::Noclip, DEFAULT_MOVE_SPEED);
         assert_eq!(world.boxes.len(), 1);
         assert!(!world.boxes.grabbable[0]);

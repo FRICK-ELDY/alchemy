@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x004c`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x004e`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -127,11 +127,12 @@ depends_on: [x0006]
 | x004a | — | done | README / roadmap 鮮度（P3-5・vision 本文は未） | [x004a-docs-freshness.md](slices/x004a-docs-freshness.md) |
 | x004b | — | done | ClientIp 共有化 + HTTP inspect 除去（P3-6） | [x004b-client-ip-shared-inspect.md](slices/x004b-client-ip-shared-inspect.md) |
 | x004c | — | done | cargo-fuzz protobuf / JWT（P3-9） | [x004c-cargo-fuzz-protobuf-jwt.md](slices/x004c-cargo-fuzz-protobuf-jwt.md) |
+| x004d | — | done | USER_ROOT_SLOTS → Manifest（P3-10・帯は protocol） | [x004d-user-root-slots-manifest.md](slices/x004d-user-root-slots-manifest.md) |
 
-**現在の次:** **P2-1 deferred**（Zenoh mTLS / Relay）、または **P3-10**。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。  
+**現在の次:** **P2-1 deferred**（Zenoh mTLS / Relay）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
-次の空き番号は **`x004d`**。
+次の空き番号は **`x004e`**。
 
 
 ## 関連

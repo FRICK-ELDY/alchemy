@@ -21,6 +21,7 @@
 //! - Manifest scale resizing Rapier colliders (half_extent stays definition size).
 //! - Locomotion module list UI / suppress sources.
 //! - Tenant namespace `alchemy/tenant/...` (dev keys only: `alchemy/dev/room/{room_id}/…`).
+//! - Room capacity beyond [`USER_ROOT_SLOTS_MAX`] / non-contiguous user_root ids (x004d).
 //! - 5+ concurrent guests / WAN liveliness ACL / Zenoh ACL.
 //! - Full host handoff UX / Wake-on-Join (generation advance is the contract only).
 //! - Router max-payload / per-peer QoS (app-level decode limits only; x003b).
@@ -52,27 +53,56 @@ pub const SCENE_FLAG_GRABBABLE: u32 = 1;
 /// Shared by host Noclip and client Settings display (x000a).
 pub const DEFAULT_MOVE_SPEED: f32 = 4.0;
 
-/// Max simultaneous players (Presence slots / user_roots).
-///
-/// Shared by host-server / client / e2e-probe to avoid id drift (x001f).
-/// Not a wire-schema field — host/content knowledge temporarily parked here;
-/// prefer a dedicated content/shared-sim crate if Presence capacity grows.
-pub const USER_ROOT_SLOTS: usize = 4;
-
-/// First user_root entity id; last = [`USER_ROOT_ENTITY_FIRST`] + [`USER_ROOT_SLOTS`] - 1.
+/// First entity id reserved for Presence user_roots (protocol band rule; x004d).
 pub const USER_ROOT_ENTITY_FIRST: u32 = 3;
 
-/// Inclusive last user_root entity id.
+/// Protocol ceiling on concurrent user_roots (id band width).
+///
+/// Room Presence capacity is **not** this constant — it comes from contiguous
+/// Manifest `user_root` entries via [`user_root_slots_from_entries`] (x004d).
+pub const USER_ROOT_SLOTS_MAX: usize = 4;
+
+/// Inclusive last entity id of the user_root band ([`USER_ROOT_ENTITY_FIRST`] + max − 1).
 pub const fn user_root_entity_last() -> u32 {
-    USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS as u32 - 1
+    USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS_MAX as u32 - 1
 }
+
+/// Why [`user_root_slots_from_entries`] rejected Manifest entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserRootSlotsError {
+    Empty,
+    Duplicate { entity_id: u32 },
+    Gap { missing_entity_id: u32 },
+}
+
+impl std::fmt::Display for UserRootSlotsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "Manifest has no user_root entries"),
+            Self::Duplicate { entity_id } => {
+                write!(f, "duplicate user_root entity_id={entity_id}")
+            }
+            Self::Gap { missing_entity_id } => {
+                write!(
+                    f,
+                    "user_root ids must be contiguous from {}; missing {missing_entity_id}",
+                    USER_ROOT_ENTITY_FIRST
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for UserRootSlotsError {}
 
 /// True when `flags` includes [`SCENE_FLAG_GRABBABLE`].
 pub const fn scene_entry_grabbable(flags: u32) -> bool {
     flags & SCENE_FLAG_GRABBABLE != 0
 }
 
-/// True when `entity_id` is in the Presence user_root band.
+/// True when `entity_id` is in the Presence user_root **band** (protocol ceiling).
+///
+/// Room capacity may be smaller; see [`user_root_slots_from_entries`].
 pub const fn scene_entry_is_user_root(entity_id: u32) -> bool {
     entity_id >= USER_ROOT_ENTITY_FIRST && entity_id <= user_root_entity_last()
 }
@@ -347,6 +377,41 @@ include!(concat!(env!("OUT_DIR"), "/alchemy.render.rs"));
 include!(concat!(env!("OUT_DIR"), "/alchemy.input.rs"));
 include!(concat!(env!("OUT_DIR"), "/alchemy.scene.rs"));
 include!(concat!(env!("OUT_DIR"), "/alchemy.presence.rs"));
+
+/// Room Presence / user_root capacity from Manifest entries (x004d).
+///
+/// Guarantees: counts ids in the protocol band; requires contiguous
+/// `FIRST..FIRST+n-1` with `1 <= n <= USER_ROOT_SLOTS_MAX`; rejects duplicates.
+/// Non-guarantees: spawn pose validity; color; runtime resize after host boot.
+pub fn user_root_slots_from_entries(entries: &[SceneEntry]) -> Result<usize, UserRootSlotsError> {
+    let mut seen = [false; USER_ROOT_SLOTS_MAX];
+    let mut max_slot: Option<usize> = None;
+    for entry in entries {
+        if !scene_entry_is_user_root(entry.entity_id) {
+            continue;
+        }
+        let slot = (entry.entity_id - USER_ROOT_ENTITY_FIRST) as usize;
+        if seen[slot] {
+            return Err(UserRootSlotsError::Duplicate {
+                entity_id: entry.entity_id,
+            });
+        }
+        seen[slot] = true;
+        max_slot = Some(max_slot.map_or(slot, |m| m.max(slot)));
+    }
+    let Some(max_slot) = max_slot else {
+        return Err(UserRootSlotsError::Empty);
+    };
+    let n = max_slot + 1;
+    for slot in 0..n {
+        if !seen[slot] {
+            return Err(UserRootSlotsError::Gap {
+                missing_entity_id: USER_ROOT_ENTITY_FIRST + slot as u32,
+            });
+        }
+    }
+    Ok(n)
+}
 
 /// Normalized SceneEntry quat xyzw (proto3 zero → identity; x002c).
 pub fn scene_entry_quat_xyzw(entry: &SceneEntry) -> [f64; 4] {
@@ -691,6 +756,57 @@ mod tests {
                 "reject {bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn user_root_slots_from_entries_contiguous() {
+        let roots: Vec<SceneEntry> = (0..USER_ROOT_SLOTS_MAX)
+            .map(|i| SceneEntry {
+                entity_id: USER_ROOT_ENTITY_FIRST + i as u32,
+                ..Default::default()
+            })
+            .collect();
+        assert_eq!(
+            user_root_slots_from_entries(&roots).unwrap(),
+            USER_ROOT_SLOTS_MAX
+        );
+        assert_eq!(user_root_slots_from_entries(&roots[..2]).unwrap(), 2);
+        assert_eq!(
+            user_root_slots_from_entries(&[]).unwrap_err(),
+            UserRootSlotsError::Empty
+        );
+        let gap = vec![
+            SceneEntry {
+                entity_id: USER_ROOT_ENTITY_FIRST,
+                ..Default::default()
+            },
+            SceneEntry {
+                entity_id: USER_ROOT_ENTITY_FIRST + 2,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            user_root_slots_from_entries(&gap).unwrap_err(),
+            UserRootSlotsError::Gap {
+                missing_entity_id: USER_ROOT_ENTITY_FIRST + 1
+            }
+        );
+        let dup = vec![
+            SceneEntry {
+                entity_id: USER_ROOT_ENTITY_FIRST,
+                ..Default::default()
+            },
+            SceneEntry {
+                entity_id: USER_ROOT_ENTITY_FIRST,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            user_root_slots_from_entries(&dup).unwrap_err(),
+            UserRootSlotsError::Duplicate {
+                entity_id: USER_ROOT_ENTITY_FIRST
+            }
+        );
     }
 
     #[test]
