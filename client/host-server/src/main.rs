@@ -8,6 +8,8 @@
 //!   hard expiry each tick. Transient refresh failure keeps last good creds; hard expiry
 //!   stops Manifest/Presence/Frame/**snapshot queryable** without exiting the process.
 //!   Resume synthesizes wire `removes` + full upserts from the last `last_sent` view
+//! - x0042: Zenoh Frame/Manifest/Presence `put().wait()` on `zenoh-publish`; physics
+//!   submits wire-agnostic pose samples / jobs (encode+sign stay in the worker)
 //! - `…/snapshot` queryable for late join (refused while gated); pure pose deltas
 //! - Empty deltas: **no publish and no `net_tick` advance**; snapshot tick = last published (x0024)
 //! - Per-`sub` Intent/Grab → up to 4 user_roots; Presence Leave / liveliness jti grace (x0022)
@@ -23,7 +25,7 @@
 //! - Steal / rotation follow / Formula / polished Walk / verifier
 //! - Authenticated remote (WAN) host shutdown
 //! - Re-fetch of world `GET …/scene` after boot (room redefinition requires host restart)
-//! - Zenoh `put().wait()` off the physics thread (credential worker only in x003d)
+//! - rkyv / bytemuck wire (encode is protobuf inside network worker today)
 //! - Intent temporary ban / Zenoh peer ACL
 //! - Unlimited Ed25519 cost on unbound steady floods (no sub bucket until bind)
 
@@ -31,13 +33,13 @@ mod finite;
 mod host_control;
 mod host_ipc;
 mod intent_rate;
+mod network_worker;
 mod pose_delta;
 mod room_token;
 mod session;
 mod sim;
 mod wire_tick;
 
-use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -56,13 +58,17 @@ use alchemy_protocol::wire_crypto::{
 };
 use alchemy_protocol::{
     frame_key, host_control_key, input_buttons, input_key, liveliness_binding_from_key,
-    liveliness_wildcard, manifest_key, presence_key, snapshot_key, validate_room_id, Entity,
-    InputEvent, LocomotionConfig, LocomotionMode, Message, PresenceAssignment, PresenceState,
-    RenderFrame, DEFAULT_MOVE_SPEED, PROTOCOL_PIN,
+    liveliness_wildcard, manifest_key, presence_key, snapshot_key, validate_room_id, InputEvent,
+    LocomotionConfig, LocomotionMode, Message, PresenceAssignment, PresenceState, RenderFrame,
+    DEFAULT_MOVE_SPEED, PROTOCOL_PIN,
 };
 use anyhow::{Context, Result};
 use finite::input_event_is_finite;
 use intent_rate::IntentRateLimiter;
+use network_worker::{
+    spawn_network_worker, FrameSample, ManifestJob, ManifestReason, NetworkWorkerConfig, Pose,
+    PresenceJob,
+};
 use room_token::{
     default_auth_url, earliest_hard_expire, ensure_sealed_manifest, fetch_room_scene,
     publish_allowed_at, spawn_credential_worker, CredentialWorkerConfig, HostCredentialChain,
@@ -330,54 +336,12 @@ impl PresenceIntents {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct Pose {
-    x: f64,
-    y: f64,
-    z: f64,
-    qx: f64,
-    qy: f64,
-    qz: f64,
-    qw: f64,
-    sx: f64,
-    sy: f64,
-    sz: f64,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-}
-
 fn zenoh_connect_endpoint() -> String {
     std::env::var("ZENOH_CONNECT").unwrap_or_else(|_| DEFAULT_ZENOH_CONNECT.to_string())
 }
 
 fn open_zenoh() -> Result<zenoh::Session> {
     zenoh_connect::open_client(&zenoh_connect_endpoint())
-}
-
-/// Hermetic E2E (x001f) / launcher (x0032): after first frame put.
-/// Body is `ready\n` plus optional `ipc=127.0.0.1:port\n` when launcher IPC is bound.
-/// Write failures are logged and ignored so a stray env cannot take down production host.
-fn signal_host_ready_once(signaled: &mut bool) {
-    if *signaled {
-        return;
-    }
-    let Ok(path) = std::env::var("ALCHEMY_HOST_READY_FILE") else {
-        *signaled = true;
-        return;
-    };
-    if path.is_empty() {
-        *signaled = true;
-        return;
-    }
-    let ipc = host_ipc::bound_addr();
-    let body = alchemy_protocol::host_ipc::ready_file_body(ipc.as_deref());
-    match std::fs::write(&path, body.as_bytes()) {
-        Ok(()) => log::info!("host ready file written (after first frame put): {path}"),
-        Err(err) => log::warn!("ALCHEMY_HOST_READY_FILE write failed ({path}): {err}"),
-    }
-    *signaled = true;
 }
 
 fn host_time_ms() -> u64 {
@@ -434,30 +398,6 @@ fn box_pose_from_sim(world: &PhysicsWorld, index: usize) -> Pose {
     pose_with_trs(t, q, world.scale_for(id), world.color_for(id))
 }
 
-fn to_entity(id: u32, pose: Pose) -> Entity {
-    alchemy_protocol::entity_trs(
-        id,
-        pose.x,
-        pose.y,
-        pose.z,
-        [pose.qx, pose.qy, pose.qz, pose.qw],
-        [pose.sx, pose.sy, pose.sz],
-        pose.r,
-        pose.g,
-        pose.b,
-        pose.a,
-    )
-}
-
-fn pose_changed(prev: Pose, next: Pose) -> bool {
-    pose_delta::translation_changed([prev.x, prev.y, prev.z], [next.x, next.y, next.z])
-        || pose_delta::orientation_changed(
-            [prev.qx, prev.qy, prev.qz, prev.qw],
-            [next.qx, next.qy, next.qz, next.qw],
-        )
-        || pose_delta::scale_changed([prev.sx, prev.sy, prev.sz], [next.sx, next.sy, next.sz])
-}
-
 /// Physics-facing gate fields (no `manifest_bytes` clone).
 #[derive(Clone, Copy, Debug)]
 struct PublishGateView {
@@ -501,33 +441,6 @@ fn take_manifest_if_newer(
             std::process::exit(78);
         }
     }
-}
-
-/// Wire catch-up after publish gate: removes for ids last sent but no longer live,
-/// plus full upserts of current poses. Updates `last_sent` to the live set.
-fn catchup_after_publish_gate(
-    last_sent: &mut HashMap<u32, Pose>,
-    all_poses: &[(u32, Pose)],
-    remove_ids: &mut Vec<u32>,
-) -> Vec<Entity> {
-    let live: HashSet<u32> = all_poses.iter().map(|(id, _)| *id).collect();
-    let mut synthesized: Vec<u32> = last_sent
-        .keys()
-        .copied()
-        .filter(|id| !live.contains(id) && !remove_ids.contains(id))
-        .collect();
-    // Stable order for logs / tests (HashMap key order is otherwise non-deterministic).
-    synthesized.sort_unstable();
-    remove_ids.extend(synthesized);
-    let upserts: Vec<_> = all_poses
-        .iter()
-        .map(|(id, pose)| to_entity(*id, *pose))
-        .collect();
-    last_sent.clear();
-    for &(id, pose) in all_poses {
-        last_sent.insert(id, pose);
-    }
-    upserts
 }
 
 fn spawn_input_gate(
@@ -989,6 +902,17 @@ fn main() -> Result<()> {
     let mut last_manifest = Instant::now();
     let mut last_publish_denied_log = Instant::now() - Duration::from_secs(60);
 
+    // x0042: move publishers to network worker (boot puts above stay on main).
+    let net = spawn_network_worker(NetworkWorkerConfig {
+        manifest_pub,
+        presence_pub,
+        frame_pub,
+        snapshot_cache: Arc::clone(&snapshot_cache),
+        host_key: host_signing_key.clone(),
+    })?;
+    let outbound = net.hub;
+    let publish_stats = net.stats;
+
     let mut physics = PhysicsWorld::from_entries(&room_scene.entries, loco_mode, move_speed);
     let grabbable_n = physics.boxes.grabbable.iter().filter(|&&g| g).count();
     log::info!(
@@ -1003,20 +927,10 @@ fn main() -> Result<()> {
     let dt = 1.0 / PHYSICS_HZ as f32;
     let mut next_physics = Instant::now();
     let mut physics_steps: u64 = 0;
-    let mut net_tick: u64 = 0;
-    // Last published frame tick (`None` until first put). Snapshot must not advertise the
-    // next unpublished `net_tick` during empty hold (DropStale trap; x0024).
-    let mut last_published_tick: Option<u64> = None;
     let mut last_log = Instant::now();
-    let mut publishes: u64 = 0;
-    let mut upsert_entities: u64 = 0;
-    let mut empty_delta_frames: u64 = 0;
     let mut physics_steps_logged: u64 = 0;
-    let mut last_sent: HashMap<u32, Pose> = HashMap::new();
     // Whether the previous tick was allowed to publish (for resume catch-up).
     let mut was_publishing = true;
-    // E2E ready = input gate + frame publisher live AND at least one frame put (x001f).
-    let mut host_ready_signaled = false;
 
     loop {
         if host_ipc::shutdown_requested() {
@@ -1046,30 +960,28 @@ fn main() -> Result<()> {
             manifest_bytes = bytes;
             manifest_revision = rev;
             manifest_epoch = epoch;
-            manifest_pub
-                .put(manifest_bytes.clone())
-                .wait()
-                .map_err(|e| anyhow::anyhow!("manifest republish failed: {e}"))?;
+            let _ = outbound.submit_manifest(ManifestJob {
+                bytes: manifest_bytes.clone(),
+                revision: manifest_revision,
+                epoch: manifest_epoch,
+                reason: ManifestReason::Epoch,
+            });
             last_manifest = Instant::now();
-            log::info!(
-                "published SceneManifest revision={manifest_revision} (credential worker epoch={manifest_epoch})"
-            );
         } else if last_manifest.elapsed() >= MANIFEST_REPUBLISH {
-            manifest_pub
-                .put(manifest_bytes.clone())
-                .wait()
-                .map_err(|e| anyhow::anyhow!("manifest republish failed: {e}"))?;
+            let _ = outbound.submit_manifest(ManifestJob {
+                bytes: manifest_bytes.clone(),
+                revision: manifest_revision,
+                epoch: manifest_epoch,
+                reason: ManifestReason::Republish,
+            });
             last_manifest = Instant::now();
-            log::info!(
-                "republished SceneManifest revision={manifest_revision} (late-joiner assist)"
-            );
         }
         // Stays true across non-net ticks until catch-up runs on a net tick.
         let resume_catchup = pub_snap.publish_allowed && !was_publishing;
 
         let tick_now = Instant::now();
         let host_generation = pub_snap.host_generation;
-        let (by_slot, occupied, presence_rev, mut presence_state, reclaimed, join_assist) = {
+        let (by_slot, occupied, presence_rev, presence_state, reclaimed, join_assist) = {
             let mut g = lock_or_fatal(&presence, "presence");
             let freed = g.drain_reclaims(tick_now, PRESENCE_SLOT_TTL);
             let join_assist = g.take_manifest_join_assist();
@@ -1099,34 +1011,24 @@ fn main() -> Result<()> {
         if pub_snap.publish_allowed
             && (presence_rev != last_presence_rev || last_presence.elapsed() >= PRESENCE_REPUBLISH)
         {
-            sign_presence(&host_signing_key, &mut presence_state);
-            let n = presence_state.assignments.len();
-            let rev = presence_state.revision;
-            presence_pub
-                .put(presence_state.encode_to_vec())
-                .wait()
-                .map_err(|e| anyhow::anyhow!("presence publish failed: {e}"))?;
-            if presence_rev != last_presence_rev {
-                log::info!("published PresenceState revision={rev} assignments={n}");
-            } else {
-                log::info!(
-                    "republished PresenceState revision={rev} assignments={n} (late-joiner assist)"
-                );
-            }
+            let republish = presence_rev == last_presence_rev;
+            let _ = outbound.submit_presence(PresenceJob {
+                state: presence_state,
+                republish,
+            });
             last_presence_rev = presence_rev;
             last_presence = Instant::now();
         }
 
         // New assign or session jti rotate (reconnect) — not reclaim/leave (x003c).
         if pub_snap.publish_allowed && join_assist {
-            manifest_pub
-                .put(manifest_bytes.clone())
-                .wait()
-                .map_err(|e| anyhow::anyhow!("manifest republish on join failed: {e}"))?;
+            let _ = outbound.submit_manifest(ManifestJob {
+                bytes: manifest_bytes.clone(),
+                revision: manifest_revision,
+                epoch: manifest_epoch,
+                reason: ManifestReason::JoinAssist,
+            });
             last_manifest = Instant::now();
-            log::info!(
-                "republished SceneManifest revision={manifest_revision} (presence join assist)"
-            );
         }
 
         for (slot, occupied_sub) in occupied.iter().enumerate() {
@@ -1148,41 +1050,31 @@ fn main() -> Result<()> {
         physics_steps = physics_steps.wrapping_add(1);
         physics_steps_logged += 1;
 
-        let mut remove_ids: Vec<u32> = reclaimed.iter().map(|(id, _)| *id).collect();
+        let remove_ids: Vec<u32> = reclaimed.iter().map(|(id, _)| *id).collect();
 
         if !physics_steps.is_multiple_of(PHYSICS_PER_NET) {
             // Still flush removes promptly when reclaim happens between net ticks.
             // Resume catch-up (with synthesized removes) waits for a net tick below.
-            if !remove_ids.is_empty() && pub_snap.publish_allowed && !resume_catchup {
-                let mut cache = lock_or_fatal(&snapshot_cache, "snapshot");
-                cache.upserts.retain(|e| !remove_ids.contains(&e.id));
-                cache.tick = net_tick;
-                cache.host_time_ms = host_time_ms();
-                cache.host_sig.clear();
-                let mut frame = RenderFrame {
-                    tick: net_tick,
+            if !remove_ids.is_empty()
+                && pub_snap.publish_allowed
+                && !resume_catchup
+                && outbound.submit_frame(FrameSample {
+                    poses: vec![],
+                    removes: remove_ids,
+                    resume_catchup: false,
+                    publish_allowed: true,
+                    removes_only: true,
                     host_time_ms: host_time_ms(),
-                    upserts: vec![],
-                    removes: remove_ids.clone(),
-                    host_sig: vec![],
-                };
-                sign_frame(&host_signing_key, &mut frame);
-                frame_pub
-                    .put(frame.encode_to_vec())
-                    .wait()
-                    .map_err(|e| anyhow::anyhow!("frame publish failed: {e}"))?;
-                for id in &remove_ids {
-                    last_sent.remove(id);
-                }
-                last_published_tick = Some(net_tick);
-                net_tick = net_tick.wrapping_add(1);
-                publishes += 1;
-                signal_host_ready_once(&mut host_ready_signaled);
+                })
+            {
+                publish_stats
+                    .coalesce_frames
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             continue;
         }
 
-        // Snapshot + delta only on net ticks (avoid every-physics-tick alloc).
+        // Pose sample only on net ticks (delta/encode/put live on zenoh-publish).
         let mut all_poses: Vec<(u32, Pose)> =
             Vec::with_capacity(1 + USER_ROOT_SLOTS + physics.boxes.len());
         if let Some((id, pose)) = moving_pose_from_sim(&physics) {
@@ -1200,98 +1092,22 @@ fn main() -> Result<()> {
             all_poses.push((physics.boxes.entity_ids[i], box_pose_from_sim(&physics, i)));
         }
 
-        let mut upserts = Vec::new();
-        if pub_snap.publish_allowed {
-            if resume_catchup {
-                log::info!("publish resumed; synthesizing catch-up upserts+removes");
-                upserts = catchup_after_publish_gate(&mut last_sent, &all_poses, &mut remove_ids);
-            } else {
-                for &(id, next_pose) in &all_poses {
-                    // Pure delta (x0023): late joiners use `…/snapshot`.
-                    // Gated ticks must not advance `last_sent` (wire view).
-                    let should_send = match last_sent.get(&id) {
-                        None => true,
-                        Some(prev) => pose_changed(*prev, next_pose),
-                    };
-                    if should_send {
-                        upserts.push(to_entity(id, next_pose));
-                        last_sent.insert(id, next_pose);
-                    }
-                }
-            }
+        if outbound.submit_frame(FrameSample {
+            poses: all_poses,
+            removes: remove_ids,
+            resume_catchup,
+            publish_allowed: pub_snap.publish_allowed,
+            removes_only: false,
+            host_time_ms: host_time_ms(),
+        }) {
+            publish_stats
+                .coalesce_frames
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-
-        let upsert_len = upserts.len() as u64;
-        if !pub_snap.publish_allowed {
-            // Local cache may stay warm for host diagnostics; queryable refuses while gated.
-            let mut cache = lock_or_fatal(&snapshot_cache, "snapshot");
-            if let Some(tick) = wire_tick::snapshot_tick_on_empty_hold(last_published_tick) {
-                cache.tick = tick;
-            }
-            cache.host_time_ms = host_time_ms();
-            cache.upserts = all_poses
-                .iter()
-                .map(|(id, pose)| to_entity(*id, *pose))
-                .collect();
-            cache.removes.clear();
-            cache.host_sig.clear();
-        } else if upserts.is_empty() && remove_ids.is_empty() {
-            // x0024: no publish / no `net_tick` advance. Refresh poses only under last
-            // published tick — never stamp the next unpublished `net_tick` (DropStale trap).
-            empty_delta_frames += 1;
-            if let Some(tick) = wire_tick::snapshot_tick_on_empty_hold(last_published_tick) {
-                let mut cache = lock_or_fatal(&snapshot_cache, "snapshot");
-                cache.tick = tick;
-                cache.host_time_ms = host_time_ms();
-                cache.upserts = all_poses
-                    .iter()
-                    .map(|(id, pose)| to_entity(*id, *pose))
-                    .collect();
-                cache.removes.clear();
-                cache.host_sig.clear();
-            }
-            if resume_catchup {
-                was_publishing = true;
-            }
-        } else {
-            upsert_entities += upsert_len;
-            {
-                let mut cache = lock_or_fatal(&snapshot_cache, "snapshot");
-                cache.tick = net_tick;
-                cache.host_time_ms = host_time_ms();
-                cache.upserts = all_poses
-                    .iter()
-                    .map(|(id, pose)| to_entity(*id, *pose))
-                    .collect();
-                cache.removes.clear();
-                cache.host_sig.clear();
-            }
-            let mut frame = RenderFrame {
-                tick: net_tick,
-                host_time_ms: host_time_ms(),
-                upserts,
-                removes: remove_ids.clone(),
-                host_sig: vec![],
-            };
-            sign_frame(&host_signing_key, &mut frame);
-            frame_pub
-                .put(frame.encode_to_vec())
-                .wait()
-                .map_err(|e| anyhow::anyhow!("frame publish failed: {e}"))?;
-            // Normal delta path: drop removed ids from the wire view.
-            // After resume catch-up this is a no-op (last_sent was already replaced by live).
-            if !resume_catchup {
-                for id in &remove_ids {
-                    last_sent.remove(id);
-                }
-            }
-            last_published_tick = Some(net_tick);
-            net_tick = net_tick.wrapping_add(1);
-            publishes += 1;
-            signal_host_ready_once(&mut host_ready_signaled);
-            if resume_catchup {
-                was_publishing = true;
-            }
+        // Catch-up flag is sticky in `coalesce_frame`; clearing local gate latch here is
+        // safe even if this sample merges with a later `resume_catchup: false` tick.
+        if resume_catchup && pub_snap.publish_allowed {
+            was_publishing = true;
         }
 
         if last_log.elapsed() >= Duration::from_secs(1) {
@@ -1315,47 +1131,17 @@ fn main() -> Result<()> {
             if roots.is_empty() {
                 roots.push_str("user_roots=-");
             }
+            let (publishes, upsert_entities, empty_delta_frames, coalesce, net_tick) =
+                publish_stats.snapshot_and_reset();
             log::info!(
-                "physics: steps={physics_steps_logged} coin=({mx:.3},{my:.3},{mz:.3}) {roots}; delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} net_tick={net_tick}"
+                "physics: steps={physics_steps_logged} coin=({mx:.3},{my:.3},{mz:.3}) {roots}; delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} coalesce={coalesce} net_tick={net_tick}"
             );
-            publishes = 0;
-            upsert_entities = 0;
-            empty_delta_frames = 0;
             physics_steps_logged = 0;
             last_log = Instant::now();
         }
     }
+    outbound.stop();
     Ok(())
-}
-
-#[cfg(test)]
-mod publish_gate_catchup_tests {
-    use super::*;
-
-    #[test]
-    fn catchup_synthesizes_removes_and_full_upserts() {
-        let mut last_sent = HashMap::new();
-        last_sent.insert(3, Pose::default()); // vanished user_root
-        last_sent.insert(10, Pose::default()); // still live but stale pose
-        let live = vec![
-            (
-                10,
-                Pose {
-                    x: 1.0,
-                    ..Pose::default()
-                },
-            ),
-            (11, Pose::default()),
-        ];
-        let mut remove_ids = vec![];
-        let upserts = catchup_after_publish_gate(&mut last_sent, &live, &mut remove_ids);
-        assert_eq!(remove_ids, vec![3]);
-        assert_eq!(upserts.len(), 2);
-        assert!(last_sent.contains_key(&10));
-        assert!(last_sent.contains_key(&11));
-        assert!(!last_sent.contains_key(&3));
-        assert!((last_sent[&10].x - 1.0).abs() < f64::EPSILON);
-    }
 }
 
 #[cfg(test)]
