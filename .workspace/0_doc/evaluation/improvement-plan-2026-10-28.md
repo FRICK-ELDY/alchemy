@@ -68,7 +68,7 @@
 | P3-7 | BLAKE3 ストリーミング・Room 作成上限 | -1 | NIF / rate limit — **マージしない**（実装試行あり・**CI が完了しなくなる**ため） |
 | P3-8 | host Room Token 否定系テスト | -1 | alg/iss/aud/exp/room — **[x0045](../../roadmap/slices/x0045-room-token-negative-tests.md) done** |
 | P3-9 | cargo-fuzz（protobuf/JWT） | 提案 | protocol / host — **[x004c](../../roadmap/slices/x004c-cargo-fuzz-protobuf-jwt.md) done** |
-| P3-10 | USER_ROOT_SLOTS を Manifest へ | -1 | protocol は帯規則のみ |
+| P3-10 | USER_ROOT_SLOTS を Manifest へ | -1 | protocol は帯規則のみ — **[x004d](../../roadmap/slices/x004d-user-root-slots-manifest.md) done** |
 
 ---
 
@@ -98,9 +98,9 @@
 
 ## 推奨スライス順
 
-**次:** **P2-1 deferred**（mTLS / Relay）再開、または **P3-10**。BlobGrant は draft 目標（P4-5）。  
+**次:** **P2-1 deferred**（mTLS / Relay）。BlobGrant は draft 目標（P4-5）。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は試行したが **CI が完了しなくなるためマージしない**（再開時は CI 完走を先行条件に）。
 
-最近閉じた: **[x004c](../../roadmap/slices/x004c-cargo-fuzz-protobuf-jwt.md)**（P3-9）、**[x004b](../../roadmap/slices/x004b-client-ip-shared-inspect.md)**（P3-6）、**[x004a](../../roadmap/slices/x004a-docs-freshness.md)**（P3-5）。
+最近閉じた: **[x004d](../../roadmap/slices/x004d-user-root-slots-manifest.md)**（P3-10）、**[x004c](../../roadmap/slices/x004c-cargo-fuzz-protobuf-jwt.md)**（P3-9）、**[x004b](../../roadmap/slices/x004b-client-ip-shared-inspect.md)**（P3-6）。
 
 スライス完了条件に必ず含める: **prod compose 起動**・**否定系が通る**・**保証表とコード一致**。

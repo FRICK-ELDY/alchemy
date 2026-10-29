@@ -1063,8 +1063,8 @@ impl SceneGpu {
                 .unwrap_or_default();
             pass.set_vertex_buffer(0, self.box_vertex_buffer.slice(..));
             pass.set_index_buffer(self.box_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            // Reserve UBO slots for all remote roots (max USER_ROOT_SLOTS; local excluded from remotes).
-            let remote_reserve = alchemy_protocol::USER_ROOT_SLOTS.min(BOX_DRAW_SLOTS);
+            // Reserve UBO slots for remote roots (protocol band ceiling; local excluded).
+            let remote_reserve = alchemy_protocol::USER_ROOT_SLOTS_MAX.min(BOX_DRAW_SLOTS);
             let box_slots = BOX_DRAW_SLOTS.saturating_sub(remote_reserve);
             for (draw_i, (id, pose)) in boxes.into_iter().enumerate() {
                 if draw_i >= box_slots {

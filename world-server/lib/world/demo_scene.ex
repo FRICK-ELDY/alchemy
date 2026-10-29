@@ -1,9 +1,13 @@
 defmodule World.DemoScene do
   @moduledoc """
-  Default room scene definition (x0027 / P4 minimal + x002c initial TRS).
+  Default room scene definition (x0027 / P4 minimal + x002c initial TRS / x004d).
 
-  Guarantees: SSoT for demo entries + locomotion assigned at room create.
-  Non-guarantees: UGC editing; shared-sim; EntityKind taxonomy; collider scale.
+  Guarantees: SSoT for demo entries + locomotion assigned at room create;
+  `@user_roots` length is the room Presence capacity (contiguous user_root
+  entity ids from 3; protocol band ceiling is `USER_ROOT_SLOTS_MAX`;
+  spawn pose and tint are paired per entry).
+  Non-guarantees: UGC editing; shared-sim; EntityKind taxonomy; collider scale;
+  runtime resize of slots after host boot.
 
   Host unit tests mirror this layout in `demo_entries_for_test` (Rust) —
   keep both in sync manually until a shared fixture exists
@@ -32,18 +36,12 @@ defmodule World.DemoScene do
     {0.70, 0.70, 0.75}
   ]
 
-  @user_spawns [
-    {0.0, 1.6, 6.0},
-    {1.5, 1.6, 6.0},
-    {-1.5, 1.6, 6.0},
-    {3.0, 1.6, 6.0}
-  ]
-
-  @user_colors [
-    {0.4, 0.7, 1.0},
-    {1.0, 0.55, 0.25},
-    {0.45, 0.9, 0.5},
-    {0.9, 0.45, 0.85}
+  # Presence capacity = length. Each tuple is {{x,y,z}, {r,g,b}} so spawn/color stay paired (x004d).
+  @user_roots [
+    {{0.0, 1.6, 6.0}, {0.4, 0.7, 1.0}},
+    {{1.5, 1.6, 6.0}, {1.0, 0.55, 0.25}},
+    {{-1.5, 1.6, 6.0}, {0.45, 0.9, 0.5}},
+    {{3.0, 1.6, 6.0}, {0.9, 0.45, 0.85}}
   ]
 
   @doc "Fresh demo scene map for a newly created room."
@@ -93,10 +91,8 @@ defmodule World.DemoScene do
   end
 
   defp user_root_entries do
-    Enum.with_index(@user_spawns)
-    |> Enum.map(fn {{x, y, z}, i} ->
-      {r, g, b} = Enum.at(@user_colors, i)
-
+    Enum.with_index(@user_roots)
+    |> Enum.map(fn {{{x, y, z}, {r, g, b}}, i} ->
       Map.merge(
         %{
           "entity_id" => 3 + i,

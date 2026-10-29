@@ -18,7 +18,7 @@ use prost::Message;
 
 use crate::wire_crypto::{PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
 use crate::{
-    InputEvent, PresenceState, RenderFrame, SceneManifest, ROOM_ID_MAX_BYTES, USER_ROOT_SLOTS,
+    InputEvent, PresenceState, RenderFrame, SceneManifest, ROOM_ID_MAX_BYTES, USER_ROOT_SLOTS_MAX,
 };
 
 /// Ed25519 signature wire length ceiling (aligned with [`SIGNATURE_LENGTH`]).
@@ -55,7 +55,7 @@ pub const MAX_MANIFEST_ENTRIES: usize = 4096;
 /// DoS bound — see module docs (not a host steady-state publish quota).
 pub const MAX_FRAME_UPSERTS: usize = 4096;
 pub const MAX_FRAME_REMOVES: usize = 4096;
-pub const MAX_PRESENCE_ASSIGNMENTS: usize = USER_ROOT_SLOTS;
+pub const MAX_PRESENCE_ASSIGNMENTS: usize = USER_ROOT_SLOTS_MAX;
 
 /// Post-decode string / JWT / key ceilings (bytes).
 pub const MAX_PROTOCOL_PIN_BYTES: usize = 128;

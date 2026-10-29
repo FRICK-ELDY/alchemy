@@ -22,13 +22,13 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | `(host_generation, revision)` 単調ゲート（x003a）— 後退は discard；同一 gen 内 `host_pub` 固定；generation 上昇は world 証明のみ | 完全な host handoff UX / Wake-on-Join；二重 host の generation フリップフロップ |
 | class 別 decode byte / count 上限（x003b）— 超過は drop（OOM 回避） | router max-payload / per-peer QoS |
 | cargo-fuzz 短時間スモーク（x004c）— Manifest/Frame/Presence/Input checked decode（CI `-max_len=8192`） | 長時間キャンペーン；Windows MSVC libFuzzer；**byte gate 超過は単体テスト** |
-| Scene 分類の薄いヘルパ（`USER_ROOT_*` / `scene_entry_is_*`） | 実行側 SoA・Rapier（→ `alchemy-shared-sim` / host-server・x0030） |
+| Scene 分類の薄いヘルパ（`USER_ROOT_ENTITY_FIRST` / `USER_ROOT_SLOTS_MAX` 帯 / `scene_entry_is_*`）+ **部屋容量は Manifest entries**（`user_root_slots_from_entries`・x004d） | 実行側 SoA・Rapier（→ `alchemy-shared-sim` / host-server・x0030）；5 人超 / 帯拡大 |
 | `SceneEntry` の `half_extent` / `flags`（`SCENE_FLAG_GRABBABLE`）/ rgba / **初期 quat+scale**（x0027 / x002c）— 配置・Grab・mesh・初期 TRS の定義正本 | UGC 編集 UI・コライダーの非一様リサイズ |
 | 配送クラス表（[`peer-delivery.md`](../../../protocol/peer-delivery.md)）+ `decide_frame_tick` / `FRAME_TICK_GAP_RESYNC`（x0024） | 確実配送 ACK / event ID チャネル・欠落デルタの再送 |
 | Manifest / frame / presence / host_control / snapshot のキー式ヘルパ + `validate_room_id`（x0017） | Zenoh ACL / mTLS（防御責任は [trust-boundary.md](trust-boundary.md)） |
 | `LocomotionConfig`（World 定義の active mode） | モジュール一覧 UI / 抑制ソース |
 | `DEFAULT_MOVE_SPEED`（host / Settings 表示の共有既定） | client 永続設定・仮想キーボード編集 |
-| `PresenceState`（`sub`→user_root entity）+ `InputEvent.leave` + liveliness キーヘルパ（x0019 / x0022） | 5 人以上の動的スケール / WAN liveliness ACL |
+| `PresenceState`（`sub`→user_root entity）+ `InputEvent.leave` + liveliness キーヘルパ（x0019 / x0022） | `USER_ROOT_SLOTS_MAX` 超の動的スケール / WAN liveliness ACL |
 
 ## メッセージ
 
@@ -37,6 +37,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - `SceneManifest { room_id, revision, entries[], locomotion, protocol_pin, host_pub, host_attestation, world_seal, host_generation }`
 - `SceneEntry { entity_id, blake3 (hex), x,y,z, half_extent, flags, r,g,b,a, qx..qw, sx,sy,sz }`
   - **分類優先（host/client 共通・`scene_entry_is_box`）:** (1) `USER_ROOT_*` ID 帯 → Presence spawn (2) `blake3` 非空 → **mesh のみ**（同居の `half_extent`/Grab flags は box 経路で無視）(3) `half_extent > 0` → 直方体の描画/コリジョン (4) `flags & SCENE_FLAG_GRABBABLE` → Grab 可＝Dynamic、非 Grab box＝Fixed 静的ジオメトリ
+  - **Presence 容量（x004d）:** 連続 `entity_id` `3..3+n-1` の user_root entries 本数 `n`（`1..=USER_ROOT_SLOTS_MAX`）。protocol は帯天井のみ；部屋ごとの上限は world DemoScene / Manifest
   - **初期 TRS（x002c）:** quat xyzw（全ゼロ／非有限→identity）。scale（全ゼロ／非有限→`(1,1,1)`；一部ゼロは維持）。host は rotation を Rapier spawn に、scale を Frame Pose に載せる。**collider / host Grab 距離は `half_extent` 固定**（client OBB・描画は Frame scale）
 - `LocomotionConfig { mode, move_speed }` — `UNSPECIFIED` → host は **Noclip**
 - `LocomotionMode`: NOCLIP / FLY / WALK
@@ -55,7 +56,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 - Snapshot 成功条件: **`upserts` 非空**（空は未準備。host は `reply_err`）。client は snapshot に tick ゲートをかけない
 - デルタ tick: host は空デルタで `net_tick` を進めない。snapshot キャッシュ tick は **最後に publish した値**（次の未送 `net_tick` 禁止）。client は `FRAME_TICK_GAP_RESYNC`（既定 1）超過で適用せず snapshot（x0024）
 - `host_sig`: encode（sig 空）を host 秘密鍵で署名
-- entity id は Manifest entries 由来（デモ: Coin=`1`、user_root=`3..6`、grabbable boxes=`10..18`）。client/host は ID 帯ハードコードで Grab しない（x0027）
+- entity id は Manifest entries 由来（デモ: Coin=`1`、user_root=`3..6`＝entries 本数、grabbable boxes=`10..18`）。Presence 容量は連続 user_root entries（protocol 帯天井 `USER_ROOT_SLOTS_MAX`・x004d）。client/host は ID 帯ハードコードで Grab しない（x0027）
 
 ### InputEvent（`proto/input_events.proto`）— Intent + session（x0023）+ capability（x002a）
 
