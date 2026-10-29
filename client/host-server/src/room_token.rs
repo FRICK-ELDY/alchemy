@@ -100,6 +100,8 @@ pub struct RoomTokenVerifier {
     cache: RwLock<KeyCache>,
     refresh_tx: Mutex<Option<SyncSender<()>>>,
     bg_started: AtomicBool,
+    /// Optional x0049 host metrics (JWKS age / hard-stale).
+    metrics: Mutex<Option<Arc<crate::metrics::HostMetrics>>>,
 }
 
 struct KeyCache {
@@ -123,7 +125,29 @@ impl RoomTokenVerifier {
             }),
             refresh_tx: Mutex::new(None),
             bg_started: AtomicBool::new(false),
+            metrics: Mutex::new(None),
         }
+    }
+
+    /// Attach host metrics registry (x0049). Call once before verify traffic.
+    pub fn set_metrics(&self, metrics: Arc<crate::metrics::HostMetrics>) {
+        if let Ok(mut slot) = self.metrics.lock() {
+            *slot = Some(metrics);
+        }
+        self.publish_jwks_age();
+    }
+
+    fn with_metrics(&self, f: impl FnOnce(&crate::metrics::HostMetrics)) {
+        if let Ok(slot) = self.metrics.lock() {
+            if let Some(m) = slot.as_ref() {
+                f(m);
+            }
+        }
+    }
+
+    fn publish_jwks_age(&self) {
+        let fetched_at = self.cache.read().expect("jwks cache lock").fetched_at;
+        self.with_metrics(|m| m.set_jwks_fetched_at(fetched_at));
     }
 
     /// Poll JWKS off the input path. Safe to call once after initial [`Self::refresh_jwks`].
@@ -149,6 +173,7 @@ impl RoomTokenVerifier {
                     if let Err(err) = this.refresh_jwks() {
                         log::warn!("JWKS background refresh failed (keeping cache): {err:#}");
                     }
+                    this.publish_jwks_age();
                 }
             })
             .expect("spawn jwks-refresh");
@@ -187,6 +212,8 @@ impl RoomTokenVerifier {
         let mut cache = self.cache.write().expect("jwks cache lock");
         cache.keys = map;
         cache.fetched_at = Instant::now();
+        drop(cache);
+        self.publish_jwks_age();
         Ok(())
     }
 
@@ -210,6 +237,7 @@ impl RoomTokenVerifier {
             let age = cache.fetched_at.elapsed();
             if age > JWKS_HARD_TTL {
                 drop(cache);
+                self.with_metrics(|m| m.inc_jwks_hard_stale());
                 self.kick_refresh_hard_stale();
                 return Err(anyhow!(
                     "JWKS cache hard-stale (age > {}s); refresh required (x0040)",
@@ -1821,6 +1849,16 @@ mod tests {
         assert!(err.to_string().contains("hard-stale"), "got: {err:#}");
         verifier.set_fetched_at_age_for_test(Duration::from_secs(0));
         assert!(verifier.verify(&token).is_ok());
+    }
+
+    #[test]
+    fn hard_stale_increments_host_metrics() {
+        let (verifier, token) = test_rsa_jwt("local");
+        let metrics = Arc::new(crate::metrics::HostMetrics::default());
+        verifier.set_metrics(Arc::clone(&metrics));
+        verifier.set_fetched_at_age_for_test(Duration::from_secs(301));
+        let _ = verifier.verify(&token).expect_err("hard-stale");
+        assert_eq!(metrics.jwks_hard_stale_total(), 1);
     }
 
     // --- x0045 / P3-8: Room Token claim negative tests (shared RSA fixture) ---

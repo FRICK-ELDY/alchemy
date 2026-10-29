@@ -33,6 +33,7 @@ mod finite;
 mod host_control;
 mod host_ipc;
 mod intent_rate;
+mod metrics;
 mod network_worker;
 mod pose_delta;
 mod room_token;
@@ -748,7 +749,10 @@ fn main() -> Result<()> {
         PRESENCE_SLOT_TTL.as_secs()
     );
 
+    let host_metrics = Arc::new(metrics::HostMetrics::default());
+    metrics::maybe_spawn_from_env(Arc::clone(&host_metrics));
     let verifier = Arc::new(RoomTokenVerifier::new(&world_url, &room_id));
+    verifier.set_metrics(Arc::clone(&host_metrics));
     verifier.refresh_jwks().context("initial JWKS fetch")?;
     verifier.spawn_background_refresh();
     let creds = HostCredentialChain::bootstrap(
@@ -937,11 +941,15 @@ fn main() -> Result<()> {
             log::info!("launcher IPC shutdown requested — leaving main loop (exit 0)");
             break;
         }
+        let scheduled = next_physics;
         let now = Instant::now();
-        if now < next_physics {
-            std::thread::sleep(next_physics - now);
+        if now < scheduled {
+            std::thread::sleep(scheduled - now);
         }
-        next_physics += physics_period;
+        let started = Instant::now();
+        let late_ms = started.saturating_duration_since(scheduled).as_millis() as u64;
+        host_metrics.set_tick_lateness_ms(late_ms);
+        next_physics = scheduled + physics_period;
 
         // x003d: credentials / seal live on the worker; physics reads gate + hard expiry.
         let pub_snap = read_publish_gate(&publish_snapshot, now);

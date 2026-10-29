@@ -212,6 +212,8 @@ pub struct SharedState {
     pub liveliness_prev: Mutex<Option<zenoh::liveliness::LivelinessToken>>,
     /// Entity poses + last applied frame tick (single mutex).
     pub world: Mutex<WorldView>,
+    /// Optional localhost Prometheus metrics (x0049); always present, server off unless env.
+    pub metrics: Arc<crate::metrics::ClientMetrics>,
     /// Manifest cuboid defs (Grab flags + half_extents); Arc-swapped on apply (x0027).
     pub box_defs: Mutex<Arc<BoxDefs>>,
     /// Primary mesh entity id from Manifest (`blake3` entry); 0 until set.
