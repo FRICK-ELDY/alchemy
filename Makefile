@@ -1,13 +1,14 @@
 # Entry points (macOS / Linux / WSL / Git Bash).
 # pack-windows / publish-windows: native Windows Git Bash or windows-latest only.
-.PHONY: ci ci-rust ci-protocol ci-auth ci-world ci-assets ci-e2e ci-prod-compose \
+.PHONY: ci ci-rust ci-launcher ci-protocol ci-auth ci-world ci-assets ci-e2e ci-prod-compose \
 	smoke-assets smoke-assets-r2 smoke-compose-e2e smoke-desktop-handthrough \
 	smoke-prod-compose pack-windows publish-windows help
 
 help:
 	@echo "Targets:"
-	@echo "  make ci            # rust + protocol + auth + world + assets + prod-compose config"
+	@echo "  make ci            # rust + launcher + protocol + auth + world + assets + prod-compose config"
 	@echo "  make ci-rust"
+	@echo "  make ci-launcher       # x0047 alchemy-launcher fmt/clippy/build/test"
 	@echo "  make ci-protocol"
 	@echo "  make ci-auth"
 	@echo "  make ci-world"
@@ -29,6 +30,9 @@ ci:
 
 ci-rust:
 	./.scripts/ci.sh rust
+
+ci-launcher:
+	./.scripts/ci.sh launcher
 
 ci-protocol:
 	./.scripts/ci.sh protocol

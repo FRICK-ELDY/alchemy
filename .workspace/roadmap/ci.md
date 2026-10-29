@@ -5,6 +5,7 @@ GitHub Actions と同じゲートを手元で実行する。**Elixir 系は全 O
 ```bash
 make ci
 make ci-rust
+make ci-launcher   # x0047 alchemy-launcher（client workspace 外）
 make ci-protocol
 make ci-auth
 make ci-world

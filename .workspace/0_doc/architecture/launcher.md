@@ -1,7 +1,7 @@
 # Launcher
 
 > **正本**: [`launcher/`](../../../launcher/)（`alchemy-launcher`）  
-> **ステータス**: 最小実装 done（x0032 / P4-4）
+> **ステータス**: 最小実装 done（x0032 / P4-4）。再起動ポリシー単体 + CI（x0047 / P3-2）
 
 ## 保証すること / しないこと
 
@@ -11,7 +11,7 @@
 | **Exit Client only** → client 終了後も host 維持 | トレイ UI / インストーラ |
 | **Exit Client+Host** → IPC で host を止め、host exit 0 なら **launcher も終了**（再起動しない） | Zenoh `host_control` 経由の停止（launcher 経路では使わない） |
 | host が `127.0.0.1:0` に bind し、ready ファイルの `ipc=` で通知（ポート TOCTOU なし） | Compose への組み込み |
-| host **非 0** crash 時のみ backoff 再起動（上限 3）。launcher 側 `ipc_addr` は更新 | host handoff / Zenoh liveliness 監視 |
+| host **非 0** crash 時のみ backoff 再起動（上限 3・`decide_host_exit`）。launcher 側 `ipc_addr` は更新 | host handoff / Zenoh liveliness 監視；**respawn 後 ready 待ち失敗**の予算内再試行（即 shutdown） |
 | Ctrl+C で IPC shutdown → 子終了（再起動後も launcher 保持の新 addr を使用） | **host crash 再起動後の client 側 Exit Client+Host**（client env の旧 `ALCHEMY_HOST_IPC_ADDR` のまま）・`cargo run` 経由時の `kill` で cargo 孫プロセスが orphan になり得ること（`ALCHEMY_HOST_BIN` 推奨） |
 | exit 0 を意図的停止とみなす（現状 host は IPC → main leave → `Ok(())` のみ） | 将来の「exit 0 だが再起動したい」終了理由の区別 |
 | | multi-room / 複数 host |

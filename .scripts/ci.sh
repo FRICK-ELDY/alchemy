@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # GitHub Actions 相当のチェック（macOS / Linux / WSL / Git Bash）。
-# 使い方: ./.scripts/ci.sh [all|rust|protocol|auth|world|assets|prod-compose]
+# 使い方: ./.scripts/ci.sh [all|rust|launcher|protocol|auth|world|assets|prod-compose]
 #
 # Elixir 系は既定で Docker（OS 差分・ネイティブ依存を避ける）。
 # ホストの mix で auth を回す場合: AUTH_CI_HOST=1 ./.scripts/ci.sh auth
@@ -36,6 +36,17 @@ run_rust() {
   fi
   step "cargo build --workspace" cargo build --workspace
   step "cargo test --workspace" cargo test --workspace
+  popd >/dev/null
+}
+
+run_launcher() {
+  # x0047 / P3-2: alchemy-launcher is outside the client workspace (parity with
+  # .github/workflows/rust-ci.yml launcher-check).
+  pushd launcher >/dev/null
+  step "launcher cargo fmt --check" cargo fmt --all -- --check
+  step "launcher cargo clippy" cargo clippy -- -D warnings
+  step "launcher cargo build" cargo build
+  step "launcher cargo test" cargo test
   popd >/dev/null
 }
 
@@ -144,6 +155,7 @@ echo "root: ${ROOT}"
 
 case "$TARGET" in
   rust) run_rust ;;
+  launcher) run_launcher ;;
   protocol) run_protocol ;;
   auth) run_auth ;;
   world) run_world_docker ;;
@@ -151,6 +163,7 @@ case "$TARGET" in
   prod-compose) run_prod_compose_config ;;
   all)
     run_rust
+    run_launcher
     run_protocol
     run_auth
     run_world_docker
@@ -158,7 +171,7 @@ case "$TARGET" in
     run_prod_compose_config
     ;;
   *)
-    echo "usage: $0 [all|rust|protocol|auth|world|assets|prod-compose]" >&2
+    echo "usage: $0 [all|rust|launcher|protocol|auth|world|assets|prod-compose]" >&2
     exit 2
     ;;
 esac
