@@ -8,6 +8,15 @@ description = "Local authoritative space host (Slice D Rapier + Slice E host_con
 [lints]
 workspace = true
 
+[features]
+# Enables key-injection helpers for cargo-fuzz only (x004c).
+# Do NOT enable on release / ZIP / pack-windows builds — injection APIs are for fuzz/tests.
+fuzzing = []
+
+[lib]
+name = "host_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "host-server"
 path = "src/main.rs"

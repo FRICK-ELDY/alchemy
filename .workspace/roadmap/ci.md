@@ -7,6 +7,7 @@ make ci
 make ci-rust
 make ci-launcher   # x0047 alchemy-launcher（client workspace 外）
 make ci-protocol
+make ci-fuzz       # x004c cargo-fuzz smoke（Linux/macOS + nightly；Windows は SKIP）
 make ci-auth
 make ci-world
 make ci-assets

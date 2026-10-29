@@ -1,0 +1,19 @@
+[package]
+name = "host-server-fuzz-tools"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT"
+description = "Helpers for host-server/fuzz corpus (not a cargo-fuzz target crate)"
+
+[[bin]]
+name = "gen_room_token_seed"
+path = "src/bin/gen_room_token_seed.rs"
+
+[dependencies]
+base64 = "0.22"
+jsonwebtoken = "9"
+serde = { version = "1", features = ["derive"] }
+
+[workspace]
+members = ["."]

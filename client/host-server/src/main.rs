@@ -32,14 +32,12 @@
 mod finite;
 mod host_control;
 mod host_ipc;
-mod intent_rate;
-mod metrics;
 mod network_worker;
 mod pose_delta;
-mod room_token;
-mod session;
 mod sim;
 mod wire_tick;
+
+use host_server::{intent_rate, metrics, room_token, session};
 
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::thread;

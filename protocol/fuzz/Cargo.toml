@@ -1,0 +1,48 @@
+[package]
+name = "alchemy-protocol-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+alchemy-protocol = { path = ".." }
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "decode_manifest"
+path = "fuzz_targets/decode_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_frame"
+path = "fuzz_targets/decode_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_presence"
+path = "fuzz_targets/decode_presence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_input"
+path = "fuzz_targets/decode_input.rs"
+test = false
+doc = false
+bench = false

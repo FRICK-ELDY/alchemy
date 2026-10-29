@@ -1,0 +1,18 @@
+[package]
+name = "alchemy-protocol-fuzz-tools"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT"
+description = "Helpers for protocol/fuzz corpus (not a cargo-fuzz target crate)"
+
+[[bin]]
+name = "gen_fuzz_corpus"
+path = "src/bin/gen_fuzz_corpus.rs"
+
+[dependencies]
+alchemy-protocol = { path = ".." }
+
+# Isolated from the client / protocol-fuzz workspaces
+[workspace]
+members = ["."]

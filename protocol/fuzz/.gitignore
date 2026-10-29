@@ -1,0 +1,9 @@
+target
+artifacts
+coverage
+hfuzz_target
+hfuzz_workspace
+# Discoveries sit beside seeds; keep only seed_* in git.
+corpus/*/**
+!corpus/*/
+!corpus/*/seed_*
