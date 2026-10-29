@@ -1,7 +1,7 @@
-// Alchemy WAN zenoh-router (zenohd) — x0022 TLS / x001b ConoHa
-// Guarantees: TLS listen on 0.0.0.0:7447 (no plaintext TCP).
-// Does NOT guarantee: mTLS, JWT/JWKS ACL, CCU QoS, site↔VPS bridge, multi-tenant isolation.
-// Diff vs local config.json5: multicast OFF; listen is tls/ not tcp/.
+// Alchemy WAN zenoh-router (zenohd) — x0022 TLS / x004e mTLS + role ACL
+// Guarantees: TLS+mTLS listen; default deny; host/guest CN key-family ACL.
+// Does NOT guarantee: per-room dynamic ACL, JWT at zenohd, CCU QoS.
+// Room isolation: application `wire_cap` key segment (x004e) + app signatures.
 // Replace certificate paths on the VPS (see manual/zenoh-wan-conoha.md).
 {
   mode: "router",
@@ -24,7 +24,97 @@
         // VPS paths after setup (example: /etc/alchemy/tls/…)
         listen_private_key: "/etc/alchemy/tls/server-key.pem",
         listen_certificate: "/etc/alchemy/tls/server-cert.pem",
+        // Verify client certs issued by Relay Agent (client CA).
+        root_ca_certificate: "/etc/alchemy/tls/client-ca-cert.pem",
+        enable_mtls: true,
       },
     },
+  },
+  access_control: {
+    enabled: true,
+    default_permission: "deny",
+    rules: [
+      {
+        id: "host-put-sim",
+        permission: "allow",
+        flows: ["ingress"],
+        messages: ["put", "delete", "declare_queryable", "reply", "liveliness_token"],
+        key_exprs: [
+          "alchemy/dev/room/*/*/manifest",
+          "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/presence",
+          "alchemy/dev/room/*/*/snapshot",
+          "alchemy/dev/room/*/*/host_control",
+          "alchemy/dev/room/*/*/alive/**",
+        ],
+      },
+      {
+        id: "host-sub-input",
+        permission: "allow",
+        flows: ["ingress"],
+        messages: [
+          "declare_subscriber",
+          "declare_liveliness_subscriber",
+          "liveliness_query",
+          "query",
+        ],
+        key_exprs: [
+          "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/alive/**",
+          "alchemy/dev/room/*/*/manifest",
+          "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/presence",
+          "alchemy/dev/room/*/*/snapshot",
+        ],
+      },
+      {
+        id: "guest-put-input",
+        permission: "allow",
+        flows: ["ingress"],
+        messages: ["put", "delete", "liveliness_token"],
+        key_exprs: [
+          "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/alive/**",
+        ],
+      },
+      {
+        id: "guest-sub-sim",
+        permission: "allow",
+        flows: ["ingress"],
+        messages: [
+          "declare_subscriber",
+          "declare_liveliness_subscriber",
+          "query",
+          "liveliness_query",
+        ],
+        key_exprs: [
+          "alchemy/dev/room/*/*/manifest",
+          "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/presence",
+          "alchemy/dev/room/*/*/snapshot",
+          "alchemy/dev/room/*/*/alive/**",
+        ],
+      },
+    ],
+    subjects: [
+      {
+        id: "host",
+        cert_common_names: ["alchemy-host"],
+      },
+      {
+        id: "guest",
+        cert_common_names: ["alchemy-guest"],
+      },
+    ],
+    policies: [
+      {
+        rules: ["host-put-sim", "host-sub-input"],
+        subjects: ["host"],
+      },
+      {
+        rules: ["guest-put-input", "guest-sub-sim"],
+        subjects: ["guest"],
+      },
+    ],
   },
 }

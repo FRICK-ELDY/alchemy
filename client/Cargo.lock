@@ -6073,9 +6073,12 @@ dependencies = [
 name = "zenoh-connect"
 version = "0.1.0"
 dependencies = [
+ "alchemy-protocol",
  "anyhow",
  "log",
+ "serde",
  "serde_json",
+ "ureq",
  "zenoh",
 ]
 

@@ -25,7 +25,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | Scene 分類の薄いヘルパ（`USER_ROOT_ENTITY_FIRST` / `USER_ROOT_SLOTS_MAX` 帯 / `scene_entry_is_*`）+ **部屋容量は Manifest entries**（`user_root_slots_from_entries`・x004d） | 実行側 SoA・Rapier（→ `alchemy-shared-sim` / host-server・x0030）；5 人超 / 帯拡大 |
 | `SceneEntry` の `half_extent` / `flags`（`SCENE_FLAG_GRABBABLE`）/ rgba / **初期 quat+scale**（x0027 / x002c）— 配置・Grab・mesh・初期 TRS の定義正本 | UGC 編集 UI・コライダーの非一様リサイズ |
 | 配送クラス表（[`peer-delivery.md`](../../../protocol/peer-delivery.md)）+ `decide_frame_tick` / `FRAME_TICK_GAP_RESYNC`（x0024） | 確実配送 ACK / event ID チャネル・欠落デルタの再送 |
-| Manifest / frame / presence / host_control / snapshot のキー式ヘルパ + `validate_room_id`（x0017） | Zenoh ACL / mTLS（防御責任は [trust-boundary.md](trust-boundary.md)） |
+| Manifest / frame / presence / host_control / snapshot のキー式ヘルパ + `validate_room_id` + **`wire_cap`（x004e）** | テナント名前空間 `alchemy/tenant/…`；防御の残りは [trust-boundary.md](trust-boundary.md) |
 | `LocomotionConfig`（World 定義の active mode） | モジュール一覧 UI / 抑制ソース |
 | `DEFAULT_MOVE_SPEED`（host / Settings 表示の共有既定） | client 永続設定・仮想キーボード編集 |
 | `PresenceState`（`sub`→user_root entity）+ `InputEvent.leave` + liveliness キーヘルパ（x0019 / x0022） | `USER_ROOT_SLOTS_MAX` 超の動的スケール / WAN liveliness ACL |
@@ -88,20 +88,21 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 - client は pin 不一致・`host_sig` 失敗・**Manifest generation 不一致 / revision 後退**を拒否（x0025 / x003a）；自 `sub` で `entity_id` を解決。Presence 単独で generation を上げない
 - host 解放: **Leave** / **liveliness Delete（`sub`+`jti`）** + Intent TTL 3s
 
-## キー式ヘルパ（x0017 + x0022 liveliness + x0023 snapshot）
+## キー式ヘルパ（x0017 + x0022 liveliness + x0023 snapshot + x004e wire_cap）
 
-式: `alchemy/dev/room/{room_id}/{manifest|frame|input|presence|host_control|snapshot|alive/{sub}/{jti}}`。  
-`*_KEY_LOCAL` は `room_id=local` の別名。host/client は env `ROOM_ID`（既定 `local`）を `validate_room_id` してから `*_key` で declare する。
+式: `alchemy/dev/room/{room_id}/{wire_cap}/{manifest|frame|input|presence|host_control|snapshot|alive/{sub}/{jti}}`。  
+`*_KEY_LOCAL` は `room_id=local` + fixture `LOCAL_WIRE_CAP` の別名。host/client は `ROOM_ID` + Token の `wire_cap` を `validate_*` してから `*_key` で declare する。
 
 | 定数 / 関数 | 既定 |
 |:---|:---|
-| `MANIFEST_KEY_LOCAL` / `manifest_key(room_id)` | `alchemy/dev/room/local/manifest` |
-| `FRAME_KEY_LOCAL` / `frame_key(room_id)` | `alchemy/dev/room/local/frame` |
-| `INPUT_KEY_LOCAL` / `input_key(room_id)` | `alchemy/dev/room/local/input` |
-| `PRESENCE_KEY_LOCAL` / `presence_key(room_id)` | `alchemy/dev/room/local/presence` |
-| `SNAPSHOT_KEY_LOCAL` / `snapshot_key(room_id)` | `alchemy/dev/room/local/snapshot` |
-| `HOST_CONTROL_KEY_LOCAL` / `host_control_key(room_id)` | `alchemy/dev/room/local/host_control` |
-| `liveliness_key(room_id, sub, jti)` / `liveliness_wildcard(room_id)` | `…/alive/{sub}/{jti}` / `…/alive/**` |
+| `LOCAL_WIRE_CAP` | fixture cap（実 room は world 発行） |
+| `MANIFEST_KEY_LOCAL` / `manifest_key(room_id, wire_cap)` | `…/local/{LOCAL_WIRE_CAP}/manifest` |
+| `FRAME_KEY_LOCAL` / `frame_key(room_id, wire_cap)` | `…/frame` |
+| `INPUT_KEY_LOCAL` / `input_key(room_id, wire_cap)` | `…/input` |
+| `PRESENCE_KEY_LOCAL` / `presence_key(room_id, wire_cap)` | `…/presence` |
+| `SNAPSHOT_KEY_LOCAL` / `snapshot_key(room_id, wire_cap)` | `…/snapshot` |
+| `HOST_CONTROL_KEY_LOCAL` / `host_control_key(room_id, wire_cap)` | `…/host_control` |
+| `liveliness_key(room_id, wire_cap, sub, jti)` / `liveliness_wildcard` | `…/alive/{sub}/{jti}` / `…/alive/**` |
 | `liveliness_binding_from_key` | `(sub, jti)`。単セグメント旧キーは拒否 |
-| `validate_room_id` | 非空・`/` なし・≤64・`[A-Za-z0-9_-]+`（x002e；world と共有ベクタ） |
+| `validate_room_id` / `validate_wire_cap` | 非空・`/` なし・≤64・`[A-Za-z0-9_-]+` |
 | `wire_crypto` | Intent / Frame の Ed25519 sign・verify |

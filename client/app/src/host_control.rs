@@ -14,7 +14,7 @@ use anyhow::Result;
 use zenoh::Wait;
 
 /// Try launcher IPC, then `ALCHEMY_HOST_PID`, else optional Zenoh `shutdown`.
-pub fn request_host_shutdown(session: &zenoh::Session, room_id: &str) {
+pub fn request_host_shutdown(session: &zenoh::Session, room_id: &str, wire_cap: Option<&str>) {
     if try_launcher_ipc() {
         return;
     }
@@ -27,7 +27,11 @@ pub fn request_host_shutdown(session: &zenoh::Session, room_id: &str) {
         );
         return;
     }
-    if let Err(err) = publish_shutdown(session, room_id) {
+    let Some(cap) = wire_cap else {
+        log::warn!("host_control Zenoh shutdown skipped: no wire_cap (x004e)");
+        return;
+    };
+    if let Err(err) = publish_shutdown(session, room_id, cap) {
         log::warn!("host_control publish failed: {err:#}");
     }
 }
@@ -94,8 +98,8 @@ fn try_kill_host_pid() -> bool {
     }
 }
 
-fn publish_shutdown(session: &zenoh::Session, room_id: &str) -> Result<()> {
-    let key = host_control_key(room_id);
+fn publish_shutdown(session: &zenoh::Session, room_id: &str, wire_cap: &str) -> Result<()> {
+    let key = host_control_key(room_id, wire_cap);
     let publisher = session
         .declare_publisher(key.as_str())
         .wait()

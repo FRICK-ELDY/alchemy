@@ -46,6 +46,8 @@ struct AuthSession {
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     token: String,
+    #[serde(default)]
+    wire_cap: String,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -108,18 +110,24 @@ fn session_pub_b64(pub_bytes: &[u8]) -> Result<String> {
     Ok(out)
 }
 
+struct RoomTokenBundle {
+    token: String,
+    wire_cap: String,
+}
+
 fn fetch_room_token(
     world_url: &str,
     room_id: &str,
     access: &str,
     role: &str,
     session_pub: &[u8],
-) -> Result<String> {
+) -> Result<RoomTokenBundle> {
     let base = world_url.trim_end_matches('/');
     let authz = format!("Bearer {access}");
     let session_pub_b64 = session_pub_b64(session_pub)?;
     // x0021: do not create rooms here — host-server owns create/owner_sub.
     // x003e: session_pub required for cnf.spk.
+    // x004e: wire_cap required for Zenoh keys.
     let resp: TokenResponse = ureq::post(&format!("{base}/api/v1/rooms/{room_id}/tokens"))
         .set("content-type", "application/json")
         .set("authorization", &authz)
@@ -134,7 +142,12 @@ fn fetch_room_token(
     if resp.token.is_empty() {
         bail!("Room Token response empty");
     }
-    Ok(resp.token)
+    let wire_cap =
+        zenoh_connect::require_wire_cap(Some(resp.wire_cap.as_str())).context("e2e wire_cap")?;
+    Ok(RoomTokenBundle {
+        token: resp.token,
+        wire_cap,
+    })
 }
 
 fn open_zenoh(endpoint: &str) -> Result<zenoh::Session> {
@@ -293,18 +306,24 @@ fn main() -> Result<()> {
 
     // x003e: mint session key before Token so cnf.spk matches bind Intent.
     let session_key = generate_signing_key();
-    let room_token = fetch_room_token(
+    let room = fetch_room_token(
         &world_url,
         &room_id,
         &access,
         "guest",
         &public_key_bytes(&session_key),
     )?;
-    log::info!("Room Token ok (role=guest, len={})", room_token.len());
+    let room_token = room.token;
+    let wire_cap = room.wire_cap;
+    log::info!(
+        "Room Token ok (role=guest, len={}, wire_cap_len={})",
+        room_token.len(),
+        wire_cap.len()
+    );
 
     let session = open_zenoh(&zenoh_connect).context("open zenoh (is zenohd up?)")?;
-    let frame_k = frame_key(&room_id);
-    let input_k = input_key(&room_id);
+    let frame_k = frame_key(&room_id, &wire_cap);
+    let input_k = input_key(&room_id, &wire_cap);
 
     let subscriber = session
         .declare_subscriber(frame_k.clone())
@@ -389,7 +408,7 @@ fn main() -> Result<()> {
     log::info!("user_root upsert after valid input ok");
 
     // Snapshot queryable should return a signed full pose set (x0023).
-    let snap_k = snapshot_key(&room_id);
+    let snap_k = snapshot_key(&room_id, &wire_cap);
     let mut saw_snapshot = false;
     match session.get(&snap_k).wait() {
         Ok(receiver) => {
@@ -447,7 +466,7 @@ fn main() -> Result<()> {
     log::info!("host still publishing after invalid token ok");
 
     // x0038: fake Manifest must not stop the host Frame path (GUI client leave is unit-tested).
-    let manifest_k = manifest_key(&room_id);
+    let manifest_k = manifest_key(&room_id, &wire_cap);
     drain_pending_frames(&mut poll_frame);
     put_manifest(&session, &manifest_k, &fake_manifest(&room_id))?;
     log::info!("put fake SceneManifest (host keep publishing; GUI discard is unit-tested)");

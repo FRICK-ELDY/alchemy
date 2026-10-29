@@ -35,7 +35,7 @@ use crate::scene::{
 use crate::system_ui::{DashTab, SystemUi, UiAction};
 use crate::world_api;
 use crate::world_hit::{desktop_look_ray, pick_grabbable_desktop};
-use crate::{declare_room_alive, join_room_with_access, leave_room};
+use crate::{bind_room_after_join, join_room_with_access, leave_room};
 
 /// Radians per pixel (fixed; Settings Facet deferred).
 const LOOK_SENSITIVITY: f32 = 0.0025;
@@ -267,7 +267,7 @@ impl App {
                 apply_start_session_result(
                     &mut self.ui,
                     &self.shared,
-                    self.zenoh.as_ref(),
+                    &mut self.zenoh,
                     visibility,
                     join,
                 );
@@ -276,7 +276,7 @@ impl App {
                 apply_join_result(
                     &mut self.ui,
                     &self.shared,
-                    self.zenoh.as_ref(),
+                    &mut self.zenoh,
                     result,
                     "Joined room",
                     "join room ok",
@@ -699,7 +699,7 @@ impl ApplicationHandler for App {
                             action,
                             &mut self.ui,
                             &self.shared,
-                            self.zenoh.as_ref(),
+                            &mut self.zenoh,
                             &mut self.auth_job,
                             event_loop,
                         );
@@ -752,7 +752,7 @@ impl ApplicationHandler for App {
                                     action,
                                     &mut self.ui,
                                     &self.shared,
-                                    self.zenoh.as_ref(),
+                                    &mut self.zenoh,
                                     &mut self.auth_job,
                                     event_loop,
                                 );
@@ -809,8 +809,8 @@ impl ApplicationHandler for App {
 
 fn apply_start_session_result(
     ui: &mut SystemUi,
-    shared: &SharedState,
-    zenoh: Option<&zenoh::Session>,
+    shared: &Arc<SharedState>,
+    zenoh: &mut Option<zenoh::Session>,
     visibility: Result<world_api::VisibilityEnsure, String>,
     join: Result<(), String>,
 ) {
@@ -824,44 +824,53 @@ fn apply_start_session_result(
         .collect::<String>();
     match (&visibility, join) {
         (Ok(world_api::VisibilityEnsure::Applied), Ok(())) => {
-            if let Some(session) = zenoh {
-                if let Err(err) = declare_room_alive(shared, session, false) {
-                    log::warn!("liveliness after start failed: {err:#}");
+            match bind_room_after_join(shared, zenoh) {
+                Ok(()) => {
+                    ui.state.home_create_open = false;
+                    ui.state.home_status = if name.is_empty() {
+                        format!("Session started — access level applied ({wanted})")
+                    } else {
+                        format!("Session started: {name} — access level applied ({wanted})")
+                    };
+                    ui.state.open = false;
+                    log::info!("start session ok; visibility applied={wanted}");
+                }
+                Err(err) => {
+                    ui.state.home_status = format!("Joined but room bus failed: {err:#}");
+                    log::warn!("room bus after start failed: {err:#}");
                 }
             }
-            ui.state.home_create_open = false;
-            ui.state.home_status = if name.is_empty() {
-                format!("Session started — access level applied ({wanted})")
-            } else {
-                format!("Session started: {name} — access level applied ({wanted})")
-            };
-            ui.state.open = false;
-            log::info!("start session ok; visibility applied={wanted}");
         }
         (Ok(world_api::VisibilityEnsure::LeftExisting), Ok(())) => {
-            if let Some(session) = zenoh {
-                if let Err(err) = declare_room_alive(shared, session, false) {
-                    log::warn!("liveliness after start failed: {err:#}");
+            match bind_room_after_join(shared, zenoh) {
+                Ok(()) => {
+                    ui.state.home_create_open = false;
+                    ui.state.home_status = format!(
+                        "Joined — visibility not updated (not owner); existing ACL kept (wanted {wanted})"
+                    );
+                    ui.state.open = false;
+                    log::info!("start session joined; visibility left existing (wanted {wanted})");
+                }
+                Err(err) => {
+                    ui.state.home_status = format!("Joined but room bus failed: {err:#}");
+                    log::warn!("room bus after start failed: {err:#}");
                 }
             }
-            ui.state.home_create_open = false;
-            ui.state.home_status = format!(
-                "Joined — visibility not updated (not owner); existing ACL kept (wanted {wanted})"
-            );
-            ui.state.open = false;
-            log::info!("start session joined; visibility left existing (wanted {wanted})");
         }
-        (Err(vis_err), Ok(())) => {
-            // Should not happen with current worker (join only after ensure Ok), but be honest.
-            if let Some(session) = zenoh {
-                let _ = declare_room_alive(shared, session, false);
+        (Err(vis_err), Ok(())) => match bind_room_after_join(shared, zenoh) {
+            Ok(()) => {
+                ui.state.home_create_open = false;
+                ui.state.home_status =
+                    format!("Joined — visibility step failed ({vis_err}); existing ACL");
+                ui.state.open = false;
+                log::warn!("joined after visibility error: {vis_err}");
             }
-            ui.state.home_create_open = false;
-            ui.state.home_status =
-                format!("Joined — visibility step failed ({vis_err}); existing ACL");
-            ui.state.open = false;
-            log::warn!("joined after visibility error: {vis_err}");
-        }
+            Err(err) => {
+                ui.state.home_status =
+                    format!("Joined but room bus failed: {err:#} (visibility: {vis_err})");
+                log::warn!("room bus after start failed: {err:#}");
+            }
+        },
         (vis, Err(err)) => {
             ui.state.home_status = match vis {
                 Ok(world_api::VisibilityEnsure::Applied) => {
@@ -882,24 +891,25 @@ fn apply_start_session_result(
 
 fn apply_join_result(
     ui: &mut SystemUi,
-    shared: &SharedState,
-    zenoh: Option<&zenoh::Session>,
+    shared: &Arc<SharedState>,
+    zenoh: &mut Option<zenoh::Session>,
     join: Result<(), String>,
     ok_status: &str,
     ok_log: &str,
 ) {
     match join {
-        Ok(()) => {
-            if let Some(session) = zenoh {
-                if let Err(err) = declare_room_alive(shared, session, false) {
-                    log::warn!("liveliness after join failed: {err:#}");
-                }
+        Ok(()) => match bind_room_after_join(shared, zenoh) {
+            Ok(()) => {
+                ui.state.home_create_open = false;
+                ui.state.home_status = ok_status.into();
+                ui.state.open = false;
+                log::info!("{ok_log}");
             }
-            ui.state.home_create_open = false;
-            ui.state.home_status = ok_status.into();
-            ui.state.open = false;
-            log::info!("{ok_log}");
-        }
+            Err(err) => {
+                ui.state.home_status = format!("Joined but room bus failed: {err:#}");
+                log::warn!("room bus after join failed: {err:#}");
+            }
+        },
         Err(err) => {
             ui.state.home_status = format!("Join failed: {err}");
             log::warn!("join failed (session kept): {err}");
@@ -912,7 +922,7 @@ fn handle_ui_action(
     action: UiAction,
     ui: &mut SystemUi,
     shared: &Arc<SharedState>,
-    zenoh: Option<&zenoh::Session>,
+    zenoh: &mut Option<zenoh::Session>,
     auth_job: &mut Option<Receiver<AuthJobOutcome>>,
     event_loop: &ActiveEventLoop,
 ) {
@@ -923,8 +933,13 @@ fn handle_ui_action(
         }
         UiAction::ExitClientAndHost => {
             log::info!("system_ui: exit client + host stub");
-            if let Some(session) = zenoh {
-                host_control::request_host_shutdown(session, shared.room_id.as_ref());
+            if let Some(session) = zenoh.as_ref() {
+                let cap = shared.wire_cap();
+                host_control::request_host_shutdown(
+                    session,
+                    shared.room_id.as_ref(),
+                    cap.as_deref(),
+                );
             }
             event_loop.exit();
         }
@@ -997,13 +1012,9 @@ fn handle_ui_action(
                 .ok()
                 .map(|g| (g.access_token.clone(), g.refresh_token.clone()))
                 .unwrap_or((None, None));
-            // Zenoh Leave on UI thread; drop local session immediately so refresh/UI stop.
+            // Zenoh Leave + drop session (kills room bus threads) on UI thread.
             // HTTP logout is best-effort on a worker (does not gate UI).
-            if let Some(session) = zenoh {
-                leave_room(shared, session);
-            } else {
-                shared.leave_room_local();
-            }
+            leave_room(shared, zenoh);
             if let Ok(mut gate) = shared.auth.lock() {
                 gate.clear_session();
             }

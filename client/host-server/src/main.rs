@@ -699,9 +699,10 @@ fn spawn_snapshot_queryable(
 fn spawn_liveliness_watcher(
     session: zenoh::Session,
     room_id: &str,
+    wire_cap: &str,
     presence: Arc<Mutex<PresenceIntents>>,
 ) -> Result<()> {
-    let key = liveliness_wildcard(room_id);
+    let key = liveliness_wildcard(room_id, wire_cap);
     let subscriber = session
         .liveliness()
         .declare_subscriber(key.clone())
@@ -740,13 +741,6 @@ fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("invalid ROOM_ID={room_id_raw:?}: {e}"))?
         .to_string();
     let auth_url = default_auth_url();
-    let manifest_key_expr = manifest_key(&room_id);
-    let frame_key_expr = frame_key(&room_id);
-    let input_key_expr = input_key(&room_id);
-    let presence_key_expr = presence_key(&room_id);
-    let snapshot_key_expr = snapshot_key(&room_id);
-    let host_control_key_expr = host_control_key(&room_id);
-    let liveliness_key_expr = liveliness_wildcard(&room_id);
     let host_control_mode = if host_control::zenoh_control_enabled() {
         "zenoh-opt-in"
     } else {
@@ -755,12 +749,6 @@ fn main() -> Result<()> {
 
     let host_signing_key = generate_signing_key();
     let host_pub = public_key_bytes(&host_signing_key);
-
-    log::info!(
-        "host-server x004d starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} user_root_band={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
-        USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS_MAX as u32 - 1,
-        PRESENCE_SLOT_TTL.as_secs()
-    );
 
     let host_metrics = Arc::new(metrics::HostMetrics::default());
     metrics::maybe_spawn_from_env(Arc::clone(&host_metrics));
@@ -778,6 +766,22 @@ fn main() -> Result<()> {
     .context("bootstrap auth → host Room Token → HostAttestation")?;
     log::info!(
         "auth JWT + host Room Token (role=host) + HostAttestation acquired; credential worker refresh enabled (fail-closed on hard expiry)"
+    );
+
+    let wire_cap = creds.wire_cap.clone();
+    let manifest_key_expr = manifest_key(&room_id, &wire_cap);
+    let frame_key_expr = frame_key(&room_id, &wire_cap);
+    let input_key_expr = input_key(&room_id, &wire_cap);
+    let presence_key_expr = presence_key(&room_id, &wire_cap);
+    let snapshot_key_expr = snapshot_key(&room_id, &wire_cap);
+    let host_control_key_expr = host_control_key(&room_id, &wire_cap);
+    let liveliness_key_expr = liveliness_wildcard(&room_id, &wire_cap);
+
+    log::info!(
+        "host-server x004e starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} manifest={manifest_key_expr} frame={frame_key_expr} snapshot={snapshot_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} wire_cap_len={} user_root_band={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        wire_cap.len(),
+        USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS_MAX as u32 - 1,
+        PRESENCE_SLOT_TTL.as_secs()
     );
 
     // Scene is fetched once at boot (x0027 Non-guarantee: no re-fetch on world redefinition).
@@ -810,6 +814,15 @@ fn main() -> Result<()> {
         host_sig: vec![],
     }));
 
+    if !creds.allocation_token.is_empty() {
+        if let Some(id) = zenoh_connect::allocate_if_configured(&creds.allocation_token)
+            .context("relay allocate (host)")?
+        {
+            std::env::set_var("ZENOH_TLS_CONNECT_CERT", id.cert_path.display().to_string());
+            std::env::set_var("ZENOH_TLS_CONNECT_KEY", id.key_path.display().to_string());
+            log::info!("relay allocate ok cn={} role={}", id.cn, id.role);
+        }
+    }
     let session = open_zenoh().context("open zenoh session")?;
     spawn_input_gate(
         session.clone(),
@@ -819,8 +832,8 @@ fn main() -> Result<()> {
         Arc::clone(&sessions),
         Arc::clone(&intent_rates),
     )?;
-    spawn_liveliness_watcher(session.clone(), &room_id, Arc::clone(&presence))?;
-    host_control::spawn_listener(session.clone(), &room_id)?;
+    spawn_liveliness_watcher(session.clone(), &room_id, &wire_cap, Arc::clone(&presence))?;
+    host_control::spawn_listener(session.clone(), &room_id, &wire_cap)?;
     host_ipc::spawn_listener().context("launcher IPC listener")?;
 
     let manifest_pub = session

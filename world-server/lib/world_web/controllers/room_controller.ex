@@ -3,6 +3,7 @@ defmodule WorldWeb.RoomController do
 
   require Logger
 
+  alias World.AllocationToken
   alias World.CanonicalManifest
   alias World.HostAttestation
   alias World.ManifestSeal
@@ -17,10 +18,15 @@ defmodule WorldWeb.RoomController do
     case resolve_sub(conn, params) do
       {:ok, owner_sub} ->
         case Rooms.create(room_id, owner_sub, visibility) do
-          {:ok, id, stored_visibility} ->
+          {:ok, id, stored_visibility, wire_cap} ->
             conn
             |> put_status(:created)
-            |> json(%{room_id: id, owner_sub: owner_sub, visibility: stored_visibility})
+            |> json(%{
+              room_id: id,
+              owner_sub: owner_sub,
+              visibility: stored_visibility,
+              wire_cap: wire_cap
+            })
 
           {:error, :already_exists} ->
             conn
@@ -143,11 +149,16 @@ defmodule WorldWeb.RoomController do
 
   # Token paths never create rooms (x0021): owner is only set by POST /rooms.
   # x003e: session_pub (32B) is required and embedded as cnf.spk.
+  # x004e: also returns wire_cap + Allocation Token for Relay Agent mTLS.
   defp issue_token(conn, room_id, role, sub, session_pub) do
+    relay_id = Application.fetch_env!(:world, :default_relay_id)
+
     with {:ok, room} <- Rooms.get(room_id),
          :ok <- RoomAccess.authorize(conn, room.owner_sub, sub, room.visibility),
          :ok <- authorize_role_cached(room, role, sub),
-         {:ok, token, ttl} <- Token.generate(room_id, role, sub, session_pub) do
+         {:ok, token, ttl} <- Token.generate(room_id, role, sub, session_pub),
+         {:ok, allocation_token, _} <-
+           AllocationToken.generate(room_id, role, sub, room.wire_cap, relay_id) do
       json(conn, %{
         token: token,
         expires_in: ttl,
@@ -155,6 +166,8 @@ defmodule WorldWeb.RoomController do
         role: role,
         sub: sub,
         visibility: room.visibility,
+        wire_cap: room.wire_cap,
+        allocation_token: allocation_token,
         token_type: "Bearer"
       })
     else

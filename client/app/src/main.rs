@@ -46,7 +46,7 @@ mod world_token;
 
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -128,6 +128,18 @@ fn gate_presence_pin(protocol_pin: &str) -> Result<(), &'static str> {
 
 fn zenoh_connect_endpoint() -> String {
     std::env::var("ZENOH_CONNECT").unwrap_or_else(|_| DEFAULT_ZENOH_CONNECT.to_string())
+}
+
+/// Explicit close so bus threads stop even when another strong `Session` clone still exists.
+///
+/// Zenoh 1.x only auto-`close`s on `Drop` when `strong_counter == 1`. Leaving App's slot as
+/// `None` alone is not enough if a spawn_* thread retained a clone (see presence historically).
+fn close_zenoh(zenoh: &mut Option<zenoh::Session>) {
+    if let Some(session) = zenoh.take() {
+        if let Err(err) = session.close().wait() {
+            log::warn!("zenoh session close failed: {err}");
+        }
+    }
 }
 
 fn open_zenoh() -> Result<zenoh::Session> {
@@ -549,8 +561,14 @@ fn spawn_manifest_subscriber(
                             );
                         }
                         if !snapshot_ok {
-                            snapshot_ok =
-                                fetch_snapshot(&session, shared.room_id.as_ref(), &shared);
+                            if let Some(cap) = shared.wire_cap() {
+                                snapshot_ok = fetch_snapshot(
+                                    &session,
+                                    shared.room_id.as_ref(),
+                                    &cap,
+                                    &shared,
+                                );
+                            }
                         }
                         log::info!(
                             "SceneManifest generation={} revision={} entries={} pin_ok attested snapshot_ok={snapshot_ok}",
@@ -726,8 +744,13 @@ fn apply_frame(
 }
 
 /// Returns true when a non-empty snapshot was verified and applied (replace).
-fn fetch_snapshot(session: &zenoh::Session, room_id: &str, shared: &SharedState) -> bool {
-    let key = snapshot_key(room_id);
+fn fetch_snapshot(
+    session: &zenoh::Session,
+    room_id: &str,
+    wire_cap: &str,
+    shared: &SharedState,
+) -> bool {
+    let key = snapshot_key(room_id, wire_cap);
     let mut applied = false;
     let mut dropped_limits: u64 = 0;
     match session.get(&key).wait() {
@@ -821,8 +844,14 @@ fn spawn_frame_subscriber(
                                         break 'sample;
                                     }
                                     resync_cooldown_until = now + SNAPSHOT_GAP_RESYNC_COOLDOWN;
-                                    let _ =
-                                        fetch_snapshot(&session, shared.room_id.as_ref(), &shared);
+                                    if let Some(cap) = shared.wire_cap() {
+                                        let _ = fetch_snapshot(
+                                            &session,
+                                            shared.room_id.as_ref(),
+                                            &cap,
+                                            &shared,
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -852,10 +881,13 @@ fn spawn_presence_subscriber(
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_subscriber presence failed: {e}"))?;
 
+    // Drop owned clone here — Subscriber holds WeakSession; Leave uses close() to end recv.
+    // Do not move `Session` into the thread (strong retain blocks Drop-auto-close).
+    drop(session);
+
     thread::Builder::new()
         .name("zenoh-presence".into())
         .spawn(move || {
-            let _session = session;
             log::info!("subscribed to {key} (Presence; local_sub from AuthGate)");
             let mut dropped_pin: u64 = 0;
             let mut dropped_no_host: u64 = 0;
@@ -1129,6 +1161,24 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     .context("fetch guest Room Token")?;
     let local_sub = jwt_sub::sub_unverified(&guest.token)
         .context("read Room Token sub (unverified payload)")?;
+    if let Ok(mut cap) = shared.wire_cap.lock() {
+        *cap = Some(Arc::<str>::from(guest.wire_cap.as_str()));
+    }
+    // mTLS material for the *next* `open_zenoh` / one-shot `bind_room_after_join` reopen (x004e).
+    if !guest.allocation_token.is_empty() {
+        if let Some(id) = zenoh_connect::allocate_if_configured(&guest.allocation_token)
+            .context("relay allocate (guest)")?
+        {
+            std::env::set_var("ZENOH_TLS_CONNECT_CERT", id.cert_path.display().to_string());
+            std::env::set_var("ZENOH_TLS_CONNECT_KEY", id.key_path.display().to_string());
+            shared.mtls_reopen_pending.store(true, Ordering::SeqCst);
+            log::info!(
+                "relay allocate ok cn={} role={} (mtls_reopen_pending)",
+                id.cn,
+                id.role
+            );
+        }
+    }
     // Lock order: auth → intent_session → pending (same as generation commit).
     if let Ok(mut gate) = shared.auth.lock() {
         gate.apply_room(guest.token, local_sub.clone(), guest.expires_in);
@@ -1143,10 +1193,128 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
         }
     }
     log::info!(
-        "joined room={} sub={local_sub} expires_in={}",
+        "joined room={} sub={local_sub} expires_in={} wire_cap_len={}",
         shared.room_id,
-        guest.expires_in
+        guest.expires_in,
+        guest.wire_cap.len()
     );
+    Ok(())
+}
+
+/// Start Zenoh room subscribers once `wire_cap` is known (silent boot or Home→Join).
+///
+/// Idempotent via `room_bus_started`. On spawn failure the flag is cleared so retry works.
+/// Pass `Some(blake3_tx)` for boot mesh wait; `None` drains blake3 on a background thread
+/// (late Home→Join mesh remount is non-goal).
+pub fn ensure_room_bus(
+    shared: &Arc<SharedState>,
+    session: &zenoh::Session,
+    blake3_tx: Option<mpsc::SyncSender<Result<String, String>>>,
+) -> Result<bool> {
+    if shared
+        .room_bus_started
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(false);
+    }
+    let started = (|| -> Result<()> {
+        let wire_cap = shared
+            .wire_cap()
+            .ok_or_else(|| anyhow::anyhow!("ensure_room_bus: wire_cap missing"))?;
+        let room_id = shared.room_id.as_ref();
+        let manifest_key_expr = manifest_key(room_id, &wire_cap);
+        let frame_key_expr = frame_key(room_id, &wire_cap);
+        let input_key_expr = input_key(room_id, &wire_cap);
+        let presence_key_expr = presence_key(room_id, &wire_cap);
+        let blake3_tx = match blake3_tx {
+            Some(tx) => tx,
+            None => {
+                let (tx, rx) = mpsc::sync_channel::<Result<String, String>>(1);
+                thread::Builder::new()
+                    .name("blake3-drain".into())
+                    .spawn(move || while rx.recv().is_ok() {})
+                    .ok();
+                tx
+            }
+        };
+        spawn_manifest_subscriber(
+            session.clone(),
+            manifest_key_expr,
+            Arc::clone(shared),
+            blake3_tx,
+            Arc::clone(&shared.manifest_seal),
+            Arc::clone(&shared.host_attest),
+        )?;
+        spawn_presence_subscriber(session.clone(), presence_key_expr, Arc::clone(shared))?;
+        spawn_frame_subscriber(session.clone(), frame_key_expr, Arc::clone(shared))?;
+        spawn_input_publisher(session.clone(), input_key_expr, Arc::clone(shared))?;
+        log::info!("room Zenoh bus started (wire_cap_len={})", wire_cap.len());
+        Ok(())
+    })();
+    if let Err(err) = started {
+        shared.room_bus_started.store(false, Ordering::SeqCst);
+        return Err(err);
+    }
+    Ok(true)
+}
+
+/// After Home→Join / StartSession: apply mTLS via reopen if needed, then start room bus + liveliness.
+///
+/// Reopen when `mtls_reopen_pending` (fresh allocate) **or** session was dropped on Leave.
+/// Persisted `ZENOH_TLS_*` env alone must not reopen — that orphans an already-attached bus.
+pub fn bind_room_after_join(
+    shared: &Arc<SharedState>,
+    zenoh: &mut Option<zenoh::Session>,
+) -> Result<()> {
+    let mtls_pending = shared.mtls_reopen_pending.swap(false, Ordering::SeqCst);
+    if mtls_pending || zenoh.is_none() {
+        // Match Leave / orphan path: always close before replace (not only Drop-on-overwrite).
+        close_zenoh(zenoh);
+        match open_zenoh().context("zenoh open/reopen after join") {
+            Ok(session) => {
+                *zenoh = Some(session);
+                shared.room_bus_started.store(false, Ordering::SeqCst);
+                log::info!(
+                    "zenoh session {} after join (mtls_pending={mtls_pending})",
+                    if mtls_pending { "reopened" } else { "opened" }
+                );
+            }
+            Err(err) => {
+                if mtls_pending {
+                    shared.mtls_reopen_pending.store(true, Ordering::SeqCst);
+                }
+                return Err(err);
+            }
+        }
+    }
+    let bus = {
+        let session = zenoh
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("bind_room_after_join: no zenoh session"))?;
+        ensure_room_bus(shared, session, None)
+    };
+    if let Err(err) = bus {
+        // Partial spawn_* may leave threads on this session; close() ends Weak recv/put.
+        log::warn!("room bus spawn failed ({err:#}); closing session to clear orphans");
+        close_zenoh(zenoh);
+        shared.room_bus_started.store(false, Ordering::SeqCst);
+        *zenoh = Some(open_zenoh().context("zenoh reopen after bus spawn failure")?);
+        let retry = {
+            let session = zenoh
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("bind_room_after_join: no zenoh after reopen"))?;
+            ensure_room_bus(shared, session, None)
+        };
+        if let Err(retry_err) = retry {
+            close_zenoh(zenoh);
+            return Err(retry_err).context("room bus retry after reopen");
+        }
+    }
+    let session = zenoh
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("bind_room_after_join: no zenoh session"))?;
+    declare_room_alive(shared, session, false).context("liveliness after join")?;
     Ok(())
 }
 
@@ -1289,6 +1457,8 @@ fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                         }
                         continue;
                     };
+                    // Guest refresh updates Room Token only — no re-allocate / session reopen.
+                    // mTLS NotAfter ≈ 1d (openssl); mid-flight cert refresh is host-side / non-goal.
                     match world_token::fetch_guest_token(
                         &shared.world_url,
                         &shared.room_id,
@@ -1376,7 +1546,10 @@ pub fn declare_room_alive(
         .context("declare liveliness: not joined")?;
     let (sub, jti) =
         jwt_sub::sub_jti_unverified(&room_token).context("declare liveliness: read sub/jti")?;
-    let key = liveliness_key(shared.room_id.as_ref(), &sub, &jti);
+    let wire_cap = shared
+        .wire_cap()
+        .ok_or_else(|| anyhow::anyhow!("liveliness requires wire_cap (join first; x004e)"))?;
+    let key = liveliness_key(shared.room_id.as_ref(), &wire_cap, &sub, &jti);
     let token = session
         .liveliness()
         .declare_token(key.clone())
@@ -1397,43 +1570,54 @@ pub fn declare_room_alive(
     Ok(())
 }
 
-/// Explicit Leave put + liveliness undeclare + local clear (x0019 / x0023 session).
-pub fn leave_room(shared: &SharedState, session: &zenoh::Session) {
-    let room_token = shared.auth.lock().ok().and_then(|g| g.room_token.clone());
-    let leave_event = {
-        let mut slot = shared.intent_session.lock().ok();
-        slot.as_mut().and_then(|opt| {
-            let sess = opt.as_mut()?;
-            Some(sess.signed_intent(
-                room_token.as_deref(),
-                intent_session::IntentBody {
-                    client_time_ms: client_time_ms(),
-                    leave: true,
-                    ..Default::default()
-                },
-            ))
-        })
-    };
-    if let Some(event) = leave_event {
-        let key = input_key(shared.room_id.as_ref());
-        match session.declare_publisher(key.clone()).wait() {
-            Ok(publisher) => {
-                if let Err(err) = publisher.put(event.encode_to_vec()).wait() {
-                    log::warn!("Leave InputEvent publish failed: {err}");
-                } else {
-                    log::info!("Leave InputEvent published on {key}");
+/// Explicit Leave put + liveliness undeclare + **`session.close()`** + local clear (x0019 / x0023).
+///
+/// Zenoh 1.x: `Drop` closes only when `strong_counter == 1`. Setting `*zenoh = None` alone does
+/// not stop bus threads that retained a strong clone. `close().wait()` closes the peer; Subscriber
+/// / Publisher use `WeakSession`, so `recv` ends and input put stops (Leave→Join must not double Intent).
+pub fn leave_room(shared: &SharedState, zenoh: &mut Option<zenoh::Session>) {
+    if let Some(session) = zenoh.as_ref() {
+        let room_token = shared.auth.lock().ok().and_then(|g| g.room_token.clone());
+        let leave_event = {
+            let mut slot = shared.intent_session.lock().ok();
+            slot.as_mut().and_then(|opt| {
+                let sess = opt.as_mut()?;
+                Some(sess.signed_intent(
+                    room_token.as_deref(),
+                    intent_session::IntentBody {
+                        client_time_ms: client_time_ms(),
+                        leave: true,
+                        ..Default::default()
+                    },
+                ))
+            })
+        };
+        if let Some(event) = leave_event {
+            if let Some(wire_cap) = shared.wire_cap() {
+                let key = input_key(shared.room_id.as_ref(), &wire_cap);
+                match session.declare_publisher(key.clone()).wait() {
+                    Ok(publisher) => {
+                        if let Err(err) = publisher.put(event.encode_to_vec()).wait() {
+                            log::warn!("Leave InputEvent publish failed: {err}");
+                        } else {
+                            log::info!("Leave InputEvent published on {key}");
+                        }
+                    }
+                    Err(err) => log::warn!("Leave publisher declare failed: {err}"),
                 }
+            } else {
+                log::warn!("Leave InputEvent skipped: no wire_cap");
             }
-            Err(err) => log::warn!("Leave publisher declare failed: {err}"),
         }
     }
-    // Drop liveliness before clearing auth so host sees Delete promptly.
+    // Drop liveliness before session close so host sees Delete promptly.
     if let Ok(mut token) = shared.liveliness.lock() {
         *token = None;
     }
     if let Ok(mut prev) = shared.liveliness_prev.lock() {
         *prev = None;
     }
+    close_zenoh(zenoh);
     shared.leave_room_local();
 }
 
@@ -1450,16 +1634,8 @@ fn main() -> Result<()> {
     let fallback_blake3 =
         std::env::var("ALCHEMY_BLOB_BLAKE3").unwrap_or_else(|_| COIN_BLAKE3_HEX.to_string());
 
-    let manifest_key_expr = manifest_key(&room_id);
-    let frame_key_expr = frame_key(&room_id);
-    let input_key_expr = input_key(&room_id);
-    let presence_key_expr = presence_key(&room_id);
-
     let silent = auth::try_silent_session(&auth_url).context("silent auth")?;
     let auth_mode = if silent.is_some() { "silent" } else { "ui" };
-    log::info!(
-        "client x003b starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} manifest={manifest_key_expr} frame={frame_key_expr} input={input_key_expr} presence={presence_key_expr}"
-    );
 
     let mut gate = AuthGate::default();
     if let Some(session) = silent {
@@ -1469,9 +1645,22 @@ fn main() -> Result<()> {
     let client_metrics = Arc::new(metrics::ClientMetrics::default());
     metrics::maybe_spawn_from_env(Arc::clone(&client_metrics));
 
+    let jwks = Arc::new(WorldJwks::new(&world_url));
+    jwks.set_metrics(Arc::clone(&client_metrics));
+    jwks.refresh()
+        .context("initial world JWKS (ManifestSeal + HostAttestation)")?;
+    jwks.spawn_background_refresh();
+    let seal = Arc::new(ManifestSealVerifier::new(Arc::clone(&jwks), &room_id));
+    let attest = Arc::new(HostAttestationVerifier::new(Arc::clone(&jwks), &room_id));
+
     let shared = Arc::new(SharedState {
         local_user_root: AtomicU32::new(LOCAL_USER_ROOT_UNSET),
-        room_id: Arc::<str>::from(room_id),
+        room_id: Arc::<str>::from(room_id.clone()),
+        wire_cap: Mutex::new(None),
+        room_bus_started: AtomicBool::new(false),
+        mtls_reopen_pending: AtomicBool::new(false),
+        manifest_seal: Arc::clone(&seal),
+        host_attest: Arc::clone(&attest),
         auth_url: Arc::<str>::from(auth_url),
         world_url: Arc::<str>::from(world_url),
         assets_url: Arc::<str>::from(assets_url.clone()),
@@ -1509,45 +1698,38 @@ fn main() -> Result<()> {
         join_room_with_access(&shared, &access).context("silent join room")?;
     }
 
-    let (blake3_tx, blake3_rx) = mpsc::sync_channel::<Result<String, String>>(1);
+    let wire_cap = shared.wire_cap();
+    log::info!(
+        "client x004e starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} wire_cap={}",
+        wire_cap
+            .as_ref()
+            .map(|c| format!("len={}", c.len()))
+            .unwrap_or_else(|| "pending".into())
+    );
 
     spawn_token_refresh(Arc::clone(&shared))?;
 
-    let jwks = Arc::new(WorldJwks::new(shared.world_url.as_ref()));
-    jwks.set_metrics(Arc::clone(&client_metrics));
-    jwks.refresh()
-        .context("initial world JWKS (ManifestSeal + HostAttestation)")?;
-    jwks.spawn_background_refresh();
-    let seal = Arc::new(ManifestSealVerifier::new(
-        Arc::clone(&jwks),
-        shared.room_id.as_ref(),
-    ));
-    let attest = Arc::new(HostAttestationVerifier::new(
-        Arc::clone(&jwks),
-        shared.room_id.as_ref(),
-    ));
+    // Allocate (if any) already set ZENOH_TLS_* during join — open picks them up.
+    let session = Some(open_zenoh().context("open zenoh session")?);
+    // Boot open consumed the cert; do not leave a stale one-shot for a later bind.
+    shared.mtls_reopen_pending.store(false, Ordering::SeqCst);
+    let joined_with_cap = wire_cap.is_some()
+        && shared
+            .auth
+            .lock()
+            .ok()
+            .map(|g| g.is_joined())
+            .unwrap_or(false);
 
-    let session = open_zenoh().context("open zenoh session")?;
-    if shared
-        .auth
-        .lock()
-        .ok()
-        .map(|g| g.is_joined())
-        .unwrap_or(false)
-    {
-        declare_room_alive(&shared, &session, false).context("silent liveliness")?;
+    let (blake3_tx, blake3_rx) = mpsc::sync_channel::<Result<String, String>>(1);
+    if joined_with_cap {
+        let z = session.as_ref().expect("session just opened");
+        ensure_room_bus(&shared, z, Some(blake3_tx))?;
+        declare_room_alive(&shared, z, false).context("silent liveliness")?;
+    } else {
+        log::info!("room Zenoh bus deferred until Home→Join (x004e); local GUI join starts bus");
+        drop(blake3_tx);
     }
-    spawn_manifest_subscriber(
-        session.clone(),
-        manifest_key_expr,
-        Arc::clone(&shared),
-        blake3_tx,
-        Arc::clone(&seal),
-        Arc::clone(&attest),
-    )?;
-    spawn_presence_subscriber(session.clone(), presence_key_expr, Arc::clone(&shared))?;
-    spawn_frame_subscriber(session.clone(), frame_key_expr, Arc::clone(&shared))?;
-    spawn_input_publisher(session.clone(), input_key_expr, Arc::clone(&shared))?;
 
     let access_for_blob = shared
         .auth
@@ -1556,37 +1738,41 @@ fn main() -> Result<()> {
         .and_then(|g| g.access_token.clone())
         .unwrap_or_default();
     // x003c: silent/auth join must take SceneManifest blake3 → assets GET (no coin fallback).
-    // Host republishes Manifest on presence join so launcher/ZIP late subscribe still receives it.
-    let manifest_wait = if access_for_blob.is_empty() {
-        MANIFEST_WAIT
+    let blob_blake3 = if !joined_with_cap {
+        log::info!("no room bus yet — Coin/Home fixture until join provides wire_cap");
+        fallback_blake3
     } else {
-        MANIFEST_WAIT_AUTH
-    };
-    let blob_blake3 = match blake3_rx.recv_timeout(manifest_wait) {
-        Ok(Ok(hex)) => {
-            let mesh_id = shared.mesh_entity_id();
-            log::info!("Manifest blake3 for mesh entity {mesh_id}: {hex}");
-            hex
-        }
-        Ok(Err(reason)) if access_for_blob.is_empty() => {
-            log::warn!("{reason}; unauthenticated — fallback blake3={fallback_blake3}");
-            fallback_blake3
-        }
-        Ok(Err(reason)) => {
-            anyhow::bail!("{reason} (auth join requires mesh blake3 for assets GET)");
-        }
-        Err(_) if access_for_blob.is_empty() => {
-            log::warn!(
-                "no SceneManifest within {:?}; unauthenticated — fallback blake3={fallback_blake3}",
-                manifest_wait
-            );
-            fallback_blake3
-        }
-        Err(_) => {
-            anyhow::bail!(
-                "no SceneManifest within {:?} after auth join (need Manifest blake3 for assets mesh; host presence-join republish should cover ZIP/launcher)",
-                manifest_wait
-            );
+        let manifest_wait = if access_for_blob.is_empty() {
+            MANIFEST_WAIT
+        } else {
+            MANIFEST_WAIT_AUTH
+        };
+        match blake3_rx.recv_timeout(manifest_wait) {
+            Ok(Ok(hex)) => {
+                let mesh_id = shared.mesh_entity_id();
+                log::info!("Manifest blake3 for mesh entity {mesh_id}: {hex}");
+                hex
+            }
+            Ok(Err(reason)) if access_for_blob.is_empty() => {
+                log::warn!("{reason}; unauthenticated — fallback blake3={fallback_blake3}");
+                fallback_blake3
+            }
+            Ok(Err(reason)) => {
+                anyhow::bail!("{reason} (auth join requires mesh blake3 for assets GET)");
+            }
+            Err(_) if access_for_blob.is_empty() => {
+                log::warn!(
+                    "no SceneManifest within {:?}; unauthenticated — fallback blake3={fallback_blake3}",
+                    manifest_wait
+                );
+                fallback_blake3
+            }
+            Err(_) => {
+                anyhow::bail!(
+                    "no SceneManifest within {:?} after auth join (need Manifest blake3 for assets mesh; host presence-join republish should cover ZIP/launcher)",
+                    manifest_wait
+                );
+            }
         }
     };
 
@@ -1615,7 +1801,7 @@ fn main() -> Result<()> {
     );
 
     let kind = surface::choose();
-    surface::run(kind, mesh, shared, Some(session))?;
+    surface::run(kind, mesh, shared, session)?;
     Ok(())
 }
 

@@ -14,7 +14,7 @@ pub use alchemy_protocol::host_control_zenoh_enabled as zenoh_control_enabled;
 
 /// Subscribe to `host_control` only when `ALCHEMY_HOST_CONTROL=1`.
 /// Otherwise no-op (WAN cannot shut down this process via Zenoh).
-pub fn spawn_listener(session: zenoh::Session, room_id: &str) -> Result<()> {
+pub fn spawn_listener(session: zenoh::Session, room_id: &str, wire_cap: &str) -> Result<()> {
     if !host_control_zenoh_enabled() {
         log::info!(
             "host_control Zenoh listener disabled (set ALCHEMY_HOST_CONTROL=1 to enable; prefer ALCHEMY_HOST_PID / launcher)"
@@ -26,7 +26,7 @@ pub fn spawn_listener(session: zenoh::Session, room_id: &str) -> Result<()> {
         "ALCHEMY_HOST_CONTROL=1: unauthenticated Zenoh shutdown is enabled — local/dev only"
     );
 
-    let key = host_control_key(room_id);
+    let key = host_control_key(room_id, wire_cap);
     let subscriber = session
         .declare_subscriber(key.clone())
         .wait()

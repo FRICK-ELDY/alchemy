@@ -50,7 +50,7 @@ const DEFAULT_EYE_Y: f32 = 1.6;
 pub fn run_openxr(
     mesh: CpuMesh,
     shared: Arc<SharedState>,
-    zenoh: Option<zenoh::Session>,
+    mut zenoh: Option<zenoh::Session>,
 ) -> Result<()> {
     let running = Arc::new(AtomicBool::new(true));
     {
@@ -1152,7 +1152,12 @@ pub fn run_openxr(
                             UiAction::ExitClientAndHost => {
                                 log::info!("XR UI: exit client + host stub");
                                 if let Some(ref z) = zenoh {
-                                    host_control::request_host_shutdown(z, shared.room_id.as_ref());
+                                    let cap = shared.wire_cap();
+                                    host_control::request_host_shutdown(
+                                        z,
+                                        shared.room_id.as_ref(),
+                                        cap.as_deref(),
+                                    );
                                 }
                                 exit_requested = true;
                             }
@@ -1162,11 +1167,7 @@ pub fn run_openxr(
                                 ui.rebuild();
                             }
                             UiAction::AuthLogout => {
-                                if let Some(ref z) = zenoh {
-                                    leave_room(&shared, z);
-                                } else {
-                                    shared.leave_room_local();
-                                }
+                                leave_room(&shared, &mut zenoh);
                                 if let Ok(mut gate) = shared.auth.lock() {
                                     gate.clear_session();
                                 }

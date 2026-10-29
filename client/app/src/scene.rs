@@ -187,6 +187,17 @@ pub struct SharedState {
     pub local_user_root: AtomicU32,
     /// `ROOM_ID` used for Zenoh keys (x0017); shared with host_control shutdown publish.
     pub room_id: Arc<str>,
+    /// Zenoh key channel secret from Room Token (x004e); `None` until join.
+    pub wire_cap: Mutex<Option<Arc<str>>>,
+    /// Once true, manifest/frame/presence/input subscribers are running (x004e).
+    /// Cleared on Leave and before re-attach after Zenoh reopen.
+    pub room_bus_started: std::sync::atomic::AtomicBool,
+    /// One-shot: allocate wrote new `ZENOH_TLS_*`; next `bind_room_after_join` must reopen.
+    /// Env alone must not trigger reopen (would orphan subscribers on an already-running bus).
+    pub mtls_reopen_pending: std::sync::atomic::AtomicBool,
+    /// World JWKS verifiers for Manifest path (needed for late Home→Join bus start).
+    pub manifest_seal: Arc<crate::manifest_seal::ManifestSealVerifier>,
+    pub host_attest: Arc<crate::host_attestation::HostAttestationVerifier>,
     pub auth_url: Arc<str>,
     pub world_url: Arc<str>,
     pub assets_url: Arc<str>,
@@ -295,6 +306,11 @@ impl SharedState {
         self.mesh_entity_id.store(mesh_id, Ordering::Relaxed);
     }
 
+    /// Current Zenoh `wire_cap` after join (x004e).
+    pub fn wire_cap(&self) -> Option<Arc<str>> {
+        self.wire_cap.lock().ok().and_then(|g| g.clone())
+    }
+
     pub fn leave_room_local(&self) {
         self.set_local_user_root(LOCAL_USER_ROOT_UNSET);
         if let Ok(mut intent) = self.intent.lock() {
@@ -303,6 +319,15 @@ impl SharedState {
                 ..Default::default()
             };
         }
+        if let Ok(mut cap) = self.wire_cap.lock() {
+            *cap = None;
+        }
+        // Callers must `session.close()` (see `leave_room` / `close_zenoh`); Drop alone is not
+        // enough if any strong clone remains. This flag only gates re-attach on the next open/bind.
+        self.room_bus_started
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.mtls_reopen_pending
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         // Lock order: auth → intent_session → pending (matches Token commit paths).
         if let Ok(mut auth) = self.auth.lock() {
             auth.clear_room();

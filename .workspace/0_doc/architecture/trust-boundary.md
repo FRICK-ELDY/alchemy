@@ -34,16 +34,16 @@ flowchart TB
   Auth -->|"access JWT"| Client
 ```
 
-**原則:** zenohd は Token を見ない（[zenoh-router](zenoh-router.md)）。防御は **host / client / HTTP 門番**のアプリ層にある。transport TLS（x0022）は盗聴耐性であり、なりすましの唯一の防御ではない。
+**原則:** zenohd は JWT を見ない（[zenoh-router](zenoh-router.md)）。WAN では **Relay Agent** が Allocation Token を検証し短命 mTLS を渡し、zenohd は role CN ACL でキー族を絞る（x004e）。部屋隔離の残りは **`wire_cap` キー式** + アプリ署名。transport TLS  alone は盗聴耐性であり、なりすましの唯一の防御ではない。
 
 ## Zenoh キー × 脅威 × 防御
 
 | Zenoh key 族 | 偽 publish の被害 | 現状の防御 | 保証しない |
 |:---|:---|:---|:---|
-| `…/input` | なりすまし操作・物理発散・巨大 payload | host: Room Token（bind）+ **`cnf.spk`==`session_pub`（x003e）** + Ed25519 session（x0023）+ `is_finite` / magnitude / Grab 開始距離（x0021）+ **hold aim/offset クランプ**（x0041・`MAX_GRAB_HIT_DISTANCE`）+ **decode 上限**（x003b）+ **Intent rate**（x0040: steady per-sub 60/30s・Leave 免除；bind **host-global 20/10s + per-pub 5/2s** 原子消費・Leave 非免除；偽 sig は bucket 非消費）+ JWKS **hard stale**（x0040） | zenohd ACL・帯域上限；同一鍵の後勝ち rebind；端末秘密鍵窃取；Intent strike；未 bind steady の Ed25519 洪水 |
+| `…/input` | なりすまし操作・物理発散・巨大 payload | **WAN:** mTLS guest CN + role ACL（x004e）；host: Room Token（bind）+ **`cnf.spk`==`session_pub`（x003e）** + Ed25519 session（x0023）+ `is_finite` / magnitude / Grab 開始距離（x0021）+ **hold aim/offset クランプ**（x0041・`MAX_GRAB_HIT_DISTANCE`）+ **decode 上限**（x003b）+ **Intent rate**（x0040）+ JWKS **hard stale**（x0040） | 帯域上限；同一鍵の後勝ち rebind；端末秘密鍵窃取；Intent strike；未 bind steady の Ed25519 洪水；LAN tcp（ACL オフ） |
 | `…/frame` | 偽描画・NaN・巨大 payload | client: `host_sig` + Manifest `host_pub`（attestation）+ finite / tick / snapshot（x0023–x0024）+ **decode 上限**（x003b） | 確実配送 ACK |
 | `…/presence` | 偽スロット・偽退室表示・旧 Presence replay | client: pin + `host_sig` + generation/revision ゲート（x0025 / x003a）+ **decode 上限**（x003b） | Presence の world 署名 |
-| `…/manifest` | 改ざん配置・偽 host_pub・旧 seal replay・同一 gen 鍵すり替え・巨大 payload | `world_seal` + HostAttestation + **`(generation, revision)` 単調ゲート** + **同一 gen 内 `host_pub` 固定**（x0026 / x003a）；失敗は **discard**（x0038）；**decode 上限**（x003b） | UGC 編集 ACL；完全な handoff UX；二重 host の generation フリップフロップ |
+| `…/manifest` | 改ざん配置・偽 host_pub・旧 seal replay・同一 gen 鍵すり替え・巨大 payload・**他 room 書き込み** | **WAN:** mTLS + host-only put ACL + **`wire_cap` キー隔離**（x004e）；`world_seal` + HostAttestation + **`(generation, revision)` 単調ゲート** + **同一 gen 内 `host_pub` 固定**（x0026 / x003a）；失敗は **discard**（x0038）；**decode 上限**（x003b） | UGC 編集 ACL；完全な handoff UX；二重 host の generation フリップフロップ；LAN tcp（ACL オフ） |
 | `…/alive` | 偽 Delete で退室 | host: liveliness を検証済み jti に紐付け（x0022） | WAN liveliness ACL |
 | `…/snapshot` | 偽全置換・巨大 payload | client: Frame と同じ host_sig / finite + **decode 上限**（x003b）で適用 | queryable 認証の別チャネル |
 | `…/host_control` | 遠隔プロセス停止 | **既定オフ**（x001e）。launcher 経路は localhost IPC（x0032） | WAN 上の無認証 Zenoh control |
@@ -88,3 +88,4 @@ flowchart TB
 | x0044 | client world_jwks soft/hard + unknown-kid cooldown |
 | x0045 | host Room Token alg/iss/aud/exp/room 否定系テスト |
 | x0049 | localhost metrics（公網・Tunnel に出さない） |
+| x004e | Relay Agent Allocation → mTLS；role ACL；`wire_cap` キー隔離 |
