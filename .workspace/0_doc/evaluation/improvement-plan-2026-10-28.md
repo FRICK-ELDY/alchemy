@@ -65,7 +65,7 @@
 | P3-4 | metrics（tick lateness / frame age / JWKS stale / CAS） | -2 | localhost Prometheus text（依存なし）— **[x0049](../../roadmap/slices/x0049-minimal-metrics.md) done** |
 | P3-5 | README / roadmap / vision 鮮度 | -1 | 現状を x0049 まで反映 — **[x004a](../../roadmap/slices/x004a-docs-freshness.md) done** |
 | P3-6 | ClientIp 共有化・`inspect(reason)` 除去 | -1 | alchemy_auth_client 拡張 — **[x004b](../../roadmap/slices/x004b-client-ip-shared-inspect.md) done** |
-| P3-7 | BLAKE3 ストリーミング・Room 作成上限 | -1 | NIF / rate limit |
+| P3-7 | BLAKE3 ストリーミング・Room 作成上限 | -1 | NIF / rate limit — **マージしない**（実装試行あり・**CI が完了しなくなる**ため） |
 | P3-8 | host Room Token 否定系テスト | -1 | alg/iss/aud/exp/room — **[x0045](../../roadmap/slices/x0045-room-token-negative-tests.md) done** |
 | P3-9 | cargo-fuzz（protobuf/JWT） | 提案 | protocol / host |
 | P3-10 | USER_ROOT_SLOTS を Manifest へ | -1 | protocol は帯規則のみ |
@@ -98,7 +98,8 @@
 
 ## 推奨スライス順
 
-**次:** **P3-7** BLAKE3 ストリーミング・Room 作成上限、または **P2-1 deferred**（mTLS / Relay）再開。BlobGrant は draft 目標（P4-5）
+**次:** **P2-1 deferred**（mTLS / Relay）再開、または **P3-9** / **P3-10**。BlobGrant は draft 目標（P4-5）。  
+**P3-7**（BLAKE3 ストリーミング・Room 作成上限）は試行したが **CI が完了しなくなるためマージしない**（再開時は CI 完走を先行条件に）。
 
 最近閉じた: **[x004b](../../roadmap/slices/x004b-client-ip-shared-inspect.md)**（P3-6）、**[x004a](../../roadmap/slices/x004a-docs-freshness.md)**（P3-5）、**[x0049](../../roadmap/slices/x0049-minimal-metrics.md)**（P3-4）。
 
