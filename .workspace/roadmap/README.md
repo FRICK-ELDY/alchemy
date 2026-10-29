@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x004a`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x004b`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -124,10 +124,11 @@ depends_on: [x0006]
 | x0047 | — | done | launcher CI + 再起動ポリシー単体テスト（P3-2） | [x0047-launcher-ci-restart-policy.md](slices/x0047-launcher-ci-restart-policy.md) |
 | x0048 | — | done | asset error placeholder + HTTP timeout（P3-3） | [x0048-asset-placeholder-http-timeout.md](slices/x0048-asset-placeholder-http-timeout.md) |
 | x0049 | — | done | metrics 最小（localhost Prometheus text・P3-4） | [x0049-minimal-metrics.md](slices/x0049-minimal-metrics.md) |
+| x004a | — | done | README / roadmap 鮮度（P3-5・vision 本文は未） | [x004a-docs-freshness.md](slices/x004a-docs-freshness.md) |
 
-**現在の次:** **P3-5** README / roadmap 鮮度、または **P2-1 deferred**（Zenoh mTLS / Relay）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
+**現在の次:** **P3-6** ClientIp 共有化・`inspect(reason)` 除去、または **P2-1 deferred**（Zenoh mTLS / Relay）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
 
-次の空き番号は **`x004a`**。
+次の空き番号は **`x004b`**。
 
 
 ## 関連

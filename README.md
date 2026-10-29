@@ -6,17 +6,16 @@
 ネイティブ Windows の日常 `cargo` はアプリケーション制御（os error 4551）の都合で推奨しません。  
 **テスター配布 ZIP**（ネイティブ Windows x64）は [Releases（Pre-release）](https://github.com/FRICK-ELDY/alchemy/releases) · 手順 [windows-tester-zip.md](.workspace/0_doc/manual/windows-tester-zip.md)。版名は `v0.0.0-dev.YYYYMMDDHHMM`（JST）。
 
-## 現状（x0020 / Desktop client 手通し）
+## 現状（〜x0049）
 
-`host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（最大 **4**）・**user_root entity 3..6**・**PresenceState**・**Leave / liveliness / Intent TTL 解放**・**`ROOM_ID` Zenoh キー**・**立方体 ×9**・**30Hz デルタ**。  
-`client` は Dash 下タブ **Home / Settings / Exit**。Home で **login / 最小 register / logout**（logout は Leave + liveliness undeclare）。未ログインでは Room Token なし。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` は CI サイレント login。Desktop Grab / XR Grab / Noclip は従来どおり。  
-**Desktop 手通し（x0020）:** 日常スタック（`:4002/:4003/:4004` + zenohd `:7447`）が正本。手順は下記「Desktop 手通し」、env 例は [`client/env.desktop.example`](client/env.desktop.example)、機械検証は `make smoke-desktop-handthrough`。  
-**LAN:** zenohd `0.0.0.0:7447`、**`ZENOH_CONNECT`**。  
-**HTTPS（x001a）:** Cloudflare Tunnel で auth / world / assets を公開（[`edge/cloudflared/`](edge/cloudflared/)）。  
-**WAN（x001b）:** ConoHa 上 zenohd + IP allowlist（[`zenoh-router/config.wan.json5`](zenoh-router/config.wan.json5) · [手順書](.workspace/0_doc/manual/zenoh-wan-conoha.md)）。  
-**Assets（x001c/x001d）:** CAS を local / **R2** 切替。s3 時 GET は **署名 URL 302**（client → R2 直 DL）。  
-**Hermetic E2E（x001f）:** `docker-compose.e2e.yml`（`:4102` 系 / Zenoh `:7547`）。Desktop をそちらへ向ける場合は env 例のコメントを参照。  
-次の空き ID = **`x0046`**（P2-1 mTLS/ACL は deferred）。[roadmap](.workspace/roadmap/README.md)。
+手通し正本は **Desktop（x0020）**: 日常スタック（`:4002/:4003/:4004` + zenohd `:7447`）。手順は下記、env 例は [`client/env.desktop.example`](client/env.desktop.example)、機械検証は `make smoke-desktop-handthrough`。
+
+`host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（最大 **4**・`cnf.spk`）・**Presence / Leave / liveliness**・**30Hz 署名デルタ**・credential / Zenoh put worker。`client` は Home login・canonical **ManifestSeal**・**generation/revision** ゲート・decode 上限・Desktop/XR Grab。  
+**暗号・門番（〜x0045）:** 検証失敗は discard、Intent rate + JWKS hard stale、Grab hold 距離クランプ。  
+**運用・品質（x0046–x0049）:** adversarial E2E、launcher CI + 再起動ポリシー、asset error placeholder + HTTP timeout、**localhost 専用 `/metrics`**（公網・Tunnel に出さない）。  
+**LAN / HTTPS / WAN:** zenohd + `ZENOH_CONNECT`；Tunnel（[`edge/cloudflared/`](edge/cloudflared/)）；WAN は **TLS**（x0022 · [手順書](.workspace/0_doc/manual/zenoh-wan-conoha.md)）。  
+**Assets:** CAS local / **R2**（GET は署名 URL 302）。**Hermetic E2E（x001f）:** `docker-compose.e2e.yml`。  
+次の空き ID = **`x004b`**。次帯は **P3-6**（または P2-1 mTLS deferred）。[roadmap](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|
@@ -140,7 +139,7 @@ bash .scripts/smoke-presence-slots.sh   # Presence slots + ROOM_ID keys + pin ba
 bash .scripts/smoke-client-auth.sh      # x0018 Home units + login→logout HTTP
 bash .scripts/smoke-leave-liveliness.sh # x0019 Leave + liveliness units + host banner
 bash .scripts/smoke-https-edge.sh       # x001a Tunnel: AUTH/WORLD/ASSETS_URL 必須
-bash .scripts/smoke-zenoh-wan.sh        # x001b WAN: ZENOH_CONNECT 必須（TCP 到達）
+bash .scripts/smoke-zenoh-wan.sh        # x001b/x0022 WAN: ZENOH_CONNECT=tls/… 必須
 make ci-e2e                             # x001f hermetic: compose 縦 login→token→input→frame
 #   前提: docker compose -f docker-compose.e2e.yml up -d --build
 #   または COMPOSE_UP=1 make ci-e2e
@@ -183,6 +182,7 @@ make ci-protocol
 make ci-auth
 make ci-world
 make ci-assets
+make ci-launcher   # x0047（client workspace 外の alchemy-launcher）
 make ci-e2e   # x001f（compose スタック起動後）
 make smoke-desktop-handthrough  # x0020（日常スタック起動後）
 ```
@@ -200,3 +200,4 @@ AUTH_CI_HOST=1 ./.scripts/ci.sh auth
 | `auth` | Docker で format / compile / credo / ecto / `mix test` |
 | `world` | Docker で format / compile / credo / `mix test` |
 | `assets` | Docker で format / compile / credo / ecto / `mix test` |
+| `launcher` | `launcher/` で fmt / clippy / build / test（x0047） |
