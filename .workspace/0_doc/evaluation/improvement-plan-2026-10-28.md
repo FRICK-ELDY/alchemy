@@ -80,7 +80,7 @@
 | P4-2 | launcher discovery / deep link / handoff | 提案 | IPC stale 解消を含む |
 | P4-3 | verifier（Spot-Check） | 目標 | **P0-2/P0-3 が先行条件** |
 | P4-4 | Formula VM / Wake-on-Join / OSC / LOD / audio | 目標 | 減点しない |
-| P4-5 | billing / market / BlobGrant 経済圏 | 目標 | P1-1 と連動 |
+| P4-5 | billing / market / BlobGrant 経済圏 | 目標 | **台帳 MVP（案 A）= [x004f](../../roadmap/slices/x004f-blob-grant-mvp.md)**。GET 常時 Grant（案 B）・Vault / market は後続 |
 
 ---
 
@@ -98,7 +98,7 @@
 
 ## 推奨スライス順
 
-**次:** BlobGrant draft 目標（P4-5）。  
+**次 / 進行中:** **[x004f](../../roadmap/slices/x004f-blob-grant-mvp.md)** BlobGrant MVP（案 A）。目標形は案 B（GET の SSoT = Grant + room 連動）。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は試行したが **CI が完了しなくなるためマージしない**（再開時は CI 完走を先行条件に）。
 
 最近閉じた: **[x004e](../../roadmap/slices/x004e-relay-agent-mvp.md)**（P2-1 Relay Agent MVP）、**[x004d](../../roadmap/slices/x004d-user-root-slots-manifest.md)**（P3-10）。

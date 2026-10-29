@@ -2,6 +2,7 @@ defmodule AssetsWeb.BlobControllerTest do
   use AssetsWeb.ConnCase, async: false
 
   alias Assets.Blobs
+  alias Assets.Blobs.BlobGrant
   alias Assets.Blobs.CasObject
   alias Assets.CAS
   alias Assets.Quota.QuotaLedger
@@ -254,5 +255,197 @@ defmodule AssetsWeb.BlobControllerTest do
     assert {:ok, object, :created} = Blobs.upload(sub, data, "text/plain")
     assert object.blake3 == Blobs.blake3_hex(data)
     assert %QuotaLedger{reserved_bytes: 0} = Repo.get(QuotaLedger, sub)
+  end
+
+  test "default upload is authenticated and other user can GET", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "room-mesh-capability"
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"blake3" => blake3, "access" => "authenticated", "status" => "created"} =
+             json_response(conn, 201)
+
+    assert %BlobGrant{grant_type: "owned"} =
+             Repo.get_by(BlobGrant, grantee_sub: @sub_a, blake3: blake3)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert response(conn, 200) == body
+  end
+
+  test "grant_required upload: owner GET 200, other user 403", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "private-drive-bytes"
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> put_req_header("x-alchemy-blob-access", "grant_required")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"blake3" => blake3, "access" => "grant_required", "status" => "created"} =
+             json_response(conn, 201)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert response(conn, 200) == body
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert %{"error" => "forbidden"} = json_response(conn, 403)
+  end
+
+  test "rejects GET without auth", %{conn: conn, signer: signer, sub: sub} do
+    body = "need-auth-to-get"
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> put_req_header("content-type", "text/plain")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"blake3" => blake3} = json_response(conn, 201)
+
+    conn = build_conn() |> get("/api/v1/blobs/#{blake3}")
+    assert %{"error" => "missing_auth_token"} = json_response(conn, 401)
+  end
+
+  test "invalid access header is 400", %{conn: conn, signer: signer, sub: sub} do
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> put_req_header("content-type", "text/plain")
+      |> put_req_header("x-alchemy-blob-access", "public")
+      |> post("/api/v1/blobs", "nope")
+
+    assert %{"error" => "invalid_access"} = json_response(conn, 400)
+  end
+
+  test "first-writer access wins: later grant_required conflicts", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "access-first-writer"
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"blake3" => blake3, "access" => "authenticated"} = json_response(conn, 201)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> put_req_header("content-type", "text/plain")
+      |> put_req_header("x-alchemy-blob-access", "grant_required")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"error" => "access_conflict"} = json_response(conn, 409)
+    assert %CasObject{access: "authenticated"} = Repo.get(CasObject, blake3)
+    assert Repo.get_by(BlobGrant, grantee_sub: @sub_b, blake3: blake3) == nil
+    # Loser reserved then compensate — must not leave reserved_bytes stuck.
+    assert Blobs.quota(@sub_b) == %{used_bytes: 0, reserved_bytes: 0, limit_bytes: 1024}
+  end
+
+  test "cross-owner grant_required: second owner with matching access can GET", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "shared-private-bytes"
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> put_req_header("x-alchemy-blob-access", "grant_required")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"blake3" => blake3, "access" => "grant_required"} = json_response(conn, 201)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> put_req_header("content-type", "text/plain")
+      |> put_req_header("x-alchemy-blob-access", "grant_required")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"blake3" => ^blake3, "status" => "created"} = json_response(conn, 201)
+
+    assert %BlobGrant{grant_type: "owned"} =
+             Repo.get_by(BlobGrant, grantee_sub: @sub_b, blake3: blake3)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert response(conn, 200) == body
+  end
+
+  test "unknown CasObject.access is fail-closed forbidden", %{
+    conn: conn,
+    signer: signer,
+    sub: sub
+  } do
+    body = "corrupt-access-row"
+    blake3 = Blobs.blake3_hex(body)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    # Bypass changeset inclusion to simulate corrupt/legacy DB value.
+    {1, _} =
+      Repo.insert_all(CasObject, [
+        %{
+          blake3: blake3,
+          size: byte_size(body),
+          mime: "text/plain",
+          access: "legacy_open",
+          inserted_at: now
+        }
+      ])
+
+    assert :created = CAS.put_if_absent(blake3, body)
+
+    {_n, _} =
+      Repo.insert_all(
+        BlobGrant,
+        [
+          %{
+            grantee_sub: sub,
+            blake3: blake3,
+            grant_type: "owned",
+            inserted_at: now
+          }
+        ],
+        on_conflict: :nothing,
+        conflict_target: [:grantee_sub, :blake3]
+      )
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert %{"error" => "forbidden"} = json_response(conn, 403)
   end
 end

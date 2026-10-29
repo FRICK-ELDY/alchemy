@@ -58,7 +58,7 @@ flowchart TB
 | auth `/internal/*` | S2S 門番の公網露出 | Tunnel ingress 404（x0043・`/dev/*` と同型）；LAN は `x-alchemy-internal-token` | Cloudflare Access |
 | world Room Token / scene / seal | 不正入室・偽 scene | Bearer + host role（x0021）+ owner 系 + visibility ACL（x0034–x0036） | Group ACL / 一覧 UI；client アクセスレベル仮 UI（x0037）は門番ではない |
 
-| assets GET/PUT | 容量食い・他人 blob 読み・（将来）所有権ロンダリング / Rug Pull / SSRF 等 | Bearer + Quota 原子更新（x002d）；GET は認証済み読み取り capability（owner 照合なし・[assets-server.md](assets-server.md)）。詳細は [assets-threat-model.md](assets-threat-model.md) | BlobGrant・PoP・Immutable Tag 等（[assets-server-draft.md](assets-server-draft.md) / 脅威モデル目標列） |
+| assets GET/PUT | 容量食い・他人 blob 読み・（将来）所有権ロンダリング / Rug Pull / SSRF 等 | Bearer + Quota 原子更新（x002d）；BlobGrant 台帳 + `grant_required`（x004f）。GET 既定は認証済み capability（[assets-server.md](assets-server.md)）。詳細は [assets-threat-model.md](assets-threat-model.md) | GET 既定を Grant 必須（案 B）・PoP・Immutable Tag 等（[assets-server-draft.md](assets-server-draft.md) / 脅威モデル目標列） |
 
 ## ホスト端末プロセス境界
 

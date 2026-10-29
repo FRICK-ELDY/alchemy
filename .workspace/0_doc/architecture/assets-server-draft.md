@@ -16,7 +16,7 @@
 | 単一 DB トランザクション境界で Drive / Comms / Vcs / Shop → Grant を結ぶ方針 | Stage 2+ PostgreSQL・Ash Domain 分割のスケジュール |
 | auth / market+billing / world+zenoh / client(+盗難特徴量) を **別プロセス境界** に切る | それらのサーバーが既に存在する／本リポジトリに揃っていること |
 
-**現行との関係**: GET capability 文書化（P1-1）と **CasObject / BlobRef + reserved put**（x003f / P1-2）は正本済み。本 draft は残る **BlobGrant / StorageVault / 5 層** の目標像。Grant 採用時は保証表とコードを揃えてから正本へ昇格する。
+**現行との関係**: GET capability 文書化（P1-1）と **CasObject / BlobRef + reserved put**（x003f / P1-2）は正本済み。**BlobGrant 台帳 + `access=grant_required`（x004f / 案 A）** も正本化済み（GET 既定はまだ capability）。本 draft の残りは **StorageVault / 5 層** と **GET 既定を常に Grant 必須にする案 B**（room 連動読取 Grant）。案 B 採用時は保証表とコードを揃えてから正本へ昇格する。
 
 ---
 
