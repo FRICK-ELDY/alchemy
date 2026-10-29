@@ -113,7 +113,7 @@ depends_on: [x0006]
 | x003c | — | done | ZIP/launcher: Coin mesh は assets DL 必須（ensure + Manifest join republish） | [x003c-assets-required-mesh.md](slices/x003c-assets-required-mesh.md) |
 | x003d | — | done | host credential worker 分離（物理ループから HTTP 除去・hard expiry で配信停止） | [x003d-credential-worker.md](slices/x003d-credential-worker.md) |
 
-**現在の次:** **x003e+**（P1: BlobGrant or 文書 / cnf / ACL / Zenoh network worker など）。
+**現在の次:** **x003e+**（cnf / ACL / Zenoh network worker など。assets GET capability は文書化済み；BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)）。
 
 次の空き番号は **`x003e`**。
 
