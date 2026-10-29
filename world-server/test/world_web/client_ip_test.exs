@@ -33,4 +33,20 @@ defmodule WorldWeb.ClientIpTest do
 
     refute ClientIp.lan_eligible?(conn)
   end
+
+  test "from_conn wires otp_app :world (trusted proxy + CF)" do
+    previous = Application.get_env(:world, :trusted_proxies, [])
+    Application.put_env(:world, :trusted_proxies, ["127.0.0.1"])
+
+    on_exit(fn ->
+      Application.put_env(:world, :trusted_proxies, previous)
+    end)
+
+    conn =
+      Plug.Test.conn(:get, "/")
+      |> Map.put(:remote_ip, {127, 0, 0, 1})
+      |> Plug.Conn.put_req_header("cf-connecting-ip", "198.51.100.7")
+
+    assert ClientIp.from_conn(conn) == "198.51.100.7"
+  end
 end

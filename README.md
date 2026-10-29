@@ -15,7 +15,7 @@
 **運用・品質（x0046–x0049）:** adversarial E2E、launcher CI + 再起動ポリシー、asset error placeholder + HTTP timeout、**localhost 専用 `/metrics`**（公網・Tunnel に出さない）。  
 **LAN / HTTPS / WAN:** zenohd + `ZENOH_CONNECT`；Tunnel（[`edge/cloudflared/`](edge/cloudflared/)）；WAN は **TLS**（x0022 · [手順書](.workspace/0_doc/manual/zenoh-wan-conoha.md)）。  
 **Assets:** CAS local / **R2**（GET は署名 URL 302）。**Hermetic E2E（x001f）:** `docker-compose.e2e.yml`。  
-次の空き ID = **`x004b`**。次帯は **P3-6**（または P2-1 mTLS deferred）。[roadmap](.workspace/roadmap/README.md)。
+次の空き ID = **`x004c`**。次帯は **P3-7**（または P2-1 mTLS deferred）。[roadmap](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|

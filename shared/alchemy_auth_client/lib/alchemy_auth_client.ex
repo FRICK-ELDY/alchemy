@@ -4,6 +4,7 @@ defmodule AlchemyAuthClient do
 
   Guarantees: one GenServer implementation for world/assets; unknown-kid fetch
   cooldown when the cache is non-empty.
-  Non-guarantees: Hex release, host-server Rust JWKS, revocation lists.
+  Non-guarantees: Hex release, host-server Rust JWKS, revocation lists,
+  ClientIp (see `alchemy_client_ip` / x004b).
   """
 end

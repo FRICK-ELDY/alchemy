@@ -53,6 +53,7 @@ defmodule Auth.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.14"},
+      {:alchemy_client_ip, path: "../shared/alchemy_client_ip"},
       {:remote_ip, "~> 1.2"},
       {:ash, "~> 3.37"},
       {:ash_postgres, "~> 2.6"},

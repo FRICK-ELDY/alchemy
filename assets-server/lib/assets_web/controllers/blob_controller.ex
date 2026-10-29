@@ -1,6 +1,8 @@
 defmodule AssetsWeb.BlobController do
   use AssetsWeb, :controller
 
+  require Logger
+
   alias Assets.Blobs
 
   def create(conn, _params) do
@@ -16,9 +18,11 @@ defmodule AssetsWeb.BlobController do
         |> json(%{error: "too_large"})
 
       {:error, reason} ->
+        Logger.warning("blob read_body failed: #{inspect(reason)}")
+
         conn
         |> put_status(:bad_request)
-        |> json(%{error: "read_body_failed", detail: inspect(reason)})
+        |> json(%{error: "read_body_failed"})
     end
   end
 
@@ -74,9 +78,11 @@ defmodule AssetsWeb.BlobController do
         |> json(%{error: "too_large"})
 
       {:error, reason} ->
+        Logger.warning("blob upload failed: #{inspect(reason)}")
+
         conn
         |> put_status(:internal_server_error)
-        |> json(%{error: "upload_failed", detail: inspect(reason)})
+        |> json(%{error: "upload_failed"})
     end
   end
 
