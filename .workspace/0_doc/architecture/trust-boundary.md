@@ -67,6 +67,7 @@ flowchart TB
 | Zenoh `host_control` | WAN peer が shutdown を送る | 既定購読しない（`ALCHEMY_HOST_CONTROL` opt-in・x001e） |
 | launcher → host | ローカルのみ graceful stop | TCP `127.0.0.1` + ワンタイムトークン（x0032） |
 | client Exit → host | 誤って全員の部屋を落とす | client 終了 ≠ host 終了（launcher が分離監視） |
+| `GET /metrics`（host/client/assets） | 公網・Tunnel 経由の運用スクレイプ | **専用 loopback bind**（`ALCHEMY_METRICS_ADDR` / `ASSETS_METRICS_ADDR`・x0049）。公開 API ポートに載せない（Tunnel→127.0.0.1 で peer が loopback に見える経路を避ける） |
 
 ## 参照スライス
 
@@ -86,3 +87,4 @@ flowchart TB
 | x0043 | auth `/internal/*` ingress 404 + Social rate limit |
 | x0044 | client world_jwks soft/hard + unknown-kid cooldown |
 | x0045 | host Room Token alg/iss/aud/exp/room 否定系テスト |
+| x0049 | localhost metrics（公網・Tunnel に出さない） |

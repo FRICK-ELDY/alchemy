@@ -62,8 +62,8 @@
 | P3-1 | adversarial E2E（偽 Manifest / stale-rev / oversize） | -2 | e2e-probe + compose fault — **[x0046](../../roadmap/slices/x0046-adversarial-e2e.md) done** |
 | P3-2 | launcher を CI に・clippy 修正・再起動ポリシー単体テスト | -1 | workflow + `make ci-launcher` — **[x0047](../../roadmap/slices/x0047-launcher-ci-restart-policy.md) done** |
 | P3-3 | fixture fallback を debug 限定 + HTTP timeout/cancel | -2 | placeholder UI — **[x0048](../../roadmap/slices/x0048-asset-placeholder-http-timeout.md) done** |
-| P3-4 | metrics（tick lateness / frame age / JWKS stale / CAS） | -2 | Prometheus or OTLP 最小 |
-| P3-5 | README / roadmap / vision 鮮度 | -1 | 現状を x0048 まで反映（本帯で一部閉じ） |
+| P3-4 | metrics（tick lateness / frame age / JWKS stale / CAS） | -2 | localhost Prometheus text（依存なし）— **[x0049](../../roadmap/slices/x0049-minimal-metrics.md) done** |
+| P3-5 | README / roadmap / vision 鮮度 | -1 | 現状を x0049 まで反映（本帯で一部閉じ） |
 | P3-6 | ClientIp 共有化・`inspect(reason)` 除去 | -1 | alchemy_auth_client 拡張 |
 | P3-7 | BLAKE3 ストリーミング・Room 作成上限 | -1 | NIF / rate limit |
 | P3-8 | host Room Token 否定系テスト | -1 | alg/iss/aud/exp/room — **[x0045](../../roadmap/slices/x0045-room-token-negative-tests.md) done** |
@@ -98,8 +98,8 @@
 
 ## 推奨スライス順
 
-**次:** **P3-4** metrics、または **P2-1 deferred**（mTLS / Relay）再開。BlobGrant は draft 目標（P4-5）
+**次:** **P3-5** README / roadmap 鮮度、または **P2-1 deferred**（mTLS / Relay）再開。BlobGrant は draft 目標（P4-5）
 
-最近閉じた: **[x0048](../../roadmap/slices/x0048-asset-placeholder-http-timeout.md)**（P3-3）、**[x0047](../../roadmap/slices/x0047-launcher-ci-restart-policy.md)**（P3-2）、**[x0046](../../roadmap/slices/x0046-adversarial-e2e.md)**（P3-1）。
+最近閉じた: **[x0049](../../roadmap/slices/x0049-minimal-metrics.md)**（P3-4）、**[x0048](../../roadmap/slices/x0048-asset-placeholder-http-timeout.md)**（P3-3）、**[x0047](../../roadmap/slices/x0047-launcher-ci-restart-policy.md)**（P3-2）。
 
 スライス完了条件に必ず含める: **prod compose 起動**・**否定系が通る**・**保証表とコード一致**。

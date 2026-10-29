@@ -50,6 +50,8 @@ pub struct WorldJwks {
     cache: RwLock<KeyCache>,
     refresh_tx: Mutex<Option<SyncSender<()>>>,
     bg_started: AtomicBool,
+    /// Optional x0049 client metrics (JWKS age / hard-stale).
+    metrics: Mutex<Option<Arc<crate::metrics::ClientMetrics>>>,
 }
 
 impl WorldJwks {
@@ -65,7 +67,29 @@ impl WorldJwks {
             }),
             refresh_tx: Mutex::new(None),
             bg_started: AtomicBool::new(false),
+            metrics: Mutex::new(None),
         }
+    }
+
+    /// Attach client metrics registry (x0049). Call once before verify traffic.
+    pub fn set_metrics(&self, metrics: Arc<crate::metrics::ClientMetrics>) {
+        if let Ok(mut slot) = self.metrics.lock() {
+            *slot = Some(metrics);
+        }
+        self.publish_jwks_age();
+    }
+
+    fn with_metrics(&self, f: impl FnOnce(&crate::metrics::ClientMetrics)) {
+        if let Ok(slot) = self.metrics.lock() {
+            if let Some(m) = slot.as_ref() {
+                f(m);
+            }
+        }
+    }
+
+    fn publish_jwks_age(&self) {
+        let fetched_at = self.cache.read().expect("jwks cache lock").fetched_at;
+        self.with_metrics(|m| m.set_jwks_fetched_at(fetched_at));
     }
 
     /// Poll JWKS off the Manifest receive path. Call once after initial [`Self::refresh`].
@@ -91,6 +115,7 @@ impl WorldJwks {
                     if let Err(err) = this.refresh() {
                         log::warn!("world JWKS background refresh failed (keeping cache): {err:#}");
                     }
+                    this.publish_jwks_age();
                 }
             })
             .expect("spawn world-jwks-refresh");
@@ -122,6 +147,8 @@ impl WorldJwks {
         let mut cache = self.cache.write().expect("jwks cache lock");
         cache.keys = keys;
         cache.fetched_at = Instant::now();
+        drop(cache);
+        self.publish_jwks_age();
         Ok(())
     }
 
@@ -145,6 +172,7 @@ impl WorldJwks {
             let age = cache.fetched_at.elapsed();
             if age > JWKS_HARD_TTL {
                 drop(cache);
+                self.with_metrics(|m| m.inc_jwks_hard_stale());
                 self.kick_refresh_hard_stale();
                 return Err(anyhow!(
                     "JWKS cache hard-stale (age > {}s); refresh required (x0044)",
@@ -318,6 +346,22 @@ mod tests {
         assert!(jwks
             .decode_claims::<TinyClaims>(&token, &validation)
             .is_ok());
+    }
+
+    #[test]
+    fn hard_stale_increments_client_metrics() {
+        let (jwks, token, _) = test_rsa_jwt();
+        let metrics = Arc::new(crate::metrics::ClientMetrics::default());
+        jwks.set_metrics(Arc::clone(&metrics));
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.validate_aud = false;
+        validation.set_required_spec_claims(&["exp", "sub"]);
+
+        jwks.set_fetched_at_age_for_test(Duration::from_secs(301));
+        let _ = jwks
+            .decode_claims::<TinyClaims>(&token, &validation)
+            .expect_err("hard-stale");
+        assert_eq!(metrics.jwks_hard_stale_total(), 1);
     }
 
     #[test]

@@ -9,11 +9,15 @@ defmodule Assets.Application do
       File.mkdir_p!(Application.fetch_env!(:assets, :cas_path))
     end
 
+    Assets.Metrics.ensure_table()
+
     children = [
       AssetsWeb.Telemetry,
       Assets.Repo,
       {Phoenix.PubSub, name: Assets.PubSub},
       Assets.Auth.Jwks,
+      # x0049: dedicated loopback Bandit — never on Endpoint (Tunnel peer spoof)
+      Assets.Metrics.Server,
       AssetsWeb.Endpoint
     ]
 

@@ -14,6 +14,7 @@ defmodule Assets.Blobs do
   alias Assets.Blobs.CasObject
   alias Assets.CAS
   alias Assets.CAS.S3, as: CasS3
+  alias Assets.Metrics
   alias Assets.Quota.QuotaLedger
   alias Assets.Repo
 
@@ -29,9 +30,27 @@ defmodule Assets.Blobs do
     max = Application.fetch_env!(:assets, :max_upload_bytes)
 
     if byte_size(data) > max do
+      Metrics.inc(:cas_put_errors_total)
       {:error, :too_large}
     else
-      do_upload(owner_sub, data, mime)
+      t0 = System.monotonic_time(:millisecond)
+
+      result = do_upload(owner_sub, data, mime)
+      Metrics.observe_ms(:cas_put_last_ms, System.monotonic_time(:millisecond) - t0)
+
+      case result do
+        {:ok, _, _} ->
+          Metrics.inc(:cas_put_total)
+
+        {:error, :quota_exceeded} ->
+          Metrics.inc(:cas_quota_exceeded_total)
+          Metrics.inc(:cas_put_errors_total)
+
+        {:error, _} ->
+          Metrics.inc(:cas_put_errors_total)
+      end
+
+      result
     end
   end
 
@@ -272,10 +291,23 @@ defmodule Assets.Blobs do
           | {:redirect, String.t(), CasObject.t()}
           | {:error, :not_found | :presign_failed}
   def fetch(blake3) when is_binary(blake3) do
-    case Repo.get(CasObject, blake3) do
-      nil -> {:error, :not_found}
-      %CasObject{} = object -> fetch_object(object, blake3)
+    t0 = System.monotonic_time(:millisecond)
+
+    result =
+      case Repo.get(CasObject, blake3) do
+        nil -> {:error, :not_found}
+        %CasObject{} = object -> fetch_object(object, blake3)
+      end
+
+    Metrics.observe_ms(:cas_get_last_ms, System.monotonic_time(:millisecond) - t0)
+
+    case result do
+      {:ok, _, _} -> Metrics.inc(:cas_get_total)
+      {:redirect, _, _} -> Metrics.inc(:cas_get_total)
+      {:error, _} -> Metrics.inc(:cas_get_errors_total)
     end
+
+    result
   end
 
   defp fetch_object(object, blake3) do

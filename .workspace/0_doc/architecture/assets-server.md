@@ -22,6 +22,7 @@
 | Quota 超過のアップロード拒否（既定 1GiB；`used + reserved`） | 課金連動 Quota / pgvector / Origin Cert / Ash 本格 |
 | auth `sub` を **PUT・Quota の所有者キー**として使う | GET で `BlobRef.owner_sub` と照合すること |
 | GET は **認証済み読み取り capability**（下表） | 非公開・有料アセットの confidentiality（→ BlobGrant） |
+| `ASSETS_METRICS_ADDR`（または `ASSETS_METRICS=1`→`127.0.0.1:9103`）時のみ **専用 loopback Bandit** で `GET /metrics`（x0049）。公開 Endpoint には載せない | OTLP / PromEx / Tunnel・公網スクレイプ；Phoenix 同一ポート上の `/metrics` |
 
 ## GET capability モデル（現行・コード一致）
 

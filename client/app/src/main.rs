@@ -34,6 +34,7 @@ mod intent_session;
 mod jwt_sub;
 mod manifest_seal;
 mod mesh;
+mod metrics;
 mod scene;
 mod surface;
 mod system_ui;
@@ -715,6 +716,9 @@ fn apply_frame(
                 frame.tick,
                 prev_tick
             );
+        }
+        ApplyFrameOutcome::Applied => {
+            shared.metrics.note_frame_accepted();
         }
         _ => {}
     }
@@ -1462,6 +1466,9 @@ fn main() -> Result<()> {
         gate.apply_auth_session(session);
     }
 
+    let client_metrics = Arc::new(metrics::ClientMetrics::default());
+    metrics::maybe_spawn_from_env(Arc::clone(&client_metrics));
+
     let shared = Arc::new(SharedState {
         local_user_root: AtomicU32::new(LOCAL_USER_ROOT_UNSET),
         room_id: Arc::<str>::from(room_id),
@@ -1478,6 +1485,7 @@ fn main() -> Result<()> {
         liveliness: Mutex::new(None),
         liveliness_prev: Mutex::new(None),
         world: Mutex::new(scene::WorldView::default()),
+        metrics: Arc::clone(&client_metrics),
         box_defs: Mutex::new(Arc::new(scene::BoxDefs::default())),
         mesh_entity_id: AtomicU32::new(0),
         asset_status: Mutex::new(None),
@@ -1506,6 +1514,7 @@ fn main() -> Result<()> {
     spawn_token_refresh(Arc::clone(&shared))?;
 
     let jwks = Arc::new(WorldJwks::new(shared.world_url.as_ref()));
+    jwks.set_metrics(Arc::clone(&client_metrics));
     jwks.refresh()
         .context("initial world JWKS (ManifestSeal + HostAttestation)")?;
     jwks.spawn_background_refresh();
