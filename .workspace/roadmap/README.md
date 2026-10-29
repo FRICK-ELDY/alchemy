@@ -126,11 +126,12 @@ depends_on: [x0006]
 | x0049 | — | done | metrics 最小（localhost Prometheus text・P3-4） | [x0049-minimal-metrics.md](slices/x0049-minimal-metrics.md) |
 | x004a | — | done | README / roadmap 鮮度（P3-5・vision 本文は未） | [x004a-docs-freshness.md](slices/x004a-docs-freshness.md) |
 | x004b | — | done | ClientIp 共有化 + HTTP inspect 除去（P3-6） | [x004b-client-ip-shared-inspect.md](slices/x004b-client-ip-shared-inspect.md) |
+| x004c | — | done | cargo-fuzz protobuf / JWT（P3-9） | [x004c-cargo-fuzz-protobuf-jwt.md](slices/x004c-cargo-fuzz-protobuf-jwt.md) |
 
-**現在の次:** **P2-1 deferred**（Zenoh mTLS / Relay）、または **P3-9** / **P3-10**。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。  
-**P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。スライス ID **`x004c`** は未採番のまま空き。
+**現在の次:** **P2-1 deferred**（Zenoh mTLS / Relay）、または **P3-10**。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。  
+**P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
-次の空き番号は **`x004c`**。
+次の空き番号は **`x004d`**。
 
 
 ## 関連

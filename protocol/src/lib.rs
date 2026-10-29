@@ -24,6 +24,7 @@
 //! - 5+ concurrent guests / WAN liveliness ACL / Zenoh ACL.
 //! - Full host handoff UX / Wake-on-Join (generation advance is the contract only).
 //! - Router max-payload / per-peer QoS (app-level decode limits only; x003b).
+//! - Long-running fuzz campaigns (x004c ships short CI smoke + seed corpus only).
 
 pub use prost::Message;
 

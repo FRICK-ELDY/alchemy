@@ -5,7 +5,8 @@
 //! Callers should use [`ZBytes::len`](https://docs.rs/zenoh/latest/zenoh/bytes/struct.ZBytes.html)
 //! (or equivalent) **before** `to_bytes()` / contiguous copy when the transport exposes a length.
 //!
-//! Non-guarantees: router max-payload / per-peer QoS; cargo-fuzz coverage.
+//! Non-guarantees: router max-payload / per-peer QoS.
+//! Fuzz: `protocol/fuzz` (x004c / P3-9) runs class decode + these checks.
 //!
 //! # Frame upsert / remove ceilings
 //! [`MAX_FRAME_UPSERTS`] / [`MAX_FRAME_REMOVES`] are **DoS bounds**, not the host's steady
@@ -210,57 +211,64 @@ pub fn check_input(event: &InputEvent) -> Result<(), DecodeLimitError> {
     Ok(())
 }
 
-/// Payload byte gate → decode → post-decode count check (wiring / regression helper).
-pub fn decode_frame_checked(payload: &[u8]) -> Result<RenderFrame, FrameDecodeLimitError> {
-    check_payload_bytes(WireClass::Frame, payload.len()).map_err(FrameDecodeLimitError::Limit)?;
-    let frame = RenderFrame::decode(payload).map_err(FrameDecodeLimitError::Decode)?;
-    check_frame(&frame).map_err(FrameDecodeLimitError::Limit)?;
+/// Shared error for payload gate → prost decode → post-decode checks.
+#[derive(Debug)]
+pub enum CheckedDecodeError {
+    Limit(DecodeLimitError),
+    Decode(prost::DecodeError),
+}
+
+impl std::fmt::Display for CheckedDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Limit(e) => write!(f, "{e}"),
+            Self::Decode(e) => write!(f, "decode: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for CheckedDecodeError {}
+
+/// Alias kept for call sites / tests (x003b).
+pub type FrameDecodeLimitError = CheckedDecodeError;
+/// Alias kept for call sites / tests (x003b).
+pub type InputDecodeLimitError = CheckedDecodeError;
+/// Manifest checked-decode error (x004c).
+pub type ManifestDecodeLimitError = CheckedDecodeError;
+/// Presence checked-decode error (x004c).
+pub type PresenceDecodeLimitError = CheckedDecodeError;
+
+/// Payload byte gate → decode → post-decode count check (wiring / regression / fuzz).
+pub fn decode_frame_checked(payload: &[u8]) -> Result<RenderFrame, CheckedDecodeError> {
+    check_payload_bytes(WireClass::Frame, payload.len()).map_err(CheckedDecodeError::Limit)?;
+    let frame = RenderFrame::decode(payload).map_err(CheckedDecodeError::Decode)?;
+    check_frame(&frame).map_err(CheckedDecodeError::Limit)?;
     Ok(frame)
 }
 
 /// Decode + post-check Input after payload byte gate.
-pub fn decode_input_checked(payload: &[u8]) -> Result<InputEvent, InputDecodeLimitError> {
-    check_payload_bytes(WireClass::Input, payload.len()).map_err(InputDecodeLimitError::Limit)?;
-    let event = InputEvent::decode(payload).map_err(InputDecodeLimitError::Decode)?;
-    check_input(&event).map_err(InputDecodeLimitError::Limit)?;
+pub fn decode_input_checked(payload: &[u8]) -> Result<InputEvent, CheckedDecodeError> {
+    check_payload_bytes(WireClass::Input, payload.len()).map_err(CheckedDecodeError::Limit)?;
+    let event = InputEvent::decode(payload).map_err(CheckedDecodeError::Decode)?;
+    check_input(&event).map_err(CheckedDecodeError::Limit)?;
     Ok(event)
 }
 
-/// Errors from [`decode_frame_checked`].
-#[derive(Debug)]
-pub enum FrameDecodeLimitError {
-    Limit(DecodeLimitError),
-    Decode(prost::DecodeError),
+/// Decode + post-check Manifest after payload byte gate (x004c).
+pub fn decode_manifest_checked(payload: &[u8]) -> Result<SceneManifest, CheckedDecodeError> {
+    check_payload_bytes(WireClass::Manifest, payload.len()).map_err(CheckedDecodeError::Limit)?;
+    let manifest = SceneManifest::decode(payload).map_err(CheckedDecodeError::Decode)?;
+    check_manifest(&manifest).map_err(CheckedDecodeError::Limit)?;
+    Ok(manifest)
 }
 
-impl std::fmt::Display for FrameDecodeLimitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Limit(e) => write!(f, "{e}"),
-            Self::Decode(e) => write!(f, "decode: {e}"),
-        }
-    }
+/// Decode + post-check Presence after payload byte gate (x004c).
+pub fn decode_presence_checked(payload: &[u8]) -> Result<PresenceState, CheckedDecodeError> {
+    check_payload_bytes(WireClass::Presence, payload.len()).map_err(CheckedDecodeError::Limit)?;
+    let state = PresenceState::decode(payload).map_err(CheckedDecodeError::Decode)?;
+    check_presence(&state).map_err(CheckedDecodeError::Limit)?;
+    Ok(state)
 }
-
-impl std::error::Error for FrameDecodeLimitError {}
-
-/// Errors from [`decode_input_checked`].
-#[derive(Debug)]
-pub enum InputDecodeLimitError {
-    Limit(DecodeLimitError),
-    Decode(prost::DecodeError),
-}
-
-impl std::fmt::Display for InputDecodeLimitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Limit(e) => write!(f, "{e}"),
-            Self::Decode(e) => write!(f, "decode: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for InputDecodeLimitError {}
 
 #[cfg(test)]
 mod tests {
@@ -293,7 +301,7 @@ mod tests {
         let junk = vec![0u8; MAX_FRAME_BYTES + 1];
         assert!(matches!(
             decode_frame_checked(&junk),
-            Err(FrameDecodeLimitError::Limit(
+            Err(CheckedDecodeError::Limit(
                 DecodeLimitError::PayloadTooLarge { .. }
             ))
         ));
@@ -312,11 +320,26 @@ mod tests {
         );
         assert!(matches!(
             decode_input_checked(&bytes),
-            Err(InputDecodeLimitError::Limit(
-                DecodeLimitError::BytesTooLong {
-                    field: "session_pub",
-                    ..
-                }
+            Err(CheckedDecodeError::Limit(DecodeLimitError::BytesTooLong {
+                field: "session_pub",
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn decode_manifest_presence_checked_empty_ok() {
+        assert!(decode_manifest_checked(&SceneManifest::default().encode_to_vec()).is_ok());
+        assert!(decode_presence_checked(&PresenceState::default().encode_to_vec()).is_ok());
+    }
+
+    #[test]
+    fn decode_manifest_checked_rejects_oversize_before_decode() {
+        let junk = vec![0u8; MAX_MANIFEST_BYTES + 1];
+        assert!(matches!(
+            decode_manifest_checked(&junk),
+            Err(CheckedDecodeError::Limit(
+                DecodeLimitError::PayloadTooLarge { .. }
             ))
         ));
     }

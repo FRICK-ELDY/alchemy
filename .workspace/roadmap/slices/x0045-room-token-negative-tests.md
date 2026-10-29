@@ -11,7 +11,7 @@
 
 | 保証する | 保証しない |
 |:---|:---|
-| 不正 alg（none / HS256）・iss・aud・exp・room_id の verify 失敗テスト | E2E / fuzz（→ x0046 / P3-9） |
+| 不正 alg（none / HS256）・iss・aud・exp・room_id の verify 失敗テスト | E2E（x0046）；fuzz は [x004c](x004c-cargo-fuzz-protobuf-jwt.md) |
 | unknown kid / invalid role の拒否テスト | 本番 HTTP JWKS 経路の結合 |
 
 ## 完了条件

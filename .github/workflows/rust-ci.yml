@@ -100,6 +100,7 @@ jobs:
 
   # x0047 / P3-2: launcher is outside the client workspace; keep this job in sync with
   # `make ci-launcher` / `.scripts/ci.sh launcher`.
+  # host cargo-fuzz: `.github/workflows/host-fuzz-ci.yml` (narrow paths).
   launcher-check:
     name: "Launcher — fmt clippy build test"
     runs-on: ubuntu-latest

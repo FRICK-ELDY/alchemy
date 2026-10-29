@@ -13,6 +13,7 @@
 //! (full TTL), not kill the process on a transient 502.
 //! Non-guarantees: auth UI, session MAC (P2); Zenoh put path is x0042 network worker.
 //! client `world_jwks` soft/hard + unknown-kid cooldown: x0044 (parity with this module).
+//! Fuzz: `host-server/fuzz` `room_token_verify` (x004c; feature `fuzzing`).
 
 use alchemy_protocol::wire_crypto::manifest_seal_blake3_hex;
 use alchemy_protocol::{
@@ -321,8 +322,8 @@ impl RoomTokenVerifier {
         self.kick_refresh();
     }
 
-    /// Test-only: inject a DecodingKey so `verify` works without HTTP JWKS.
-    #[cfg(test)]
+    /// Test / fuzz: inject a DecodingKey so `verify` works without HTTP JWKS.
+    #[cfg(any(test, feature = "fuzzing"))]
     pub fn insert_decoding_key_for_test(&self, kid: &str, key: DecodingKey) {
         let mut cache = self.cache.write().expect("jwks cache lock");
         cache.keys.insert(kid.to_string(), key);
