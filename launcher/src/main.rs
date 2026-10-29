@@ -1,25 +1,27 @@
-//! alchemy-launcher — minimal process manager (x0032 / P4-4).
+//! alchemy-launcher — minimal process manager (x0032 / x0047).
 //!
 //! Guarantees:
 //! - Spawn host-server then client after `ALCHEMY_HOST_READY_FILE` (includes bound IPC addr)
 //! - Exit Client only: client dies, host kept
 //! - Exit Client+Host / IPC SHUTDOWN: host exits 0 → launcher stops (no crash-restart)
-//! - Host crash (non-zero): bounded backoff restart; Ctrl+C → IPC shutdown then exit
+//! - Host crash (non-zero): bounded backoff restart ([`restart`] policy); Ctrl+C → IPC shutdown
 //!
 //! Non-guarantees: alchemy:// deep links, tray UI, host handoff, Zenoh liveliness watch,
 //! Compose integration, installer.
 
+mod restart;
+
 use alchemy_protocol::host_ipc::{self, ENV_ADDR, ENV_TOKEN};
 use anyhow::{bail, Context, Result};
+use restart::{decide_host_exit, HostExitAction, MAX_HOST_RESTARTS};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const MAX_HOST_RESTARTS: u32 = 3;
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
 
 fn main() {
@@ -34,7 +36,7 @@ fn run() -> Result<()> {
 
     let client_dir = resolve_client_dir();
     log::info!(
-        "alchemy-launcher x0032; client_dir={}",
+        "alchemy-launcher x0047; client_dir={}",
         client_dir.display()
     );
 
@@ -88,12 +90,16 @@ fn run() -> Result<()> {
         }
 
         match host.try_wait() {
-            Ok(Some(status)) => {
-                if shutting_down.load(Ordering::SeqCst) {
+            Ok(Some(status)) => match decide_host_exit(
+                status.success(),
+                shutting_down.load(Ordering::SeqCst),
+                host_restarts,
+            ) {
+                HostExitAction::IgnoreDuringShutdown => {
                     log::info!("host exited during shutdown ({status})");
                     break;
                 }
-                if is_intentional_host_stop(status) {
+                HostExitAction::StopLauncherIntentionally => {
                     // Exit Client+Host / authenticated IPC: exit 0 — do not restart.
                     log::info!(
                         "host stopped intentionally ({status}); launcher exiting (no restart)"
@@ -106,39 +112,58 @@ fn run() -> Result<()> {
                     log::info!("launcher exit");
                     return Ok(());
                 }
-                host_restarts += 1;
-                if host_restarts > MAX_HOST_RESTARTS {
+                HostExitAction::BudgetExhausted { attempt } => {
                     log::error!(
-                        "host crashed ({status}); restart budget exhausted ({MAX_HOST_RESTARTS})"
+                        "host crashed ({status}); restart budget exhausted ({attempt} > {MAX_HOST_RESTARTS})"
                     );
                     if let Some(mut c) = client.take() {
                         let _ = c.kill();
+                        let _ = c.wait();
                     }
                     bail!("host restart budget exhausted");
                 }
-                let backoff = Duration::from_secs(1u64 << (host_restarts.min(3) - 1));
-                log::warn!(
-                    "host crashed ({status}); restart {host_restarts}/{MAX_HOST_RESTARTS} after {backoff:?}"
-                );
-                thread::sleep(backoff);
-                let _ = fs::remove_file(&ready_path);
-                host = spawn_host(&client_dir, &ipc_token, &ready_path)
-                    .context("respawn host-server")?;
-                log::info!("host-server restarted pid={}", host.id());
-                match wait_ready(&ready_path, &mut host, &shutting_down) {
-                    Ok(addr) => {
-                        // Launcher Ctrl+C uses the fresh addr. Client process still has the
-                        // old ALCHEMY_HOST_IPC_ADDR — Exit Client+Host after restart is
-                        // non-guaranteed (see architecture/launcher.md).
-                        log::info!("host IPC addr after restart: {addr}");
-                        ipc_addr = addr;
+                HostExitAction::Restart { attempt, backoff } => {
+                    host_restarts = attempt;
+                    log::warn!(
+                        "host crashed ({status}); restart {host_restarts}/{MAX_HOST_RESTARTS} after {backoff:?}"
+                    );
+                    // Honor Ctrl+C during backoff — do not respawn into a shutdown.
+                    if sleep_interruptible(backoff, &shutting_down) {
+                        log::info!("shutdown during restart backoff; skipping respawn");
+                        break;
                     }
-                    Err(err) => {
-                        log::error!("host restart ready wait failed: {err:#}");
-                        shutting_down.store(true, Ordering::SeqCst);
+                    let _ = fs::remove_file(&ready_path);
+                    host = match spawn_host(&client_dir, &ipc_token, &ready_path) {
+                        Ok(child) => child,
+                        Err(err) => {
+                            if let Some(mut c) = client.take() {
+                                let _ = c.kill();
+                                let _ = c.wait();
+                            }
+                            return Err(err).context("respawn host-server");
+                        }
+                    };
+                    log::info!("host-server restarted pid={}", host.id());
+                    match wait_ready(&ready_path, &mut host, &shutting_down) {
+                        Ok(addr) => {
+                            // Launcher Ctrl+C uses the fresh addr. Client process still has the
+                            // old ALCHEMY_HOST_IPC_ADDR — Exit Client+Host after restart is
+                            // non-guaranteed (see architecture/launcher.md).
+                            log::info!("host IPC addr after restart: {addr}");
+                            ipc_addr = addr;
+                        }
+                        Err(err) => {
+                            // Ready-wait failure (crash-before-ready / timeout) is **outside**
+                            // `decide_host_exit` budget: stop immediately rather than burn more
+                            // restart attempts (boot/config is likely broken).
+                            log::error!(
+                                "host restart ready wait failed (no further decide_host_exit retries): {err:#}"
+                            );
+                            shutting_down.store(true, Ordering::SeqCst);
+                        }
                     }
                 }
-            }
+            },
             Ok(None) => {}
             Err(err) => log::warn!("host try_wait: {err}"),
         }
@@ -159,9 +184,18 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-/// Authenticated IPC / clean main-loop leave uses process exit code 0.
-fn is_intentional_host_stop(status: ExitStatus) -> bool {
-    status.success()
+/// Sleep up to `total`, returning `true` if `shutting_down` became set.
+fn sleep_interruptible(total: Duration, shutting_down: &AtomicBool) -> bool {
+    let slice = Duration::from_millis(200);
+    let start = Instant::now();
+    while start.elapsed() < total {
+        if shutting_down.load(Ordering::SeqCst) {
+            return true;
+        }
+        let remaining = total.saturating_sub(start.elapsed());
+        thread::sleep(remaining.min(slice));
+    }
+    shutting_down.load(Ordering::SeqCst)
 }
 
 fn resolve_client_dir() -> PathBuf {

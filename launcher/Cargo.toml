@@ -3,7 +3,7 @@ name = "alchemy-launcher"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Minimal process manager: spawn host + client, localhost IPC shutdown (x0032)"
+description = "Minimal process manager: spawn host + client, localhost IPC shutdown (x0032/x0047)"
 
 [[bin]]
 name = "alchemy-launcher"
