@@ -127,7 +127,8 @@ depends_on: [x0006]
 | x004a | — | done | README / roadmap 鮮度（P3-5・vision 本文は未） | [x004a-docs-freshness.md](slices/x004a-docs-freshness.md) |
 | x004b | — | done | ClientIp 共有化 + HTTP inspect 除去（P3-6） | [x004b-client-ip-shared-inspect.md](slices/x004b-client-ip-shared-inspect.md) |
 
-**現在の次:** **P3-7** BLAKE3 ストリーミング・Room 作成上限、または **P2-1 deferred**（Zenoh mTLS / Relay）。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。
+**現在の次:** **P2-1 deferred**（Zenoh mTLS / Relay）、または **P3-9** / **P3-10**。BlobGrant は [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md)。  
+**P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。スライス ID **`x004c`** は未採番のまま空き。
 
 次の空き番号は **`x004c`**。
 
