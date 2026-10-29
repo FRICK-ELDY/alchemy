@@ -16,12 +16,17 @@ defmodule Assets.CAS.S3 do
 
   @impl true
   def put_if_absent(blake3_hex, data) when is_binary(data) do
+    # head → put is TOCTOU; both racers may observe :created. Callers must not
+    # CAS.delete on :created alone (x003f compensate releases quota only).
     case head(blake3_hex) do
       :ok ->
-        :ok
+        :existing
 
       {:error, :not_found} ->
-        put(blake3_hex, data)
+        case put(blake3_hex, data) do
+          :ok -> :created
+          {:error, reason} -> {:error, reason}
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -45,6 +50,17 @@ defmodule Assets.CAS.S3 do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  @impl true
+  def delete(blake3_hex) when is_binary(blake3_hex) do
+    cfg = s3_config!()
+
+    case ExAws.S3.delete_object(cfg.bucket, object_key(blake3_hex))
+         |> ExAws.request(aws_config(cfg)) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 

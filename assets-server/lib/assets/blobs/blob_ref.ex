@@ -1,24 +1,26 @@
 defmodule Assets.Blobs.BlobRef do
+  @moduledoc """
+  Per-owner reference to a CasObject. Quota is charged per (owner_sub, blake3).
+  """
+
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:blake3, :string, autogenerate: false}
+  @primary_key false
   @foreign_key_type :string
 
   schema "blob_refs" do
-    field :size, :integer
-    field :mime, :string
-    field :owner_sub, :string
+    field :owner_sub, :string, primary_key: true
+    field :blake3, :string, primary_key: true
 
     timestamps(type: :utc_datetime_usec, updated_at: false)
   end
 
-  def changeset(blob, attrs) do
-    blob
-    |> cast(attrs, [:blake3, :size, :mime, :owner_sub])
-    |> validate_required([:blake3, :size, :mime, :owner_sub])
-    |> validate_number(:size, greater_than_or_equal_to: 0)
+  def changeset(ref, attrs) do
+    ref
+    |> cast(attrs, [:owner_sub, :blake3])
+    |> validate_required([:owner_sub, :blake3])
     |> validate_length(:blake3, is: 64)
-    |> unique_constraint(:blake3, name: :blob_refs_pkey)
+    |> unique_constraint([:owner_sub, :blake3], name: :blob_refs_pkey)
   end
 end
