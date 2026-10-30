@@ -76,7 +76,7 @@
 
 | ID | 項目 | 根拠 | 備考 |
 |:---|:---|:---|:---|
-| P4-1 | 描画経路統合（wgpu + OpenXR） | -2 | vk_loop 肥大の根本 — **[x0050](../../roadmap/slices/x0050-xr-swapchain-wgpu.md)** → **[x0051](../../roadmap/slices/x0051-xr-scene-gpu-unify.md)** → **[x0052](../../roadmap/slices/x0052-xr-vk-loop-gpu-remove.md)**（planned） |
+| P4-1 | 描画経路統合（wgpu + OpenXR） | -2 | vk_loop 肥大の根本 — **[x0050](../../roadmap/slices/x0050-xr-swapchain-wgpu.md)** done → **[x0051](../../roadmap/slices/x0051-xr-scene-gpu-unify.md)** → **[x0052](../../roadmap/slices/x0052-xr-vk-loop-gpu-remove.md)**（planned） |
 | P4-2 | launcher discovery / deep link / handoff | 提案 | IPC stale 解消を含む |
 | P4-3 | verifier（Spot-Check） | 目標 | **P0-2/P0-3 が先行条件** |
 | P4-4 | Formula VM / Wake-on-Join / OSC / LOD / audio | 目標 | 減点しない |
