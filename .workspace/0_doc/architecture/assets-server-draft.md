@@ -179,4 +179,13 @@ flowchart TB
 - Stage 1 SQLite で Shop/Drive/Vcs を同じ TX に載せる範囲（最初は Vault + Blob のみか）
 - 脅威モデル目標列（PoP / Immutable Tag / Safe HTTP 等）のスライス分割順 — [assets-threat-model.md](assets-threat-model.md)
 
+
+## 実装順（planned）
+
+インベントリ到達（B+2→C+3）は正本コードではなく **roadmap 細 Slice** で進める:
+
+- 目次: [inventory-ladder.md](../roadmap/inventory-ladder.md)
+- Wave 0–4: `x0054` … `x0065`（Drive / Prefab / Vcs / Origin Cert 薄皮を保証単位で分割）
+- Prefab は最初から論理 Tree（opaque 1 blob に閉じない）。Vcs 昇格は B+2 往復（x0061）の後
+
 採用して正本化するときは、本ファイルを昇格するか [assets-server.md](assets-server.md) へ取り込み、保証表とコードを一致させる。セキュリティ完了条件は脅威モデルの **目標の防御** を写す。
