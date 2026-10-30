@@ -40,7 +40,7 @@
 | ESC（Desktop）/ Menu（OpenXR）ダッシュ・下タブ Home/Settings/Exit・Pinned Exit・Home アカウント殻（x0018）・Button hover・client 終了・host 終了は `ALCHEMY_HOST_PID`（Zenoh `host_control` は opt-in・x001e）。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 / XR 仮想キーボード / 認証付きリモート shutdown |
 | Home ログイン後: 新規ワールド作成パネル（仮 UI）でセッション名 + **アクセスレベル**（=`visibility`）→ Start で create/PUT + guest 入室（x0037）。owner 同一アカウント時のみ選択レベルが載る；非 owner は既存 ACL のまま入室し status で区別。`ROOM_ID` 固定。ログインは自動入室しない（CI サイレントは従来どおり入室） | UI アート最終化 / テンプレ本実装 / XR Start HTTP / 表示名の永続 |
 | visibility 正本は world DB。host `ROOM_VISIBILITY` は **初回 create 既定**；owner の client PUT が後勝ち。起動順は host 先（同一アカウント）を前提 | 異アカウントが先に create したときの host 昇格 |
-| OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD |
+| OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD；**実行中の XR↔Desktop ホットスイッチ**（候補 [x0053](../roadmap/slices/x0053-xr-desktop-hotswitch.md)） |
 | OpenXR: XR Vulkan を wgpu-hal で採用し SceneGpu dual-eye＋UI／レーザー／コントローラ overlay（x0052 既定）。ash は enable／interop のみ | multiview；CompositionLayerQuad；Bevy |
 
 ## チャネル分離（C-C + E + x0009）

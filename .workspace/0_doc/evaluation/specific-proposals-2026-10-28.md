@@ -43,6 +43,8 @@
 - **Grab 保持中 aim の距離クランプ** `0`（Opus）
 - **error placeholder（fixture fallback は debug 限定）・jitter buffer / 補間** `0`（GPT）
 - **launcher 安定 discovery endpoint（host restart 後 IPC 更新）** `0`（双方）
+- **XR ↔ Desktop ホットスイッチ（HMD presence / 明示トグル）** `0`
+  > Resonite 相当。起動固定ではなく同一セッションで切替。調査・保証たたきは [x0053](../../roadmap/slices/x0053-xr-desktop-hotswitch.md)。VRC には無い体感差。
 
 ---
 
