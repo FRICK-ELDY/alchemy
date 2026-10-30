@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0054`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0066`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -134,18 +134,36 @@ depends_on: [x0006]
 | x0051 | — | done | XR SceneGpu 一本化（P4-1 / 2/3・dual-eye） | [x0051-xr-scene-gpu-unify.md](slices/x0051-xr-scene-gpu-unify.md) |
 | x0052 | — | done | XR vk_loop GPU 削除（P4-1 / 3/3） | [x0052-xr-vk-loop-gpu-remove.md](slices/x0052-xr-vk-loop-gpu-remove.md) |
 | x0053 | — | planned | XR ↔ Desktop ホットスイッチ（presence / 明示トグル） | [x0053-xr-desktop-hotswitch.md](slices/x0053-xr-desktop-hotswitch.md) |
+| x0054 | — | planned | inventory PUT 常時 grant_required（Wave 0） | [x0054-inventory-grant-required-put.md](slices/x0054-inventory-grant-required-put.md) |
+| x0055 | — | planned | ItemRef blake3 草案（Wave 0） | [x0055-item-ref-blake3-draft.md](slices/x0055-item-ref-blake3-draft.md) |
+| x0056 | — | planned | shared-sim held Slot（Wave 1） | [x0056-shared-sim-held-slot.md](slices/x0056-shared-sim-held-slot.md) |
+| x0057 | — | planned | host Grab ↔ held Slot 同期（Wave 1） | [x0057-host-grab-held-slot.md](slices/x0057-host-grab-held-slot.md) |
+| x0058 | — | planned | StorageVault Personal 薄皮（Wave 1） | [x0058-vault-personal-peel.md](slices/x0058-vault-personal-peel.md) |
+| x0059 | — | planned | Slot グラフ一般化（Wave 2） | [x0059-slot-graph-general.md](slices/x0059-slot-graph-general.md) |
+| x005a | — | planned | 渡す・置く（Wave 2） | [x005a-slot-pass-place.md](slices/x005a-slot-pass-place.md) |
+| x005b | — | planned | Slot セッション undo/redo（Wave 2） | [x005b-slot-session-undo.md](slices/x005b-slot-session-undo.md) |
+| x005c | — | planned | DriveNode folder/blob（Wave 2） | [x005c-drive-node-folder-blob.md](slices/x005c-drive-node-folder-blob.md) |
+| x005d | — | planned | DriveNode kind=prefab（Wave 2） | [x005d-drive-node-prefab-kind.md](slices/x005d-drive-node-prefab-kind.md) |
+| x005e | — | planned | Prefab 論理 Tree スキーマ（Wave 3） | [x005e-prefab-payload-schema.md](slices/x005e-prefab-payload-schema.md) |
+| x005f | — | planned | インベントリ取り出し spawn（Wave 3） | [x005f-inventory-take-out.md](slices/x005f-inventory-take-out.md) |
+| x0060 | — | planned | インベントリ戻す Prefab 保存（Wave 3） | [x0060-inventory-put-back.md](slices/x0060-inventory-put-back.md) |
+| x0061 | — | planned | 退出→再入室→取り出し＝B+2（Wave 3） | [x0061-inventory-rejoin-roundtrip.md](slices/x0061-inventory-rejoin-roundtrip.md) |
+| x0062 | — | planned | Prefab→VcsRepo 昇格（Wave 4） | [x0062-prefab-promote-vcs.md](slices/x0062-prefab-promote-vcs.md) |
+| x0063 | — | planned | ItemRef repo@rev（Wave 4） | [x0063-item-ref-repo-rev.md](slices/x0063-item-ref-repo-rev.md) |
+| x0064 | — | planned | Vcs Branch/Tag 最小（Wave 4） | [x0064-vcs-branch-tag-minimal.md](slices/x0064-vcs-branch-tag-minimal.md) |
+| x0065 | — | planned | Origin Cert 薄皮＝C+3（Wave 4） | [x0065-origin-cert-thin.md](slices/x0065-origin-cert-thin.md) |
 
-**現在の次:** 並行候補: 案 B（GET 常時 Grant）/ launcher / verifier（保留）。P4-1 描画統合は **x0050–x0052 done**。体感候補: **[x0053](slices/x0053-xr-desktop-hotswitch.md)**（未着手・調査メモ済み）。  
+**現在の次:** インベントリ本線は **[inventory-ladder](inventory-ladder.md)**（B+2→C+3）。実装着手は **[x0054](slices/x0054-inventory-grant-required-put.md)**。体感並行: **[x0053](slices/x0053-xr-desktop-hotswitch.md)**（同一 PR 禁止）。案 B 本体・launcher・verifier は保留。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
-次の空き番号は **`x0054`**。
-
+次の空き番号は **`x0066`**。
 
 ## 関連
 
 | 文書 | 内容 |
 |:---|:---|
 | [ローカル CI](ci.md) | `make ci` など |
+| [inventory-ladder.md](inventory-ladder.md) | インベントリ B+2→C+3 交互ラダー |
 | [architecture/overview.md](../0_doc/architecture/overview.md) | 目標アーキテクチャ |
 | [README.md](../../README.md) | リポジトリ入口・起動手順 |
 
