@@ -1,9 +1,9 @@
 //! XR UI intent: menu toggle + controller ray vs head-locked dash quad / world boxes.
 //!
 //! system_ui stays device-agnostic; this module maps XR poses → canvas pixels.
-//! Laser beam model matrices are pure here (vk_loop only draws).
+//! Laser beam model matrices are pure here (session only draws).
 //! World OBB hits live in [`crate::world_hit`] (shared with Desktop Grab; x002b).
-//! Grab hold Intent (entity + world aim) is written in vk_loop (x0011).
+//! Grab hold Intent (entity + world aim) is written in wgpu_session (x0011).
 
 use glam::{Mat4, Quat, Vec3};
 

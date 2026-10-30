@@ -3,7 +3,7 @@
 //! Guarantees: same physical device; swapchain `VkImage` → `wgpu::Texture` without
 //! transferring ownership (XR owns images; `drop_callback` keeps wgpu from destroying);
 //! ash device/instance destroyed on [`Drop`] (incl. `?` failure after create).
-//! Non-guarantees: multiview; Bevy; ash deletion.
+//! Non-guarantees: multiview; Bevy; ash graphics pipelines (removed x0052).
 
 #![allow(clippy::missing_transmute_annotations)] // OpenXR vulkan_enable2 get_instance_proc_addr
 
@@ -104,16 +104,6 @@ impl Drop for FrameEndGuard<'_> {
             }
         }
     }
-}
-
-/// `ALCHEMY_XR_WGPU=1` enables wgpu SceneGpu XR session (x0051).
-pub fn xr_wgpu_enabled() -> bool {
-    xr_wgpu_flag_value(std::env::var("ALCHEMY_XR_WGPU").ok().as_deref())
-}
-
-/// Pure flag parse (unit-testable without mutating process env).
-pub fn xr_wgpu_flag_value(val: Option<&str>) -> bool {
-    matches!(val, Some("1"))
 }
 
 pub fn map_swapchain_format(vk_fmt: u32) -> Option<(vk::Format, wgpu::TextureFormat)> {
@@ -475,14 +465,6 @@ pub fn pick_swapchain_format(formats: &[u32]) -> Result<(u32, wgpu::TextureForma
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn xr_wgpu_flag_only_one() {
-        assert!(!xr_wgpu_flag_value(None));
-        assert!(!xr_wgpu_flag_value(Some("0")));
-        assert!(!xr_wgpu_flag_value(Some("true")));
-        assert!(xr_wgpu_flag_value(Some("1")));
-    }
 
     #[test]
     fn maps_common_swapchain_formats() {

@@ -110,9 +110,9 @@
   > 採用: **-2**
   > 対象ファイル: `client/app/src/main.rs`, `client/app/src/world_api.rs`
 
-- **描画経路二重化（vk_loop 肥大）** `-2`（Opus 継続）
-  > 採用: **-2**
-  > 対象ファイル: `client/app/src/surface/xr/vk_loop.rs`
+- **描画経路二重化（vk_loop 肥大）** `-2`（Opus 継続）→ **クローズ**（[x0052](../../roadmap/slices/x0052-xr-vk-loop-gpu-remove.md) / P4-1）
+  > 評価時点の採用は **-2**。実装後: ash graphics / `vk_loop.rs` 削除、XR は `wgpu_session` + SceneGpu 既定。
+  > 対象（当時）: `client/app/src/surface/xr/vk_loop.rs` → 現行: `wgpu_session.rs` / `wgpu_interop.rs`
 
 - **メトリクス / OTLP 不在** `-2`（双方）
   > 採用: **-2**
