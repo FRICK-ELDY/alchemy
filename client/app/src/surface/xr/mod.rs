@@ -4,22 +4,21 @@
 //! dash UI + aim laser in the same projection (x000e; tip in front of panel),
 //! laser UV → system_ui `on_pointer` hover/press (x000f; no XR types in system_ui),
 //! thumbstick Noclip Intent (aim-relative), comfort turn (snap/smooth),
-//! floor: ash = checker; `ALCHEMY_XR_WGPU=1` = SceneGpu solid floor (Desktop 相当),
+//! SceneGpu solid floor (Desktop 相当) + mesh/boxes (x0051/x0052),
 //! XR_EXT_render_model controllers when runtime supports them (SteamVR 2.12+),
 //! embedded baseColor textures when present in the GLB (x000c),
 //! animatable node pose/visibility (x000d).
 //! Grab hold: squeeze (or Select when dash closed) → InputEvent GRAB + aim (x0011).
-//! `ALCHEMY_XR_WGPU=1` → SceneGpu dual-eye + wgpu overlays (x0051); unset → ash vk_loop.
+//! XR 描画は wgpu SceneGpu + overlays 既定（x0052）。ash は Vulkan enable／hal interop のみ。
 //! Non-guarantees: WSL HMD, Quest standalone, Vive trackpad-only,
 //! Facet rearrange / WorldRoot, Steal, CompositionLayerQuad dash,
-//! PBR maps, SteamVR rendermodels path loading; ash deletion / flag remove (→ x0052).
+//! PBR maps, SteamVR rendermodels path loading; multiview; Bevy.
 
 mod input;
 mod loader;
 mod loco;
 mod math;
 mod render_model;
-mod vk_loop;
 mod wgpu_interop;
 mod wgpu_overlays;
 mod wgpu_session;
@@ -65,10 +64,6 @@ pub fn probe() -> Result<bool> {
 }
 
 pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session>) -> Result<()> {
-    if wgpu_interop::xr_wgpu_enabled() {
-        log::info!("surface/xr: ALCHEMY_XR_WGPU=1 → wgpu SceneGpu session (x0051)");
-        wgpu_session::run_session(mesh, shared, zenoh)
-    } else {
-        vk_loop::run_openxr(mesh, shared, zenoh)
-    }
+    log::info!("surface/xr: wgpu SceneGpu session (x0052)");
+    wgpu_session::run_session(mesh, shared, zenoh)
 }

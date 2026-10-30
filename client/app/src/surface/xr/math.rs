@@ -2,7 +2,7 @@
 //!
 //! Guarantees: FOV→matrix for **wgpu** NDC (Y-up, matches SceneGpu / `perspective_rh`);
 //! `openxr` types stay in `surface/xr` (not `scene`).
-//! Non-guarantees: ash `vk_loop` (Vulkan Y-down) shares a different local formula; multiview.
+//! Non-guarantees: raw Vulkan Y-down FOV formula (removed with ash graphics, x0052); multiview.
 
 use glam::{Mat4, Vec4};
 use openxr as xr;
@@ -20,8 +20,7 @@ pub fn view_from_pose(pose: xr::Posef) -> Mat4 {
 
 /// Projection from OpenXR FOV (near/far meters) for wgpu clip space.
 ///
-/// ash `vk_loop` uses `(tan_down − tan_up)` because raw Vulkan NDC Y grows downward.
-/// wgpu (and Desktop SceneGpu) use Y-up → `(tan_up − tan_down)` or the image is inverted.
+/// wgpu / SceneGpu NDC Y-up → `(tan_up − tan_down)` (Vulkan Y-down was the old ash path).
 pub fn projection_from_fov(fov: xr::Fovf, near: f32, far: f32) -> Mat4 {
     let tan_left = fov.angle_left.tan();
     let tan_right = fov.angle_right.tan();

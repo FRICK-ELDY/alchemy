@@ -5,7 +5,7 @@
 //! - Stick X → comfort turn (see `crate::turn`; L+R add, clamped)
 //!
 //! Comfort yaw: stage aim → world Intent via `R(-yaw)` so it matches the yawed floor.
-//! Non-guarantees: OpenXR action binding (see vk_loop), host speed override protocol.
+//! Non-guarantees: OpenXR action binding (see wgpu_session), host speed override protocol.
 
 use glam::{Quat, Vec3};
 

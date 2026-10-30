@@ -1,12 +1,11 @@
-//! OpenXR full session via wgpu: SceneGpu dual-eye + overlays (x0051 / `ALCHEMY_XR_WGPU=1`).
+//! OpenXR session via wgpu: SceneGpu dual-eye + overlays（x0051/x0052 既定経路）.
 //!
 //! Guarantees: acquire → SceneGpu×2 + overlays → release → project;
 //! drop 順: `render_models.clear` → aim/view/stage Spaces → swapchain/textures →
-//! frame_stream/wait → session → bridge（ash `vk_loop` と同契約; x0050 の bridge 順に加え
-//! EXT handle / Space を session より先に破棄）;
-//! `frame_stream.begin` 後は成功／失敗／panic とも `end` 必須; ash と同等の
+//! frame_stream/wait → session → bridge（EXT handle / Space を session より先に破棄）;
+//! `frame_stream.begin` 後は成功／失敗／panic とも `end` 必須;
 //! actions / Intent / Grab / Menu / UiAction.
-//! Non-guarantees: ash 削除; multiview; Bevy; CompositionLayerQuad.
+//! Non-guarantees: multiview; Bevy; CompositionLayerQuad.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -57,7 +56,7 @@ pub fn run_session(
     let running = Arc::new(AtomicBool::new(true));
     let _ = ctrlc_set(Arc::clone(&running));
 
-    // Safety: process-global OpenXR loader (same as ash path).
+    // Safety: process-global OpenXR loader (SteamVR discovery in loader.rs).
     let entry = unsafe { super::loader::load_entry() }.context("OpenXR Entry::load")?;
     let available = entry.enumerate_extensions()?;
     if !available.khr_vulkan_enable2 {
@@ -204,7 +203,7 @@ pub fn run_session(
     let mut ctrl_roots: Vec<(usize, Mat4)> = Vec::new();
 
     log::info!(
-        "ALCHEMY_XR_WGPU=1 session — SceneGpu dual-eye + overlays ({width}x{height}×{VIEW_COUNT}); Menu/Select/Grab as ash path"
+        "XR wgpu session — SceneGpu dual-eye + overlays ({width}x{height}×{VIEW_COUNT}); Menu/Select/Grab"
     );
 
     let mut event_storage = xr::EventDataBuffer::new();
@@ -289,7 +288,7 @@ pub fn run_session(
             controller_gpu_gen = render_models.generation;
         }
 
-        // Comfort turn + Intent (same as ash).
+        // Comfort turn + Intent before projection.
         {
             let left_stick = thumbstick_action.state(&session, hands[0])?.current_state;
             let right_stick = thumbstick_action.state(&session, hands[1])?.current_state;
@@ -736,8 +735,7 @@ pub fn run_session(
         select_was_down = select_down_for_ui;
     }
 
-    // OpenXR lifetime: destroy EXT handles + Spaces before session (ash vk_loop parity).
-    // Explicit success-path reorder was a porting bug — Spaces must not outlive session.
+    // OpenXR lifetime: destroy EXT handles + Spaces before session.
     controller_gpu.clear();
     render_models.clear(&xr_instance);
     drop(aim_left);

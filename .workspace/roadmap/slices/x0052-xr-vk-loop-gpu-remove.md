@@ -1,6 +1,6 @@
 # x0052 — XR `vk_loop` GPU 部削除（P4-1 / 3/3）
 
-> **ID:** `x0052` · **slug:** `xr-vk-loop-gpu-remove` · **status:** `planned` · **area:** `[client, docs]` · **depends_on:** `[x0051]`  
+> **ID:** `x0052` · **slug:** `xr-vk-loop-gpu-remove` · **status:** `done` · **area:** `[client, docs]` · **depends_on:** `[x0051]`  
 > **優先度:** **P4-1**（描画経路統合・第3スライス）
 
 目標: ash 手書きレンダを削除し、XR ループを「セッション＋入力＋swapchain acquire/release＋wgpu submit」の薄層にする。wgpu 経路を既定化し、評価上の描画二重化（`-2`）を閉じる。
@@ -18,25 +18,34 @@
 
 ## 設計（要点）
 
-1. `create_*_pipeline` / naga→SPIR-V multiview / `upload_gpu_*` 等の ash 描画ヘルパを削除
-2. [`vk_loop.rs`](../../../client/app/src/surface/xr/vk_loop.rs) をセッション・入力・present 中心に薄くする（リネームは任意）
-3. `ALCHEMY_XR_WGPU` 等の移行用フラグを撤去または no-op 化
-4. 文書: client.md 保証表、improvement-plan P4-1、本スライス status=done
+1. `vk_loop.rs`（ash create_*_pipeline / naga→SPIR-V multiview / upload_gpu_*）を削除
+2. [`wgpu_session.rs`](../../../client/app/src/surface/xr/wgpu_session.rs) を XR 既定経路に（`mod.rs` 直結）
+3. `ALCHEMY_XR_WGPU` フラグ撤去
+4. `naga` 依存削除（ash graphics 専用だった）
+5. 文書: client.md 保証表、improvement-plan P4-1、本スライス status=done
 
 ## Phase
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | Slice + 目次 | planned |
-| 1 | ash 描画コード削除・wgpu 既定化 | planned |
-| 2 | フラグ整理・モジュール整理 | planned |
-| 3 | docs / P4-1 クローズ + CI 緑 | planned |
+| 0 | Slice + 目次 | done |
+| 1 | ash 描画コード削除・wgpu 既定化 | done |
+| 2 | フラグ整理・モジュール整理 | done |
+| 3 | docs / P4-1 クローズ + `cargo test -p client` / clippy 緑 | done |
+
+## 検証根拠（CI vs HMD）
+
+| ゲート | 保証すること | 保証しないこと |
+|:---|:---|:---|
+| `cargo clippy -p client -- -D warnings` / `cargo test -p client` | 単一経路がコンパイルされ、`surface/xr` 単体テストが通る | HMD 実機の見た目 |
+| `.scripts/smoke-openxr.sh`（`ALCHEMY_FORCE_DESKTOP=1`） | CI/WSL で HMD なしに client をビルド・テストできる | XR present／stereo 実行 |
+| 運用者 HMD 目視 | SceneGpu floor/mesh/boxes + dash/laser/controllers | CI 自動化 |
 
 ## 完了条件
 
 1. XR が SceneGpu 系のみで描画（ash graphics pipeline なし）
-2. Desktop / XR 回帰なし、`cargo test -p client` / CI 緑
-3. 評価「描画二重化 -2」を閉じる根拠が文書とコードで揃う
+2. Desktop 回帰なし、`cargo test -p client` / clippy 緑（HMD 実行は運用者正本）
+3. 評価「描画二重化 -2」を閉じる根拠が文書とコードで揃う（[specific-weaknesses](../../0_doc/evaluation/specific-weaknesses-2026-10-28.md) もクローズ注記）
 
 ## やらない
 

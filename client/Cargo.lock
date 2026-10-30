@@ -547,7 +547,6 @@ dependencies = [
  "jsonwebtoken",
  "libc",
  "log",
- "naga",
  "openxr",
  "pkcs1",
  "pkcs8",
