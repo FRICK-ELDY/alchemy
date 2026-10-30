@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0053`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0054`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -133,11 +133,12 @@ depends_on: [x0006]
 | x0050 | — | done | XR swapchain → wgpu（P4-1 / 1/3・clear-only） | [x0050-xr-swapchain-wgpu.md](slices/x0050-xr-swapchain-wgpu.md) |
 | x0051 | — | done | XR SceneGpu 一本化（P4-1 / 2/3・dual-eye） | [x0051-xr-scene-gpu-unify.md](slices/x0051-xr-scene-gpu-unify.md) |
 | x0052 | — | done | XR vk_loop GPU 削除（P4-1 / 3/3） | [x0052-xr-vk-loop-gpu-remove.md](slices/x0052-xr-vk-loop-gpu-remove.md) |
+| x0053 | — | planned | XR ↔ Desktop ホットスイッチ（presence / 明示トグル） | [x0053-xr-desktop-hotswitch.md](slices/x0053-xr-desktop-hotswitch.md) |
 
-**現在の次:** 並行候補: 案 B（GET 常時 Grant）/ launcher / verifier（保留）。P4-1 描画統合は **x0050–x0052 done**。  
+**現在の次:** 並行候補: 案 B（GET 常時 Grant）/ launcher / verifier（保留）。P4-1 描画統合は **x0050–x0052 done**。体感候補: **[x0053](slices/x0053-xr-desktop-hotswitch.md)**（未着手・調査メモ済み）。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
-次の空き番号は **`x0053`**。
+次の空き番号は **`x0054`**。
 
 
 ## 関連

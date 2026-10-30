@@ -81,6 +81,7 @@
 | P4-3 | verifier（Spot-Check） | 目標 | **P0-2/P0-3 が先行条件** |
 | P4-4 | Formula VM / Wake-on-Join / OSC / LOD / audio | 目標 | 減点しない |
 | P4-5 | billing / market / BlobGrant 経済圏 | 目標 | **台帳 MVP（案 A）= [x004f](../../roadmap/slices/x004f-blob-grant-mvp.md)**。GET 常時 Grant（案 B）・Vault / market は後続 |
+| P4-6 | XR ↔ Desktop ホットスイッチ | 提案 | Resonite 風 presence／明示トグル。[**x0053**](../../roadmap/slices/x0053-xr-desktop-hotswitch.md) planned（調査メモ済み・実装未） |
 
 ---
 
