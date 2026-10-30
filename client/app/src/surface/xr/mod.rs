@@ -8,15 +8,18 @@
 //! embedded baseColor textures when present in the GLB (x000c),
 //! animatable node pose/visibility (x000d).
 //! Grab hold: squeeze (or Select when dash closed) → InputEvent GRAB + aim (x0011).
+//! `ALCHEMY_XR_WGPU=1` → clear-only wgpu swapchain path (x0050); unset → ash vk_loop.
 //! Non-guarantees: WSL HMD, Quest standalone, Vive trackpad-only, Coin mesh in XR,
 //! Facet rearrange / WorldRoot, Steal, CompositionLayerQuad dash,
-//! PBR maps, SteamVR rendermodels path loading.
+//! PBR maps, SteamVR rendermodels path loading; wgpu path mesh/UI (→ x0051).
 
 mod input;
 mod loader;
 mod loco;
 mod render_model;
 mod vk_loop;
+mod wgpu_clear;
+mod wgpu_interop;
 
 use anyhow::{bail, Context, Result};
 
@@ -59,5 +62,10 @@ pub fn probe() -> Result<bool> {
 }
 
 pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session>) -> Result<()> {
-    vk_loop::run_openxr(mesh, shared, zenoh)
+    if wgpu_interop::xr_wgpu_enabled() {
+        log::info!("surface/xr: ALCHEMY_XR_WGPU=1 → wgpu clear-only (x0050)");
+        wgpu_clear::run_clear_only(mesh, shared, zenoh)
+    } else {
+        vk_loop::run_openxr(mesh, shared, zenoh)
+    }
 }
