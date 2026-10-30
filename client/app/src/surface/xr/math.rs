@@ -1,8 +1,8 @@
 //! Stereo view / projection helpers for XR wgpu (x0051).
 //!
-//! Guarantees: same FOV→matrix convention as ash `vk_loop` (Vulkan NDC Y-down);
+//! Guarantees: FOV→matrix for **wgpu** NDC (Y-up, matches SceneGpu / `perspective_rh`);
 //! `openxr` types stay in `surface/xr` (not `scene`).
-//! Non-guarantees: multiview; ash deletion.
+//! Non-guarantees: ash `vk_loop` (Vulkan Y-down) shares a different local formula; multiview.
 
 use glam::{Mat4, Vec4};
 use openxr as xr;
@@ -18,15 +18,18 @@ pub fn view_from_pose(pose: xr::Posef) -> Mat4 {
     Mat4::from_rotation_translation(ori, pos).inverse()
 }
 
-/// Projection from OpenXR FOV (near/far meters). Matches ash `projection_from_fov`.
+/// Projection from OpenXR FOV (near/far meters) for wgpu clip space.
+///
+/// ash `vk_loop` uses `(tan_down − tan_up)` because raw Vulkan NDC Y grows downward.
+/// wgpu (and Desktop SceneGpu) use Y-up → `(tan_up − tan_down)` or the image is inverted.
 pub fn projection_from_fov(fov: xr::Fovf, near: f32, far: f32) -> Mat4 {
     let tan_left = fov.angle_left.tan();
     let tan_right = fov.angle_right.tan();
     let tan_up = fov.angle_up.tan();
     let tan_down = fov.angle_down.tan();
     let tan_width = tan_right - tan_left;
-    // Vulkan NDC Y grows downward; OpenXR view Y grows upward → use (down − up).
-    let tan_height = tan_down - tan_up;
+    // wgpu NDC Y grows upward (OpenXR view Y also up) → (up − down).
+    let tan_height = tan_up - tan_down;
     Mat4::from_cols(
         Vec4::new(2.0 / tan_width, 0.0, 0.0, 0.0),
         Vec4::new(0.0, 2.0 / tan_height, 0.0, 0.0),
@@ -49,20 +52,33 @@ pub fn projection_from_fov_default(fov: xr::Fovf) -> Mat4 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn symmetric_fov_no_div_by_zero() {
-        let fov = xr::Fovf {
+    fn symmetric_fov() -> xr::Fovf {
+        xr::Fovf {
             angle_left: -1.0,
             angle_right: 1.0,
             angle_up: 1.0,
             angle_down: -1.0,
-        };
-        let p = projection_from_fov(fov, 0.05, 100.0);
+        }
+    }
+
+    #[test]
+    fn symmetric_fov_no_div_by_zero() {
+        let p = projection_from_fov(symmetric_fov(), 0.05, 100.0);
         let cols = p.to_cols_array();
         assert!(cols.iter().all(|v| v.is_finite()));
-        // Scale terms non-zero.
         assert!(cols[0].abs() > 0.1);
         assert!(cols[5].abs() > 0.1);
+    }
+
+    #[test]
+    fn symmetric_fov_y_scale_positive_for_wgpu() {
+        // Column-major m[1][1] = cols[5]. ash Vulkan formula yields negative; wgpu needs +.
+        let p = projection_from_fov(symmetric_fov(), 0.05, 100.0);
+        let y_scale = p.to_cols_array()[5];
+        assert!(
+            y_scale > 0.0,
+            "wgpu Y-up expects positive Y scale, got {y_scale}"
+        );
     }
 
     #[test]
