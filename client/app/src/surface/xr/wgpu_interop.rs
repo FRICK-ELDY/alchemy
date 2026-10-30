@@ -3,7 +3,7 @@
 //! Guarantees: same physical device; swapchain `VkImage` → `wgpu::Texture` without
 //! transferring ownership (XR owns images; `drop_callback` keeps wgpu from destroying);
 //! ash device/instance destroyed on [`Drop`] (incl. `?` failure after create).
-//! Non-guarantees: mesh/UI draw; multiview; Bevy.
+//! Non-guarantees: multiview; Bevy; ash deletion.
 
 #![allow(clippy::missing_transmute_annotations)] // OpenXR vulkan_enable2 get_instance_proc_addr
 
@@ -11,18 +11,102 @@ use anyhow::{bail, Context, Result};
 use ash::vk::{self, Handle};
 use openxr as xr;
 
-/// Distinctive clear so HMD proves the wgpu path (vs ash teal ~0.05/0.12/0.16).
-pub const WGPU_CLEAR_COLOR: wgpu::Color = wgpu::Color {
-    r: 0.55,
-    g: 0.08,
-    b: 0.42,
-    a: 1.0,
-};
-
 pub const VIEW_COUNT: u32 = 2;
 const VK_TARGET_VERSION: u32 = vk::make_api_version(0, 1, 1, 0);
 
-/// `ALCHEMY_XR_WGPU=1` enables clear-only wgpu swapchain path.
+/// After acquire: success path uses [`Self::release`]; [`Drop`] retries if still armed
+/// (panic/unwind, or fallible `release` that failed before disarm).
+pub struct SwapchainReleaseGuard<'a> {
+    swapchain: &'a mut xr::Swapchain<xr::Vulkan>,
+    armed: bool,
+}
+
+impl<'a> SwapchainReleaseGuard<'a> {
+    pub fn arm(swapchain: &'a mut xr::Swapchain<xr::Vulkan>) -> Self {
+        Self {
+            swapchain,
+            armed: true,
+        }
+    }
+
+    pub fn wait_image(&mut self, timeout: xr::Duration) -> Result<()> {
+        self.swapchain
+            .wait_image(timeout)
+            .map_err(|e| anyhow::anyhow!("wait_image: {e}"))
+    }
+
+    /// Fallible release for the normal path. Disarm only after success so a failed
+    /// `release_image` still leaves [`Drop`] armed to retry before empty `frame end`.
+    pub fn release(mut self) -> Result<()> {
+        self.swapchain
+            .release_image()
+            .context("swapchain release_image")?;
+        self.armed = false;
+        Ok(())
+    }
+}
+
+impl Drop for SwapchainReleaseGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Err(err) = self.swapchain.release_image() {
+                log::warn!("swapchain release_image on panic/unwind: {err}");
+            }
+        }
+    }
+}
+
+/// After `frame_stream.begin`: success uses `end_*`; [`Drop`] empty-ends on panic/`?` skip.
+pub struct FrameEndGuard<'s> {
+    stream: &'s mut xr::FrameStream<xr::Vulkan>,
+    display_time: xr::Time,
+    blend: xr::EnvironmentBlendMode,
+    ended: bool,
+}
+
+impl<'s> FrameEndGuard<'s> {
+    pub fn new(
+        stream: &'s mut xr::FrameStream<xr::Vulkan>,
+        display_time: xr::Time,
+        blend: xr::EnvironmentBlendMode,
+    ) -> Self {
+        Self {
+            stream,
+            display_time,
+            blend,
+            ended: false,
+        }
+    }
+
+    pub fn end_empty(mut self) -> Result<()> {
+        self.ended = true;
+        self.stream
+            .end(self.display_time, self.blend, &[])
+            .context("frame_stream.end (empty)")
+    }
+
+    pub fn end_projection(
+        mut self,
+        proj: &xr::CompositionLayerProjection<'_, xr::Vulkan>,
+    ) -> Result<()> {
+        self.ended = true;
+        self.stream
+            .end(self.display_time, self.blend, &[proj])
+            .context("frame_stream.end (projection)")
+    }
+}
+
+impl Drop for FrameEndGuard<'_> {
+    fn drop(&mut self) {
+        if !self.ended {
+            if let Err(err) = self.stream.end(self.display_time, self.blend, &[]) {
+                log::warn!("frame_stream.end (empty) on panic/unwind: {err}");
+            }
+        }
+    }
+}
+
+/// `ALCHEMY_XR_WGPU=1` enables wgpu SceneGpu XR session (x0051).
 pub fn xr_wgpu_enabled() -> bool {
     xr_wgpu_flag_value(std::env::var("ALCHEMY_XR_WGPU").ok().as_deref())
 }

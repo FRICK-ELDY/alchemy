@@ -15,7 +15,7 @@
 **運用・品質（x0046–x004d）:** adversarial E2E、launcher CI、asset placeholder + HTTP timeout、**localhost `/metrics`**、ClientIp 共有、**cargo-fuzz**、**Presence 容量 = Manifest entries**。  
 **LAN / HTTPS / WAN:** zenohd + `ZENOH_CONNECT`；Tunnel（[`edge/cloudflared/`](edge/cloudflared/)）；WAN は **TLS**（x0022 · [手順書](.workspace/0_doc/manual/zenoh-wan-conoha.md)）。  
 **Assets:** CAS local / **R2**（GET は署名 URL 302）。**Hermetic E2E（x001f）:** `docker-compose.e2e.yml`。  
-次の空き ID = **`x0053`**。P4-1 描画統合は **[x0050](.workspace/roadmap/slices/x0050-xr-swapchain-wgpu.md)** done → x0051。BlobGrant 案 B は後続。[roadmap](.workspace/roadmap/README.md)。
+次の空き ID = **`x0053`**。P4-1 描画統合は **[x0050](.workspace/roadmap/slices/x0050-xr-swapchain-wgpu.md)**/**[x0051](.workspace/roadmap/slices/x0051-xr-scene-gpu-unify.md)** done → **[x0052](.workspace/roadmap/slices/x0052-xr-vk-loop-gpu-remove.md)**。BlobGrant 案 B は後続。[roadmap](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|
@@ -148,7 +148,7 @@ make ci-e2e                             # x001f hermetic: compose 縦 login→to
 #   拠点 host + 外 client（x001a URL）で同じ ROOM_ID。smoke: bash .scripts/smoke-zenoh-wan.sh
 # ESC ダッシュ / Home タブ / XR Grab / Noclip。Desktop 強制: ALCHEMY_FORCE_DESKTOP=1
 # OpenXR ローダー明示: ALCHEMY_OPENXR_LOADER=...
-# XR wgpu clear-only (x0050): ALCHEMY_XR_WGPU=1（FORCE_DESKTOP なし・SteamVR）
+# XR wgpu SceneGpu (x0051): ALCHEMY_XR_WGPU=1（FORCE_DESKTOP なし・SteamVR）
 ```
 
 環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID`（既定 `local`） / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（サイレント login） / `ZENOH_CONNECT` / `ZENOH_TLS_ROOT_CA`（WAN 私有 CA） / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_PID` / `ALCHEMY_FORCE_DESKTOP` / `ALCHEMY_XR_WGPU` / `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。Desktop 正本例: [`client/env.desktop.example`](client/env.desktop.example)。

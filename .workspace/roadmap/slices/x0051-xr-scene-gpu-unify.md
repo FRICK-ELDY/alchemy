@@ -1,6 +1,6 @@
 # x0051 — XR メッシュ描画を SceneGpu に一本化（P4-1 / 2/3）
 
-> **ID:** `x0051` · **slug:** `xr-scene-gpu-unify` · **status:** `planned` · **area:** `[client, docs]` · **depends_on:** `[x0050]`  
+> **ID:** `x0051` · **slug:** `xr-scene-gpu-unify` · **status:** `done` · **area:** `[client, docs]` · **depends_on:** `[x0050]`  
 > **優先度:** **P4-1**（描画経路統合・第2スライス）
 
 目標: XR のワールド描画を Desktop と同じ **wgpu `SceneGpu`** 経路に寄せる。stereo は **眼ごと 2 pass**（左右の `view`/`proj`）。ash 手書きレンダはフラグ切替で残してよい（削除は x0052）。
@@ -28,10 +28,10 @@
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | Slice + 目次 | planned |
-| 1 | SceneGpu dual-eye（floor / mesh / boxes） | planned |
-| 2 | UI canvas / laser / controller を wgpu へ | planned |
-| 3 | Desktop 回帰確認 + client.md | planned |
+| 0 | Slice + 目次 | done |
+| 1 | SceneGpu dual-eye（floor / mesh / boxes） | done |
+| 2 | UI canvas / laser / controller を wgpu へ | done |
+| 3 | Desktop 回帰確認 + client.md | done |
 
 ## 完了条件
 
