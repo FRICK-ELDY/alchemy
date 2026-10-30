@@ -127,6 +127,11 @@ impl ControllerModel {
 
         (&self.worlds, &self.visible)
     }
+
+    /// Last [`Self::compose_node_worlds`] scratch (immutable; for stereo dual-eye reuse).
+    pub fn composed_node_worlds(&self) -> (&[Mat4], &[bool]) {
+        (&self.worlds, &self.visible)
+    }
 }
 
 fn local_and_visibility(node: &RigNode, states: &[sys::RenderModelNodeStateEXT]) -> (Mat4, bool) {
