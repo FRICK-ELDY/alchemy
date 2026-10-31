@@ -1,8 +1,8 @@
-//! system_ui — personal DashRoot + retained Canvas (x000f + x0018 Home + x0037 create).
+//! system_ui — personal DashRoot + retained Canvas (x000f + x0018 Home + x0037 create + x0066 Connect).
 //!
 //! Guarantees: ESC/Menu toggle (via surface), hit-tested chrome, Exit Pinned Facet,
-//! Home tab account / create-world form (Desktop text input), Button hover/press color,
-//! client exit / auth / start-session action plumbing, Settings defaults (read-only).
+//! Home / Connect form strings (Desktop text input), Button hover/press color,
+//! client exit / auth / start-session / Connect Apply action plumbing, Settings defaults (read-only).
 //! Dash is personal — never published on Room `frame`.
 //! Non-guarantees: OpenXR types inside this module, user Facet rearrange, Vault layout
 //! persist, WorldRoot, XR virtual keyboard, auth/world HTTP (surface modules), final UI art.
@@ -15,7 +15,8 @@ mod icons;
 mod layout;
 
 pub use dash::{
-    access_level_from_widget, DashState, DashTab, HomeField, HomeMode, SESSION_NAME_MAX,
+    access_level_from_widget, ConnectField, ConnectMode, DashState, DashTab, HomeField, HomeMode,
+    SESSION_NAME_MAX,
 };
 pub use gpu::UiGpu;
 pub use layout::{LayoutTree, WidgetId};
@@ -173,6 +174,91 @@ impl SystemUi {
                 self.rebuild();
                 UiAction::None
             }
+            WidgetId::TabConnect => {
+                self.state.tab = DashTab::Connect;
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::ConnectModeSimple => {
+                self.state.set_connect_simple_mode();
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::ConnectModeDetail => {
+                self.state.set_connect_detail_mode();
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::ConnectFieldDomain => {
+                self.state.connect_focus = Some(ConnectField::Domain);
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::ConnectFieldAuth => {
+                self.state.connect_focus = Some(ConnectField::Auth);
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::ConnectFieldAssets => {
+                self.state.connect_focus = Some(ConnectField::Assets);
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::ConnectFieldWorld => {
+                self.state.connect_focus = Some(ConnectField::World);
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::ConnectRelay0
+            | WidgetId::ConnectRelay1
+            | WidgetId::ConnectRelay2
+            | WidgetId::ConnectRelay3 => {
+                let row = match hit {
+                    WidgetId::ConnectRelay0 => 0,
+                    WidgetId::ConnectRelay1 => 1,
+                    WidgetId::ConnectRelay2 => 2,
+                    WidgetId::ConnectRelay3 => 3,
+                    _ => 0,
+                };
+                if let Some(abs) = self.state.connect_relay_abs(row) {
+                    self.state.connect_focus = Some(ConnectField::Relay(abs));
+                }
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::ConnectSelectRelay0
+            | WidgetId::ConnectSelectRelay1
+            | WidgetId::ConnectSelectRelay2
+            | WidgetId::ConnectSelectRelay3 => {
+                let row = match hit {
+                    WidgetId::ConnectSelectRelay0 => 0,
+                    WidgetId::ConnectSelectRelay1 => 1,
+                    WidgetId::ConnectSelectRelay2 => 2,
+                    WidgetId::ConnectSelectRelay3 => 3,
+                    _ => 0,
+                };
+                if let Some(abs) = self.state.connect_relay_abs(row) {
+                    self.state.select_connect_relay(abs);
+                }
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::ConnectRelayScrollUp => {
+                self.state.scroll_relays_up();
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::ConnectRelayScrollDown => {
+                self.state.scroll_relays_down();
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::ConnectAddRelay => {
+                self.state.add_connect_relay();
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::ConnectApply => UiAction::ConnectApply,
             WidgetId::ExitClientOnly => UiAction::ExitClientOnly,
             WidgetId::ExitClientAndHost => UiAction::ExitClientAndHost,
             WidgetId::TurnModeToggle => {
@@ -296,45 +382,77 @@ impl SystemUi {
         }
     }
 
-    /// Desktop text into focused Home field (ignored when dash closed / not Home).
+    /// Desktop text into focused Home / Connect field.
     pub fn on_text_input(&mut self, text: &str) {
-        if !self.state.open || self.state.tab != DashTab::Home {
+        if !self.state.open {
             return;
         }
-        // Logged-in hub: no editable fields. Create panel: session name only.
-        if self.state.home_logged_in_as.is_some() && !self.state.home_create_open {
-            return;
+        match self.state.tab {
+            DashTab::Home => {
+                // Logged-in hub: no editable fields. Create panel: session name only.
+                if self.state.home_logged_in_as.is_some() && !self.state.home_create_open {
+                    return;
+                }
+                if self.state.home_logged_in_as.is_some()
+                    && self.state.home_create_open
+                    && self.state.home_focus != Some(HomeField::SessionName)
+                {
+                    return;
+                }
+                self.state.append_home_text(text);
+                self.rebuild();
+            }
+            DashTab::Connect => {
+                self.state.append_connect_text(text);
+                self.rebuild();
+            }
+            _ => {}
         }
-        if self.state.home_logged_in_as.is_some()
-            && self.state.home_create_open
-            && self.state.home_focus != Some(HomeField::SessionName)
-        {
-            return;
-        }
-        self.state.append_home_text(text);
-        self.rebuild();
     }
 
     pub fn on_home_backspace(&mut self) {
-        if !self.state.open || self.state.tab != DashTab::Home {
+        if !self.state.open {
             return;
         }
-        self.state.home_backspace();
-        self.rebuild();
+        match self.state.tab {
+            DashTab::Home => {
+                self.state.home_backspace();
+                self.rebuild();
+            }
+            DashTab::Connect => {
+                self.state.connect_backspace();
+                self.rebuild();
+            }
+            _ => {}
+        }
     }
 
     pub fn on_home_tab_key(&mut self) {
-        if !self.state.open || self.state.tab != DashTab::Home {
+        if !self.state.open {
             return;
         }
-        // Hub: cycle is a no-op (see DashState::cycle_home_focus).
-        self.state.cycle_home_focus();
-        self.rebuild();
+        match self.state.tab {
+            DashTab::Home => {
+                self.state.cycle_home_focus();
+                self.rebuild();
+            }
+            DashTab::Connect => {
+                self.state.cycle_connect_focus();
+                self.rebuild();
+            }
+            _ => {}
+        }
     }
 
-    /// Enter on Home: login/register when signed out; Start session on create panel.
+    /// Enter on Home: login/register / Start; on Connect: Apply.
     pub fn on_home_enter(&mut self) -> UiAction {
-        if !self.state.open || self.state.tab != DashTab::Home {
+        if !self.state.open {
+            return UiAction::None;
+        }
+        if self.state.tab == DashTab::Connect {
+            return UiAction::ConnectApply;
+        }
+        if self.state.tab != DashTab::Home {
             return UiAction::None;
         }
         if self.state.home_logged_in_as.is_some() {
@@ -428,6 +546,8 @@ pub enum UiAction {
     StartSession,
     /// Hub: guest join current `ROOM_ID` without create (x0037).
     JoinRoom,
+    /// Connect tab: persist + apply home-node endpoints (x0066).
+    ConnectApply,
 }
 
 fn chrono_lite_now() -> String {

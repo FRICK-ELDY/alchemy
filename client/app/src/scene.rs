@@ -198,9 +198,17 @@ pub struct SharedState {
     /// World JWKS verifiers for Manifest path (needed for late Home→Join bus start).
     pub manifest_seal: Arc<crate::manifest_seal::ManifestSealVerifier>,
     pub host_attest: Arc<crate::host_attestation::HostAttestationVerifier>,
-    pub auth_url: Arc<str>,
-    pub world_url: Arc<str>,
-    pub assets_url: Arc<str>,
+    /// Shared JWKS cache (retarget on Connect Apply · x0066).
+    pub world_jwks: Arc<crate::world_jwks::WorldJwks>,
+    /// Home-node endpoints (Mutex so Connect Apply can update while unjoined · x0066).
+    /// Runtime paths read these — not process env — so Apply never races `set_var`.
+    pub auth_url: Mutex<Arc<str>>,
+    pub world_url: Mutex<Arc<str>>,
+    /// Updated on Connect Apply for subsequent HTTP; boot mesh is not remounted (x0066).
+    pub assets_url: Mutex<Arc<str>>,
+    pub zenoh_connect: Mutex<Arc<str>>,
+    /// Empty / None → skip Relay allocate (LAN tcp).
+    pub relay_allocate_url: Mutex<Option<Arc<str>>>,
     /// Auth + Room Token gate (x0018). Intent publishes only when `room_token` is set.
     pub auth: Mutex<AuthGate>,
     /// Ed25519 Intent session while joined (x0023).
@@ -237,6 +245,41 @@ pub struct SharedState {
 }
 
 impl SharedState {
+    pub fn auth_url_snap(&self) -> Arc<str> {
+        self.auth_url
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn world_url_snap(&self) -> Arc<str> {
+        self.world_url
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn assets_url_snap(&self) -> Arc<str> {
+        self.assets_url
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn zenoh_connect_snap(&self) -> Arc<str> {
+        self.zenoh_connect
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn relay_allocate_snap(&self) -> Option<Arc<str>> {
+        self.relay_allocate_url
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     /// Sticky Home status: if an asset failure is recorded, overwrite `home_status` and
     /// return `true` (caller should keep Home tab open). Skips while status looks busy
     /// (`…` / `...`) so "Signing in…" is not clobbered mid-flight.
@@ -396,7 +439,7 @@ impl SharedState {
         };
 
         match crate::world_token::fetch_guest_token(
-            &self.world_url,
+            &self.world_url_snap(),
             &self.room_id,
             &access,
             &session_pub_b64,

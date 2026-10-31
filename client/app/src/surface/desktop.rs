@@ -32,7 +32,7 @@ use crate::scene::{
     create_depth_view, create_wgpu_for_window, CameraLook, EntityPose, MoveIntent, SceneGpu,
     SharedState,
 };
-use crate::system_ui::{DashTab, SystemUi, UiAction};
+use crate::system_ui::{ConnectMode, DashTab, SystemUi, UiAction};
 use crate::world_api;
 use crate::world_hit::{desktop_look_ray, pick_grabbable_desktop};
 use crate::{bind_room_after_join, join_room_with_access, leave_room};
@@ -738,7 +738,8 @@ impl ApplicationHandler for App {
                         }
                         log::info!("system_ui open={}", self.ui.state.open);
                     }
-                    if pressed && self.ui.state.open && self.ui.state.tab == DashTab::Home {
+                    let typing_tab = matches!(self.ui.state.tab, DashTab::Home | DashTab::Connect);
+                    if pressed && self.ui.state.open && typing_tab {
                         match code {
                             KeyCode::Backspace => {
                                 self.ui.on_home_backspace();
@@ -763,7 +764,9 @@ impl ApplicationHandler for App {
                 }
                 if pressed {
                     if let Some(text) = event.text.as_ref() {
-                        if self.ui.state.open && self.ui.state.tab == DashTab::Home {
+                        if self.ui.state.open
+                            && matches!(self.ui.state.tab, DashTab::Home | DashTab::Connect)
+                        {
                             // Skip control-ish single chars already handled as keys.
                             if text != "\u{8}" && text != "\t" && text != "\r" && text != "\n" {
                                 self.ui.on_text_input(text);
@@ -952,7 +955,7 @@ fn handle_ui_action(
             let identifier = ui.state.home_identifier.clone();
             let password = ui.state.home_password.clone();
             let remember = ui.state.home_remember_me;
-            let auth_url = shared.auth_url.clone();
+            let auth_url = shared.auth_url_snap();
             let shared_job = Arc::clone(shared);
             ui.state.home_status = "Signing in…".into();
             ui.rebuild();
@@ -984,7 +987,7 @@ fn handle_ui_action(
             let password = ui.state.home_password.clone();
             let birthday = ui.state.home_birthday.clone();
             let remember = ui.state.home_remember_me;
-            let auth_url = shared.auth_url.clone();
+            let auth_url = shared.auth_url_snap();
             let shared_job = Arc::clone(shared);
             ui.state.home_status = "Creating account…".into();
             ui.rebuild();
@@ -1025,7 +1028,7 @@ fn handle_ui_action(
             ui.rebuild();
             log::info!("auth logout — Leave + local session cleared");
             if let Some(access) = access {
-                let auth_url = shared.auth_url.clone();
+                let auth_url = shared.auth_url_snap();
                 spawn_auth_http(move || {
                     let _ = auth::logout(&auth_url, &access, refresh.as_deref());
                 });
@@ -1051,7 +1054,7 @@ fn handle_ui_action(
             *auth_job = Some(rx);
             spawn_auth_http(move || {
                 let visibility = world_api::ensure_room_visibility(
-                    &shared_job.world_url,
+                    &shared_job.world_url_snap(),
                     &shared_job.room_id,
                     &access,
                     level,
@@ -1089,6 +1092,46 @@ fn handle_ui_action(
                 let _ = tx.send(AuthJobOutcome::JoinRoom { result });
             });
         }
+        UiAction::ConnectApply => {
+            if matches!(ui.state.connect_mode, ConnectMode::Simple)
+                && ui.state.connect_domain.trim().is_empty()
+            {
+                ui.state.connect_status = "Enter a domain (example.tld) before Apply".into();
+                ui.rebuild();
+                return;
+            }
+            let mut profile = ui.state.connect_draft_profile();
+            let world_changed = !ui.state.connect_last_world.is_empty()
+                && profile.world_url != ui.state.connect_last_world;
+            if world_changed && matches!(ui.state.connect_mode, ConnectMode::Detail) {
+                // Keep relay candidates; re-derive allocate hints from zenoh strings only.
+                for a in &mut profile.relay_allocate_urls {
+                    a.clear();
+                }
+                profile.sync_empty_allocate_hints();
+            }
+            match crate::apply_connect_profile(shared, zenoh, &profile) {
+                Ok(auth_changed) => {
+                    ui.state.load_connect_profile(&profile);
+                    ui.state.connect_last_world = profile.world_url.clone();
+                    if auth_changed {
+                        ui.state.home_logged_in_as = None;
+                        ui.state.home_create_open = false;
+                        ui.state.home_status = "Auth URL changed — sign in again on Home".into();
+                    }
+                    ui.state.connect_status = if world_changed {
+                        "Applied (world changed: relay candidates kept, allocate re-derived) — restart host if already running".into()
+                    } else {
+                        "Applied — restart host (Exit client+host) if it was already running".into()
+                    };
+                }
+                Err(err) => {
+                    ui.state.connect_status = format!("Apply failed: {err:#}");
+                    log::warn!("Connect Apply failed: {err:#}");
+                }
+            }
+            ui.rebuild();
+        }
         UiAction::None => {}
     }
 }
@@ -1098,6 +1141,9 @@ pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut ui = SystemUi::new();
     ui.state.home_room_id = shared.room_id.to_string();
+    if let Ok(profile) = alchemy_connect_config::resolve() {
+        ui.state.load_connect_profile(&profile);
+    }
     let (joined, authenticated, username) = shared
         .auth
         .lock()

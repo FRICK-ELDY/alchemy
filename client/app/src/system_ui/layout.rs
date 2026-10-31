@@ -16,6 +16,7 @@ pub enum WidgetId {
     SyncBadge,
     CloseSession,
     TabHome,
+    TabConnect,
     TabExit,
     TabSettings,
     ExitClientOnly,
@@ -49,6 +50,26 @@ pub enum WidgetId {
     HomeAccessFollowersPlus,
     HomeAccessPublic,
     HomeStartSession,
+    /// Connect / home-node endpoints (x0066).
+    ConnectModeSimple,
+    ConnectModeDetail,
+    ConnectFieldDomain,
+    ConnectFieldAuth,
+    ConnectFieldAssets,
+    ConnectFieldWorld,
+    /// Visible relay viewport rows (absolute index = scroll + row · x0066).
+    ConnectRelay0,
+    ConnectRelay1,
+    ConnectRelay2,
+    ConnectRelay3,
+    ConnectSelectRelay0,
+    ConnectSelectRelay1,
+    ConnectSelectRelay2,
+    ConnectSelectRelay3,
+    ConnectRelayScrollUp,
+    ConnectRelayScrollDown,
+    ConnectAddRelay,
+    ConnectApply,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -727,6 +727,11 @@ pub fn run_session(
                                 "Start/Join session HTTP is Desktop-only this Slice (use silent login or Desktop)".into();
                             ui.rebuild();
                         }
+                        UiAction::ConnectApply => {
+                            ui.state.connect_status =
+                                "Connect Apply is Desktop-only this Slice".into();
+                            ui.rebuild();
+                        }
                         UiAction::None => {}
                     }
                 }

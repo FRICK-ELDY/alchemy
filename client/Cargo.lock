@@ -58,6 +58,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "alchemy-connect-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "alchemy-protocol"
 version = "0.1.0"
 dependencies = [
@@ -534,6 +543,7 @@ dependencies = [
 name = "client"
 version = "0.1.0"
 dependencies = [
+ "alchemy-connect-config",
  "alchemy-protocol",
  "alchemy-shared-sim",
  "anyhow",
@@ -1622,6 +1632,7 @@ dependencies = [
 name = "host-server"
 version = "0.1.0"
 dependencies = [
+ "alchemy-connect-config",
  "alchemy-protocol",
  "alchemy-shared-sim",
  "anyhow",

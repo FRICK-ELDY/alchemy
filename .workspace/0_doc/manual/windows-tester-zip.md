@@ -67,6 +67,6 @@ git push origin "refs/tags/$TAG"
 
 1. Releases の最新 Pre-release から ZIP を取得して展開
 2. VC++ x64 再頒布が無い環境では起動に失敗しうる（README-testers.txt 参照）
-3. `env.testers.example.cmd` → `env.local.cmd` に URL / `ZENOH_CONNECT` を設定（着信ポート開放は不要）
-4. `Start.cmd` を実行（失敗時は pause）
-5. `env.local.cmd` に `AUTH_USER` / `AUTH_PASSWORD` **必須**（無いと Start が失敗）。mesh は Manifest → assets GET（[x003c](../../roadmap/slices/x003c-assets-required-mesh.md)）
+3. `Start.cmd` を実行（失敗時は pause）
+4. 既定はテスター拠点（`auth/assets/world.frick-eldy.com` + Zenoh `160.251.251.30`）。必要なら Dash **Connect** で変更。URL 用の `env.local.cmd` は不要（[x0066](../../roadmap/slices/x0066-dash-connect-endpoints.md)）
+5. Home で login → create / join。mesh は Manifest → assets GET（[x003c](../../roadmap/slices/x003c-assets-required-mesh.md)）。`ensure-demo-coin` は資格情報があるときだけ任意実行

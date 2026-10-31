@@ -735,6 +735,11 @@ fn spawn_liveliness_watcher(
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    // Same connect.json as client; process env still wins (x0066).
+    if let Err(err) = alchemy_connect_config::apply_file_defaults_to_env() {
+        log::warn!("connect.json defaults: {err:#}");
+    }
+
     let world_url = std::env::var("WORLD_URL").unwrap_or_else(|_| DEFAULT_WORLD_URL.to_string());
     let room_id_raw = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
     let room_id = validate_room_id(&room_id_raw)

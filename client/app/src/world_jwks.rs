@@ -46,7 +46,7 @@ struct KeyCache {
 
 /// Cached world JWKS shared by HostAttestation and ManifestSeal verifiers.
 pub struct WorldJwks {
-    jwks_url: String,
+    jwks_url: RwLock<String>,
     cache: RwLock<KeyCache>,
     refresh_tx: Mutex<Option<SyncSender<()>>>,
     bg_started: AtomicBool,
@@ -58,7 +58,7 @@ impl WorldJwks {
     pub fn new(world_url: &str) -> Self {
         let base = world_url.trim_end_matches('/');
         Self {
-            jwks_url: format!("{base}/.well-known/jwks.json"),
+            jwks_url: RwLock::new(format!("{base}/.well-known/jwks.json")),
             cache: RwLock::new(KeyCache {
                 keys: HashMap::new(),
                 fetched_at: Instant::now() - Duration::from_secs(3600),
@@ -69,6 +69,18 @@ impl WorldJwks {
             bg_started: AtomicBool::new(false),
             metrics: Mutex::new(None),
         }
+    }
+
+    /// Point at a new world base URL and invalidate cache (x0066 Connect Apply, unjoined).
+    pub fn retarget_world(&self, world_url: &str) {
+        let base = world_url.trim_end_matches('/');
+        let url = format!("{base}/.well-known/jwks.json");
+        *self.jwks_url.write().expect("jwks_url lock") = url;
+        let mut cache = self.cache.write().expect("jwks cache lock");
+        cache.keys.clear();
+        cache.fetched_at = Instant::now() - Duration::from_secs(3600);
+        cache.last_unknown_kid_kick = None;
+        cache.last_hard_stale_kick = None;
     }
 
     /// Attach client metrics registry (x0049). Call once before verify traffic.
@@ -123,9 +135,10 @@ impl WorldJwks {
 
     /// Fetch JWKS over HTTP (startup / background only — not from `decode_claims`).
     pub fn refresh(&self) -> Result<()> {
+        let url = self.jwks_url.read().expect("jwks_url lock").clone();
         let agent = ureq::AgentBuilder::new().timeout(JWKS_HTTP_TIMEOUT).build();
         let jwks: Jwks = agent
-            .get(&self.jwks_url)
+            .get(&url)
             .call()
             .context("fetch world JWKS")?
             .into_json()

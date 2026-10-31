@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 alchemy-protocol = { path = "../protocol" }
+alchemy-connect-config = { path = "../client/connect-config" }
 anyhow = "1"
 ctrlc = "3"
 env_logger = "0.11"

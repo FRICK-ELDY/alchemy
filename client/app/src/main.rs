@@ -80,10 +80,6 @@ use world_jwks::WorldJwks;
 use zenoh::bytes::ZBytes;
 use zenoh::Wait;
 
-const DEFAULT_ZENOH_CONNECT: &str = "tcp/127.0.0.1:7447";
-const DEFAULT_WORLD_URL: &str = "http://127.0.0.1:4003";
-const DEFAULT_AUTH_URL: &str = "http://127.0.0.1:4002";
-const DEFAULT_ASSETS_URL: &str = "http://127.0.0.1:4004";
 const DEFAULT_ROOM_ID: &str = "local";
 /// Match net frame rate so Grab hold aim stays smooth enough (x0011).
 const INPUT_HZ: u64 = 30;
@@ -126,8 +122,194 @@ fn gate_presence_pin(protocol_pin: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn zenoh_connect_endpoint() -> String {
-    std::env::var("ZENOH_CONNECT").unwrap_or_else(|_| DEFAULT_ZENOH_CONNECT.to_string())
+/// Persist + apply home-node endpoints while unjoined (x0066).
+///
+/// Order: validate → probe JWKS → reopen Zenoh → commit SharedState → `save_file` →
+/// optional session clear. Probe / SharedState / persist failures roll JWKS / Zenoh /
+/// SharedState back to the pre-Apply snapshot (best effort). Session clear runs only
+/// after durable persist so a failed Apply never clears login. Does **not** call
+/// `apply_to_env`.
+///
+/// Returns whether the auth base changed (UI must logout). When true, session tokens
+/// are cleared after persist (poisoned auth lock → `into_inner`, still clear).
+pub fn apply_connect_profile(
+    shared: &SharedState,
+    zenoh: &mut Option<zenoh::Session>,
+    profile: &alchemy_connect_config::ConnectProfile,
+) -> Result<bool> {
+    // Fail-closed: do not Apply against a poisoned AuthGate (may be mid-panic residue).
+    let joined = shared
+        .auth
+        .lock()
+        .map_err(|_| anyhow::anyhow!("auth lock poisoned; refusing Connect Apply"))?
+        .is_joined();
+    if joined {
+        anyhow::bail!("leave the room before applying Connect endpoints");
+    }
+
+    let mut profile = profile.clone();
+    profile.sanitize();
+    profile.sync_empty_allocate_hints();
+    alchemy_connect_config::validate_for_apply(&profile)?;
+
+    let prev = ConnectEndpointSnap {
+        auth: shared.auth_url_snap(),
+        world: shared.world_url_snap(),
+        assets: shared.assets_url_snap(),
+        zenoh: shared.zenoh_connect_snap(),
+        allocate: shared.relay_allocate_snap(),
+    };
+    let auth_changed = profile.auth_url.as_str() != prev.auth.as_ref();
+
+    // --- Probes (rollback JWKS / Zenoh on failure; SharedState untouched) ---
+    shared.world_jwks.retarget_world(&profile.world_url);
+    if let Err(err) = shared.world_jwks.refresh() {
+        restore_jwks(shared, prev.world.as_ref());
+        return Err(err).context("refresh world JWKS after Connect Apply");
+    }
+
+    close_zenoh(zenoh);
+    match open_zenoh(profile.selected_zenoh()) {
+        Ok(session) => *zenoh = Some(session),
+        Err(err) => {
+            restore_jwks(shared, prev.world.as_ref());
+            restore_zenoh(zenoh, prev.zenoh.as_ref());
+            return Err(err).context("reopen zenoh after Connect Apply");
+        }
+    }
+    shared.mtls_reopen_pending.store(false, Ordering::SeqCst);
+
+    // --- Commit SharedState (all locks held before any write) ---
+    if let Err(err) = commit_endpoint_slots(shared, &profile) {
+        restore_jwks(shared, prev.world.as_ref());
+        restore_zenoh(zenoh, prev.zenoh.as_ref());
+        return Err(err);
+    }
+
+    // --- Persist; on failure roll SharedState + probes back (session untouched) ---
+    let path = alchemy_connect_config::default_config_path();
+    if let Err(err) = alchemy_connect_config::save_file(&path, &profile) {
+        if let Err(restore_err) = commit_endpoint_snap(shared, &prev) {
+            log::warn!(
+                "Connect Apply SharedState rollback failed after persist error: {restore_err:#}"
+            );
+            restore_jwks(shared, prev.world.as_ref());
+            restore_zenoh(zenoh, prev.zenoh.as_ref());
+            return Err(err).context(format!(
+                "persist connect.json after Connect Apply; SharedState rollback also failed: {restore_err:#}"
+            ));
+        }
+        restore_jwks(shared, prev.world.as_ref());
+        restore_zenoh(zenoh, prev.zenoh.as_ref());
+        return Err(err).context("persist connect.json after Connect Apply");
+    }
+
+    // After durable commit only: always clear tokens when auth base moved (poison → into_inner).
+    if auth_changed {
+        shared
+            .auth
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear_session();
+    }
+
+    log::info!(
+        "Connect applied auth={} assets={} world={} zenoh={} allocate={:?} path={} auth_changed={auth_changed}",
+        profile.auth_url,
+        shared.assets_url_snap(),
+        profile.world_url,
+        profile.selected_zenoh(),
+        profile.selected_allocate_url(),
+        path.display()
+    );
+    Ok(auth_changed)
+}
+
+struct ConnectEndpointSnap {
+    auth: Arc<str>,
+    world: Arc<str>,
+    assets: Arc<str>,
+    zenoh: Arc<str>,
+    allocate: Option<Arc<str>>,
+}
+
+fn restore_jwks(shared: &SharedState, world_url: &str) {
+    shared.world_jwks.retarget_world(world_url);
+    if let Err(err) = shared.world_jwks.refresh() {
+        log::warn!("Connect Apply JWKS restore failed: {err:#}");
+    }
+}
+
+fn restore_zenoh(zenoh: &mut Option<zenoh::Session>, endpoint: &str) {
+    close_zenoh(zenoh);
+    match open_zenoh(endpoint) {
+        Ok(session) => *zenoh = Some(session),
+        Err(err) => {
+            log::warn!("Connect Apply zenoh restore failed: {err:#}");
+            *zenoh = None;
+        }
+    }
+}
+
+fn commit_endpoint_slots(
+    shared: &SharedState,
+    profile: &alchemy_connect_config::ConnectProfile,
+) -> Result<()> {
+    let mut auth = shared
+        .auth_url
+        .lock()
+        .map_err(|_| anyhow::anyhow!("auth_url lock poisoned"))?;
+    let mut world = shared
+        .world_url
+        .lock()
+        .map_err(|_| anyhow::anyhow!("world_url lock poisoned"))?;
+    let mut assets = shared
+        .assets_url
+        .lock()
+        .map_err(|_| anyhow::anyhow!("assets_url lock poisoned"))?;
+    let mut zenoh_ep = shared
+        .zenoh_connect
+        .lock()
+        .map_err(|_| anyhow::anyhow!("zenoh_connect lock poisoned"))?;
+    let mut allocate = shared
+        .relay_allocate_url
+        .lock()
+        .map_err(|_| anyhow::anyhow!("relay_allocate_url lock poisoned"))?;
+    *auth = Arc::<str>::from(profile.auth_url.as_str());
+    *world = Arc::<str>::from(profile.world_url.as_str());
+    *assets = Arc::<str>::from(profile.assets_url.as_str());
+    *zenoh_ep = Arc::<str>::from(profile.selected_zenoh());
+    *allocate = profile.selected_allocate_url().map(Arc::<str>::from);
+    Ok(())
+}
+
+fn commit_endpoint_snap(shared: &SharedState, snap: &ConnectEndpointSnap) -> Result<()> {
+    let mut auth = shared
+        .auth_url
+        .lock()
+        .map_err(|_| anyhow::anyhow!("auth_url lock poisoned"))?;
+    let mut world = shared
+        .world_url
+        .lock()
+        .map_err(|_| anyhow::anyhow!("world_url lock poisoned"))?;
+    let mut assets = shared
+        .assets_url
+        .lock()
+        .map_err(|_| anyhow::anyhow!("assets_url lock poisoned"))?;
+    let mut zenoh_ep = shared
+        .zenoh_connect
+        .lock()
+        .map_err(|_| anyhow::anyhow!("zenoh_connect lock poisoned"))?;
+    let mut allocate = shared
+        .relay_allocate_url
+        .lock()
+        .map_err(|_| anyhow::anyhow!("relay_allocate_url lock poisoned"))?;
+    *auth = Arc::clone(&snap.auth);
+    *world = Arc::clone(&snap.world);
+    *assets = Arc::clone(&snap.assets);
+    *zenoh_ep = Arc::clone(&snap.zenoh);
+    *allocate = snap.allocate.clone();
+    Ok(())
 }
 
 /// Explicit close so bus threads stop even when another strong `Session` clone still exists.
@@ -142,8 +324,20 @@ fn close_zenoh(zenoh: &mut Option<zenoh::Session>) {
     }
 }
 
-fn open_zenoh() -> Result<zenoh::Session> {
-    zenoh_connect::open_client(&zenoh_connect_endpoint())
+fn open_zenoh(endpoint: &str) -> Result<zenoh::Session> {
+    zenoh_connect::open_client(endpoint)
+}
+
+fn allocate_for_shared(
+    shared: &SharedState,
+    allocation_token: &str,
+) -> Result<Option<zenoh_connect::AllocatedIdentity>> {
+    match shared.relay_allocate_snap() {
+        Some(url) if !url.is_empty() => {
+            zenoh_connect::allocate(url.as_ref(), allocation_token).map(Some)
+        }
+        _ => Ok(None),
+    }
 }
 
 fn assets_http_agent() -> ureq::Agent {
@@ -1153,7 +1347,7 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     let session = intent_session::IntentSession::new();
     let session_pub_b64 = session.session_pub_b64();
     let guest = world_token::fetch_guest_token(
-        &shared.world_url,
+        &shared.world_url_snap(),
         &shared.room_id,
         access_token,
         &session_pub_b64,
@@ -1166,7 +1360,7 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     }
     // mTLS material for the *next* `open_zenoh` / one-shot `bind_room_after_join` reopen (x004e).
     if !guest.allocation_token.is_empty() {
-        if let Some(id) = zenoh_connect::allocate_if_configured(&guest.allocation_token)
+        if let Some(id) = allocate_for_shared(shared, &guest.allocation_token)
             .context("relay allocate (guest)")?
         {
             std::env::set_var("ZENOH_TLS_CONNECT_CERT", id.cert_path.display().to_string());
@@ -1271,7 +1465,9 @@ pub fn bind_room_after_join(
     if mtls_pending || zenoh.is_none() {
         // Match Leave / orphan path: always close before replace (not only Drop-on-overwrite).
         close_zenoh(zenoh);
-        match open_zenoh().context("zenoh open/reopen after join") {
+        match open_zenoh(shared.zenoh_connect_snap().as_ref())
+            .context("zenoh open/reopen after join")
+        {
             Ok(session) => {
                 *zenoh = Some(session);
                 shared.room_bus_started.store(false, Ordering::SeqCst);
@@ -1299,7 +1495,10 @@ pub fn bind_room_after_join(
         log::warn!("room bus spawn failed ({err:#}); closing session to clear orphans");
         close_zenoh(zenoh);
         shared.room_bus_started.store(false, Ordering::SeqCst);
-        *zenoh = Some(open_zenoh().context("zenoh reopen after bus spawn failure")?);
+        *zenoh = Some(
+            open_zenoh(shared.zenoh_connect_snap().as_ref())
+                .context("zenoh reopen after bus spawn failure")?,
+        );
         let retry = {
             let session = zenoh
                 .as_ref()
@@ -1373,7 +1572,7 @@ fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                         .ok()
                         .and_then(|g| g.refresh_token.clone());
                     match refresh_token {
-                        Some(rt) => match auth::refresh(&shared.auth_url, &rt) {
+                        Some(rt) => match auth::refresh(&shared.auth_url_snap(), &rt) {
                             Ok(session) => {
                                 if let Ok(mut gate) = shared.auth.lock() {
                                     gate.apply_auth_session(session);
@@ -1460,7 +1659,7 @@ fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                     // Guest refresh updates Room Token only — no re-allocate / session reopen.
                     // mTLS NotAfter ≈ 1d (openssl); mid-flight cert refresh is host-side / non-goal.
                     match world_token::fetch_guest_token(
-                        &shared.world_url,
+                        &shared.world_url_snap(),
                         &shared.room_id,
                         &access,
                         &session_pub_b64,
@@ -1624,9 +1823,16 @@ pub fn leave_room(shared: &SharedState, zenoh: &mut Option<zenoh::Session>) {
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let world_url = std::env::var("WORLD_URL").unwrap_or_else(|_| DEFAULT_WORLD_URL.to_string());
-    let auth_url = std::env::var("AUTH_URL").unwrap_or_else(|_| DEFAULT_AUTH_URL.to_string());
-    let assets_url = std::env::var("ASSETS_URL").unwrap_or_else(|_| DEFAULT_ASSETS_URL.to_string());
+    // File fills gaps; process env (CI / Start.cmd) still wins (x0066).
+    if let Err(err) = alchemy_connect_config::apply_file_defaults_to_env() {
+        log::warn!("connect.json defaults: {err:#}");
+    }
+    let endpoints = alchemy_connect_config::resolve().context("resolve Connect endpoints")?;
+    alchemy_connect_config::apply_to_env(&endpoints);
+    let auth_url = endpoints.auth_url.clone();
+    let world_url = endpoints.world_url.clone();
+    let assets_url = endpoints.assets_url.clone();
+
     let room_id_raw = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
     let room_id = validate_room_id(&room_id_raw)
         .map_err(|e| anyhow::anyhow!("invalid ROOM_ID={room_id_raw:?}: {e}"))?
@@ -1661,9 +1867,12 @@ fn main() -> Result<()> {
         mtls_reopen_pending: AtomicBool::new(false),
         manifest_seal: Arc::clone(&seal),
         host_attest: Arc::clone(&attest),
-        auth_url: Arc::<str>::from(auth_url),
-        world_url: Arc::<str>::from(world_url),
-        assets_url: Arc::<str>::from(assets_url.clone()),
+        world_jwks: Arc::clone(&jwks),
+        auth_url: Mutex::new(Arc::<str>::from(auth_url)),
+        world_url: Mutex::new(Arc::<str>::from(world_url)),
+        assets_url: Mutex::new(Arc::<str>::from(assets_url.clone())),
+        zenoh_connect: Mutex::new(Arc::<str>::from(endpoints.selected_zenoh())),
+        relay_allocate_url: Mutex::new(endpoints.selected_allocate_url().map(Arc::<str>::from)),
         auth: Mutex::new(gate),
         intent_session: Mutex::new(None),
         pending_intent_session: Mutex::new(None),
@@ -1710,7 +1919,8 @@ fn main() -> Result<()> {
     spawn_token_refresh(Arc::clone(&shared))?;
 
     // Allocate (if any) already set ZENOH_TLS_* during join — open picks them up.
-    let session = Some(open_zenoh().context("open zenoh session")?);
+    let session =
+        Some(open_zenoh(shared.zenoh_connect_snap().as_ref()).context("open zenoh session")?);
     // Boot open consumed the cert; do not leave a stale one-shot for a later bind.
     shared.mtls_reopen_pending.store(false, Ordering::SeqCst);
     let joined_with_cap = wire_cap.is_some()

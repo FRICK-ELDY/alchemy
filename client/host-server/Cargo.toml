@@ -31,6 +31,7 @@ prost = { workspace = true }
 rapier3d = { workspace = true }
 zenoh = { workspace = true }
 zenoh-connect = { workspace = true }
+alchemy-connect-config = { workspace = true }
 jsonwebtoken = "9"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
