@@ -68,5 +68,5 @@ git push origin "refs/tags/$TAG"
 1. Releases の最新 Pre-release から ZIP を取得して展開
 2. VC++ x64 再頒布が無い環境では起動に失敗しうる（README-testers.txt 参照）
 3. `Start.cmd` を実行（失敗時は pause）
-4. Dash **Connect** タブで拠点端点を設定（簡易 `example.tld` または詳細）。URL 用の `env.local.cmd` は不要（[x0066](../../roadmap/slices/x0066-dash-connect-endpoints.md)）
+4. 既定はテスター拠点（`auth/assets/world.frick-eldy.com` + Zenoh `160.251.251.30`）。必要なら Dash **Connect** で変更。URL 用の `env.local.cmd` は不要（[x0066](../../roadmap/slices/x0066-dash-connect-endpoints.md)）
 5. Home で login → create / join。mesh は Manifest → assets GET（[x003c](../../roadmap/slices/x003c-assets-required-mesh.md)）。`ensure-demo-coin` は資格情報があるときだけ任意実行

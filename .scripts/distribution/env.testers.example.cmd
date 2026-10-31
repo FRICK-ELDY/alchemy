@@ -3,7 +3,9 @@ rem Optional operator overrides. Testers normally do NOT need this file (x0066).
 rem Prefer in-app Dash → Connect (simple domain or detail endpoints).
 rem Copy to env.local.cmd only for CI-style silent login / seed, or to force URLs.
 
-rem rem --- Optional URL overrides (win over connect.json) ---
+rem rem --- Optional URL overrides (win over connect.json / tester defaults) ---
+rem rem Tester defaults are frick-eldy.com + tls/160.251.251.30:7447 (x0066).
+rem rem Local stack example:
 rem set "AUTH_URL=http://127.0.0.1:4002"
 rem set "WORLD_URL=http://127.0.0.1:4003"
 rem set "ASSETS_URL=http://127.0.0.1:4004"

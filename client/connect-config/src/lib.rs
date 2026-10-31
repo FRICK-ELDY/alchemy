@@ -11,10 +11,14 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const DEFAULT_AUTH_URL: &str = "http://127.0.0.1:4002";
-pub const DEFAULT_ASSETS_URL: &str = "http://127.0.0.1:4004";
-pub const DEFAULT_WORLD_URL: &str = "http://127.0.0.1:4003";
-pub const DEFAULT_ZENOH_CONNECT: &str = "tcp/127.0.0.1:7447";
+/// Tester home-node defaults (x0066). Local/CI override via env or Connect UI.
+pub const DEFAULT_SIMPLE_DOMAIN: &str = "frick-eldy.com";
+pub const DEFAULT_AUTH_URL: &str = "https://auth.frick-eldy.com";
+pub const DEFAULT_ASSETS_URL: &str = "https://assets.frick-eldy.com";
+pub const DEFAULT_WORLD_URL: &str = "https://world.frick-eldy.com";
+/// Zenoh IP 直書き（`relay.frick-eldy.com` のホスト名証明書が整うまで）。
+pub const DEFAULT_ZENOH_CONNECT: &str = "tls/160.251.251.30:7447";
+pub const DEFAULT_RELAY_ALLOCATE_URL: &str = "https://160.251.251.30:7450";
 pub const PROFILE_VERSION: u32 = 1;
 
 const ENV_AUTH: &str = "AUTH_URL";
@@ -49,15 +53,16 @@ fn profile_version_default() -> u32 {
 
 impl Default for ConnectProfile {
     fn default() -> Self {
+        // HTTP = auth/assets/world.<domain>; Zenoh/allocate = IP 直書き（ホスト名証は後回し）。
         Self {
             version: PROFILE_VERSION,
-            simple_domain: None,
+            simple_domain: Some(DEFAULT_SIMPLE_DOMAIN.to_string()),
             auth_url: DEFAULT_AUTH_URL.to_string(),
             assets_url: DEFAULT_ASSETS_URL.to_string(),
             world_url: DEFAULT_WORLD_URL.to_string(),
             relays: vec![DEFAULT_ZENOH_CONNECT.to_string()],
             selected_relay: 0,
-            relay_allocate_urls: vec![String::new()],
+            relay_allocate_urls: vec![DEFAULT_RELAY_ALLOCATE_URL.to_string()],
         }
     }
 }
@@ -153,6 +158,8 @@ pub fn allocate_hint_from_zenoh(zenoh: &str) -> String {
 }
 
 /// Expand `example.tld` → https auth/assets/world + tls relay (+ allocate https :7450).
+///
+/// Tester home [`DEFAULT_SIMPLE_DOMAIN`] keeps Zenoh/allocate as IP 直書き (no hostname cert yet).
 pub fn expand_simple_domain(domain: &str) -> ConnectProfile {
     let d = domain
         .trim()
@@ -160,6 +167,9 @@ pub fn expand_simple_domain(domain: &str) -> ConnectProfile {
         .trim_start_matches("http://");
     let d = d.trim_end_matches('/');
     let d = d.trim();
+    if d.eq_ignore_ascii_case(DEFAULT_SIMPLE_DOMAIN) {
+        return ConnectProfile::default();
+    }
     ConnectProfile {
         version: PROFILE_VERSION,
         simple_domain: Some(d.to_string()),
@@ -306,9 +316,8 @@ pub fn apply_file_defaults_to_env() -> Result<()> {
 }
 
 pub fn apply_file_defaults_to_env_at(path: &Path) -> Result<()> {
-    let Some(file) = load_file(path)? else {
-        return Ok(());
-    };
+    // No file → compile-time tester defaults (env still wins via set_if_unset).
+    let file = load_file(path)?.unwrap_or_default();
     set_if_unset(ENV_AUTH, &file.auth_url);
     set_if_unset(ENV_ASSETS, &file.assets_url);
     set_if_unset(ENV_WORLD, &file.world_url);
@@ -381,6 +390,22 @@ mod tests {
             vec!["https://relay.example.tld:7450"]
         );
         assert!(p.matches_simple_expand("example.tld"));
+    }
+
+    #[test]
+    fn tester_compile_defaults_use_ip_relay() {
+        let p = ConnectProfile::default();
+        assert_eq!(p.auth_url, DEFAULT_AUTH_URL);
+        assert_eq!(p.assets_url, DEFAULT_ASSETS_URL);
+        assert_eq!(p.world_url, DEFAULT_WORLD_URL);
+        assert_eq!(p.relays, vec![DEFAULT_ZENOH_CONNECT]);
+        assert_eq!(p.relay_allocate_urls, vec![DEFAULT_RELAY_ALLOCATE_URL]);
+        assert_eq!(p.simple_domain.as_deref(), Some(DEFAULT_SIMPLE_DOMAIN));
+        assert!(p.matches_simple_expand(DEFAULT_SIMPLE_DOMAIN));
+        assert_eq!(expand_simple_domain(DEFAULT_SIMPLE_DOMAIN), p);
+        assert!(DEFAULT_ZENOH_CONNECT.contains("160.251.251.30"));
+        assert!(!DEFAULT_ZENOH_CONNECT.contains("relay.frick-eldy.com"));
+        assert!(validate_for_apply(&p).is_ok());
     }
 
     #[test]

@@ -151,17 +151,19 @@ impl Default for DashState {
             home_access_level: AccessLevel::Public,
             home_room_id: "local".into(),
             home_session_actions_enabled: true,
+            // Simple: HTTP = *.frick-eldy.com / Zenoh = IP 直書き（ホスト名証明書は後回し）。
             connect_mode: ConnectMode::Simple,
             connect_focus: Some(ConnectField::Domain),
-            connect_domain: String::new(),
+            connect_domain: alchemy_connect_config::DEFAULT_SIMPLE_DOMAIN.into(),
             connect_auth: alchemy_connect_config::DEFAULT_AUTH_URL.into(),
             connect_assets: alchemy_connect_config::DEFAULT_ASSETS_URL.into(),
             connect_world: alchemy_connect_config::DEFAULT_WORLD_URL.into(),
             connect_relays: vec![alchemy_connect_config::DEFAULT_ZENOH_CONNECT.into()],
-            connect_allocate: vec![String::new()],
+            connect_allocate: vec![alchemy_connect_config::DEFAULT_RELAY_ALLOCATE_URL.into()],
             connect_selected: 0,
             connect_relay_scroll: 0,
-            connect_status: "Home node — Apply before login".into(),
+            connect_status: "Tester home — Zenoh is IP (tls/160.251.251.30) until hostname cert"
+                .into(),
             connect_last_world: alchemy_connect_config::DEFAULT_WORLD_URL.into(),
         }
     }

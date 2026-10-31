@@ -84,7 +84,7 @@
 - 詳細: [`client/fixtures/README.md`](../../../client/fixtures/README.md)
 - Icons: [`client/app/assets/icons/README.md`](../../../client/app/assets/icons/README.md)
 
-端点（x0066）: 優先順位は **env > `%LOCALAPPDATA%/alchemy/connect.json`（または `ALCHEMY_CONNECT_CONFIG`）> localhost 既定**。Dash **Connect** タブ（簡易ドメイン / 詳細 Auth·Assets·World·world 配下 relay）で永続。未入室 Apply のみ（probe 成功後に SharedState + ファイル確定、失敗時ロールバック）。world 変更時は relay 候補を残し allocate のみ再導出。`assets_url` は Apply で更新するが起動メッシュ remount はしない。host / launcher も同じファイルを読む。  
+端点（x0066）: 優先順位は **env > `%LOCALAPPDATA%/alchemy/connect.json`（または `ALCHEMY_CONNECT_CONFIG`）> テスター既定（`https://{auth,assets,world}.frick-eldy.com` + Zenoh **IP 直書き** `tls/160.251.251.30:7447`；`relay.frick-eldy.com` ホスト名証は後回し）**。Dash **Connect** タブ（簡易ドメイン / 詳細 Auth·Assets·World·world 配下 relay）で永続。未入室 Apply のみ（probe 成功後に SharedState + ファイル確定、失敗時ロールバック）。world 変更時は relay 候補を残し allocate のみ再導出。`assets_url` は Apply で更新するが起動メッシュ remount はしない。host / launcher も同じファイル／既定を読む。  
 環境変数: `AUTH_URL` / `ASSETS_URL` / `WORLD_URL` / `ZENOH_CONNECT` / 任意 `RELAY_ALLOCATE_URL`（CI override）、任意 `ROOM_ID`（既定 `local`・x0017）、任意 `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（サイレント login・x0018。**release では seed 既定なし**・x001e）、任意 `ALCHEMY_BLOB_BLAKE3`、任意 `ALCHEMY_HOST_PID`、任意 `ALCHEMY_HOST_CONTROL=1`、任意 `ALCHEMY_FORCE_DESKTOP=1`、任意 `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。  
 未設定時は Desktop で Home タブが開き、login/register 後に入室する。
 

@@ -21,12 +21,15 @@ What is NOT included
 
 Endpoints (x0066)
 -----------------
-  Prefer Dash → Connect tab after Start:
-    Simple: example.tld  → auth/assets/world/relay.<domain>
-    Detail: Auth · Assets · World · Relays (+ under World)
-  Apply while not joined. Host already running? Exit client+host, then Start again
-  so host-server reloads the same connect.json.
-  Optional: env.local.cmd still overrides for CI / operators.
+  Compile-time tester defaults (no connect.json yet):
+    https://auth.frick-eldy.com
+    https://assets.frick-eldy.com
+    https://world.frick-eldy.com
+    tls/160.251.251.30:7447  (+ allocate https://160.251.251.30:7450)
+    (Zenoh is IP hardcoded until relay.frick-eldy.com has a server cert; DNS name is optional)
+  Prefer Dash → Connect after Start (Simple domain or Detail). Apply while not joined.
+  Host already running? Exit client+host, then Start again so host reloads connect.json.
+  Optional: env.local.cmd still overrides for CI / operators / localhost.
 
 Assets mesh
 -----------

@@ -104,7 +104,7 @@ Connect タブで **拠点**端点を UI 入力しローカルに永続すれば
 |:---|:---|:---|
 | 1 | プロセス環境変数（既存名） | CI / hermetic e2e / 開発者 override |
 | 2 | ローカル設定ファイル（例: `%LOCALAPPDATA%/alchemy/connect.json` 相当。秘密を書かない） | テスター・日常 UI |
-| 3 | コンパイル時既定（`127.0.0.1:4002` 等） | ローカル日常スタック |
+| 3 | コンパイル時既定（テスター: `frick-eldy.com` HTTP + Zenoh **IP 直書き** `tls/160.251.251.30:7447`。ホスト名証は後回し） | ローカルは env / Connect で上書き |
 
 保証: ファイルには **Auth / Assets / World URL・relay 候補配列・選択インデックス**のみ。`AUTH_PASSWORD` / トークンは **書かない**（Home / 既存 silent login のまま）。
 
