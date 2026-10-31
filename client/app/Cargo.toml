@@ -28,6 +28,7 @@ wgpu = { workspace = true }
 winit = { workspace = true }
 zenoh = { workspace = true }
 zenoh-connect = { workspace = true }
+alchemy-connect-config = { workspace = true }
 openxr = { workspace = true }
 ash = { workspace = true }
 serde = { version = "1", features = ["derive"] }

@@ -1,27 +1,48 @@
-//! Official default Facet set layout (x000f + x0018 Home + x0037 create panel).
+//! Official default Facet set layout (x000f + x0018 Home + x0037 create + x0066 Connect).
 //!
-//! Facets: Chrome (top) · Home · Settings · Exit (Pinned). Button colors react to hover/press.
-//! Home holds account / create-world form strings only — no auth/world HTTP here.
+//! Facets: Chrome (top) · Home · Connect · Settings · Exit (Pinned). Button colors react to hover/press.
+//! Home / Connect hold form strings only — no auth/world/zenoh HTTP here.
 //! Create panel visuals are placeholders (swap later).
 
 use super::facet::{facet_of, DashRoot, FacetId};
 use super::layout::{Color, LayoutTree, Rect, WidgetId};
 use crate::access_level::AccessLevel;
 use crate::turn::{TurnSettings, DEFAULT_SMOOTH_TURN_DEG_PER_SEC, DEFAULT_SNAP_DEGREES};
+use alchemy_connect_config::{expand_simple_domain, ConnectProfile};
 
 /// Session display-name cap (input + status; keep in sync with desktop join status).
 pub const SESSION_NAME_MAX: usize = 48;
 /// Login / register field cap (identifier, password, email, …).
 const HOME_ACCOUNT_FIELD_MAX: usize = 64;
+const CONNECT_FIELD_MAX: usize = 128;
+/// Visible rows only — list length is unbounded (scroll · x0066).
+const CONNECT_RELAY_UI_SLOTS: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DashTab {
     /// Account shell (login / register / logout).
     Home,
+    /// Home-node endpoints (x0066).
+    Connect,
     /// Pinned Exit Facet body.
     Exit,
     /// Official Settings Facet body.
     Settings,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectMode {
+    Simple,
+    Detail,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectField {
+    Domain,
+    Auth,
+    Assets,
+    World,
+    Relay(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,6 +100,21 @@ pub struct DashState {
     pub home_room_id: String,
     /// When false (XR), Start/Join hits are omitted — Desktop HTTP only (x0037).
     pub home_session_actions_enabled: bool,
+    /// Connect tab draft (x0066) — Apply persists via surface.
+    pub connect_mode: ConnectMode,
+    pub connect_focus: Option<ConnectField>,
+    pub connect_domain: String,
+    pub connect_auth: String,
+    pub connect_assets: String,
+    pub connect_world: String,
+    pub connect_relays: Vec<String>,
+    pub connect_allocate: Vec<String>,
+    pub connect_selected: usize,
+    /// First visible relay index in the detail list (viewport of [`CONNECT_RELAY_UI_SLOTS`]).
+    pub connect_relay_scroll: usize,
+    pub connect_status: String,
+    /// Last successfully applied world URL (allocate re-derive on change · x0066).
+    pub connect_last_world: String,
 }
 
 impl Default for DashState {
@@ -115,6 +151,18 @@ impl Default for DashState {
             home_access_level: AccessLevel::Public,
             home_room_id: "local".into(),
             home_session_actions_enabled: true,
+            connect_mode: ConnectMode::Simple,
+            connect_focus: Some(ConnectField::Domain),
+            connect_domain: String::new(),
+            connect_auth: alchemy_connect_config::DEFAULT_AUTH_URL.into(),
+            connect_assets: alchemy_connect_config::DEFAULT_ASSETS_URL.into(),
+            connect_world: alchemy_connect_config::DEFAULT_WORLD_URL.into(),
+            connect_relays: vec![alchemy_connect_config::DEFAULT_ZENOH_CONNECT.into()],
+            connect_allocate: vec![String::new()],
+            connect_selected: 0,
+            connect_relay_scroll: 0,
+            connect_status: "Home node — Apply before login".into(),
+            connect_last_world: alchemy_connect_config::DEFAULT_WORLD_URL.into(),
         }
     }
 }
@@ -232,6 +280,239 @@ impl DashState {
         };
         self.home_focus = next;
     }
+
+    pub fn load_connect_profile(&mut self, profile: &ConnectProfile) {
+        let mut profile = profile.clone();
+        profile.sanitize();
+        self.connect_auth = profile.auth_url.clone();
+        self.connect_assets = profile.assets_url.clone();
+        self.connect_world = profile.world_url.clone();
+        self.connect_last_world = profile.world_url.clone();
+        self.connect_relays = profile.relays.clone();
+        self.connect_allocate = profile.relay_allocate_urls.clone();
+        self.connect_selected = profile
+            .selected_relay
+            .min(profile.relays.len().saturating_sub(1));
+        self.ensure_relay_visible(self.connect_selected);
+        if let Some(domain) = &profile.simple_domain {
+            if profile.matches_simple_expand(domain) {
+                self.connect_mode = ConnectMode::Simple;
+                self.connect_domain = domain.clone();
+                self.connect_focus = Some(ConnectField::Domain);
+                return;
+            }
+        }
+        self.connect_mode = ConnectMode::Detail;
+        self.connect_domain.clear();
+        // Keep Auth/Assets/World (and a still-valid Relay) after Apply; only default
+        // to selected relay when focus was Domain / None / stale Relay (startup / mode flip).
+        self.connect_focus = match self.connect_focus {
+            Some(ConnectField::Auth | ConnectField::Assets | ConnectField::World) => {
+                self.connect_focus
+            }
+            Some(ConnectField::Relay(i)) if i < self.connect_relays.len() => {
+                Some(ConnectField::Relay(i))
+            }
+            Some(ConnectField::Relay(_)) => Some(ConnectField::Relay(self.connect_selected)),
+            Some(ConnectField::Domain) | None => Some(ConnectField::Relay(self.connect_selected)),
+        };
+    }
+
+    pub fn connect_draft_profile(&self) -> ConnectProfile {
+        match self.connect_mode {
+            ConnectMode::Simple => {
+                let domain = self.connect_domain.trim();
+                if domain.is_empty() {
+                    ConnectProfile::default()
+                } else {
+                    expand_simple_domain(domain)
+                }
+            }
+            ConnectMode::Detail => {
+                let mut p = ConnectProfile {
+                    version: alchemy_connect_config::PROFILE_VERSION,
+                    simple_domain: None,
+                    auth_url: self.connect_auth.clone(),
+                    assets_url: self.connect_assets.clone(),
+                    world_url: self.connect_world.clone(),
+                    relays: self.connect_relays.clone(),
+                    selected_relay: self.connect_selected,
+                    relay_allocate_urls: self.connect_allocate.clone(),
+                };
+                p.sanitize();
+                let domain = self.connect_domain.trim();
+                if !domain.is_empty() && p.matches_simple_expand(domain) {
+                    p.simple_domain = Some(domain.to_string());
+                }
+                p
+            }
+        }
+    }
+
+    pub fn set_connect_simple_mode(&mut self) {
+        self.connect_mode = ConnectMode::Simple;
+        self.connect_focus = Some(ConnectField::Domain);
+        if self.connect_domain.trim().is_empty() {
+            self.connect_status = "Enter example.tld then Apply".into();
+        }
+    }
+
+    pub fn set_connect_detail_mode(&mut self) {
+        if self.connect_mode == ConnectMode::Simple {
+            let domain = self.connect_domain.trim();
+            if !domain.is_empty() {
+                let expanded = expand_simple_domain(domain);
+                self.connect_auth = expanded.auth_url;
+                self.connect_assets = expanded.assets_url;
+                self.connect_world = expanded.world_url;
+                self.connect_relays = expanded.relays;
+                self.connect_allocate = expanded.relay_allocate_urls;
+                self.connect_selected = 0;
+            }
+        }
+        self.connect_mode = ConnectMode::Detail;
+        self.connect_focus = Some(ConnectField::Auth);
+    }
+
+    pub fn append_connect_text(&mut self, text: &str) {
+        let Some(field) = self.connect_focus else {
+            return;
+        };
+        let target = self.connect_field_mut(field);
+        for ch in text.chars() {
+            if !ch.is_control() && target.chars().count() < CONNECT_FIELD_MAX {
+                target.push(ch);
+            }
+        }
+        self.after_connect_field_edit(field);
+    }
+
+    pub fn connect_backspace(&mut self) {
+        let Some(field) = self.connect_focus else {
+            return;
+        };
+        self.connect_field_mut(field).pop();
+        self.after_connect_field_edit(field);
+    }
+
+    fn after_connect_field_edit(&mut self, field: ConnectField) {
+        match field {
+            ConnectField::Relay(i) => {
+                while self.connect_allocate.len() <= i {
+                    self.connect_allocate.push(String::new());
+                }
+                self.connect_allocate[i] =
+                    alchemy_connect_config::allocate_hint_from_zenoh(&self.connect_relays[i]);
+            }
+            ConnectField::World
+                if !self.connect_last_world.is_empty()
+                    && self.connect_world.trim_end_matches('/') != self.connect_last_world =>
+            {
+                self.connect_status =
+                    "World edited — Apply will re-derive relay allocate URLs".into();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn cycle_connect_focus(&mut self) {
+        let fields: Vec<ConnectField> = match self.connect_mode {
+            ConnectMode::Simple => vec![ConnectField::Domain],
+            ConnectMode::Detail => {
+                let mut v = vec![
+                    ConnectField::Auth,
+                    ConnectField::Assets,
+                    ConnectField::World,
+                ];
+                self.clamp_relay_scroll();
+                let start = self.connect_relay_scroll;
+                let end = (start + CONNECT_RELAY_UI_SLOTS).min(self.connect_relays.len());
+                for i in start..end {
+                    v.push(ConnectField::Relay(i));
+                }
+                v
+            }
+        };
+        let next = match self.connect_focus {
+            None => fields.first().copied(),
+            Some(cur) => {
+                let i = fields.iter().position(|f| *f == cur).unwrap_or(0);
+                Some(fields[(i + 1) % fields.len()])
+            }
+        };
+        self.connect_focus = next;
+    }
+
+    pub fn add_connect_relay(&mut self) {
+        self.connect_relays
+            .push(alchemy_connect_config::DEFAULT_ZENOH_CONNECT.into());
+        self.connect_allocate.push(String::new());
+        let idx = self.connect_relays.len() - 1;
+        self.connect_selected = idx;
+        self.connect_focus = Some(ConnectField::Relay(idx));
+        self.ensure_relay_visible(idx);
+        self.connect_status =
+            format!("Added relay #{idx} (priority list · top=preferred) — edit then Apply");
+    }
+
+    pub fn select_connect_relay(&mut self, idx: usize) {
+        if idx < self.connect_relays.len() {
+            self.connect_selected = idx;
+            self.ensure_relay_visible(idx);
+            self.connect_status = format!("Selected relay #{idx} (manual · auto/failover later)");
+        }
+    }
+
+    pub fn scroll_relays_up(&mut self) {
+        if self.connect_relay_scroll > 0 {
+            self.connect_relay_scroll -= 1;
+        }
+    }
+
+    pub fn scroll_relays_down(&mut self) {
+        self.connect_relay_scroll = self.connect_relay_scroll.saturating_add(1);
+        self.clamp_relay_scroll();
+    }
+
+    fn clamp_relay_scroll(&mut self) {
+        let len = self.connect_relays.len();
+        let max_scroll = len.saturating_sub(CONNECT_RELAY_UI_SLOTS);
+        if self.connect_relay_scroll > max_scroll {
+            self.connect_relay_scroll = max_scroll;
+        }
+    }
+
+    fn ensure_relay_visible(&mut self, idx: usize) {
+        if idx < self.connect_relay_scroll {
+            self.connect_relay_scroll = idx;
+        } else if idx >= self.connect_relay_scroll + CONNECT_RELAY_UI_SLOTS {
+            self.connect_relay_scroll = idx + 1 - CONNECT_RELAY_UI_SLOTS;
+        }
+        self.clamp_relay_scroll();
+    }
+
+    /// Absolute relay index for visible viewport row `row` (0..CONNECT_RELAY_UI_SLOTS).
+    pub fn connect_relay_abs(&self, row: usize) -> Option<usize> {
+        let abs = self.connect_relay_scroll.saturating_add(row);
+        (abs < self.connect_relays.len()).then_some(abs)
+    }
+
+    fn connect_field_mut(&mut self, field: ConnectField) -> &mut String {
+        match field {
+            ConnectField::Domain => &mut self.connect_domain,
+            ConnectField::Auth => &mut self.connect_auth,
+            ConnectField::Assets => &mut self.connect_assets,
+            ConnectField::World => &mut self.connect_world,
+            ConnectField::Relay(i) => {
+                while self.connect_relays.len() <= i {
+                    self.connect_relays
+                        .push(alchemy_connect_config::DEFAULT_ZENOH_CONNECT.into());
+                    self.connect_allocate.push(String::new());
+                }
+                &mut self.connect_relays[i]
+            }
+        }
+    }
 }
 
 const TOP_H: f32 = 44.0;
@@ -310,6 +591,275 @@ fn push_field(
     );
     tree.register_hit(id, r);
     y + 16.0 + h + 10.0
+}
+
+fn rebuild_connect(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
+    let panel = Rect::new(cx, cy0, cw, ch.min(420.0));
+    tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
+    tree.push_label(
+        Rect::new(cx + 20.0, cy0 + 12.0, cw - 40.0, 22.0),
+        "Connect (home node)",
+        TEXT,
+        2.0,
+    );
+
+    let mode_y = cy0 + 42.0;
+    let mode_w = 100.0;
+    let simple_r = Rect::new(cx + 20.0, mode_y, mode_w, 28.0);
+    let detail_r = Rect::new(cx + 28.0 + mode_w, mode_y, mode_w, 28.0);
+    let simple_base = if state.connect_mode == ConnectMode::Simple {
+        ACCENT
+    } else {
+        BTN
+    };
+    let detail_base = if state.connect_mode == ConnectMode::Detail {
+        ACCENT
+    } else {
+        BTN
+    };
+    tree.push_rect(
+        simple_r,
+        state.interact(WidgetId::ConnectModeSimple, simple_base),
+    );
+    tree.push_label(
+        Rect::new(simple_r.x + 8.0, simple_r.y + 6.0, mode_w - 16.0, 18.0),
+        "Simple",
+        TEXT,
+        1.2,
+    );
+    tree.register_hit(WidgetId::ConnectModeSimple, simple_r);
+    tree.push_rect(
+        detail_r,
+        state.interact(WidgetId::ConnectModeDetail, detail_base),
+    );
+    tree.push_label(
+        Rect::new(detail_r.x + 8.0, detail_r.y + 6.0, mode_w - 16.0, 18.0),
+        "Detail",
+        TEXT,
+        1.2,
+    );
+    tree.register_hit(WidgetId::ConnectModeDetail, detail_r);
+
+    let mut y = mode_y + 40.0;
+    let field_h = 30.0;
+    let label_w = 72.0;
+    let input_x = cx + 20.0 + label_w;
+    let input_w = (cw - 48.0 - label_w).max(120.0);
+
+    let push_field = |tree: &mut LayoutTree,
+                      state: &DashState,
+                      y: f32,
+                      label: &str,
+                      value: &str,
+                      field: ConnectField,
+                      id: WidgetId| {
+        tree.push_label(
+            Rect::new(cx + 20.0, y + 6.0, label_w - 4.0, 18.0),
+            label,
+            MUTED,
+            1.0,
+        );
+        let r = Rect::new(input_x, y, input_w, field_h);
+        let focused = state.connect_focus == Some(field);
+        tree.push_rect(r, if focused { FIELD_FOCUS } else { FIELD });
+        let shown = if value.is_empty() {
+            "…".to_string()
+        } else {
+            value.chars().take(48).collect()
+        };
+        tree.push_label(
+            Rect::new(r.x + 8.0, r.y + 6.0, r.w - 16.0, 18.0),
+            &shown,
+            TEXT,
+            1.1,
+        );
+        tree.register_hit(id, r);
+    };
+
+    match state.connect_mode {
+        ConnectMode::Simple => {
+            push_field(
+                tree,
+                state,
+                y,
+                "Domain",
+                &state.connect_domain,
+                ConnectField::Domain,
+                WidgetId::ConnectFieldDomain,
+            );
+            y += field_h + 10.0;
+            tree.push_label(
+                Rect::new(cx + 20.0, y, cw - 40.0, 36.0),
+                "expands to auth/assets/world + relay.<domain>",
+                MUTED,
+                1.0,
+            );
+            y += 40.0;
+        }
+        ConnectMode::Detail => {
+            push_field(
+                tree,
+                state,
+                y,
+                "Auth",
+                &state.connect_auth,
+                ConnectField::Auth,
+                WidgetId::ConnectFieldAuth,
+            );
+            y += field_h + 6.0;
+            push_field(
+                tree,
+                state,
+                y,
+                "Assets",
+                &state.connect_assets,
+                ConnectField::Assets,
+                WidgetId::ConnectFieldAssets,
+            );
+            y += field_h + 6.0;
+            push_field(
+                tree,
+                state,
+                y,
+                "World",
+                &state.connect_world,
+                ConnectField::World,
+                WidgetId::ConnectFieldWorld,
+            );
+            y += field_h + 10.0;
+            tree.push_label(
+                Rect::new(cx + 20.0, y, cw - 40.0, 18.0),
+                "Relays (priority top→bottom · select one for now)",
+                MUTED,
+                1.0,
+            );
+            y += 22.0;
+            let relay_ids = [
+                WidgetId::ConnectRelay0,
+                WidgetId::ConnectRelay1,
+                WidgetId::ConnectRelay2,
+                WidgetId::ConnectRelay3,
+            ];
+            let select_ids = [
+                WidgetId::ConnectSelectRelay0,
+                WidgetId::ConnectSelectRelay1,
+                WidgetId::ConnectSelectRelay2,
+                WidgetId::ConnectSelectRelay3,
+            ];
+            let scroll = state.connect_relay_scroll.min(
+                state
+                    .connect_relays
+                    .len()
+                    .saturating_sub(CONNECT_RELAY_UI_SLOTS),
+            );
+            let visible = state.connect_relays.len().saturating_sub(scroll);
+            let n = visible.min(CONNECT_RELAY_UI_SLOTS);
+            let relay_input_x = cx + 52.0;
+            let relay_input_w = (cw - 100.0).max(120.0);
+            for row in 0..n {
+                let abs = scroll + row;
+                let sel = Rect::new(cx + 20.0, y, 28.0, field_h);
+                let sel_base = if state.connect_selected == abs {
+                    ACCENT
+                } else {
+                    BTN
+                };
+                tree.push_rect(sel, state.interact(select_ids[row], sel_base));
+                tree.push_label(
+                    Rect::new(sel.x + 6.0, sel.y + 6.0, 20.0, 18.0),
+                    if state.connect_selected == abs {
+                        "●"
+                    } else {
+                        "○"
+                    },
+                    TEXT,
+                    1.2,
+                );
+                tree.register_hit(select_ids[row], sel);
+                let value = state
+                    .connect_relays
+                    .get(abs)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let r = Rect::new(relay_input_x, y, relay_input_w, field_h);
+                let focused = state.connect_focus == Some(ConnectField::Relay(abs));
+                tree.push_rect(r, if focused { FIELD_FOCUS } else { FIELD });
+                let shown: String = if value.is_empty() {
+                    format!("#{abs} …")
+                } else {
+                    format!("#{abs} {}", value.chars().take(40).collect::<String>())
+                };
+                tree.push_label(
+                    Rect::new(r.x + 8.0, r.y + 6.0, r.w - 16.0, 18.0),
+                    shown,
+                    TEXT,
+                    1.1,
+                );
+                tree.register_hit(relay_ids[row], r);
+                y += field_h + 4.0;
+            }
+            let add = Rect::new(cx + 20.0, y, 72.0, 28.0);
+            tree.push_rect(add, state.interact(WidgetId::ConnectAddRelay, BTN));
+            tree.push_label(
+                Rect::new(add.x + 16.0, add.y + 6.0, 40.0, 18.0),
+                "+",
+                TEXT,
+                1.5,
+            );
+            tree.register_hit(WidgetId::ConnectAddRelay, add);
+            let can_up = scroll > 0;
+            let can_down = scroll + CONNECT_RELAY_UI_SLOTS < state.connect_relays.len();
+            if can_up {
+                let up = Rect::new(cx + 100.0, y, 28.0, 28.0);
+                tree.push_rect(up, state.interact(WidgetId::ConnectRelayScrollUp, BTN));
+                tree.push_label(
+                    Rect::new(up.x + 6.0, up.y + 6.0, 16.0, 16.0),
+                    "▲",
+                    TEXT,
+                    1.2,
+                );
+                tree.register_hit(WidgetId::ConnectRelayScrollUp, up);
+            }
+            if can_down {
+                let down = Rect::new(cx + 132.0, y, 28.0, 28.0);
+                tree.push_rect(down, state.interact(WidgetId::ConnectRelayScrollDown, BTN));
+                tree.push_label(
+                    Rect::new(down.x + 6.0, down.y + 6.0, 16.0, 16.0),
+                    "▼",
+                    TEXT,
+                    1.2,
+                );
+                tree.register_hit(WidgetId::ConnectRelayScrollDown, down);
+            }
+            tree.push_label(
+                Rect::new(cx + 168.0, y + 6.0, cw - 188.0, 18.0),
+                format!(
+                    "{} relays · selected #{} (auto/failover later)",
+                    state.connect_relays.len(),
+                    state.connect_selected
+                ),
+                MUTED,
+                1.0,
+            );
+            y += 36.0;
+        }
+    }
+
+    let apply = Rect::new(cx + 20.0, y.min(cy0 + ch - 56.0), 120.0, 36.0);
+    tree.push_rect(apply, state.interact(WidgetId::ConnectApply, ACCENT));
+    tree.push_label(
+        Rect::new(apply.x + 28.0, apply.y + 8.0, 80.0, 20.0),
+        "Apply",
+        TEXT,
+        1.5,
+    );
+    tree.register_hit(WidgetId::ConnectApply, apply);
+    tree.push_label(
+        Rect::new(cx + 152.0, apply.y + 8.0, cw - 180.0, 40.0),
+        &state.connect_status,
+        MUTED,
+        1.0,
+    );
 }
 
 fn rebuild_home(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
@@ -824,13 +1374,13 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
     tree.push_icon(Rect::new(w - 32.0, iy, icon * 0.7, icon * 0.7), "close");
     tree.register_hit(WidgetId::CloseSession, x_r);
 
-    // --- Bottom bar: Home · Settings · Exit ---
+    // --- Bottom bar: Home · Connect · Settings · Exit ---
     let by = h - BOTTOM_H;
     tree.push_rect(Rect::new(0.0, by, w, BOTTOM_H), BAR);
 
-    let tab_w = 88.0;
-    let gap = 16.0;
-    let tabs_total = tab_w * 3.0 + gap * 2.0;
+    let tab_w = 78.0;
+    let gap = 10.0;
+    let tabs_total = tab_w * 4.0 + gap * 3.0;
     let tab0_x = (w - tabs_total) * 0.5;
 
     let draw_tab = |tree: &mut LayoutTree,
@@ -878,6 +1428,16 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
         tree,
         state,
         tab0_x + tab_w + gap,
+        DashTab::Connect,
+        WidgetId::TabConnect,
+        "sync",
+        FacetId::Connect.label(),
+        Color::rgba(0.14, 0.32, 0.36, 0.95),
+    );
+    draw_tab(
+        tree,
+        state,
+        tab0_x + (tab_w + gap) * 2.0,
         DashTab::Settings,
         WidgetId::TabSettings,
         "settings",
@@ -887,7 +1447,7 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
     draw_tab(
         tree,
         state,
-        tab0_x + (tab_w + gap) * 2.0,
+        tab0_x + (tab_w + gap) * 3.0,
         DashTab::Exit,
         WidgetId::TabExit,
         "power",
@@ -905,6 +1465,9 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
     match state.tab {
         DashTab::Home => {
             rebuild_home(tree, state, cx, cy0, cw, ch);
+        }
+        DashTab::Connect => {
+            rebuild_connect(tree, state, cx, cy0, cw, ch);
         }
         // Pinned Exit Facet body
         DashTab::Exit => {

@@ -152,7 +152,7 @@ depends_on: [x0006]
 | x0063 | — | planned | ItemRef repo@rev（Wave 4） | [x0063-item-ref-repo-rev.md](slices/x0063-item-ref-repo-rev.md) |
 | x0064 | — | planned | Vcs Branch/Tag 最小（Wave 4） | [x0064-vcs-branch-tag-minimal.md](slices/x0064-vcs-branch-tag-minimal.md) |
 | x0065 | — | planned | Origin Cert 薄皮＝C+3（Wave 4） | [x0065-origin-cert-thin.md](slices/x0065-origin-cert-thin.md) |
-| x0066 | — | planned | Dash Connect タブ（端点 UI）＋テスター URL env 廃止 | [x0066-dash-connect-endpoints.md](slices/x0066-dash-connect-endpoints.md) |
+| x0066 | — | active | Dash Connect タブ（端点 UI）＋テスター URL env 廃止 | [x0066-dash-connect-endpoints.md](slices/x0066-dash-connect-endpoints.md) |
 
 **現在の次:** インベントリ本線は **[inventory-ladder](inventory-ladder.md)**（B+2→C+3）。実装着手は **[x0054](slices/x0054-inventory-grant-required-put.md)**。体感並行: **[x0053](slices/x0053-xr-desktop-hotswitch.md)** / 配布 UX: **[x0066](slices/x0066-dash-connect-endpoints.md)**（同一 PR 禁止）。案 B 本体・launcher・verifier は保留。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。

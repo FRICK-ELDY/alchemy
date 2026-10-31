@@ -1,0 +1,11 @@
+[package]
+name = "alchemy-connect-config"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Home-node Connect endpoints (x0066): resolve env > file > defaults, persist, simple-domain expand"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

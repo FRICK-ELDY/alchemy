@@ -31,6 +31,8 @@ pub enum FacetId {
     Chrome,
     /// Home tab: login / register / logout (x0018).
     Home,
+    /// Connect tab: home-node endpoints (x0066).
+    Connect,
     /// Settings tab body + turn toggle.
     Settings,
     /// Exit tab body + exit actions. **Pinned** — cannot be removed.
@@ -46,6 +48,7 @@ impl FacetId {
         match self {
             Self::Chrome => "Chrome",
             Self::Home => "Home",
+            Self::Connect => "Connect",
             Self::Settings => "Settings",
             Self::Exit => "Exit",
         }
@@ -56,6 +59,7 @@ impl FacetId {
 pub const OFFICIAL_DEFAULT_FACETS: &[FacetId] = &[
     FacetId::Chrome,
     FacetId::Home,
+    FacetId::Connect,
     FacetId::Settings,
     FacetId::Exit,
 ];
@@ -70,6 +74,25 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         WidgetId::TabSettings | WidgetId::TurnModeToggle | WidgetId::SettingsPlaceholder => {
             FacetId::Settings
         }
+        WidgetId::TabConnect
+        | WidgetId::ConnectModeSimple
+        | WidgetId::ConnectModeDetail
+        | WidgetId::ConnectFieldDomain
+        | WidgetId::ConnectFieldAuth
+        | WidgetId::ConnectFieldAssets
+        | WidgetId::ConnectFieldWorld
+        | WidgetId::ConnectRelay0
+        | WidgetId::ConnectRelay1
+        | WidgetId::ConnectRelay2
+        | WidgetId::ConnectRelay3
+        | WidgetId::ConnectSelectRelay0
+        | WidgetId::ConnectSelectRelay1
+        | WidgetId::ConnectSelectRelay2
+        | WidgetId::ConnectSelectRelay3
+        | WidgetId::ConnectRelayScrollUp
+        | WidgetId::ConnectRelayScrollDown
+        | WidgetId::ConnectAddRelay
+        | WidgetId::ConnectApply => FacetId::Connect,
         WidgetId::TabHome
         | WidgetId::HomeFieldIdentifier
         | WidgetId::HomeFieldPassword

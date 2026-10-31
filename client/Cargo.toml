@@ -6,6 +6,7 @@ members = [
     "shared-sim",
     "e2e-probe",
     "zenoh-connect",
+    "connect-config",
 ]
 
 [workspace.package]
@@ -22,6 +23,7 @@ undocumented_unsafe_blocks = "deny"
 alchemy-protocol = { path = "../protocol" }
 alchemy-shared-sim = { path = "shared-sim" }
 zenoh-connect = { path = "zenoh-connect" }
+alchemy-connect-config = { path = "connect-config" }
 prost = "0.14"
 zenoh = "1.10"
 anyhow = "1"

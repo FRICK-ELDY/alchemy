@@ -12,20 +12,27 @@ What is in this folder
   host-server.exe
   client.exe
   build-info.json        — version, gitSha, builtAt (JST), rustcHost
-  env.testers.example.cmd — copy to env.local.cmd and edit URLs / login
+  env.testers.example.cmd — optional overrides only (Connect tab is preferred)
 
 What is NOT included
 --------------------
   auth-server / world-server / assets-server / zenohd
   installer, auto-update, code signing (SmartScreen may warn)
 
-Assets mesh (required)
-----------------------
-  env.local.cmd MUST set AUTH_USER/AUTH_PASSWORD or ALCHEMY_AUTH_TOKEN (Start fails otherwise).
-  Start.cmd runs ensure-demo-coin.ps1 to POST fixtures/Coin_PolygonalMind.glb into ASSETS_URL.
-  Client then loads mesh via SceneManifest blake3 → GET /api/v1/blobs/... (x003c).
-  Packaged fixtures/ is the seed upload source. Authenticated release does not fall back to it.
-  (Unauthenticated Home UI may still show the local GLB as a placeholder before login.)
+Endpoints (x0066)
+-----------------
+  Prefer Dash → Connect tab after Start:
+    Simple: example.tld  → auth/assets/world/relay.<domain>
+    Detail: Auth · Assets · World · Relays (+ under World)
+  Apply while not joined. Host already running? Exit client+host, then Start again
+  so host-server reloads the same connect.json.
+  Optional: env.local.cmd still overrides for CI / operators.
+
+Assets mesh
+-----------
+  Client loads mesh via SceneManifest blake3 → GET /api/v1/blobs/... (x003c).
+  ensure-demo-coin runs only when AUTH_USER/PASSWORD or ALCHEMY_AUTH_TOKEN is set.
+  Otherwise the Coin must already exist on the remote assets-server.
 
 Runtime prerequisites (Windows)
 -------------------------------
@@ -39,26 +46,14 @@ Runtime prerequisites (Windows)
 Before Start.cmd
 ----------------
 1. Use a reachable server stack (operator Tunnel / WAN / LAN — not bundled here).
-2. Copy env.testers.example.cmd → env.local.cmd and set at least:
-     AUTH_URL / WORLD_URL / ASSETS_URL
-     ZENOH_CONNECT   (e.g. tls/<host>:7447 or tcp/<LAN-IP>:7447)
-3. Prefer UI login on the Home tab. Do not ship demo passwords in shared ZIPs.
-   Release builds need AUTH_PASSWORD or ALCHEMY_AUTH_TOKEN for silent login.
-
-Run
----
-  Double-click Start.cmd  (or run from cmd.exe)
-  On failure the window pauses so you can read the message.
+2. Double-click Start.cmd (or run from cmd.exe).
+3. In Connect tab, set the home node (or leave localhost defaults for a local stack).
+4. Home tab: login, then create / join.
 
 Exit
 ----
   In-app: Exit Client only keeps host; Exit Client+Host stops both.
   Console Ctrl+C: launcher shuts down host via localhost IPC.
-
-Non-guarantees
---------------
-  Offline / assets-down Coin fixture fallback uses a compile-time path and is
-  expected to fail in this ZIP. Point ASSETS_URL at a working assets-server.
 
 Report bugs
 -----------

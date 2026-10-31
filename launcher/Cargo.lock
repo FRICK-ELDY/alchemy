@@ -12,9 +12,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "alchemy-connect-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "alchemy-launcher"
 version = "0.1.0"
 dependencies = [
+ "alchemy-connect-config",
  "alchemy-protocol",
  "anyhow",
  "ctrlc",

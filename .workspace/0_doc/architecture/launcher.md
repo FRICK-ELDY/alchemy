@@ -31,6 +31,7 @@
 |:---|:---|
 | `ALCHEMY_CLIENT_DIR` | client Cargo workspace 根（既定: repo `client/`） |
 | `ALCHEMY_HOST_BIN` / `ALCHEMY_CLIENT_BIN` | 直接バイナリ（未設定時は `cargo run -p …`） |
+| （未設定時）`connect.json` | 起動前に `alchemy-connect-config` が端点を env へ注入（CI env が勝ち・x0066） |
 | `ALCHEMY_HOST_IPC_TOKEN` | launcher → host。host が `127.0.0.1:0` で listen |
 | `ALCHEMY_HOST_IPC_ADDR` | launcher が ready の `ipc=` から client に渡す（loopback のみ） |
 | `ALCHEMY_HOST_READY_FILE` | `ready\nipc=127.0.0.1:port\n`（最初の frame put 後） |

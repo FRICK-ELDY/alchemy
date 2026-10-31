@@ -34,6 +34,11 @@ fn main() {
 fn run() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    // Inject connect.json into env before spawning host/client (CI env still wins · x0066).
+    if let Err(err) = alchemy_connect_config::apply_file_defaults_to_env() {
+        log::warn!("connect.json defaults: {err:#}");
+    }
+
     let client_dir = resolve_client_dir();
     log::info!(
         "alchemy-launcher x0047; client_dir={}",

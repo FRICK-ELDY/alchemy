@@ -1,6 +1,6 @@
 # x0066 — Dash Connect タブ（エンドポイント設定）＋テスター env 廃止
 
-> **ID:** `x0066` · **slug:** `dash-connect-endpoints` · **status:** `planned` · **area:** `[client, system_ui, launcher, docs]` · **surface:** `[desktop]` · **depends_on:** `[x0018, x0032]`
+> **ID:** `x0066` · **slug:** `dash-connect-endpoints` · **status:** `active` · **area:** `[client, system_ui, launcher, docs]` · **surface:** `[desktop]` · **depends_on:** `[x0018, x0032]`
 
 目標: system_ui に **Connect タブ**を追加し、テスター／日常クライアントが端点を **UI で設定・永続**できるようにする。Windows テスター ZIP から **URL / Zenoh 接続先のための `env.local.cmd` 手編集を廃止**する。
 
@@ -45,8 +45,10 @@ assets ◄──(Bearer + CAS)── client     │
 |:---|:---|
 | **破綻していない** | relay を **world の子**にするのは Allocation／JWKS 契約と一致。Auth→Assets→World の並びも「口座 → 物置 → 案内所＋回線」で説明可能 |
 | **Assets は sibling** | 木の見た目で assets を world 配下にしない（CAS は world 発行物ではない）。並びだけ World の前 |
-| **本 Slice の relay `+`** | 候補を手で増やし **選択中 1 本だけ**接続に使う。自動発見・SLA 切替・課金スプリットはしない |
-| **運用上の注意（非破綻・制約）** | world URL を変えたら relay リストは「別 world 用」になりうる → Apply 時に警告 or リストをクリア（実装で選ぶ）。host/client は **同じ選択中 relay** を共有。LAN/tcp は allocate なしでも open 可だが、誤った relay だと空振り |
+| **本 Slice の relay `+`** | 候補は **本数上限なし**（表示はスクロール）。**手動で選択中 1 本**だけ接続。リスト順＝将来の優先順（上から） |
+| **後続（本 Slice 外）** | Ping 最良への自動接続、障害時の上から順フェイルオーバー、公認リレー屋の自動発見 |
+| **運用上の注意（非破綻・制約）** | world 変更時は **relay 候補は残し、allocate のみ再導出**して即 Apply。host/client は **同じ選択中 relay** を共有。LAN/tcp は allocate なしでも open 可だが、誤った relay だと空振り |
+| **assets 契約** | Connect Apply は `SharedState.assets_url` を更新する。起動時メッシュの remount はしない（再入室／再起動で新 URL） |
 
 つながる条件の要約: **world が auth を信頼し、選んだ Relay Agent が同じ world の Allocation を検証できる**こと。auth と relay の直結セットではない。
 
@@ -89,7 +91,7 @@ Connect タブで **拠点**端点を UI 入力しローカルに永続すれば
 | 層 | 役割 | 知らないこと |
 |:---|:---|:---|
 | **system_ui（Connect Facet）** | 簡易 1 欄 / 詳細（Auth·Assets·World + world 配下 relay リスト·`+`·選択）。Home と同様 **フォームだけ** | HTTP / Zenoh open / Room Token / OpenXR / JWKS 検証 |
-| **client app / surface** | 永続・展開・**選択中 relay 1 本**の適用。world 変更時の relay リスト扱い | Facet レイアウトの詳細 |
+| **client app / surface** | 永続・展開・**選択中 relay 1 本**の適用。world 変更時は allocate 再導出（候補保持） | Facet レイアウトの詳細 |
 | **host-server** | 同一端点契約（**同じ選択中 relay** 含む）を受け取る | system_ui |
 | **launcher / Start.cmd** | テスター起動時に **URL 系 env を必須としない**。CI／運用者向け **任意 override** は残してよい | Dash タブ UI |
 | **ensure-demo-coin** | 本 Slice では **資格情報付き seed を Start 必須から外す**か、運用者任意スクリプトへ退避（下表） | Connect フォーム |
@@ -110,8 +112,8 @@ Connect タブで **拠点**端点を UI 入力しローカルに永続すれば
 
 | 操作 | 保証（案） |
 |:---|:---|
-| 未入室で Apply | 以降の login / Room Token / assets GET / Zenoh open に新端点を使う |
-| 入室中に Apply | **本 Slice では拒否 or 「Leave してから」**（途中ホットスワップはしない） |
+| 未入室で Apply | probe（JWKS / Zenoh）→ SharedState → `connect.json` の順で確定。途中失敗はランタイムをロールバック。永続成功後のみ auth 変更時に session clear |
+| 入室中に Apply | **拒否**（Leave してから） |
 | 次回起動 | 永続値をロード（env があれば env 勝ち） |
 
 host と client の端点が食い違うと Token / Zenoh が壊れるため、**launcher 子プロセスへ同じ値を渡す**か **両方が同じ設定ファイルを読む**ことを成功条件に含める。
@@ -120,12 +122,12 @@ host と client の端点が食い違うと Token / Zenoh が壊れるため、*
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | 本 Slice + 目次 | **active（文書のみ）** |
-| 1 | 端点設定型 + 永続 I/O + env 優先ロード（UI なしでも単体テスト可） | planned |
-| 2 | Dash **Connect**（簡易 / 詳細・Auth→Assets→World→relay 木・`+`・選択・Apply）。展開と永続形は app 側 | planned |
-| 3 | client 実行経路を設定源に接続（login / assets / world / **選択中** zenoh-connect） | planned |
-| 4 | host + launcher 配線（同一設定）。テスター `Start.cmd` / README-testers / windows-tester-zip から **URL 手編集必須を削除** | planned |
-| 5 | ensure-demo-coin 必須資格情報の切り離し（任意スクリプト or 事前 seed 前提）+ docs / smoke | planned |
+| 0 | 本 Slice + 目次 | done |
+| 1 | 端点設定型 + 永続 I/O + env 優先ロード（`alchemy-connect-config`） | done |
+| 2 | Dash **Connect**（簡易 / 詳細・Auth→Assets→World→relay 木・`+`・選択・Apply） | done |
+| 3 | client 実行経路を設定源に接続（login / assets / world / **選択中** zenoh-connect） | done |
+| 4 | host + launcher 配線（同一設定）。テスター `Start.cmd` / README-testers / windows-tester-zip から **URL 手編集必須を削除** | done |
+| 5 | ensure-demo-coin 必須資格情報の切り離し（任意）+ docs | done |
 
 ## 保証する / しない
 
@@ -133,8 +135,8 @@ host と client の端点が食い違うと Token / Zenoh が壊れるため、*
 |:---|:---|
 | Desktop Dash に Connect（**簡易 `example.tld`** / **詳細: Auth·Assets·World + world 配下 relay `+`**） | VR 仮想キーボード；`alchemy-node-info` 自動発見 |
 | 簡易 Apply で auth/assets/world + relay 1 本の既定 FQDN に展開される | 任意サブドメイン規約のサーバ側強制（クライアント展開のみ） |
-| relay 候補を複数持て、**選択中 1 本**だけ接続に使う | 同時マルチリレー・障害時自動フェイルオーバー・課金スプリット |
-| Apply（未入室）で端点が以降の接続に効く | 入室中ホットスワップ；誤った relay でも空振りしないこと |
+| relay 候補を件数上限なく持て、**手動選択 1 本**だけ接続に使う（表示はスクロール） | Ping 自動選択・障害時上からフェイルオーバー・同時マルチ接続（後続） |
+| Apply（未入室）で端点が以降の接続に効く（失敗時ロールバック） | 入室中ホットスワップ；誤った relay でも空振りしないこと；Apply 後の起動メッシュ remount |
 | 端点のローカル永続（秘密なし）と、env による CI override | クラウド同期・プロファイル複数・ディープリンク注入 |
 | テスター ZIP: **URL / relay のために `env.local.cmd` を書かなくても** Connect UI で参加動線が成立 | auth/world/assets/zenohd の ZIP 同梱 |
 | host と client が同じ端点契約（選択中 relay 含む）を共有できる | host handoff・複数 room |
@@ -162,7 +164,8 @@ host と client の端点が食い違うと Token / Zenoh が壊れるため、*
 
 - 連合: S2S・他運営 World 一覧・ディープリンクによる **セッション上書き**（拠点 Connect とは別 Slice）
 - `alchemy-node-info.json` / 公認リレー自動発見・SLA 監視切替
-- 複数 relay への同時接続・セッション中フェイルオーバー
+- Ping 最良への自動接続、ルーター停止時の上から順フェイルオーバー（リスト優先順は本 Slice で保持）
+- 複数 relay への同時接続
 - join-only 起動モード本体（ローカル host を立てない配布）— 必要なら後続 Slice
 - `ROOM_ID` / visibility / ワールド一覧 UI
 - TLS ルート CA の UI 編集（`ZENOH_TLS_ROOT_CA` は当面 env / 同梱のまま）
