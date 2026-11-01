@@ -7,9 +7,11 @@ ConoHa VPS 上の **relay-server**（`zenohd`・**TLS+mTLS**・`7447`）と **re
 | **relay-server** | zenohd の設定・待受（空間同期の仲介） |
 | **relay-agent** | Allocation Token 検証 → 短命 mTLS 証明書発行 |
 
-前提 Slice: [x001a HTTPS](../../roadmap/slices/x001a-https-edge-tunnel.md) · [x001b](../../roadmap/slices/x001b-zenoh-wan-conoha.md) · **TLS: [x0022](../../roadmap/slices/x0022-liveliness-wan-tls.md)** · **mTLS/Relay: [x004e](../../roadmap/slices/x004e-relay-agent-mvp.md)**  
+前提 Slice: [x001a HTTPS](../../roadmap/slices/x001a-https-edge-tunnel.md) · [x001b](../../roadmap/slices/x001b-zenoh-wan-conoha.md) · **TLS: [x0022](../../roadmap/slices/x0022-liveliness-wan-tls.md)** · **mTLS/Relay: [x004e](../../roadmap/slices/x004e-relay-agent-mvp.md)** · **world 短命 mTLS: [x0066](../../roadmap/slices/x0066-ephemeral-mtls-world-issue.md)**  
 config: [`relay-server/config.wan.json5`](../../../relay-server/config.wan.json5) · agent: [`relay-agent/`](../../../relay-agent/)  
 DNS / Let's Encrypt（サーバ証明書のドメイン化）: [`relay-server-dns.md`](relay-server-dns.md)
+
+**x0066（推奨 WAN）**: host / client が CSR を送り、**world-server** が同一 client CA で短命 cert を返す。zenohd の `root_ca_certificate` はその CA を検証する。`RELAY_ALLOCATE_URL`（Relay Agent）は**後方互換**として併存し、world が `mtls` を返したときは allocate をスキップする。
 
 想定スペック: **Ubuntu 22.04 または 24.04**、4Core / 4GB RAM（手順は両 LTS で同じ）。
 

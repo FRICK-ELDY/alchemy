@@ -29,6 +29,23 @@ if url = System.get_env("AUTH_JWKS_URL") do
   config :world, auth_jwks_url: url
 end
 
+# x0066: client CA for ephemeral mTLS (PEM inline or file paths). Never log these.
+if pem = System.get_env("MTLS_CA_CERT_PEM") do
+  config :world, mtls_ca_cert_pem: pem
+end
+
+if pem = System.get_env("MTLS_CA_KEY_PEM") do
+  config :world, mtls_ca_key_pem: pem
+end
+
+if path = System.get_env("MTLS_CA_CERT_PATH") do
+  config :world, mtls_ca_cert_path: path
+end
+
+if path = System.get_env("MTLS_CA_KEY_PATH") do
+  config :world, mtls_ca_key_path: path
+end
+
 if url = System.get_env("AUTH_INTERNAL_URL") do
   config :world, auth_internal_url: url
 end

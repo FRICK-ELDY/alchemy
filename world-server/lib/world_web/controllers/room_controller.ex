@@ -7,6 +7,7 @@ defmodule WorldWeb.RoomController do
   alias World.CanonicalManifest
   alias World.HostAttestation
   alias World.ManifestSeal
+  alias World.MtlsIssuer
   alias World.RoomAccess
   alias World.Rooms
   alias World.Token
@@ -59,22 +60,46 @@ defmodule WorldWeb.RoomController do
     end
   end
 
+  # Typical ECDSA/RSA CSR PEM is a few KB; cap rejects disk/openssl DoS bodies.
+  @csr_pem_max_bytes 16_384
+
   def create_token(conn, %{"room_id" => room_id} = params) do
     role = Map.get(params, "role", "guest")
 
-    with {:ok, sub} <- resolve_sub(conn, params),
-         {:ok, session_pub} <- decode_token_session_pub(params) do
-      issue_token(conn, room_id, role, sub, session_pub)
-    else
-      {:error, :anon_disabled} ->
+    case optional_csr_pem(params) do
+      :too_large ->
         conn
-        |> put_status(:unauthorized)
-        |> json(%{error: "anon_tokens_disabled"})
+        |> put_status(:request_entity_too_large)
+        |> json(%{error: "csr_pem_too_large"})
 
-      {:error, :invalid_session_pub} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: "invalid_session_pub"})
+      csr_pem ->
+        with {:ok, sub} <- resolve_sub(conn, params),
+             {:ok, session_pub} <- decode_token_session_pub(params) do
+          issue_token(conn, room_id, role, sub, session_pub, csr_pem)
+        else
+          {:error, :anon_disabled} ->
+            conn
+            |> put_status(:unauthorized)
+            |> json(%{error: "anon_tokens_disabled"})
+
+          {:error, :invalid_session_pub} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "invalid_session_pub"})
+        end
+    end
+  end
+
+  defp optional_csr_pem(params) do
+    case Map.get(params, "csr_pem") do
+      pem when is_binary(pem) and pem != "" and byte_size(pem) <= @csr_pem_max_bytes ->
+        pem
+
+      pem when is_binary(pem) and byte_size(pem) > @csr_pem_max_bytes ->
+        :too_large
+
+      _ ->
+        nil
     end
   end
 
@@ -150,7 +175,8 @@ defmodule WorldWeb.RoomController do
   # Token paths never create rooms (x0021): owner is only set by POST /rooms.
   # x003e: session_pub (32B) is required and embedded as cnf.spk.
   # x004e: also returns wire_cap + Allocation Token for Relay Agent mTLS.
-  defp issue_token(conn, room_id, role, sub, session_pub) do
+  # x0066: optional csr_pem → mtls client cert (world-issued; CSR Subject ignored).
+  defp issue_token(conn, room_id, role, sub, session_pub, csr_pem) do
     relay_id = Application.fetch_env!(:world, :default_relay_id)
 
     with {:ok, room} <- Rooms.get(room_id),
@@ -158,8 +184,9 @@ defmodule WorldWeb.RoomController do
          :ok <- authorize_role_cached(room, role, sub),
          {:ok, token, ttl} <- Token.generate(room_id, role, sub, session_pub),
          {:ok, allocation_token, _} <-
-           AllocationToken.generate(room_id, role, sub, room.wire_cap, relay_id) do
-      json(conn, %{
+           AllocationToken.generate(room_id, role, sub, room.wire_cap, relay_id),
+         {:ok, mtls} <- maybe_issue_mtls(csr_pem, role) do
+      body = %{
         token: token,
         expires_in: ttl,
         room_id: room_id,
@@ -169,8 +196,41 @@ defmodule WorldWeb.RoomController do
         wire_cap: room.wire_cap,
         allocation_token: allocation_token,
         token_type: "Bearer"
-      })
+      }
+
+      body =
+        if mtls do
+          Map.put(body, :mtls, %{
+            client_cert_pem: mtls.client_cert_pem,
+            ca_cert_pem: mtls.ca_cert_pem,
+            expires_at: DateTime.to_iso8601(mtls.expires_at)
+          })
+        else
+          body
+        end
+
+      json(conn, body)
     else
+      {:error, :openssl_failed} ->
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{error: "mtls_sign_failed"})
+
+      {:error, :sign_failed} ->
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{error: "mtls_sign_failed"})
+
+      {:error, :chmod_failed} ->
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{error: "mtls_sign_failed"})
+
+      {:error, :invalid_args} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_csr_pem"})
+
       {:error, :invalid_room_id} ->
         conn
         |> put_status(:unprocessable_entity)
@@ -215,6 +275,34 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:internal_server_error)
         |> json(%{error: "token_issue_failed"})
+    end
+  end
+
+  # x0066: csr_pem present → sign; absent → no mtls field (Relay Agent path may still apply).
+  # CA 未設定 / 読めない: csr を無視して Token を返す（Agent 併存）。
+  # CA 設定あり・署名失敗（openssl）: Token ごと 5xx（WAN で world 発行を選んだ経路の fail-closed）。
+  defp maybe_issue_mtls(nil, _role), do: {:ok, nil}
+  defp maybe_issue_mtls("", _role), do: {:ok, nil}
+
+  defp maybe_issue_mtls(csr_pem, role) when is_binary(csr_pem) do
+    if MtlsIssuer.configured?() do
+      case MtlsIssuer.issue(csr_pem, role) do
+        {:ok, mtls} ->
+          {:ok, mtls}
+
+        {:error, :ca_not_configured} ->
+          {:ok, nil}
+
+        {:error, :ca_unreadable} ->
+          Logger.warning("csr_pem ignored: MTLS CA unreadable (x0066 Agent coexistence)")
+          {:ok, nil}
+
+        {:error, other} ->
+          {:error, other}
+      end
+    else
+      Logger.info("csr_pem ignored: MTLS CA not configured (x0066 coexistence)")
+      {:ok, nil}
     end
   end
 

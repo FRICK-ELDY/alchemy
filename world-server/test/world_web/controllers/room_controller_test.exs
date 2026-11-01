@@ -121,6 +121,138 @@ defmodule WorldWeb.RoomControllerTest do
     assert alloc_claims["role"] == "guest"
   end
 
+  test "csr_pem yields mtls with forced guest CN when CA configured", %{
+    conn: conn,
+    signer: signer
+  } do
+    openssl = mtls_test_openssl()
+    tmp = Path.join(System.tmp_dir!(), "world-mtls-ctrl-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+    on_exit(fn -> File.rm_rf(tmp) end)
+
+    ca_key = Path.join(tmp, "ca-key.pem")
+    ca_cert = Path.join(tmp, "ca-cert.pem")
+
+    {_, 0} =
+      System.cmd(
+        openssl,
+        [
+          "req",
+          "-x509",
+          "-newkey",
+          "rsa:2048",
+          "-nodes",
+          "-keyout",
+          ca_key,
+          "-out",
+          ca_cert,
+          "-days",
+          "1",
+          "-subj",
+          "/CN=alchemy-test-client-ca"
+        ],
+        stderr_to_stdout: true
+      )
+
+    Application.put_env(:world, :mtls_ca_cert_path, ca_cert)
+    Application.put_env(:world, :mtls_ca_key_path, ca_key)
+    Application.put_env(:world, :mtls_work_dir, Path.join(tmp, "work"))
+    Application.put_env(:world, :openssl_bin, openssl)
+
+    on_exit(fn ->
+      Application.delete_env(:world, :mtls_ca_cert_path)
+      Application.delete_env(:world, :mtls_ca_key_path)
+      Application.delete_env(:world, :mtls_work_dir)
+      Application.delete_env(:world, :openssl_bin)
+    end)
+
+    owner = "22222222-2222-2222-2222-222222222222"
+    guest = "33333333-3333-3333-3333-333333333333"
+
+    assert %{"room_id" => "mtls-room"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "mtls-room"})
+             |> json_response(201)
+
+    key = Path.join(tmp, "client.key.pem")
+    csr_path = Path.join(tmp, "client.csr.pem")
+
+    {_, 0} =
+      System.cmd(
+        openssl,
+        [
+          "req",
+          "-newkey",
+          "rsa:2048",
+          "-nodes",
+          "-keyout",
+          key,
+          "-out",
+          csr_path,
+          "-subj",
+          "/CN=alchemy-core"
+        ],
+        stderr_to_stdout: true
+      )
+
+    csr_pem = File.read!(csr_path)
+
+    body =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> post(
+        "/api/v1/rooms/mtls-room/tokens",
+        token_params(%{role: "guest", csr_pem: csr_pem})
+      )
+      |> json_response(200)
+
+    assert is_binary(body["allocation_token"])
+    assert %{"client_cert_pem" => cert, "ca_cert_pem" => ca, "expires_at" => exp} = body["mtls"]
+    assert String.contains?(cert, "BEGIN CERTIFICATE")
+    assert String.contains?(ca, "BEGIN CERTIFICATE")
+    assert is_binary(exp)
+
+    issued = Path.join(tmp, "issued.pem")
+    File.write!(issued, cert)
+
+    {subject, 0} =
+      System.cmd(openssl, ["x509", "-in", issued, "-noout", "-subject"], stderr_to_stdout: true)
+
+    assert subject =~ "alchemy-guest"
+    refute subject =~ "alchemy-core"
+  end
+
+  test "csr_pem without CA is ignored (token without mtls)", %{conn: conn, signer: signer} do
+    Application.delete_env(:world, :mtls_ca_cert_path)
+    Application.delete_env(:world, :mtls_ca_key_path)
+    Application.delete_env(:world, :mtls_ca_cert_pem)
+    Application.delete_env(:world, :mtls_ca_key_pem)
+
+    owner = "22222222-2222-2222-2222-222222222222"
+
+    assert %{"room_id" => "nocacert"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "nocacert"})
+             |> json_response(201)
+
+    body =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post(
+        "/api/v1/rooms/nocacert/tokens",
+        token_params(%{
+          role: "guest",
+          csr_pem: "-----BEGIN CERTIFICATE REQUEST-----\nMIIB\n-----END CERTIFICATE REQUEST-----"
+        })
+      )
+      |> json_response(200)
+
+    assert is_binary(body["token"])
+    refute Map.has_key?(body, "mtls")
+  end
+
   test "health and jwks", %{conn: conn} do
     conn = get(conn, "/health")
     assert %{"status" => "ok"} = json_response(conn, 200)
@@ -627,6 +759,26 @@ defmodule WorldWeb.RoomControllerTest do
       :ok -> :ok
       {:error, :not_found} -> :ok
     end
+  end
+
+  defp mtls_test_openssl do
+    found =
+      [
+        System.get_env("OPENSSL_BIN"),
+        "openssl",
+        "C:/Program Files/Git/usr/bin/openssl.exe",
+        "C:/Program Files/OpenSSL-Win64/bin/openssl.exe"
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.find(fn bin ->
+        try do
+          match?({_, 0}, System.cmd(bin, ["version"], stderr_to_stdout: true))
+        rescue
+          _ -> false
+        end
+      end)
+
+    found || flunk("openssl not found (set OPENSSL_BIN)")
   end
 
   defp restart_repo! do

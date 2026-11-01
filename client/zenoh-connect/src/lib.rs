@@ -1,13 +1,18 @@
-//! Shared Zenoh session open helpers for host / client / e2e-probe (x0022 / x004e).
+//! Shared Zenoh session open helpers for host / client / e2e-probe (x0022 / x004e / x0066).
 //!
 //! Guarantees: `ZENOH_CONNECT` endpoint + optional `ZENOH_TLS_ROOT_CA` via JSON5 insert;
 //! optional mTLS client cert/key (`ZENOH_TLS_CONNECT_CERT` / `ZENOH_TLS_CONNECT_KEY`) when set;
-//! optional Relay allocate (`RELAY_ALLOCATE_URL`).
+//! optional Relay allocate (`RELAY_ALLOCATE_URL`); world-issued mtls via `EphemeralMtlsIdentity`.
 //! Non-guarantees: endpoint validation beyond string insert.
 
 mod allocate;
+mod ephemeral;
 
-pub use allocate::{allocate, allocate_if_configured, require_wire_cap, AllocatedIdentity};
+pub use allocate::{
+    allocate, allocate_if_configured, apply_world_mtls_or_allocate, install_world_mtls_pems,
+    mtls_env_ready, require_wire_cap, should_request_world_mtls, AllocatedIdentity,
+};
+pub use ephemeral::EphemeralMtlsIdentity;
 
 use anyhow::{anyhow, Result};
 use zenoh::Config;

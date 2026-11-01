@@ -395,13 +395,37 @@ impl SharedState {
             return;
         };
 
+        let (csr_pem, eph_key) = if zenoh_connect::should_request_world_mtls() {
+            match zenoh_connect::EphemeralMtlsIdentity::generate() {
+                Ok(eph) => (
+                    Some(eph.csr_pem.clone()),
+                    Some(eph.private_key_pem().to_string()),
+                ),
+                Err(err) => {
+                    log::warn!("host generation CSR failed: {err:#}");
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
         match crate::world_token::fetch_guest_token(
             &self.world_url,
             &self.room_id,
             &access,
             &session_pub_b64,
+            csr_pem.as_deref(),
         ) {
             Ok(guest) => {
+                if let Err(err) = zenoh_connect::apply_world_mtls_or_allocate(
+                    guest.mtls.as_ref().map(|m| m.client_cert_pem.as_str()),
+                    eph_key.as_deref(),
+                    &guest.wire_cap,
+                    "guest",
+                    &guest.allocation_token,
+                ) {
+                    log::warn!("host generation mTLS update failed: {err:#}");
+                }
                 let local_sub = match crate::jwt_sub::sub_unverified(&guest.token) {
                     Ok(s) => s,
                     Err(err) => {
