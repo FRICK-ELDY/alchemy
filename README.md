@@ -170,7 +170,7 @@ sudo cp /etc/alchemy/zenoh-wan.json5 /etc/alchemy/zenoh-wan.json5.bak
 sudo cp /tmp/zenoh-wan.json5 /etc/alchemy/zenoh-wan.json5
 # 控えた listen_* をエディタで戻す（経路 A: 正本の server-*.pem のままなら不要）
 # sudo nano /etc/alchemy/zenoh-wan.json5
-grep -E 'listen_|root_ca|shared_memory|guest-egress|host-egress|enabled:' /etc/alchemy/zenoh-wan.json5
+grep -E 'listen_|root_ca|shared_memory|host-room|guest-room|room/\*\*|enabled:' /etc/alchemy/zenoh-wan.json5
 sudo systemctl restart alchemy-zenohd
 systemctl is-active alchemy-zenohd
 ```

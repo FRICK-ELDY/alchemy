@@ -1,7 +1,8 @@
 # x0067 — zenohd ACL: キー族 put 分離と host→guest 配信
 
-> **ID:** `x0067` · **slug:** `zenohd-acl-put-family-host-guest` · **status:** `planned` · **area:** `[zenoh, relay, docs, host, client]` · **depends_on:** `[x004e, x0066]`  
-> **種別:** 調査課題（現行 WAN は回避策で運用）
+> **ID:** `x0067` · **slug:** `zenohd-acl-put-family-host-guest` · **status:** `planned` · **area:** `[zenoh, relay, docs]` · **depends_on:** `[x004e, x0066]`  
+> **種別:** 調査課題（現行 WAN は回避策で運用）  
+> **注:** Phase 1 の否定系観測に host/client ログを使うが、本 Slice 自体は relay ACL 調査が主目的。
 
 目標: **zenohd 1.10.1** で観測した「キー族 put 分離 + egress だと guest→host は通るが **host→guest（Manifest / Presence）が届かない**」現象の原因を特定し、第1壁の put 分離を安全に復帰できる条件を決める。
 
@@ -31,9 +32,31 @@
 - host→guest 失敗時: client は `declare_subscriber` 成功後も sample 無し（`drop SceneManifest` も無し）→ **ACL/経路で未到達**（検証 reject ではない）
 - 待ち時間延長（2s→8s）では解消しなかった（再送は届いていない）
 
+### 失敗構成の正本（Phase 0）
+
+**commit:** [`388b768`](https://github.com/FRICK-ELDY/alchemy/commit/388b768)（`fix(x0066): WAN ACL の put 分離を戻し Docker CA マウントを直す`）。  
+作業ツリーの現行 `config.wan.json5`（統合版）とは別物。中身は次のみ:
+
+```bash
+git show 388b768:relay-server/config.wan.json5
+```
+
+SHM off + LE listen のうえで VPS に載せ、host→guest 失敗を再確認した版。
+
+| rule id | flows | messages（要点） | key_exprs（要点） |
+|:---|:---|:---|:---|
+| `host-put-sim` | ingress | put, delete, declare_queryable, reply, liveliness_token | `…/*/*/manifest\|frame\|presence\|snapshot\|host_control\|alive/**` |
+| `host-sub-input` | ingress | declare_subscriber, declare_liveliness_subscriber, liveliness_query, query | input / alive / sim keys |
+| `host-egress-input` | egress | put, delete, liveliness_token, query, reply | input / alive / snapshot |
+| `guest-put-input` | ingress | put, delete, liveliness_token | input / alive only |
+| `guest-sub-sim` | ingress | declare_subscriber, … | sim keys + alive |
+| `guest-egress-sim` | egress | put, delete, liveliness_token, reply | sim keys + alive |
+
+policies: host ← 上3、guest ← 下3。`shared_memory.enabled: false`。
+
 ## 仮説（未検証・優先順）
 
-1. **egress put の subject / flow 組み合わせ**: guest 向け sim put が「egress 専用ルール」ではマッチせず、`flows: [ingress, egress]` 同一ルールに put を載せると通る（put 統合で偶然満たした）
+1. **egress 専用 put ルールの効き方**: 失敗構成は guest sim put を **egress 専用**ルールにしている。同一ルールに `flows: [ingress,egress]` + `put` を載せると通る可能性はあるが、そのとき **ingress put も許可される**（＝put 分離が崩れる）。切り分け必須
 2. **Interest / declare の伝播**: guest の `declare_subscriber` が host 面の egress を要し、現行 host ルール不足で publisher 側 interest が欠ける
 3. **キー式 `*/*/` vs `**`**: inclusion マッチの差（input は `*/*/` で guest→host 成功しているため優先度低）
 4. **ペイロードサイズ / 断片化**: Manifest 大・Presence 小の両方未到達なら優先度低
@@ -41,27 +64,38 @@
 
 ## 調査手順（案）
 
-1. ベース: WAN mTLS + `shared_memory.enabled: false` + LE listen（現行運用）
-2. 最小差分だけ戻す（毎回 zenohd restart → host 起動維持 → silent client）:
-   - A: 現行キー族分離のまま、`guest-egress-sim` と `guest-sub-sim` を **1 ルールにマージ**（`flows: [ingress, egress]`、messages に put + declare_subscriber）。guest の **sim put(ingress) はまだ付けない**
-   - B: A がダメなら `host-put-sim` のみ `flows: [ingress, egress]`
-   - C: guest sim キーに put を **egress のみ**残し、ingress put は input/alive のみ（現状）を維持したまま、host 側 interest 用に `declare_subscriber` egress を host へ追加
-3. 各段で host ログ（assign / join assist）と client（Manifest blake3 / Presence）を記録
-4. 通った最小構成を `config.wan.json5` 正本化し、本 Slice を done
+ベース: WAN mTLS + `shared_memory.enabled: false` + LE listen。毎回 zenohd restart → host 起動維持 → silent client。
+
+各段の成功判定（両方見る）:
+
+- **配信:** client が Manifest blake3 / Presence を受信
+- **分離維持（transport 層）:** guest から sim キー（例: `…/manifest`）への **ingress put が zenohd ACL で拒否**される（put API エラー / ルータ側 drop。アプリ署名 discard は数えない）。A2 以外でここが崩れたら「分離復帰」とは数えない
+
+差分（失敗構成 `388b768` からの最小変更）:
+
+| 段 | 内容 | ねらい | 解釈上の注意 |
+|:---|:---|:---|:---|
+| **A0（対照）** | `388b768` のまま再掲 | ベースライン再現 | guest-sub-sim と guest-egress-sim は **別ルールのまま** |
+| **A1** | A0 を維持。ルール id / 文言以外は変えない再確認 | フレーク排除 | — |
+| **A2（明示実験）** | guest の sim 向けに **1 ルール**へマージ: `flows: [ingress, egress]`、messages に `put` + `declare_subscriber` 等 | 「同一ルール化すると配信が通るか」 | **ingress put も許可される**前提。通っても「flow マージ」と「guest sim ingress put 解禁」が同時に起きる → 仮説1の肯定にはなるが **分離復帰ではない** |
+| **B** | A0 ベースで `host-put-sim` のみ `flows: [ingress, egress]`（guest 側は分離のまま） | host 面 put の両 flow | guest sim ingress put は引き続き拒否であること |
+| **C** | A0 ベースで host に sim/input 向け `declare_subscriber` **egress** allow を追加 | interest 仮説 | 同上。Manifest 受信だけで他要因と混ぜない |
+
+通った最小構成のうち、**分離維持（guest sim ingress put 拒否）を満たすもの**があれば正本候補。A2 のみ成功なら「統合に近づいただけ」と記録し、分離復帰は未達とする。
 
 ## 完了条件
 
 1. 上表に「最小で host→guest が通る ACL」または「分離復帰不可」の結論がある
 2. `config.wan.json5` / wan 手順 / trust-boundary の第1壁記述が結論と一致
-3. 可能なら zenohd 版・設定差分・再現ログへのリンクが Slice に残る
-4. put 分離復帰時は「guest が sim に transport put できない」否定系を WAN または同等で 1 本
+3. zenohd 版・失敗構成 commit（`388b768`）・各段の差分が Slice に残る
+4. put 分離復帰時は「guest が sim に **ingress** put できない」否定系を WAN または同等で 1 本（**transport 拒否**を観測。アプリ discard のみは不可。各実験段でも同時観測）
 
 ## Phase
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | 本課題 Slice + 観測の固定 | done |
-| 1 | 最小差分 A/B/C の WAN 再現 | planned |
+| 0 | 本課題 Slice + 観測の固定 + 失敗 ACL 正本参照 | done |
+| 1 | 最小差分 A0/A1/A2/B/C の WAN 再現 | planned |
 | 2 | 正本 ACL 更新 or 非保証の確定 | planned |
 | 3 | （任意）upstream / 新 zenohd 再検証 | planned |
 
@@ -73,7 +107,8 @@
 
 ## 関連
 
-- [`relay-server/config.wan.json5`](../../../relay-server/config.wan.json5)
+- 現行（回避）: [`relay-server/config.wan.json5`](../../../relay-server/config.wan.json5)（`e2778dd` 以降の `host-room` / `guest-room`）
+- 失敗（分離）: `git show 388b768:relay-server/config.wan.json5`
 - [relay-server-wan.md](../../0_doc/manual/relay-server-wan.md)
 - [trust-boundary.md](../../0_doc/architecture/trust-boundary.md)
 - [x004e](x004e-relay-agent-mvp.md) · [x0066](x0066-ephemeral-mtls-world-issue.md)
