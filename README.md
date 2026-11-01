@@ -153,7 +153,7 @@ make ci-e2e                             # x001f hermetic: compose 縦 login→to
 
 ### VPS 上の zenohd 設定更新
 
-正本は常にリポジトリの [`relay-server/config.wan.json5`](relay-server/config.wan.json5)。VPS の `/etc/alchemy/zenoh-wan.json5` へコピーしたあと、**listen 証明書パスだけ**運用に合わせて戻す（LE 経路 B の例）。`enable_mtls` / `root_ca_certificate` / `access_control` / `shared_memory` はリポジトリ側を優先する。
+正本は常にリポジトリの [`relay-server/config.wan.json5`](relay-server/config.wan.json5)。VPS の `/etc/alchemy/zenoh-wan.json5` へコピーしたあと、**listen 証明書パスだけ**運用中の値に手で戻す（リポジトリ正本は例の `server-*.pem`）。`enable_mtls` / `root_ca_certificate` / `access_control` / `shared_memory` はリポジトリ側を優先する。経路 B のパス例は [relay-server-dns.md](.workspace/0_doc/manual/relay-server-dns.md)（certbot `live/…` または copy 先の `server-*.pem`）。
 
 手元（PowerShell）:
 
@@ -164,14 +164,12 @@ scp .\relay-server\config.wan.json5 account@<VPS_IP>:/tmp/zenoh-wan.json5
 VPS:
 
 ```bash
+# いま動いている listen パスを控える
+grep -E 'listen_private_key|listen_certificate' /etc/alchemy/zenoh-wan.json5
 sudo cp /etc/alchemy/zenoh-wan.json5 /etc/alchemy/zenoh-wan.json5.bak
 sudo cp /tmp/zenoh-wan.json5 /etc/alchemy/zenoh-wan.json5
-# 経路 B（Let's Encrypt）— リポジトリ正本の server-*.pem を LE に戻す
-sudo sed -i \
-  -e 's|listen_private_key: ".*"|listen_private_key: "/etc/alchemy/tls/le-privkey.pem"|' \
-  -e 's|listen_certificate: ".*"|listen_certificate: "/etc/alchemy/tls/le-fullchain.pem"|' \
-  /etc/alchemy/zenoh-wan.json5
-# 経路 A（私有サーバ証明書）なら sed は不要（正本の server-*.pem のまま）
+# 控えた listen_* をエディタで戻す（経路 A: 正本の server-*.pem のままなら不要）
+# sudo nano /etc/alchemy/zenoh-wan.json5
 grep -E 'listen_|root_ca|shared_memory|guest-egress|host-egress|enabled:' /etc/alchemy/zenoh-wan.json5
 sudo systemctl restart alchemy-zenohd
 systemctl is-active alchemy-zenohd

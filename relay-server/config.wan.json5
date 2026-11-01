@@ -39,9 +39,10 @@
   access_control: {
     enabled: true,
     // default deny: subscribers need matching *egress* put allows or samples never arrive.
-    // 第1壁 put 分離（guest=input/alive、host=sim）を維持。再強化しないこと:
+    // 第1壁 put 分離（guest=input/alive、host=sim）を維持。緩和しないこと:
     //   guest に sim キーへの put(ingress) を足さない / host に input への put(ingress) を足さない。
-    // WAN 検証: egress 追加後 guest→host は通った。host→guest 沈黙時は SHM off + 本ルールで再検証すること
+    // host_control: host ingress put のみ（既定オフ。WAN で ALCHEMY_HOST_CONTROL=1 は ACL 上不可）。
+    // WAN 検証: egress 追加後 guest→host は通った。host→guest は SHM off + 本ルールで再確認すること
     // （room/** への put 統合は攻撃面拡大のため採用しない）。
     default_permission: "deny",
     rules: [

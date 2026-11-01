@@ -44,7 +44,8 @@ services:
       MTLS_CA_KEY_PATH: ${MTLS_CA_KEY_PATH:-}
     volumes:
       - world_prod_keys:/var/lib/world
-      # Optional; empty dir is fine if MTLS_CA_* unset. Never nest under /var/lib/world.
+      # Optional x0066 CA. If ./priv/mtls is missing, Docker creates an empty dir (gitignored).
+      # Omit this line when unused. Never nest under /var/lib/world.
       - ./priv/mtls:/etc/alchemy/mtls:ro
 
 volumes:
