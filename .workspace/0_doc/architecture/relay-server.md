@@ -1,8 +1,8 @@
 # relay-server
 
 > **正本**: [`relay-server/`](../../../relay-server/)  
-> **ステータス**: ローカル done · WAN TCP（x001b）→ **WAN TLS（x0022）** → **WAN mTLS + role ACL（x004e）**  
-> **役割**: zenohd の設定・待受（空間同期の仲介）。Allocation → mTLS は **Relay Agent**（[`relay-agent/`](../../../relay-agent/)）
+> **ステータス**: ローカル done · WAN TCP（x001b）→ **WAN TLS（x0022）** → **WAN mTLS + role ACL（x004e）** → **world 短命 mTLS（x0066）**  
+> **役割**: zenohd の設定・待受（空間同期の仲介）。短命 client 証明書の **署名**は拠点 **world-server**（x0066）。**Relay Agent**（[`relay-agent/`](../../../relay-agent/)）は互換フォールバック
 
 ## 保証すること / しないこと
 
@@ -10,9 +10,11 @@
 |:---|:---|
 | 同一マシン / LAN の pub-sub（`config.json5` tcp・ACL オフ） | JWKS / Room Token ACL（検証は host-server） |
 | TCP リスナ `0.0.0.0:7447`（localhost + LAN、x0014） | CCU・帯域 QoS；**router max payload**（アプリ側 decode 上限は [protocol.md](protocol.md) x003b） |
-| WAN: ConoHa 上 zenohd の **TLS+mTLS** 待受（x004e）+ IP allowlist | Billing / 第三者リレー / ACL ホットリロード |
-| WAN: role CN ACL（`alchemy-host` / `alchemy-guest`）+ default deny | per-room 動的 subject（部屋隔離は `wire_cap`） |
-| client/host の `ZENOH_CONNECT`（既定 localhost `tcp`；WAN は `tls/` + allocate） | Relay Allocation Token の課金フィールド |
+| WAN: ConoHa 上 zenohd の **TLS+mTLS** 待受（client CA で検証） | Billing / 第三者リレー / ACL ホットリロード |
+| WAN: role CN ACL（`alchemy-host` / `alchemy-guest`）+ default deny（第1壁: put/sub キー族） | per-room 動的 subject；第1壁による部屋キー秘匿 |
+| client/host の `ZENOH_CONNECT`（既定 localhost `tcp`；WAN は `tls/` + world `mtls` または allocate） | 送信元 IP allowlist（任意の追加硬化）；Relay Allocation の課金フィールド |
+
+部屋隔離は **`wire_cap` キー式**（第2壁）+ アプリ署名。運用手順: [`manual/relay-server-wan.md`](../manual/relay-server-wan.md)
 
 ## 設定ファイル
 
@@ -21,7 +23,7 @@
 | [`config.json5`](../../../relay-server/config.json5) | ローカル / LAN（multicast ON・tcp・ACL オフ） |
 | [`config.wan.json5`](../../../relay-server/config.wan.json5) | ConoHa 公網（multicast OFF・**tls+mTLS+ACL**） |
 
-運用手順（WAN 正本: mTLS / Relay Agent / allowlist）: [`manual/relay-server-wan.md`](../manual/relay-server-wan.md)  
+運用手順（WAN 正本: world 発行 mTLS / zenohd 検証 / Relay Agent 互換）: [`manual/relay-server-wan.md`](../manual/relay-server-wan.md)  
 DNS / Let's Encrypt（追加）: [`manual/relay-server-dns.md`](../manual/relay-server-dns.md)
 
 ## MVP キー式（x004e）
@@ -40,6 +42,6 @@ DNS / Let's Encrypt（追加）: [`manual/relay-server-dns.md`](../manual/relay-
 
 偽 publish 時の防御責任: [trust-boundary.md](trust-boundary.md)。
 
-## トークン検証
+## トークン検証と mTLS 発行
 
-zenohd は Token を見ない。**Relay Agent** が Allocation Token（`aud=alchemy-relay`）を JWKS で検証してから短命 mTLS 証明書を渡す。Room Token は従来どおり host-server。アプリ層の境界は [trust-boundary.md](trust-boundary.md)。
+zenohd は Token を見ない。**推奨（x0066）**: world が Room Token 発行時に CSR を受け、同一 client CA で短命 cert を返す。**互換（x004e）**: Relay Agent が Allocation Token（`aud=alchemy-relay`）を JWKS で検証してから短命 mTLS 証明書を渡す。Room Token は従来どおり host-server。アプリ層の境界は [trust-boundary.md](trust-boundary.md)。

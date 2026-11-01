@@ -63,7 +63,7 @@ flowchart TB
 
         subgraph OpenRelayNetwork["Open Zenoh Relay ネットワーク (マルチテナント相乗り ＆ サブスク 70:30 分配対象)"]
             direction LR
-            OfficialVPS["公式リレー: ConoHa VPS (Ubuntu / 4Core / 4GB)<br/>【relay-server (zenohd) + 軽量 Relay Agent】<br/>・【現状】TLS :7447 待受 + mTLS / role CN ACL（DB非搭載・ステートレス）；Relay Agent が Allocation Token を world JWKS で検証 → 短命 mTLS；Room Token は host-server（zenohd は JWT を見ない）<br/>・【目標】QUIC / WebTransport 待受 ／ 名前空間隔離 alchemy/tenant/{運営者ID}/room/{room_id}/** ／ Token Bucket の CCU・帯域 QoS<br/>・$0 無料枠ユーザーおよびサードパーティリレー障害時の緊急フォールバック先"]:::vps
+            OfficialVPS["公式リレー: ConoHa VPS (Ubuntu / 4Core / 4GB)<br/>【relay-server (zenohd)；Relay Agent は互換】<br/>・【現状】TLS :7447 待受 + mTLS / role CN ACL（DB非搭載・ステートレス）；短命 mTLS は拠点 world が署名（x0066；Agent はフォールバック）；Room Token は host-server（zenohd は JWT を見ない）<br/>・【目標】QUIC / WebTransport 待受 ／ 名前空間隔離 alchemy/tenant/{運営者ID}/room/{room_id}/** ／ Token Bucket の CCU・帯域 QoS<br/>・$0 無料枠ユーザーおよびサードパーティリレー障害時の緊急フォールバック先"]:::vps
 
             ThirdPartyRelay["サードパーティ『Zenoh リレー貸し屋』ノード群 (Open Zenoh Relay 規格)<br/>【インフラ提供者が自前VPSや10G回線で zenohd コンテナのみを起動 (DB不要)】<br/>・/.well-known/alchemy-relay-info.json 公開<br/>・個人運営者から指名されると、その運営者の月額サブスクの 30% を毎月獲得<br/>・market-server でイベント用の『VIP専用リレー貸切パス』も販売可能"]:::relay3rd
 

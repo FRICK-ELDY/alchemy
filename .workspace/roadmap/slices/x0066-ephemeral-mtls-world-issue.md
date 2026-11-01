@@ -4,8 +4,6 @@
 
 目標: 静的 client 証明書の事前配布と「固定 IP allowlist 前提」をやめ、**クライアントがオンメモリで CSR を作り、world-server が私有 CA で短命 mTLS 証明書を署名**して WAN zenohd に入る。トピック汚染は **第1壁 Zenoh CN ACL**、部屋隔離は **第2壁 `wire_cap` キー**（現行のまま）。
 
-設計ドラフト（移行元）: [`../ephemeral_mtls_zenoh_acl.md`](../ephemeral_mtls_zenoh_acl.md)（正本は本 Slice）。
-
 ## 保証する / しない
 
 | 保証する | 保証しない |

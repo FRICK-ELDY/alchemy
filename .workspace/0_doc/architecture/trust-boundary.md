@@ -34,7 +34,7 @@ flowchart TB
   Auth -->|"access JWT"| Client
 ```
 
-**原則:** zenohd は JWT を見ない（[relay-server](relay-server.md)）。WAN では **Relay Agent** が Allocation Token を検証し短命 mTLS を渡し、zenohd は role CN ACL でキー族を絞る（x004e）。部屋隔離の残りは **`wire_cap` キー式** + アプリ署名。transport TLS  alone は盗聴耐性であり、なりすましの唯一の防御ではない。
+**原則:** zenohd は JWT を見ない（[relay-server](relay-server.md)）。WAN では **world（x0066）** が CSR から短命 mTLS を署名する（互換として **Relay Agent** が Allocation Token を検証して発行してもよい）。zenohd は同一 client CA で検証し、role CN ACL でキー族の put/sub を絞る（第1壁）。部屋隔離は **`wire_cap` キー式**（第2壁）+ アプリ署名。guest の frame/manifest **subscribe** は ACL 上許される。transport TLS alone は盗聴耐性であり、なりすましの唯一の防御ではない。送信元 IP allowlist は任意硬化であり保証しない。
 
 ## Zenoh キー × 脅威 × 防御
 
@@ -88,4 +88,5 @@ flowchart TB
 | x0044 | client world_jwks soft/hard + unknown-kid cooldown |
 | x0045 | host Room Token alg/iss/aud/exp/room 否定系テスト |
 | x0049 | localhost metrics（公網・Tunnel に出さない） |
-| x004e | Relay Agent Allocation → mTLS；role ACL；`wire_cap` キー隔離 |
+| x004e | Relay Agent Allocation → mTLS（互換）；role ACL；`wire_cap` キー隔離 |
+| x0066 | world が CSR から短命 mTLS を署名；zenohd は同一 client CA で検証；IP allowlist 非保証 |
