@@ -18,8 +18,8 @@ DNS / Let's Encrypt（サーバ証明書のドメイン化）: [`relay-server-dn
 
 ## 二重の壁
 
-1. **第1壁 — Zenoh ACL（CN）**: guest（`alchemy-guest`）は `frame` / `manifest` 等へ put できない。`input` への put はできる（[`config.wan.json5`](../../../relay-server/config.wan.json5)）
-2. **第2壁 — `wire_cap`**: キー式 `alchemy/dev/room/{room_id}/{wire_cap}/…` と Room Token / アプリ署名
+1. **第1壁 — Zenoh ACL（CN）**: role ごとの **キー族 × メッセージ** を絞る。guest（`alchemy-guest`）は `frame` / `manifest` 等へ **put できない**が、同じキー族への **subscribe はできる**（[`config.wan.json5`](../../../relay-server/config.wan.json5)）。部屋の鍵空間を隠す壁ではない
+2. **第2壁 — `wire_cap`**: キー式 `alchemy/dev/room/{room_id}/{wire_cap}/…` と Room Token / アプリ署名。**部屋隔離はこちら**
 
 zenohd は **JWT を見ない**。平文 TCP は待受しない。`quic/` 待受は対象外。
 
@@ -41,53 +41,9 @@ client の秘密鍵は配布物に同梱しない。接続のたびに手元で�
 
 ## 初回セットアップ
 
-### 1. 証明書を分ける
+手元（開発マシン）で材料を作り、**拠点 world** と **VPS** へ配る。生成もコピーも、まず手元で行う。
 
-開発用（私有サーバ証明書）はリポジトリのスクリプト。Let's Encrypt を使うときはサーバ証明書だけ [`relay-server-dns.md`](relay-server-dns.md) に合わせ、**client CA は私有のまま**残す。
-
-```bash
-bash relay-server/scripts/gen-wan-dev-certs.sh <VPS_IP_or_DNS> /tmp/alchemy-tls
-```
-
-| ファイル | 置く場所 | 用途 |
-|:---|:---|:---|
-| `server-cert.pem` / `server-key.pem` | VPS `/etc/alchemy/tls/` | zenohd の listen。Let's Encrypt のときは fullchain / privkey に差し替える |
-| `client-ca-cert.pem` | VPS `/etc/alchemy/tls/` **と** 拠点 world | zenohd の `root_ca_certificate`。world の `MTLS_CA_CERT_PATH` |
-| `client-ca-key.pem` | 拠点 world（`0600`） | `MTLS_CA_KEY_PATH`。world が CSR に署名する |
-| `ca-cert.pem` | 私有サーバ証明書のとき、host / client | `ZENOH_TLS_ROOT_CA`（zenohd のサーバ証明書を信頼する） |
-
-Let's Encrypt のサーバ証明書では、client / host の `ZENOH_TLS_ROOT_CA` は不要（公開 CA）。
-
-VPS へサーバ材料と client CA **証明書**だけを置く:
-
-```bash
-sudo mkdir -p /etc/alchemy/tls
-sudo cp /tmp/alchemy-tls/server-cert.pem /tmp/alchemy-tls/server-key.pem \
-  /tmp/alchemy-tls/client-ca-cert.pem /etc/alchemy/tls/
-sudo chmod 600 /etc/alchemy/tls/server-key.pem
-```
-
-`client-ca-key.pem` は推奨経路では VPS に置かない。Relay Agent を併用するときだけ、後述の `RELAY_TLS_DIR` に証明書と鍵の両方を置く。
-
-### 2. 拠点 world に署名 CA を渡す
-
-world プロセスから読めるパス（または PEM そのもの）を設定する。秘密鍵をログやレスポンスに出さない。
-
-```bash
-# パス
-MTLS_CA_CERT_PATH=/path/to/client-ca-cert.pem
-MTLS_CA_KEY_PATH=/path/to/client-ca-key.pem
-
-# または PEM をそのまま（どちらか一方）
-# MTLS_CA_CERT_PEM=...
-# MTLS_CA_KEY_PEM=...
-```
-
-署名は openssl CLI（Elixir に x509 パッケージは足さない）。`openssl` が PATH に無いときは `OPENSSL_BIN` で実行ファイルを指定する。未設定、または CA が読めないとき、world は `csr_pem` を無視して Token だけ返し、`mtls` フィールドは付けない。
-
-API 上の `expires_at` は署名から **6 時間**。openssl の NotAfter は **1 日**。期限の 30 分前にセッションを自動で開き直す手順は、この文書の範囲外。Token を取り直すときに host / client は新しい CSR を付ける。
-
-### 3. SSH と zenohd（VPS）
+### 1. SSH と zenohd（VPS）
 
 ```bash
 ssh ubuntu@<VPS_IP>
@@ -95,16 +51,91 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 cargo install zenohd
 zenohd --help | head
+# いったんログアウトして手元に戻る
 ```
 
-### 4. config 配置
+### 2. 証明書を作る（手元）
+
+スクリプトは **私有サーバ CA** と **client CA** を同じ鍵から複製する開発用。Let's Encrypt に移すときは **サーバ証明書だけ**差し替え、**client CA（`client-ca-*.pem`）は作り直さない**。再実行すると client CA も新規になり、既発行の短命 client 証明書と zenohd の検証が食い違う。
+
+```bash
+# 手元のリポジトリで
+bash relay-server/scripts/gen-wan-dev-certs.sh <VPS_IP_or_DNS> ./alchemy-tls-wan
+```
+
+| ファイル | 置く場所 | 用途 |
+|:---|:---|:---|
+| `server-cert.pem` / `server-key.pem` | **A.** VPS `/etc/alchemy/tls/` | 私有サーバ証明書の listen |
+| （LE fullchain / privkey） | **B.** VPS（certbot パスまたは `/etc/alchemy/tls/`） | 公開 DNS 名があるときの listen。手順は [`relay-server-dns.md`](relay-server-dns.md) |
+| `client-ca-cert.pem` | VPS `/etc/alchemy/tls/` **と** 拠点 world | zenohd の `root_ca_certificate`。world の `MTLS_CA_CERT_PATH` |
+| `client-ca-key.pem` | 拠点 world のみ（`0600`） | `MTLS_CA_KEY_PATH`。world が CSR に署名する |
+| `ca-cert.pem` | **A** のとき host / client | `ZENOH_TLS_ROOT_CA`（zenohd サーバ証明書を信頼する）。**B** では不要 |
+
+#### A. 開発用（私有サーバ証明書）— VPS へ
+
+```bash
+# 手元 → VPS（client CA の鍵は送らない）
+scp ./alchemy-tls-wan/server-cert.pem ./alchemy-tls-wan/server-key.pem \
+  ./alchemy-tls-wan/client-ca-cert.pem ubuntu@<VPS_IP>:/tmp/alchemy-tls/
+
+ssh ubuntu@<VPS_IP>
+sudo mkdir -p /etc/alchemy/tls
+sudo cp /tmp/alchemy-tls/server-cert.pem /tmp/alchemy-tls/server-key.pem \
+  /tmp/alchemy-tls/client-ca-cert.pem /etc/alchemy/tls/
+sudo chmod 600 /etc/alchemy/tls/server-key.pem
+rm -f /tmp/alchemy-tls/server-key.pem
+```
+
+#### B. 本番寄り（Let's Encrypt）— サーバ証明書だけ
+
+1. 手元で §2 の gen を一度だけ実行し、**`client-ca-cert.pem` だけ** VPS へ置く（`server-*.pem` は LE に置き換えるので VPS の listen には使わない）
+2. サーバ証明書の取得・config 差し替えは [`relay-server-dns.md`](relay-server-dns.md)
+3. `enable_mtls` / `root_ca_certificate`（私有 client CA）/ ACL は残す
+
+```bash
+scp ./alchemy-tls-wan/client-ca-cert.pem ubuntu@<VPS_IP>:/tmp/alchemy-tls/
+ssh ubuntu@<VPS_IP> 'sudo mkdir -p /etc/alchemy/tls && sudo cp /tmp/alchemy-tls/client-ca-cert.pem /etc/alchemy/tls/'
+```
+
+`client-ca-key.pem` は推奨経路では VPS に置かない。Relay Agent を併用するときだけ、後述の `RELAY_TLS_DIR` に証明書と鍵の両方を置く。
+
+### 3. 拠点 world に署名 CA を渡す（手元 → 拠点）
+
+証明書と秘密鍵の **両方**が必要。パス方式（`MTLS_CA_*_PATH`）か PEM 方式（`MTLS_CA_*_PEM`）のどちらか一方の **方式**を選ぶ。どちらの方式でも **cert と key のペア**を揃える（片方だけでは `resolve_ca` が失敗する）。
+
+```bash
+# 例: 拠点マシン上の固定パスへ（手元から scp / 共有ディレクトリなど）
+mkdir -p /etc/alchemy/mtls
+cp ./alchemy-tls-wan/client-ca-cert.pem ./alchemy-tls-wan/client-ca-key.pem /etc/alchemy/mtls/
+chmod 644 /etc/alchemy/mtls/client-ca-cert.pem
+chmod 600 /etc/alchemy/mtls/client-ca-key.pem
+```
+
+world の環境変数（秘密鍵をログやレスポンスに出さない）:
+
+```bash
+# パス方式（cert / key 両方）
+MTLS_CA_CERT_PATH=/etc/alchemy/mtls/client-ca-cert.pem
+MTLS_CA_KEY_PATH=/etc/alchemy/mtls/client-ca-key.pem
+
+# または PEM 方式（cert / key 両方。PATH 方式と併用しない）
+# MTLS_CA_CERT_PEM="$(cat /etc/alchemy/mtls/client-ca-cert.pem)"
+# MTLS_CA_KEY_PEM="$(cat /etc/alchemy/mtls/client-ca-key.pem)"
+```
+
+署名は openssl CLI（Elixir に x509 パッケージは足さない）。`openssl` が PATH に無いときは `OPENSSL_BIN` で実行ファイルを指定する。未設定、または CA が読めないとき、world は `csr_pem` を無視して Token だけ返し、`mtls` フィールドは付けない。
+
+API 上の `expires_at` は署名から **6 時間**。openssl の NotAfter は **1 日**。期限の 30 分前にセッションを自動で開き直す手順は、この文書の範囲外。Token を取り直すときに host / client は新しい CSR を付ける。
+
+### 4. config 配置（VPS）
 
 ```bash
 sudo mkdir -p /etc/alchemy
 sudo cp relay-server/config.wan.json5 /etc/alchemy/zenoh-wan.json5
 # listen: tls/0.0.0.0:7447
-# listen_private_key / listen_certificate … サーバ証明書
-# root_ca_certificate: /etc/alchemy/tls/client-ca-cert.pem
+# A: listen_* → /etc/alchemy/tls/server-*.pem
+# B: listen_* → Let's Encrypt fullchain/privkey（relay-server-dns.md）
+# root_ca_certificate: /etc/alchemy/tls/client-ca-cert.pem（A/B 共通）
 # enable_mtls: true と access_control はそのまま
 ```
 
@@ -136,7 +167,7 @@ sudo systemctl status alchemy-zenohd
 
 ### 6. ufw
 
-7447 の入場は mTLS 握手（client CA で署名された証明書が無い接続は zenohd が拒否する）。送信元 IP の固定リストは手順に含めない。
+7447 の入場は **mTLS**（client CA で署名された証明書が無い接続は zenohd が拒否する）。送信元 IP の固定リストは **推奨手順に含めない**（任意の追加硬化。下記）。
 
 ```bash
 sudo ufw default deny incoming
@@ -147,9 +178,11 @@ sudo ufw enable
 sudo ufw status numbered
 ```
 
-すでに「特定のグローバル IP だけ 7447」というルールがある VPS は、そのルールを外して `ufw allow 7447/tcp` にする。限定ルールが残っていると、登録外のクライアントは握手の前に捨てられる。
+すでに「特定のグローバル IP だけ 7447」というルールがある VPS で、未知のクライアント回線からも入室したいときは、そのルールを外して `ufw allow 7447/tcp` にする。限定ルールが残っていると、登録外のクライアントは握手の前に捨てられる。
 
 ベンダーのセキュリティグループも **7447/tcp をクライアントから到達できる**ようにする。SSH は送信元を絞ったままにする。平文の publish ポートは増やさない。
+
+**任意の追加硬化**: 運用上、接続元グローバル IP が固定で分かる場合だけ、7447 を送信元制限してもよい。これは保証ではない。公網で開くと第1壁の **guest 購読面**（`frame` / `manifest` 等の subscribe）にも到達しうるので、部屋隔離は第2壁（`wire_cap`）とアプリ署名に依存する。
 
 到達確認:
 
@@ -182,11 +215,11 @@ host / client に `RELAY_ALLOCATE_URL=http://<到達できるホスト>:7450` �
 
 ### 拠点 host
 
-world / auth が同じマシンの既定（`:4003` / `:4002`）なら URL は省略できる。world に §2 の CA が入っていること。
+world / auth が同じマシンの既定（`:4003` / `:4002`）なら URL は省略できる。world に §3 の CA が入っていること。
 
 ```powershell
 $env:ZENOH_CONNECT = "tls/<VPS_HOST>:7447"
-# 私有サーバ証明書のときだけ:
+# 私有サーバ証明書（§2-A）のときだけ:
 # $env:ZENOH_TLS_ROOT_CA = "D:\path\to\ca-cert.pem"
 cd D:\github\frick\alchemy\client
 cargo run -p host-server
@@ -199,7 +232,7 @@ $env:AUTH_URL = "https://auth.example.tld"
 $env:WORLD_URL = "https://world.example.tld"
 $env:ASSETS_URL = "https://assets.example.tld"
 $env:ZENOH_CONNECT = "tls/<VPS_HOST>:7447"
-# 私有サーバ証明書のときだけ:
+# 私有サーバ証明書（§2-A）のときだけ:
 # $env:ZENOH_TLS_ROOT_CA = "D:\path\to\ca-cert.pem"
 $env:ROOM_ID = "local"
 $env:ALCHEMY_FORCE_DESKTOP = "1"
@@ -211,7 +244,7 @@ cargo run -p client
 
 ```bash
 export ZENOH_CONNECT=tls/<VPS_HOST>:7447
-# export ZENOH_TLS_ROOT_CA=/path/to/ca-cert.pem   # 私有サーバ証明書のとき
+# export ZENOH_TLS_ROOT_CA=/path/to/ca-cert.pem   # §2-A のとき
 bash .scripts/smoke-zenoh-wan.sh
 ```
 
@@ -219,11 +252,12 @@ bash .scripts/smoke-zenoh-wan.sh
 
 ## 毎回の運用
 
-1. 拠点 world が `MTLS_CA_CERT_PATH` と `MTLS_CA_KEY_PATH`（または PEM）を読める  
+1. 拠点 world が `MTLS_CA_CERT_PATH` と `MTLS_CA_KEY_PATH`（または PEM ペア）を読める  
 2. VPS: `systemctl status alchemy-zenohd` が active  
 3. 拠点: auth / world / assets（+ 必要なら cloudflared）  
 4. 拠点: `ZENOH_CONNECT=tls/<VPS_HOST>:7447` で host-server  
 5. 外: x001a URL + 同じ `ZENOH_CONNECT` で client  
+6. client CA をローテするとき以外は `gen-wan-dev-certs.sh` を再実行しない  
 
 ---
 
@@ -231,11 +265,11 @@ bash .scripts/smoke-zenoh-wan.sh
 
 | 症状 | 見ること |
 |:---|:---|
-| TLS handshake 失敗 | サーバ証明書の CN/SAN と `ZENOH_CONNECT` のホスト名。私有サーバ CA なら `ZENOH_TLS_ROOT_CA`。client 証明書拒否なら、world の CA と zenohd の `root_ca_certificate` が同じ `client-ca-cert.pem` か、world が `mtls` を返しているか |
-| Token は取れるが zenoh に入れない | world ログの `MTLS CA not configured` / `unreadable`。`csr_pem` が無視されると `mtls` が無く、`RELAY_ALLOCATE_URL` も無ければ client 証明書が無い |
+| TLS handshake 失敗 | サーバ証明書の CN/SAN と `ZENOH_CONNECT` のホスト名。§2-A なら `ZENOH_TLS_ROOT_CA`。client 証明書拒否なら、world の CA と zenohd の `root_ca_certificate` が同じ `client-ca-cert.pem` か、world が `mtls` を返しているか。gen を再実行して client CA だけ作り直していないか |
+| Token は取れるが zenoh に入れない | world ログの `MTLS CA not configured` / `unreadable`。PATH/PEM で cert・key が揃っているか。`csr_pem` が無視されると `mtls` が無く、`RELAY_ALLOCATE_URL` も無ければ client 証明書が無い |
 | connection refused | zenohd / `ss -lntp \| grep 7447`。ufw とセキュリティグループが 7447/tcp を許可しているか。平文 `tcp/` で繋いでいないか |
-| 特定の回線だけ届かない | 古い送信元 IP 限定の 7447 ルールが残っていないか |
-| guest の frame が拒否される | 想定どおり（第1壁）。CN が `alchemy-guest` なら `input` は put でき、`frame` はできない |
+| 特定の回線だけ届かない | 送信元 IP 限定の 7447 ルールが残っていないか（推奨は `allow 7447/tcp`） |
+| guest の frame put が拒否される | 想定どおり（第1壁）。subscribe は通る。部屋隔離は `wire_cap`（第2壁） |
 | HTTPS は通るが空間が空 | `ZENOH_CONNECT` / `ROOM_ID` の一致。第2壁は `wire_cap` |
 
 ---
@@ -247,7 +281,7 @@ bash .scripts/smoke-zenoh-wan.sh
 | WAN 待受が TLS+mTLS（平文 TCP の公開をしない） | QUIC / WebTransport / P2P |
 | world が CSR を受け、Subject を使わず role CN で短命 cert を署名する | 期限 30 分前の完全な自動セッション再 open |
 | zenohd と world が同一 client CA を検証と署名に使う | ACL ホットリロード / per-room subject |
-| role CN ACL（第1壁）と `wire_cap`（第2壁） | Billing / CCU・帯域 QoS |
-| ローカル `tcp/` と、CA 未設定時の Relay Agent 経路 | 既存 VPS の IP 限定ルール撤去や Steam 公開面 Tunnel の移行作業そのもの |
+| role CN ACL（第1壁: put/sub キー族）と `wire_cap`（第2壁: 部屋隔離） | 第1壁だけで部屋のキー空間を秘匿すること |
+| ローカル `tcp/` と、CA 未設定時の Relay Agent 経路 | 送信元 IP allowlist（任意硬化。運用完了も非保証） |
 | x001a HTTPS と併用した外からの入室 | 端末に置いた一時 PEM の窃取 |
-| liveliness Delete が検証済み jti に紐付く（x0022） | client 秘密鍵の永続同梱 |
+| liveliness Delete が検証済み jti に紐付く（x0022） | client 秘密鍵の永続同梱；gen 再実行後の旧 client cert 互換 |
