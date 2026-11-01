@@ -3,8 +3,9 @@ defmodule World.MtlsIssuer do
   x0066: Sign short-lived mTLS client certs from a CSR using openssl CLI (no Hex x509 dep).
 
   Guarantees: CSR Subject is ignored; CN is forced from server-authorized role
-  (`alchemy-host` | `alchemy-guest`). Non-guarantees: sub-day openssl NotAfter
-  (tooling uses `-days 1`); soft API TTL is separate (`expires_at`).
+  (`alchemy-host` | `alchemy-guest`); CA key / CSR scratch files are removed even on
+  sign failure. Non-guarantees: sub-day openssl NotAfter (tooling uses `-days 1`);
+  soft API TTL is separate (`expires_at`).
   """
 
   require Logger
@@ -21,7 +22,7 @@ defmodule World.MtlsIssuer do
   True when CA cert + key PEM (or readable path files) are configured.
   """
   def configured? do
-    match?({:ok, _, _}, load_ca())
+    match?({:ok, _}, resolve_ca())
   end
 
   @doc """
@@ -42,29 +43,34 @@ defmodule World.MtlsIssuer do
     work = work_dir()
 
     with :ok <- File.mkdir_p(work),
-         {:ok, ca_cert_path, ca_key_path, ca_pem} <- materialize_ca(work),
-         {:ok, paths} <- write_inputs(work, csr_pem),
-         :ok <- run_sign(paths, ca_cert_path, ca_key_path, cn),
-         {:ok, cert_pem} <- File.read(paths.cert) do
-      cleanup(paths)
-      File.rm(ca_cert_path)
-      File.rm(ca_key_path)
-      now = DateTime.utc_now() |> DateTime.truncate(:second)
-      expires_at = DateTime.add(now, ttl, :second)
+         {:ok, ca_spec} <- resolve_ca(),
+         {:ok, ca_cert_path, ca_key_path, ca_pem, temp_ca_files} <- materialize_ca(work, ca_spec) do
+      try do
+        with {:ok, paths} <- write_inputs(work, csr_pem),
+             :ok <- run_sign(paths, ca_cert_path, ca_key_path, cn),
+             {:ok, cert_pem} <- File.read(paths.cert) do
+          now = DateTime.utc_now() |> DateTime.truncate(:second)
+          expires_at = DateTime.add(now, ttl, :second)
 
-      {:ok,
-       %{
-         client_cert_pem: cert_pem,
-         ca_cert_pem: ca_pem,
-         expires_at: expires_at
-       }}
-    else
-      {:error, reason} = err when is_atom(reason) ->
-        err
+          {:ok,
+           %{
+             client_cert_pem: cert_pem,
+             ca_cert_pem: ca_pem,
+             expires_at: expires_at
+           }}
+        else
+          {:error, reason} = err when is_atom(reason) ->
+            err
 
-      {:error, reason} ->
-        Logger.warning("mtls_issuer failed: #{inspect(reason)}")
-        {:error, :sign_failed}
+          {:error, reason} ->
+            Logger.warning("mtls_issuer failed: #{inspect(reason)}")
+            {:error, :sign_failed}
+        end
+      after
+        # CSR / issued cert / ext + any temp CA copies (inline PEM path).
+        maybe_cleanup_inputs()
+        Enum.each(temp_ca_files, &File.rm/1)
+      end
     end
   end
 
@@ -96,23 +102,22 @@ defmodule World.MtlsIssuer do
     _ -> false
   end
 
-  defp load_ca do
+  # {:inline, cert_pem, key_pem} | {:paths, cert_path, key_path}
+  defp resolve_ca do
     cert = Application.get_env(:world, :mtls_ca_cert_pem)
     key = Application.get_env(:world, :mtls_ca_key_pem)
-
     cert_path = Application.get_env(:world, :mtls_ca_cert_path)
     key_path = Application.get_env(:world, :mtls_ca_key_path)
 
     cond do
       is_binary(cert) and cert != "" and is_binary(key) and key != "" ->
-        {:ok, cert, key}
+        {:ok, {:inline, cert, key}}
 
       is_binary(cert_path) and cert_path != "" and is_binary(key_path) and key_path != "" ->
-        with {:ok, c} <- File.read(cert_path),
-             {:ok, k} <- File.read(key_path) do
-          {:ok, c, k}
+        if File.regular?(cert_path) and File.regular?(key_path) do
+          {:ok, {:paths, cert_path, key_path}}
         else
-          _ -> {:error, :ca_unreadable}
+          {:error, :ca_unreadable}
         end
 
       true ->
@@ -120,17 +125,35 @@ defmodule World.MtlsIssuer do
     end
   end
 
-  defp materialize_ca(work) do
-    with {:ok, cert_pem, key_pem} <- load_ca() do
-      stamp = System.system_time(:nanosecond)
-      cert_path = Path.join(work, "ca-#{stamp}.cert.pem")
-      key_path = Path.join(work, "ca-#{stamp}.key.pem")
+  # Path-configured CA: openssl uses files in place (no CA key copy into work dir).
+  # Inline PEM: write temp copies with 0600; always deleted in `after`.
+  defp materialize_ca(_work, {:paths, cert_path, key_path}) do
+    case File.read(cert_path) do
+      {:ok, ca_pem} -> {:ok, cert_path, key_path, ca_pem, []}
+      {:error, _} -> {:error, :ca_unreadable}
+    end
+  end
 
-      with :ok <- File.write(cert_path, cert_pem),
-           :ok <- File.write(key_path, key_pem),
-           :ok <- chmod_secret(key_path) do
-        {:ok, cert_path, key_path, cert_pem}
-      end
+  defp materialize_ca(work, {:inline, cert_pem, key_pem}) do
+    stamp = System.system_time(:nanosecond)
+    cert_path = Path.join(work, "ca-#{stamp}.cert.pem")
+    key_path = Path.join(work, "ca-#{stamp}.key.pem")
+
+    with :ok <- File.write(cert_path, cert_pem),
+         :ok <- File.write(key_path, key_pem),
+         :ok <- chmod_secret(key_path) do
+      {:ok, cert_path, key_path, cert_pem, [cert_path, key_path]}
+    else
+      {:error, :chmod_failed} ->
+        File.rm(cert_path)
+        File.rm(key_path)
+        {:error, :chmod_failed}
+
+      {:error, reason} ->
+        File.rm(cert_path)
+        File.rm(key_path)
+        Logger.warning("mtls_issuer materialize_ca write failed: #{inspect(reason)}")
+        {:error, :sign_failed}
     end
   end
 
@@ -145,8 +168,30 @@ defmodule World.MtlsIssuer do
 
     with :ok <- File.write(csr, csr_pem),
          :ok <- File.write(ext, ext_body) do
-      {:ok, %{csr: csr, cert: cert, ext: ext, stamp: stamp}}
+      paths = %{csr: csr, cert: cert, ext: ext}
+      Process.put({__MODULE__, :input_paths}, paths)
+      {:ok, paths}
     end
+  end
+
+  defp maybe_cleanup_inputs do
+    case Process.get({__MODULE__, :input_paths}) do
+      %{csr: _, cert: _, ext: _} = paths ->
+        Process.delete({__MODULE__, :input_paths})
+        cleanup_inputs(paths)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp cleanup_inputs(paths) do
+    Enum.each([paths.csr, paths.cert, paths.ext], fn
+      p when is_binary(p) -> File.rm(p)
+      _ -> :ok
+    end)
+
+    :ok
   end
 
   defp run_sign(paths, ca_cert, ca_key, cn) do
@@ -183,15 +228,15 @@ defmodule World.MtlsIssuer do
     end
   end
 
-  defp cleanup(paths) do
-    Enum.each([paths.csr, paths.cert, paths.ext], &File.rm/1)
-    :ok
-  end
-
   defp chmod_secret(path) do
     case File.chmod(path, 0o600) do
-      :ok -> :ok
-      {:error, _} -> :ok
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("mtls_issuer chmod 0600 failed path=#{path} reason=#{inspect(reason)}")
+        File.rm(path)
+        {:error, :chmod_failed}
     end
   end
 end

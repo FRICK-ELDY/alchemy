@@ -15,6 +15,8 @@ const TOKEN_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Deserialize)]
 struct MtlsResponse {
     client_cert_pem: String,
+    /// World soft TTL / CA PEM are accepted for wire compat but unused client-side:
+    /// Zenoh trust is `ZENOH_TLS_ROOT_CA` / webpki; mid-flight cert reopen is non-goal (x0066).
     #[serde(default)]
     #[allow(dead_code)]
     ca_cert_pem: String,

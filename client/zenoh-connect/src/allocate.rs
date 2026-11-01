@@ -1,8 +1,9 @@
 //! Relay Agent allocate client (x004e) + world-issued PEM install (x0066).
 //!
 //! Guarantees: POST Allocation Token → write cert/key PEM files under a work dir;
-//! world `mtls` PEMs + in-memory key install the same way (short-lived 0600 files).
-//! Non-guarantees: agent discovery; refresh before cert expiry; zero disk for Zenoh paths.
+//! world `mtls` PEMs + in-memory key install the same way (short-lived 0600 files);
+//! **both** paths set `ZENOH_TLS_CONNECT_CERT` / `KEY` (Agent 併存に必須).
+//! Non-guarantees: agent discovery; soft TTL enforcement; zero disk for Zenoh paths.
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -11,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const ALLOCATE_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Soft TTL aligned with world-server default (`MtlsIssuer` 6h); openssl NotAfter may be longer.
+const WORLD_MTLS_SOFT_TTL_SECS: u64 = 6 * 3600;
 
 #[derive(Debug, Deserialize)]
 pub struct AllocateResponse {
@@ -37,11 +40,33 @@ pub struct AllocatedIdentity {
     pub expires_in: u64,
 }
 
-/// True when `ZENOH_TLS_CONNECT_CERT` / `KEY` already point at an identity (e.g. world mtls).
+/// True when `ZENOH_TLS_CONNECT_CERT` / `KEY` already point at an identity.
 pub fn mtls_env_ready() -> bool {
     let cert = std::env::var("ZENOH_TLS_CONNECT_CERT").unwrap_or_default();
     let key = std::env::var("ZENOH_TLS_CONNECT_KEY").unwrap_or_default();
     !cert.is_empty() && !key.is_empty()
+}
+
+fn role_cn(role: &str) -> String {
+    match role {
+        "host" => "alchemy-host".into(),
+        "guest" => "alchemy-guest".into(),
+        other => other.to_string(),
+    }
+}
+
+/// Point Zenoh env at `id`, removing previous short-lived PEM paths when replaced.
+fn install_identity_env(id: &AllocatedIdentity) {
+    let prev_cert = std::env::var("ZENOH_TLS_CONNECT_CERT").ok();
+    let prev_key = std::env::var("ZENOH_TLS_CONNECT_KEY").ok();
+    std::env::set_var("ZENOH_TLS_CONNECT_CERT", id.cert_path.display().to_string());
+    std::env::set_var("ZENOH_TLS_CONNECT_KEY", id.key_path.display().to_string());
+    for prev in [prev_cert, prev_key].into_iter().flatten() {
+        let path = PathBuf::from(&prev);
+        if path != id.cert_path && path != id.key_path {
+            let _ = fs::remove_file(&path);
+        }
+    }
 }
 
 /// Install world-issued cert + caller-held private key as short-lived PEM files and env.
@@ -54,13 +79,24 @@ pub fn install_world_mtls_pems(
     wire_cap: &str,
     role: &str,
 ) -> Result<AllocatedIdentity> {
-    let id = write_identity_pems(client_cert_pem, private_key_pem, wire_cap, role, "world-mtls")?;
-    std::env::set_var("ZENOH_TLS_CONNECT_CERT", id.cert_path.display().to_string());
-    std::env::set_var("ZENOH_TLS_CONNECT_KEY", id.key_path.display().to_string());
+    let mut id = write_identity_pems(
+        client_cert_pem,
+        private_key_pem,
+        wire_cap,
+        role,
+        "world-mtls",
+        &role_cn(role),
+        WORLD_MTLS_SOFT_TTL_SECS,
+    )?;
+    install_identity_env(&id);
+    // Re-read cn in case role_cn was used (already set).
+    id.cn = role_cn(role);
     Ok(id)
 }
 
 /// Prefer world-issued cert + in-memory key; else Relay Agent allocate (x0066 / x004e).
+///
+/// Both branches install `ZENOH_TLS_CONNECT_*` when they produce an identity.
 pub fn apply_world_mtls_or_allocate(
     client_cert_pem: Option<&str>,
     private_key_pem: Option<&str>,
@@ -76,15 +112,12 @@ pub fn apply_world_mtls_or_allocate(
     allocate_if_configured(allocation_token)
 }
 
-/// When `RELAY_ALLOCATE_URL` is set, exchange `allocation_token` for mTLS files.
+/// When `RELAY_ALLOCATE_URL` is set, exchange `allocation_token` for mTLS files + env.
 ///
-/// Returns `Ok(None)` when the env is unset/empty (local tcp path), or when world
-/// mTLS env is already installed (x0066 preferred over Relay Agent).
+/// Returns `Ok(None)` when the env is unset/empty (local tcp path).
+/// Does **not** skip when `ZENOH_TLS_CONNECT_*` is already set — refresh must replace PEMs.
+/// Prefer [`apply_world_mtls_or_allocate`] when world may have issued certs first.
 pub fn allocate_if_configured(allocation_token: &str) -> Result<Option<AllocatedIdentity>> {
-    if mtls_env_ready() {
-        log::info!("skip relay allocate: ZENOH_TLS_CONNECT_* already set (world mtls)");
-        return Ok(None);
-    }
     let Ok(url) = std::env::var("RELAY_ALLOCATE_URL") else {
         return Ok(None);
     };
@@ -120,18 +153,17 @@ pub fn allocate(allocate_url: &str, allocation_token: &str) -> Result<AllocatedI
         .into_json()
         .context("parse allocate response")?;
 
-    write_identity_pems(
+    let id = write_identity_pems(
         &resp.cert_pem,
         &resp.key_pem,
         &resp.wire_cap,
         &resp.role,
         "client",
-    )
-    .map(|mut id| {
-        id.cn = resp.cn;
-        id.expires_in = resp.expires_in;
-        id
-    })
+        &resp.cn,
+        resp.expires_in,
+    )?;
+    install_identity_env(&id);
+    Ok(id)
 }
 
 fn write_identity_pems(
@@ -140,6 +172,8 @@ fn write_identity_pems(
     wire_cap: &str,
     role: &str,
     prefix: &str,
+    cn: &str,
+    expires_in: u64,
 ) -> Result<AllocatedIdentity> {
     let work = PathBuf::from(std::env::var("RELAY_MTLS_WORK_DIR").unwrap_or_else(|_| {
         std::env::temp_dir()
@@ -162,8 +196,8 @@ fn write_identity_pems(
         key_path,
         wire_cap: wire_cap.to_string(),
         role: role.to_string(),
-        cn: String::new(),
-        expires_in: 0,
+        cn: cn.to_string(),
+        expires_in,
     })
 }
 
@@ -179,12 +213,36 @@ fn write_secret(path: &Path, pem: &str) -> Result<()> {
     Ok(())
 }
 
+/// Resolve wire_cap: prefer token field, else `WIRE_CAP` env, else error.
+pub fn require_wire_cap(from_token: Option<&str>) -> Result<String> {
+    if let Some(cap) = from_token {
+        if !cap.is_empty() {
+            alchemy_protocol::validate_wire_cap(cap)
+                .map_err(|e| anyhow!("wire_cap from token: {e}"))?;
+            return Ok(cap.to_string());
+        }
+    }
+    let env_cap = std::env::var("WIRE_CAP").unwrap_or_default();
+    if !env_cap.is_empty() {
+        alchemy_protocol::validate_wire_cap(&env_cap).map_err(|e| anyhow!("WIRE_CAP env: {e}"))?;
+        return Ok(env_cap);
+    }
+    Err(anyhow!(
+        "wire_cap missing (token response or WIRE_CAP env required; x004e)"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Env-mutating tests must not run in parallel with each other.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn should_request_world_mtls_from_tls_connect() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev_c = std::env::var("ZENOH_CONNECT").ok();
         let prev_w = std::env::var("WORLD_MTLS").ok();
         std::env::remove_var("WORLD_MTLS");
@@ -205,15 +263,20 @@ mod tests {
     }
 
     #[test]
-    fn allocate_skipped_when_mtls_env_ready() {
+    fn allocate_skipped_when_url_unset() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_url = std::env::var("RELAY_ALLOCATE_URL").ok();
         let prev_cert = std::env::var("ZENOH_TLS_CONNECT_CERT").ok();
         let prev_key = std::env::var("ZENOH_TLS_CONNECT_KEY").ok();
-        let prev_url = std::env::var("RELAY_ALLOCATE_URL").ok();
-        std::env::set_var("ZENOH_TLS_CONNECT_CERT", "/tmp/x.pem");
-        std::env::set_var("ZENOH_TLS_CONNECT_KEY", "/tmp/y.pem");
-        std::env::set_var("RELAY_ALLOCATE_URL", "http://127.0.0.1:9");
-        let out = allocate_if_configured("tok").expect("skip");
+        std::env::remove_var("RELAY_ALLOCATE_URL");
+        std::env::remove_var("ZENOH_TLS_CONNECT_CERT");
+        std::env::remove_var("ZENOH_TLS_CONNECT_KEY");
+        let out = allocate_if_configured("tok").expect("none");
         assert!(out.is_none());
+        match prev_url {
+            Some(v) => std::env::set_var("RELAY_ALLOCATE_URL", v),
+            None => std::env::remove_var("RELAY_ALLOCATE_URL"),
+        }
         match prev_cert {
             Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_CERT", v),
             None => std::env::remove_var("ZENOH_TLS_CONNECT_CERT"),
@@ -222,28 +285,52 @@ mod tests {
             Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_KEY", v),
             None => std::env::remove_var("ZENOH_TLS_CONNECT_KEY"),
         }
-        match prev_url {
-            Some(v) => std::env::set_var("RELAY_ALLOCATE_URL", v),
-            None => std::env::remove_var("RELAY_ALLOCATE_URL"),
-        }
     }
-}
 
-/// Resolve wire_cap: prefer token field, else `WIRE_CAP` env, else error.
-pub fn require_wire_cap(from_token: Option<&str>) -> Result<String> {
-    if let Some(cap) = from_token {
-        if !cap.is_empty() {
-            alchemy_protocol::validate_wire_cap(cap)
-                .map_err(|e| anyhow!("wire_cap from token: {e}"))?;
-            return Ok(cap.to_string());
+    #[test]
+    fn install_world_sets_env_and_cn() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_cert = std::env::var("ZENOH_TLS_CONNECT_CERT").ok();
+        let prev_key = std::env::var("ZENOH_TLS_CONNECT_KEY").ok();
+        let prev_work = std::env::var("RELAY_MTLS_WORK_DIR").ok();
+        let work = std::env::temp_dir().join(format!(
+            "alchemy-mtls-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::env::set_var("RELAY_MTLS_WORK_DIR", work.display().to_string());
+
+        let id = install_world_mtls_pems(
+            "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+            "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "guest",
+        )
+        .expect("install");
+        assert_eq!(id.cn, "alchemy-guest");
+        assert_eq!(id.expires_in, WORLD_MTLS_SOFT_TTL_SECS);
+        assert_eq!(
+            std::env::var("ZENOH_TLS_CONNECT_CERT").unwrap(),
+            id.cert_path.display().to_string()
+        );
+        assert_eq!(
+            std::env::var("ZENOH_TLS_CONNECT_KEY").unwrap(),
+            id.key_path.display().to_string()
+        );
+        let _ = fs::remove_dir_all(&work);
+        match prev_cert {
+            Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_CERT", v),
+            None => std::env::remove_var("ZENOH_TLS_CONNECT_CERT"),
+        }
+        match prev_key {
+            Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_KEY", v),
+            None => std::env::remove_var("ZENOH_TLS_CONNECT_KEY"),
+        }
+        match prev_work {
+            Some(v) => std::env::set_var("RELAY_MTLS_WORK_DIR", v),
+            None => std::env::remove_var("RELAY_MTLS_WORK_DIR"),
         }
     }
-    let env_cap = std::env::var("WIRE_CAP").unwrap_or_default();
-    if !env_cap.is_empty() {
-        alchemy_protocol::validate_wire_cap(&env_cap).map_err(|e| anyhow!("WIRE_CAP env: {e}"))?;
-        return Ok(env_cap);
-    }
-    Err(anyhow!(
-        "wire_cap missing (token response or WIRE_CAP env required; x004e)"
-    ))
 }

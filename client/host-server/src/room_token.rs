@@ -343,6 +343,7 @@ impl RoomTokenVerifier {
 #[derive(Debug, Deserialize)]
 struct MtlsResponse {
     client_cert_pem: String,
+    /// Soft TTL / CA PEM kept for wire compat; unused until mid-flight reopen (x0066 non-goal).
     #[serde(default)]
     #[allow(dead_code)]
     ca_cert_pem: String,

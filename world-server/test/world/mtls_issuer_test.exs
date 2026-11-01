@@ -79,6 +79,29 @@ defmodule World.MtlsIssuerTest do
     refute MtlsIssuer.configured?()
   end
 
+  test "sign failure removes temp CA copies when CA is inline PEM", %{tmp: tmp} do
+    ca_cert = Application.get_env(:world, :mtls_ca_cert_path)
+    ca_key = Application.get_env(:world, :mtls_ca_key_path)
+    cert_pem = File.read!(ca_cert)
+    key_pem = File.read!(ca_key)
+
+    Application.delete_env(:world, :mtls_ca_cert_path)
+    Application.delete_env(:world, :mtls_ca_key_path)
+    Application.put_env(:world, :mtls_ca_cert_pem, cert_pem)
+    Application.put_env(:world, :mtls_ca_key_pem, key_pem)
+
+    work = Path.join(tmp, "work")
+    File.mkdir_p!(work)
+
+    assert {:error, :openssl_failed} = MtlsIssuer.issue("not-a-real-csr", "guest")
+
+    leftover =
+      File.ls!(work)
+      |> Enum.filter(&(String.starts_with?(&1, "ca-") or String.starts_with?(&1, "req-")))
+
+    assert leftover == []
+  end
+
   defp openssl_bin do
     found =
       [

@@ -60,30 +60,46 @@ defmodule WorldWeb.RoomController do
     end
   end
 
+  # Typical ECDSA/RSA CSR PEM is a few KB; cap rejects disk/openssl DoS bodies.
+  @csr_pem_max_bytes 16_384
+
   def create_token(conn, %{"room_id" => room_id} = params) do
     role = Map.get(params, "role", "guest")
-    csr_pem = optional_csr_pem(params)
 
-    with {:ok, sub} <- resolve_sub(conn, params),
-         {:ok, session_pub} <- decode_token_session_pub(params) do
-      issue_token(conn, room_id, role, sub, session_pub, csr_pem)
-    else
-      {:error, :anon_disabled} ->
+    case optional_csr_pem(params) do
+      :too_large ->
         conn
-        |> put_status(:unauthorized)
-        |> json(%{error: "anon_tokens_disabled"})
+        |> put_status(:request_entity_too_large)
+        |> json(%{error: "csr_pem_too_large"})
 
-      {:error, :invalid_session_pub} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: "invalid_session_pub"})
+      csr_pem ->
+        with {:ok, sub} <- resolve_sub(conn, params),
+             {:ok, session_pub} <- decode_token_session_pub(params) do
+          issue_token(conn, room_id, role, sub, session_pub, csr_pem)
+        else
+          {:error, :anon_disabled} ->
+            conn
+            |> put_status(:unauthorized)
+            |> json(%{error: "anon_tokens_disabled"})
+
+          {:error, :invalid_session_pub} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "invalid_session_pub"})
+        end
     end
   end
 
   defp optional_csr_pem(params) do
     case Map.get(params, "csr_pem") do
-      pem when is_binary(pem) and pem != "" -> pem
-      _ -> nil
+      pem when is_binary(pem) and pem != "" and byte_size(pem) <= @csr_pem_max_bytes ->
+        pem
+
+      pem when is_binary(pem) and byte_size(pem) > @csr_pem_max_bytes ->
+        :too_large
+
+      _ ->
+        nil
     end
   end
 
@@ -263,17 +279,26 @@ defmodule WorldWeb.RoomController do
   end
 
   # x0066: csr_pem present → sign; absent → no mtls field (Relay Agent path may still apply).
-  # CA 未設定時は csr を無視（ローカル tcp / Agent 併存。明確エラーは署名失敗時のみ）。
+  # CA 未設定 / 読めない: csr を無視して Token を返す（Agent 併存）。
+  # CA 設定あり・署名失敗（openssl）: Token ごと 5xx（WAN で world 発行を選んだ経路の fail-closed）。
   defp maybe_issue_mtls(nil, _role), do: {:ok, nil}
   defp maybe_issue_mtls("", _role), do: {:ok, nil}
 
   defp maybe_issue_mtls(csr_pem, role) when is_binary(csr_pem) do
     if MtlsIssuer.configured?() do
       case MtlsIssuer.issue(csr_pem, role) do
-        {:ok, mtls} -> {:ok, mtls}
-        {:error, :ca_not_configured} -> {:ok, nil}
-        {:error, :ca_unreadable} -> {:error, :mtls_ca_unavailable}
-        {:error, other} -> {:error, other}
+        {:ok, mtls} ->
+          {:ok, mtls}
+
+        {:error, :ca_not_configured} ->
+          {:ok, nil}
+
+        {:error, :ca_unreadable} ->
+          Logger.warning("csr_pem ignored: MTLS CA unreadable (x0066 Agent coexistence)")
+          {:ok, nil}
+
+        {:error, other} ->
+          {:error, other}
       end
     else
       Logger.info("csr_pem ignored: MTLS CA not configured (x0066 coexistence)")
