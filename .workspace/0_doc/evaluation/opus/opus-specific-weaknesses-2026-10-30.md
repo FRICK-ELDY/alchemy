@@ -137,7 +137,7 @@
 - **Relay Agent が平文 HTTP で秘密鍵と Allocation Token をやり取りし、手順書が `0.0.0.0` 待受を指示する（新規）** `-2`
   > relay-agent はサーバー側で client の秘密鍵を生成し、`key_pem` を JSON で返す。既定は loopback だが、WAN の client / host は VPS 上の relay に届く必要があるため、手順書は `RELAY_AGENT_LISTEN=0.0.0.0:7450` を指示している（コード自身が「cleartext HTTP で秘密鍵を返す」と警告を出す）。Cloudflare Tunnel の ingress にも relay は無い。経路上の盗聴者は Allocation Token と mTLS 秘密鍵の両方を得られ、mTLS の意味が失われる。
   > 改善方針: (1) client が鍵を生成して CSR だけを送る（秘密鍵をネットワークに出さない）、(2) relay を Tunnel ingress（`relay.example.tld`）か TLS 終端の背後に置く、の 2 点。
-  > 対象ファイル: `relay-agent/src/main.rs`（L95-103, L219-288, L391-401）, `.workspace/0_doc/manual/zenoh-wan-conoha.md`（L64）, `edge/cloudflared/config.yml.example`
+  > 対象ファイル: `relay-agent/src/main.rs`（L95-103, L219-288, L391-401）, `.workspace/0_doc/manual/relay-server-wan.md`（L70）, `edge/cloudflared/config.yml.example`
 
 - **client 証明書の NotAfter が 1 日で、失効手段が無い（新規）** `-1`
   > `expires_in=300` は「再取得の SLA」に過ぎず、証明書自体は `-days 1` で 24 時間有効。Room Token が失効しても、退室・BAN されても、証明書は 1 日使える。CRL / OCSP も無い。openssl CLI の制約（日単位）が理由として書かれているが、`-not_after` / `x509 -req -days` の代わりに `openssl ca -enddate` を使えば分単位の NotAfter が出せる。

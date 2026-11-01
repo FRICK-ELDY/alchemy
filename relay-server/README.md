@@ -9,7 +9,8 @@ Room Token の検証は host-server。Allocation Token → mTLS は [relay-agent
 | **relay-agent** | Allocation Token 検証 → 短命 mTLS 証明書発行 |
 
 正本アーキテクチャ: [`.workspace/0_doc/architecture/relay-server.md`](../.workspace/0_doc/architecture/relay-server.md)  
-WAN 運用手順: [`.workspace/0_doc/manual/zenoh-wan-conoha.md`](../.workspace/0_doc/manual/zenoh-wan-conoha.md)（x001b → TLS x0022 → **mTLS x004e**）
+WAN 運用正本: [`.workspace/0_doc/manual/relay-server-wan.md`](../.workspace/0_doc/manual/relay-server-wan.md)（x001b → TLS x0022 → **mTLS x004e**）  
+DNS / Let's Encrypt（追加）: [`.workspace/0_doc/manual/relay-server-dns.md`](../.workspace/0_doc/manual/relay-server-dns.md)
 
 ## 保証すること / しないこと
 

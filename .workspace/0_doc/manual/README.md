@@ -5,5 +5,6 @@
 | 文書 | 内容 |
 |:---|:---|
 | [cloudflare-tunnel-windows.md](cloudflare-tunnel-windows.md) | Cloudflare Tunnel（Windows）— auth / world / assets の HTTPS 公開（x001a） |
-| [zenoh-wan-conoha.md](zenoh-wan-conoha.md) | Zenoh WAN（ConoHa / Ubuntu 22.04・24.04）— zenohd + IP allowlist（x001b） |
+| [relay-server-wan.md](relay-server-wan.md) | WAN 正本 — relay-server（TLS+mTLS）+ relay-agent + IP allowlist（x001b / x0022 / x004e） |
+| [relay-server-dns.md](relay-server-dns.md) | 追加章 — DNS Only（グレー雲）+ Let's Encrypt サーバ証明書自動更新 |
 | [assets-cas-r2.md](assets-cas-r2.md) | assets CAS → Cloudflare R2（x001c）+ GET 署名 URL 302（x001d） |

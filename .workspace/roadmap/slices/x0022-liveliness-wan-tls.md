@@ -6,7 +6,7 @@
 
 根拠: [improvement-plan-2026-10-26.md](../../0_doc/evaluation/improvement-plan-2026-10-26.md)（P2-1 / P2-3）
 
-正本: [protocol.md](../../0_doc/architecture/protocol.md) · [relay-server.md](../../0_doc/architecture/relay-server.md) · [manual/zenoh-wan-conoha.md](../../0_doc/manual/zenoh-wan-conoha.md)
+正本: [protocol.md](../../0_doc/architecture/protocol.md) · [relay-server.md](../../0_doc/architecture/relay-server.md) · [manual/relay-server-wan.md](../../0_doc/manual/relay-server-wan.md)
 
 ## 設計方針
 
