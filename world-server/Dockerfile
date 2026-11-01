@@ -65,6 +65,8 @@ RUN mix release
 
 FROM alpine:${ALPINE_VERSION} AS release
 
+# openssl: required at runtime for x0066 World.MtlsIssuer (CSR → short-lived client cert).
+# Do not drop this package without replacing the issuer CLI dependency.
 RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates su-exec \
  && adduser -D -h /app world \
  && mkdir -p /var/lib/world \

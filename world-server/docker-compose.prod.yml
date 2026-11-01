@@ -8,6 +8,14 @@
 # `/var/lib/world` (x001e keys + x0028 ledger). Recreate **without** removing
 # that volume keeps the key and rooms; `docker compose down -v` regenerates the
 # key (**invalidates Room Tokens**) and wipes the room ledger.
+#
+# x0066 client CA (optional WAN):
+#   - Bind `./priv/mtls` → `/etc/alchemy/mtls:ro` (outside `/var/lib/world` —
+#     entrypoint chown on that tree would fail on a :ro mount).
+#   - Set MTLS_CA_*_PATH in `.env.prod` only when files exist; unset = Token only.
+#   - Host key must be readable by container user `world` (`:ro` cannot chown).
+#     Example: `chown <world_uid>:<world_gid> priv/mtls/client-ca-key.pem && chmod 600 …`
+#     (`docker compose run --rm --entrypoint id world` → uid/gid).
 
 services:
   world:
@@ -31,12 +39,13 @@ services:
       AUTH_INTERNAL_URL: ${AUTH_INTERNAL_URL:-http://host.docker.internal:4002}
       AUTH_INTERNAL_TOKEN: ${AUTH_INTERNAL_TOKEN:?set AUTH_INTERNAL_TOKEN in .env.prod}
       WORLD_DATABASE_PATH: /var/lib/world/world.db
-      # x0066: bind-mount host ./priv/mtls (see volumes). Windows host paths are invalid here.
-      MTLS_CA_CERT_PATH: ${MTLS_CA_CERT_PATH:-/var/lib/world/mtls/client-ca-cert.pem}
-      MTLS_CA_KEY_PATH: ${MTLS_CA_KEY_PATH:-/var/lib/world/mtls/client-ca-key.pem}
+      # x0066: optional — only from .env.prod when CA is mounted (no compose defaults).
+      MTLS_CA_CERT_PATH: ${MTLS_CA_CERT_PATH:-}
+      MTLS_CA_KEY_PATH: ${MTLS_CA_KEY_PATH:-}
     volumes:
       - world_prod_keys:/var/lib/world
-      - ./priv/mtls:/var/lib/world/mtls:ro
+      # Optional; empty dir is fine if MTLS_CA_* unset. Never nest under /var/lib/world.
+      - ./priv/mtls:/etc/alchemy/mtls:ro
 
 volumes:
   world_prod_keys:

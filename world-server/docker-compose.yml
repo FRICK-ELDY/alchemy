@@ -20,9 +20,10 @@ services:
       AUTH_INTERNAL_URL: http://host.docker.internal:4002
       AUTH_INTERNAL_TOKEN: dev-internal-token
       WORLD_DATABASE_PATH: /app/priv/data/world_dev.db
-      # x0066: host bind mounts world-server → /app; use container paths (not Windows D:\…)
-      MTLS_CA_CERT_PATH: /app/priv/mtls/client-ca-cert.pem
-      MTLS_CA_KEY_PATH: /app/priv/mtls/client-ca-key.pem
+      # x0066 WAN: create priv/mtls then uncomment (container paths; not Windows D:\…).
+      # Unset = csr_pem ignored, Token only — easy to miss if path is set but files absent.
+      # MTLS_CA_CERT_PATH: /app/priv/mtls/client-ca-cert.pem
+      # MTLS_CA_KEY_PATH: /app/priv/mtls/client-ca-key.pem
     volumes:
       - .:/app
       - ../shared/alchemy_auth_client:/shared/alchemy_auth_client

@@ -141,16 +141,43 @@ make ci-e2e                             # x001f hermetic: compose 縦 login→to
 #   export AUTH_URL=https://auth.example.tld WORLD_URL=https://world.example.tld ASSETS_URL=https://assets.example.tld
 #   （env 例: edge/client.env.example / smoke: bash .scripts/smoke-https-edge.sh）
 #   公網へのルーターポート開放は不要（Tunnel）。
-# Zenoh WAN TLS（x0022 / ConoHa）:
-#   手順: .workspace/0_doc/manual/relay-server-wan.md
-#   VPS: zenohd -c config.wan.json5（tls）+ certs + ufw allowlist（7447 全世界開放禁止）
-#   export ZENOH_CONNECT=tls/<VPS_HOST>:7447
-#   # 私有 CA: export ZENOH_TLS_ROOT_CA=/path/to/ca-cert.pem
+# Zenoh WAN TLS+mTLS（x0022 / x004e / x0066 · ConoHa）:
+#   初回・正本: .workspace/0_doc/manual/relay-server-wan.md（DNS/LE: relay-server-dns.md）
+#   設定の載せ替え: 下記「VPS 上の zenohd 設定更新」
+#   export ZENOH_CONNECT=tls/<VPS_HOST_or_DNS>:7447
 #   拠点 host + 外 client（x001a URL）で同じ ROOM_ID。smoke: bash .scripts/smoke-zenoh-wan.sh
 # ESC ダッシュ / Home タブ / XR Grab / Noclip。Desktop 強制: ALCHEMY_FORCE_DESKTOP=1
 # OpenXR ローダー明示: ALCHEMY_OPENXR_LOADER=...
 # XR SceneGpu（x0052 既定）: FORCE_DESKTOP なし・SteamVR
 ```
+
+### VPS 上の zenohd 設定更新
+
+正本は常にリポジトリの [`relay-server/config.wan.json5`](relay-server/config.wan.json5)。VPS の `/etc/alchemy/zenoh-wan.json5` へコピーしたあと、**listen 証明書パスだけ**運用に合わせて戻す（LE 経路 B の例）。`enable_mtls` / `root_ca_certificate` / `access_control` / `shared_memory` はリポジトリ側を優先する。
+
+手元（PowerShell）:
+
+```powershell
+scp .\relay-server\config.wan.json5 account@<VPS_IP>:/tmp/zenoh-wan.json5
+```
+
+VPS:
+
+```bash
+sudo cp /etc/alchemy/zenoh-wan.json5 /etc/alchemy/zenoh-wan.json5.bak
+sudo cp /tmp/zenoh-wan.json5 /etc/alchemy/zenoh-wan.json5
+# 経路 B（Let's Encrypt）— リポジトリ正本の server-*.pem を LE に戻す
+sudo sed -i \
+  -e 's|listen_private_key: ".*"|listen_private_key: "/etc/alchemy/tls/le-privkey.pem"|' \
+  -e 's|listen_certificate: ".*"|listen_certificate: "/etc/alchemy/tls/le-fullchain.pem"|' \
+  /etc/alchemy/zenoh-wan.json5
+# 経路 A（私有サーバ証明書）なら sed は不要（正本の server-*.pem のまま）
+grep -E 'listen_|root_ca|shared_memory|guest-egress|host-egress|enabled:' /etc/alchemy/zenoh-wan.json5
+sudo systemctl restart alchemy-zenohd
+systemctl is-active alchemy-zenohd
+```
+
+再起動後は既存の host / client の Zenoh セッションが切れる。**host を起動し直して置きっぱなし**にしてから client を繋ぐ。接続例: `ZENOH_CONNECT=tls/relay.example.tld:7447`（詳細・初回セットアップは [relay-server-wan.md](.workspace/0_doc/manual/relay-server-wan.md)）。
 
 環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID`（既定 `local`） / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（サイレント login） / `ZENOH_CONNECT` / `ZENOH_TLS_ROOT_CA`（WAN 私有 CA） / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_PID` / `ALCHEMY_FORCE_DESKTOP` / `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。Desktop 正本例: [`client/env.desktop.example`](client/env.desktop.example)。
 

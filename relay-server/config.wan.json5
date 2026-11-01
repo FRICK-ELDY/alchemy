@@ -38,44 +38,99 @@
   },
   access_control: {
     enabled: true,
-    // Without egress allows, subscribers declare OK but never receive Puts (default deny).
-    // Observed on zenohd 1.10.1: guest→host worked with egress-only input rules, but
-    // host→guest Manifest/Presence stayed silent. Use both flows + room/** inclusion.
-    // App signatures still discard forged guest Puts on sim keys.
+    // default deny: subscribers need matching *egress* put allows or samples never arrive.
+    // 第1壁 put 分離（guest=input/alive、host=sim）を維持。再強化しないこと:
+    //   guest に sim キーへの put(ingress) を足さない / host に input への put(ingress) を足さない。
+    // WAN 検証: egress 追加後 guest→host は通った。host→guest 沈黙時は SHM off + 本ルールで再検証すること
+    // （room/** への put 統合は攻撃面拡大のため採用しない）。
     default_permission: "deny",
     rules: [
       {
-        id: "host-room",
+        id: "host-put-sim",
         permission: "allow",
-        flows: ["ingress", "egress"],
-        messages: [
-          "put",
-          "delete",
-          "declare_subscriber",
-          "declare_queryable",
-          "declare_liveliness_subscriber",
-          "liveliness_token",
-          "liveliness_query",
-          "query",
-          "reply",
+        flows: ["ingress"],
+        messages: ["put", "delete", "declare_queryable", "reply", "liveliness_token"],
+        key_exprs: [
+          "alchemy/dev/room/*/*/manifest",
+          "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/presence",
+          "alchemy/dev/room/*/*/snapshot",
+          "alchemy/dev/room/*/*/host_control",
+          "alchemy/dev/room/*/*/alive/**",
         ],
-        key_exprs: ["alchemy/dev/room/**"],
       },
       {
-        id: "guest-room",
+        id: "host-sub-input",
         permission: "allow",
-        flows: ["ingress", "egress"],
+        flows: ["ingress"],
         messages: [
-          "put",
-          "delete",
           "declare_subscriber",
           "declare_liveliness_subscriber",
-          "liveliness_token",
           "liveliness_query",
           "query",
-          "reply",
         ],
-        key_exprs: ["alchemy/dev/room/**"],
+        key_exprs: [
+          "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/alive/**",
+          "alchemy/dev/room/*/*/manifest",
+          "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/presence",
+          "alchemy/dev/room/*/*/snapshot",
+        ],
+      },
+      // Router → host: guest Intent / liveliness (and queryable replies).
+      {
+        id: "host-egress-input",
+        permission: "allow",
+        flows: ["egress"],
+        messages: ["put", "delete", "liveliness_token", "query", "reply"],
+        key_exprs: [
+          "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/alive/**",
+          "alchemy/dev/room/*/*/snapshot",
+        ],
+      },
+      {
+        id: "guest-put-input",
+        permission: "allow",
+        flows: ["ingress"],
+        messages: ["put", "delete", "liveliness_token"],
+        key_exprs: [
+          "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/alive/**",
+        ],
+      },
+      {
+        id: "guest-sub-sim",
+        permission: "allow",
+        flows: ["ingress"],
+        messages: [
+          "declare_subscriber",
+          "declare_liveliness_subscriber",
+          "query",
+          "liveliness_query",
+        ],
+        key_exprs: [
+          "alchemy/dev/room/*/*/manifest",
+          "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/presence",
+          "alchemy/dev/room/*/*/snapshot",
+          "alchemy/dev/room/*/*/alive/**",
+        ],
+      },
+      // Router → guest: host sim traffic (required under default deny).
+      {
+        id: "guest-egress-sim",
+        permission: "allow",
+        flows: ["egress"],
+        messages: ["put", "delete", "liveliness_token", "reply"],
+        key_exprs: [
+          "alchemy/dev/room/*/*/manifest",
+          "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/presence",
+          "alchemy/dev/room/*/*/snapshot",
+          "alchemy/dev/room/*/*/alive/**",
+        ],
       },
     ],
     subjects: [
@@ -90,11 +145,11 @@
     ],
     policies: [
       {
-        rules: ["host-room"],
+        rules: ["host-put-sim", "host-sub-input", "host-egress-input"],
         subjects: ["host"],
       },
       {
-        rules: ["guest-room"],
+        rules: ["guest-put-input", "guest-sub-sim", "guest-egress-sim"],
         subjects: ["guest"],
       },
     ],

@@ -18,8 +18,7 @@ DNS / Let's Encrypt（サーバ証明書のドメイン化）: [`relay-server-dn
 
 ## 二重の壁
 
-1. **第1壁 — Zenoh ACL（CN）**: mTLS で `alchemy-host` / `alchemy-guest` を識別し、`default_permission: deny` のうえ `alchemy/dev/room/**` を role に許可する（[`config.wan.json5`](../../../relay-server/config.wan.json5)）。**ingress と egress の両方**を allow すること（egress 無しだと subscribe 宣言は通っても Put が届かない）。WAN では `shared_memory` を切る（リモート peer 向け最適化が大容量 Put を落とすことがある）。  
-   **暫定**: zenohd 1.10.1 で host→guest 配信を通すため、キー族ごとの put 分離（guest の `frame` / `manifest` put 拒否）は **緩めてある**。偽 sim put の破棄はアプリ署名（第2壁側）に寄る。部屋の鍵空間を隠す壁ではない
+1. **第1壁 — Zenoh ACL（CN）**: role ごとの **キー族 × メッセージ** を絞る（[`config.wan.json5`](../../../relay-server/config.wan.json5)）。guest（`alchemy-guest`）は `frame` / `manifest` 等へ **put できない**が、同じキー族への **subscribe はできる**。host は sim put、guest Intent 受信は **egress** allow が必要（default deny 下では subscribe 宣言だけでは Put が届かない）。WAN では `shared_memory` を切る。部屋の鍵空間を隠す壁ではない
 2. **第2壁 — `wire_cap`**: キー式 `alchemy/dev/room/{room_id}/{wire_cap}/…` と Room Token / アプリ署名。**部屋隔離はこちら**
 
 zenohd は **JWT を見ない**。平文 TCP は待受しない。`quic/` 待受は対象外。
@@ -125,6 +124,8 @@ MTLS_CA_KEY_PATH=/etc/alchemy/mtls/client-ca-key.pem
 ```
 
 署名は openssl CLI（Elixir に x509 パッケージは足さない）。`openssl` が PATH に無いときは `OPENSSL_BIN` で実行ファイルを指定する。未設定、または CA が読めないとき、world は `csr_pem` を無視して Token だけ返し、`mtls` フィールドは付けない。
+
+**Docker prod**（`world-server/docker-compose.prod.yml`）: host の `world-server/priv/mtls/` をコンテナの **`/etc/alchemy/mtls:ro`** に bind する（`/var/lib/world` 配下は entrypoint の `chown` と `:ro` が衝突するため使わない）。`.env.prod` で `MTLS_CA_*_PATH=/etc/alchemy/mtls/…` をセットする。秘密鍵はコンテナ user `world` から読めること（`:ro` では entrypoint が直せない）。Room Token PEM / SQLite は引き続き named volume `world_prod_keys`（`/var/lib/world`）。
 
 API 上の `expires_at` は署名から **6 時間**。openssl の NotAfter は **1 日**。期限の 30 分前にセッションを自動で開き直す手順は、この文書の範囲外。Token を取り直すときに host / client は新しい CSR を付ける。
 
@@ -270,7 +271,8 @@ bash .scripts/smoke-zenoh-wan.sh
 | Token は取れるが zenoh に入れない | world ログの `MTLS CA not configured` / `unreadable`。PATH/PEM で cert・key が揃っているか。`csr_pem` が無視されると `mtls` が無く、`RELAY_ALLOCATE_URL` も無ければ client 証明書が無い |
 | connection refused | zenohd / `ss -lntp \| grep 7447`。ufw とセキュリティグループが 7447/tcp を許可しているか。平文 `tcp/` で繋いでいないか |
 | 特定の回線だけ届かない | 送信元 IP 限定の 7447 ルールが残っていないか（推奨は `allow 7447/tcp`） |
-| mTLS は通るが Manifest が届かない | zenohd ACL に **egress** があるか・`shared_memory` が off か。host が起動したままか。部屋隔離は `wire_cap`（第2壁） |
+| guest の frame put が拒否される | 想定どおり（第1壁）。subscribe は通る。部屋隔離は `wire_cap`（第2壁） |
+| mTLS は通るが Manifest が届かない | ACL の **guest-egress-sim** / **host-egress-input** と `shared_memory: false`。host を起動したままにする |
 | HTTPS は通るが空間が空 | `ZENOH_CONNECT` / `ROOM_ID` の一致。第2壁は `wire_cap` |
 
 ---
@@ -282,7 +284,7 @@ bash .scripts/smoke-zenoh-wan.sh
 | WAN 待受が TLS+mTLS（平文 TCP の公開をしない） | QUIC / WebTransport / P2P |
 | world が CSR を受け、Subject を使わず role CN で短命 cert を署名する | 期限 30 分前の完全な自動セッション再 open |
 | zenohd と world が同一 client CA を検証と署名に使う | ACL ホットリロード / per-room subject |
-| role CN ACL（第1壁: mTLS CN + room/**・**egress 必須**）と `wire_cap`（第2壁: 部屋隔離） | 第1壁だけで部屋のキー空間を秘匿すること；キー族ごとの put 分離（暫定緩和中） |
+| role CN ACL（第1壁: put/sub キー族 + **egress**）と `wire_cap`（第2壁: 部屋隔離） | 第1壁だけで部屋のキー空間を秘匿すること |
 | ローカル `tcp/` と、CA 未設定時の Relay Agent 経路 | 送信元 IP allowlist（任意硬化。運用完了も非保証） |
 | x001a HTTPS と併用した外からの入室 | 端末に置いた一時 PEM の窃取 |
 | liveliness Delete が検証済み jti に紐付く（x0022） | client 秘密鍵の永続同梱；gen 再実行後の旧 client cert 互換 |

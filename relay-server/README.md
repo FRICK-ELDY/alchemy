@@ -18,7 +18,7 @@ DNS / Let's Encrypt（追加）: [`.workspace/0_doc/manual/relay-server-dns.md`]
 |:---|:---|
 | 同一マシン / LAN /（WAN 時）allowlist 経由のプロセスが同じ zenohd に接続できる | JWKS を zenohd が直接見る |
 | WAN 待受は TLS+mTLS（平文 TCP のみの公網公開をしない） | Billing / CCU QoS |
-| WAN: role CN ACL（host/guest）+ default deny + ingress/egress on `room/**`；SHM off | per-room 動的 ACL（部屋は `wire_cap`）；キー族 put 分離（暫定緩和） |
+| WAN: role CN ACL（host/guest）+ default deny + egress；SHM off | per-room 動的 ACL（部屋は `wire_cap`） |
 | キー式での Publish / Subscribe | 拠点 zenohd ↔ VPS ブリッジ |
 
 ## ローカル vs WAN

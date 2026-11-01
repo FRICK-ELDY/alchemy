@@ -25,8 +25,8 @@ world-server/priv/test_room_jwt_private.pem
 world-server/priv/test_room_jwt_public.pem
 # world-server ephemeral mTLS client CA (x0066; never commit)
 world-server/priv/mtls/
-# WAN cert scratch from gen-wan-dev-certs.sh (local ops)
-/alchemy-tls-wan/
+# WAN cert scratch from gen-wan-dev-certs.sh (any cwd; not only repo root)
+alchemy-tls-wan/
 # world-server SQLite (x0028)
 world-server/priv/data/*.db
 world-server/priv/data/*.db-*
