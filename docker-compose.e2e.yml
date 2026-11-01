@@ -150,7 +150,7 @@ services:
     ports:
       - "7547:7447"
     volumes:
-      - ./zenoh-router/config.json5:/config.json5:ro
+      - ./relay-server/config.json5:/config.json5:ro
     command: ["--config", "/config.json5"]
     networks: [e2e]
 

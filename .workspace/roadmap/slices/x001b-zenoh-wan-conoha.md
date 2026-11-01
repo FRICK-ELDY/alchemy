@@ -4,7 +4,7 @@
 
 目標: ConoHa VPS（4Core / 4GB Ubuntu **22.04 / 24.04**）上の **zenohd だけ**を公網 TCP で待受し、拠点 host + 外 client が `ZENOH_CONNECT` で同じ `ROOM_ID` に入る。x001a の HTTPS 入口と合わせて「外から入室できる」縦スライスを通す。
 
-正本: [zenoh-router.md](../../0_doc/architecture/zenoh-router.md) · [overview.md](../../0_doc/architecture/overview.md)（公式リレー ConoHa）· [x001a](x001a-https-edge-tunnel.md)  
+正本: [relay-server.md](../../0_doc/architecture/relay-server.md) · [overview.md](../../0_doc/architecture/overview.md)（公式リレー ConoHa）· [x001a](x001a-https-edge-tunnel.md)  
 手順書: [manual/zenoh-wan-conoha.md](../../0_doc/manual/zenoh-wan-conoha.md)
 
 ## 設計方針
@@ -20,7 +20,7 @@
 |:---|:---|:---|
 | 0 | Slice 文書 + 目次 | done |
 | 1 | VPS セットアップ runbook（zenohd インストール・systemd・firewall） | done |
-| 2 | `zenoh-router` WAN 用 config 例 + ローカルとの差分文書 | done |
+| 2 | `relay-server` WAN 用 config 例 + ローカルとの差分文書 | done |
 | 3 | 2 client（別ネット）Presence / Leave 動作確認 | done |
 | 4 | smoke 手順 + README / architecture 更新 | done |
 
@@ -49,7 +49,7 @@
 
 ## 起動
 
-詳細: [`manual/zenoh-wan-conoha.md`](../../0_doc/manual/zenoh-wan-conoha.md) · config: [`zenoh-router/config.wan.json5`](../../../zenoh-router/config.wan.json5)
+詳細: [`manual/zenoh-wan-conoha.md`](../../0_doc/manual/zenoh-wan-conoha.md) · config: [`relay-server/config.wan.json5`](../../../relay-server/config.wan.json5)
 
 ```bash
 # VPS

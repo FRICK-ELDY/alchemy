@@ -8,7 +8,7 @@
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
 | 0 | `auth-server` を alchemy-engine から移植・Docker 起動 | done |
-| 1 | `zenoh-router` 設定（ローカル zenohd） | done |
+| 1 | `relay-server` 設定（ローカル zenohd） | done |
 | 2 | `protocol/` 最小 RenderFrame + PROTOCOL_PIN | done |
 | 3 | `client/host-server` 30Hz Publish | done |
 | 4 | `client/app` Subscribe + wgpu 最小描画 | done |
@@ -28,7 +28,7 @@
 ```bash
 # macOS / Linux / Windows（任意で WSL2）
 cd auth-server && docker compose up -d && cd ..
-zenohd -c zenoh-router/config.json5
+zenohd -c relay-server/config.json5
 cd client
 cargo run -p host-server   # 別ターミナル
 cargo run -p client        # 別ターミナル

@@ -112,11 +112,11 @@
 
 ## 転送・公開エッジ
 
-### zenoh-router / edge
+### relay-server / edge
 
 - **WANをmTLS・role ACL・default denyへ引き上げた** `+3`
   > guestはinput/alive、hostはmanifest/frame/presence/snapshotに限定され、cert CNをsubjectへ結ぶ。`wire_cap`をkey segmentへ入れ、アプリ署名と二層で隔離する（`config.wan.json5:21-119`）。
-  > 対象ファイル: `zenoh-router/config.wan.json5`
+  > 対象ファイル: `relay-server/config.wan.json5`
 
 - **Tunnelでorigin秘匿と公開route最小化を実装** `+2`
   > auth/world/assetsだけを公開し、dev/internal/catch-allをdenyする。credentialsをrepo外に置くrunbookもある。

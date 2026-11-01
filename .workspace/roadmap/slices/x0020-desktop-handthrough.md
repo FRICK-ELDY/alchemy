@@ -49,7 +49,7 @@
 
 ### 手動確認チェックリスト
 
-1. auth / world / assets を各 `docker compose up -d`、`zenohd -c zenoh-router/config.json5`
+1. auth / world / assets を各 `docker compose up -d`、`zenohd -c relay-server/config.json5`
 2. `cd client && cargo run -p host-server` → ログに Room Token verified / SceneManifest / physics
 3. 別ターミナル: `ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=alice AUTH_PASSWORD=Password1 cargo run -p client` → ウィンドウが開き描画される  
    （UI login: `AUTH_USER` を省略し Home タブから login。release は password または `ALCHEMY_AUTH_TOKEN` 必須）
@@ -63,7 +63,7 @@
 cd auth-server && docker compose up -d && cd ..
 cd world-server && docker compose up -d && cd ..
 cd assets-server && docker compose up -d && cd ..
-zenohd -c zenoh-router/config.json5
+zenohd -c relay-server/config.json5
 
 # 3a
 cd client

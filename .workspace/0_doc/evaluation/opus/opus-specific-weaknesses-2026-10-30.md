@@ -23,7 +23,7 @@
 | ホスト端末 | client/host-server | -4 |
 | ホスト端末 | client/app | -2 |
 | ホスト端末 | launcher/ | -1 |
-| 転送・エッジ | zenoh-router / edge / relay-agent | -7 |
+| 転送・エッジ | relay-server / edge / relay-agent | -7 |
 | 横断 | テスト戦略 | -4 |
 | 横断 | 可観測性 | -2 |
 | 横断 | エラーハンドリング | -1 |
@@ -127,12 +127,12 @@
 
 ## 技術評価層 — 転送・公開エッジ
 
-### zenoh-router / edge / relay-agent
+### relay-server / edge / relay-agent
 
 - **WAN ACL がワイルドカード subscribe を許し、`wire_cap` による部屋隔離が成立しない（新規・重大）** `-3`
   > `config.wan.json5` の guest / host ルールはキー式 `alchemy/dev/room/*/*/manifest` 等を許可する。Zenoh の ACL は「宣言したキー式がルールのキー式に含まれるか」で判定するので、ルールと同一のワイルドカード式で `declare_subscriber` すれば許可される。そのため、正規の guest 証明書を 1 枚持つ peer は、全部屋の manifest / frame / presence / snapshot と liveliness（`alive/{sub}/{jti}`）を購読でき、受信サンプルのキーから全部屋の `wire_cap` を読み取れる。結果として、(1) `private` / `friends` 公開範囲の部屋のシーン・姿勢・参加者 `sub` が WAN の任意の guest に見える（world の visibility ACL を transport 層で迂回）、(2) 誰でも部屋を作れば `alchemy-host` 証明書を得られるので、漏れた `wire_cap` 宛てに他人の部屋の manifest / frame を put できる（アプリ署名で破棄されるが、DoS 負荷になる）。x004e の保証表「`wire_cap` を知らない peer は他 room キー式に到達できない」は前提（`wire_cap` が秘密であること）が崩れている。
   > 改善方針: 短期は「subscribe も put も wildcard を含まない宣言だけを許す」ことは Zenoh ACL では表現できないため、(a) Relay Agent を L7 プロキシにして room 単位の購読を強制する、または (b) payload を Room 鍵（Room Token 応答で配布）で AEAD 暗号化し、キー式隔離に依存しない。いずれにせよ「guest 証明書で `*/*/manifest` を subscribe し、他 room のサンプルが届かない」否定系テストを WAN 構成で CI に入れる。
-  > 対象ファイル: `zenoh-router/config.wan.json5`（L37-97）, `protocol/src/lib.rs`（L323-325, L409-415）, `.workspace/roadmap/slices/x004e-relay-agent-mvp.md`（L13-19）, `.workspace/0_doc/architecture/trust-boundary.md`（L38, L48）
+  > 対象ファイル: `relay-server/config.wan.json5`（L37-97）, `protocol/src/lib.rs`（L323-325, L409-415）, `.workspace/roadmap/slices/x004e-relay-agent-mvp.md`（L13-19）, `.workspace/0_doc/architecture/trust-boundary.md`（L38, L48）
 
 - **Relay Agent が平文 HTTP で秘密鍵と Allocation Token をやり取りし、手順書が `0.0.0.0` 待受を指示する（新規）** `-2`
   > relay-agent はサーバー側で client の秘密鍵を生成し、`key_pem` を JSON で返す。既定は loopback だが、WAN の client / host は VPS 上の relay に届く必要があるため、手順書は `RELAY_AGENT_LISTEN=0.0.0.0:7450` を指示している（コード自身が「cleartext HTTP で秘密鍵を返す」と警告を出す）。Cloudflare Tunnel の ingress にも relay は無い。経路上の盗聴者は Allocation Token と mTLS 秘密鍵の両方を得られ、mTLS の意味が失われる。
@@ -188,7 +188,7 @@
 ### 開発者体験（DX）
 
 - **README・client.md の現在地とキー表が古い（継続・部分解消）** `-1`
-  > README は「現状（〜x004d）」「WAN は TLS」「次の空き ID = x0053」のままで、x004e（mTLS / relay）・x004f（BlobGrant）・x0052 以降と、roadmap の「次 = x0066」に追従していない。client.md のチャネル表はキーが `alchemy/dev/room/{ROOM_ID}/manifest` のままで、x004e で入った `{wire_cap}` セグメントが無い（zenoh-router.md は正しい）。
+  > README は「現状（〜x004d）」「WAN は TLS」「次の空き ID = x0053」のままで、x004e（mTLS / relay）・x004f（BlobGrant）・x0052 以降と、roadmap の「次 = x0066」に追従していない。client.md のチャネル表はキーが `alchemy/dev/room/{ROOM_ID}/manifest` のままで、x004e で入った `{wire_cap}` セグメントが無い（relay-server.md は正しい）。
   > 対象ファイル: `README.md`（L9-18）, `.workspace/0_doc/architecture/client.md`（L50-56）
 
 - **`make ci` が relay-agent・共有 Elixir パッケージ・fuzz を覆わない（新規）** `-1`
@@ -208,8 +208,8 @@
 ### プロジェクト全体設計
 
 - **保証表が `wire_cap` による部屋隔離を過大に主張している（新規）** `-1`
-  > x004e スライス・trust-boundary.md・zenoh-router.md が「部屋隔離 = `wire_cap` キー式」を保証側に置くが、上記のとおり `wire_cap` は guest の wildcard subscribe で漏れる。このプロジェクトの最大の長所は「保証する／しない」表とコードの一致なので、ここで過大主張があると文書全体の信頼度が下がる。実装が直るまでは非保証側へ移し、「推測困難な capability（購読者からは見える）」と正確に書くべき。
-  > 対象ファイル: `.workspace/0_doc/architecture/trust-boundary.md`（L38, L48）, `.workspace/0_doc/architecture/zenoh-router.md`（L14）
+  > x004e スライス・trust-boundary.md・relay-server.md が「部屋隔離 = `wire_cap` キー式」を保証側に置くが、上記のとおり `wire_cap` は guest の wildcard subscribe で漏れる。このプロジェクトの最大の長所は「保証する／しない」表とコードの一致なので、ここで過大主張があると文書全体の信頼度が下がる。実装が直るまでは非保証側へ移し、「推測困難な capability（購読者からは見える）」と正確に書くべき。
+  > 対象ファイル: `.workspace/0_doc/architecture/trust-boundary.md`（L38, L48）, `.workspace/0_doc/architecture/relay-server.md`（L14）
 
 - **`vision.md` が見出しのみ（継続）** `-1`
   > 3 回連続で `# Vision` の 1 行のまま。overview.md が実質的なビジョンを担っているなら、vision.md を削除して overview へ誘導する方が誠実。

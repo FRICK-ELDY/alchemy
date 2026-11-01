@@ -22,7 +22,7 @@
 | auth-server | [`auth-server/`](auth-server/) |
 | world-server | [`world-server/`](world-server/) |
 | assets-server | [`assets-server/`](assets-server/) |
-| zenoh-router | [`zenoh-router/`](zenoh-router/) |
+| relay-server | [`relay-server/`](relay-server/) |
 | protocol（共有ワイヤ契約） | [`protocol/`](protocol/) |
 | client workspace | [`client/`](client/)（`app` + `host-server`） |
 | edge（Cloudflare Tunnel） | [`edge/cloudflared/`](edge/cloudflared/) |
@@ -55,7 +55,7 @@ WSL 内で `bash .scripts/wsl-setup.sh`（build-essential / wgpu 用ライブラ
 |:---|:---|:---|
 | Rust (stable) | client / host-server / protocol | [rustup](https://rustup.rs/)（任意で `wsl-setup.sh`） |
 | Docker / Docker Compose | auth / world / assets | Desktop、または Linux ネイティブ |
-| zenohd | ローカルルーター | `cargo install zenohd` |
+| zenohd | ローカルリレー（relay-server） | `cargo install zenohd` |
 
 任意: Elixir 1.19 / OTP 28（ホスト直実行したい場合のみ）。
 
@@ -77,7 +77,7 @@ cd world-server && docker compose up -d && cd ..
 cd assets-server && docker compose up -d && cd ..
 
 # 2) zenohd
-zenohd -c zenoh-router/config.json5
+zenohd -c relay-server/config.json5
 
 # --- 次はどちらか一方（同一 ROOM_ID で dual host にしない）---
 

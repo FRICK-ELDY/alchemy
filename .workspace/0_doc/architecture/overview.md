@@ -8,7 +8,7 @@
 
 | ブロック | 役割 |
 |:---|:---|
-| **1. 外部決済・公開エッジ ＆ Open Zenoh Relay** | MoR/Stripe・Cloudflare（WAF/CDN/R2）・公式/サードパーティ zenoh-router・連合ノード |
+| **1. 外部決済・公開エッジ ＆ Open Zenoh Relay** | MoR/Stripe・Cloudflare（WAF/CDN/R2）・公式/サードパーティ relay-server・連合ノード |
 | **2. 運営側コアインフラ** | 拠点 Proxmox 上の auth / assets / world(+verifier) / billing / market・DB・貸し出し host プール・NAS |
 | **3. 共通契約層** | Protobuf ワイヤ契約・shared-sim / host-server・Dual Representation |
 | **4. ホストユーザー端末** | launcher・ローカル host-server・client（OSC 受信・Dual Editor・LOD ビルド） |
@@ -63,7 +63,7 @@ flowchart TB
 
         subgraph OpenRelayNetwork["Open Zenoh Relay ネットワーク (マルチテナント相乗り ＆ サブスク 70:30 分配対象)"]
             direction LR
-            OfficialVPS["公式リレー: ConoHa VPS (Ubuntu / 4Core / 4GB)<br/>【zenoh-router (zenohd) + 軽量 Relay Agent】<br/>・QUIC / TCP / WebTransport 待受 (DB非搭載・ステートレス)<br/>・/.well-known/jwks.json で Relay Allocation Token ＆ Room Token を検証<br/>・名前空間隔離: alchemy/tenant/{運営者ID}/room/{room_id}/**<br/>・Token Bucket によるプラン別 CCU(同時接続) ＆ 帯域(Mbps) QoS 制限<br/>・$0 無料枠ユーザーおよびサードパーティリレー障害時の緊急フォールバック先"]:::vps
+            OfficialVPS["公式リレー: ConoHa VPS (Ubuntu / 4Core / 4GB)<br/>【relay-server (zenohd) + 軽量 Relay Agent】<br/>・QUIC / TCP / WebTransport 待受 (DB非搭載・ステートレス)<br/>・/.well-known/jwks.json で Relay Allocation Token ＆ Room Token を検証<br/>・名前空間隔離: alchemy/tenant/{運営者ID}/room/{room_id}/**<br/>・Token Bucket によるプラン別 CCU(同時接続) ＆ 帯域(Mbps) QoS 制限<br/>・$0 無料枠ユーザーおよびサードパーティリレー障害時の緊急フォールバック先"]:::vps
 
             ThirdPartyRelay["サードパーティ『Zenoh リレー貸し屋』ノード群 (Open Zenoh Relay 規格)<br/>【インフラ提供者が自前VPSや10G回線で zenohd コンテナのみを起動 (DB不要)】<br/>・/.well-known/alchemy-relay-info.json 公開<br/>・個人運営者から指名されると、その運営者の月額サブスクの 30% を毎月獲得<br/>・market-server でイベント用の『VIP専用リレー貸切パス』も販売可能"]:::relay3rd
 
@@ -86,7 +86,7 @@ flowchart TB
             %% --- CT1: 通信ブリッジ ---
             subgraph CT1_Bridge["CT 1: 通信ブリッジ層 (Ubuntu LXC / 1Core / 1GB)"]
                 Cloudflared["cloudflared (Cloudflare Tunnel)<br/>RTX1300のポート開放ゼロで内側からHTTPS公開"]:::cf
-                HomeZenoh["ローカル zenoh-router (zenohd)<br/>・拠点LAN内(作業用PC等)を 0.5ms で高速ルーティング<br/>・ConoHa VPS (または指名リレー屋) へ外向きブリッジ接続"]:::vps
+                HomeZenoh["ローカル relay-server (zenohd)<br/>・拠点LAN内(作業用PC等)を 0.5ms で高速ルーティング<br/>・ConoHa VPS (または指名リレー屋) へ外向きブリッジ接続"]:::vps
             end
 
             %% --- CT2: Elixir コア & オプション群 ---
@@ -175,7 +175,7 @@ flowchart TB
         end
 
         %% --- 別プロセス②：クライアント本体 (VRAlchemy) ---
-        subgraph ClientProcess["別プロセス②：client — VRAlchemy (100% Pure Rust 体感・描画・作成・ビルドプロセス ※ルーター機能は一切持たない純粋エンドポイント)"]
+        subgraph ClientProcess["別プロセス②：client — VRAlchemy (100% Pure Rust 体感・描画・作成・ビルドプロセス ※リレー機能は一切持たない純粋エンドポイント)"]
             direction TB
 
             ClientBootAndOSC["① 起動・VR自動判定・ローカルファイル ＆ 標準OSC受信エッジ (app / window / xr / input)<br/>・OpenXRランタイム応答あり ➔ VRモード ／ なし ➔ Desktopモード (最初はPrivateでホームを0秒ローカル起動)<br/>・ローカルファイル (.glb / .png / .ogg) のドラッグ＆ドロップ 0秒プレビュー ＆ 3Dインゲーム・ファイルブラウザ<br/>・標準 OSC over UDP 受信口 (Pure Rust: rosc クレート / localhost:9000):<br/> トラッカーからの長いOSC文字列アドレスを受信 ➔ is_finite() 検証 ➔ コンパクトな数値配列 Protobuf に圧縮して Zenoh へ送信"]:::local
@@ -201,17 +201,17 @@ flowchart TB
 
     %% ====================================================================================
     %% 5. クライアント側：ハイブリッドP2P負荷分散 ＆ ホスト引き継ぎ
-    %%     鉄則：クライアントは絶対にサブ・ルーター(他人の通信の中継役)にはならず、1対1 P2Pか専用ルーター経由に限定
+    %%     鉄則：クライアントは絶対にサブ・リレー(他人の通信の中継役)にはならず、1対1 P2Pか専用リレー経由に限定
     %% ====================================================================================
     subgraph ParticipantsAndPlatforms["5. 参加プレイヤー群 (ハイブリッドP2P負荷分散 ＆ スマートホスト引き継ぎ) ＆ マルチプラットフォーム展開"]
         direction TB
 
-        subgraph RoomParticipants["ワールド参加者 (例：登録メンバー10人 ＋ 外部ゲスト5人 ＝ 15人集会でもルーター負荷は数Mbps)"]
+        subgraph RoomParticipants["ワールド参加者 (例：登録メンバー10人 ＋ 外部ゲスト5人 ＝ 15人集会でもリレー負荷は数Mbps)"]
             direction LR
 
-            TrustedMembers["自サーバー登録メンバー / 相互フレンド (Trusted Peers — 9人)<br/>・client + 待機中のローカル host-server<br/>・【1対1 ダイレクトP2P (QUIC Hole Punching)】:<br/> 信頼関係がある仲間同士は、音声(Opus)・フルトラ表情・P2Pキャッシュを<br/> ルーターを通さず1対1で直接送受信 (※他人の通信の中継＝サブルーター化は絶対しない)<br/>・【スマートホスト昇格待機】:<br/> client_info で『ホスト引き受けON』かつ高スペックなメンバーBは、<br/> ホストAが終了/突然死した瞬間に直前の受信フレームから0秒で新ホストへ自動昇格"]:::member
+            TrustedMembers["自サーバー登録メンバー / 相互フレンド (Trusted Peers — 9人)<br/>・client + 待機中のローカル host-server<br/>・【1対1 ダイレクトP2P (QUIC Hole Punching)】:<br/> 信頼関係がある仲間同士は、音声(Opus)・フルトラ表情・P2Pキャッシュを<br/> リレーを通さず1対1で直接送受信 (※他人の通信の中継＝サブリレー化は絶対しない)<br/>・【スマートホスト昇格待機】:<br/> client_info で『ホスト引き受けON』かつ高スペックなメンバーBは、<br/> ホストAが終了/突然死した瞬間に直前の受信フレームから0秒で新ホストへ自動昇格"]:::member
 
-            ExternalGuests["外部ゲストアカウント (Untrusted / 非フレンド — 5人)<br/>・client (または Webブラウザ / Quest単体)<br/>・【IP秘匿リレー経由】:<br/> 見知らぬゲストに対してはお互いの拠点IPアドレスを隠すため、<br/> ダイレクトP2Pは使わず必ず『zenoh-router (ConoHa VPS / 公認リレー屋)』を経由<br/>・入室した瞬間に有料アバター含む全員の姿を R2 / リレーキャッシュから表示"]:::guest
+            ExternalGuests["外部ゲストアカウント (Untrusted / 非フレンド — 5人)<br/>・client (または Webブラウザ / Quest単体)<br/>・【IP秘匿リレー経由】:<br/> 見知らぬゲストに対してはお互いの拠点IPアドレスを隠すため、<br/> ダイレクトP2Pは使わず必ず『relay-server (ConoHa VPS / 公認リレー屋)』を経由<br/>・入室した瞬間に有料アバター含む全員の姿を R2 / リレーキャッシュから表示"]:::guest
         end
 
         subgraph TargetPlatforms["単一 Pure Rust コードベースからのマルチプラットフォーム展開ロードマップ (Step 1〜5)"]
@@ -238,7 +238,7 @@ flowchart TB
     WorldServer <===>|"④ S2S HTTPS 連合 (World一覧・JWKS・Marketカタログ交換)"| FedNodeB
     MarketServer -.->|"ドメイン＆公開鍵を『Blocked』遮断"| EvilMarketNode
 
-    %% 3. アセットLODビルド保存 ＆ R2 / NAS 配信 (ホストやルーターを一切圧迫しない直結経路)
+    %% 3. アセットLODビルド保存 ＆ R2 / NAS 配信 (ホストやリレーを一切圧迫しない直結経路)
     ClientAssetAndCache ===>|"⑤ 自PCでビルドしたPC版+Quest軽量LODをGit Commit (Quota検査)"| AssetsServer
     AssetsServer ===>|"⑥ S3互換APIで保存 (.env 1行でR2と拠点NASを切替)"| CFR2 & QNAPStorage
     CFR2 & QNAPStorage -.->|"⑦ 重い3D/画像バイナリはCDN/S3から直接高速DL (Egress 0円・ホスト負荷 0)"| ClientAssetAndCache & TrustedMembers & ExternalGuests
@@ -249,8 +249,8 @@ flowchart TB
     OfficialVPS & ThirdPartyRelay ===>|"⑩ 全参加者へ一斉配信 (Fan-out) ＆ verifier が抜き打ち監査"| TrustedMembers & ExternalGuests & VerifierApp
 
     %% 5. 音声 (Zenoh Audio Streaming)・フルトラ表情・キャッシュのハイブリッド経路 (host-server バイパス)
-    ClientAVEngine <===>|"⑪ 仲間内(登録メンバー/フレンド)は1対1ダイレクトP2Pで音声・表情・キャッシュを直接交換 (ルーター負荷 0)"| TrustedMembers
-    ExternalGuests <===>|"⑫ 外部ゲスト分の音声(Opus over QUIC)・表情・入力のみルーターがIP秘匿中継"| OfficialVPS & ThirdPartyRelay
+    ClientAVEngine <===>|"⑪ 仲間内(登録メンバー/フレンド)は1対1ダイレクトP2Pで音声・表情・キャッシュを直接交換 (リレー負荷 0)"| TrustedMembers
+    ExternalGuests <===>|"⑫ 外部ゲスト分の音声(Opus over QUIC)・表情・入力のみリレーがIP秘匿中継"| OfficialVPS & ThirdPartyRelay
 
     %% 6. 入力・監査・スマート死活監視フェイルオーバー
     TrustedMembers & ExternalGuests ===>|"⑬ 移動・空間編集入力 (with Room Token)"| OfficialVPS & ThirdPartyRelay ===>|"入力転送"| LocalHostEngine & CloudHosts
@@ -275,12 +275,12 @@ flowchart TB
 ### Zenoh WAN（運用）
 
 - ConoHa / Ubuntu 22.04・24.04 手順書: [`manual/zenoh-wan-conoha.md`](../manual/zenoh-wan-conoha.md)（Slice [x001b](../../roadmap/slices/x001b-zenoh-wan-conoha.md)）
-- WAN config: [`zenoh-router/config.wan.json5`](../../../zenoh-router/config.wan.json5)
+- WAN config: [`relay-server/config.wan.json5`](../../../relay-server/config.wan.json5)
 
 ### Alchemy 側
 
 - [auth-server](auth-server.md) · [assets-server](assets-server.md) · [world-server](world-server.md)
-- [protocol](protocol.md) · [zenoh-router](zenoh-router.md)
+- [protocol](protocol.md) · [relay-server](relay-server.md)
 - [trust-boundary](trust-boundary.md)（脅威モデル / 防御責任・x0031）
 - [launcher](launcher.md)（x0032 最小 PM）· [client](client.md)
 

@@ -62,7 +62,7 @@
 ## 起動（同一マシン smoke・3 client）
 
 ```bash
-zenohd -c zenoh-router/config.json5
+zenohd -c relay-server/config.json5
 cd client && cargo run -p host-server
 
 ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=alice cargo run -p client

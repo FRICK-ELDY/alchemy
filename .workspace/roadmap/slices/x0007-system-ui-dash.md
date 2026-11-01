@@ -49,7 +49,7 @@ ESC で開閉、Material Icons 静的同梱、終了フロー（client 保証 / 
 cd auth-server && docker compose up -d && cd ..
 cd assets-server && docker compose up -d && cd ..
 cd world-server && docker compose up -d && cd ..
-zenohd -c zenoh-router/config.json5
+zenohd -c relay-server/config.json5
 
 # 別ターミナル: host（PID を控えると client+host 終了スタブが使える）
 cd client

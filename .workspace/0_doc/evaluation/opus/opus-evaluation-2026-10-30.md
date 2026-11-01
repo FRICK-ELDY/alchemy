@@ -45,7 +45,7 @@
 | ホスト端末 | client/host-server | +39 | -4 | **+35** | +20 |
 | ホスト端末 | client/app | +34 | -2 | **+32** | +15 |
 | ホスト端末 | launcher/ | +4 | -1 | **+3** | +1 |
-| 転送・エッジ | zenoh-router / edge / relay-agent | +15 | -7 | **+8** | +6 |
+| 転送・エッジ | relay-server / edge / relay-agent | +15 | -7 | **+8** | +6 |
 | Optional | billing / market | — | — | 対象外（ディレクトリなし） | 対象外 |
 | 横断 | テスト戦略 | +19 | -4 | **+15** | +7 |
 | 横断 | 可観測性 | +6 | -2 | **+4** | +1 |
@@ -86,7 +86,7 @@
 >
 > **launcher（+3）**: CI・テスト・再起動ポリシーの純関数化で前回 -1 を解消。IPC stale は非保証として正直に記録されている。
 
-### 転送・エッジ（zenoh-router / edge / relay-agent）
+### 転送・エッジ（relay-server / edge / relay-agent）
 
 > **（+8）**: mTLS + default deny + role CN ACL（+3）の方向は正しいが、実効性に 3 つの穴がある。(1) guest / host ルールが `alchemy/dev/room/*/*/manifest` のワイルドカード式をそのまま許すので、guest 証明書 1 枚で全部屋のサンプルを購読でき、キーから全部屋の `wire_cap` が読める（-3）。private 部屋のシーンと参加者 `sub` が WAN の任意の guest に見え、world の visibility ACL を transport 層で迂回できる。(2) relay は秘密鍵をサーバー側で生成して平文 HTTP で返し、手順書は `0.0.0.0` 待受を指示する（-2）。(3) 証明書の NotAfter は 1 日で失効手段が無い（-1）。アプリ署名が残るので偽配信は破棄されるが、機密性と DoS 耐性の保証は文書の主張に届いていない。
 
@@ -202,7 +202,7 @@
 
 ## 次にやるべきトップ 5
 
-1. **WAN の部屋隔離を成立させる（-3 の解消）**: 短期は trust-boundary.md / zenoh-router.md / x004e の保証表で `wire_cap` 隔離を非保証側へ移して事実と一致させる。本対応は Relay の L7 化（部屋単位の購読強制）か、payload の Room 鍵 AEAD 暗号化（依存追加は人に回す）。完了条件は「guest 証明書で `alchemy/dev/room/*/*/manifest` を subscribe しても他部屋のサンプルが届かない」否定系テスト。
+1. **WAN の部屋隔離を成立させる（-3 の解消）**: 短期は trust-boundary.md / relay-server.md / x004e の保証表で `wire_cap` 隔離を非保証側へ移して事実と一致させる。本対応は Relay の L7 化（部屋単位の購読強制）か、payload の Room 鍵 AEAD 暗号化（依存追加は人に回す）。完了条件は「guest 証明書で `alchemy/dev/room/*/*/manifest` を subscribe しても他部屋のサンプルが届かない」否定系テスト。
 2. **relay の鍵配布を直す（-2 / -1）**: client 生成鍵の CSR 方式に変え、relay を Tunnel ingress か TLS 終端の背後に置く。証明書の NotAfter を `expires_in` と同じ分単位にする。
 3. **relay-agent を CI・`make ci`・cargo deny に入れ、テストを書く（-2 / -1）**: `verify_allocation` と HTTP パーサを純関数化して否定系（iss / aud / relay_id / role / 64KiB）を固定。同時に WAN 構成（mTLS + ACL の zenohd + relay）の compose E2E を追加し、上の 1 の否定系を CI で回す。スライス完了条件テンプレートに「新クレートは CI に入っている」を追加する。
 4. **world に rate limit と Room 上限を入れる（-2）**: auth の `Auth.RateLimit` を `shared/` に切り出して world に適用。P3-7 は BLAKE3 と切り離して rate limit 単独のスライスにし、CI 完走の問題を切り分ける。

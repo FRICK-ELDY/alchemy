@@ -24,7 +24,7 @@
 |:---|:---|:---|:---|:---|
 | P0-1 | 証明書 NotAfter = `expires_in` | -3 | OpenSSL `-not_after` / `ca -enddate` 等で秒単位。応答 TTL と一致 | 発行直後の NotAfter が ≈300s。漏えい鍵が 24h 残らないテスト |
 | P0-2 | Allocation hard JWKS / body / thread / rate / jti | -3 | hard TTL、unknown-kid cooldown、Content-Length 事前上限、発行 semaphore、jti 短期 dedupe | oversize / stale JWKS / 連打で OOM・無制限 spawn しないテスト |
-| P0-3 | 部屋隔離: 保証表修正 → 本対応 | -3 | 短期: trust-boundary / zenoh-router / x004e で `wire_cap` 隔離を非保証へ。本対応: Relay L7 または Room 鍵 AEAD（依存は人に回す） | guest が `*/*/manifest` subscribe しても他部屋が届かない否定系（WAN 構成） |
+| P0-3 | 部屋隔離: 保証表修正 → 本対応 | -3 | 短期: trust-boundary / relay-server / x004e で `wire_cap` 隔離を非保証へ。本対応: Relay L7 または Room 鍵 AEAD（依存は人に回す） | guest が `*/*/manifest` subscribe しても他部屋が届かない否定系（WAN 構成） |
 | P0-4 | 秘密鍵をネットワークに出さない | -2 | client CSR。relay は署名のみ。Tunnel/TLS 背後。手順書から `0.0.0.0` cleartext を外す | 応答に `key_pem` が無い。手順書どおりでも平文鍵が WAN に流れない |
 | P0-5 | CAS access を Grant/ref へ | -3 | `CasObject` は bytes のみ。access は ref/grant。先着固定を廃止 | 同一 hash で公開 mesh と private inventory を両立するテスト |
 

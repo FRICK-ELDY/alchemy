@@ -17,7 +17,7 @@ on:
       - "assets-server/**"
       - "shared/alchemy_auth_client/**"
       - "shared/alchemy_client_ip/**"
-      - "zenoh-router/config.json5"
+      - "relay-server/config.json5"
       - ".github/workflows/e2e-compose.yml"
   push:
     branches: ["main"]
@@ -35,7 +35,7 @@ on:
       - "assets-server/**"
       - "shared/alchemy_auth_client/**"
       - "shared/alchemy_client_ip/**"
-      - "zenoh-router/config.json5"
+      - "relay-server/config.json5"
       - ".github/workflows/e2e-compose.yml"
 
 concurrency:

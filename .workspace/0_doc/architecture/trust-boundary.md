@@ -1,7 +1,7 @@
 # Trust boundary（脅威モデル）
 
 > **正本**: 本ファイル（x0031 / P4-3）  
-> 関連: [overview](overview.md) · [protocol](protocol.md) · [zenoh-router](zenoh-router.md) · [client](client.md) · [auth-server](auth-server.md)  
+> 関連: [overview](overview.md) · [protocol](protocol.md) · [relay-server](relay-server.md) · [client](client.md) · [auth-server](auth-server.md)  
 > **assets 深掘り**: [assets-threat-model.md](assets-threat-model.md)（CAS / Quota / BlobGrant 手口×対策）
 
 目的: **未認証の publisher が各経路に到達したとき、誰が何を防ぐか**を一箇所に固定する。  
@@ -34,7 +34,7 @@ flowchart TB
   Auth -->|"access JWT"| Client
 ```
 
-**原則:** zenohd は JWT を見ない（[zenoh-router](zenoh-router.md)）。WAN では **Relay Agent** が Allocation Token を検証し短命 mTLS を渡し、zenohd は role CN ACL でキー族を絞る（x004e）。部屋隔離の残りは **`wire_cap` キー式** + アプリ署名。transport TLS  alone は盗聴耐性であり、なりすましの唯一の防御ではない。
+**原則:** zenohd は JWT を見ない（[relay-server](relay-server.md)）。WAN では **Relay Agent** が Allocation Token を検証し短命 mTLS を渡し、zenohd は role CN ACL でキー族を絞る（x004e）。部屋隔離の残りは **`wire_cap` キー式** + アプリ署名。transport TLS  alone は盗聴耐性であり、なりすましの唯一の防御ではない。
 
 ## Zenoh キー × 脅威 × 防御
 
@@ -48,7 +48,7 @@ flowchart TB
 | `…/snapshot` | 偽全置換・巨大 payload | client: Frame と同じ host_sig / finite + **decode 上限**（x003b）で適用 | queryable 認証の別チャネル |
 | `…/host_control` | 遠隔プロセス停止 | **既定オフ**（x001e）。launcher 経路は localhost IPC（x0032） | WAN 上の無認証 Zenoh control |
 
-キー式の一覧は [zenoh-router.md](zenoh-router.md) の MVP 表および protocol の `*_key` ヘルパ。
+キー式の一覧は [relay-server.md](relay-server.md) の MVP 表および protocol の `*_key` ヘルパ。
 
 ## HTTP 門番
 

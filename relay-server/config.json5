@@ -1,4 +1,4 @@
-// Alchemy local zenoh-router (zenohd) — Slice A
+// Alchemy local relay-server (zenohd) — Slice A
 // Guarantees: same-machine / LAN pub-sub on declared listeners.
 // Does NOT guarantee: JWT/JWKS ACL, CCU QoS, VPS bridge, multi-tenant isolation.
 {

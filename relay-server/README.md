@@ -1,9 +1,14 @@
-# zenoh-router
+# relay-server
 
-ローカル / WAN（ConoHa）の `zenohd` 設定。空間同期の pub/sub を仲介する。  
+ローカル / WAN（ConoHa）の `zenohd` 設定・待受。空間同期の pub/sub を仲介する。  
 Room Token の検証は host-server。Allocation Token → mTLS は [relay-agent](../relay-agent/)（x004e）。
 
-正本アーキテクチャ: [`.workspace/0_doc/architecture/zenoh-router.md`](../.workspace/0_doc/architecture/zenoh-router.md)  
+| | 役割 |
+|:---|:---|
+| **relay-server** | zenohd の設定・待受（空間同期の仲介） |
+| **relay-agent** | Allocation Token 検証 → 短命 mTLS 証明書発行 |
+
+正本アーキテクチャ: [`.workspace/0_doc/architecture/relay-server.md`](../.workspace/0_doc/architecture/relay-server.md)  
 WAN 運用手順: [`.workspace/0_doc/manual/zenoh-wan-conoha.md`](../.workspace/0_doc/manual/zenoh-wan-conoha.md)（x001b → TLS x0022 → **mTLS x004e**）
 
 ## 保証すること / しないこと
@@ -39,7 +44,7 @@ WAN 運用手順: [`.workspace/0_doc/manual/zenoh-wan-conoha.md`](../.workspace/
 前提: `zenohd` が PATH にあること（例: `cargo install zenohd`）。
 
 ```bash
-zenohd -c zenoh-router/config.json5
+zenohd -c relay-server/config.json5
 ```
 
-証明書生成（WAN）: `bash zenoh-router/scripts/gen-wan-dev-certs.sh <host> ./tls-wan-dev`
+証明書生成（WAN）: `bash relay-server/scripts/gen-wan-dev-certs.sh <host> ./tls-wan-dev`

@@ -6,7 +6,7 @@
 
 根拠: [improvement-plan-2026-10-28.md](../../0_doc/evaluation/improvement-plan-2026-10-28.md) **P0-4 / P0-5 / P0-6**
 
-正本: [protocol.md](../../0_doc/architecture/protocol.md) · [zenoh-router.md](../../0_doc/architecture/zenoh-router.md) · 各 compose / `.env.prod.example`
+正本: [protocol.md](../../0_doc/architecture/protocol.md) · [relay-server.md](../../0_doc/architecture/relay-server.md) · 各 compose / `.env.prod.example`
 
 ## 設計
 

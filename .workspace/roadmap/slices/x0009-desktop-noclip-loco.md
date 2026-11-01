@@ -59,7 +59,7 @@ client は mode 非依存の Intent のみ送り、VR ロコモーションは�
 cd auth-server && docker compose up -d && cd ..
 cd world-server && docker compose up -d && cd ..
 cd assets-server && docker compose up -d && cd ..
-zenohd -c zenoh-router/config.json5
+zenohd -c relay-server/config.json5
 cd client
 cargo run -p host-server
 ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
