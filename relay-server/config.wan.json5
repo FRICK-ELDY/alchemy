@@ -2,7 +2,7 @@
 // Guarantees: TLS+mTLS listen; default deny; host/guest CN key-family ACL.
 // Does NOT guarantee: per-room dynamic ACL, JWT at zenohd, CCU QoS.
 // Room isolation: application `wire_cap` key segment (x004e) + app signatures.
-// Replace certificate paths on the VPS (see manual/zenoh-wan-conoha.md).
+// Replace certificate paths on the VPS (see manual/relay-server-wan.md; LE: manual/relay-server-dns.md).
 {
   mode: "router",
   metadata: {

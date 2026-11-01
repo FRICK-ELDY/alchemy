@@ -39,7 +39,7 @@
 - **relay が秘密鍵を平文 HTTP で返し、手順書が `0.0.0.0` を指示** `-2`（Opus -2 / GPT 未個別）
   > サーバー側鍵生成 + `key_pem` JSON。Tunnel 背後でもなく、盗聴で Allocation Token と mTLS 鍵の両方が取れる。
   > 採用: **-2**（Opus）
-  > 対象ファイル: `relay-agent/src/main.rs`, `.workspace/0_doc/manual/zenoh-wan-conoha.md`
+  > 対象ファイル: `relay-agent/src/main.rs`, `.workspace/0_doc/manual/relay-server-wan.md`
 
 ### assets-server
 

@@ -274,7 +274,8 @@ flowchart TB
 
 ### Zenoh WAN（運用）
 
-- ConoHa / Ubuntu 22.04・24.04 手順書: [`manual/zenoh-wan-conoha.md`](../manual/zenoh-wan-conoha.md)（Slice [x001b](../../roadmap/slices/x001b-zenoh-wan-conoha.md)）
+- WAN 手順正本: [`manual/relay-server-wan.md`](../manual/relay-server-wan.md)（Slice [x001b](../../roadmap/slices/x001b-zenoh-wan-conoha.md)）
+- DNS / Let's Encrypt（追加）: [`manual/relay-server-dns.md`](../manual/relay-server-dns.md)
 - WAN config: [`relay-server/config.wan.json5`](../../../relay-server/config.wan.json5)
 
 ### Alchemy 側

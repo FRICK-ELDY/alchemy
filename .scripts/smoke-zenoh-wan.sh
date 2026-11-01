@@ -10,7 +10,7 @@ usage: ZENOH_CONNECT=tls/<VPS_HOST>:7447 bash .scripts/smoke-zenoh-wan.sh
 
 Checks that the host:port in ZENOH_CONNECT accepts TCP connections (allowlist).
 Does not verify the TLS handshake. Operator demo:
-  .workspace/0_doc/manual/zenoh-wan-conoha.md
+  .workspace/0_doc/manual/relay-server-wan.md
 EOF
 }
 

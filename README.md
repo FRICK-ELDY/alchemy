@@ -13,7 +13,7 @@
 `host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（Manifest user_root 本数・帯天井 4・`cnf.spk`）・**Presence / Leave / liveliness**・**30Hz 署名デルタ**・credential / Zenoh put worker。`client` は Home login・canonical **ManifestSeal**・**generation/revision** ゲート・decode 上限・Desktop/XR Grab。  
 **暗号・門番（〜x0045）:** 検証失敗は discard、Intent rate + JWKS hard stale、Grab hold 距離クランプ。  
 **運用・品質（x0046–x004d）:** adversarial E2E、launcher CI、asset placeholder + HTTP timeout、**localhost `/metrics`**、ClientIp 共有、**cargo-fuzz**、**Presence 容量 = Manifest entries**。  
-**LAN / HTTPS / WAN:** zenohd + `ZENOH_CONNECT`；Tunnel（[`edge/cloudflared/`](edge/cloudflared/)）；WAN は **TLS**（x0022 · [手順書](.workspace/0_doc/manual/zenoh-wan-conoha.md)）。  
+**LAN / HTTPS / WAN:** zenohd + `ZENOH_CONNECT`；Tunnel（[`edge/cloudflared/`](edge/cloudflared/)）；WAN は **TLS**（x0022 · [手順書](.workspace/0_doc/manual/relay-server-wan.md)）。  
 **Assets:** CAS local / **R2**（GET は署名 URL 302）。**Hermetic E2E（x001f）:** `docker-compose.e2e.yml`。  
 次の空き ID = **`x0053`**。P4-1 描画統合は **[x0050](.workspace/roadmap/slices/x0050-xr-swapchain-wgpu.md)**–**[x0052](.workspace/roadmap/slices/x0052-xr-vk-loop-gpu-remove.md)** **done**。BlobGrant 案 B は後続。[roadmap](.workspace/roadmap/README.md)。
 
@@ -142,7 +142,7 @@ make ci-e2e                             # x001f hermetic: compose 縦 login→to
 #   （env 例: edge/client.env.example / smoke: bash .scripts/smoke-https-edge.sh）
 #   公網へのルーターポート開放は不要（Tunnel）。
 # Zenoh WAN TLS（x0022 / ConoHa）:
-#   手順: .workspace/0_doc/manual/zenoh-wan-conoha.md
+#   手順: .workspace/0_doc/manual/relay-server-wan.md
 #   VPS: zenohd -c config.wan.json5（tls）+ certs + ufw allowlist（7447 全世界開放禁止）
 #   export ZENOH_CONNECT=tls/<VPS_HOST>:7447
 #   # 私有 CA: export ZENOH_TLS_ROOT_CA=/path/to/ca-cert.pem

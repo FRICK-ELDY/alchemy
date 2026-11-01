@@ -1,4 +1,4 @@
-# Zenoh WAN 手順（ConoHa / Ubuntu 22.04・24.04）
+# relay-server WAN 手順（ConoHa / Ubuntu 22.04・24.04）
 
 ConoHa VPS 上の **relay-server**（`zenohd`・**TLS+mTLS**・`7447`）と **relay-agent**（Allocation → 短命 client cert）を待受し、拠点 host と外 client が同じ `ROOM_ID` / `wire_cap` に入る。
 
@@ -8,7 +8,8 @@ ConoHa VPS 上の **relay-server**（`zenohd`・**TLS+mTLS**・`7447`）と **re
 | **relay-agent** | Allocation Token 検証 → 短命 mTLS 証明書発行 |
 
 前提 Slice: [x001a HTTPS](../../roadmap/slices/x001a-https-edge-tunnel.md) · [x001b](../../roadmap/slices/x001b-zenoh-wan-conoha.md) · **TLS: [x0022](../../roadmap/slices/x0022-liveliness-wan-tls.md)** · **mTLS/Relay: [x004e](../../roadmap/slices/x004e-relay-agent-mvp.md)**  
-config: [`relay-server/config.wan.json5`](../../../relay-server/config.wan.json5) · agent: [`relay-agent/`](../../../relay-agent/)
+config: [`relay-server/config.wan.json5`](../../../relay-server/config.wan.json5) · agent: [`relay-agent/`](../../../relay-agent/)  
+DNS / Let's Encrypt（サーバ証明書のドメイン化）: [`relay-server-dns.md`](relay-server-dns.md)
 
 想定スペック: **Ubuntu 22.04 または 24.04**、4Core / 4GB RAM（手順は両 LTS で同じ）。
 
@@ -71,7 +72,7 @@ cargo build --release
 ```
 
 
-**B. 本番寄り（Let's Encrypt）** — 公開 DNS 名があるとき。`listen_certificate` / `listen_private_key` を certbot の fullchain/privkey に合わせる。client 側の `ZENOH_TLS_ROOT_CA` は不要（webpki 既定）。
+**B. 本番寄り（Let's Encrypt）** — 公開 DNS 名があるとき。手順の詳細は [`relay-server-dns.md`](relay-server-dns.md)。`listen_certificate` / `listen_private_key` を certbot の fullchain/privkey に合わせ、**`tls/` + mTLS + ACL は残す**。client 側の `ZENOH_TLS_ROOT_CA` は不要（webpki 既定）。
 
 ### 4. config 配置
 

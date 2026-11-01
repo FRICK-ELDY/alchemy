@@ -21,7 +21,8 @@
 | [`config.json5`](../../../relay-server/config.json5) | ローカル / LAN（multicast ON・tcp・ACL オフ） |
 | [`config.wan.json5`](../../../relay-server/config.wan.json5) | ConoHa 公網（multicast OFF・**tls+mTLS+ACL**） |
 
-運用手順（Ubuntu 22.04 / systemd / ufw / TLS / Relay Agent）: [`manual/zenoh-wan-conoha.md`](../manual/zenoh-wan-conoha.md)
+運用手順（WAN 正本: mTLS / Relay Agent / allowlist）: [`manual/relay-server-wan.md`](../manual/relay-server-wan.md)  
+DNS / Let's Encrypt（追加）: [`manual/relay-server-dns.md`](../manual/relay-server-dns.md)
 
 ## MVP キー式（x004e）
 

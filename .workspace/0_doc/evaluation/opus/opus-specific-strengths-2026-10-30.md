@@ -352,7 +352,7 @@
 - **ローカル / WAN 設定の分離と差分の明記（継続）** `+2`
   > 対象ファイル: `relay-server/config.json5`, `relay-server/config.wan.json5`, `.workspace/0_doc/architecture/relay-server.md`（L17-22）
 - **WAN の運用手順（systemd・ufw allowlist・relay 起動）（継続）** `+1`
-  > 対象ファイル: `.workspace/0_doc/manual/zenoh-wan-conoha.md`
+  > 対象ファイル: `.workspace/0_doc/manual/relay-server-wan.md`
 - **「zenohd はトークンを見ない」という境界の明記（継続）** `+1`
 - **`TRUSTED_PROXIES` の必須手順化（継続）** `+2`
   > 対象ファイル: `edge/cloudflared/README.md`
