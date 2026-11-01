@@ -15,7 +15,7 @@
 **運用・品質（x0046–x004d）:** adversarial E2E、launcher CI、asset placeholder + HTTP timeout、**localhost `/metrics`**、ClientIp 共有、**cargo-fuzz**、**Presence 容量 = Manifest entries**。  
 **LAN / HTTPS / WAN:** zenohd + `ZENOH_CONNECT`；Tunnel（[`edge/cloudflared/`](edge/cloudflared/)）；WAN は **TLS + 短命 mTLS**（x0022 / [x0066](.workspace/roadmap/slices/x0066-ephemeral-mtls-world-issue.md) · [手順書](.workspace/0_doc/manual/relay-server-wan.md)）。world が CSR を署名し、zenohd は role CN ACL（[x0067](.workspace/roadmap/slices/x0067-zenohd-acl-put-family-host-guest.md)）。Relay Agent は互換フォールバック。  
 **Assets:** CAS local / **R2**（GET は署名 URL 302）。**Hermetic E2E（x001f）:** `docker-compose.e2e.yml`。  
-P4-1 描画統合は **[x0050](.workspace/roadmap/slices/x0050-xr-swapchain-wgpu.md)**–**[x0052](.workspace/roadmap/slices/x0052-xr-vk-loop-gpu-remove.md)** **done**。次の実装候補は relay 契約の残り → 部屋隔離 → inventory **[x0054](.workspace/roadmap/slices/x0054-inventory-grant-required-put.md)**（体感並行 **[x0053](.workspace/roadmap/slices/x0053-xr-desktop-hotswitch.md)**）。空き ID = **`x0068`**。[roadmap](.workspace/roadmap/README.md)。
+P4-1 描画統合は **[x0050](.workspace/roadmap/slices/x0050-xr-swapchain-wgpu.md)**–**[x0052](.workspace/roadmap/slices/x0052-xr-vk-loop-gpu-remove.md)** **done**。relay 契約（NotAfter ≈ TTL / bound / CI）は **[x0068](.workspace/roadmap/slices/x0068-relay-mtls-ttl-bound-ci.md)** **done**。次の実装候補は 部屋隔離 → inventory **[x0054](.workspace/roadmap/slices/x0054-inventory-grant-required-put.md)**（体感並行 **[x0053](.workspace/roadmap/slices/x0053-xr-desktop-hotswitch.md)**）。空き ID = **`x0069`**。[roadmap](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|

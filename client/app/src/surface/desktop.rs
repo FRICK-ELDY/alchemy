@@ -210,6 +210,32 @@ impl App {
         }
     }
 
+    /// x0068: Token refresh installed new mTLS PEMs → reopen Zenoh while joined.
+    fn poll_mtls_reopen(&mut self) {
+        let joined = self
+            .shared
+            .auth
+            .lock()
+            .ok()
+            .map(|g| g.is_joined())
+            .unwrap_or(false);
+        if !joined {
+            return;
+        }
+        if !self
+            .shared
+            .mtls_reopen_pending
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        match bind_room_after_join(&self.shared, &mut self.zenoh) {
+            Ok(()) => log::info!("mTLS refresh: Zenoh reopened + room bus rebound"),
+            // pending restore is owned by bind_room_after_join (leave_room clears it).
+            Err(err) => log::warn!("mTLS refresh reopen failed (will retry): {err:#}"),
+        }
+    }
+
     /// Non-blocking poll of Auth worker (x002e). Safe to call every frame.
     fn poll_auth_job(&mut self) {
         let outcome = match self.auth_job.as_ref() {
@@ -775,6 +801,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 self.poll_auth_job();
+                self.poll_mtls_reopen();
                 self.maintain_look_capture();
                 self.rebuild_intent();
                 let highlight = self.aim_highlight();
@@ -793,6 +820,7 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         self.poll_auth_job();
+        self.poll_mtls_reopen();
         // x0048: re-apply sticky asset failure after Login/Start/Join settle (skips "…").
         if self
             .shared

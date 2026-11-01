@@ -15,13 +15,12 @@ const TOKEN_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Deserialize)]
 struct MtlsResponse {
     client_cert_pem: String,
-    /// World soft TTL / CA PEM are accepted for wire compat but unused client-side:
-    /// Zenoh trust is `ZENOH_TLS_ROOT_CA` / webpki; mid-flight cert reopen is non-goal (x0066).
+    /// CA PEM accepted for wire compat; Zenoh trust uses `ZENOH_TLS_ROOT_CA`.
     #[serde(default)]
     #[allow(dead_code)]
     ca_cert_pem: String,
+    /// Soft TTL / NotAfter alignment (x0068); drives PEM soft TTL + reopen scheduling.
     #[serde(default)]
-    #[allow(dead_code)]
     expires_at: String,
 }
 
@@ -44,6 +43,8 @@ struct TokenResponse {
 #[derive(Debug, Clone)]
 pub struct WorldMtls {
     pub client_cert_pem: String,
+    /// ISO-8601 from world; empty when absent.
+    pub expires_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +120,7 @@ pub fn fetch_guest_token(
         .context("guest token wire_cap")?;
     let mtls = resp.mtls.map(|m| WorldMtls {
         client_cert_pem: m.client_cert_pem,
+        expires_at: m.expires_at,
     });
     Ok(GuestToken {
         token: resp.token,

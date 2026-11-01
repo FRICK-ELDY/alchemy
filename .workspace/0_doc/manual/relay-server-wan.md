@@ -127,7 +127,10 @@ MTLS_CA_KEY_PATH=/etc/alchemy/mtls/client-ca-key.pem
 
 **Docker prod**（`world-server/docker-compose.prod.yml`）: host の `world-server/priv/mtls/` をコンテナの **`/etc/alchemy/mtls:ro`** に bind する（`/var/lib/world` 配下は entrypoint の `chown` と `:ro` が衝突するため使わない）。`.env.prod` で `MTLS_CA_*_PATH=/etc/alchemy/mtls/…` をセットする。秘密鍵はコンテナ user `world` から読めること（`:ro` では entrypoint が直せない）。Room Token PEM / SQLite は引き続き named volume `world_prod_keys`（`/var/lib/world`）。
 
-API 上の `expires_at` は署名から **6 時間**。openssl の NotAfter は **1 日**。期限の 30 分前にセッションを自動で開き直す手順は、この文書の範囲外。Token を取り直すときに host / client は新しい CSR を付ける。
+API 上の `expires_at` と openssl の **NotAfter はともに約 300 秒**（Room Token TTL と同値・[x0068](../../roadmap/slices/x0068-relay-mtls-ttl-bound-ci.md)）。これは本番 WAN 向けの短命契約である。
+
+- **guest**: Token refresh で新しい CSR / PEM を入れたあと、`mtls_reopen_pending` により Desktop / XR が Zenoh を reopen する（連続プレイを 300s で落とさない）。
+- **host**: mid-flight Zenoh reopen はまだしない。確立済み TLS は通常そのまま続き、クラッシュ再起動・再接続は refresh 済み PEM を使う。Token refresh を止めると再接続時に失敗し得る。
 
 ### 4. config 配置（VPS）
 

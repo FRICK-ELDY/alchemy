@@ -64,6 +64,26 @@ defmodule World.MtlsIssuerTest do
     refute subject =~ "alchemy-core"
   end
 
+  test "NotAfter and expires_at match TTL 300s", %{tmp: tmp, openssl: openssl} do
+    csr = make_csr(tmp, "/CN=ignored", openssl)
+    before = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    assert {:ok, %{client_cert_pem: cert, expires_at: exp}} =
+             MtlsIssuer.issue(csr, "guest", ttl_seconds: 300)
+
+    after_dt = DateTime.utc_now() |> DateTime.truncate(:second)
+    soft_lo = DateTime.add(before, 300 - 5, :second)
+    soft_hi = DateTime.add(after_dt, 300 + 5, :second)
+    assert DateTime.compare(exp, soft_lo) != :lt
+    assert DateTime.compare(exp, soft_hi) != :gt
+
+    end_unix = cert_enddate_unix(tmp, cert, openssl)
+    before_unix = DateTime.to_unix(before)
+    after_unix = DateTime.to_unix(after_dt)
+    assert end_unix >= before_unix + 300 - 30
+    assert end_unix <= after_unix + 300 + 30
+  end
+
   test "host role yields alchemy-host CN", %{tmp: tmp, openssl: openssl} do
     csr = make_csr(tmp, "/CN=ignored-host-claim", openssl)
 
@@ -155,5 +175,50 @@ defmodule World.MtlsIssuerTest do
       System.cmd(openssl, ["x509", "-in", path, "-noout", "-subject"], stderr_to_stdout: true)
 
     subject
+  end
+
+  defp cert_enddate_unix(tmp, cert_pem, openssl) do
+    path = Path.join(tmp, "issued-end.cert.pem")
+    File.write!(path, cert_pem)
+
+    {out, 0} =
+      System.cmd(openssl, ["x509", "-in", path, "-noout", "-enddate"], stderr_to_stdout: true)
+
+    # notAfter=Nov  1 14:45:03 2026 GMT
+    "notAfter=" <> rest = String.trim(out)
+
+    rest =
+      rest
+      |> String.replace_suffix(" GMT", "")
+      |> String.replace_suffix(" UTC", "")
+      |> String.trim()
+
+    [mon_s, day_s, time_s, year_s] = String.split(rest)
+
+    mon =
+      %{
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12
+      }[mon_s]
+
+    [hh, mm, ss] = String.split(time_s, ":") |> Enum.map(&String.to_integer/1)
+    y = String.to_integer(year_s)
+    d = String.to_integer(day_s)
+
+    greg =
+      :calendar.datetime_to_gregorian_seconds({{y, mon, d}, {hh, mm, ss}})
+
+    # Unix epoch = 1970-01-01 in gregorian seconds
+    greg - 62_167_219_200
   end
 end

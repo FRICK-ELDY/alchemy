@@ -343,12 +343,11 @@ impl RoomTokenVerifier {
 #[derive(Debug, Deserialize)]
 struct MtlsResponse {
     client_cert_pem: String,
-    /// Soft TTL / CA PEM kept for wire compat; unused until mid-flight reopen (x0066 non-goal).
     #[serde(default)]
     #[allow(dead_code)]
     ca_cert_pem: String,
+    /// Soft TTL / NotAfter alignment (x0068).
     #[serde(default)]
-    #[allow(dead_code)]
     expires_at: String,
 }
 
@@ -368,10 +367,11 @@ struct TokenResponse {
     mtls: Option<MtlsResponse>,
 }
 
-/// World-issued ephemeral client certificate (x0066).
+/// World-issued ephemeral client certificate (x0066 / x0068).
 #[derive(Debug, Clone)]
 pub struct WorldMtls {
     pub client_cert_pem: String,
+    pub expires_at: String,
 }
 
 /// Host Room Token bootstrap payload (x004e includes wire_cap + allocation; x0066 mtls).
@@ -690,6 +690,7 @@ pub fn fetch_host_token(
                 .context("host token wire_cap")?;
             let mtls = parsed.mtls.map(|m| WorldMtls {
                 client_cert_pem: m.client_cert_pem,
+                expires_at: m.expires_at,
             });
             Ok(HostTokenBundle {
                 token: parsed.token,
@@ -809,6 +810,11 @@ impl HostCredentialChain {
             &bundle.wire_cap,
             "host",
             &bundle.allocation_token,
+            bundle
+                .mtls
+                .as_ref()
+                .map(|m| m.expires_at.as_str())
+                .filter(|s| !s.is_empty()),
         ) {
             log::warn!("host bootstrap mTLS: {err:#}");
         }
@@ -937,18 +943,26 @@ impl HostCredentialChain {
         self.host_refresh_at = refresh_deadline(ttl)
             .unwrap_or_else(|| Instant::now() + Duration::from_secs(BYPASS_ROOM_TOKEN_TTL_HINT));
         self.host_hard_expire_at = hard_expire_or_hint(ttl, BYPASS_ROOM_TOKEN_TTL_HINT);
-        // Refresh mTLS files for the next Zenoh open (world preferred; else Relay Agent).
+        // Refresh mTLS PEM files (x0068 NotAfter ≈ soft TTL). Host does not mid-flight
+        // reopen Zenoh; established TLS usually continues. Crash/restart or transport
+        // reconnect uses these files — keep Token refresh healthy on WAN.
         match zenoh_connect::apply_world_mtls_or_allocate(
             bundle.mtls.as_ref().map(|m| m.client_cert_pem.as_str()),
             eph_key.as_deref(),
             &bundle.wire_cap,
             "host",
             &self.allocation_token,
+            bundle
+                .mtls
+                .as_ref()
+                .map(|m| m.expires_at.as_str())
+                .filter(|s| !s.is_empty()),
         ) {
             Ok(Some(id)) => {
                 log::info!(
-                    "refreshed host mTLS cert files cn={} (apply on next Zenoh open)",
-                    id.cn
+                    "refreshed host mTLS cert files cn={} soft_ttl={}s (no mid-flight reopen; next open / reconnect)",
+                    id.cn,
+                    id.expires_in
                 );
             }
             Ok(None) => {}

@@ -4,17 +4,16 @@ defmodule World.MtlsIssuer do
 
   Guarantees: CSR Subject is ignored; CN is forced from server-authorized role
   (`alchemy-host` | `alchemy-guest`); CA key / CSR scratch files are removed even on
-  sign failure. Non-guarantees: sub-day openssl NotAfter (tooling uses `-days 1`);
-  soft API TTL is separate (`expires_at`).
+  sign failure; **openssl NotAfter ≈ soft TTL** (`expires_at`, default 300s) via
+  `-not_after` (x0068). Non-guarantees: CRL/OCSP; sub-second clock skew.
   """
 
   require Logger
 
   @cn_host "alchemy-host"
   @cn_guest "alchemy-guest"
-  # Soft refresh SLA returned to clients (openssl NotAfter floor is 1 day).
-  @default_ttl_seconds 6 * 3600
-  @openssl_days "1"
+  # Soft refresh SLA + certificate NotAfter (aligned with room_token_ttl_seconds).
+  @default_ttl_seconds 300
 
   @type role :: String.t()
 
@@ -47,7 +46,7 @@ defmodule World.MtlsIssuer do
          {:ok, ca_cert_path, ca_key_path, ca_pem, temp_ca_files} <- materialize_ca(work, ca_spec) do
       try do
         with {:ok, paths} <- write_inputs(work, csr_pem),
-             :ok <- run_sign(paths, ca_cert_path, ca_key_path, cn),
+             :ok <- run_sign(paths, ca_cert_path, ca_key_path, cn, ttl),
              {:ok, cert_pem} <- File.read(paths.cert) do
           now = DateTime.utc_now() |> DateTime.truncate(:second)
           expires_at = DateTime.add(now, ttl, :second)
@@ -213,9 +212,15 @@ defmodule World.MtlsIssuer do
     :ok
   end
 
-  defp run_sign(paths, ca_cert, ca_key, cn) do
+  defp run_sign(paths, ca_cert, ca_key, cn, ttl_seconds) do
     serial = Integer.to_string(System.system_time(:nanosecond), 16)
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    # Skew allowance so zenohd "not yet valid" is unlikely under mild clock drift.
+    not_before = DateTime.add(now, -60, :second) |> asn1_utc()
+    not_after = DateTime.add(now, ttl_seconds, :second) |> asn1_utc()
+
     # -subj replaces CSR subject (do not trust client-supplied CN).
+    # -not_after overrides -days (OpenSSL 3+); fail-closed if unsupported.
     args = [
       "x509",
       "-req",
@@ -229,8 +234,10 @@ defmodule World.MtlsIssuer do
       "0x#{serial}",
       "-out",
       paths.cert,
-      "-days",
-      @openssl_days,
+      "-not_before",
+      not_before,
+      "-not_after",
+      not_after,
       "-subj",
       "/CN=#{cn}",
       "-extfile",
@@ -245,6 +252,13 @@ defmodule World.MtlsIssuer do
         Logger.warning("openssl x509 failed code=#{code}: #{String.slice(out, 0, 500)}")
         {:error, :openssl_failed}
     end
+  end
+
+  defp asn1_utc(%DateTime{} = dt) do
+    {{y, m, d}, {hh, mm, ss}} = DateTime.to_naive(dt) |> NaiveDateTime.to_erl()
+
+    :io_lib.format("~4..0B~2..0B~2..0B~2..0B~2..0B~2..0BZ", [y, m, d, hh, mm, ss])
+    |> IO.iodata_to_binary()
   end
 
   defp chmod_secret(path) do

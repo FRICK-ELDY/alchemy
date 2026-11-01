@@ -1181,14 +1181,20 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
         &guest.wire_cap,
         "guest",
         &guest.allocation_token,
+        guest
+            .mtls
+            .as_ref()
+            .map(|m| m.expires_at.as_str())
+            .filter(|s| !s.is_empty()),
     )
     .context("guest mTLS (world or relay allocate)")?
     {
         shared.mtls_reopen_pending.store(true, Ordering::SeqCst);
         log::info!(
-            "guest mTLS ready cn={} role={} (mtls_reopen_pending)",
+            "guest mTLS ready cn={} role={} soft_ttl={}s (mtls_reopen_pending)",
             id.cn,
-            id.role
+            id.role,
+            id.expires_in
         );
     }
     // Lock order: auth → intent_session → pending (same as generation commit).
@@ -1279,26 +1285,34 @@ pub fn bind_room_after_join(
     shared: &Arc<SharedState>,
     zenoh: &mut Option<zenoh::Session>,
 ) -> Result<()> {
+    // Consume pending up front; restore on *any* Err so poll_mtls_reopen can retry (x0068).
     let mtls_pending = shared.mtls_reopen_pending.swap(false, Ordering::SeqCst);
+    match bind_room_after_join_inner(shared, zenoh, mtls_pending) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if mtls_pending {
+                shared.mtls_reopen_pending.store(true, Ordering::SeqCst);
+            }
+            Err(err)
+        }
+    }
+}
+
+fn bind_room_after_join_inner(
+    shared: &Arc<SharedState>,
+    zenoh: &mut Option<zenoh::Session>,
+    mtls_pending: bool,
+) -> Result<()> {
     if mtls_pending || zenoh.is_none() {
         // Match Leave / orphan path: always close before replace (not only Drop-on-overwrite).
         close_zenoh(zenoh);
-        match open_zenoh().context("zenoh open/reopen after join") {
-            Ok(session) => {
-                *zenoh = Some(session);
-                shared.room_bus_started.store(false, Ordering::SeqCst);
-                log::info!(
-                    "zenoh session {} after join (mtls_pending={mtls_pending})",
-                    if mtls_pending { "reopened" } else { "opened" }
-                );
-            }
-            Err(err) => {
-                if mtls_pending {
-                    shared.mtls_reopen_pending.store(true, Ordering::SeqCst);
-                }
-                return Err(err);
-            }
-        }
+        let session = open_zenoh().context("zenoh open/reopen after join")?;
+        *zenoh = Some(session);
+        shared.room_bus_started.store(false, Ordering::SeqCst);
+        log::info!(
+            "zenoh session {} after join (mtls_pending={mtls_pending})",
+            if mtls_pending { "reopened" } else { "opened" }
+        );
     }
     let bus = {
         let session = zenoh
@@ -1469,8 +1483,8 @@ fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                         }
                         continue;
                     };
-                    // Guest refresh: re-issue Room Token; when WAN, new CSR → world mtls env
-                    // (applied on next Zenoh open; mid-flight reopen is non-goal for this path).
+                    // Guest refresh: re-issue Room Token; when WAN, new CSR → world mtls env.
+                    // x0068: set mtls_reopen_pending so desktop/XR reapplies via bind_room_after_join.
                     let (csr_pem, eph_key) = if zenoh_connect::should_request_world_mtls() {
                         match zenoh_connect::EphemeralMtlsIdentity::generate() {
                             Ok(eph) => (
@@ -1493,14 +1507,30 @@ fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                         csr_pem.as_deref(),
                     ) {
                         Ok(guest) => {
-                            if let Err(err) = zenoh_connect::apply_world_mtls_or_allocate(
+                            match zenoh_connect::apply_world_mtls_or_allocate(
                                 guest.mtls.as_ref().map(|m| m.client_cert_pem.as_str()),
                                 eph_key.as_deref(),
                                 &guest.wire_cap,
                                 "guest",
                                 &guest.allocation_token,
+                                guest
+                                    .mtls
+                                    .as_ref()
+                                    .map(|m| m.expires_at.as_str())
+                                    .filter(|s| !s.is_empty()),
                             ) {
-                                log::warn!("guest refresh mTLS update failed: {err:#}");
+                                Ok(Some(id)) => {
+                                    shared.mtls_reopen_pending.store(true, Ordering::SeqCst);
+                                    log::info!(
+                                        "guest refresh mTLS cn={} soft_ttl={}s (mtls_reopen_pending)",
+                                        id.cn,
+                                        id.expires_in
+                                    );
+                                }
+                                Ok(None) => {}
+                                Err(err) => {
+                                    log::warn!("guest refresh mTLS update failed: {err:#}");
+                                }
                             }
                             let local_sub = match jwt_sub::sub_unverified(&guest.token) {
                                 Ok(s) => s,

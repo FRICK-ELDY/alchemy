@@ -417,14 +417,29 @@ impl SharedState {
             csr_pem.as_deref(),
         ) {
             Ok(guest) => {
-                if let Err(err) = zenoh_connect::apply_world_mtls_or_allocate(
+                match zenoh_connect::apply_world_mtls_or_allocate(
                     guest.mtls.as_ref().map(|m| m.client_cert_pem.as_str()),
                     eph_key.as_deref(),
                     &guest.wire_cap,
                     "guest",
                     &guest.allocation_token,
+                    guest
+                        .mtls
+                        .as_ref()
+                        .map(|m| m.expires_at.as_str())
+                        .filter(|s| !s.is_empty()),
                 ) {
-                    log::warn!("host generation mTLS update failed: {err:#}");
+                    Ok(Some(id)) => {
+                        self.mtls_reopen_pending
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                        log::info!(
+                            "host generation mTLS cn={} soft_ttl={}s (mtls_reopen_pending)",
+                            id.cn,
+                            id.expires_in
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(err) => log::warn!("host generation mTLS update failed: {err:#}"),
                 }
                 let local_sub = match crate::jwt_sub::sub_unverified(&guest.token) {
                     Ok(s) => s,

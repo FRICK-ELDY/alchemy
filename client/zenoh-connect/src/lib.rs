@@ -10,7 +10,8 @@ mod ephemeral;
 
 pub use allocate::{
     allocate, allocate_if_configured, apply_world_mtls_or_allocate, install_world_mtls_pems,
-    mtls_env_ready, require_wire_cap, should_request_world_mtls, AllocatedIdentity,
+    mtls_env_ready, require_wire_cap, should_request_world_mtls, soft_ttl_secs_from_expires_at,
+    AllocatedIdentity, WORLD_MTLS_SOFT_TTL_SECS,
 };
 pub use ephemeral::EphemeralMtlsIdentity;
 

@@ -3,7 +3,11 @@ name = "alchemy-relay-agent"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Relay Agent MVP: Allocation Token → short-lived mTLS client certs (x004e)"
+description = "Relay Agent: Allocation Token → short-lived mTLS client certs (x004e / x0068)"
+
+[lib]
+name = "alchemy_relay_agent"
+path = "src/lib.rs"
 
 [[bin]]
 name = "alchemy-relay-agent"

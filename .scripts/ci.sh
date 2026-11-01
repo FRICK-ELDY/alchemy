@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # GitHub Actions 相当のチェック（macOS / Linux / WSL / Git Bash）。
-# 使い方: ./.scripts/ci.sh [all|rust|launcher|protocol|auth|world|assets|prod-compose]
+# 使い方: ./.scripts/ci.sh [all|rust|launcher|relay|protocol|auth|world|assets|prod-compose]
 #
 # Elixir 系は既定で Docker（OS 差分・ネイティブ依存を避ける）。
 # ホストの mix で auth を回す場合: AUTH_CI_HOST=1 ./.scripts/ci.sh auth
@@ -47,6 +47,22 @@ run_launcher() {
   step "launcher cargo clippy" cargo clippy -- -D warnings
   step "launcher cargo build" cargo build
   step "launcher cargo test" cargo test
+  popd >/dev/null
+}
+
+run_relay_agent() {
+  # x0068 / P1-1: alchemy-relay-agent is outside the client workspace (parity with
+  # .github/workflows/rust-ci.yml relay-agent-check).
+  pushd relay-agent >/dev/null
+  step "relay-agent cargo fmt --check" cargo fmt --all -- --check
+  step "relay-agent cargo clippy" cargo clippy -- -D warnings
+  if command -v cargo-deny >/dev/null 2>&1; then
+    step "relay-agent cargo deny check" cargo deny check
+  else
+    echo "[SKIP] relay-agent cargo deny check (local only; CI gates via EmbarkStudios/cargo-deny-action)"
+  fi
+  step "relay-agent cargo build" cargo build
+  step "relay-agent cargo test" cargo test
   popd >/dev/null
 }
 
@@ -156,6 +172,7 @@ echo "root: ${ROOT}"
 case "$TARGET" in
   rust) run_rust ;;
   launcher) run_launcher ;;
+  relay|relay-agent) run_relay_agent ;;
   protocol) run_protocol ;;
   auth) run_auth ;;
   world) run_world_docker ;;
@@ -164,6 +181,7 @@ case "$TARGET" in
   all)
     run_rust
     run_launcher
+    run_relay_agent
     run_protocol
     run_auth
     run_world_docker
@@ -171,7 +189,7 @@ case "$TARGET" in
     run_prod_compose_config
     ;;
   *)
-    echo "usage: $0 [all|rust|launcher|protocol|auth|world|assets|prod-compose]" >&2
+    echo "usage: $0 [all|rust|launcher|relay|protocol|auth|world|assets|prod-compose]" >&2
     exit 2
     ;;
 esac
