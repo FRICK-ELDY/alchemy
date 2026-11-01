@@ -152,10 +152,10 @@ depends_on: [x0006]
 | x0063 | — | planned | ItemRef repo@rev（Wave 4） | [x0063-item-ref-repo-rev.md](slices/x0063-item-ref-repo-rev.md) |
 | x0064 | — | planned | Vcs Branch/Tag 最小（Wave 4） | [x0064-vcs-branch-tag-minimal.md](slices/x0064-vcs-branch-tag-minimal.md) |
 | x0065 | — | planned | Origin Cert 薄皮＝C+3（Wave 4） | [x0065-origin-cert-thin.md](slices/x0065-origin-cert-thin.md) |
-| x0066 | — | active | Ephemeral mTLS（world 発行）+ Zenoh ACL（第1壁 CN / 第2壁 wire_cap） | [x0066-ephemeral-mtls-world-issue.md](slices/x0066-ephemeral-mtls-world-issue.md) |
+| x0066 | — | done | Ephemeral mTLS（world 発行）+ Zenoh ACL（第1壁 CN / 第2壁 wire_cap） | [x0066-ephemeral-mtls-world-issue.md](slices/x0066-ephemeral-mtls-world-issue.md) |
 | x0067 | — | done | zenohd ACL: キー族 put 分離を非対称 ingress/egress + interest で復帰 | [x0067-zenohd-acl-put-family-host-guest.md](slices/x0067-zenohd-acl-put-family-host-guest.md) |
 
-**現在の次:** WAN 門番は **[x0066](slices/x0066-ephemeral-mtls-world-issue.md)**（world 短命 mTLS）。第1壁 put 分離復帰は **[x0067](slices/x0067-zenohd-acl-put-family-host-guest.md)**（done）。インベントリ本線は **[inventory-ladder](inventory-ladder.md)**（B+2→C+3）· 実装着手 **[x0054](slices/x0054-inventory-grant-required-put.md)**。体感並行: **[x0053](slices/x0053-xr-desktop-hotswitch.md)**（同一 PR 禁止）。案 B 本体・launcher・verifier は保留。  
+**現在の次:** WAN 門番（x0066 / x0067）は **done**。残りは [improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md) の **relay 契約**（NotAfter ≈ TTL / JWKS·body bound / relay CI）→ 部屋隔離（P0-3）→ CAS Grant（P0-5）。インベントリ本線は **[inventory-ladder](inventory-ladder.md)**（着手 **[x0054](slices/x0054-inventory-grant-required-put.md)**、門番の後）。体感並行: **[x0053](slices/x0053-xr-desktop-hotswitch.md)**（同一 PR 禁止）。案 B 本体・launcher・verifier は保留。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
 次の空き番号は **`x0068`**。

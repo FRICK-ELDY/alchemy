@@ -6,16 +6,16 @@
 日常開発はネイティブ Windows の `cargo` で問題ない（かつて Smart App Control が ON だと os error 4551 で阻害されたが、現環境では OFF）。WSL2 は任意の代替。  
 **テスター配布 ZIP**（ネイティブ Windows x64）は [Releases（Pre-release）](https://github.com/FRICK-ELDY/alchemy/releases) · 手順 [windows-tester-zip.md](.workspace/0_doc/manual/windows-tester-zip.md)。版名は `v0.0.0-dev.YYYYMMDDHHMM`（JST）。
 
-## 現状（〜x004d）
+## 現状（〜x0067）
 
 手通し正本は **Desktop（x0020）**: 日常スタック（`:4002/:4003/:4004` + zenohd `:7447`）。手順は下記、env 例は [`client/env.desktop.example`](client/env.desktop.example)、機械検証は `make smoke-desktop-handthrough`。
 
 `host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（Manifest user_root 本数・帯天井 4・`cnf.spk`）・**Presence / Leave / liveliness**・**30Hz 署名デルタ**・credential / Zenoh put worker。`client` は Home login・canonical **ManifestSeal**・**generation/revision** ゲート・decode 上限・Desktop/XR Grab。  
 **暗号・門番（〜x0045）:** 検証失敗は discard、Intent rate + JWKS hard stale、Grab hold 距離クランプ。  
 **運用・品質（x0046–x004d）:** adversarial E2E、launcher CI、asset placeholder + HTTP timeout、**localhost `/metrics`**、ClientIp 共有、**cargo-fuzz**、**Presence 容量 = Manifest entries**。  
-**LAN / HTTPS / WAN:** zenohd + `ZENOH_CONNECT`；Tunnel（[`edge/cloudflared/`](edge/cloudflared/)）；WAN は **TLS**（x0022 · [手順書](.workspace/0_doc/manual/relay-server-wan.md)）。  
+**LAN / HTTPS / WAN:** zenohd + `ZENOH_CONNECT`；Tunnel（[`edge/cloudflared/`](edge/cloudflared/)）；WAN は **TLS + 短命 mTLS**（x0022 / [x0066](.workspace/roadmap/slices/x0066-ephemeral-mtls-world-issue.md) · [手順書](.workspace/0_doc/manual/relay-server-wan.md)）。world が CSR を署名し、zenohd は role CN ACL（[x0067](.workspace/roadmap/slices/x0067-zenohd-acl-put-family-host-guest.md)）。Relay Agent は互換フォールバック。  
 **Assets:** CAS local / **R2**（GET は署名 URL 302）。**Hermetic E2E（x001f）:** `docker-compose.e2e.yml`。  
-次の空き ID = **`x0053`**。P4-1 描画統合は **[x0050](.workspace/roadmap/slices/x0050-xr-swapchain-wgpu.md)**–**[x0052](.workspace/roadmap/slices/x0052-xr-vk-loop-gpu-remove.md)** **done**。BlobGrant 案 B は後続。[roadmap](.workspace/roadmap/README.md)。
+P4-1 描画統合は **[x0050](.workspace/roadmap/slices/x0050-xr-swapchain-wgpu.md)**–**[x0052](.workspace/roadmap/slices/x0052-xr-vk-loop-gpu-remove.md)** **done**。次の実装候補は relay 契約の残り → 部屋隔離 → inventory **[x0054](.workspace/roadmap/slices/x0054-inventory-grant-required-put.md)**（体感並行 **[x0053](.workspace/roadmap/slices/x0053-xr-desktop-hotswitch.md)**）。空き ID = **`x0068`**。[roadmap](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|

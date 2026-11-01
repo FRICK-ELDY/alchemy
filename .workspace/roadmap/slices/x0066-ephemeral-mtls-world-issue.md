@@ -1,6 +1,6 @@
 # x0066 — Ephemeral mTLS（world 発行）+ Zenoh ACL
 
-> **ID:** `x0066` · **slug:** `ephemeral-mtls-world-issue` · **status:** `active` · **area:** `[world, relay, host, client, zenoh, docs]` · **depends_on:** `[x004e, x0022]`
+> **ID:** `x0066` · **slug:** `ephemeral-mtls-world-issue` · **status:** `done` · **area:** `[world, relay, host, client, zenoh, docs]` · **depends_on:** `[x004e, x0022]`
 
 目標: 静的 client 証明書の事前配布と「固定 IP allowlist 前提」をやめ、**クライアントがオンメモリで CSR を作り、world-server が私有 CA で短命 mTLS 証明書を署名**して WAN zenohd に入る。トピック汚染は **第1壁 Zenoh CN ACL**、部屋隔離は **第2壁 `wire_cap` キー**（現行のまま）。
 
