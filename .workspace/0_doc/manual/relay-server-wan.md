@@ -18,8 +18,7 @@ DNS / Let's Encrypt（サーバ証明書のドメイン化）: [`relay-server-dn
 
 ## 二重の壁
 
-1. **第1壁 — Zenoh ACL（CN）**: mTLS で `alchemy-host` / `alchemy-guest` を識別し、`default_permission: deny` のうえ `alchemy/dev/room/**` を role に許可する（[`config.wan.json5`](../../../relay-server/config.wan.json5)）。**ingress と egress の両方**が必要（egress 無しだと subscribe 宣言は通っても Put が届かない）。WAN では `shared_memory` を切る。部屋の鍵空間を隠す壁ではない。  
-   **zenohd 1.10.1**: キー族ごとの put 分離（guest=`input`/`alive` のみ、host=sim のみ）だと **guest→host は通るが host→guest（Manifest / Presence）が届かない**（egress + SHM off でも再現）。現行は put を `room/**` に統合し、偽 sim の破棄はアプリ署名（第2壁）に寄る。新 zenohd で再検証するまで put 分離に戻さない。原因調査は [x0067](../../roadmap/slices/x0067-zenohd-acl-put-family-host-guest.md)
+1. **第1壁 — Zenoh ACL（CN）**: mTLS で `alchemy-host` / `alchemy-guest` を識別し、`default_permission: deny` のうえ **キー族 × メッセージ × flow（非対称）** を許可する（[`config.wan.json5`](../../../relay-server/config.wan.json5)）。Host→Guest は Guest の sim **`put` egress** + Host への **`declare_subscriber` egress**（interest）；Guest→Host 連続 Intent は Guest の `input` **`put` ingress** + Guest への **`declare_subscriber` egress**（host 購読 interest）。**sim への Guest `put` ingress は deny**（偽装 Publish / Fan-out 増幅を遮断）。WAN では `shared_memory` を切る。部屋の鍵空間を隠す壁ではない。詳細・WAN 検証は [x0067](../../roadmap/slices/x0067-zenohd-acl-put-family-host-guest.md)
 2. **第2壁 — `wire_cap`**: キー式 `alchemy/dev/room/{room_id}/{wire_cap}/…` と Room Token / アプリ署名。**部屋隔離はこちら**
 
 zenohd は **JWT を見ない**。平文 TCP は待受しない。`quic/` 待受は対象外。
@@ -272,7 +271,7 @@ bash .scripts/smoke-zenoh-wan.sh
 | Token は取れるが zenoh に入れない | world ログの `MTLS CA not configured` / `unreadable`。PATH/PEM で cert・key が揃っているか。`csr_pem` が無視されると `mtls` が無く、`RELAY_ALLOCATE_URL` も無ければ client 証明書が無い |
 | connection refused | zenohd / `ss -lntp \| grep 7447`。ufw とセキュリティグループが 7447/tcp を許可しているか。平文 `tcp/` で繋いでいないか |
 | 特定の回線だけ届かない | 送信元 IP 限定の 7447 ルールが残っていないか（推奨は `allow 7447/tcp`） |
-| mTLS は通るが Manifest が届かない | ACL が put 分離のままになっていないか（zenohd 1.10.1 では host→guest が沈黙）。`room/**` + egress + `shared_memory: false`、host を起動したままにする |
+| mTLS は通るが Manifest が届かない | (1) Guest sim の `put` **egress**（`guest-egress-sim`）(2) Host の `declare_subscriber` **egress**（`host-egress-declare`；**388b768 は put egress ありでもここ欠落で沈黙**）(3) `shared_memory: false`、host 起動維持。Intent がすぐ `reason=ttl` なら `guest-egress-interest` 欠落も疑う。切り分け: `RUST_LOG=zenoh::net::routing::interceptor=trace`（[x0067](../../roadmap/slices/x0067-zenohd-acl-put-family-host-guest.md)） |
 | HTTPS は通るが空間が空 | `ZENOH_CONNECT` / `ROOM_ID` の一致。第2壁は `wire_cap` |
 
 ---
@@ -284,7 +283,7 @@ bash .scripts/smoke-zenoh-wan.sh
 | WAN 待受が TLS+mTLS（平文 TCP の公開をしない） | QUIC / WebTransport / P2P |
 | world が CSR を受け、Subject を使わず role CN で短命 cert を署名する | 期限 30 分前の完全な自動セッション再 open |
 | zenohd と world が同一 client CA を検証と署名に使う | ACL ホットリロード / per-room subject |
-| role CN ACL（第1壁: mTLS CN + `room/**` + **egress**；SHM off）と `wire_cap`（第2壁: 部屋隔離） | 第1壁だけで部屋のキー空間を秘匿すること；zenohd 1.10.1 でのキー族 put 分離 |
+| role CN ACL（第1壁: キー族 × 非対称 put + **`declare_subscriber` egress**（`host-egress-declare` / `guest-egress-interest`）；guest sim は put egress のみ・put ingress deny；SHM off）と `wire_cap`（第2壁: 部屋隔離） | 第1壁だけで部屋のキー空間を秘匿すること；ACL ホットリロード / per-room subject |
 | ローカル `tcp/` と、CA 未設定時の Relay Agent 経路 | 送信元 IP allowlist（任意硬化。運用完了も非保証） |
 | x001a HTTPS と併用した外からの入室 | 端末に置いた一時 PEM の窃取 |
 | liveliness Delete が検証済み jti に紐付く（x0022） | client 秘密鍵の永続同梱；gen 再実行後の旧 client cert 互換 |
