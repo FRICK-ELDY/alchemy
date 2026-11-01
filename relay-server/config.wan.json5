@@ -1,10 +1,16 @@
 // Alchemy WAN relay-server (zenohd) — x0022 TLS / x004e mTLS + role ACL / x0066 world-issue
-// Guarantees: TLS+mTLS listen; default deny; role CN ACL (第1壁) + egress; SHM off.
-// Does NOT guarantee: per-room dynamic ACL, JWT at zenohd, CCU QoS, QUIC listen;
-//   key-family put separation on zenohd 1.10.1 (see access_control comment).
+// Guarantees: TLS+mTLS listen; default deny; host/guest CN key-family ACL (第1壁) + asymmetric flows; SHM off.
+// Does NOT guarantee: per-room dynamic ACL, JWT at zenohd, CCU QoS, QUIC listen.
 // Room isolation: application `wire_cap` key segment (x004e 第2壁) + app signatures.
 // Client certs: same client CA for **world-server (x0066 signer)** and/or **Relay Agent (x004e)**.
 // Replace certificate paths on the VPS (see manual/relay-server-wan.md; LE: manual/relay-server-dns.md).
+//
+// ACL flow asymmetry (x0067 / zenohd 1.10.1, WAN-verified 2026-11-01):
+//   Host→Guest: guest put egress + host declare_subscriber egress (interest).
+//   Guest→Host continuous Intent: guest put ingress + guest declare_subscriber
+//     egress on input/alive (host subscriber interest → guest publisher).
+//   Guest must NEVER put (ingress) on sim keys (spoof / fan-out).
+// Debug: RUST_LOG=zenoh::net::routing::interceptor=trace (remove after verify)
 {
   mode: "router",
   metadata: {
@@ -41,46 +47,136 @@
     enabled: true,
     // default deny: subscribers need matching *egress* put allows or samples never arrive.
     //
-    // zenohd 1.10.1 (verified WAN 2026-11-01):
-    //   Fine-grained put separation (guest=input/alive only, host=sim only) + egress + SHM off
-    //   → guest→host OK, but host→guest Manifest/Presence never arrive.
-    //   role CN + alchemy/dev/room/** put/sub on ingress+egress → host→guest OK.
-    //   Do not reintroduce key-family put separation until re-verified (slice x0067).
-    // Forged sim Puts are still discarded by app signatures (第2壁).
+    // Key-family put separation (第1壁) — do not collapse to room/**:
+    //   guest sim: declare_subscriber ingress + put egress ONLY (no put ingress)
+    //   guest input: put ingress; alive/**: put ingress + put egress (via guest-egress-sim)
+    //   host sim: put ingress+egress (exp B); host input: put egress + declare ingress
+    // Interest egress (x0067 本丸; 388b768 欠落で沈黙 / Intent TTL):
+    //   host-egress-declare: declare_subscriber egress on sim/input (Host→Guest path)
+    //   guest-egress-interest: declare_subscriber egress on input/alive (continuous Intent)
     default_permission: "deny",
     rules: [
       {
-        id: "host-room",
+        id: "host-put-sim",
         permission: "allow",
+        // ingress: Host publish; egress: required for zenohd 1.10.1 to route Host→Guest
+        // (trace: alchemy-host unauthorized to Put (egress) on …/manifest when ingress-only).
         flows: ["ingress", "egress"],
-        messages: [
-          "put",
-          "delete",
-          "declare_subscriber",
-          "declare_queryable",
-          "declare_liveliness_subscriber",
-          "liveliness_token",
-          "liveliness_query",
-          "query",
-          "reply",
+        messages: ["put", "delete", "declare_queryable", "reply", "liveliness_token"],
+        key_exprs: [
+          "alchemy/dev/room/*/*/manifest",
+          "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/presence",
+          "alchemy/dev/room/*/*/snapshot",
+          "alchemy/dev/room/*/*/host_control",
+          "alchemy/dev/room/*/*/alive/**",
         ],
-        key_exprs: ["alchemy/dev/room/**"],
       },
       {
-        id: "guest-room",
+        id: "host-sub-input",
         permission: "allow",
-        flows: ["ingress", "egress"],
+        flows: ["ingress"],
         messages: [
-          "put",
-          "delete",
           "declare_subscriber",
           "declare_liveliness_subscriber",
-          "liveliness_token",
           "liveliness_query",
           "query",
-          "reply",
         ],
-        key_exprs: ["alchemy/dev/room/**"],
+        key_exprs: [
+          "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/alive/**",
+          "alchemy/dev/room/*/*/manifest",
+          "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/presence",
+          "alchemy/dev/room/*/*/snapshot",
+        ],
+      },
+      // Router → host: guest Intent / liveliness (and queryable replies).
+      {
+        id: "host-egress-input",
+        permission: "allow",
+        flows: ["egress"],
+        messages: ["put", "delete", "liveliness_token", "query", "reply"],
+        key_exprs: [
+          "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/alive/**",
+          "alchemy/dev/room/*/*/snapshot",
+        ],
+      },
+      // Router → host: subscriber interest (x0067 exp C). Trace showed
+      // alchemy-host unauthorized to Declare Subscriber (egress) on …/manifest.
+      {
+        id: "host-egress-declare",
+        permission: "allow",
+        flows: ["egress"],
+        messages: ["declare_subscriber", "declare_liveliness_subscriber"],
+        key_exprs: [
+          "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/alive/**",
+          "alchemy/dev/room/*/*/manifest",
+          "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/presence",
+          "alchemy/dev/room/*/*/snapshot",
+        ],
+      },
+      // Guest → router: client input / alive only (never sim put ingress).
+      {
+        id: "guest-put-input",
+        permission: "allow",
+        flows: ["ingress"],
+        messages: ["put", "delete", "liveliness_token"],
+        key_exprs: [
+          "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/alive/**",
+        ],
+      },
+      // Guest → router: subscribe to Host→Guest sim keys (declaration only).
+      {
+        id: "guest-sub-sim",
+        permission: "allow",
+        flows: ["ingress"],
+        messages: [
+          "declare_subscriber",
+          "declare_liveliness_subscriber",
+          "query",
+          "liveliness_query",
+        ],
+        key_exprs: [
+          "alchemy/dev/room/*/*/manifest",
+          "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/presence",
+          "alchemy/dev/room/*/*/snapshot",
+          "alchemy/dev/room/*/*/alive/**",
+        ],
+      },
+      // Router → guest: Host→Guest delivery. Put egress MUST be allowed here;
+      // put ingress on these keys must stay deny (not listed in any guest ingress put rule).
+      {
+        id: "guest-egress-sim",
+        permission: "allow",
+        flows: ["egress"],
+        messages: ["put", "delete", "liveliness_token", "reply"],
+        key_exprs: [
+          "alchemy/dev/room/*/*/manifest",
+          "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/presence",
+          "alchemy/dev/room/*/*/snapshot",
+          "alchemy/dev/room/*/*/alive/**",
+        ],
+      },
+      // Router → guest: host subscriber interest for guest publishers (input / alive).
+      // Trace: alchemy-guest unauthorized to Declare Subscriber (egress) on …/input.
+      // Without this, guest declare_publisher may match nobody after the first put →
+      // Intent stops → presence Intent TTL (3s) reclaim ("kicked").
+      {
+        id: "guest-egress-interest",
+        permission: "allow",
+        flows: ["egress"],
+        messages: ["declare_subscriber", "declare_liveliness_subscriber"],
+        key_exprs: [
+          "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/alive/**",
+        ],
       },
     ],
     subjects: [
@@ -95,11 +191,16 @@
     ],
     policies: [
       {
-        rules: ["host-room"],
+        rules: ["host-put-sim", "host-sub-input", "host-egress-input", "host-egress-declare"],
         subjects: ["host"],
       },
       {
-        rules: ["guest-room"],
+        rules: [
+          "guest-put-input",
+          "guest-sub-sim",
+          "guest-egress-sim",
+          "guest-egress-interest",
+        ],
         subjects: ["guest"],
       },
     ],

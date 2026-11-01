@@ -170,7 +170,11 @@ sudo cp /etc/alchemy/zenoh-wan.json5 /etc/alchemy/zenoh-wan.json5.bak
 sudo cp /tmp/zenoh-wan.json5 /etc/alchemy/zenoh-wan.json5
 # 控えた listen_* をエディタで戻す（経路 A: 正本の server-*.pem のままなら不要）
 # sudo nano /etc/alchemy/zenoh-wan.json5
-grep -E 'listen_|root_ca|shared_memory|host-room|guest-room|room/\*\*|enabled:' /etc/alchemy/zenoh-wan.json5
+# x0067 正本: interest egress 欠落（388b768）や room/** put 統合をここで落とす
+grep -E 'listen_|root_ca|shared_memory|enabled:|host-put-sim|host-egress-declare|guest-egress-interest|guest-egress-sim|guest-put-input|guest-sub-sim' /etc/alchemy/zenoh-wan.json5
+# 期待: 上に host-egress-declare / guest-egress-interest / host-put-sim あり
+# 旧統合・旧 id が残っていたら失敗（コメント中の "room/**" 文言には反応しない）
+grep -E 'host-room|guest-room|key_exprs: \["alchemy/dev/room/\*\*"\]' /etc/alchemy/zenoh-wan.json5 && echo 'FAIL: legacy room/** ACL still present' || echo 'OK: no legacy room/** key_exprs'
 sudo systemctl restart alchemy-zenohd
 systemctl is-active alchemy-zenohd
 ```

@@ -11,7 +11,7 @@
 | 同一マシン / LAN の pub-sub（`config.json5` tcp・ACL オフ） | JWKS / Room Token ACL（検証は host-server） |
 | TCP リスナ `0.0.0.0:7447`（localhost + LAN、x0014） | CCU・帯域 QoS；**router max payload**（アプリ側 decode 上限は [protocol.md](protocol.md) x003b） |
 | WAN: ConoHa 上 zenohd の **TLS+mTLS** 待受（client CA で検証） | Billing / 第三者リレー / ACL ホットリロード |
-| WAN: role CN ACL（`alchemy-host` / `alchemy-guest`）+ default deny + **egress** on `alchemy/dev/room/**`；`shared_memory` off | per-room 動的 subject；第1壁による部屋キー秘匿；**zenohd 1.10.1 のキー族 put 分離**（host→guest が届かない） |
+| WAN: role CN キー族 ACL（`alchemy-host` / `alchemy-guest`）+ default deny + **非対称 put**（guest sim: sub ingress + put egress、put ingress deny）+ **`declare_subscriber` egress**（`host-egress-declare` / `guest-egress-interest`）；`shared_memory` off | per-room 動的 subject；第1壁による部屋キー秘匿 |
 | client/host の `ZENOH_CONNECT`（既定 localhost `tcp`；WAN は `tls/` + world `mtls` または allocate） | 送信元 IP allowlist（任意の追加硬化）；Relay Allocation の課金フィールド |
 
 部屋隔離は **`wire_cap` キー式**（第2壁）+ アプリ署名。運用手順: [`manual/relay-server-wan.md`](../manual/relay-server-wan.md)
