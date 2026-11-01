@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0067`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0068`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -153,11 +153,12 @@ depends_on: [x0006]
 | x0064 | — | planned | Vcs Branch/Tag 最小（Wave 4） | [x0064-vcs-branch-tag-minimal.md](slices/x0064-vcs-branch-tag-minimal.md) |
 | x0065 | — | planned | Origin Cert 薄皮＝C+3（Wave 4） | [x0065-origin-cert-thin.md](slices/x0065-origin-cert-thin.md) |
 | x0066 | — | active | Ephemeral mTLS（world 発行）+ Zenoh ACL（第1壁 CN / 第2壁 wire_cap） | [x0066-ephemeral-mtls-world-issue.md](slices/x0066-ephemeral-mtls-world-issue.md) |
+| x0067 | — | planned | zenohd ACL: キー族 put 分離で host→guest が届かない原因調査 | [x0067-zenohd-acl-put-family-host-guest.md](slices/x0067-zenohd-acl-put-family-host-guest.md) |
 
-**現在の次:** WAN 門番は **[x0066](slices/x0066-ephemeral-mtls-world-issue.md)**（world 短命 mTLS）。インベントリ本線は **[inventory-ladder](inventory-ladder.md)**（B+2→C+3）· 実装着手 **[x0054](slices/x0054-inventory-grant-required-put.md)**。体感並行: **[x0053](slices/x0053-xr-desktop-hotswitch.md)**（同一 PR 禁止）。案 B 本体・launcher・verifier は保留。  
+**現在の次:** WAN 門番は **[x0066](slices/x0066-ephemeral-mtls-world-issue.md)**（world 短命 mTLS）。put 分離復帰の調査は **[x0067](slices/x0067-zenohd-acl-put-family-host-guest.md)**（planned）。インベントリ本線は **[inventory-ladder](inventory-ladder.md)**（B+2→C+3）· 実装着手 **[x0054](slices/x0054-inventory-grant-required-put.md)**。体感並行: **[x0053](slices/x0053-xr-desktop-hotswitch.md)**（同一 PR 禁止）。案 B 本体・launcher・verifier は保留。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
-次の空き番号は **`x0067`**。
+次の空き番号は **`x0068`**。
 
 ## 関連
 
