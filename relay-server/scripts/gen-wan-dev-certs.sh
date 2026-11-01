@@ -3,7 +3,9 @@
 # Usage: ./gen-wan-dev-certs.sh <server-cn-or-ip> [out-dir]
 # Does NOT obtain public CA certs (use Let's Encrypt in production when you have a DNS name).
 #
-# x004e: also writes client-ca-*.pem (same CA by default) for Relay Agent ephemeral client certs.
+# x004e / x0066: also writes client-ca-*.pem (same CA by default).
+# world signs with client-ca-key.pem; zenohd verifies with client-ca-cert.pem.
+# Relay Agent fallback (x004e) is the path that also needs the key on the VPS.
 set -euo pipefail
 CN="${1:?usage: $0 <cn-or-ip> [out-dir]}"
 OUT="${2:-./tls-wan-dev}"
@@ -33,7 +35,8 @@ openssl x509 -req -in "$OUT/server.csr" -CA "$OUT/ca-cert.pem" -CAkey "$OUT/ca-k
   -CAcreateserial -out "$OUT/server-cert.pem" -days 825 \
   -extfile <(printf "subjectAltName=%s\n" "$SAN")
 
-# Relay Agent signs ephemeral client certs with this CA (MVP: same as server CA).
+# Client CA material (dev default: same CA as the server cert).
+# world (x0066) signs; zenohd only needs the cert. Relay Agent also needs the key.
 cp -f "$OUT/ca-cert.pem" "$OUT/client-ca-cert.pem"
 cp -f "$OUT/ca-key.pem" "$OUT/client-ca-key.pem"
 
@@ -44,6 +47,8 @@ echo "Wrote:"
 echo "  CA (client ZENOH_TLS_ROOT_CA):     $OUT/ca-cert.pem"
 echo "  server cert:                       $OUT/server-cert.pem"
 echo "  server key:                        $OUT/server-key.pem"
-echo "  client CA (Relay Agent / zenohd):  $OUT/client-ca-cert.pem"
-echo "  client CA key:                     $OUT/client-ca-key.pem"
-echo "Copy *.pem to VPS /etc/alchemy/tls/ and point config.wan.json5 at them."
+echo "  client CA cert (zenohd + world):   $OUT/client-ca-cert.pem"
+echo "  client CA key (world MTLS_CA_KEY): $OUT/client-ca-key.pem"
+echo "VPS /etc/alchemy/tls/: server-cert.pem, server-key.pem, client-ca-cert.pem"
+echo "world: client-ca-cert.pem + client-ca-key.pem (MTLS_CA_CERT_PATH / MTLS_CA_KEY_PATH)"
+echo "See .workspace/0_doc/manual/relay-server-wan.md"
