@@ -12,7 +12,12 @@ workspace = true
 alchemy-protocol = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
+# x0066: in-memory ECDSA P-256 key + CSR (approved new dep; no disk private key at rest).
+rcgen = { version = "0.13", default-features = false, features = ["pem", "crypto", "ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
 ureq = { version = "2", default-features = false, features = ["json", "tls"] }
 zenoh = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

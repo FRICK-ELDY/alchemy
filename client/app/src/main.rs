@@ -1152,11 +1152,18 @@ fn spawn_input_publisher(
 pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result<()> {
     let session = intent_session::IntentSession::new();
     let session_pub_b64 = session.session_pub_b64();
+    let (csr_pem, eph_key) = if zenoh_connect::should_request_world_mtls() {
+        let eph = zenoh_connect::EphemeralMtlsIdentity::generate().context("ephemeral mTLS CSR")?;
+        (Some(eph.csr_pem.clone()), Some(eph.private_key_pem().to_string()))
+    } else {
+        (None, None)
+    };
     let guest = world_token::fetch_guest_token(
         &shared.world_url,
         &shared.room_id,
         access_token,
         &session_pub_b64,
+        csr_pem.as_deref(),
     )
     .context("fetch guest Room Token")?;
     let local_sub = jwt_sub::sub_unverified(&guest.token)
@@ -1164,20 +1171,22 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     if let Ok(mut cap) = shared.wire_cap.lock() {
         *cap = Some(Arc::<str>::from(guest.wire_cap.as_str()));
     }
-    // mTLS material for the *next* `open_zenoh` / one-shot `bind_room_after_join` reopen (x004e).
-    if !guest.allocation_token.is_empty() {
-        if let Some(id) = zenoh_connect::allocate_if_configured(&guest.allocation_token)
-            .context("relay allocate (guest)")?
-        {
-            std::env::set_var("ZENOH_TLS_CONNECT_CERT", id.cert_path.display().to_string());
-            std::env::set_var("ZENOH_TLS_CONNECT_KEY", id.key_path.display().to_string());
-            shared.mtls_reopen_pending.store(true, Ordering::SeqCst);
-            log::info!(
-                "relay allocate ok cn={} role={} (mtls_reopen_pending)",
-                id.cn,
-                id.role
-            );
-        }
+    // mTLS: world-issued preferred; else Relay allocate (x0066 / x004e).
+    if let Some(id) = zenoh_connect::apply_world_mtls_or_allocate(
+        guest.mtls.as_ref().map(|m| m.client_cert_pem.as_str()),
+        eph_key.as_deref(),
+        &guest.wire_cap,
+        "guest",
+        &guest.allocation_token,
+    )
+    .context("guest mTLS (world or relay allocate)")?
+    {
+        shared.mtls_reopen_pending.store(true, Ordering::SeqCst);
+        log::info!(
+            "guest mTLS ready cn={} role={} (mtls_reopen_pending)",
+            id.cn,
+            id.role
+        );
     }
     // Lock order: auth → intent_session → pending (same as generation commit).
     if let Ok(mut gate) = shared.auth.lock() {
@@ -1457,15 +1466,39 @@ fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                         }
                         continue;
                     };
-                    // Guest refresh updates Room Token only — no re-allocate / session reopen.
-                    // mTLS NotAfter ≈ 1d (openssl); mid-flight cert refresh is host-side / non-goal.
+                    // Guest refresh: re-issue Room Token; when WAN, new CSR → world mtls env
+                    // (applied on next Zenoh open; mid-flight reopen is non-goal for this path).
+                    let (csr_pem, eph_key) = if zenoh_connect::should_request_world_mtls() {
+                        match zenoh_connect::EphemeralMtlsIdentity::generate() {
+                            Ok(eph) => (
+                                Some(eph.csr_pem.clone()),
+                                Some(eph.private_key_pem().to_string()),
+                            ),
+                            Err(err) => {
+                                log::warn!("guest refresh CSR failed: {err:#}");
+                                (None, None)
+                            }
+                        }
+                    } else {
+                        (None, None)
+                    };
                     match world_token::fetch_guest_token(
                         &shared.world_url,
                         &shared.room_id,
                         &access,
                         &session_pub_b64,
+                        csr_pem.as_deref(),
                     ) {
                         Ok(guest) => {
+                            if let Err(err) = zenoh_connect::apply_world_mtls_or_allocate(
+                                guest.mtls.as_ref().map(|m| m.client_cert_pem.as_str()),
+                                eph_key.as_deref(),
+                                &guest.wire_cap,
+                                "guest",
+                                &guest.allocation_token,
+                            ) {
+                                log::warn!("guest refresh mTLS update failed: {err:#}");
+                            }
                             let local_sub = match jwt_sub::sub_unverified(&guest.token) {
                                 Ok(s) => s,
                                 Err(err) => {

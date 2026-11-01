@@ -814,7 +814,9 @@ fn main() -> Result<()> {
         host_sig: vec![],
     }));
 
-    if !creds.allocation_token.is_empty() {
+    // Bootstrap already applied world mtls or allocate into env when configured (x0066/x004e).
+    // Re-run allocate only if env still empty and allocation_token is present.
+    if !creds.allocation_token.is_empty() && !zenoh_connect::mtls_env_ready() {
         if let Some(id) = zenoh_connect::allocate_if_configured(&creds.allocation_token)
             .context("relay allocate (host)")?
         {
