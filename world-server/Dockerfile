@@ -14,7 +14,8 @@ RUN cargo build --release --bin manifest-seal-hash \
 # Build context: repository root (shared path deps · x002f / x004b).
 FROM ${ELIXIR_IMAGE} AS dev
 
-RUN apk add --no-cache build-base git wget
+# openssl: x0066 MtlsIssuer (CSR → short-lived client cert)
+RUN apk add --no-cache build-base git wget openssl
 COPY --from=seal-hash /manifest-seal-hash /usr/local/bin/manifest-seal-hash
 
 WORKDIR /app
@@ -64,6 +65,8 @@ RUN mix release
 
 FROM alpine:${ALPINE_VERSION} AS release
 
+# openssl: required at runtime for x0066 World.MtlsIssuer (CSR → short-lived client cert).
+# Do not drop this package without replacing the issuer CLI dependency.
 RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates su-exec \
  && adduser -D -h /app world \
  && mkdir -p /var/lib/world \

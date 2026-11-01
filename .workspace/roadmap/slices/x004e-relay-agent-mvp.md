@@ -13,7 +13,7 @@
 |:---|:---|
 | WAN: mTLS 未提示 peer は zenohd に入れない | Billing / 70:30 / 第三者リレー発見 |
 | Allocation Token 検証後にだけ短命 client 証明書を渡す | CCU・帯域 Token Bucket enforcement |
-| guest CN は `manifest`/`frame`/`presence`/`snapshot` に put 不可；host CN は `input` に put 不可 | Zenoh ACL ホットリロード / 動的 per-room subject |
+| （設計時）role CN × キー族 ACL の器を入れた | Zenoh ACL ホットリロード / 動的 per-room subject。**運用中の put 族保証は [x0066](x0066-ephemeral-mtls-world-issue.md) / [x0067](x0067-zenohd-acl-put-family-host-guest.md) 注記へ**（zenohd 1.10.1 では guest sim put 不可を保証しない） |
 | `wire_cap` を知らない peer は他 room キー式に到達できない | `alchemy/tenant/{運営者}` 本番名前空間への全面移行 |
 | ローカル e2e は tcp・mTLS オフのまま（opt-in WAN） | Relay Agent の L7 Zenoh プロキシ化 |
 
