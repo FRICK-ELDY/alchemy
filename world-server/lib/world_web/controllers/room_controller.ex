@@ -211,17 +211,17 @@ defmodule WorldWeb.RoomController do
 
       json(conn, body)
     else
-      {:error, :mtls_ca_unavailable} ->
-        conn
-        |> put_status(:service_unavailable)
-        |> json(%{error: "mtls_ca_unavailable"})
-
       {:error, :openssl_failed} ->
         conn
         |> put_status(:internal_server_error)
         |> json(%{error: "mtls_sign_failed"})
 
       {:error, :sign_failed} ->
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{error: "mtls_sign_failed"})
+
+      {:error, :chmod_failed} ->
         conn
         |> put_status(:internal_server_error)
         |> json(%{error: "mtls_sign_failed"})

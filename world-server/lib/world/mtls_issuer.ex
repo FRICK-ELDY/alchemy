@@ -104,26 +104,40 @@ defmodule World.MtlsIssuer do
 
   # {:inline, cert_pem, key_pem} | {:paths, cert_path, key_path}
   defp resolve_ca do
+    case resolve_ca_inline() do
+      {:ok, _} = ok -> ok
+      :none -> resolve_ca_paths()
+    end
+  end
+
+  defp resolve_ca_inline do
     cert = Application.get_env(:world, :mtls_ca_cert_pem)
     key = Application.get_env(:world, :mtls_ca_key_pem)
+
+    if present_bin?(cert) and present_bin?(key) do
+      {:ok, {:inline, cert, key}}
+    else
+      :none
+    end
+  end
+
+  defp resolve_ca_paths do
     cert_path = Application.get_env(:world, :mtls_ca_cert_path)
     key_path = Application.get_env(:world, :mtls_ca_key_path)
 
     cond do
-      is_binary(cert) and cert != "" and is_binary(key) and key != "" ->
-        {:ok, {:inline, cert, key}}
+      not (present_bin?(cert_path) and present_bin?(key_path)) ->
+        {:error, :ca_not_configured}
 
-      is_binary(cert_path) and cert_path != "" and is_binary(key_path) and key_path != "" ->
-        if File.regular?(cert_path) and File.regular?(key_path) do
-          {:ok, {:paths, cert_path, key_path}}
-        else
-          {:error, :ca_unreadable}
-        end
+      File.regular?(cert_path) and File.regular?(key_path) ->
+        {:ok, {:paths, cert_path, key_path}}
 
       true ->
-        {:error, :ca_not_configured}
+        {:error, :ca_unreadable}
     end
   end
+
+  defp present_bin?(v), do: is_binary(v) and v != ""
 
   # Path-configured CA: openssl uses files in place (no CA key copy into work dir).
   # Inline PEM: write temp copies with 0600; always deleted in `after`.
@@ -166,11 +180,16 @@ defmodule World.MtlsIssuer do
     ext_body =
       "basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=clientAuth\n"
 
+    # Register CSR immediately so `after` cleans up if ext write fails.
+    Process.put({__MODULE__, :input_paths}, %{csr: csr, cert: cert, ext: ext})
+
     with :ok <- File.write(csr, csr_pem),
          :ok <- File.write(ext, ext_body) do
-      paths = %{csr: csr, cert: cert, ext: ext}
-      Process.put({__MODULE__, :input_paths}, paths)
-      {:ok, paths}
+      {:ok, %{csr: csr, cert: cert, ext: ext}}
+    else
+      {:error, reason} ->
+        maybe_cleanup_inputs()
+        {:error, reason}
     end
   end
 

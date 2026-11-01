@@ -55,7 +55,28 @@ fn role_cn(role: &str) -> String {
     }
 }
 
-/// Point Zenoh env at `id`, removing previous short-lived PEM paths when replaced.
+fn mtls_work_dir() -> PathBuf {
+    PathBuf::from(std::env::var("RELAY_MTLS_WORK_DIR").unwrap_or_else(|_| {
+        std::env::temp_dir()
+            .join("alchemy-mtls")
+            .display()
+            .to_string()
+    }))
+}
+
+/// True only for short-lived PEMs we wrote under the mtls work dir (never static cert paths).
+fn is_managed_mtls_path(path: &Path) -> bool {
+    let work = mtls_work_dir();
+    if path.starts_with(&work) {
+        return true;
+    }
+    match (work.canonicalize(), path.canonicalize()) {
+        (Ok(work), Ok(canon)) => canon.starts_with(&work),
+        _ => false,
+    }
+}
+
+/// Point Zenoh env at `id`, removing previous **managed** short-lived PEM paths when replaced.
 fn install_identity_env(id: &AllocatedIdentity) {
     let prev_cert = std::env::var("ZENOH_TLS_CONNECT_CERT").ok();
     let prev_key = std::env::var("ZENOH_TLS_CONNECT_KEY").ok();
@@ -63,7 +84,7 @@ fn install_identity_env(id: &AllocatedIdentity) {
     std::env::set_var("ZENOH_TLS_CONNECT_KEY", id.key_path.display().to_string());
     for prev in [prev_cert, prev_key].into_iter().flatten() {
         let path = PathBuf::from(&prev);
-        if path != id.cert_path && path != id.key_path {
+        if path != id.cert_path && path != id.key_path && is_managed_mtls_path(&path) {
             let _ = fs::remove_file(&path);
         }
     }
@@ -79,7 +100,7 @@ pub fn install_world_mtls_pems(
     wire_cap: &str,
     role: &str,
 ) -> Result<AllocatedIdentity> {
-    let mut id = write_identity_pems(
+    let id = write_identity_pems(
         client_cert_pem,
         private_key_pem,
         wire_cap,
@@ -89,8 +110,6 @@ pub fn install_world_mtls_pems(
         WORLD_MTLS_SOFT_TTL_SECS,
     )?;
     install_identity_env(&id);
-    // Re-read cn in case role_cn was used (already set).
-    id.cn = role_cn(role);
     Ok(id)
 }
 
@@ -175,12 +194,7 @@ fn write_identity_pems(
     cn: &str,
     expires_in: u64,
 ) -> Result<AllocatedIdentity> {
-    let work = PathBuf::from(std::env::var("RELAY_MTLS_WORK_DIR").unwrap_or_else(|_| {
-        std::env::temp_dir()
-            .join("alchemy-mtls")
-            .display()
-            .to_string()
-    }));
+    let work = mtls_work_dir();
     fs::create_dir_all(&work).context("mtls work dir")?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -320,6 +334,56 @@ mod tests {
             id.key_path.display().to_string()
         );
         let _ = fs::remove_dir_all(&work);
+        match prev_cert {
+            Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_CERT", v),
+            None => std::env::remove_var("ZENOH_TLS_CONNECT_CERT"),
+        }
+        match prev_key {
+            Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_KEY", v),
+            None => std::env::remove_var("ZENOH_TLS_CONNECT_KEY"),
+        }
+        match prev_work {
+            Some(v) => std::env::set_var("RELAY_MTLS_WORK_DIR", v),
+            None => std::env::remove_var("RELAY_MTLS_WORK_DIR"),
+        }
+    }
+
+    #[test]
+    fn install_does_not_delete_static_env_paths() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_cert = std::env::var("ZENOH_TLS_CONNECT_CERT").ok();
+        let prev_key = std::env::var("ZENOH_TLS_CONNECT_KEY").ok();
+        let prev_work = std::env::var("RELAY_MTLS_WORK_DIR").ok();
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let static_dir = std::env::temp_dir().join(format!("alchemy-static-mtls-{stamp}"));
+        fs::create_dir_all(&static_dir).unwrap();
+        let static_cert = static_dir.join("static.cert.pem");
+        let static_key = static_dir.join("static.key.pem");
+        fs::write(&static_cert, "static-cert").unwrap();
+        fs::write(&static_key, "static-key").unwrap();
+        std::env::set_var("ZENOH_TLS_CONNECT_CERT", static_cert.display().to_string());
+        std::env::set_var("ZENOH_TLS_CONNECT_KEY", static_key.display().to_string());
+
+        let work = std::env::temp_dir().join(format!("alchemy-mtls-test-{stamp}"));
+        std::env::set_var("RELAY_MTLS_WORK_DIR", work.display().to_string());
+
+        let _ = install_world_mtls_pems(
+            "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+            "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "host",
+        )
+        .expect("install");
+
+        assert!(static_cert.is_file(), "static cert must survive");
+        assert!(static_key.is_file(), "static key must survive");
+
+        let _ = fs::remove_dir_all(&work);
+        let _ = fs::remove_dir_all(&static_dir);
         match prev_cert {
             Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_CERT", v),
             None => std::env::remove_var("ZENOH_TLS_CONNECT_CERT"),

@@ -909,9 +909,13 @@ impl HostCredentialChain {
         } else {
             (None, None)
         };
-        let bundle =
-            fetch_host_token(world_url, room_id, &self.auth.access_token, csr_pem.as_deref())
-                .context("refresh host Room Token")?;
+        let bundle = fetch_host_token(
+            world_url,
+            room_id,
+            &self.auth.access_token,
+            csr_pem.as_deref(),
+        )
+        .context("refresh host Room Token")?;
         let claims = verifier
             .verify(&bundle.token)
             .context("refreshed host Room Token verify")?;

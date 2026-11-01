@@ -1154,7 +1154,10 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     let session_pub_b64 = session.session_pub_b64();
     let (csr_pem, eph_key) = if zenoh_connect::should_request_world_mtls() {
         let eph = zenoh_connect::EphemeralMtlsIdentity::generate().context("ephemeral mTLS CSR")?;
-        (Some(eph.csr_pem.clone()), Some(eph.private_key_pem().to_string()))
+        (
+            Some(eph.csr_pem.clone()),
+            Some(eph.private_key_pem().to_string()),
+        )
     } else {
         (None, None)
     };

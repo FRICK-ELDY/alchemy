@@ -815,13 +815,12 @@ fn main() -> Result<()> {
     }));
 
     // Bootstrap already applied world mtls or allocate into env when configured (x0066/x004e).
-    // Re-run allocate only if env still empty and allocation_token is present.
+    // Re-run allocate only if env still empty and allocation_token is present
+    // (`allocate_if_configured` sets ZENOH_TLS_CONNECT_* itself).
     if !creds.allocation_token.is_empty() && !zenoh_connect::mtls_env_ready() {
         if let Some(id) = zenoh_connect::allocate_if_configured(&creds.allocation_token)
             .context("relay allocate (host)")?
         {
-            std::env::set_var("ZENOH_TLS_CONNECT_CERT", id.cert_path.display().to_string());
-            std::env::set_var("ZENOH_TLS_CONNECT_KEY", id.key_path.display().to_string());
             log::info!("relay allocate ok cn={} role={}", id.cn, id.role);
         }
     }

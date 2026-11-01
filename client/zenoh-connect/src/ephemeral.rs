@@ -48,7 +48,9 @@ mod tests {
     fn generate_csr_pem() {
         let id = EphemeralMtlsIdentity::generate().expect("generate");
         assert!(id.csr_pem.contains("BEGIN CERTIFICATE REQUEST"));
-        assert!(id.private_key_pem().contains("BEGIN PRIVATE KEY")
-            || id.private_key_pem().contains("BEGIN EC PRIVATE KEY"));
+        assert!(
+            id.private_key_pem().contains("BEGIN PRIVATE KEY")
+                || id.private_key_pem().contains("BEGIN EC PRIVATE KEY")
+        );
     }
 }
