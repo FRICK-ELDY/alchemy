@@ -163,7 +163,7 @@ alwaysApply: false
 
 - **`relay-server/`** — zenohd の設定・待受（空間同期の仲介）
   - ローカル / LAN / WAN（ConoHa）設定の分離と運用手順の一致
-  - Token / ACL を zenohd に持たせず host 側検証にする境界
+  - JWT / Room Token を zenohd に持たせず（Room Token は host-server、Allocation は relay-agent）。WAN の role CN `access_control` は zenohd 側で保持する境界
   - （目標）マルチテナント名前空間・CCU/帯域 QoS — 未実装なら提案または対象外
 
 - **`relay-agent/`** — Allocation Token 検証 → 短命 mTLS 証明書発行

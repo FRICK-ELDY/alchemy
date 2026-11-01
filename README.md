@@ -22,7 +22,8 @@
 | auth-server | [`auth-server/`](auth-server/) |
 | world-server | [`world-server/`](world-server/) |
 | assets-server | [`assets-server/`](assets-server/) |
-| relay-server | [`relay-server/`](relay-server/) |
+| relay-server | [`relay-server/`](relay-server/)（zenohd 設定・待受） |
+| relay-agent | [`relay-agent/`](relay-agent/)（Allocation → 短命 mTLS） |
 | protocol（共有ワイヤ契約） | [`protocol/`](protocol/) |
 | client workspace | [`client/`](client/)（`app` + `host-server`） |
 | edge（Cloudflare Tunnel） | [`edge/cloudflared/`](edge/cloudflared/) |

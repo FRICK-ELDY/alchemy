@@ -6,7 +6,7 @@
 {
   mode: "router",
   metadata: {
-    name: "alchemy-wan-router",
+    name: "alchemy-wan-relay",
   },
   listen: {
     endpoints: [
