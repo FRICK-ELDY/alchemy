@@ -23,7 +23,7 @@
 | ホスト端末 | client/host-server | +39 |
 | ホスト端末 | client/app | +34 |
 | ホスト端末 | launcher/ | +4 |
-| 転送・エッジ | zenoh-router / edge / relay-agent | +15 |
+| 転送・エッジ | relay-server / edge / relay-agent | +15 |
 | 横断 | テスト戦略 | +19 |
 | 横断 | 可観測性 | +6 |
 | 横断 | エラーハンドリング | +5 |
@@ -317,7 +317,7 @@
 - **新規ワールド作成とアクセスレベル選択（仮 UI）（継続）** `+1`
 - **Leave → liveliness undeclare → session close の順序設計（継続）** `+1`
   > 対象ファイル: `client/app/src/main.rs`（L1613-1621）
-- **サブルーター化しない純粋エンドポイント（継続）** `+1`
+- **サブリレー化しない純粋エンドポイント（継続）** `+1`
 
 ### launcher/（プロセスマネージャ）
 
@@ -332,11 +332,11 @@
 
 ## 技術評価層 — 転送・公開エッジ
 
-### zenoh-router / edge / relay-agent
+### relay-server / edge / relay-agent
 
 - **WAN を TLS + mTLS + `default_permission: deny` + role CN ACL にした（新規・x004e）** `+3`
   > 前回まとめ -2（TLS のみ・publisher 隔離なし）に対し、mTLS 未提示 peer の接続拒否と、guest は manifest / frame / presence / snapshot に put 不可、host は input に put 不可という「キー族 × 役割」の静的 ACL を入れた。ACL ホットリロードが無い Zenoh の制約から role 固定 CN を選んだ判断理由も記録されている（部屋隔離の穴は弱点参照）。
-  > 対象ファイル: `zenoh-router/config.wan.json5`（L21-119）
+  > 対象ファイル: `relay-server/config.wan.json5`（L21-119）
 
 - **Relay Agent の Allocation 検証（RS256 固定・iss / aud / relay_id / role の全照合）（新規・x004e）** `+1`
   > 新しい Cargo の暗号クレートを入れず openssl CLI と既存 `jsonwebtoken` で済ませ、CA 署名は Mutex で直列化、serial は nanos で一意化する。ガードレール（依存追加は人に回す）を守った実装。
@@ -350,7 +350,7 @@
 - **WAN の Zenoh を TLS 化し、接続ヘルパを `zenoh-connect` に共通化（継続・mTLS 拡張）** `+2`
   > 対象ファイル: `client/zenoh-connect/`
 - **ローカル / WAN 設定の分離と差分の明記（継続）** `+2`
-  > 対象ファイル: `zenoh-router/config.json5`, `zenoh-router/config.wan.json5`, `.workspace/0_doc/architecture/zenoh-router.md`（L17-22）
+  > 対象ファイル: `relay-server/config.json5`, `relay-server/config.wan.json5`, `.workspace/0_doc/architecture/relay-server.md`（L17-22）
 - **WAN の運用手順（systemd・ufw allowlist・relay 起動）（継続）** `+1`
   > 対象ファイル: `.workspace/0_doc/manual/zenoh-wan-conoha.md`
 - **「zenohd はトークンを見ない」という境界の明記（継続）** `+1`

@@ -74,7 +74,7 @@
 
 ## 転送・公開エッジ
 
-### relay-agent / zenoh-router
+### relay-agent / relay-server
 
 - **秒単位証明書・hard stale・bounded issuanceを一括で閉じる** `0`
   > Allocation Tokenのexp/jti、証明書NotAfter、JWKS hard TTL、per-sub/relay rate、発行worker上限を一つの受理契約にする。証明書CN/SANへroom/wire capabilityを直接載せるかはzenoh ACL hot reloadとのtrade-offを別設計する。
@@ -82,7 +82,7 @@
 
 - **QoS/CCUはRelay Agent前段で測定可能にする** `0`
   > 現在のrole ACLを維持し、allocation単位のconnection/byte budgetとdeny reasonを追加する。billing未実装の間も固定free-tier値で検証できる。
-  > 対象ファイル: `zenoh-router/config.wan.json5`
+  > 対象ファイル: `relay-server/config.wan.json5`
 
 ## 横断品質
 

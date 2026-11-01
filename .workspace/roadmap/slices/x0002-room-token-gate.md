@@ -27,7 +27,7 @@
 ```bash
 cd auth-server && docker compose up -d && cd ..
 cd world-server && docker compose up -d && cd ..
-zenohd -c zenoh-router/config.json5
+zenohd -c relay-server/config.json5
 cd client
 cargo run -p host-server   # auth login (alice) → Room Token
 cargo run -p client

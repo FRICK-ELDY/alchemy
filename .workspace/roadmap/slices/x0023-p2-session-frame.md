@@ -82,7 +82,7 @@
 
 ```bash
 # 日常スタックは x0020 のまま（PIN だけ上がる）
-zenohd -c zenoh-router/config.json5
+zenohd -c relay-server/config.json5
 # host-server → client（Desktop）
 
 cd client && cargo test -p alchemy-protocol -p host-server -p client

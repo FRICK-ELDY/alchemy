@@ -6,7 +6,7 @@
 
 根拠: [improvement-plan-2026-10-26.md](../../0_doc/evaluation/improvement-plan-2026-10-26.md)（P2-1 / P2-3）
 
-正本: [protocol.md](../../0_doc/architecture/protocol.md) · [zenoh-router.md](../../0_doc/architecture/zenoh-router.md) · [manual/zenoh-wan-conoha.md](../../0_doc/manual/zenoh-wan-conoha.md)
+正本: [protocol.md](../../0_doc/architecture/protocol.md) · [relay-server.md](../../0_doc/architecture/relay-server.md) · [manual/zenoh-wan-conoha.md](../../0_doc/manual/zenoh-wan-conoha.md)
 
 ## 設計方針
 
@@ -65,7 +65,7 @@
 
 ```bash
 # ローカル（従来）
-zenohd -c zenoh-router/config.json5
+zenohd -c relay-server/config.json5
 ZENOH_CONNECT=tcp/127.0.0.1:7447 cargo run -p host-server
 
 # WAN（詳細は manual）

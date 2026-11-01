@@ -9,8 +9,8 @@
 ## 成果物
 
 - `.workspace/0_doc/architecture/trust-boundary.md`（新規）
-- overview / protocol / zenoh-router からリンク
-- zenoh-router MVP キー表に manifest / presence / alive / snapshot / host_control を追記
+- overview / protocol / relay-server からリンク
+- relay-server MVP キー表に manifest / presence / alive / snapshot / host_control を追記
 
 ## やらない
 

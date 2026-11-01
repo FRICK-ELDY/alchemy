@@ -4,7 +4,7 @@
 
 目標: host / client が既に読む **`ROOM_ID`（既定 `local`）を、実際の Zenoh pub/sub キーに反映**する。`*_KEY_LOCAL` 定数への直結をやめ、protocol の `*_key(room_id)` ヘルパ経由に統一。異なる `ROOM_ID` のセッションはキー空間で隔離されることまで smoke する。（完了）
 
-正本: [protocol.md](../../0_doc/architecture/protocol.md) · [client.md](../../0_doc/architecture/client.md) · [zenoh-router.md](../../0_doc/architecture/zenoh-router.md)
+正本: [protocol.md](../../0_doc/architecture/protocol.md) · [client.md](../../0_doc/architecture/client.md) · [relay-server.md](../../0_doc/architecture/relay-server.md)
 
 ## 設計方針
 
@@ -49,7 +49,7 @@
 ## 起動（同一マシン smoke）
 
 ```bash
-zenohd -c zenoh-router/config.json5
+zenohd -c relay-server/config.json5
 
 # 部屋 A
 ROOM_ID=alpha cargo run -p host-server

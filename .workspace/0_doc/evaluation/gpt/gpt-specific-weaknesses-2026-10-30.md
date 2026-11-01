@@ -21,7 +21,7 @@
 
 ## 転送・公開エッジ
 
-### relay-agent / zenoh-router
+### relay-agent / relay-server
 
 - **「300秒証明書」の実際の NotAfter が24時間** `-3`
   > API は `expires_in=300` を返すが、OpenSSL は `-days 1` で証明書を発行する（`main.rs:22-27, 260-275, 393-399`）。クライアントが5分で再割当しても、漏えいした秘密鍵と証明書は zenohd から見れば最大24時間有効であり、「短命 mTLS」の失効境界を満たさない。CN は role のみなので、漏えい host cert はその間 host ACL を持つ。

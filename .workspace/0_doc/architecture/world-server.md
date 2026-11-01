@@ -91,5 +91,5 @@ cd world-server && docker compose up -d
 ## 関連
 
 - ワイヤ: [protocol.md](protocol.md)（`InputEvent.room_token`）
-- 転送: [zenoh-router.md](zenoh-router.md)
+- 転送: [relay-server.md](relay-server.md)
 - 認証ユーザー JWT: [auth-server.md](auth-server.md)

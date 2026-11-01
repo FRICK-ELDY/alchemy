@@ -24,7 +24,7 @@
 - **WAN ACL の wildcard subscribe で `wire_cap` 部屋隔離が成立しない** `-3`（Opus -3 / GPT は ACL を partial）
   > guest/host ルールが `alchemy/dev/room/*/*/manifest` 等を許可する。同一ワイルドカードで subscribe できれば、guest 証明書 1 枚で全部屋のキーから `wire_cap` を読める。アプリ署名は残るが、private 部屋の内容・参加者 `sub` の機密性と put DoS 前提が崩れる。保証表の「`wire_cap` を知らない peer は他 room に到達できない」は過大。
   > 採用: **-3**（Opus。zenohd 実機否定系は未実行のため、まず保証表修正＋否定系で確認）
-  > 対象ファイル: `zenoh-router/config.wan.json5`, `protocol/src/lib.rs`, `.workspace/0_doc/architecture/trust-boundary.md`
+  > 対象ファイル: `relay-server/config.wan.json5`, `protocol/src/lib.rs`, `.workspace/0_doc/architecture/trust-boundary.md`
 
 - **「300秒証明書」の実 NotAfter が 24 時間** `-3`（GPT -3 / Opus -1）
   > API は `expires_in=300` だが OpenSSL `-days 1`。漏えい鍵は最大 1 日 host/guest ACL を持つ。短命 mTLS の失効境界を満たさない。

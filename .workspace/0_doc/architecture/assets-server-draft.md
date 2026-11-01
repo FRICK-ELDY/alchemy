@@ -113,7 +113,7 @@ flowchart TB
         end
 
         %% 外部③：リアルタイム通信・空間案内・着用権監査
-        subgraph WorldAndZenoh["③ 🏰 world-server (Elixir) ＆ ⚡ zenoh-router (Rust zenohd)"]
+        subgraph WorldAndZenoh["③ 🏰 world-server (Elixir) ＆ ⚡ relay-server (Rust zenohd)"]
             WorldRealtime["リアルタイム通知 ＆ 空間ゲートウェイ<br/>・🔔 メール / マイクロフィード新着時のリアルタイムPush通知 (Fan-out)<br/>・💬 容量を消費しない揮発性ルームチャット ＆ 🎙️ Zenoh音声通話<br/>・🚪 ポスト内の alchemy:// ディープリンクからの部屋ワープ解決<br/>・🛡️ apps/verifier: 着用・配置時の Origin Cert / License Token 監査"]:::world
         end
 

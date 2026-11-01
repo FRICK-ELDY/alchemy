@@ -20,13 +20,13 @@ OTP の障害隔離と、Phoenix / Ash による「永続権威＋監査」の�
 | **場所** | `client/app`・`client/host-server`・`client/shared-sim`・`protocol/`・`launcher/`・probe 類 |
 | **宣言** | Edition 2021 · ワークスペースは `client/`（加えて独立の `protocol/`・`launcher/`） |
 | **理由** | 空間の **実行**: Rapier tick、SoA、wgpu / OpenXR 描画、ワイヤ encode/decode、Ed25519。データ指向・ゼロコピー方針と、Desktop → VR →（将来）Wasm への単一コードベースに合う。 |
-| **分割** | **host-server** = 空間権威プロセス、**client** = エンドポイントのみ（ルーターではない）、**protocol** = 独立したワイヤ SSoT クレート。 |
+| **分割** | **host-server** = 空間権威プロセス、**client** = エンドポイントのみ（リレーではない）、**protocol** = 独立したワイヤ SSoT クレート。 |
 
 ## Zenoh
 
 | | |
 |:---|:---|
-| **場所** | 実行時: host / client の `zenoh` クレート · 運用: `zenohd`（`zenoh-router/`） |
+| **場所** | 実行時: host / client の `zenoh` クレート · 運用: `zenohd`（`relay-server/`） |
 | **宣言** | Rust クレート `zenoh = "1.10"`（固定 ≈ `1.10.1`） |
 | **理由** | Manifest / Presence / RenderFrame / Input / liveliness / snapshot を **一本のトランスポート** に載せる。Pub/Sub と queryable が部屋スコープのキーに合う。LAN と WAN（ConoHa ブリッジ／将来の Open Relay）を同じモデルで扱える。 |
 | **明示的に選ばないもの** | 空間同期用の独自 UDP と Phoenix Channel。OSC はクライアント局所の **デバイス入力エッジ** に留め、検証後に Protobuf 化して Zenoh へ送る。 |

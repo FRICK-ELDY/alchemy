@@ -4,7 +4,7 @@
 
 目標: 同一 LAN で **2 クライアント**（PC 上 `alice` + ノートPC `bob`）が同じ room に入り、Room Token の **`sub` ごとに別 `user_root`**（entity 3 / 4）で移動・見えること。proto 変更なし。（完了）
 
-正本: [client.md](../../0_doc/architecture/client.md) · [zenoh-router.md](../../0_doc/architecture/zenoh-router.md) · [protocol.md](../../0_doc/architecture/protocol.md)
+正本: [client.md](../../0_doc/architecture/client.md) · [relay-server.md](../../0_doc/architecture/relay-server.md) · [protocol.md](../../0_doc/architecture/protocol.md)
 
 ## 設計方針
 
@@ -53,7 +53,7 @@ host は **初見 `sub` に空きスロットを first-come で割当**する。
 
 ```bash
 # PC: auth/world/assets + zenohd + host
-zenohd -c zenoh-router/config.json5
+zenohd -c relay-server/config.json5
 cd client && cargo run -p host-server
 
 # Terminal A

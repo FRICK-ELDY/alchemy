@@ -1,9 +1,14 @@
 # Zenoh WAN 手順（ConoHa / Ubuntu 22.04・24.04）
 
-ConoHa VPS 上の **zenohd**（**TLS+mTLS**・`7447`）と **Relay Agent**（Allocation → 短命 client cert）を待受し、拠点 host と外 client が同じ `ROOM_ID` / `wire_cap` に入る。
+ConoHa VPS 上の **relay-server**（`zenohd`・**TLS+mTLS**・`7447`）と **relay-agent**（Allocation → 短命 client cert）を待受し、拠点 host と外 client が同じ `ROOM_ID` / `wire_cap` に入る。
+
+| | 役割 |
+|:---|:---|
+| **relay-server** | zenohd の設定・待受（空間同期の仲介） |
+| **relay-agent** | Allocation Token 検証 → 短命 mTLS 証明書発行 |
 
 前提 Slice: [x001a HTTPS](../../roadmap/slices/x001a-https-edge-tunnel.md) · [x001b](../../roadmap/slices/x001b-zenoh-wan-conoha.md) · **TLS: [x0022](../../roadmap/slices/x0022-liveliness-wan-tls.md)** · **mTLS/Relay: [x004e](../../roadmap/slices/x004e-relay-agent-mvp.md)**  
-config: [`zenoh-router/config.wan.json5`](../../../zenoh-router/config.wan.json5) · agent: [`relay-agent/`](../../../relay-agent/)
+config: [`relay-server/config.wan.json5`](../../../relay-server/config.wan.json5) · agent: [`relay-agent/`](../../../relay-agent/)
 
 想定スペック: **Ubuntu 22.04 または 24.04**、4Core / 4GB RAM（手順は両 LTS で同じ）。
 
@@ -14,8 +19,8 @@ config: [`zenoh-router/config.wan.json5`](../../../zenoh-router/config.wan.json5
 | auth / world / assets | 拠点（x001a Tunnel 可） |
 | host-server | 拠点。`ZENOH_CONNECT=tls/<VPS_HOST>:7447` + `RELAY_ALLOCATE_URL` |
 | 外 client | x001a の `https://…` + 同じ Zenoh / Relay env |
-| zenohd | **VPS**（mTLS + role ACL） |
-| Relay Agent | **VPS**（`POST /v1/allocate`、例 `:7450`） |
+| relay-server（zenohd） | **VPS**（mTLS + role ACL） |
+| relay-agent | **VPS**（`POST /v1/allocate`、例 `:7450`） |
 
 zenohd は **JWT を見ない**。Allocation Token は Relay Agent が検証する（x004e）。平文 TCP は待受しない。
 
@@ -46,7 +51,7 @@ zenohd --help | head
 
 ```bash
 # リポジトリから
-bash zenoh-router/scripts/gen-wan-dev-certs.sh <VPS_IP_or_DNS> /tmp/alchemy-tls
+bash relay-server/scripts/gen-wan-dev-certs.sh <VPS_IP_or_DNS> /tmp/alchemy-tls
 sudo mkdir -p /etc/alchemy/tls
 sudo cp /tmp/alchemy-tls/server-cert.pem /tmp/alchemy-tls/server-key.pem \
   /tmp/alchemy-tls/client-ca-cert.pem /tmp/alchemy-tls/client-ca-key.pem /etc/alchemy/tls/
@@ -72,7 +77,7 @@ cargo build --release
 
 ```bash
 sudo mkdir -p /etc/alchemy
-sudo cp zenoh-router/config.wan.json5 /etc/alchemy/zenoh-wan.json5
+sudo cp relay-server/config.wan.json5 /etc/alchemy/zenoh-wan.json5
 # listen: tls/0.0.0.0:7447
 # transport.link.tls.listen_* が /etc/alchemy/tls/… を指すこと
 ```

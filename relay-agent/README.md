@@ -2,6 +2,11 @@
 
 軽量 Relay Agent: **Allocation Token → 短命 mTLS client 証明書**。
 
+| | 役割 |
+|:---|:---|
+| **relay-server** | zenohd の設定・待受（空間同期の仲介）→ [`relay-server/`](../relay-server/) |
+| **relay-agent** | Allocation Token 検証 → 短命 mTLS 証明書発行（本ディレクトリ） |
+
 ## 保証 / 非保証
 
 | 保証 | 非保証 |
@@ -25,7 +30,7 @@
 ## 起動
 
 ```bash
-# 証明書: zenoh-router/scripts/gen-wan-dev-certs.sh …（client-ca-* を含む）
+# 証明書: relay-server/scripts/gen-wan-dev-certs.sh …（client-ca-* を含む）
 cargo run --release
 curl -fsS http://127.0.0.1:7450/health
 ```

@@ -28,7 +28,7 @@ alwaysApply: false
 | **2. 運営側コア（Core Profile）** | `auth-server/` · `assets-server/` · `world-server/` |
 | **3. 共通契約層** | `protocol/` ·（目標）`shared-sim` ※現状は `client/host-server` に同居 |
 | **4. ホストユーザー端末** | `launcher/` · `client/host-server/` · `client/app/` |
-| **転送・公開エッジ** | `zenoh-router/` · `edge/` |
+| **転送・公開エッジ** | `relay-server/` · `relay-agent/` · `edge/` |
 | **Optional Profile（目標）** | billing / market-server ※リポジトリ未設置なら対象外 |
 
 ---
@@ -116,7 +116,7 @@ alwaysApply: false
 
 - **ティック構造**
   - 内部物理 Tick（目標 60Hz）とネットワーク配信 Tick（20/30/60Hz 可変・デルタ）の分離
-  - Presence / Manifest / frame チャネル責務（ルーター化しない）
+  - Presence / Manifest / frame チャネル責務（リレー化しない）
 
 - **シミュレーション範囲**
   - Rapier 等の物理・entity 割当（user_root 等）の設計品質
@@ -126,7 +126,7 @@ alwaysApply: false
 
 ### 技術評価層 — client/app/（体感・描画・UI エンドポイント）
 
-`client/app/`（パッケージ名 `client`）。**ルーター機能を持たない純粋エンドポイント**。host-server とは別プロセス前提。
+`client/app/`（パッケージ名 `client`）。**リレー機能を持たない純粋エンドポイント**。host-server とは別プロセス前提。
 
 - **`surface/`**（boot・Desktop / OpenXR）
   - ランタイム有無による VR / Desktop 切替・デバイス差の吸収
@@ -142,7 +142,7 @@ alwaysApply: false
   - （目標）OSC 受信エッジ・Dual Editor・LOD ビルド・空間オーディオ・P2P キャッシュ — 未実装なら提案または対象外
 
 - **プロセス境界**
-  - client が他人の通信を中継しないこと（サブルーター禁止）
+  - client が他人の通信を中継しないこと（サブリレー禁止）
   - host との IPC / 起動責務が launcher 前提と矛盾しないこと
 
 ---
@@ -157,14 +157,18 @@ alwaysApply: false
 
 ---
 
-### 技術評価層 — zenoh-router/ ＆ edge/（転送・公開エッジ）
+### 技術評価層 — relay-server/ ・ relay-agent/ ＆ edge/（転送・公開エッジ）
 
 空間 Network Transport は **Zenoh のみ**。OSC は client 局所の Device Input Edge（目標）。
 
-- **`zenoh-router/`**
+- **`relay-server/`** — zenohd の設定・待受（空間同期の仲介）
   - ローカル / LAN / WAN（ConoHa）設定の分離と運用手順の一致
-  - Token / ACL を zenohd に持たせず host 側検証にする境界
-  - （目標）マルチテナント名前空間・CCU/帯域 QoS・Relay Allocation Token — 未実装なら提案または対象外
+  - zenohd は JWT を見ない（Room Token = host-server / Allocation Token = relay-agent）。WAN の role CN `access_control` は zenohd 側で保持する境界
+  - （目標）マルチテナント名前空間・CCU/帯域 QoS — 未実装なら提案または対象外
+
+- **`relay-agent/`** — Allocation Token 検証 → 短命 mTLS 証明書発行
+  - `aud=alchemy-relay` の JWKS 検証と証明書発行境界
+  - zenohd（relay-server）とは別プロセスであることの明示
 
 - **`edge/`**（cloudflared・client env 例）
   - Cloudflare Tunnel による拠点 IP 秘匿・ポート開放ゼロ

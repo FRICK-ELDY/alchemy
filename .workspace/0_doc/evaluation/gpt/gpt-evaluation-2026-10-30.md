@@ -11,7 +11,7 @@
 | client/host-server | +9 | 0 | +9 |
 | client/app | +11 | 0 | +11 |
 | launcher | +2 | -1 | +1 |
-| zenoh-router / relay-agent / edge | +5 | -6 | -1 |
+| relay-server / relay-agent / edge | +5 | -6 | -1 |
 | Optional Profile | 0 | 0 | 0 |
 | テスト戦略 | +7 | -3 | +4 |
 | 可観測性 | +2 | -1 | +1 |
@@ -77,7 +77,7 @@ Manifest pin/room/seal/attestation失敗はleaveせずdiscardし、generation/re
 
 loopback one-time IPC、ready、client-only exit、bounded crash restartがCI対象になった。ただしhost restart後、既存clientのIPC envは古いままで、Exit Client+Hostが壊れる。deep link/tray/handoffは目標であり対象外。
 
-### zenoh-router / relay-agent / edge
+### relay-server / relay-agent / edge
 
 **小計: +5 / -6 = -1**
 

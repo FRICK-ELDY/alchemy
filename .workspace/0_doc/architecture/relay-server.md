@@ -1,8 +1,8 @@
-# zenoh-router
+# relay-server
 
-> **正本**: [`zenoh-router/`](../../../zenoh-router/)  
+> **正本**: [`relay-server/`](../../../relay-server/)  
 > **ステータス**: ローカル done · WAN TCP（x001b）→ **WAN TLS（x0022）** → **WAN mTLS + role ACL（x004e）**  
-> **Relay Agent**: [`relay-agent/`](../../../relay-agent/)（Allocation Token → 短命 client cert）
+> **役割**: zenohd の設定・待受（空間同期の仲介）。Allocation → mTLS は **Relay Agent**（[`relay-agent/`](../../../relay-agent/)）
 
 ## 保証すること / しないこと
 
@@ -18,8 +18,8 @@
 
 | ファイル | 用途 |
 |:---|:---|
-| [`config.json5`](../../../zenoh-router/config.json5) | ローカル / LAN（multicast ON・tcp・ACL オフ） |
-| [`config.wan.json5`](../../../zenoh-router/config.wan.json5) | ConoHa 公網（multicast OFF・**tls+mTLS+ACL**） |
+| [`config.json5`](../../../relay-server/config.json5) | ローカル / LAN（multicast ON・tcp・ACL オフ） |
+| [`config.wan.json5`](../../../relay-server/config.wan.json5) | ConoHa 公網（multicast OFF・**tls+mTLS+ACL**） |
 
 運用手順（Ubuntu 22.04 / systemd / ufw / TLS / Relay Agent）: [`manual/zenoh-wan-conoha.md`](../manual/zenoh-wan-conoha.md)
 

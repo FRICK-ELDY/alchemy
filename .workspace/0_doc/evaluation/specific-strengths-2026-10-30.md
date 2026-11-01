@@ -91,7 +91,7 @@
 
 - **WAN mTLS + role CN ACL + default deny（方向）** `+3`
   > TLS のみから身元付き転送へ前進。実効の部屋隔離・証明書寿命は弱点側。
-  > 対象ファイル: `zenoh-router/config.wan.json5`, `relay-agent/`
+  > 対象ファイル: `relay-server/config.wan.json5`, `relay-agent/`
 
 - **Cloudflare Tunnel による origin 秘匿** `+2`
   > `/internal/*`・`/dev/*` ingress 404。
