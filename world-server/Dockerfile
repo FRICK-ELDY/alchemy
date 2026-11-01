@@ -14,7 +14,8 @@ RUN cargo build --release --bin manifest-seal-hash \
 # Build context: repository root (shared path deps · x002f / x004b).
 FROM ${ELIXIR_IMAGE} AS dev
 
-RUN apk add --no-cache build-base git wget
+# openssl: x0066 MtlsIssuer (CSR → short-lived client cert)
+RUN apk add --no-cache build-base git wget openssl
 COPY --from=seal-hash /manifest-seal-hash /usr/local/bin/manifest-seal-hash
 
 WORKDIR /app

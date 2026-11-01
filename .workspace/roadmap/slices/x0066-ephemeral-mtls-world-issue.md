@@ -9,7 +9,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | WAN: world が CSR を受け、**CSR Subject を無視**して role CN（`alchemy-host` / `alchemy-guest`）で短命 cert を署名 | QUIC 待受；`alchemy-core` 常時接続 |
-| 第1壁: guest CN は `…/frame` 等 sim put 不可（既存 `config.wan.json5` ACL） | ACL ホットリロード / per-room subject |
+| 第1壁: mTLS CN + `alchemy/dev/room/**` ACL（ingress/egress；WAN は SHM off） | キー族ごとの put 分離（暫定緩和・アプリ署名に寄る）；ACL ホットリロード / per-room subject |
 | 第2壁: キー式 `alchemy/dev/room/{room_id}/{wire_cap}/…` 維持（x004e） | `alchemy/room/*` へのキー式移行 |
 | ローカル `tcp/` と `RELAY_ALLOCATE_URL`（Relay Agent）は併存・回帰しない | Steam 公開面 Tunnel / IP allowlist 撤廃の運用完了 |
 | client 秘密鍵を永続同梱しない（temp PEM は短命 0600） | 期限 30 分前の完全自動セッション再 open |
@@ -17,16 +17,17 @@
 
 ## 二重の壁
 
-1. **第1壁 — Zenoh ACL（CN）**: guest は `frame` / `manifest` 等へ put できない  
+1. **第1壁 — Zenoh ACL（CN）**: 未認証 peer を弾き、`alchemy/dev/room/**` を role に許可（**egress 必須**）。キー族 put 分離は暫定緩和  
 2. **第2壁 — `wire_cap`**: 部屋チャネル秘密 + Room Token / アプリ署名（既存）
 
 ## 完了条件
 
 1. 未提示 / 偽 client cert → WAN zenohd が TLS 握手で拒否  
-2. guest CN で `…/frame` put 不可、`…/input` put 可  
+2. ~~guest CN で `…/frame` put 不可、`…/input` put 可~~ → **暫定緩和**（host→guest 配信のため。偽 sim はアプリ署名で discard。再強化は後続）  
 3. CSR に偽 CN を書いても発行 CN はサーバー role 由来  
 4. `csr_pem` なし・ローカル tcp は従来どおり  
-5. Relay Agent 経路がまだ動く（world `mtls` 無し時）
+5. Relay Agent 経路がまだ動く（world `mtls` 無し時）  
+6. WAN: host 起動中に guest が Manifest を受信できる（egress + SHM off）
 
 ## Phase
 

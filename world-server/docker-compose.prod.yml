@@ -31,8 +31,12 @@ services:
       AUTH_INTERNAL_URL: ${AUTH_INTERNAL_URL:-http://host.docker.internal:4002}
       AUTH_INTERNAL_TOKEN: ${AUTH_INTERNAL_TOKEN:?set AUTH_INTERNAL_TOKEN in .env.prod}
       WORLD_DATABASE_PATH: /var/lib/world/world.db
+      # x0066: bind-mount host ./priv/mtls (see volumes). Windows host paths are invalid here.
+      MTLS_CA_CERT_PATH: ${MTLS_CA_CERT_PATH:-/var/lib/world/mtls/client-ca-cert.pem}
+      MTLS_CA_KEY_PATH: ${MTLS_CA_KEY_PATH:-/var/lib/world/mtls/client-ca-key.pem}
     volumes:
       - world_prod_keys:/var/lib/world
+      - ./priv/mtls:/var/lib/world/mtls:ro
 
 volumes:
   world_prod_keys:
