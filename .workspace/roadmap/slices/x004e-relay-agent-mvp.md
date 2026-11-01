@@ -50,7 +50,7 @@
 - **Home→Join（ローカル含む）**: `bind_room_after_join` が room bus（spawn_*）を起動。mTLS は `mtls_reopen_pending` ワンショットで reopen（env 存続では再 open しない）
 - **Leave / bus 破棄は `session.close().wait()`**（tcp/WAN 共通）。Zenoh 1.x は strong_counter>1 だと Drop では close しない → 旧 input が Token 復活で二重 Intent になるのを防ぐ
 - `ensure_room_bus` 失敗時は flag 巻き戻し；bind 経路は close+reopen で orphan 掃除後リトライ
-- allocate `expires_in=300`（再取得 SLA）。openssl NotAfter は `-days 1`（ツール下限）。完了条件の「未知 wire_cap」は推測不能依存
-- host Token refresh で allocation を再取得し cert ファイルを更新（稼働中 session の再 open は未自動化・NotAfter≈1d）。guest refresh は re-allocate しない
+- allocate `expires_in=300`。NotAfter ≈ 300s は **[x0068](x0068-relay-mtls-ttl-bound-ci.md)** で保証（旧 `-days 1` は廃止）。完了条件の「未知 wire_cap」は推測不能依存
+- host Token refresh で allocation を再取得し cert ファイルを更新（稼働中 session の再 open は未自動化）。guest refresh は re-allocate しない
 
 ← [目次](../README.md)

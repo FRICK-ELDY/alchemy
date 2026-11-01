@@ -26,6 +26,7 @@ use super::math::{projection_from_fov_default, view_from_pose};
 use super::render_model::{enable_if_available, RenderModelCache};
 use super::wgpu_interop::{self, FrameEndGuard, SwapchainReleaseGuard, XrWgpuBridge, VIEW_COUNT};
 use super::wgpu_overlays::{GpuController, XrOverlays};
+use crate::bind_room_after_join;
 use crate::host_control;
 use crate::leave_room;
 use crate::mesh::CpuMesh;
@@ -222,6 +223,21 @@ pub fn run_session(
                 Ok(()) => {}
                 Err(xr::sys::Result::ERROR_SESSION_NOT_RUNNING) => break,
                 Err(e) => log::warn!("request_exit: {e}"),
+            }
+        }
+
+        // x0068: guest Token refresh installed new mTLS PEMs → reopen Zenoh while joined.
+        let joined = shared
+            .auth
+            .lock()
+            .ok()
+            .map(|g| g.is_joined())
+            .unwrap_or(false);
+        if joined && shared.mtls_reopen_pending.load(Ordering::SeqCst) {
+            match bind_room_after_join(&shared, &mut zenoh) {
+                Ok(()) => log::info!("XR mTLS refresh: Zenoh reopened + room bus rebound"),
+                // pending restore is owned by bind_room_after_join (leave_room clears it).
+                Err(err) => log::warn!("XR mTLS refresh reopen failed (will retry): {err:#}"),
             }
         }
 

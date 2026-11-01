@@ -12,8 +12,47 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const ALLOCATE_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
-/// Soft TTL aligned with world-server default (`MtlsIssuer` 6h); openssl NotAfter may be longer.
-const WORLD_MTLS_SOFT_TTL_SECS: u64 = 6 * 3600;
+/// Fallback soft TTL when `mtls.expires_at` is missing/unparseable (x0068).
+pub const WORLD_MTLS_SOFT_TTL_SECS: u64 = 300;
+
+/// Parse world `mtls.expires_at` (ISO-8601 / RFC3339 UTC) into remaining seconds.
+pub fn soft_ttl_secs_from_expires_at(expires_at: &str) -> Option<u64> {
+    let end = parse_rfc3339_unix(expires_at)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some(end.saturating_sub(now).max(1))
+}
+
+fn parse_rfc3339_unix(s: &str) -> Option<u64> {
+    // World `DateTime.to_iso8601` emits UTC with `Z` (second truncation). Only `Z` / `+00:00`
+    // are accepted; other offsets fall through to WORLD_MTLS_SOFT_TTL_SECS.
+    let s = s.trim();
+    let s = s.strip_suffix('Z').or_else(|| s.strip_suffix("+00:00"))?;
+    let (date, time) = s.split_once('T')?;
+    let mut d = date.split('-');
+    let y: i32 = d.next()?.parse().ok()?;
+    let m: u64 = d.next()?.parse().ok()?;
+    let day: u64 = d.next()?.parse().ok()?;
+    let time = time.split('.').next()?;
+    let mut t = time.split(':');
+    let hh: u64 = t.next()?.parse().ok()?;
+    let mm: u64 = t.next()?.parse().ok()?;
+    let ss: u64 = t.next()?.parse().ok()?;
+    Some(civil_to_unix(y, m, day, hh, mm, ss))
+}
+
+fn civil_to_unix(y: i32, m: u64, d: u64, hh: u64, mm: u64, ss: u64) -> u64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = (era as i64) * 146_097 + (doe as i64) - 719_468;
+    (days as u64) * 86_400 + hh * 3600 + mm * 60 + ss
+}
 
 #[derive(Debug, Deserialize)]
 pub struct AllocateResponse {
@@ -99,7 +138,9 @@ pub fn install_world_mtls_pems(
     private_key_pem: &str,
     wire_cap: &str,
     role: &str,
+    soft_ttl_secs: Option<u64>,
 ) -> Result<AllocatedIdentity> {
+    let ttl = soft_ttl_secs.unwrap_or(WORLD_MTLS_SOFT_TTL_SECS);
     let id = write_identity_pems(
         client_cert_pem,
         private_key_pem,
@@ -107,7 +148,7 @@ pub fn install_world_mtls_pems(
         role,
         "world-mtls",
         &role_cn(role),
-        WORLD_MTLS_SOFT_TTL_SECS,
+        ttl,
     )?;
     install_identity_env(&id);
     Ok(id)
@@ -116,16 +157,19 @@ pub fn install_world_mtls_pems(
 /// Prefer world-issued cert + in-memory key; else Relay Agent allocate (x0066 / x004e).
 ///
 /// Both branches install `ZENOH_TLS_CONNECT_*` when they produce an identity.
+/// `mtls_expires_at` (ISO-8601) sets soft TTL when present (x0068).
 pub fn apply_world_mtls_or_allocate(
     client_cert_pem: Option<&str>,
     private_key_pem: Option<&str>,
     wire_cap: &str,
     role: &str,
     allocation_token: &str,
+    mtls_expires_at: Option<&str>,
 ) -> Result<Option<AllocatedIdentity>> {
     if let (Some(cert), Some(key)) = (client_cert_pem, private_key_pem) {
         if !cert.is_empty() && !key.is_empty() {
-            return install_world_mtls_pems(cert, key, wire_cap, role).map(Some);
+            let ttl = mtls_expires_at.and_then(soft_ttl_secs_from_expires_at);
+            return install_world_mtls_pems(cert, key, wire_cap, role, ttl).map(Some);
         }
     }
     allocate_if_configured(allocation_token)
@@ -321,6 +365,7 @@ mod tests {
             "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "guest",
+            None,
         )
         .expect("install");
         assert_eq!(id.cn, "alchemy-guest");
@@ -376,6 +421,7 @@ mod tests {
             "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "host",
+            Some(120),
         )
         .expect("install");
 
@@ -396,5 +442,13 @@ mod tests {
             Some(v) => std::env::set_var("RELAY_MTLS_WORK_DIR", v),
             None => std::env::remove_var("RELAY_MTLS_WORK_DIR"),
         }
+    }
+
+    #[test]
+    fn soft_ttl_parses_rfc3339_z() {
+        assert_eq!(parse_rfc3339_unix("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_rfc3339_unix("1970-01-01T00:05:00Z"), Some(300));
+        let future = soft_ttl_secs_from_expires_at("2099-01-01T00:00:00Z");
+        assert!(future.is_some_and(|s| s > 60));
     }
 }

@@ -12,7 +12,7 @@
 | 第1壁: mTLS CN + キー族 ACL（非対称 ingress/egress；guest sim put ingress deny；SHM off） | ACL ホットリロード / per-room subject（詳細は [x0067](x0067-zenohd-acl-put-family-host-guest.md)） |
 | 第2壁: キー式 `alchemy/dev/room/{room_id}/{wire_cap}/…` 維持（x004e） | `alchemy/room/*` へのキー式移行 |
 | ローカル `tcp/` と `RELAY_ALLOCATE_URL`（Relay Agent）は併存・回帰しない | Steam 公開面 Tunnel / IP allowlist 撤廃の運用完了 |
-| client 秘密鍵を永続同梱しない（temp PEM は短命 0600） | 期限 30 分前の完全自動セッション再 open |
+| client 秘密鍵を永続同梱しない（temp PEM は短命 0600）；NotAfter ≈ soft TTL は [x0068](x0068-relay-mtls-ttl-bound-ci.md) | 期限前の完全自動セッション再 open |
 | Elixir 新規 Hex 依存なし（openssl CLI） | Billing / CCU QoS |
 
 ## 二重の壁
