@@ -6,7 +6,7 @@
 日常開発はネイティブ Windows の `cargo` で問題ない（かつて Smart App Control が ON だと os error 4551 で阻害されたが、現環境では OFF）。WSL2 は任意の代替。  
 **テスター配布 ZIP**（ネイティブ Windows x64）は [Releases（Pre-release）](https://github.com/FRICK-ELDY/alchemy/releases) · 手順 [windows-tester-zip.md](.workspace/0_doc/manual/windows-tester-zip.md)。版名は `v0.0.0-dev.YYYYMMDDHHMM`（JST）。
 
-## 現状（〜x0067）
+## 現状（〜x0069）
 
 手通し正本は **Desktop（x0020）**: 日常スタック（`:4002/:4003/:4004` + zenohd `:7447`）。手順は下記、env 例は [`client/env.desktop.example`](client/env.desktop.example)、機械検証は `make smoke-desktop-handthrough`。
 
@@ -15,7 +15,7 @@
 **運用・品質（x0046–x004d）:** adversarial E2E、launcher CI、asset placeholder + HTTP timeout、**localhost `/metrics`**、ClientIp 共有、**cargo-fuzz**、**Presence 容量 = Manifest entries**。  
 **LAN / HTTPS / WAN:** zenohd + `ZENOH_CONNECT`；Tunnel（[`edge/cloudflared/`](edge/cloudflared/)）；WAN は **TLS + 短命 mTLS**（x0022 / [x0066](.workspace/roadmap/slices/x0066-ephemeral-mtls-world-issue.md) · [手順書](.workspace/0_doc/manual/relay-server-wan.md)）。world が CSR を署名し、zenohd は role CN ACL（[x0067](.workspace/roadmap/slices/x0067-zenohd-acl-put-family-host-guest.md)）。Relay Agent は互換フォールバック。  
 **Assets:** CAS local / **R2**（GET は署名 URL 302）。**Hermetic E2E（x001f）:** `docker-compose.e2e.yml`。  
-P4-1 描画統合は **[x0050](.workspace/roadmap/slices/x0050-xr-swapchain-wgpu.md)**–**[x0052](.workspace/roadmap/slices/x0052-xr-vk-loop-gpu-remove.md)** **done**。relay 契約（NotAfter ≈ TTL / bound / CI）は **[x0068](.workspace/roadmap/slices/x0068-relay-mtls-ttl-bound-ci.md)** **done**。次の実装候補は 部屋隔離 → inventory **[x0054](.workspace/roadmap/slices/x0054-inventory-grant-required-put.md)**（体感並行 **[x0053](.workspace/roadmap/slices/x0053-xr-desktop-hotswitch.md)**）。空き ID = **`x0069`**。[roadmap](.workspace/roadmap/README.md)。
+P4-1 描画統合は **[x0050](.workspace/roadmap/slices/x0050-xr-swapchain-wgpu.md)**–**[x0052](.workspace/roadmap/slices/x0052-xr-vk-loop-gpu-remove.md)** **done**。relay 契約は **[x0068](.workspace/roadmap/slices/x0068-relay-mtls-ttl-bound-ci.md)** **done**。部屋隔離（Room 鍵 AEAD）は **[x0069](.workspace/roadmap/slices/x0069-room-key-aead.md)** **done**。次は CAS Grant → inventory **[x0054](.workspace/roadmap/slices/x0054-inventory-grant-required-put.md)**（体感並行 **[x0053](.workspace/roadmap/slices/x0053-xr-desktop-hotswitch.md)**）。空き ID = **`x006a`**。[roadmap](.workspace/roadmap/README.md)。
 
 | コンポーネント | パス |
 |:---|:---|

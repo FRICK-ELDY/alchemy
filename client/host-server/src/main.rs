@@ -53,6 +53,7 @@ fn lock_or_fatal<'a, T>(mutex: &'a Mutex<T>, label: &str) -> MutexGuard<'a, T> {
 }
 
 use alchemy_protocol::decode_limits::{check_input, check_payload_bytes, WireClass};
+use alchemy_protocol::wire_aead::{self, AeadKind};
 use alchemy_protocol::wire_crypto::{
     generate_signing_key, public_key_bytes, sign_frame, sign_presence, SigningKey,
 };
@@ -456,9 +457,12 @@ fn take_manifest_if_newer(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_input_gate(
     session: zenoh::Session,
     input_key_expr: String,
+    room_id: String,
+    room_key: Arc<[u8; wire_aead::ROOM_KEY_LEN]>,
     verifier: Arc<RoomTokenVerifier>,
     presence: Arc<Mutex<PresenceIntents>>,
     sessions: Arc<Mutex<SessionTable>>,
@@ -474,7 +478,7 @@ fn spawn_input_gate(
         .spawn(move || {
             let _session = session;
             log::info!(
-                "subscribed to {input_key_expr} (session Ed25519 + optional Room Token bind + is_finite)"
+                "subscribed to {input_key_expr} (AEAD + session Ed25519 + optional Room Token bind + is_finite)"
             );
             let mut accepted: u64 = 0;
             let mut leaves: u64 = 0;
@@ -482,18 +486,38 @@ fn spawn_input_gate(
             let mut dropped_finite: u64 = 0;
             let mut dropped_limits: u64 = 0;
             let mut dropped_rate: u64 = 0;
+            let mut dropped_aead: u64 = 0;
             let mut last_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 // x003b: early drops must still reach the interval aggregate log below.
                 'sample: {
                 let bytes: ZBytes = sample.payload().clone();
-                // x003b: length before contiguous copy (`to_bytes`).
-                if let Err(err) = check_payload_bytes(WireClass::Input, bytes.len()) {
+                // x0069: ciphertext ceiling before open; plaintext limits after.
+                if let Err(err) = wire_aead::check_aead_envelope_bytes(AeadKind::Input, bytes.len())
+                {
                     dropped_limits += 1;
                     log::warn!("drop InputEvent: {err}");
                     break 'sample;
                 }
-                let payload = bytes.to_bytes();
+                let envelope = bytes.to_bytes();
+                let payload = match wire_aead::open(
+                    room_key.as_ref(),
+                    &room_id,
+                    AeadKind::Input,
+                    envelope.as_ref(),
+                ) {
+                    Ok(pt) => pt,
+                    Err(err) => {
+                        dropped_aead += 1;
+                        log::warn!("drop InputEvent: AEAD: {err}");
+                        break 'sample;
+                    }
+                };
+                if let Err(err) = check_payload_bytes(WireClass::Input, payload.len()) {
+                    dropped_limits += 1;
+                    log::warn!("drop InputEvent: {err}");
+                    break 'sample;
+                }
                 match InputEvent::decode(payload.as_ref()) {
                     Ok(event) => {
                         if let Err(err) = check_input(&event) {
@@ -633,13 +657,14 @@ fn spawn_input_gate(
                 if last_log.elapsed() >= Duration::from_secs(5) {
                     let dropped_full = lock_or_fatal(&presence, "presence").dropped_full;
                     log::info!(
-                        "input gate: accepted={accepted} leaves={leaves} dropped_auth={dropped_auth} dropped_non_finite={dropped_finite} dropped_limits={dropped_limits} dropped_rate={dropped_rate} dropped_full={dropped_full} (last ~5s)"
+                        "input gate: accepted={accepted} leaves={leaves} dropped_auth={dropped_auth} dropped_non_finite={dropped_finite} dropped_limits={dropped_limits} dropped_aead={dropped_aead} dropped_rate={dropped_rate} dropped_full={dropped_full} (last ~5s)"
                     );
                     accepted = 0;
                     leaves = 0;
                     dropped_auth = 0;
                     dropped_finite = 0;
                     dropped_limits = 0;
+                    dropped_aead = 0;
                     dropped_rate = 0;
                     last_log = Instant::now();
                 }
@@ -655,6 +680,8 @@ fn spawn_snapshot_queryable(
     snapshot: Arc<Mutex<RenderFrame>>,
     publish_snapshot: Arc<RwLock<HostPublishSnapshot>>,
     host_key: SigningKey,
+    room_id: String,
+    room_key: Arc<[u8; wire_aead::ROOM_KEY_LEN]>,
 ) -> Result<()> {
     let queryable = session
         .declare_queryable(snapshot_key_expr.clone())
@@ -687,7 +714,19 @@ fn spawn_snapshot_queryable(
                 }
                 sign_frame(&host_key, &mut frame);
                 let key = snapshot_key_expr.clone();
-                if let Err(err) = query.reply(key, frame.encode_to_vec()).wait() {
+                let env = match wire_aead::seal(
+                    room_key.as_ref(),
+                    &room_id,
+                    AeadKind::Snapshot,
+                    &frame.encode_to_vec(),
+                ) {
+                    Ok(env) => env,
+                    Err(err) => {
+                        log::warn!("snapshot AEAD seal failed: {err}");
+                        continue;
+                    }
+                };
+                if let Err(err) = query.reply(key, env).wait() {
                     log::warn!("snapshot reply failed: {err}");
                 }
             }
@@ -769,6 +808,7 @@ fn main() -> Result<()> {
     );
 
     let wire_cap = creds.wire_cap.clone();
+    let room_key = Arc::new(creds.room_key);
     let manifest_key_expr = manifest_key(&room_id, &wire_cap);
     let frame_key_expr = frame_key(&room_id, &wire_cap);
     let input_key_expr = input_key(&room_id, &wire_cap);
@@ -828,6 +868,8 @@ fn main() -> Result<()> {
     spawn_input_gate(
         session.clone(),
         input_key_expr,
+        room_id.clone(),
+        Arc::clone(&room_key),
         Arc::clone(&verifier),
         Arc::clone(&presence),
         Arc::clone(&sessions),
@@ -858,8 +900,15 @@ fn main() -> Result<()> {
         host_generation: creds.host_generation,
     };
     sign_presence(&host_signing_key, &mut empty_presence);
+    let empty_presence_env = wire_aead::seal(
+        room_key.as_ref(),
+        &room_id,
+        AeadKind::Presence,
+        &empty_presence.encode_to_vec(),
+    )
+    .context("AEAD seal initial presence")?;
     presence_pub
-        .put(empty_presence.encode_to_vec())
+        .put(empty_presence_env)
         .wait()
         .map_err(|e| anyhow::anyhow!("presence publish failed: {e}"))?;
     log::info!(
@@ -903,6 +952,8 @@ fn main() -> Result<()> {
         Arc::clone(&snapshot_cache),
         Arc::clone(&publish_snapshot),
         host_signing_key.clone(),
+        room_id.clone(),
+        Arc::clone(&room_key),
     )?;
     spawn_credential_worker(
         Arc::clone(&publish_snapshot),
@@ -922,8 +973,15 @@ fn main() -> Result<()> {
     let mut manifest_bytes = manifest.encode_to_vec();
     let mut manifest_revision = manifest.revision;
     let mut manifest_epoch = 0u64;
+    let initial_manifest_env = wire_aead::seal(
+        room_key.as_ref(),
+        &room_id,
+        AeadKind::Manifest,
+        &manifest_bytes,
+    )
+    .context("AEAD seal initial manifest")?;
     manifest_pub
-        .put(manifest_bytes.clone())
+        .put(initial_manifest_env)
         .wait()
         .map_err(|e| anyhow::anyhow!("manifest publish failed: {e}"))?;
     log::info!(
@@ -942,6 +1000,8 @@ fn main() -> Result<()> {
         frame_pub,
         snapshot_cache: Arc::clone(&snapshot_cache),
         host_key: host_signing_key.clone(),
+        room_id: room_id.clone(),
+        room_key: Arc::clone(&room_key),
     })?;
     let outbound = net.hub;
     let publish_stats = net.stats;

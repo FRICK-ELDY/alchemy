@@ -13,6 +13,9 @@ blake3 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"
+# x0069: Room-key AEAD (XChaCha20Poly1305); human-approved dependency.
+chacha20poly1305 = "0.10"
+base64 = "0.22"
 
 [[bin]]
 name = "manifest-seal-hash"

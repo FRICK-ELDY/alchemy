@@ -13,6 +13,7 @@
 //! draining pending jobs / joining the worker on `stop()` (process exit may drop
 //! in-flight puts); Manifest logical (non-bytes) jobs — sealed bytes pass through.
 
+use alchemy_protocol::wire_aead::{self, AeadKind};
 use alchemy_protocol::wire_crypto::{sign_frame, sign_presence, SigningKey};
 use alchemy_protocol::{Entity, Message, PresenceState, RenderFrame};
 use anyhow::{Context, Result};
@@ -268,6 +269,10 @@ pub struct NetworkWorkerConfig {
     pub frame_pub: zenoh::pubsub::Publisher<'static>,
     pub snapshot_cache: Arc<Mutex<RenderFrame>>,
     pub host_key: SigningKey,
+    /// Room id for AEAD AAD (x0069).
+    pub room_id: String,
+    /// Room AEAD key (x0069).
+    pub room_key: Arc<[u8; wire_aead::ROOM_KEY_LEN]>,
 }
 
 fn to_entity(id: u32, pose: Pose) -> Entity {
@@ -345,6 +350,16 @@ fn put_or_die(label: &str, pub_: &zenoh::pubsub::Publisher<'_>, bytes: Vec<u8>) 
     }
 }
 
+fn seal_or_die(kind: AeadKind, room_id: &str, room_key: &[u8], plaintext: Vec<u8>) -> Vec<u8> {
+    match wire_aead::seal(room_key, room_id, kind, &plaintext) {
+        Ok(env) => env,
+        Err(e) => {
+            log::error!("AEAD seal {kind:?} failed: {e}");
+            std::process::exit(78);
+        }
+    }
+}
+
 struct WorkerState {
     last_sent: HashMap<u32, Pose>,
     net_tick: u64,
@@ -373,8 +388,15 @@ impl WorkerState {
         }
     }
 
-    fn handle_manifest(&mut self, pub_: &zenoh::pubsub::Publisher<'_>, job: ManifestJob) {
-        put_or_die("manifest", pub_, job.bytes);
+    fn handle_manifest(
+        &mut self,
+        pub_: &zenoh::pubsub::Publisher<'_>,
+        room_id: &str,
+        room_key: &[u8],
+        job: ManifestJob,
+    ) {
+        let env = seal_or_die(AeadKind::Manifest, room_id, room_key, job.bytes);
+        put_or_die("manifest", pub_, env);
         match job.reason {
             ManifestReason::Epoch => log::info!(
                 "published SceneManifest revision={} (credential worker epoch={})",
@@ -396,12 +418,20 @@ impl WorkerState {
         &mut self,
         pub_: &zenoh::pubsub::Publisher<'_>,
         key: &SigningKey,
+        room_id: &str,
+        room_key: &[u8],
         mut job: PresenceJob,
     ) {
         let n = job.state.assignments.len();
         let rev = job.state.revision;
         sign_presence(key, &mut job.state);
-        put_or_die("presence", pub_, job.state.encode_to_vec());
+        let env = seal_or_die(
+            AeadKind::Presence,
+            room_id,
+            room_key,
+            job.state.encode_to_vec(),
+        );
+        put_or_die("presence", pub_, env);
         if job.republish {
             log::info!(
                 "republished PresenceState revision={rev} assignments={n} (late-joiner assist)"
@@ -433,6 +463,8 @@ impl WorkerState {
         &mut self,
         frame_pub: &zenoh::pubsub::Publisher<'_>,
         key: &SigningKey,
+        room_id: &str,
+        room_key: &[u8],
         stats: &PublishStats,
         host_ready: &AtomicBool,
         upserts: Vec<Entity>,
@@ -448,7 +480,8 @@ impl WorkerState {
             host_sig: vec![],
         };
         sign_frame(key, &mut frame);
-        put_or_die("frame", frame_pub, frame.encode_to_vec());
+        let env = seal_or_die(AeadKind::Frame, room_id, room_key, frame.encode_to_vec());
+        put_or_die("frame", frame_pub, env);
         stats
             .upsert_entities
             .fetch_add(upsert_len, Ordering::Relaxed);
@@ -459,10 +492,13 @@ impl WorkerState {
         signal_host_ready_once(host_ready);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_frame(
         &mut self,
         frame_pub: &zenoh::pubsub::Publisher<'_>,
         key: &SigningKey,
+        room_id: &str,
+        room_key: &[u8],
         cache: &Mutex<RenderFrame>,
         stats: &PublishStats,
         host_ready: &AtomicBool,
@@ -503,6 +539,8 @@ impl WorkerState {
             self.put_signed_frame(
                 frame_pub,
                 key,
+                room_id,
+                room_key,
                 stats,
                 host_ready,
                 vec![],
@@ -568,6 +606,8 @@ impl WorkerState {
         self.put_signed_frame(
             frame_pub,
             key,
+            room_id,
+            room_key,
             stats,
             host_ready,
             upserts,
@@ -601,6 +641,8 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
                 frame_pub,
                 snapshot_cache,
                 host_key,
+                room_id,
+                room_key,
             } = config;
             let mut state = WorkerState {
                 last_sent: HashMap::new(),
@@ -609,18 +651,26 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
                 deferred_removes: Vec::new(),
                 deferred_catchup: false,
             };
-            log::info!("network worker ready (Zenoh put off physics thread)");
+            log::info!("network worker ready (Zenoh put off physics thread; AEAD on)");
             while let Some((frame, presence, manifest)) = hub_w.take_batch() {
                 if let Some(job) = manifest {
-                    state.handle_manifest(&manifest_pub, job);
+                    state.handle_manifest(&manifest_pub, &room_id, room_key.as_ref(), job);
                 }
                 if let Some(job) = presence {
-                    state.handle_presence(&presence_pub, &host_key, job);
+                    state.handle_presence(
+                        &presence_pub,
+                        &host_key,
+                        &room_id,
+                        room_key.as_ref(),
+                        job,
+                    );
                 }
                 if let Some(sample) = frame {
                     state.handle_frame(
                         &frame_pub,
                         &host_key,
+                        &room_id,
+                        room_key.as_ref(),
                         &snapshot_cache,
                         &stats_w,
                         &ready_w,

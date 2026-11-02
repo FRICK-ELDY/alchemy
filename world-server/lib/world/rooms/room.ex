@@ -2,7 +2,7 @@ defmodule World.Rooms.Room do
   @moduledoc """
   Persistent room ledger row (x0028).
 
-  Guarantees: `room_id` + `owner_sub` + DemoScene `scene` + `visibility` + `wire_cap` (x004e) survive restart.
+  Guarantees: `room_id` + `owner_sub` + DemoScene `scene` + `visibility` + `wire_cap` (x004e) + `room_key` (x0069) survive restart.
   Non-guarantees: Presence / physics pose; UGC edit history.
   """
 
@@ -48,6 +48,12 @@ defmodule World.Rooms.Room do
       public? true
     end
 
+    # x0069: 32-byte Room AEAD key as 64 lowercase hex (API: URL-safe base64).
+    attribute :room_key, :string do
+      allow_nil? false
+      public? true
+    end
+
     # x003a: host generation. 0 = none yet; bumps when attested host_pub changes.
     attribute :host_generation, :integer do
       allow_nil? false
@@ -72,7 +78,7 @@ defmodule World.Rooms.Room do
 
     create :create do
       primary? true
-      accept [:room_id, :owner_sub, :scene, :visibility, :wire_cap]
+      accept [:room_id, :owner_sub, :scene, :visibility, :wire_cap, :room_key]
     end
 
     update :set_visibility do

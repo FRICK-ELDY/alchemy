@@ -189,6 +189,8 @@ pub struct SharedState {
     pub room_id: Arc<str>,
     /// Zenoh key channel secret from Room Token (x004e); `None` until join.
     pub wire_cap: Mutex<Option<Arc<str>>>,
+    /// Room AEAD key from Room Token (x0069); `None` until join.
+    pub room_key: Mutex<Option<Arc<[u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]>>>,
     /// Once true, manifest/frame/presence/input subscribers are running (x004e).
     /// Cleared on Leave and before re-attach after Zenoh reopen.
     pub room_bus_started: std::sync::atomic::AtomicBool,
@@ -311,6 +313,11 @@ impl SharedState {
         self.wire_cap.lock().ok().and_then(|g| g.clone())
     }
 
+    /// Current Room AEAD key after join (x0069).
+    pub fn room_key(&self) -> Option<Arc<[u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]>> {
+        self.room_key.lock().ok().and_then(|g| g.clone())
+    }
+
     pub fn leave_room_local(&self) {
         self.set_local_user_root(LOCAL_USER_ROOT_UNSET);
         if let Ok(mut intent) = self.intent.lock() {
@@ -321,6 +328,9 @@ impl SharedState {
         }
         if let Ok(mut cap) = self.wire_cap.lock() {
             *cap = None;
+        }
+        if let Ok(mut key) = self.room_key.lock() {
+            *key = None;
         }
         // Callers must `session.close()` (see `leave_room` / `close_zenoh`); Drop alone is not
         // enough if any strong clone remains. This flag only gates re-attach on the next open/bind.

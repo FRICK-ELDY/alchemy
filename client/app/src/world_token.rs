@@ -1,7 +1,7 @@
-//! Guest Room Token HTTP client (x0021 / x003e / x004e / x0066).
+//! Guest Room Token HTTP client (x0021 / x003e / x004e / x0066 / x0069).
 //!
-//! Guarantees: `POST …/tokens` includes `session_pub`; returns `wire_cap` + `allocation_token`;
-//! optional `csr_pem` → `mtls` when world CA is configured.
+//! Guarantees: `POST …/tokens` includes `session_pub`; returns `wire_cap` + `room_key` +
+//! `allocation_token`; optional `csr_pem` → `mtls` when world CA is configured.
 //! Non-guarantees: debug `ALCHEMY_ROOM_TOKEN` bypass cnf alignment.
 
 use std::time::Duration;
@@ -32,6 +32,9 @@ struct TokenResponse {
     /// Empty when talking to a pre-x004e world; `require_wire_cap` fails closed (or WIRE_CAP env).
     #[serde(default)]
     wire_cap: String,
+    /// Room AEAD key, URL-safe base64 of 32 bytes (x0069).
+    #[serde(default)]
+    room_key: String,
     /// Empty when Relay is unused / old world; allocate is skipped.
     #[serde(default)]
     allocation_token: String,
@@ -52,8 +55,26 @@ pub struct GuestToken {
     pub token: String,
     pub expires_in: u64,
     pub wire_cap: String,
+    pub room_key: [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
     pub allocation_token: String,
     pub mtls: Option<WorldMtls>,
+}
+
+fn parse_room_key_b64(b64: &str) -> Result<[u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]> {
+    alchemy_protocol::wire_aead::decode_room_key_b64(b64)
+        .map_err(|e| anyhow::anyhow!("room_key from token: {e}"))
+}
+
+fn room_key_from_env_or_local() -> [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN] {
+    if let Ok(b64) = std::env::var("ALCHEMY_ROOM_KEY") {
+        if !b64.is_empty() {
+            if let Ok(key) = parse_room_key_b64(&b64) {
+                return key;
+            }
+            log::warn!("ALCHEMY_ROOM_KEY invalid; falling back to LOCAL_ROOM_KEY");
+        }
+    }
+    alchemy_protocol::LOCAL_ROOM_KEY
 }
 
 fn token_agent() -> ureq::Agent {
@@ -85,6 +106,7 @@ pub fn fetch_guest_token(
                     // Env override: no TTL → skip auto-refresh.
                     expires_in: 0,
                     wire_cap,
+                    room_key: room_key_from_env_or_local(),
                     allocation_token: String::new(),
                     mtls: None,
                 });
@@ -118,6 +140,7 @@ pub fn fetch_guest_token(
     }
     let wire_cap = zenoh_connect::require_wire_cap(Some(resp.wire_cap.as_str()))
         .context("guest token wire_cap")?;
+    let room_key = parse_room_key_b64(&resp.room_key).context("guest token room_key")?;
     let mtls = resp.mtls.map(|m| WorldMtls {
         client_cert_pem: m.client_cert_pem,
         expires_at: m.expires_at,
@@ -126,6 +149,7 @@ pub fn fetch_guest_token(
         token: resp.token,
         expires_in: resp.expires_in,
         wire_cap,
+        room_key,
         allocation_token: resp.allocation_token,
         mtls,
     })

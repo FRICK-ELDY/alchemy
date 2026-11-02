@@ -359,6 +359,9 @@ struct TokenResponse {
     /// Zenoh key channel secret (x004e). Empty on pre-x004e world → `require_wire_cap` / WIRE_CAP.
     #[serde(default)]
     wire_cap: String,
+    /// Room AEAD key, URL-safe base64 of 32 bytes (x0069). Empty → fail closed except debug bypass.
+    #[serde(default)]
+    room_key: String,
     /// Relay Allocation Token (x004e); empty when Relay unused or world older than x004e.
     #[serde(default)]
     allocation_token: String,
@@ -380,8 +383,27 @@ pub struct HostTokenBundle {
     pub token: String,
     pub expires_in: u64,
     pub wire_cap: String,
+    /// Raw 32-byte Room AEAD key (x0069).
+    pub room_key: [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
     pub allocation_token: String,
     pub mtls: Option<WorldMtls>,
+}
+
+fn parse_room_key_b64(b64: &str) -> Result<[u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]> {
+    alchemy_protocol::wire_aead::decode_room_key_b64(b64)
+        .map_err(|e| anyhow!("room_key from token: {e}"))
+}
+
+fn room_key_from_env_or_local() -> [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN] {
+    if let Ok(b64) = std::env::var("ALCHEMY_ROOM_KEY") {
+        if !b64.is_empty() {
+            if let Ok(key) = parse_room_key_b64(&b64) {
+                return key;
+            }
+            log::warn!("ALCHEMY_ROOM_KEY invalid; falling back to LOCAL_ROOM_KEY");
+        }
+    }
+    alchemy_protocol::LOCAL_ROOM_KEY
 }
 
 /// Auth session for long-running host (x0025 three-tier refresh).
@@ -624,6 +646,7 @@ pub fn fetch_host_token(
             token,
             expires_in: BYPASS_ROOM_TOKEN_TTL_HINT,
             wire_cap,
+            room_key: room_key_from_env_or_local(),
             allocation_token: String::new(),
             mtls: None,
         });
@@ -688,6 +711,7 @@ pub fn fetch_host_token(
             };
             let wire_cap = zenoh_connect::require_wire_cap(Some(parsed.wire_cap.as_str()))
                 .context("host token wire_cap")?;
+            let room_key = parse_room_key_b64(&parsed.room_key).context("host token room_key")?;
             let mtls = parsed.mtls.map(|m| WorldMtls {
                 client_cert_pem: m.client_cert_pem,
                 expires_at: m.expires_at,
@@ -696,6 +720,7 @@ pub fn fetch_host_token(
                 token: parsed.token,
                 expires_in: ttl,
                 wire_cap,
+                room_key,
                 allocation_token: parsed.allocation_token,
                 mtls,
             })
@@ -768,6 +793,8 @@ pub struct HostCredentialChain {
     pub attest_hard_expire_at: Instant,
     /// Zenoh key channel secret (x004e); stable for room lifetime.
     pub wire_cap: String,
+    /// Room AEAD key (x0069); stable for room lifetime.
+    pub room_key: [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
     /// Latest Allocation Token for Relay mTLS refresh (x004e).
     pub allocation_token: String,
 }
@@ -837,6 +864,7 @@ impl HostCredentialChain {
             }),
             attest_hard_expire_at: hard_expire_or_hint(attest_ttl, BYPASS_ROOM_TOKEN_TTL_HINT),
             wire_cap: bundle.wire_cap,
+            room_key: bundle.room_key,
             allocation_token: bundle.allocation_token,
         })
     }
@@ -932,11 +960,14 @@ impl HostCredentialChain {
             ));
         }
         self.host_token = bundle.token;
-        // wire_cap is room-lifetime stable; Zenoh key exprs were fixed at boot — do not rewrite.
+        // wire_cap / room_key are room-lifetime stable; Zenoh keys + AEAD fixed at boot.
         if self.wire_cap.is_empty() {
             self.wire_cap = bundle.wire_cap.clone();
         } else if !bundle.wire_cap.is_empty() && bundle.wire_cap != self.wire_cap {
             log::warn!("host Token refresh wire_cap changed (ignored; keys stay on boot cap)");
+        }
+        if bundle.room_key != self.room_key {
+            log::warn!("host Token refresh room_key changed (ignored; AEAD stays on boot key)");
         }
         self.allocation_token = bundle.allocation_token.clone();
         let ttl = bundle.expires_in;

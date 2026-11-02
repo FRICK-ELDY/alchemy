@@ -58,6 +58,7 @@ use alchemy_protocol::decode_limits::{
 use alchemy_protocol::generation_gate::{
     decide_gen_rev, decide_presence_gen_rev, GenRev, GenRevDecision,
 };
+use alchemy_protocol::wire_aead::{self, AeadKind};
 use alchemy_protocol::wire_crypto::{
     frame_entities_finite, manifest_seal_blake3_hex, verify_frame, verify_presence,
 };
@@ -312,6 +313,41 @@ fn client_time_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Ciphertext ceiling (on `ZBytes::len`) → contiguous copy → AEAD open → plaintext.
+/// Fail-closed before protobuf / signature checks.
+fn open_zenoh_payload(
+    shared: &SharedState,
+    kind: AeadKind,
+    bytes: &ZBytes,
+) -> Result<Vec<u8>, String> {
+    if let Err(err) = wire_aead::check_aead_envelope_bytes(kind, bytes.len()) {
+        return Err(err.to_string());
+    }
+    let room_key = shared
+        .room_key()
+        .ok_or_else(|| "room_key missing".to_string())?;
+    let envelope = bytes.to_bytes();
+    wire_aead::open(
+        room_key.as_ref(),
+        shared.room_id.as_ref(),
+        kind,
+        envelope.as_ref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn seal_zenoh_payload(
+    shared: &SharedState,
+    kind: AeadKind,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, String> {
+    let room_key = shared
+        .room_key()
+        .ok_or_else(|| "room_key missing".to_string())?;
+    wire_aead::seal(room_key.as_ref(), shared.room_id.as_ref(), kind, plaintext)
+        .map_err(|e| e.to_string())
+}
+
 fn spawn_manifest_subscriber(
     session: zenoh::Session,
     key: String,
@@ -340,18 +376,25 @@ fn spawn_manifest_subscriber(
             let mut dropped_gen_rev: u64 = 0;
             let mut dropped_decode: u64 = 0;
             let mut dropped_limits: u64 = 0;
+            let mut dropped_aead: u64 = 0;
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 // x003b: early drops must still reach the interval aggregate log below.
                 'sample: {
                 let bytes: ZBytes = sample.payload().clone();
-                // x003b: length before contiguous copy (`to_bytes`).
-                if let Err(err) = check_payload_bytes(WireClass::Manifest, bytes.len()) {
+                let payload = match open_zenoh_payload(&shared, AeadKind::Manifest, &bytes) {
+                    Ok(pt) => pt,
+                    Err(err) => {
+                        dropped_aead += 1;
+                        log::warn!("drop SceneManifest: AEAD: {err}");
+                        break 'sample;
+                    }
+                };
+                if let Err(err) = check_payload_bytes(WireClass::Manifest, payload.len()) {
                     dropped_limits += 1;
                     log::warn!("drop SceneManifest: {err}");
                     break 'sample;
                 }
-                let payload = bytes.to_bytes();
                 match SceneManifest::decode(payload.as_ref()) {
                     Ok(manifest) => {
                         if let Err(err) = check_manifest(&manifest) {
@@ -590,10 +633,11 @@ fn spawn_manifest_subscriber(
                         + dropped_gen_rev
                         + dropped_decode
                         + dropped_limits
+                        + dropped_aead
                         > 0
                     {
                         log::info!(
-                            "manifest gate: dropped_identity={dropped_identity} dropped_seal={dropped_seal} dropped_attest={dropped_attest} dropped_gen_rev={dropped_gen_rev} dropped_decode={dropped_decode} dropped_limits={dropped_limits} (last ~5s)"
+                            "manifest gate: dropped_identity={dropped_identity} dropped_seal={dropped_seal} dropped_attest={dropped_attest} dropped_gen_rev={dropped_gen_rev} dropped_decode={dropped_decode} dropped_limits={dropped_limits} dropped_aead={dropped_aead} (last ~5s)"
                         );
                     }
                     dropped_identity = 0;
@@ -602,6 +646,7 @@ fn spawn_manifest_subscriber(
                     dropped_gen_rev = 0;
                     dropped_decode = 0;
                     dropped_limits = 0;
+                    dropped_aead = 0;
                     last_gate_log = Instant::now();
                 }
             }
@@ -753,18 +798,26 @@ fn fetch_snapshot(
     let key = snapshot_key(room_id, wire_cap);
     let mut applied = false;
     let mut dropped_limits: u64 = 0;
+    let mut dropped_aead: u64 = 0;
     match session.get(&key).wait() {
         Ok(receiver) => {
             while let Ok(reply) = receiver.recv() {
                 match reply.result() {
                     Ok(sample) => {
                         let bytes: ZBytes = sample.payload().clone();
-                        if let Err(err) = check_payload_bytes(WireClass::Frame, bytes.len()) {
+                        let payload = match open_zenoh_payload(shared, AeadKind::Snapshot, &bytes) {
+                            Ok(pt) => pt,
+                            Err(err) => {
+                                dropped_aead += 1;
+                                log::warn!("drop snapshot: AEAD: {err}");
+                                continue;
+                            }
+                        };
+                        if let Err(err) = check_payload_bytes(WireClass::Frame, payload.len()) {
                             dropped_limits += 1;
                             log::warn!("drop snapshot: {err}");
                             continue;
                         }
-                        let payload = bytes.to_bytes();
                         match RenderFrame::decode(payload.as_ref()) {
                             Ok(frame) => {
                                 if let Err(err) = check_frame(&frame) {
@@ -788,8 +841,8 @@ fn fetch_snapshot(
         }
         Err(err) => log::warn!("snapshot get failed: {err}"),
     }
-    if dropped_limits > 0 {
-        log::info!("snapshot gate: dropped_limits={dropped_limits}");
+    if dropped_limits > 0 || dropped_aead > 0 {
+        log::info!("snapshot gate: dropped_limits={dropped_limits} dropped_aead={dropped_aead}");
     }
     if !applied {
         log::warn!("snapshot not applied yet; will retry on next Manifest or frame gap");
@@ -818,16 +871,24 @@ fn spawn_frame_subscriber(
             log::info!("subscribed to {key} (signed delta upserts/removes)");
             let mut resync_cooldown_until = Instant::now();
             let mut dropped_limits: u64 = 0;
+            let mut dropped_aead: u64 = 0;
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 'sample: {
                     let bytes: ZBytes = sample.payload().clone();
-                    if let Err(err) = check_payload_bytes(WireClass::Frame, bytes.len()) {
+                    let payload = match open_zenoh_payload(&shared, AeadKind::Frame, &bytes) {
+                        Ok(pt) => pt,
+                        Err(err) => {
+                            dropped_aead += 1;
+                            log::warn!("drop RenderFrame: AEAD: {err}");
+                            break 'sample;
+                        }
+                    };
+                    if let Err(err) = check_payload_bytes(WireClass::Frame, payload.len()) {
                         dropped_limits += 1;
                         log::warn!("drop RenderFrame: {err}");
                         break 'sample;
                     }
-                    let payload = bytes.to_bytes();
                     match RenderFrame::decode(payload.as_ref()) {
                         Ok(frame) => {
                             if let Err(err) = check_frame(&frame) {
@@ -859,10 +920,13 @@ fn spawn_frame_subscriber(
                     }
                 } // 'sample
                 if last_gate_log.elapsed() >= GATE_LOG_INTERVAL {
-                    if dropped_limits > 0 {
-                        log::info!("frame gate: dropped_limits={dropped_limits} (last ~5s)");
+                    if dropped_limits > 0 || dropped_aead > 0 {
+                        log::info!(
+                            "frame gate: dropped_limits={dropped_limits} dropped_aead={dropped_aead} (last ~5s)"
+                        );
                     }
                     dropped_limits = 0;
+                    dropped_aead = 0;
                     last_gate_log = Instant::now();
                 }
             }
@@ -895,16 +959,24 @@ fn spawn_presence_subscriber(
             let mut dropped_gen_rev: u64 = 0;
             let mut dropped_decode: u64 = 0;
             let mut dropped_limits: u64 = 0;
+            let mut dropped_aead: u64 = 0;
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 'sample: {
                 let bytes: ZBytes = sample.payload().clone();
-                if let Err(err) = check_payload_bytes(WireClass::Presence, bytes.len()) {
+                let payload = match open_zenoh_payload(&shared, AeadKind::Presence, &bytes) {
+                    Ok(pt) => pt,
+                    Err(err) => {
+                        dropped_aead += 1;
+                        log::warn!("drop PresenceState: AEAD: {err}");
+                        break 'sample;
+                    }
+                };
+                if let Err(err) = check_payload_bytes(WireClass::Presence, payload.len()) {
                     dropped_limits += 1;
                     log::warn!("drop PresenceState: {err}");
                     break 'sample;
                 }
-                let payload = bytes.to_bytes();
                 match PresenceState::decode(payload.as_ref()) {
                     Ok(state) => {
                         if let Err(err) = check_presence(&state) {
@@ -1025,10 +1097,11 @@ fn spawn_presence_subscriber(
                         + dropped_gen_rev
                         + dropped_decode
                         + dropped_limits
+                        + dropped_aead
                         > 0
                     {
                         log::info!(
-                            "presence gate: dropped_pin={dropped_pin} dropped_no_host={dropped_no_host} dropped_sig={dropped_sig} dropped_gen_rev={dropped_gen_rev} dropped_decode={dropped_decode} dropped_limits={dropped_limits} (last ~5s)"
+                            "presence gate: dropped_pin={dropped_pin} dropped_no_host={dropped_no_host} dropped_sig={dropped_sig} dropped_gen_rev={dropped_gen_rev} dropped_decode={dropped_decode} dropped_limits={dropped_limits} dropped_aead={dropped_aead} (last ~5s)"
                         );
                     }
                     dropped_pin = 0;
@@ -1037,6 +1110,7 @@ fn spawn_presence_subscriber(
                     dropped_gen_rev = 0;
                     dropped_limits = 0;
                     dropped_decode = 0;
+                    dropped_aead = 0;
                     last_gate_log = Instant::now();
                 }
             }
@@ -1102,7 +1176,15 @@ fn spawn_input_publisher(
                     continue;
                 };
                 let was_bind = !event.room_token.is_empty();
-                if let Err(err) = publisher.put(event.encode_to_vec()).wait() {
+                let env = match seal_zenoh_payload(&shared, AeadKind::Input, &event.encode_to_vec())
+                {
+                    Ok(env) => env,
+                    Err(err) => {
+                        log::warn!("input AEAD seal failed: {err}");
+                        continue;
+                    }
+                };
+                if let Err(err) = publisher.put(env).wait() {
                     log::warn!("input publish failed: {err}");
                     // Keep bind_pending so the next Intent still carries room_token.
                     continue;
@@ -1174,6 +1256,9 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     if let Ok(mut cap) = shared.wire_cap.lock() {
         *cap = Some(Arc::<str>::from(guest.wire_cap.as_str()));
     }
+    if let Ok(mut key) = shared.room_key.lock() {
+        *key = Some(Arc::new(guest.room_key));
+    }
     // mTLS: world-issued preferred; else Relay allocate (x0066 / x004e).
     if let Some(id) = zenoh_connect::apply_world_mtls_or_allocate(
         guest.mtls.as_ref().map(|m| m.client_cert_pem.as_str()),
@@ -1219,7 +1304,8 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     Ok(())
 }
 
-/// Start Zenoh room subscribers once `wire_cap` is known (silent boot or Home→Join).
+/// Start Zenoh room subscribers once `wire_cap` **and** `room_key` are known
+/// (silent boot or Home→Join; x004e / x0069).
 ///
 /// Idempotent via `room_bus_started`. On spawn failure the flag is cleared so retry works.
 /// Pass `Some(blake3_tx)` for boot mesh wait; `None` drains blake3 on a background thread
@@ -1240,6 +1326,9 @@ pub fn ensure_room_bus(
         let wire_cap = shared
             .wire_cap()
             .ok_or_else(|| anyhow::anyhow!("ensure_room_bus: wire_cap missing"))?;
+        if shared.room_key().is_none() {
+            anyhow::bail!("ensure_room_bus: room_key missing");
+        }
         let room_id = shared.room_id.as_ref();
         let manifest_key_expr = manifest_key(room_id, &wire_cap);
         let frame_key_expr = frame_key(room_id, &wire_cap);
@@ -1663,10 +1752,15 @@ pub fn leave_room(shared: &SharedState, zenoh: &mut Option<zenoh::Session>) {
                 let key = input_key(shared.room_id.as_ref(), &wire_cap);
                 match session.declare_publisher(key.clone()).wait() {
                     Ok(publisher) => {
-                        if let Err(err) = publisher.put(event.encode_to_vec()).wait() {
-                            log::warn!("Leave InputEvent publish failed: {err}");
-                        } else {
-                            log::info!("Leave InputEvent published on {key}");
+                        match seal_zenoh_payload(shared, AeadKind::Input, &event.encode_to_vec()) {
+                            Ok(env) => {
+                                if let Err(err) = publisher.put(env).wait() {
+                                    log::warn!("Leave InputEvent publish failed: {err}");
+                                } else {
+                                    log::info!("Leave InputEvent published on {key}");
+                                }
+                            }
+                            Err(err) => log::warn!("Leave InputEvent AEAD seal failed: {err}"),
                         }
                     }
                     Err(err) => log::warn!("Leave publisher declare failed: {err}"),
@@ -1723,6 +1817,7 @@ fn main() -> Result<()> {
         local_user_root: AtomicU32::new(LOCAL_USER_ROOT_UNSET),
         room_id: Arc::<str>::from(room_id.clone()),
         wire_cap: Mutex::new(None),
+        room_key: Mutex::new(None),
         room_bus_started: AtomicBool::new(false),
         mtls_reopen_pending: AtomicBool::new(false),
         manifest_seal: Arc::clone(&seal),
