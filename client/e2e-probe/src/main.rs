@@ -283,11 +283,7 @@ enum ManifestGuestOutcome {
     HostShaped,
 }
 
-fn classify_manifest_guest(
-    room_id: &str,
-    room_key: &[u8],
-    bytes: &ZBytes,
-) -> ManifestGuestOutcome {
+fn classify_manifest_guest(room_id: &str, room_key: &[u8], bytes: &ZBytes) -> ManifestGuestOutcome {
     let payload = match open_zenoh_sample(room_id, room_key, AeadKind::Manifest, bytes) {
         Ok(pt) => pt,
         Err(_) => return ManifestGuestOutcome::AeadDiscard,
