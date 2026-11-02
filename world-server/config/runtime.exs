@@ -74,6 +74,11 @@ if System.get_env("BIND_ALL") in ~w(true 1) do
     server: true
 end
 
+# Same env name as host/client (`zenoh-connect`). Default stays config.exs value.
+if endpoint = System.get_env("ZENOH_CONNECT") do
+  config :world, zenoh_connect: endpoint
+end
+
 # x0039/x003b: test uses config/test.exs path; ignore developer WORLD_DATABASE_PATH
 # so compose `.env` / day-to-day DB cannot pollute ExUnit (assets CAS isolation と同型).
 if config_env() != :test do

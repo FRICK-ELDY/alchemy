@@ -33,4 +33,9 @@ defmodule World.TestEnvIsolationTest do
   test "auth_access_mode stays :stub in test" do
     assert Application.get_env(:world, :auth_access_mode) == :stub
   end
+
+  test "zenoh_adapter stays LocalStubAdapter in test" do
+    assert Application.get_env(:world, :zenoh_adapter) ==
+             World.Network.Zenoh.LocalStubAdapter
+  end
 end

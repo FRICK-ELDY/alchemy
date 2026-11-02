@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x006a`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x006b`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -156,11 +156,12 @@ depends_on: [x0006]
 | x0067 | — | done | zenohd ACL: キー族 put 分離を非対称 ingress/egress + interest で復帰 | [x0067-zenohd-acl-put-family-host-guest.md](slices/x0067-zenohd-acl-put-family-host-guest.md) |
 | x0068 | — | done | relay 契約（NotAfter ≈ TTL / JWKS·body bound / CI） | [x0068-relay-mtls-ttl-bound-ci.md](slices/x0068-relay-mtls-ttl-bound-ci.md) |
 | x0069 | — | done | 部屋隔離（Room 鍵 AEAD / XChaCha20Poly1305） | [x0069-room-key-aead.md](slices/x0069-room-key-aead.md) |
+| x006a | — | in_progress | world-server へ Zenohex 導入（Adapter 隔離 / :ring） | [x006a-world-zenohex-adapter.md](slices/x006a-world-zenohex-adapter.md) |
 
 **現在の次:** x0054 **done**。inventory ladder Wave 0 の続きは **[x0055](slices/x0055-item-ref-blake3-draft.md)**。体感並行: **[x0053](slices/x0053-xr-desktop-hotswitch.md)**（同一 PR 禁止）。案 B 本体・launcher・verifier は保留。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
-次の空き番号は **`x006a`**。
+次の空き番号は **`x006b`**。
 
 ## 関連
 
@@ -168,6 +169,7 @@ depends_on: [x0006]
 |:---|:---|
 | [ローカル CI](ci.md) | `make ci` など |
 | [inventory-ladder.md](inventory-ladder.md) | インベントリ B+2→C+3 交互ラダー |
+| [x006a-zenohex-intro-spec.md](x006a-zenohex-intro-spec.md) | x006a 入力仕様（Adapter / :ring / stub；読み替え注記付き） |
 | [architecture/overview.md](../0_doc/architecture/overview.md) | 目標アーキテクチャ |
 | [README.md](../../README.md) | リポジトリ入口・起動手順 |
 

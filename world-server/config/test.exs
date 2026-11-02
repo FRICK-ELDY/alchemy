@@ -24,7 +24,9 @@ config :world,
   auth_access_mode: :stub,
   auth_access_stub: fn _owner, _viewer, _vis -> false end,
   auth_internal_token: "dev-internal-token",
-  trusted_proxies: []
+  trusted_proxies: [],
+  # No NIF session / zenohd in ExUnit — in-memory adapter only.
+  zenoh_adapter: World.Network.Zenoh.LocalStubAdapter
 
 config :logger, level: :warning
 config :phoenix, :plug_init_mode, :runtime
