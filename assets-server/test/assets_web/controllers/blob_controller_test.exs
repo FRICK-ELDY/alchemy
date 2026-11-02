@@ -314,6 +314,158 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"error" => "forbidden"} = json_response(conn, 403)
   end
 
+  test "inventory PUT always grant_required: owner GET 200, other user 403", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "inventory-private-bytes"
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> post("/api/v1/inventory/blobs", body)
+
+    assert %{"blake3" => blake3, "access" => "grant_required", "status" => "created"} =
+             json_response(conn, 201)
+
+    assert %BlobGrant{grant_type: "owned"} =
+             Repo.get_by(BlobGrant, grantee_sub: @sub_a, blake3: blake3)
+
+    assert %CasObject{access: "grant_required"} = Repo.get(CasObject, blake3)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert response(conn, 200) == body
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert %{"error" => "forbidden"} = json_response(conn, 403)
+  end
+
+  test "inventory PUT rejects authenticated access header with 400", %{
+    conn: conn,
+    signer: signer
+  } do
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> put_req_header("x-alchemy-blob-access", "authenticated")
+      |> post("/api/v1/inventory/blobs", "inventory-cannot-weaken")
+
+    assert %{"error" => "invalid_access"} = json_response(conn, 400)
+  end
+
+  test "inventory PUT rejects unknown access header with 400", %{
+    conn: conn,
+    signer: signer
+  } do
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> put_req_header("x-alchemy-blob-access", "public")
+      |> post("/api/v1/inventory/blobs", "inventory-unknown-access")
+
+    assert %{"error" => "invalid_access"} = json_response(conn, 400)
+  end
+
+  test "inventory PUT accepts explicit grant_required header", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "inventory-explicit-grant-required"
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> put_req_header("x-alchemy-blob-access", "grant_required")
+      |> post("/api/v1/inventory/blobs", body)
+
+    assert %{"access" => "grant_required", "status" => "created"} = json_response(conn, 201)
+  end
+
+  test "room-mesh and inventory paths stay separated for different bodies", %{
+    conn: conn,
+    signer: signer
+  } do
+    mesh = "room-mesh-still-authenticated"
+    inventory = "inventory-private-sibling"
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> post("/api/v1/blobs", mesh)
+
+    assert %{"blake3" => mesh_blake3, "access" => "authenticated", "status" => "created"} =
+             json_response(conn, 201)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> post("/api/v1/inventory/blobs", inventory)
+
+    assert %{"blake3" => inv_blake3, "access" => "grant_required", "status" => "created"} =
+             json_response(conn, 201)
+
+    assert mesh_blake3 != inv_blake3
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> get("/api/v1/blobs/#{mesh_blake3}")
+
+    assert response(conn, 200) == mesh
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> get("/api/v1/blobs/#{inv_blake3}")
+
+    assert %{"error" => "forbidden"} = json_response(conn, 403)
+  end
+
+  test "inventory PUT conflicts when same bytes already authenticated", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "inventory-cannot-privatize-existing"
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"blake3" => blake3, "access" => "authenticated"} = json_response(conn, 201)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> put_req_header("content-type", "text/plain")
+      |> post("/api/v1/inventory/blobs", body)
+
+    assert %{"error" => "access_conflict"} = json_response(conn, 409)
+    assert Repo.get_by(BlobGrant, grantee_sub: @sub_b, blake3: blake3) == nil
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert response(conn, 200) == body
+  end
+
   test "rejects GET without auth", %{conn: conn, signer: signer, sub: sub} do
     body = "need-auth-to-get"
 

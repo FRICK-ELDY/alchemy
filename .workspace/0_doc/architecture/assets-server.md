@@ -1,7 +1,7 @@
 # assets-server
 
 > **正本コード**: [`assets-server/`](../../../assets-server/)  
-> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳 + `access`）  
+> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳 + `access`）+ **x0054**（inventory PUT 常時 `grant_required`）  
 > **目標たたき台**: [assets-server-draft.md](assets-server-draft.md)（5 層全体。GET 既定を Grant 必須にする案 B は後続）  
 > **脅威（手口×対策）**: [assets-threat-model.md](assets-threat-model.md)
 
@@ -13,7 +13,7 @@
 
 | | 内容 |
 |:---|:---|
-| **現行（x004f / 案 A）** | PUT で `:owned` Grant を必ず立てる。GET 既定は **認証済み読み取り capability**（部屋メッシュ DL を壊さない）。任意で `access=grant_required` なら Grant 必須 |
+| **現行（x004f / x0054 / 案 A）** | PUT で `:owned` Grant を必ず立てる。GET 既定は **認証済み読み取り capability**（部屋メッシュ DL を壊さない）。任意で `access=grant_required`、または **`POST /api/v1/inventory/blobs` は常に Grant 必須** |
 | **目標（案 B）** | GET 可否の SSoT は常に `BlobGrant`。部屋メッシュも入室連動の読取 Grant（または短命トークン）が先。別スライス |
 
 ## 保証すること / しないこと
@@ -24,6 +24,8 @@
 | 不変バイナリを CAS（BLAKE3 キー）に置く | Vault / Folder / Commit（Spatial VCS） |
 | `CasObject`（物理・所有者なし）と `BlobRef`（owner×blake3）を分離（x003f） | StorageVault / `:purchased` / `:mail_temp` |
 | PUT finalize で uploader に `:owned` `BlobGrant`（x004f） | room スコープ grant・Manifest 連動付与（→ 案 B） |
+| `POST /api/v1/inventory/blobs` は常に `access=grant_required`（x0054）。access ヘッダは省略/`grant_required` のみ（他は 400） | DriveNode / Prefab / Vault 表・client UI |
+| | 既存 `authenticated` 同一 blake3 の私有化（x004f 先勝ちで 409） |
 | PUT: `reserved_bytes` 予約 → TX 外 CAS put → used 振替。失敗時は**予約解放のみ**（CAS は消さない＝並行同一 hash 安全） | Oban・予約期限切れジョブ・署名 URL 直 PUT・orphan CAS の定期 GC |
 | `ASSETS_CAS_BACKEND=local\|s3` で置き場切替（x001c）。**test では runtime が CAS env を無視**（x001e） | 公開バケット・CDN カスタムドメイン |
 | s3 時 GET は短命署名 URL へ 302（x001d） | Upload の署名 URL 直 PUT |
@@ -50,7 +52,7 @@
 
 意図する運用前提: Manifest 等で blake3 を渡された **入室済み・認証済み client** がメッシュを取る経路（`access=authenticated`）。非公開・Drive 相当は `grant_required`。hash 秘匿や「配布済みでも読めない」は案 B（room Grant）後続。公開読取 API は `Blobs.fetch/2` のみ（門番なし `download/1` は置かない）。
 
-PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。任意ヘッダ `x-alchemy-blob-access: grant_required`（未指定=`authenticated`、未知値=400）。`auth_sub` で `reserved_bytes` 予約 → TX 外 CAS put → `BlobRef` + `:owned` `BlobGrant` 確定と used 振替。同一 owner の再 PUT は `:existing`（Quota 非加算）。**別 owner の同 bytes は自 ref + 自 Grant を作成し自 Quota を消費**（CAS は put_if_absent；`access` / mime は先勝ち）。**要求 `access` が既存 CasObject と不一致なら 409 `access_conflict`**（黙って先勝ち成功にはしない）。補償パスは **予約解放のみで CAS.delete しない**。
+PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。任意ヘッダ `x-alchemy-blob-access: grant_required`（未指定=`authenticated`、未知値=400）。インベントリ用は **`POST /api/v1/inventory/blobs`**（x0054）で常に `grant_required`（ヘッダ省略または `grant_required` のみ可。`authenticated` / 未知値は 400）。`auth_sub` で `reserved_bytes` 予約 → TX 外 CAS put → `BlobRef` + `:owned` `BlobGrant` 確定と used 振替。同一 owner の再 PUT は `:existing`（Quota 非加算）。**別 owner の同 bytes は自 ref + 自 Grant を作成し自 Quota を消費**（CAS は put_if_absent；`access` / mime は先勝ち）。**要求 `access` が既存 CasObject と不一致なら 409 `access_conflict`**（黙って先勝ち成功にはしない。inventory 経路でも既存 `authenticated` を私有化しない）。補償パスは **予約解放のみで CAS.delete しない**。
 
 ## 層の境界
 
@@ -68,6 +70,7 @@ PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。任意ヘッ
 |:---|:---|:---|:---|
 | GET | `/health` | 不要 | 生存確認 |
 | POST | `/api/v1/blobs` | Bearer | raw body アップロード。任意 `x-alchemy-blob-access`。既存と不一致は 409 |
+| POST | `/api/v1/inventory/blobs` | Bearer | インベントリ用。常に `grant_required`（x0054）。access ヘッダは省略/`grant_required` のみ（他は 400） |
 | GET | `/api/v1/blobs/:blake3` | Bearer | 既定: 認証済み capability。`grant_required`: Grant 必須（無ければ 403）。未知 access は 403。local: 200 / s3: 302 |
 | GET | `/api/v1/quota` | Bearer | `{used_bytes, reserved_bytes, limit_bytes}`（自 `auth_sub`） |
 
@@ -107,7 +110,7 @@ bash .scripts/smoke-assets-glb.sh   # Coin fixture → CAS
 
 ## 後続
 
-- **インベントリラダー（B+2→C+3・planned）**: [inventory-ladder.md](../roadmap/inventory-ladder.md)。assets 側の細 Slice は x0054（inventory `grant_required` PUT）→ x0058 Vault 薄皮 → x005c–x005d DriveNode → x005e Prefab → x0062–x0065 Vcs／Origin Cert。**本正本の保証表は未実装のまま**（実装時に Slice 完了と同時更新）
+- **インベントリラダー（B+2→C+3）**: [inventory-ladder.md](../roadmap/inventory-ladder.md)。**x0054 done**（inventory `grant_required` PUT）。続きは x0055 ItemRef 草案 → x0058 Vault 薄皮 → x005c–x005d DriveNode → x005e Prefab → x0062–x0065 Vcs／Origin Cert
 - **案 B**: GET 既定を Grant 必須へ。room join 連動読取 Grant / 短命トークン（部屋を壊さない移行）
 - [assets-server-draft.md](assets-server-draft.md) の Vault / purchased / 5 層
 - [assets-threat-model.md](assets-threat-model.md) 目標列（予約期限ジョブ・Immutable Tag・配信ドメイン分離・Safe HTTP・jti 等）

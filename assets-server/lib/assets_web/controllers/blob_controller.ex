@@ -6,26 +6,28 @@ defmodule AssetsWeb.BlobController do
   alias Assets.Blobs
 
   def create(conn, _params) do
-    max = Application.fetch_env!(:assets, :max_upload_bytes)
-
     case parse_access_header(conn) do
       {:ok, access} ->
-        case Plug.Conn.read_body(conn, length: max) do
-          {:ok, body, conn} ->
-            respond_upload(conn, body, access)
+        read_and_upload(conn, access)
 
-          {:more, _partial, conn} ->
-            conn
-            |> put_status(413)
-            |> json(%{error: "too_large"})
+      {:error, :invalid_access} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "invalid_access"})
+    end
+  end
 
-          {:error, reason} ->
-            Logger.warning("blob read_body failed: #{inspect(reason)}")
+  @doc """
+  Inventory PUT (x0054). Always `access=grant_required`; path is the API contract.
 
-            conn
-            |> put_status(:bad_request)
-            |> json(%{error: "read_body_failed"})
-        end
+  `x-alchemy-blob-access` may be omitted or `grant_required`. Any other value
+  (including `authenticated`) is 400 — the path cannot be weakened, and unknown
+  values match `/blobs` fail-closed behavior.
+  """
+  def create_inventory(conn, _params) do
+    case parse_inventory_access_header(conn) do
+      :ok ->
+        read_and_upload(conn, :grant_required)
 
       {:error, :invalid_access} ->
         conn
@@ -61,6 +63,27 @@ defmodule AssetsWeb.BlobController do
         conn
         |> put_status(:internal_server_error)
         |> json(%{error: "presign_failed"})
+    end
+  end
+
+  defp read_and_upload(conn, access) do
+    max = Application.fetch_env!(:assets, :max_upload_bytes)
+
+    case Plug.Conn.read_body(conn, length: max) do
+      {:ok, body, conn} ->
+        respond_upload(conn, body, access)
+
+      {:more, _partial, conn} ->
+        conn
+        |> put_status(413)
+        |> json(%{error: "too_large"})
+
+      {:error, reason} ->
+        Logger.warning("blob read_body failed: #{inspect(reason)}")
+
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "read_body_failed"})
     end
   end
 
@@ -116,6 +139,15 @@ defmodule AssetsWeb.BlobController do
       [] -> {:ok, :authenticated}
       ["authenticated"] -> {:ok, :authenticated}
       ["grant_required"] -> {:ok, :grant_required}
+      _ -> {:error, :invalid_access}
+    end
+  end
+
+  # Inventory path: only absent or grant_required. authenticated / unknown → 400.
+  defp parse_inventory_access_header(conn) do
+    case get_req_header(conn, "x-alchemy-blob-access") do
+      [] -> :ok
+      ["grant_required"] -> :ok
       _ -> {:error, :invalid_access}
     end
   end

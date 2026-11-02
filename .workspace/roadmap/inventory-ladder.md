@@ -17,7 +17,7 @@ ID は roadmap 規約どおり **`x` + 4桁ゼロ埋め小文字 16進**（`x005
 
 | Wave | 到達 | Slice |
 |:---|:---|:---|
-| **0 権利楔** | 私有 blob を Grant 保有者だけが GET | [x0054](slices/x0054-inventory-grant-required-put.md) · [x0055](slices/x0055-item-ref-blake3-draft.md) |
+| **0 権利楔** | 私有 blob を Grant 保有者だけが GET | [x0054](slices/x0054-inventory-grant-required-put.md) **done** · [x0055](slices/x0055-item-ref-blake3-draft.md) |
 | **1 箱庭・身体** | 「掴んでいる」が親子として表せる（未永続） | [x0056](slices/x0056-shared-sim-held-slot.md) · [x0057](slices/x0057-host-grab-held-slot.md) · [x0058](slices/x0058-vault-personal-peel.md) |
 | **2 空間グラフ + Drive 薄皮** | 渡す／置く／undo + DriveNode | [x0059](slices/x0059-slot-graph-general.md) · [x005a](slices/x005a-slot-pass-place.md) · [x005b](slices/x005b-slot-session-undo.md) · [x005c](slices/x005c-drive-node-folder-blob.md) · [x005d](slices/x005d-drive-node-prefab-kind.md) |
 | **3 B+2 保存** | 退出→再入室→取り出し | [x005e](slices/x005e-prefab-payload-schema.md) · [x005f](slices/x005f-inventory-take-out.md) · [x0060](slices/x0060-inventory-put-back.md) · [x0061](slices/x0061-inventory-rejoin-roundtrip.md) |

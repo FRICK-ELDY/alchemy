@@ -1,6 +1,6 @@
 # x0054 — inventory PUT は常に grant_required
 
-> **ID:** `x0054` · **slug:** `inventory-grant-required-put` · **status:** `planned` · **area:** `[assets]` · **depends_on:** `[x004f]`  
+> **ID:** `x0054` · **slug:** `inventory-grant-required-put` · **status:** `done` · **area:** `[assets]` · **depends_on:** `[x004f]`  
 > **ladder:** Wave 0 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: 個人インベントリ用バイナリの PUT 経路を **常に `access=grant_required`** に固定する。部屋メッシュ用 `POST /api/v1/blobs`（既定 `authenticated`）は壊さない。
@@ -9,21 +9,25 @@
 
 | 保証する | 保証しない |
 |:---|:---|
-| inventory 専用 PUT（例: `POST /api/v1/inventory/blobs` または同等）は常に `grant_required` | GET 既定を常時 Grant 必須にする案 B 本体 |
+| `POST /api/v1/inventory/blobs` は常に `grant_required` | GET 既定を常時 Grant 必須にする案 B 本体 |
 | finalize で uploader に `:owned` BlobGrant | room join 連動読取 Grant |
 | owner GET 200 / 他 user GET 403 | DriveNode / Prefab / Vault 表 |
-| 既存部屋メッシュ DL（`authenticated`）回帰緑 | client UI・host spawn |
+| 既存部屋メッシュ DL（`authenticated`）回帰緑 | client UI·host spawn |
+| access ヘッダは省略または `grant_required` のみ（他は 400） | 既存 `authenticated` 同一 blake3 の私有化（先勝ちで 409） |
 
 ## 設計メモ
 
 - 既存 `x-alchemy-blob-access: grant_required` でも達成可能だが、**経路を分ける**ことで「インベントリは私有」を API 契約として固定する
+- inventory 経路の access ヘッダ: 省略 / `grant_required` のみ可。`authenticated` や未知値は 400（弱化不可・`/blobs` と同型の fail-closed）
+- 強制は HTTP 境界（`BlobController.create_inventory/2`）。`Blobs.upload/4` は引き続き両 access を受け付ける
+- 同一 bytes が先に `authenticated` で置かれている場合は x004f 先勝ちのまま **409**（inventory 経路でも access を上書きしない）
 - 案 B（部屋メッシュ含む全 GET＝Grant）は別 Slice（本 Slice 外）
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | 本 Slice + 目次 + ladder | planned |
-| 1 | upload 固定 + HTTP + テスト | planned |
-| 2 | [assets-server.md](../../0_doc/architecture/assets-server.md) 保証表 | planned |
+| 0 | 本 Slice + 目次 + ladder | done |
+| 1 | upload 固定 + HTTP + テスト | done |
+| 2 | [assets-server.md](../../0_doc/architecture/assets-server.md) 保証表 | done |
 
 ## 完了条件
 
