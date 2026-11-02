@@ -7,7 +7,8 @@ defmodule World.Network.Zenoh.Client do
   samples arrive as `World.Network.Zenoh.Adapter.sample_message/0`
   (`{:zenoh_sample, key_expr, payload}`).
   Non-guarantees: which adapter is live; key expression layout; payload
-  crypto; session survival / automatic re-subscribe after disconnect.
+  crypto; session survival / automatic re-subscribe after disconnect;
+  a sample already in flight at `unsubscribe/1` time may still arrive once.
   """
 
   alias World.Network.Zenoh.Adapter

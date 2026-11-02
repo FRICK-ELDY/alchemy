@@ -14,6 +14,8 @@ defmodule World.Network.Zenoh.LocalStubAdapter do
 
   alias World.Network.Zenoh.Adapter
 
+  @call_timeout 5_000
+
   @type entry :: %{
           key_expr: String.t(),
           subscriber_pid: pid(),
@@ -30,18 +32,18 @@ defmodule World.Network.Zenoh.LocalStubAdapter do
   @impl World.Network.Zenoh.Adapter
   def publish(key_expr, payload)
       when is_binary(key_expr) and is_binary(payload) do
-    GenServer.call(__MODULE__, {:publish, key_expr, payload})
+    GenServer.call(__MODULE__, {:publish, key_expr, payload}, @call_timeout)
   end
 
   @impl World.Network.Zenoh.Adapter
   def subscribe(key_expr, subscriber_pid)
       when is_binary(key_expr) and is_pid(subscriber_pid) do
-    GenServer.call(__MODULE__, {:subscribe, key_expr, subscriber_pid})
+    GenServer.call(__MODULE__, {:subscribe, key_expr, subscriber_pid}, @call_timeout)
   end
 
   @impl World.Network.Zenoh.Adapter
   def unsubscribe(sub_id) do
-    GenServer.call(__MODULE__, {:unsubscribe, sub_id})
+    GenServer.call(__MODULE__, {:unsubscribe, sub_id}, @call_timeout)
   end
 
   @impl GenServer

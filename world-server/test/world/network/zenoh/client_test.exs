@@ -3,6 +3,7 @@ defmodule World.Network.Zenoh.ClientTest do
 
   alias World.Network.Zenoh.Adapter
   alias World.Network.Zenoh.Client
+  alias World.Network.Zenoh.LocalStubAdapter
   alias World.Network.Zenoh.ZenohexAdapter
 
   @key "alchemy/dev/room/local/testcap/manifest"
@@ -24,8 +25,7 @@ defmodule World.Network.Zenoh.ClientTest do
   end
 
   test "publish delivers Adapter.sample_message to exact-match subscriber" do
-    assert Application.get_env(:world, :zenoh_adapter) ==
-             World.Network.Zenoh.LocalStubAdapter
+    assert Application.get_env(:world, :zenoh_adapter) == LocalStubAdapter
 
     assert {:ok, sub_id} = Client.subscribe(@key, self())
     assert :ok = Client.publish(@key, <<"seal-bytes">>)
@@ -47,7 +47,7 @@ defmodule World.Network.Zenoh.ClientTest do
     assert :ok = Client.unsubscribe(sub_id)
   end
 
-  test "dead subscriber pid is dropped from LocalStubAdapter fanout" do
+  test "dead subscriber pid is dropped from LocalStubAdapter subscriptions" do
     {:ok, pid} =
       Task.start(fn ->
         receive do
@@ -56,12 +56,26 @@ defmodule World.Network.Zenoh.ClientTest do
       end)
 
     assert {:ok, _sub_id} = Client.subscribe(@key, pid)
+    assert map_size(:sys.get_state(LocalStubAdapter).subscriptions) == 1
+
     Process.exit(pid, :kill)
+    assert_subscriptions_cleared(LocalStubAdapter)
+  end
 
-    # Allow the adapter to process :DOWN before publish.
-    Process.sleep(50)
+  defp assert_subscriptions_cleared(server) do
+    result =
+      Enum.reduce_while(1..50, :timeout, fn _, _ ->
+        case :sys.get_state(server) do
+          %{subscriptions: subs} when map_size(subs) == 0 ->
+            {:halt, :ok}
 
-    assert :ok = Client.publish(@key, <<"orphan">>)
-    refute_receive {:zenoh_sample, @key, <<"orphan">>}, 200
+          _ ->
+            Process.sleep(10)
+            {:cont, :timeout}
+        end
+      end)
+
+    assert result == :ok,
+           "expected #{inspect(server)} subscriptions to clear after subscriber DOWN"
   end
 end

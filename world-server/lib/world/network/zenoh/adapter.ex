@@ -6,7 +6,8 @@ defmodule World.Network.Zenoh.Adapter do
   every successful subscription delivers samples to `subscriber_pid` as
   `sample_message/0` only (see `sample_message/2`).
   Non-guarantees: topic schema; AEAD; mTLS; delivery/ordering across adapters;
-  automatic re-subscribe after session loss.
+  automatic re-subscribe after session loss; a sample already in flight at
+  unsubscribe time may still arrive once.
   """
 
   @type key_expr :: String.t()

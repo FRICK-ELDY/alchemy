@@ -6,14 +6,20 @@ defmodule World.Network.Zenoh.ZenohexAdapter do
   leaves this module (forwarder normalizes to
   `World.Network.Zenoh.Adapter.sample_message/0`); `:ring` channel config is
   assumed from app config; failed opens retry every 3s without crashing the
-  supervisor; publishers are cached per `key_expr`; dead subscriber pids are
-  cleaned via `Process.monitor`.
+  supervisor; publishers are cached per `key_expr`; dead subscriber / forwarder
+  pids are cleaned via `Process.monitor`; GenServer shutdown (`trap_exit` →
+  `{:stop, …}` → `terminate/2`) drops subscriptions and `Session.close/1`.
   Non-guarantees: mTLS client identity; ACL; topic schema; delivery when
   disconnected (`{:error, :not_connected}`); **session survival after a
   successful open** (no liveliness/`closed?` poll loop); **automatic
   re-subscribe** after reconnect — callers must treat disconnect as lost
   subscriptions; GenServer.call serialization (default 5s timeout) under NIF
-  stall.
+  stall; **at-most-once after unsubscribe** — a sample already queued on the
+  forwarder mailbox may still be delivered once.
+
+  Closed-session recovery (`Session.closed?/1` → clear + reconnect schedule)
+  is triggered on **`Publisher.put` / `declare_publisher` failure** and on
+  **`declare_subscriber` failure**. There is no background poll.
   """
 
   @behaviour World.Network.Zenoh.Adapter
@@ -36,7 +42,8 @@ defmodule World.Network.Zenoh.ZenohexAdapter do
           nif_id: reference(),
           forwarder: pid(),
           subscriber_pid: pid(),
-          monitor_ref: reference()
+          subscriber_monitor: reference(),
+          forwarder_monitor: reference()
         }
 
   @type state :: %{
@@ -76,6 +83,10 @@ defmodule World.Network.Zenoh.ZenohexAdapter do
 
   @impl GenServer
   def init(_opts) do
+    # So Supervisor `:shutdown` arrives as `{:EXIT, …}` and we can `{:stop, …}`
+    # into `terminate/2` (forwarders use monitor, not link — see spawn_forwarder/1).
+    Process.flag(:trap_exit, true)
+
     _ = NifLogger.enable()
     _ = NifLogger.set_level(:warning)
     _ = NifLogger.set_target("zenohex_nif")
@@ -88,6 +99,13 @@ defmodule World.Network.Zenoh.ZenohexAdapter do
     }
 
     {:ok, schedule_connect(state)}
+  end
+
+  @impl GenServer
+  def terminate(_reason, state) do
+    cancel_reconnect(state)
+    _ = clear_session(state)
+    :ok
   end
 
   @impl GenServer
@@ -125,7 +143,8 @@ defmodule World.Network.Zenoh.ZenohexAdapter do
           nif_id: nif_id,
           forwarder: forwarder,
           subscriber_pid: subscriber_pid,
-          monitor_ref: Process.monitor(subscriber_pid)
+          subscriber_monitor: Process.monitor(subscriber_pid),
+          forwarder_monitor: Process.monitor(forwarder)
         }
 
         subscriptions = Map.put(state.subscriptions, sub_id, entry)
@@ -133,7 +152,7 @@ defmodule World.Network.Zenoh.ZenohexAdapter do
 
       {:error, reason} ->
         stop_forwarder(forwarder)
-        {:reply, {:error, reason}, state}
+        {:reply, {:error, reason}, maybe_recover_closed_session(state)}
     end
   end
 
@@ -155,8 +174,8 @@ defmodule World.Network.Zenoh.ZenohexAdapter do
     case open_session() do
       {:ok, session_id} ->
         Logger.info("ZenohexAdapter: session open connect=#{connect_endpoint()}")
-        # Non-guarantee: existing callers are NOT re-subscribed; drop local bookkeeping only.
-        state = drop_all_subscriptions(state)
+        # Non-guarantee: existing callers are NOT re-subscribed.
+        state = clear_session(state)
         {:noreply, %{state | session_id: session_id, publishers: %{}}}
 
       {:error, reason} ->
@@ -168,14 +187,26 @@ defmodule World.Network.Zenoh.ZenohexAdapter do
     end
   end
 
-  def handle_info({:DOWN, monitor_ref, :process, _pid, _reason}, state) do
+  def handle_info({:DOWN, monitor_ref, :process, _pid, reason}, state) do
     {dropped, kept} =
       Enum.split_with(state.subscriptions, fn {_id, entry} ->
-        entry.monitor_ref == monitor_ref
+        entry.subscriber_monitor == monitor_ref or entry.forwarder_monitor == monitor_ref
       end)
 
-    Enum.each(dropped, fn {_id, entry} -> drop_subscription_entry(entry) end)
+    Enum.each(dropped, fn {_id, entry} ->
+      if entry.forwarder_monitor == monitor_ref and reason not in [:normal, :killed] do
+        Logger.warning("ZenohexAdapter: forwarder down reason=#{inspect(reason)}")
+      end
+
+      drop_subscription_entry(entry)
+    end)
+
     {:noreply, %{state | subscriptions: Map.new(kept)}}
+  end
+
+  # Parent / Supervisor EXIT (forwarders are monitored, not linked).
+  def handle_info({:EXIT, _pid, reason}, state) do
+    {:stop, reason, state}
   end
 
   def handle_info(msg, state) do
@@ -242,11 +273,23 @@ defmodule World.Network.Zenoh.ZenohexAdapter do
       Logger.warning("ZenohexAdapter: session closed; scheduling reconnect")
 
       state
-      |> drop_all_subscriptions()
-      |> then(&%{&1 | session_id: nil, publishers: %{}})
+      |> clear_session()
       |> schedule_reconnect()
     else
       state
+    end
+  end
+
+  defp clear_session(state) do
+    state = drop_all_subscriptions(state)
+
+    case state.session_id do
+      nil ->
+        %{state | session_id: nil, publishers: %{}}
+
+      session_id ->
+        _ = Session.close(session_id)
+        %{state | session_id: nil, publishers: %{}}
     end
   end
 
@@ -256,13 +299,16 @@ defmodule World.Network.Zenoh.ZenohexAdapter do
   end
 
   defp drop_subscription_entry(entry) do
-    Process.demonitor(entry.monitor_ref, [:flush])
-    stop_forwarder(entry.forwarder)
+    Process.demonitor(entry.subscriber_monitor, [:flush])
+    Process.demonitor(entry.forwarder_monitor, [:flush])
     _ = Subscriber.undeclare(entry.nif_id)
+    stop_forwarder(entry.forwarder)
     :ok
   end
 
   defp spawn_forwarder(subscriber_pid) do
+    # Not linked: Supervisor EXIT must not be confused with forwarder death.
+    # Orphans on brutal_kill are accepted; normal shutdown goes through terminate/2.
     spawn(fn -> forward_loop(subscriber_pid) end)
   end
 
@@ -271,14 +317,13 @@ defmodule World.Network.Zenoh.ZenohexAdapter do
       %Zenohex.Sample{} = sample ->
         send(subscriber_pid, normalize_sample(sample))
         forward_loop(subscriber_pid)
-
-      :stop ->
-        :ok
     end
   end
 
   defp stop_forwarder(forwarder) when is_pid(forwarder) do
-    send(forwarder, :stop)
+    # Kill rather than mailbox `:stop` so queued Samples are less likely to flush
+    # after unsubscribe. A race before kill remains a documented non-guarantee.
+    Process.exit(forwarder, :killed)
     :ok
   end
 end
