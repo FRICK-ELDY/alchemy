@@ -5,17 +5,32 @@ defmodule World.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [
-      WorldWeb.Telemetry,
-      World.Repo,
-      {Phoenix.PubSub, name: World.PubSub},
-      World.Token.Keys,
-      World.Auth.Jwks,
-      WorldWeb.Endpoint
-    ]
+    children =
+      [
+        WorldWeb.Telemetry,
+        World.Repo,
+        {Phoenix.PubSub, name: World.PubSub},
+        World.Token.Keys,
+        World.Auth.Jwks,
+        WorldWeb.Endpoint
+      ] ++ zenoh_children()
 
     opts = [strategy: :one_for_one, name: World.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  defp zenoh_children do
+    case Application.get_env(:world, :zenoh_adapter, World.Network.Zenoh.ZenohexAdapter) do
+      World.Network.Zenoh.ZenohexAdapter ->
+        [World.Network.Zenoh.ZenohexAdapter]
+
+      World.Network.Zenoh.LocalStubAdapter ->
+        [World.Network.Zenoh.LocalStubAdapter]
+
+      other ->
+        raise ArgumentError,
+              "unsupported :world :zenoh_adapter #{inspect(other)}; expected ZenohexAdapter or LocalStubAdapter"
+    end
   end
 
   @impl true

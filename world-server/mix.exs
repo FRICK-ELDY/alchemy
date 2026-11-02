@@ -42,6 +42,7 @@ defmodule World.MixProject do
       {:telemetry_poller, "~> 1.0"},
       {:ash, "~> 3.0"},
       {:ash_sqlite, "~> 0.2"},
+      {:zenohex, "~> 0.10.1"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end

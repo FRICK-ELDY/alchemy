@@ -26,7 +26,15 @@ config :world,
   # x0034 S2S — auth_internal_token: dev/test only; prod requires AUTH_INTERNAL_TOKEN
   auth_internal_url: "http://127.0.0.1:4002",
   auth_access_mode: :http,
-  trusted_proxies: []
+  trusted_proxies: [],
+  # Zenoh control-plane adapter (NIF isolated behind World.Network.Zenoh.Client).
+  zenoh_adapter: World.Network.Zenoh.ZenohexAdapter,
+  zenoh_connect: "tcp/127.0.0.1:7447"
+
+# Rule: :ring so Zenoh callbacks never block when the BEAM mailbox lags.
+config :zenohex,
+  channel_kind: :ring,
+  channel_capacity: 1024
 
 config :world, WorldWeb.Endpoint,
   url: [host: "localhost"],
