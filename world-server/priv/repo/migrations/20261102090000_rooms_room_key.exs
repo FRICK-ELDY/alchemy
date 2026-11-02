@@ -18,6 +18,9 @@ defmodule World.Repo.Migrations.RoomsRoomKey do
   end
 
   def down do
+    # Intentional no-op (same as rooms_wire_cap): SQLite DROP COLUMN support varies;
+    # rollback of this slice is "restore DB from backup", not a reversible migration.
+    # The `room_key` column remains after a down.
     :ok
   end
 end

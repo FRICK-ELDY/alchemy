@@ -313,20 +313,27 @@ fn client_time_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Ciphertext ceiling → AEAD open → plaintext. Fail-closed before protobuf.
+/// Ciphertext ceiling (on `ZBytes::len`) → contiguous copy → AEAD open → plaintext.
+/// Fail-closed before protobuf / signature checks.
 fn open_zenoh_payload(
     shared: &SharedState,
     kind: AeadKind,
-    envelope: &[u8],
+    bytes: &ZBytes,
 ) -> Result<Vec<u8>, String> {
-    if let Err(err) = wire_aead::check_aead_envelope_bytes(kind, envelope.len()) {
+    if let Err(err) = wire_aead::check_aead_envelope_bytes(kind, bytes.len()) {
         return Err(err.to_string());
     }
     let room_key = shared
         .room_key()
         .ok_or_else(|| "room_key missing".to_string())?;
-    wire_aead::open(room_key.as_ref(), shared.room_id.as_ref(), kind, envelope)
-        .map_err(|e| e.to_string())
+    let envelope = bytes.to_bytes();
+    wire_aead::open(
+        room_key.as_ref(),
+        shared.room_id.as_ref(),
+        kind,
+        envelope.as_ref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn seal_zenoh_payload(
@@ -375,9 +382,7 @@ fn spawn_manifest_subscriber(
                 // x003b: early drops must still reach the interval aggregate log below.
                 'sample: {
                 let bytes: ZBytes = sample.payload().clone();
-                let envelope = bytes.to_bytes();
-                let payload = match open_zenoh_payload(&shared, AeadKind::Manifest, envelope.as_ref())
-                {
+                let payload = match open_zenoh_payload(&shared, AeadKind::Manifest, &bytes) {
                     Ok(pt) => pt,
                     Err(err) => {
                         dropped_aead += 1;
@@ -793,23 +798,21 @@ fn fetch_snapshot(
     let key = snapshot_key(room_id, wire_cap);
     let mut applied = false;
     let mut dropped_limits: u64 = 0;
+    let mut dropped_aead: u64 = 0;
     match session.get(&key).wait() {
         Ok(receiver) => {
             while let Ok(reply) = receiver.recv() {
                 match reply.result() {
                     Ok(sample) => {
                         let bytes: ZBytes = sample.payload().clone();
-                        let envelope = bytes.to_bytes();
-                        let payload =
-                            match open_zenoh_payload(shared, AeadKind::Snapshot, envelope.as_ref())
-                            {
-                                Ok(pt) => pt,
-                                Err(err) => {
-                                    dropped_limits += 1;
-                                    log::warn!("drop snapshot: AEAD: {err}");
-                                    continue;
-                                }
-                            };
+                        let payload = match open_zenoh_payload(shared, AeadKind::Snapshot, &bytes) {
+                            Ok(pt) => pt,
+                            Err(err) => {
+                                dropped_aead += 1;
+                                log::warn!("drop snapshot: AEAD: {err}");
+                                continue;
+                            }
+                        };
                         if let Err(err) = check_payload_bytes(WireClass::Frame, payload.len()) {
                             dropped_limits += 1;
                             log::warn!("drop snapshot: {err}");
@@ -838,8 +841,8 @@ fn fetch_snapshot(
         }
         Err(err) => log::warn!("snapshot get failed: {err}"),
     }
-    if dropped_limits > 0 {
-        log::info!("snapshot gate: dropped_limits={dropped_limits}");
+    if dropped_limits > 0 || dropped_aead > 0 {
+        log::info!("snapshot gate: dropped_limits={dropped_limits} dropped_aead={dropped_aead}");
     }
     if !applied {
         log::warn!("snapshot not applied yet; will retry on next Manifest or frame gap");
@@ -868,20 +871,19 @@ fn spawn_frame_subscriber(
             log::info!("subscribed to {key} (signed delta upserts/removes)");
             let mut resync_cooldown_until = Instant::now();
             let mut dropped_limits: u64 = 0;
+            let mut dropped_aead: u64 = 0;
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 'sample: {
                     let bytes: ZBytes = sample.payload().clone();
-                    let envelope = bytes.to_bytes();
-                    let payload =
-                        match open_zenoh_payload(&shared, AeadKind::Frame, envelope.as_ref()) {
-                            Ok(pt) => pt,
-                            Err(err) => {
-                                dropped_limits += 1;
-                                log::warn!("drop RenderFrame: AEAD: {err}");
-                                break 'sample;
-                            }
-                        };
+                    let payload = match open_zenoh_payload(&shared, AeadKind::Frame, &bytes) {
+                        Ok(pt) => pt,
+                        Err(err) => {
+                            dropped_aead += 1;
+                            log::warn!("drop RenderFrame: AEAD: {err}");
+                            break 'sample;
+                        }
+                    };
                     if let Err(err) = check_payload_bytes(WireClass::Frame, payload.len()) {
                         dropped_limits += 1;
                         log::warn!("drop RenderFrame: {err}");
@@ -918,10 +920,13 @@ fn spawn_frame_subscriber(
                     }
                 } // 'sample
                 if last_gate_log.elapsed() >= GATE_LOG_INTERVAL {
-                    if dropped_limits > 0 {
-                        log::info!("frame gate: dropped_limits={dropped_limits} (last ~5s)");
+                    if dropped_limits > 0 || dropped_aead > 0 {
+                        log::info!(
+                            "frame gate: dropped_limits={dropped_limits} dropped_aead={dropped_aead} (last ~5s)"
+                        );
                     }
                     dropped_limits = 0;
+                    dropped_aead = 0;
                     last_gate_log = Instant::now();
                 }
             }
@@ -954,20 +959,19 @@ fn spawn_presence_subscriber(
             let mut dropped_gen_rev: u64 = 0;
             let mut dropped_decode: u64 = 0;
             let mut dropped_limits: u64 = 0;
+            let mut dropped_aead: u64 = 0;
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 'sample: {
                 let bytes: ZBytes = sample.payload().clone();
-                let envelope = bytes.to_bytes();
-                let payload =
-                    match open_zenoh_payload(&shared, AeadKind::Presence, envelope.as_ref()) {
-                        Ok(pt) => pt,
-                        Err(err) => {
-                            dropped_limits += 1;
-                            log::warn!("drop PresenceState: AEAD: {err}");
-                            break 'sample;
-                        }
-                    };
+                let payload = match open_zenoh_payload(&shared, AeadKind::Presence, &bytes) {
+                    Ok(pt) => pt,
+                    Err(err) => {
+                        dropped_aead += 1;
+                        log::warn!("drop PresenceState: AEAD: {err}");
+                        break 'sample;
+                    }
+                };
                 if let Err(err) = check_payload_bytes(WireClass::Presence, payload.len()) {
                     dropped_limits += 1;
                     log::warn!("drop PresenceState: {err}");
@@ -1093,10 +1097,11 @@ fn spawn_presence_subscriber(
                         + dropped_gen_rev
                         + dropped_decode
                         + dropped_limits
+                        + dropped_aead
                         > 0
                     {
                         log::info!(
-                            "presence gate: dropped_pin={dropped_pin} dropped_no_host={dropped_no_host} dropped_sig={dropped_sig} dropped_gen_rev={dropped_gen_rev} dropped_decode={dropped_decode} dropped_limits={dropped_limits} (last ~5s)"
+                            "presence gate: dropped_pin={dropped_pin} dropped_no_host={dropped_no_host} dropped_sig={dropped_sig} dropped_gen_rev={dropped_gen_rev} dropped_decode={dropped_decode} dropped_limits={dropped_limits} dropped_aead={dropped_aead} (last ~5s)"
                         );
                     }
                     dropped_pin = 0;
@@ -1105,6 +1110,7 @@ fn spawn_presence_subscriber(
                     dropped_gen_rev = 0;
                     dropped_limits = 0;
                     dropped_decode = 0;
+                    dropped_aead = 0;
                     last_gate_log = Instant::now();
                 }
             }
@@ -1298,7 +1304,8 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     Ok(())
 }
 
-/// Start Zenoh room subscribers once `wire_cap` is known (silent boot or Home→Join).
+/// Start Zenoh room subscribers once `wire_cap` **and** `room_key` are known
+/// (silent boot or Home→Join; x004e / x0069).
 ///
 /// Idempotent via `room_bus_started`. On spawn failure the flag is cleared so retry works.
 /// Pass `Some(blake3_tx)` for boot mesh wait; `None` drains blake3 on a background thread
@@ -1319,6 +1326,9 @@ pub fn ensure_room_bus(
         let wire_cap = shared
             .wire_cap()
             .ok_or_else(|| anyhow::anyhow!("ensure_room_bus: wire_cap missing"))?;
+        if shared.room_key().is_none() {
+            anyhow::bail!("ensure_room_bus: room_key missing");
+        }
         let room_id = shared.room_id.as_ref();
         let manifest_key_expr = manifest_key(room_id, &wire_cap);
         let frame_key_expr = frame_key(room_id, &wire_cap);

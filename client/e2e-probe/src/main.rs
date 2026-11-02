@@ -183,20 +183,25 @@ fn put_input(
     Ok(())
 }
 
-fn open_frame_payload(room_id: &str, room_key: &[u8], envelope: &[u8]) -> Result<Vec<u8>> {
-    wire_aead::check_aead_envelope_bytes(AeadKind::Frame, envelope.len())
-        .map_err(|e| anyhow!("frame envelope: {e}"))?;
-    wire_aead::open(room_key, room_id, AeadKind::Frame, envelope)
-        .map_err(|e| anyhow!("AEAD open frame: {e}"))
+/// Ceiling on `ZBytes::len` → copy → AEAD open (single check site for Frame / Snapshot).
+fn open_zenoh_sample(
+    room_id: &str,
+    room_key: &[u8],
+    kind: AeadKind,
+    bytes: &ZBytes,
+) -> Result<Vec<u8>> {
+    wire_aead::check_aead_envelope_bytes(kind, bytes.len())
+        .map_err(|e| anyhow!("{kind:?} envelope: {e}"))?;
+    let envelope = bytes.to_bytes();
+    wire_aead::open(room_key, room_id, kind, envelope.as_ref())
+        .map_err(|e| anyhow!("AEAD open {kind:?}: {e}"))
 }
 
-fn open_snapshot_payload(room_id: &str, room_key: &[u8], envelope: &[u8]) -> Result<Vec<u8>> {
-    wire_aead::check_aead_envelope_bytes(AeadKind::Snapshot, envelope.len())
-        .map_err(|e| anyhow!("snapshot envelope: {e}"))?;
-    wire_aead::open(room_key, room_id, AeadKind::Snapshot, envelope)
-        .map_err(|e| anyhow!("AEAD open snapshot: {e}"))
-}
-
+/// Adversarial Manifest put: **plaintext junk by design** (x0038/x003a/x0046).
+/// Host does not subscribe to peer Manifest; this only asserts host Frame survival
+/// under large / bogus Zenoh traffic. Not a client seal/pin/revision gate probe —
+/// those are unit-tested. Sealing here would only matter once e2e grows a verifying
+/// guest consumer for peer Manifest discard.
 fn put_manifest(session: &zenoh::Session, key: &str, manifest: &SceneManifest) -> Result<()> {
     let bytes = manifest.encode_to_vec();
     session
@@ -223,13 +228,20 @@ fn drain_pending_frames(try_recv: &mut impl FnMut() -> Option<ZBytes>) {
     while try_recv().is_some() {}
 }
 
-/// Wait for a decodable RenderFrame that arrives **after** a prior drain + put.
-fn expect_new_frame(try_recv: &mut impl FnMut() -> Option<ZBytes>, context: &str) -> Result<()> {
+/// Wait for an AEAD-openable, decodable RenderFrame after a prior drain + put (x0069).
+fn expect_new_frame(
+    try_recv: &mut impl FnMut() -> Option<ZBytes>,
+    room_id: &str,
+    room_key: &[u8],
+    context: &str,
+) -> Result<()> {
     let post_deadline = Instant::now() + ADVERSARIAL_STEP_WAIT;
     while Instant::now() < post_deadline {
         if let Some(bytes) = try_recv() {
-            if RenderFrame::decode(bytes.to_bytes().as_ref()).is_ok() {
-                return Ok(());
+            if let Ok(payload) = open_zenoh_sample(room_id, room_key, AeadKind::Frame, &bytes) {
+                if RenderFrame::decode(payload.as_ref()).is_ok() {
+                    return Ok(());
+                }
             }
         } else {
             thread::sleep(Duration::from_millis(50));
@@ -380,8 +392,7 @@ fn main() -> Result<()> {
         match subscriber.try_recv() {
             Ok(Some(sample)) => {
                 let bytes: ZBytes = sample.payload().clone();
-                let envelope = bytes.to_bytes();
-                match open_frame_payload(&room_id, &room_key, envelope.as_ref()) {
+                match open_zenoh_sample(&room_id, &room_key, AeadKind::Frame, &bytes) {
                     Ok(payload) => match RenderFrame::decode(payload.as_ref()) {
                         Ok(frame) => {
                             frames += 1;
@@ -451,7 +462,7 @@ fn main() -> Result<()> {
                 if let Ok(sample) = reply.result() {
                     let bytes: ZBytes = sample.payload().clone();
                     if let Ok(payload) =
-                        open_snapshot_payload(&room_id, &room_key, bytes.to_bytes().as_ref())
+                        open_zenoh_sample(&room_id, &room_key, AeadKind::Snapshot, &bytes)
                     {
                         if let Ok(frame) = RenderFrame::decode(payload.as_ref()) {
                             if frame.host_sig.len() == 64 && !frame.upserts.is_empty() {
@@ -500,6 +511,8 @@ fn main() -> Result<()> {
     log::info!("put invalid InputEvent (expect host drop)");
     expect_new_frame(
         &mut poll_frame,
+        &room_id,
+        &room_key,
         "host stopped publishing frames after invalid token input",
     )?;
     log::info!("host still publishing after invalid token ok");
@@ -511,6 +524,8 @@ fn main() -> Result<()> {
     log::info!("put fake SceneManifest (host keep publishing; GUI discard is unit-tested)");
     expect_new_frame(
         &mut poll_frame,
+        &room_id,
+        &room_key,
         "host stopped publishing frames after fake Manifest",
     )?;
     log::info!("host still publishing after fake Manifest ok");
@@ -523,6 +538,8 @@ fn main() -> Result<()> {
     );
     expect_new_frame(
         &mut poll_frame,
+        &room_id,
+        &room_key,
         "host stopped publishing frames after stale-revision Manifest",
     )?;
     log::info!("host still publishing after stale-revision Manifest ok");
@@ -534,6 +551,8 @@ fn main() -> Result<()> {
     log::info!("put oversize Input payload ({oversize} bytes; expect host drop)");
     expect_new_frame(
         &mut poll_frame,
+        &room_id,
+        &room_key,
         "host stopped publishing frames after oversize Input",
     )?;
     log::info!("host still publishing after oversize Input ok");
@@ -548,6 +567,8 @@ fn main() -> Result<()> {
     );
     expect_new_frame(
         &mut poll_frame,
+        &room_id,
+        &room_key,
         "host stopped publishing frames after oversize Manifest",
     )?;
     log::info!("host still publishing after oversize Manifest ok");
