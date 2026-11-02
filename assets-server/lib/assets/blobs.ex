@@ -2,6 +2,10 @@ defmodule Assets.Blobs do
   @moduledoc """
   Blob upload/download with quota reservation (x003f) and BlobGrant ledger (x004f).
 
+  `upload/4` still accepts `:authenticated` or `:grant_required`. Forcing inventory
+  uploads to `grant_required` is an HTTP-boundary concern (`BlobController.create_inventory/2`,
+  x0054), not a guarantee of this module.
+
   Flow: reserve (short TX) → CAS.put outside TX → finalize meta + owned grant + used.
   Failure after reserve releases reserved_bytes only. CAS bytes are never deleted
   on compensate — concurrent same-blake3 PUT (cross-owner PoP) must not race on

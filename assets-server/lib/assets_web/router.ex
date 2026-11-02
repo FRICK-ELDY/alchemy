@@ -9,6 +9,8 @@ defmodule AssetsWeb.Router do
     pipe_through [:user_auth]
 
     post "/blobs", BlobController, :create
+    # x0054: inventory binaries are always grant_required (path is the contract).
+    post "/inventory/blobs", BlobController, :create_inventory
     get "/blobs/:blake3", BlobController, :show
     get "/quota", QuotaController, :show
   end
