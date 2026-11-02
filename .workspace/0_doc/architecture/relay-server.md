@@ -11,10 +11,10 @@
 | 同一マシン / LAN の pub-sub（`config.json5` tcp・ACL オフ） | JWKS / Room Token ACL（検証は host-server） |
 | TCP リスナ `0.0.0.0:7447`（localhost + LAN、x0014） | CCU・帯域 QoS；**router max payload**（アプリ側 decode 上限は [protocol.md](protocol.md) x003b） |
 | WAN: ConoHa 上 zenohd の **TLS+mTLS** 待受（client CA で検証） | Billing / 第三者リレー / ACL ホットリロード |
-| WAN: role CN キー族 ACL（`alchemy-host` / `alchemy-guest`）+ default deny + **非対称 put**（guest sim: sub ingress + put egress、put ingress deny）+ **`declare_subscriber` egress**（`host-egress-declare` / `guest-egress-interest`）；`shared_memory` off | per-room 動的 subject；第1壁による部屋キー秘匿 |
+| WAN: role CN キー族 ACL（`alchemy-host` / `alchemy-guest`）+ default deny + **非対称 put**（guest sim: sub ingress + put egress、put ingress deny）+ **`declare_subscriber` egress**（`host-egress-declare` / `guest-egress-interest`）；`shared_memory` off | per-room 動的 subject；第1壁による部屋キー秘匿；`wire_cap` トピック名の秘匿（wildcard subscribe で列挙されうる） |
 | client/host の `ZENOH_CONNECT`（既定 localhost `tcp`；WAN は `tls/` + world `mtls` または allocate） | 送信元 IP allowlist（任意の追加硬化）；Relay Allocation の課金フィールド |
 
-部屋隔離は **`wire_cap` キー式**（第2壁）+ アプリ署名。運用手順: [`manual/relay-server-wan.md`](../manual/relay-server-wan.md)
+部屋の**機密性**は **Room 鍵 AEAD**（第2壁・[x0069](../../roadmap/slices/x0069-room-key-aead.md)）+ アプリ署名。`wire_cap` はキー式ルーティング用。運用手順: [`manual/relay-server-wan.md`](../manual/relay-server-wan.md)
 
 ## 設定ファイル
 
@@ -38,7 +38,7 @@ DNS / Let's Encrypt（追加）: [`manual/relay-server-dns.md`](../manual/relay-
 | Liveliness | `alchemy/dev/room/{room_id}/{wire_cap}/alive/{sub}/{jti}` |
 | Host control | `alchemy/dev/room/{room_id}/{wire_cap}/host_control`（**既定オフ**・x001e） |
 
-`wire_cap` は world が room 作成時に発行し、Room Token / Allocation Token 応答で配布する。
+`wire_cap` は world が room 作成時に発行し、Room Token / Allocation Token 応答で配布する（ルーティング用）。平文の機密性は Token JSON の **`room_key`**（x0069）による AEAD。
 
 偽 publish 時の防御責任: [trust-boundary.md](trust-boundary.md)。
 

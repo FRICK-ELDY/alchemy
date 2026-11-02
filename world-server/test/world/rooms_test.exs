@@ -17,6 +17,15 @@ defmodule World.RoomsTest do
     assert length(scene["entries"]) == 14
   end
 
+  test "create stores room_key hex and token encoding is 32 bytes (x0069)" do
+    assert {:ok, "rk-room", _, _} = Rooms.create("rk-room", @owner)
+    assert {:ok, %Room{room_key: hex}} = Room.get_by_room_id("rk-room")
+    assert byte_size(hex) == 64
+    assert {:ok, b64} = Rooms.room_key_for_token(hex)
+    assert {:ok, raw} = Base.url_decode64(b64, padding: false)
+    assert byte_size(raw) == 32
+  end
+
   test "create rejects duplicate room_id" do
     assert {:ok, _, _, _} = Rooms.create("dup-room", @owner)
     assert {:error, :already_exists} = Rooms.create("dup-room", @owner)

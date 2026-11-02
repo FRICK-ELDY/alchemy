@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0069`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x006a`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -155,11 +155,12 @@ depends_on: [x0006]
 | x0066 | — | done | Ephemeral mTLS（world 発行）+ Zenoh ACL（第1壁 CN / 第2壁 wire_cap） | [x0066-ephemeral-mtls-world-issue.md](slices/x0066-ephemeral-mtls-world-issue.md) |
 | x0067 | — | done | zenohd ACL: キー族 put 分離を非対称 ingress/egress + interest で復帰 | [x0067-zenohd-acl-put-family-host-guest.md](slices/x0067-zenohd-acl-put-family-host-guest.md) |
 | x0068 | — | done | relay 契約（NotAfter ≈ TTL / JWKS·body bound / CI） | [x0068-relay-mtls-ttl-bound-ci.md](slices/x0068-relay-mtls-ttl-bound-ci.md) |
+| x0069 | — | done | 部屋隔離（Room 鍵 AEAD / XChaCha20Poly1305） | [x0069-room-key-aead.md](slices/x0069-room-key-aead.md) |
 
-**現在の次:** x0068 **done**。次は 部屋隔離（P0-3）→ CAS Grant（P0-5）。インベントリ本線は **[inventory-ladder](inventory-ladder.md)**（着手 **[x0054](slices/x0054-inventory-grant-required-put.md)**、門番の後）。体感並行: **[x0053](slices/x0053-xr-desktop-hotswitch.md)**（同一 PR 禁止）。案 B 本体・launcher・verifier は保留。  
+**現在の次:** x0069 **done**。次は CAS Grant（P0-5）→ inventory **[x0054](slices/x0054-inventory-grant-required-put.md)**。体感並行: **[x0053](slices/x0053-xr-desktop-hotswitch.md)**（同一 PR 禁止）。案 B 本体・launcher・verifier は保留。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
-次の空き番号は **`x0069`**。
+次の空き番号は **`x006a`**。
 
 ## 関連
 

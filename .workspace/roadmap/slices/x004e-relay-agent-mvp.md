@@ -14,7 +14,7 @@
 | WAN: mTLS 未提示 peer は zenohd に入れない | Billing / 70:30 / 第三者リレー発見 |
 | Allocation Token 検証後にだけ短命 client 証明書を渡す | CCU・帯域 Token Bucket enforcement |
 | （設計時）role CN × キー族 ACL の器を入れた | Zenoh ACL ホットリロード / 動的 per-room subject。**運用中の put 族保証は [x0067](x0067-zenohd-acl-put-family-host-guest.md)**（guest sim put **ingress** deny + put **egress** allow） |
-| `wire_cap` を知らない peer は他 room キー式に到達できない | `alchemy/tenant/{運営者}` 本番名前空間への全面移行 |
+| `wire_cap` をキー式セグメントとして使う（ルーティング） | `wire_cap` による部屋機密性（wildcard subscribe で列挙されうる）。**機密性は [x0069](x0069-room-key-aead.md) Room 鍵 AEAD**。`alchemy/tenant/{運営者}` 本番名前空間への全面移行 |
 | ローカル e2e は tcp・mTLS オフのまま（opt-in WAN） | Relay Agent の L7 Zenoh プロキシ化 |
 
 ## 設計（要点）

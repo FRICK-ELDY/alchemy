@@ -16,7 +16,7 @@ config :world,
   room_token_private_key_path: "priv/room_jwt_private.pem",
   room_token_generate_key_on_startup: true,
   # Must match alchemy-protocol `PROTOCOL_PIN` (ManifestSeal hash input · x0039 / x004e).
-  protocol_pin: "alchemy-protocol/0.17.0-x004e",
+  protocol_pin: "alchemy-protocol/0.18.0-x0069",
   # Slice B.5: Room APIs require auth-server Bearer JWT by default.
   allow_anon_tokens: false,
   auth_jwks_url: "http://127.0.0.1:4002/.well-known/jwks.json",

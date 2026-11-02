@@ -176,12 +176,14 @@ defmodule WorldWeb.RoomController do
   # x003e: session_pub (32B) is required and embedded as cnf.spk.
   # x004e: also returns wire_cap + Allocation Token for Relay Agent mTLS.
   # x0066: optional csr_pem → mtls client cert (world-issued; CSR Subject ignored).
+  # x0069: room_key (URL-safe base64 of 32B) for Zenoh payload AEAD — not in Allocation JWT.
   defp issue_token(conn, room_id, role, sub, session_pub, csr_pem) do
     relay_id = Application.fetch_env!(:world, :default_relay_id)
 
     with {:ok, room} <- Rooms.get(room_id),
          :ok <- RoomAccess.authorize(conn, room.owner_sub, sub, room.visibility),
          :ok <- authorize_role_cached(room, role, sub),
+         {:ok, room_key_b64} <- Rooms.room_key_for_token(room.room_key),
          {:ok, token, ttl} <- Token.generate(room_id, role, sub, session_pub),
          {:ok, allocation_token, _} <-
            AllocationToken.generate(room_id, role, sub, room.wire_cap, relay_id),
@@ -194,6 +196,7 @@ defmodule WorldWeb.RoomController do
         sub: sub,
         visibility: room.visibility,
         wire_cap: room.wire_cap,
+        room_key: room_key_b64,
         allocation_token: allocation_token,
         token_type: "Bearer"
       }
@@ -235,6 +238,11 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:unprocessable_entity)
         |> json(%{error: "invalid_room_id"})
+
+      {:error, :invalid_room_key} ->
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{error: "invalid_room_key"})
 
       {:error, :not_found} ->
         conn

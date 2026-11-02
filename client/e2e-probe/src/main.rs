@@ -15,7 +15,8 @@ use std::env;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use alchemy_protocol::decode_limits::{MAX_INPUT_BYTES, MAX_MANIFEST_BYTES};
+use alchemy_protocol::decode_limits::MAX_MANIFEST_BYTES;
+use alchemy_protocol::wire_aead::{self, AeadKind};
 use alchemy_protocol::wire_crypto::{
     generate_signing_key, public_key_bytes, sign_input, SigningKey,
 };
@@ -48,6 +49,8 @@ struct TokenResponse {
     token: String,
     #[serde(default)]
     wire_cap: String,
+    #[serde(default)]
+    room_key: String,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -113,6 +116,7 @@ fn session_pub_b64(pub_bytes: &[u8]) -> Result<String> {
 struct RoomTokenBundle {
     token: String,
     wire_cap: String,
+    room_key: [u8; wire_aead::ROOM_KEY_LEN],
 }
 
 fn fetch_room_token(
@@ -144,9 +148,11 @@ fn fetch_room_token(
     }
     let wire_cap =
         zenoh_connect::require_wire_cap(Some(resp.wire_cap.as_str())).context("e2e wire_cap")?;
+    let room_key = wire_aead::decode_room_key_b64(&resp.room_key).context("e2e room_key")?;
     Ok(RoomTokenBundle {
         token: resp.token,
         wire_cap,
+        room_key,
     })
 }
 
@@ -161,13 +167,34 @@ fn client_time_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn put_input(session: &zenoh::Session, key: &str, event: &InputEvent) -> Result<()> {
-    let bytes = event.encode_to_vec();
+fn put_input(
+    session: &zenoh::Session,
+    key: &str,
+    room_id: &str,
+    room_key: &[u8],
+    event: &InputEvent,
+) -> Result<()> {
+    let env = wire_aead::seal(room_key, room_id, AeadKind::Input, &event.encode_to_vec())
+        .map_err(|e| anyhow!("AEAD seal input: {e}"))?;
     session
-        .put(key, bytes)
+        .put(key, env)
         .wait()
         .map_err(|e| anyhow!("zenoh put input: {e}"))?;
     Ok(())
+}
+
+fn open_frame_payload(room_id: &str, room_key: &[u8], envelope: &[u8]) -> Result<Vec<u8>> {
+    wire_aead::check_aead_envelope_bytes(AeadKind::Frame, envelope.len())
+        .map_err(|e| anyhow!("frame envelope: {e}"))?;
+    wire_aead::open(room_key, room_id, AeadKind::Frame, envelope)
+        .map_err(|e| anyhow!("AEAD open frame: {e}"))
+}
+
+fn open_snapshot_payload(room_id: &str, room_key: &[u8], envelope: &[u8]) -> Result<Vec<u8>> {
+    wire_aead::check_aead_envelope_bytes(AeadKind::Snapshot, envelope.len())
+        .map_err(|e| anyhow!("snapshot envelope: {e}"))?;
+    wire_aead::open(room_key, room_id, AeadKind::Snapshot, envelope)
+        .map_err(|e| anyhow!("AEAD open snapshot: {e}"))
 }
 
 fn put_manifest(session: &zenoh::Session, key: &str, manifest: &SceneManifest) -> Result<()> {
@@ -315,6 +342,7 @@ fn main() -> Result<()> {
     )?;
     let room_token = room.token;
     let wire_cap = room.wire_cap;
+    let room_key = room.room_key;
     log::info!(
         "Room Token ok (role=guest, len={}, wire_cap_len={})",
         room_token.len(),
@@ -337,6 +365,8 @@ fn main() -> Result<()> {
     put_input(
         &session,
         &input_k,
+        &room_id,
+        &room_key,
         &move_input(&session_key, Some(&room_token), intent_seq),
     )?;
     log::info!("put valid signed InputEvent (bind) on {input_k}");
@@ -350,24 +380,27 @@ fn main() -> Result<()> {
         match subscriber.try_recv() {
             Ok(Some(sample)) => {
                 let bytes: ZBytes = sample.payload().clone();
-                let payload = bytes.to_bytes();
-                match RenderFrame::decode(payload.as_ref()) {
-                    Ok(frame) => {
-                        frames += 1;
-                        if frame.host_sig.len() == 64 {
-                            saw_host_sig = true;
+                let envelope = bytes.to_bytes();
+                match open_frame_payload(&room_id, &room_key, envelope.as_ref()) {
+                    Ok(payload) => match RenderFrame::decode(payload.as_ref()) {
+                        Ok(frame) => {
+                            frames += 1;
+                            if frame.host_sig.len() == 64 {
+                                saw_host_sig = true;
+                            }
+                            if !frame.upserts.is_empty() {
+                                saw_upserts = true;
+                            }
+                            if frame_has_user_root(&frame) {
+                                saw_user_root = true;
+                            }
+                            if saw_upserts && saw_user_root && saw_host_sig {
+                                break;
+                            }
                         }
-                        if !frame.upserts.is_empty() {
-                            saw_upserts = true;
-                        }
-                        if frame_has_user_root(&frame) {
-                            saw_user_root = true;
-                        }
-                        if saw_upserts && saw_user_root && saw_host_sig {
-                            break;
-                        }
-                    }
-                    Err(err) => log::warn!("RenderFrame decode failed: {err}"),
+                        Err(err) => log::warn!("RenderFrame decode failed: {err}"),
+                    },
+                    Err(err) => log::warn!("RenderFrame AEAD open failed: {err}"),
                 }
             }
             Ok(None) | Err(_) => {
@@ -378,6 +411,8 @@ fn main() -> Result<()> {
                     let _ = put_input(
                         &session,
                         &input_k,
+                        &room_id,
+                        &room_key,
                         &move_input(&session_key, Some(&room_token), intent_seq),
                     );
                 }
@@ -415,10 +450,14 @@ fn main() -> Result<()> {
             while let Ok(reply) = receiver.recv() {
                 if let Ok(sample) = reply.result() {
                     let bytes: ZBytes = sample.payload().clone();
-                    if let Ok(frame) = RenderFrame::decode(bytes.to_bytes().as_ref()) {
-                        if frame.host_sig.len() == 64 && !frame.upserts.is_empty() {
-                            saw_snapshot = true;
-                            break;
+                    if let Ok(payload) =
+                        open_snapshot_payload(&room_id, &room_key, bytes.to_bytes().as_ref())
+                    {
+                        if let Ok(frame) = RenderFrame::decode(payload.as_ref()) {
+                            if frame.host_sig.len() == 64 && !frame.upserts.is_empty() {
+                                saw_snapshot = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -457,7 +496,7 @@ fn main() -> Result<()> {
         intent_sig: vec![0u8; 64],
     };
     drain_pending_frames(&mut poll_frame);
-    put_input(&session, &input_k, &bad)?;
+    put_input(&session, &input_k, &room_id, &room_key, &bad)?;
     log::info!("put invalid InputEvent (expect host drop)");
     expect_new_frame(
         &mut poll_frame,
@@ -488,13 +527,11 @@ fn main() -> Result<()> {
     )?;
     log::info!("host still publishing after stale-revision Manifest ok");
 
-    // x0046: oversize Input hits host pre-decode byte gate; host must keep publishing.
+    // x0046 / x0069: oversize Input hits host AEAD envelope ceiling; host must keep publishing.
+    let oversize = wire_aead::max_aead_envelope_bytes(AeadKind::Input) + 1;
     drain_pending_frames(&mut poll_frame);
-    put_raw(&session, &input_k, vec![0u8; MAX_INPUT_BYTES + 1])?;
-    log::info!(
-        "put oversize Input payload ({} bytes; expect host drop)",
-        MAX_INPUT_BYTES + 1
-    );
+    put_raw(&session, &input_k, vec![0u8; oversize])?;
+    log::info!("put oversize Input payload ({oversize} bytes; expect host drop)");
     expect_new_frame(
         &mut poll_frame,
         "host stopped publishing frames after oversize Input",

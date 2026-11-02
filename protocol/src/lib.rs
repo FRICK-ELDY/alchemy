@@ -5,6 +5,7 @@
 //! - `RenderFrame` (delta upserts/removes + host_sig), `SceneManifest` (+ `LocomotionConfig`, host_pub),
 //!   `InputEvent` (session Ed25519), `PresenceState` (`sub`→entity) encode/decode.
 //! - [`wire_crypto`] sign/verify helpers for Intent / Frame (x0023).
+//! - [`wire_aead`] Room-key XChaCha20Poly1305 for Zenoh payloads (x0069).
 //! - [`sim_capability`] role → Intent/HTTP capability bits (x002a; not a wire schema).
 //! - [`generation_gate`] monotonic `(host_generation, revision)` (x003a).
 //! - [`decode_limits`] class-specific pre/post decode ceilings (x003b; **does not bump** pin —
@@ -26,6 +27,7 @@
 //! - Full host handoff UX / Wake-on-Join (generation advance is the contract only).
 //! - Router max-payload / per-peer QoS (app-level decode limits only; x003b).
 //! - Long-running fuzz campaigns (x004c ships short CI smoke + seed corpus only).
+//! - `wire_cap` topic-name secrecy (x0069: confidentiality is Room-key AEAD).
 
 pub use prost::Message;
 
@@ -33,12 +35,13 @@ pub mod decode_limits;
 pub mod generation_gate;
 pub mod host_ipc;
 pub mod sim_capability;
+pub mod wire_aead;
 pub mod wire_crypto;
 
 /// Bump when `proto/` has an incompatible wire change.
 ///
-/// x004e: Zenoh keys include `wire_cap` (incompatible with x003a peers).
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.17.0-x004e";
+/// x0069: Zenoh payloads are Room-key AEAD envelopes (incompatible with x004e plain protobuf peers).
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.18.0-x0069";
 
 /// Identity orientation on the wire (`Entity.qx..qw`, xyzw).
 pub const ENTITY_QUAT_IDENTITY: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -180,6 +183,9 @@ pub mod input_buttons {
 ///
 /// Real rooms get a random cap from world-server; this value is **not** a WAN secret.
 pub const LOCAL_WIRE_CAP: &str = "localdevwirecap00000001";
+
+/// Fixture Room AEAD key for debug Token bypass / unit tests only (x0069). **Not for WAN.**
+pub const LOCAL_ROOM_KEY: [u8; wire_aead::ROOM_KEY_LEN] = *b"alchemy-local-room-key-x0069!!!!";
 
 /// Default Zenoh key for local room frames (high-frequency pose delta).
 pub const FRAME_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/frame";

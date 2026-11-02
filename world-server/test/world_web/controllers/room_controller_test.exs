@@ -119,6 +119,19 @@ defmodule WorldWeb.RoomControllerTest do
     assert alloc_claims["aud"] == "alchemy-relay"
     assert alloc_claims["wire_cap"] == body["wire_cap"]
     assert alloc_claims["role"] == "guest"
+    # x0069: room_key is URL-safe base64 of 32 bytes; not in Allocation JWT
+    assert is_binary(body["room_key"]) and body["room_key"] != ""
+    assert {:ok, room_key_raw} = Base.url_decode64(body["room_key"], padding: false)
+    assert byte_size(room_key_raw) == 32
+    refute Map.has_key?(alloc_claims, "room_key")
+
+    # Same room → same room_key on re-issue
+    body2 =
+      conn
+      |> post("/api/v1/rooms/owned/tokens", token_params(%{role: "guest"}))
+      |> json_response(200)
+
+    assert body2["room_key"] == body["room_key"]
   end
 
   test "csr_pem yields mtls with forced guest CN when CA configured", %{

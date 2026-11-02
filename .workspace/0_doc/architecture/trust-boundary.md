@@ -34,18 +34,18 @@ flowchart TB
   Auth -->|"access JWT"| Client
 ```
 
-**原則:** zenohd は JWT を見ない（[relay-server](relay-server.md)）。WAN では **world（x0066）** が CSR から短命 mTLS を署名する（互換として **Relay Agent** が Allocation Token を検証して発行してもよい）。zenohd は同一 client CA で検証し、role CN + **キー族 × 非対称 put + `declare_subscriber` egress** ACL（第1壁・[x0067](../../roadmap/slices/x0067-zenohd-acl-put-family-host-guest.md)）で未認証 peer と Guest の sim 偽装 put を弾く（Host→Guest: Guest **put egress** + Host **`declare_subscriber` egress**；Guest→Host 連続 Intent: Guest **put ingress** + Guest **`declare_subscriber` egress** on input；Guest sim **put ingress** は deny）。部屋隔離は **`wire_cap` キー式**（第2壁）+ アプリ署名。transport TLS alone は盗聴耐性であり、なりすましの唯一の防御ではない。送信元 IP allowlist は任意硬化であり保証しない。
+**原則:** zenohd は JWT を見ない（[relay-server](relay-server.md)）。WAN では **world（x0066）** が CSR から短命 mTLS を署名する（互換として **Relay Agent** が Allocation Token を検証して発行してもよい）。zenohd は同一 client CA で検証し、role CN + **キー族 × 非対称 put + `declare_subscriber` egress** ACL（第1壁・[x0067](../../roadmap/slices/x0067-zenohd-acl-put-family-host-guest.md)）で未認証 peer と Guest の sim 偽装 put を弾く（Host→Guest: Guest **put egress** + Host **`declare_subscriber` egress**；Guest→Host 連続 Intent: Guest **put ingress** + Guest **`declare_subscriber` egress** on input；Guest sim **put ingress** は deny）。部屋の**機密性**は **Room 鍵 AEAD**（第2壁・[x0069](../../roadmap/slices/x0069-room-key-aead.md)）+ アプリ署名。`wire_cap` はキー式ルーティング用であり、WAN ACL のワイルドカード購読では**トピック名として列挙されうる**（秘匿を保証しない）。transport TLS alone は盗聴耐性であり、なりすましの唯一の防御ではない。送信元 IP allowlist は任意硬化であり保証しない。
 
 ## Zenoh キー × 脅威 × 防御
 
 | Zenoh key 族 | 偽 publish の被害 | 現状の防御 | 保証しない |
 |:---|:---|:---|:---|
-| `…/input` | なりすまし操作・物理発散・巨大 payload | **WAN:** mTLS guest CN + role ACL（x004e）；host: Room Token（bind）+ **`cnf.spk`==`session_pub`（x003e）** + Ed25519 session（x0023）+ `is_finite` / magnitude / Grab 開始距離（x0021）+ **hold aim/offset クランプ**（x0041・`MAX_GRAB_HIT_DISTANCE`）+ **decode 上限**（x003b）+ **Intent rate**（x0040）+ JWKS **hard stale**（x0040） | 帯域上限；同一鍵の後勝ち rebind；端末秘密鍵窃取；Intent strike；未 bind steady の Ed25519 洪水；LAN tcp（ACL オフ） |
-| `…/frame` | 偽描画・NaN・巨大 payload | client: `host_sig` + Manifest `host_pub`（attestation）+ finite / tick / snapshot（x0023–x0024）+ **decode 上限**（x003b） | 確実配送 ACK |
-| `…/presence` | 偽スロット・偽退室表示・旧 Presence replay | client: pin + `host_sig` + generation/revision ゲート（x0025 / x003a）+ **decode 上限**（x003b） | Presence の world 署名 |
-| `…/manifest` | 改ざん配置・偽 host_pub・旧 seal replay・同一 gen 鍵すり替え・巨大 payload・**他 room 書き込み** | **WAN:** mTLS + role CN キー族 ACL（guest は sim **put ingress** deny・**put egress** allow；x0067）+ **`wire_cap` キー隔離**（x004e）；`world_seal` + HostAttestation + **`(generation, revision)` 単調ゲート** + **同一 gen 内 `host_pub` 固定**（x0026 / x003a）；失敗は **discard**（x0038）；**decode 上限**（x003b） | UGC 編集 ACL；完全な handoff UX；二重 host の generation フリップフロップ；LAN tcp（ACL オフ） |
+| `…/input` | なりすまし操作・物理発散・巨大 payload・他 room 平文盗聴 | **WAN:** mTLS guest CN + role ACL（x004e）；**Room 鍵 AEAD**（x0069・開封失敗は discard）+ host: Room Token（bind）+ **`cnf.spk`==`session_pub`（x003e）** + Ed25519 session（x0023）+ `is_finite` / magnitude / Grab 開始距離（x0021）+ **hold aim/offset クランプ**（x0041・`MAX_GRAB_HIT_DISTANCE`）+ **decode 上限**（x003b）+ **Intent rate**（x0040）+ JWKS **hard stale**（x0040） | 帯域上限；同一鍵の後勝ち rebind；端末秘密鍵窃取；Intent strike；未 bind steady の Ed25519 洪水；LAN tcp（ACL オフ）；`wire_cap` 秘匿 |
+| `…/frame` | 偽描画・NaN・巨大 payload・他 room 平文盗聴 | **Room 鍵 AEAD**（x0069）+ client: `host_sig` + Manifest `host_pub`（attestation）+ finite / tick / snapshot（x0023–x0024）+ **decode 上限**（x003b） | 確実配送 ACK；`wire_cap` 秘匿 |
+| `…/presence` | 偽スロット・偽退室表示・旧 Presence replay・他 room 平文盗聴 | **Room 鍵 AEAD**（x0069）+ client: pin + `host_sig` + generation/revision ゲート（x0025 / x003a）+ **decode 上限**（x003b） | Presence の world 署名；`wire_cap` 秘匿 |
+| `…/manifest` | 改ざん配置・偽 host_pub・旧 seal replay・同一 gen 鍵すり替え・巨大 payload・**他 room 平文読取** | **WAN:** mTLS + role CN キー族 ACL（guest は sim **put ingress** deny・**put egress** allow；x0067）+ **Room 鍵 AEAD**（x0069；`wire_cap` はルーティングのみ）；`world_seal` + HostAttestation + **`(generation, revision)` 単調ゲート** + **同一 gen 内 `host_pub` 固定**（x0026 / x003a）；失敗は **discard**（x0038）；**decode 上限**（x003b） | UGC 編集 ACL；完全な handoff UX；二重 host の generation フリップフロップ；LAN tcp（ACL オフ）；トピック名秘匿 |
 | `…/alive` | 偽 Delete で退室 | host: liveliness を検証済み jti に紐付け（x0022） | WAN liveliness ACL |
-| `…/snapshot` | 偽全置換・巨大 payload | client: Frame と同じ host_sig / finite + **decode 上限**（x003b）で適用 | queryable 認証の別チャネル |
+| `…/snapshot` | 偽全置換・巨大 payload・他 room 平文盗聴 | **Room 鍵 AEAD**（x0069）+ client: Frame と同じ host_sig / finite + **decode 上限**（x003b）で適用 | queryable 認証の別チャネル；`wire_cap` 秘匿 |
 | `…/host_control` | 遠隔プロセス停止 | **既定オフ**（x001e）。launcher 経路は localhost IPC（x0032） | WAN 上の無認証 Zenoh control |
 
 キー式の一覧は [relay-server.md](relay-server.md) の MVP 表および protocol の `*_key` ヘルパ。
@@ -88,5 +88,6 @@ flowchart TB
 | x0044 | client world_jwks soft/hard + unknown-kid cooldown |
 | x0045 | host Room Token alg/iss/aud/exp/room 否定系テスト |
 | x0049 | localhost metrics（公網・Tunnel に出さない） |
-| x004e | Relay Agent Allocation → mTLS（互換）；role ACL；`wire_cap` キー隔離 |
+| x004e | Relay Agent Allocation → mTLS（互換）；role ACL；`wire_cap` キー式（ルーティング） |
 | x0066 | world が CSR から短命 mTLS を署名；zenohd は同一 client CA で検証；IP allowlist 非保証 |
+| x0069 | Room 鍵 AEAD（XChaCha20Poly1305）；部屋機密性の第2壁；`wire_cap` 秘匿は非保証 |

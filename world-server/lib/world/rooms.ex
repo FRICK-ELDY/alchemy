@@ -344,13 +344,35 @@ defmodule World.Rooms do
       owner_sub: owner_sub,
       scene: DemoScene.build(),
       visibility: visibility,
-      wire_cap: generate_wire_cap()
+      wire_cap: generate_wire_cap(),
+      room_key: generate_room_key_hex()
     })
   end
 
   # 16 random bytes → 32 hex chars; matches protocol `[A-Za-z0-9_-]+` / ≤64B.
   defp generate_wire_cap do
     Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+  end
+
+  # x0069: 32 random bytes → 64 hex chars (Token JSON uses URL-safe base64 of raw bytes).
+  def generate_room_key_hex do
+    Base.encode16(:crypto.strong_rand_bytes(32), case: :lower)
+  end
+
+  @doc """
+  Encode stored hex `room_key` to URL-safe base64 (no padding) for Token JSON.
+  """
+  def room_key_for_token(hex) when is_binary(hex) do
+    case Base.decode16(hex, case: :lower) do
+      {:ok, <<_::binary-size(32)>> = raw} ->
+        {:ok, Base.url_encode64(raw, padding: false)}
+
+      {:ok, _} ->
+        {:error, :invalid_room_key}
+
+      :error ->
+        {:error, :invalid_room_key}
+    end
   end
 
   defp map_create_error(error) do
