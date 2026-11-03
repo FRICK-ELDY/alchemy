@@ -1,11 +1,13 @@
 //! system_ui — personal DashRoot + retained Canvas (x000f + x0018 Home + x0037 create).
 //!
 //! Guarantees: ESC/Menu toggle (via surface), hit-tested chrome, Exit Pinned Facet,
-//! Home tab account / create-world form (Desktop text input), Button hover/press color,
-//! client exit / auth / start-session action plumbing, Settings defaults (read-only).
+//! onboarding shell (Step1 operator → Step2 auth → Main hub), Home account /
+//! create-world form (Desktop text input), Button hover/press color, client exit /
+//! auth / start-session action plumbing, Settings defaults (read-only).
 //! Dash is personal — never published on Room `frame`.
 //! Non-guarantees: OpenXR types inside this module, user Facet rearrange, Vault layout
-//! persist, WorldRoot, XR virtual keyboard, auth/world HTTP (surface modules), final UI art.
+//! persist, WorldRoot, XR virtual keyboard, auth/world HTTP (surface modules), final UI art,
+//! Federation directory / PLAY TOGETHER session list.
 
 mod dash;
 pub mod facet;
@@ -15,11 +17,13 @@ mod icons;
 mod layout;
 
 pub use dash::{
-    access_level_from_widget, DashState, DashTab, HomeField, HomeMode, SESSION_NAME_MAX,
+    access_level_from_widget, DashState, DashTab, HomeField, HomeMode, OnboardingShell,
+    SESSION_NAME_MAX,
 };
 pub use gpu::UiGpu;
 pub use layout::{LayoutTree, WidgetId};
 
+use crate::operator_prefs::OperatorKind;
 use dash::rebuild;
 
 /// Owns dash state + retained layout tree.
@@ -159,17 +163,95 @@ impl SystemUi {
         }
         match hit {
             WidgetId::TabExit | WidgetId::CloseSession => {
+                self.state.shell = OnboardingShell::Dash;
                 self.state.tab = DashTab::Exit;
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::TabSettings => {
+                self.state.shell = OnboardingShell::Dash;
                 self.state.tab = DashTab::Settings;
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::TabHome => {
+                if self.state.home_logged_in_as.is_some() && !self.state.home_create_open {
+                    // Return to PLAY TOGETHER / SOLO hub when signed in.
+                    self.state.shell = OnboardingShell::MainHub;
+                    self.state.tab = DashTab::Home;
+                } else {
+                    self.state.shell = OnboardingShell::Dash;
+                    self.state.tab = DashTab::Home;
+                }
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::OperatorOfficial => {
+                self.state.operator = OperatorKind::Official;
+                self.state.custom_host_focus = false;
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::OperatorFederation => {
+                self.state.operator = OperatorKind::Federation;
+                self.state.custom_host_focus = false;
+                self.state.shell = OnboardingShell::Step1FederationStub;
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::OperatorCustom => {
+                self.state.operator = OperatorKind::Custom;
+                self.state.custom_host_focus = true;
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::OperatorCustomHost => {
+                self.state.operator = OperatorKind::Custom;
+                self.state.custom_host_focus = true;
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::Step1Next => {
+                if self.state.operator == OperatorKind::Federation {
+                    return UiAction::None;
+                }
+                self.state.custom_host_focus = false;
+                self.state.shell = OnboardingShell::Step2Auth;
                 self.state.tab = DashTab::Home;
+                self.state.home_focus = Some(HomeField::Identifier);
+                self.state.home_status = "Sign in to continue".into();
+                self.rebuild();
+                UiAction::ApplyOperatorEndpoints
+            }
+            WidgetId::Step1Back => {
+                // First-launch: no prior step. Keep Step1.
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::FederationStubBack => {
+                self.state.shell = OnboardingShell::Step1Operator;
+                self.state.operator = OperatorKind::Official;
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::Step2Back => {
+                self.state.shell = OnboardingShell::Step1Operator;
+                self.state.custom_host_focus = self.state.operator == OperatorKind::Custom;
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::MainPlayTogether => {
+                self.state.home_status =
+                    "PLAY TOGETHER session list is a stub (not available yet)".into();
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::MainSoloHost => {
+                self.state.shell = OnboardingShell::Dash;
+                self.state.tab = DashTab::Home;
+                self.state.home_create_open = false;
+                self.state.home_status =
+                    "SOLO — create or join (host must use the same AUTH/WORLD URLs)".into();
                 self.rebuild();
                 UiAction::None
             }
@@ -229,6 +311,7 @@ impl SystemUi {
             },
             WidgetId::HomeLogout => {
                 self.state.home_create_open = false;
+                self.state.shell = OnboardingShell::Step2Auth;
                 UiAction::AuthLogout
             }
             WidgetId::HomeNewWorld => {
@@ -296,9 +379,21 @@ impl SystemUi {
         }
     }
 
-    /// Desktop text into focused Home field (ignored when dash closed / not Home).
+    /// Desktop text into focused Home / onboarding field (ignored when dash closed).
     pub fn on_text_input(&mut self, text: &str) {
-        if !self.state.open || self.state.tab != DashTab::Home {
+        if !self.state.open {
+            return;
+        }
+        if self.state.shell == OnboardingShell::Step1Operator {
+            self.state.append_home_text(text);
+            self.rebuild();
+            return;
+        }
+        if !matches!(
+            self.state.shell,
+            OnboardingShell::Step2Auth | OnboardingShell::Dash
+        ) || (self.state.shell == OnboardingShell::Dash && self.state.tab != DashTab::Home)
+        {
             return;
         }
         // Logged-in hub: no editable fields. Create panel: session name only.
@@ -316,7 +411,19 @@ impl SystemUi {
     }
 
     pub fn on_home_backspace(&mut self) {
-        if !self.state.open || self.state.tab != DashTab::Home {
+        if !self.state.open {
+            return;
+        }
+        if self.state.shell == OnboardingShell::Step1Operator {
+            self.state.home_backspace();
+            self.rebuild();
+            return;
+        }
+        if !matches!(
+            self.state.shell,
+            OnboardingShell::Step2Auth | OnboardingShell::Dash
+        ) || (self.state.shell == OnboardingShell::Dash && self.state.tab != DashTab::Home)
+        {
             return;
         }
         self.state.home_backspace();
@@ -324,7 +431,14 @@ impl SystemUi {
     }
 
     pub fn on_home_tab_key(&mut self) {
-        if !self.state.open || self.state.tab != DashTab::Home {
+        if !self.state.open {
+            return;
+        }
+        if !matches!(
+            self.state.shell,
+            OnboardingShell::Step2Auth | OnboardingShell::Dash
+        ) || (self.state.shell == OnboardingShell::Dash && self.state.tab != DashTab::Home)
+        {
             return;
         }
         // Hub: cycle is a no-op (see DashState::cycle_home_focus).
@@ -332,9 +446,27 @@ impl SystemUi {
         self.rebuild();
     }
 
-    /// Enter on Home: login/register when signed out; Start session on create panel.
+    /// Enter on Home/Step2: login/register when signed out; Start session on create panel.
     pub fn on_home_enter(&mut self) -> UiAction {
-        if !self.state.open || self.state.tab != DashTab::Home {
+        if !self.state.open {
+            return UiAction::None;
+        }
+        if self.state.shell == OnboardingShell::Step1Operator
+            && self.state.operator != OperatorKind::Federation
+        {
+            self.state.custom_host_focus = false;
+            self.state.shell = OnboardingShell::Step2Auth;
+            self.state.tab = DashTab::Home;
+            self.state.home_focus = Some(HomeField::Identifier);
+            self.state.home_status = "Sign in to continue".into();
+            self.rebuild();
+            return UiAction::ApplyOperatorEndpoints;
+        }
+        if !matches!(
+            self.state.shell,
+            OnboardingShell::Step2Auth | OnboardingShell::Dash
+        ) || (self.state.shell == OnboardingShell::Dash && self.state.tab != DashTab::Home)
+        {
             return UiAction::None;
         }
         if self.state.home_logged_in_as.is_some() {
@@ -418,6 +550,8 @@ pub enum UiAction {
     None,
     ExitClientOnly,
     ExitClientAndHost,
+    /// Step1 NEXT: write selected operator endpoints into SharedState + prefs.
+    ApplyOperatorEndpoints,
     /// Home tab: POST login (session only; no auto-join · x0037).
     AuthLogin,
     /// Home tab: POST register (session only; no auto-join · x0037).
@@ -452,6 +586,7 @@ mod tests {
     fn on_pointer_sets_hover_on_open_dash() {
         let mut ui = SystemUi::new();
         ui.state.open = true;
+        ui.state.shell = OnboardingShell::Dash;
         ui.state.tab = DashTab::Exit;
         ui.state.canvas_w = 960.0;
         ui.state.canvas_h = 540.0;
@@ -476,6 +611,7 @@ mod tests {
     fn home_tab_has_submit_and_bottom_tab() {
         let mut ui = SystemUi::new();
         ui.state.open = true;
+        ui.state.shell = OnboardingShell::Dash;
         ui.state.tab = DashTab::Home;
         ui.state.canvas_w = 960.0;
         ui.state.canvas_h = 540.0;
@@ -488,5 +624,73 @@ mod tests {
             .any(|(id, _)| *id == WidgetId::HomeSubmit));
         ui.state.append_home_text("alice");
         assert_eq!(ui.state.home_identifier, "alice");
+    }
+
+    #[test]
+    fn step1_shows_operator_cards_and_next() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::Step1Operator;
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::OperatorOfficial));
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::Step1Next));
+        assert!(!ui.tree.hits.iter().any(|(id, _)| *id == WidgetId::TabHome));
+    }
+
+    #[test]
+    fn step1_next_official_goes_to_step2() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::Step1Operator;
+        ui.state.operator = crate::operator_prefs::OperatorKind::Official;
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        let rect = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::Step1Next)
+            .map(|(_, r)| *r)
+            .expect("next");
+        let action = ui.on_click(rect.x + 1.0, rect.y + 1.0);
+        assert_eq!(action, UiAction::ApplyOperatorEndpoints);
+        assert_eq!(ui.state.shell, OnboardingShell::Step2Auth);
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::HomeSubmit));
+    }
+
+    #[test]
+    fn main_hub_has_play_and_solo() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::MainHub;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::MainPlayTogether));
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::MainSoloHost));
     }
 }

@@ -3,11 +3,24 @@
 //! Facets: Chrome (top) · Home · Settings · Exit (Pinned). Button colors react to hover/press.
 //! Home holds account / create-world form strings only — no auth/world HTTP here.
 //! Create panel visuals are placeholders (swap later).
+//! Onboarding shell: Step1 operator → Step2 auth → Main hub (minimal chrome).
 
 use super::facet::{facet_of, DashRoot, FacetId};
 use super::layout::{Color, LayoutTree, Rect, WidgetId};
 use crate::access_level::AccessLevel;
+use crate::operator_prefs::{OperatorKind, CUSTOM_DEFAULT_HOST};
 use crate::turn::{TurnSettings, DEFAULT_SMOOTH_TURN_DEG_PER_SEC, DEFAULT_SNAP_DEGREES};
+
+/// Full-screen onboarding / hub phases (before or instead of classic Dash tabs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OnboardingShell {
+    Step1Operator,
+    Step1FederationStub,
+    Step2Auth,
+    MainHub,
+    /// Classic Home / Settings / Exit after SOLO or Settings.
+    Dash,
+}
 
 /// Session display-name cap (input + status; keep in sync with desktop join status).
 pub const SESSION_NAME_MAX: usize = 48;
@@ -79,6 +92,12 @@ pub struct DashState {
     pub home_room_id: String,
     /// When false (XR), Start/Join hits are omitted — Desktop HTTP only (x0037).
     pub home_session_actions_enabled: bool,
+    /// Onboarding / main-hub shell (Step1–3).
+    pub shell: OnboardingShell,
+    pub operator: OperatorKind,
+    pub custom_host: String,
+    /// Focus for Step1 custom host field.
+    pub custom_host_focus: bool,
 }
 
 impl Default for DashState {
@@ -115,6 +134,10 @@ impl Default for DashState {
             home_access_level: AccessLevel::Public,
             home_room_id: "local".into(),
             home_session_actions_enabled: true,
+            shell: OnboardingShell::Step1Operator,
+            operator: OperatorKind::Official,
+            custom_host: CUSTOM_DEFAULT_HOST.into(),
+            custom_host_focus: false,
         }
     }
 }
@@ -157,6 +180,14 @@ impl DashState {
     }
 
     pub fn append_home_text(&mut self, text: &str) {
+        if self.shell == OnboardingShell::Step1Operator && self.custom_host_focus {
+            for ch in text.chars() {
+                if !ch.is_control() && self.custom_host.chars().count() < HOME_ACCOUNT_FIELD_MAX {
+                    self.custom_host.push(ch);
+                }
+            }
+            return;
+        }
         let Some(field) = self.home_focus else {
             return;
         };
@@ -181,6 +212,10 @@ impl DashState {
     }
 
     pub fn home_backspace(&mut self) {
+        if self.shell == OnboardingShell::Step1Operator && self.custom_host_focus {
+            self.custom_host.pop();
+            return;
+        }
         // Logged-in hub: no account fields visible — ignore.
         if self.home_logged_in_as.is_some() && !self.home_create_open {
             return;
@@ -312,7 +347,15 @@ fn push_field(
     y + 16.0 + h + 10.0
 }
 
-fn rebuild_home(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
+fn rebuild_home(
+    tree: &mut LayoutTree,
+    state: &DashState,
+    cx: f32,
+    cy0: f32,
+    cw: f32,
+    ch: f32,
+    step2: bool,
+) {
     if state.home_logged_in_as.is_some() && state.home_create_open {
         rebuild_home_create(tree, state, cx, cy0, cw, ch);
         return;
@@ -320,9 +363,14 @@ fn rebuild_home(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw:
 
     let panel = Rect::new(cx, cy0, cw, ch.min(420.0));
     tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
+    let title = if step2 {
+        "STEP 2 / 3 — LOGIN & REGISTRATION"
+    } else {
+        "Home"
+    };
     tree.push_label(
         Rect::new(cx + 24.0, cy0 + 16.0, cw - 48.0, 24.0),
-        "Home",
+        title,
         TEXT,
         2.5,
     );
@@ -523,9 +571,16 @@ fn rebuild_home(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw:
     y += 40.0;
 
     let submit = Rect::new(x, y, 200.0, 44.0);
-    let submit_label = match state.home_mode {
-        HomeMode::Login => "Sign in",
-        HomeMode::Register => "Create account",
+    let submit_label = if step2 {
+        match state.home_mode {
+            HomeMode::Login => "Proceed to Step 3",
+            HomeMode::Register => "Create & proceed",
+        }
+    } else {
+        match state.home_mode {
+            HomeMode::Login => "Sign in",
+            HomeMode::Register => "Create account",
+        }
     };
     tree.push_rect(submit, state.interact(WidgetId::HomeSubmit, ACCENT));
     tree.push_label(
@@ -536,12 +591,24 @@ fn rebuild_home(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw:
     );
     tree.register_hit(WidgetId::HomeSubmit, submit);
 
-    tree.push_label(
-        Rect::new(x + 220.0, y + 14.0, fw - 220.0, 18.0),
-        "Type while field focused (Tab cycles)",
-        MUTED,
-        1.0,
-    );
+    if step2 {
+        let back = Rect::new(x + 220.0, y, 160.0, 44.0);
+        tree.push_rect(back, state.interact(WidgetId::Step2Back, BTN));
+        tree.push_label(
+            Rect::new(x + 236.0, y + 12.0, 128.0, 22.0),
+            "Back to Step 1",
+            TEXT,
+            1.2,
+        );
+        tree.register_hit(WidgetId::Step2Back, back);
+    } else {
+        tree.push_label(
+            Rect::new(x + 220.0, y + 14.0, fw - 220.0, 18.0),
+            "Type while field focused (Tab cycles)",
+            MUTED,
+            1.0,
+        );
+    }
 }
 
 /// Placeholder create-world panel (Resonite-like information structure only).
@@ -729,6 +796,269 @@ fn rebuild_home_create(
     }
 }
 
+const OFFICIAL_CARD: Color = Color::rgba(0.12, 0.28, 0.22, 1.0);
+const FED_CARD: Color = Color::rgba(0.22, 0.14, 0.32, 1.0);
+const CUSTOM_CARD: Color = Color::rgba(0.12, 0.22, 0.32, 1.0);
+const SELECT_RING: Color = Color::rgba(0.45, 0.85, 0.95, 1.0);
+
+fn rebuild_step1_operator(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
+    tree.push_label(
+        Rect::new(cx, cy0, cw, 22.0),
+        "STEP 1 / 3",
+        MUTED,
+        1.2,
+    );
+    tree.push_label(
+        Rect::new(cx, cy0 + 28.0, cw, 28.0),
+        "SELECT SERVER OPERATOR",
+        TEXT,
+        2.5,
+    );
+
+    let gap = 16.0;
+    let card_w = ((cw - gap * 2.0) / 3.0).max(120.0);
+    let card_h = (ch - 120.0).clamp(180.0, 280.0);
+    let card_y = cy0 + 72.0;
+    let cards = [
+        (
+            WidgetId::OperatorOfficial,
+            OperatorKind::Official,
+            "OFFICIAL SERVER",
+            "Pre-configured & Recommended",
+            OFFICIAL_CARD,
+        ),
+        (
+            WidgetId::OperatorFederation,
+            OperatorKind::Federation,
+            "COMMUNITY FEDERATION",
+            "Connect with Federated Worlds",
+            FED_CARD,
+        ),
+        (
+            WidgetId::OperatorCustom,
+            OperatorKind::Custom,
+            "CUSTOM URL",
+            "Self-Hosted or Localhost",
+            CUSTOM_CARD,
+        ),
+    ];
+    for (i, (id, kind, title, sub, base)) in cards.iter().enumerate() {
+        let x = cx + i as f32 * (card_w + gap);
+        let r = Rect::new(x, card_y, card_w, card_h);
+        let selected = state.operator == *kind;
+        if selected {
+            tree.push_rect(
+                Rect::new(r.x - 3.0, r.y - 3.0, r.w + 6.0, r.h + 6.0),
+                SELECT_RING,
+            );
+        }
+        tree.push_rect(r, state.interact(*id, *base));
+        tree.push_label(
+            Rect::new(x + 12.0, card_y + 24.0, card_w - 24.0, 40.0),
+            *title,
+            TEXT,
+            1.4,
+        );
+        tree.push_label(
+            Rect::new(x + 12.0, card_y + card_h - 40.0, card_w - 24.0, 28.0),
+            *sub,
+            MUTED,
+            1.0,
+        );
+        tree.register_hit(*id, r);
+
+        if *kind == OperatorKind::Custom {
+            let field = Rect::new(x + 12.0, card_y + 90.0, card_w - 24.0, 36.0);
+            let focused = state.custom_host_focus;
+            let fc = if focused { FIELD_FOCUS } else { FIELD };
+            tree.push_rect(field, state.interact(WidgetId::OperatorCustomHost, fc));
+            let mut shown = state.custom_host.clone();
+            if shown.is_empty() {
+                shown = if focused {
+                    "_".into()
+                } else {
+                    CUSTOM_DEFAULT_HOST.into()
+                };
+            } else if focused {
+                shown.push('_');
+            }
+            tree.push_label(
+                Rect::new(field.x + 8.0, field.y + 8.0, field.w - 16.0, 20.0),
+                &shown,
+                TEXT,
+                1.2,
+            );
+            tree.register_hit(WidgetId::OperatorCustomHost, field);
+        }
+    }
+
+    let next = Rect::new(cx + cw - 140.0, cy0 + ch - 52.0, 120.0, 40.0);
+    let next_enabled = state.operator != OperatorKind::Federation;
+    let next_base = if next_enabled { ACCENT } else { BTN };
+    tree.push_rect(next, state.interact(WidgetId::Step1Next, next_base));
+    tree.push_label(
+        Rect::new(next.x + 28.0, next.y + 10.0, 80.0, 20.0),
+        "NEXT",
+        TEXT,
+        1.5,
+    );
+    if next_enabled {
+        tree.register_hit(WidgetId::Step1Next, next);
+    }
+
+    // BACK is a no-op on first launch (no prior shell); still drawn for parity.
+    let back = Rect::new(cx + cw - 280.0, cy0 + ch - 52.0, 120.0, 40.0);
+    tree.push_rect(back, state.interact(WidgetId::Step1Back, BTN));
+    tree.push_label(
+        Rect::new(back.x + 28.0, back.y + 10.0, 80.0, 20.0),
+        "BACK",
+        MUTED,
+        1.5,
+    );
+    tree.register_hit(WidgetId::Step1Back, back);
+}
+
+fn rebuild_federation_stub(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
+    tree.push_label(
+        Rect::new(cx, cy0, cw, 22.0),
+        "STEP 1 / 3 — COMMUNITY FEDERATION",
+        MUTED,
+        1.2,
+    );
+    tree.push_label(
+        Rect::new(cx, cy0 + 36.0, cw, 24.0),
+        "Federation directory (stub)",
+        TEXT,
+        2.0,
+    );
+    let panel = Rect::new(cx, cy0 + 72.0, cw * 0.62, ch - 140.0);
+    tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.18, 1.0));
+    tree.push_label(
+        Rect::new(panel.x + 16.0, panel.y + 16.0, panel.w - 32.0, 20.0),
+        "Search or enter URL… (unavailable)",
+        MUTED,
+        1.0,
+    );
+    tree.push_label(
+        Rect::new(panel.x + 16.0, panel.y + 56.0, panel.w - 32.0, 60.0),
+        "No federation hubs listed yet.\nComing soon.",
+        TEXT,
+        1.3,
+    );
+    let detail = Rect::new(cx + cw * 0.66, cy0 + 72.0, cw * 0.34, ch - 140.0);
+    tree.push_rect(detail, Color::rgba(0.10, 0.11, 0.15, 1.0));
+    tree.push_label(
+        Rect::new(detail.x + 12.0, detail.y + 16.0, detail.w - 24.0, 40.0),
+        "alchemy-node-info.json\n(stub)",
+        MUTED,
+        1.0,
+    );
+    tree.push_label(
+        Rect::new(detail.x + 12.0, detail.y + detail.h - 80.0, detail.w - 24.0, 40.0),
+        "CONNECT disabled",
+        MUTED,
+        1.2,
+    );
+    let back = Rect::new(cx + cw - 140.0, cy0 + ch - 52.0, 120.0, 40.0);
+    tree.push_rect(back, state.interact(WidgetId::FederationStubBack, BTN));
+    tree.push_label(
+        Rect::new(back.x + 28.0, back.y + 10.0, 80.0, 20.0),
+        "BACK",
+        TEXT,
+        1.5,
+    );
+    tree.register_hit(WidgetId::FederationStubBack, back);
+}
+
+fn rebuild_main_hub(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
+    let who = state
+        .home_logged_in_as
+        .as_deref()
+        .unwrap_or("signed in");
+    tree.push_label(
+        Rect::new(cx, cy0, cw * 0.5, 24.0),
+        "Alchemy",
+        TEXT,
+        2.5,
+    );
+    tree.push_label(
+        Rect::new(cx + cw * 0.5, cy0, cw * 0.5, 20.0),
+        format!("{who} · server operator"),
+        MUTED,
+        1.1,
+    );
+    tree.push_label(
+        Rect::new(cx, cy0 + 36.0, cw, 18.0),
+        &state.home_status,
+        MUTED,
+        1.0,
+    );
+
+    let gap = 24.0;
+    let card_w = ((cw - gap) * 0.5).max(160.0);
+    let card_h = (ch - 100.0).clamp(160.0, 300.0);
+    let y = cy0 + 72.0;
+
+    let play = Rect::new(cx, y, card_w, card_h);
+    tree.push_rect(play, state.interact(WidgetId::MainPlayTogether, CUSTOM_CARD));
+    tree.push_label(
+        Rect::new(cx + 20.0, y + 28.0, card_w - 40.0, 28.0),
+        "PLAY TOGETHER",
+        TEXT,
+        2.0,
+    );
+    tree.push_label(
+        Rect::new(cx + 20.0, y + 68.0, card_w - 40.0, 20.0),
+        "Session List (stub)",
+        MUTED,
+        1.2,
+    );
+    tree.push_label(
+        Rect::new(cx + 20.0, y + 100.0, card_w - 40.0, 40.0),
+        "Join active public/friends rooms",
+        MUTED,
+        1.0,
+    );
+    tree.push_label(
+        Rect::new(cx + 20.0, y + card_h - 48.0, card_w - 40.0, 28.0),
+        "Friends Online — placeholder",
+        MUTED,
+        1.0,
+    );
+    tree.register_hit(WidgetId::MainPlayTogether, play);
+
+    let solo = Rect::new(cx + card_w + gap, y, card_w, card_h);
+    tree.push_rect(
+        solo,
+        state.interact(WidgetId::MainSoloHost, Color::rgba(0.32, 0.18, 0.10, 1.0)),
+    );
+    tree.push_label(
+        Rect::new(solo.x + 20.0, y + 28.0, card_w - 40.0, 28.0),
+        "SOLO PLAY",
+        TEXT,
+        2.0,
+    );
+    tree.push_label(
+        Rect::new(solo.x + 20.0, y + 68.0, card_w - 40.0, 20.0),
+        "Private Local Host",
+        MUTED,
+        1.2,
+    );
+    tree.push_label(
+        Rect::new(solo.x + 20.0, y + 100.0, card_w - 40.0, 40.0),
+        "Host on your own PC / Explore Solo",
+        MUTED,
+        1.0,
+    );
+    tree.push_label(
+        Rect::new(solo.x + 20.0, y + card_h - 48.0, card_w - 40.0, 28.0),
+        "[ Host local ]",
+        TEXT,
+        1.3,
+    );
+    tree.register_hit(WidgetId::MainSoloHost, solo);
+}
+
 pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
     tree.clear();
     if !state.open {
@@ -737,6 +1067,13 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
 
     let w = state.canvas_w.max(1.0);
     let h = state.canvas_h.max(1.0);
+    let onboarding = matches!(
+        state.shell,
+        OnboardingShell::Step1Operator
+            | OnboardingShell::Step1FederationStub
+            | OnboardingShell::Step2Auth
+            | OnboardingShell::MainHub
+    );
 
     // Dimmed full-canvas backdrop (still part of one Canvas / DashRoot).
     tree.push_rect(Rect::new(0.0, 0.0, w, h), BG);
@@ -824,76 +1161,86 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
     tree.push_icon(Rect::new(w - 32.0, iy, icon * 0.7, icon * 0.7), "close");
     tree.register_hit(WidgetId::CloseSession, x_r);
 
-    // --- Bottom bar: Home · Settings · Exit ---
-    let by = h - BOTTOM_H;
-    tree.push_rect(Rect::new(0.0, by, w, BOTTOM_H), BAR);
-
-    let tab_w = 88.0;
-    let gap = 16.0;
-    let tabs_total = tab_w * 3.0 + gap * 2.0;
-    let tab0_x = (w - tabs_total) * 0.5;
-
-    let draw_tab = |tree: &mut LayoutTree,
-                    state: &DashState,
-                    x: f32,
-                    tab: DashTab,
-                    id: WidgetId,
-                    icon: &'static str,
-                    label: &str,
-                    active_color: Color| {
-        let r = Rect::new(x, by + 8.0, tab_w, BOTTOM_H - 16.0);
-        let hot = state.hover == Some(id) || state.pressed == Some(id);
-        if state.tab == tab || hot {
-            let base = if state.tab == tab {
-                active_color
-            } else {
-                ICON_HOT
-            };
-            tree.push_rect(r, state.interact(id, base));
-        }
-        tree.push_icon(
-            Rect::new(x + (tab_w - 32.0) * 0.5, by + 12.0, 32.0, 32.0),
-            icon,
-        );
-        tree.push_label(
-            Rect::new(x + 4.0, by + 46.0, tab_w - 8.0, 14.0),
-            label,
-            TEXT,
-            1.0,
-        );
-        tree.register_hit(id, r);
+    let show_bottom_tabs = matches!(
+        state.shell,
+        OnboardingShell::Dash | OnboardingShell::MainHub
+    );
+    let by = if show_bottom_tabs {
+        h - BOTTOM_H
+    } else {
+        h
     };
+    if show_bottom_tabs {
+        // --- Bottom bar: Home · Settings · Exit ---
+        tree.push_rect(Rect::new(0.0, by, w, BOTTOM_H), BAR);
 
-    draw_tab(
-        tree,
-        state,
-        tab0_x,
-        DashTab::Home,
-        WidgetId::TabHome,
-        "home",
-        FacetId::Home.label(),
-        Color::rgba(0.18, 0.28, 0.42, 0.95),
-    );
-    draw_tab(
-        tree,
-        state,
-        tab0_x + tab_w + gap,
-        DashTab::Settings,
-        WidgetId::TabSettings,
-        "settings",
-        FacetId::Settings.label(),
-        Color::rgba(0.20, 0.22, 0.28, 0.95),
-    );
-    draw_tab(
-        tree,
-        state,
-        tab0_x + (tab_w + gap) * 2.0,
-        DashTab::Exit,
-        WidgetId::TabExit,
-        "power",
-        FacetId::Exit.label(),
-        TAB_ON,
-    );
+        let tab_w = 88.0;
+        let gap = 16.0;
+        let tabs_total = tab_w * 3.0 + gap * 2.0;
+        let tab0_x = (w - tabs_total) * 0.5;
+
+        let draw_tab = |tree: &mut LayoutTree,
+                        state: &DashState,
+                        x: f32,
+                        tab: DashTab,
+                        id: WidgetId,
+                        icon: &'static str,
+                        label: &str,
+                        active_color: Color| {
+            let r = Rect::new(x, by + 8.0, tab_w, BOTTOM_H - 16.0);
+            let hot = state.hover == Some(id) || state.pressed == Some(id);
+            if state.tab == tab || hot {
+                let base = if state.tab == tab {
+                    active_color
+                } else {
+                    ICON_HOT
+                };
+                tree.push_rect(r, state.interact(id, base));
+            }
+            tree.push_icon(
+                Rect::new(x + (tab_w - 32.0) * 0.5, by + 12.0, 32.0, 32.0),
+                icon,
+            );
+            tree.push_label(
+                Rect::new(x + 4.0, by + 46.0, tab_w - 8.0, 14.0),
+                label,
+                TEXT,
+                1.0,
+            );
+            tree.register_hit(id, r);
+        };
+
+        draw_tab(
+            tree,
+            state,
+            tab0_x,
+            DashTab::Home,
+            WidgetId::TabHome,
+            "home",
+            FacetId::Home.label(),
+            Color::rgba(0.18, 0.28, 0.42, 0.95),
+        );
+        draw_tab(
+            tree,
+            state,
+            tab0_x + tab_w + gap,
+            DashTab::Settings,
+            WidgetId::TabSettings,
+            "settings",
+            FacetId::Settings.label(),
+            Color::rgba(0.20, 0.22, 0.28, 0.95),
+        );
+        draw_tab(
+            tree,
+            state,
+            tab0_x + (tab_w + gap) * 2.0,
+            DashTab::Exit,
+            WidgetId::TabExit,
+            "power",
+            FacetId::Exit.label(),
+            TAB_ON,
+        );
+    }
 
     // --- Center ---
     let cy0 = TOP_H + 24.0;
@@ -902,9 +1249,28 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
     let cx = w * 0.12;
     let cw = w * 0.76;
 
+    if onboarding {
+        match state.shell {
+            OnboardingShell::Step1Operator => {
+                rebuild_step1_operator(tree, state, cx, cy0, cw, ch);
+            }
+            OnboardingShell::Step1FederationStub => {
+                rebuild_federation_stub(tree, state, cx, cy0, cw, ch);
+            }
+            OnboardingShell::Step2Auth => {
+                rebuild_home(tree, state, cx, cy0, cw, ch, true);
+            }
+            OnboardingShell::MainHub => {
+                rebuild_main_hub(tree, state, cx, cy0, cw, ch);
+            }
+            OnboardingShell::Dash => {}
+        }
+        return;
+    }
+
     match state.tab {
         DashTab::Home => {
-            rebuild_home(tree, state, cx, cy0, cw, ch);
+            rebuild_home(tree, state, cx, cy0, cw, ch, false);
         }
         // Pinned Exit Facet body
         DashTab::Exit => {
@@ -1033,6 +1399,7 @@ mod tests {
         let mut tree = LayoutTree::default();
         let state = DashState {
             open: true,
+            shell: OnboardingShell::Dash,
             tab: DashTab::Exit,
             canvas_w: 960.0,
             canvas_h: 540.0,
@@ -1056,6 +1423,7 @@ mod tests {
         let mut tree = LayoutTree::default();
         let state = DashState {
             open: true,
+            shell: OnboardingShell::Dash,
             tab: DashTab::Home,
             canvas_w: 960.0,
             canvas_h: 540.0,
@@ -1071,6 +1439,7 @@ mod tests {
         let mut tree = LayoutTree::default();
         let state = DashState {
             open: true,
+            shell: OnboardingShell::Dash,
             tab: DashTab::Home,
             canvas_w: 960.0,
             canvas_h: 540.0,
@@ -1093,6 +1462,7 @@ mod tests {
         let mut tree = LayoutTree::default();
         let state = DashState {
             open: true,
+            shell: OnboardingShell::Dash,
             tab: DashTab::Home,
             canvas_w: 960.0,
             canvas_h: 540.0,
@@ -1125,6 +1495,7 @@ mod tests {
         let mut tree = LayoutTree::default();
         let state = DashState {
             open: true,
+            shell: OnboardingShell::Dash,
             tab: DashTab::Home,
             canvas_w: 960.0,
             canvas_h: 540.0,
@@ -1167,6 +1538,7 @@ mod tests {
     fn settings_tab_shows_max_speed() {
         let state = DashState {
             open: true,
+            shell: OnboardingShell::Dash,
             tab: DashTab::Settings,
             ..Default::default()
         };
@@ -1210,6 +1582,7 @@ mod tests {
         let mut tree = LayoutTree::default();
         let mut state = DashState {
             open: true,
+            shell: OnboardingShell::Dash,
             tab: DashTab::Exit,
             canvas_w: 960.0,
             canvas_h: 540.0,

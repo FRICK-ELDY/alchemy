@@ -28,11 +28,12 @@ use winit::window::{Cursor, CursorGrabMode, CustomCursor, Window, WindowId};
 use crate::auth;
 use crate::host_control;
 use crate::mesh::CpuMesh;
+use crate::operator_prefs::{self, endpoints_for, OperatorKind};
 use crate::scene::{
     create_depth_view, create_wgpu_for_window, CameraLook, EntityPose, MoveIntent, SceneGpu,
     SharedState,
 };
-use crate::system_ui::{DashTab, SystemUi, UiAction};
+use crate::system_ui::{DashTab, OnboardingShell, SystemUi, UiAction};
 use crate::world_api;
 use crate::world_hit::{desktop_look_ray, pick_grabbable_desktop};
 use crate::{bind_room_after_join, join_room_with_access, leave_room};
@@ -261,21 +262,48 @@ impl App {
         }
     }
 
+    fn persist_session_prefs(&self, username: &str) {
+        let mut prefs = operator_prefs::load();
+        prefs.operator_chosen = true;
+        prefs.operator = self.ui.state.operator;
+        prefs.custom_host = self.ui.state.custom_host.clone();
+        let ep = endpoints_for(prefs.operator, &prefs.custom_host);
+        prefs.apply_endpoints(&ep);
+        prefs.username = Some(username.to_string());
+        if self.ui.state.home_remember_me {
+            prefs.refresh_token = self
+                .shared
+                .auth
+                .lock()
+                .ok()
+                .and_then(|g| g.refresh_token.clone());
+            prefs.last_login_at = Some(operator_prefs::now_unix_secs());
+        } else {
+            prefs.clear_session();
+            prefs.username = Some(username.to_string());
+        }
+        operator_prefs::save(&prefs);
+    }
+
     fn apply_auth_outcome(&mut self, outcome: AuthJobOutcome) {
         match outcome {
             AuthJobOutcome::LoginOk { username } => {
+                self.persist_session_prefs(&username);
                 self.ui.state.home_logged_in_as = Some(username);
                 self.ui.state.home_password.clear();
                 self.ui.state.home_create_open = false;
-                self.ui.state.home_status = "Signed in — create or join a world".into();
+                self.ui.state.shell = OnboardingShell::MainHub;
+                self.ui.state.home_status = "Signed in — choose PLAY TOGETHER or SOLO".into();
                 self.ui.rebuild();
                 log::info!("auth login ok (no auto-join)");
             }
             AuthJobOutcome::RegisterOk { username } => {
+                self.persist_session_prefs(&username);
                 self.ui.state.home_logged_in_as = Some(username);
                 self.ui.state.home_password.clear();
                 self.ui.state.home_create_open = false;
-                self.ui.state.home_status = "Account created — create or join a world".into();
+                self.ui.state.shell = OnboardingShell::MainHub;
+                self.ui.state.home_status = "Account created — choose PLAY TOGETHER or SOLO".into();
                 self.ui.rebuild();
                 log::info!("auth register ok (no auto-join)");
             }
@@ -971,6 +999,25 @@ fn handle_ui_action(
             }
             event_loop.exit();
         }
+        UiAction::ApplyOperatorEndpoints => {
+            if ui.state.operator == OperatorKind::Federation {
+                return;
+            }
+            let ep = endpoints_for(ui.state.operator, &ui.state.custom_host);
+            shared.apply_endpoints(&ep);
+            let mut prefs = operator_prefs::load();
+            prefs.operator_chosen = true;
+            prefs.operator = ui.state.operator;
+            prefs.custom_host = ui.state.custom_host.clone();
+            prefs.apply_endpoints(&ep);
+            // Keep any existing refresh until login replaces it.
+            operator_prefs::save(&prefs);
+            log::info!(
+                "operator endpoints applied: auth={} world={}",
+                ep.auth_url,
+                ep.world_url
+            );
+        }
         UiAction::AuthLogin => {
             if auth_job.is_some() {
                 ui.state.home_status = "Auth busy…".into();
@@ -980,7 +1027,7 @@ fn handle_ui_action(
             let identifier = ui.state.home_identifier.clone();
             let password = ui.state.home_password.clone();
             let remember = ui.state.home_remember_me;
-            let auth_url = shared.auth_url.clone();
+            let auth_url = shared.get_auth_url();
             let shared_job = Arc::clone(shared);
             ui.state.home_status = "Signing in…".into();
             ui.rebuild();
@@ -1012,7 +1059,7 @@ fn handle_ui_action(
             let password = ui.state.home_password.clone();
             let birthday = ui.state.home_birthday.clone();
             let remember = ui.state.home_remember_me;
-            let auth_url = shared.auth_url.clone();
+            let auth_url = shared.get_auth_url();
             let shared_job = Arc::clone(shared);
             ui.state.home_status = "Creating account…".into();
             ui.rebuild();
@@ -1046,14 +1093,18 @@ fn handle_ui_action(
             if let Ok(mut gate) = shared.auth.lock() {
                 gate.clear_session();
             }
+            let mut prefs = operator_prefs::load();
+            prefs.clear_session();
+            operator_prefs::save(&prefs);
             ui.state.home_logged_in_as = None;
             ui.state.home_create_open = false;
-            ui.state.home_status = "Signed out — Leave sent (host reclaim immediate)".into();
+            ui.state.shell = OnboardingShell::Step2Auth;
+            ui.state.home_status = "Signed out — sign in again".into();
             ui.state.tab = DashTab::Home;
             ui.rebuild();
             log::info!("auth logout — Leave + local session cleared");
             if let Some(access) = access {
-                let auth_url = shared.auth_url.clone();
+                let auth_url = shared.get_auth_url();
                 spawn_auth_http(move || {
                     let _ = auth::logout(&auth_url, &access, refresh.as_deref());
                 });
@@ -1078,8 +1129,9 @@ fn handle_ui_action(
             let (tx, rx) = mpsc::channel();
             *auth_job = Some(rx);
             spawn_auth_http(move || {
+                let world_url = shared_job.get_world_url();
                 let visibility = world_api::ensure_room_visibility(
-                    &shared_job.world_url,
+                    &world_url,
                     &shared_job.room_id,
                     &access,
                     level,
@@ -1126,6 +1178,9 @@ pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut ui = SystemUi::new();
     ui.state.home_room_id = shared.room_id.to_string();
+    let prefs = operator_prefs::load();
+    ui.state.operator = prefs.operator;
+    ui.state.custom_host = prefs.custom_host.clone();
     let (joined, authenticated, username) = shared
         .auth
         .lock()
@@ -1134,20 +1189,30 @@ pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session
         .unwrap_or((false, false, None));
     if joined {
         ui.state.home_logged_in_as = username;
+        ui.state.shell = OnboardingShell::Dash;
         ui.state.home_status = "Signed in (silent / CI)".into();
     } else {
-        // Prompt for Home login / create before joining.
         ui.state.open = true;
         ui.state.tab = DashTab::Home;
         if authenticated {
             ui.state.home_logged_in_as = username;
-            ui.state.home_status = "Signed in — create or join a world".into();
+            ui.state.shell = OnboardingShell::MainHub;
+            ui.state.home_status = "Signed in — choose PLAY TOGETHER or SOLO".into();
+        } else if !prefs.operator_chosen {
+            ui.state.shell = OnboardingShell::Step1Operator;
+            ui.state.home_status = "Select a server operator".into();
+        } else {
+            ui.state.shell = OnboardingShell::Step2Auth;
+            ui.state.home_status = "Sign in to continue".into();
         }
     }
     // x0048: sticky asset failure → Home status (not Coin fixture).
     if shared.overlay_asset_home_status(&mut ui.state.home_status) {
         ui.state.open = true;
         ui.state.tab = DashTab::Home;
+        if ui.state.shell == OnboardingShell::MainHub {
+            ui.state.shell = OnboardingShell::Dash;
+        }
     }
     let mut app = App {
         mesh,

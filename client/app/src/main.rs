@@ -35,6 +35,7 @@ mod jwt_sub;
 mod manifest_seal;
 mod mesh;
 mod metrics;
+mod operator_prefs;
 mod scene;
 mod surface;
 mod system_ui;
@@ -82,9 +83,6 @@ use zenoh::bytes::ZBytes;
 use zenoh::Wait;
 
 const DEFAULT_ZENOH_CONNECT: &str = "tcp/127.0.0.1:7447";
-const DEFAULT_WORLD_URL: &str = "http://127.0.0.1:4003";
-const DEFAULT_AUTH_URL: &str = "http://127.0.0.1:4002";
-const DEFAULT_ASSETS_URL: &str = "http://127.0.0.1:4004";
 const DEFAULT_ROOM_ID: &str = "local";
 /// Match net frame rate so Grab hold aim stays smooth enough (x0011).
 const INPUT_HZ: u64 = 30;
@@ -1243,8 +1241,9 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     } else {
         (None, None)
     };
+    let world_url = shared.get_world_url();
     let guest = world_token::fetch_guest_token(
-        &shared.world_url,
+        &world_url,
         &shared.room_id,
         access_token,
         &session_pub_b64,
@@ -1488,7 +1487,7 @@ fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                         .ok()
                         .and_then(|g| g.refresh_token.clone());
                     match refresh_token {
-                        Some(rt) => match auth::refresh(&shared.auth_url, &rt) {
+                        Some(rt) => match auth::refresh(&shared.get_auth_url(), &rt) {
                             Ok(session) => {
                                 if let Ok(mut gate) = shared.auth.lock() {
                                     gate.apply_auth_session(session);
@@ -1588,8 +1587,9 @@ fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                     } else {
                         (None, None)
                     };
+                    let world_url = shared.get_world_url();
                     match world_token::fetch_guest_token(
-                        &shared.world_url,
+                        &world_url,
                         &shared.room_id,
                         &access,
                         &session_pub_b64,
@@ -1784,9 +1784,16 @@ pub fn leave_room(shared: &SharedState, zenoh: &mut Option<zenoh::Session>) {
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let world_url = std::env::var("WORLD_URL").unwrap_or_else(|_| DEFAULT_WORLD_URL.to_string());
-    let auth_url = std::env::var("AUTH_URL").unwrap_or_else(|_| DEFAULT_AUTH_URL.to_string());
-    let assets_url = std::env::var("ASSETS_URL").unwrap_or_else(|_| DEFAULT_ASSETS_URL.to_string());
+    let prefs = operator_prefs::load();
+    let boot_ep = operator_prefs::boot_endpoints(&prefs);
+    let auth_url = boot_ep.auth_url.clone();
+    let world_url = boot_ep.world_url.clone();
+    let assets_url = boot_ep.assets_url.clone();
+    let zenoh_connect = boot_ep.zenoh_connect.clone();
+    // Keep env ZENOH_CONNECT as process default when set (zenoh_connect crate reads env).
+    if std::env::var_os("ZENOH_CONNECT").is_none() {
+        std::env::set_var("ZENOH_CONNECT", &zenoh_connect);
+    }
     let room_id_raw = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
     let room_id = validate_room_id(&room_id_raw)
         .map_err(|e| anyhow::anyhow!("invalid ROOM_ID={room_id_raw:?}: {e}"))?
@@ -1800,6 +1807,25 @@ fn main() -> Result<()> {
     let mut gate = AuthGate::default();
     if let Some(session) = silent {
         gate.apply_auth_session(session);
+    } else if prefs.operator_chosen
+        && prefs.session_still_valid(operator_prefs::now_unix_secs())
+        && prefs.refresh_token.is_some()
+    {
+        // Restore remember-me session (≤7 days); failure falls through to UI Step2.
+        if let Some(rt) = prefs.refresh_token.clone() {
+            match auth::refresh(&auth_url, &rt) {
+                Ok(session) => {
+                    log::info!("onboarding: restored session via refresh_token");
+                    let mut prefs = prefs.clone();
+                    prefs.refresh_token = session.refresh_token.clone().or(Some(rt));
+                    prefs.username = Some(session.user.username.clone());
+                    prefs.last_login_at = Some(operator_prefs::now_unix_secs());
+                    operator_prefs::save(&prefs);
+                    gate.apply_auth_session(session);
+                }
+                Err(err) => log::info!("onboarding: refresh restore failed ({err:#}) — UI login"),
+            }
+        }
     }
 
     let client_metrics = Arc::new(metrics::ClientMetrics::default());
@@ -1807,8 +1833,13 @@ fn main() -> Result<()> {
 
     let jwks = Arc::new(WorldJwks::new(&world_url));
     jwks.set_metrics(Arc::clone(&client_metrics));
-    jwks.refresh()
-        .context("initial world JWKS (ManifestSeal + HostAttestation)")?;
+    // UI-first boot may not have world up yet; soft-fail and retry after operator select.
+    if let Err(err) = jwks.refresh() {
+        if auth_mode == "silent" {
+            return Err(err).context("initial world JWKS (ManifestSeal + HostAttestation)");
+        }
+        log::warn!("initial world JWKS deferred (UI onboarding): {err:#}");
+    }
     jwks.spawn_background_refresh();
     let seal = Arc::new(ManifestSealVerifier::new(Arc::clone(&jwks), &room_id));
     let attest = Arc::new(HostAttestationVerifier::new(Arc::clone(&jwks), &room_id));
@@ -1820,11 +1851,13 @@ fn main() -> Result<()> {
         room_key: Mutex::new(None),
         room_bus_started: AtomicBool::new(false),
         mtls_reopen_pending: AtomicBool::new(false),
+        world_jwks: Arc::clone(&jwks),
         manifest_seal: Arc::clone(&seal),
         host_attest: Arc::clone(&attest),
-        auth_url: Arc::<str>::from(auth_url),
-        world_url: Arc::<str>::from(world_url),
-        assets_url: Arc::<str>::from(assets_url.clone()),
+        auth_url: Mutex::new(auth_url),
+        world_url: Mutex::new(world_url),
+        assets_url: Mutex::new(assets_url.clone()),
+        zenoh_connect: Mutex::new(zenoh_connect),
         auth: Mutex::new(gate),
         intent_session: Mutex::new(None),
         pending_intent_session: Mutex::new(None),

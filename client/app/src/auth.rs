@@ -2,7 +2,8 @@
 //!
 //! Guarantees: login / register / logout / refresh against existing `/api/v1/auth/*`;
 //! refresh deadlines at ~80% of `expires_in` for access and Room Token.
-//! Non-guarantees: email verify UI, OAuth, disk credential vault, OpenXR keyboard.
+//! Non-guarantees: email verify UI, OAuth, OS keychain vault, OpenXR keyboard.
+//! Lightweight onboarding prefs (refresh_token + last_login_at) live in `operator_prefs`.
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;

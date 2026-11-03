@@ -197,12 +197,17 @@ pub struct SharedState {
     /// One-shot: allocate wrote new `ZENOH_TLS_*`; next `bind_room_after_join` must reopen.
     /// Env alone must not trigger reopen (would orphan subscribers on an already-running bus).
     pub mtls_reopen_pending: std::sync::atomic::AtomicBool,
+    /// World JWKS cache (retargeted when onboarding switches operator).
+    pub world_jwks: Arc<crate::world_jwks::WorldJwks>,
     /// World JWKS verifiers for Manifest path (needed for late Home→Join bus start).
     pub manifest_seal: Arc<crate::manifest_seal::ManifestSealVerifier>,
     pub host_attest: Arc<crate::host_attestation::HostAttestationVerifier>,
-    pub auth_url: Arc<str>,
-    pub world_url: Arc<str>,
-    pub assets_url: Arc<str>,
+    /// Mutable so onboarding Step1 can switch Official / Custom without restart.
+    pub auth_url: Mutex<String>,
+    pub world_url: Mutex<String>,
+    pub assets_url: Mutex<String>,
+    /// Saved for join / prefs; Zenoh open still happens at join time.
+    pub zenoh_connect: Mutex<String>,
     /// Auth + Room Token gate (x0018). Intent publishes only when `room_token` is set.
     pub auth: Mutex<AuthGate>,
     /// Ed25519 Intent session while joined (x0023).
@@ -239,6 +244,56 @@ pub struct SharedState {
 }
 
 impl SharedState {
+    pub fn get_auth_url(&self) -> String {
+        self.auth_url
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    pub fn get_world_url(&self) -> String {
+        self.world_url
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    pub fn get_assets_url(&self) -> String {
+        self.assets_url
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    pub fn get_zenoh_connect(&self) -> String {
+        self.zenoh_connect
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    pub fn apply_endpoints(&self, ep: &crate::operator_prefs::Endpoints) {
+        if let Ok(mut g) = self.auth_url.lock() {
+            *g = ep.auth_url.clone();
+        }
+        if let Ok(mut g) = self.world_url.lock() {
+            *g = ep.world_url.clone();
+        }
+        if let Ok(mut g) = self.assets_url.lock() {
+            *g = ep.assets_url.clone();
+        }
+        if let Ok(mut g) = self.zenoh_connect.lock() {
+            *g = ep.zenoh_connect.clone();
+        }
+        if std::env::var_os("ZENOH_CONNECT").is_none() {
+            std::env::set_var("ZENOH_CONNECT", &ep.zenoh_connect);
+        }
+        self.world_jwks.retarget_world(&ep.world_url);
+        if let Err(err) = self.world_jwks.refresh() {
+            log::warn!("world JWKS refresh after operator switch: {err:#}");
+        }
+    }
+
     /// Sticky Home status: if an asset failure is recorded, overwrite `home_status` and
     /// return `true` (caller should keep Home tab open). Skips while status looks busy
     /// (`…` / `...`) so "Signing in…" is not clobbered mid-flight.
@@ -419,8 +474,9 @@ impl SharedState {
         } else {
             (None, None)
         };
+        let world_url = self.get_world_url();
         match crate::world_token::fetch_guest_token(
-            &self.world_url,
+            &world_url,
             &self.room_id,
             &access,
             &session_pub_b64,
