@@ -737,6 +737,9 @@ pub fn run_session(
                             if let Ok(mut gate) = shared.auth.lock() {
                                 gate.clear_session();
                             }
+                            let mut prefs = crate::operator_prefs::load();
+                            prefs.clear_session();
+                            crate::operator_prefs::save(&prefs);
                             ui.state.home_logged_in_as = None;
                             ui.state.home_create_open = false;
                             ui.state.shell = crate::system_ui::OnboardingShell::Step2Auth;

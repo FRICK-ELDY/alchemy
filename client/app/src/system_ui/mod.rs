@@ -215,6 +215,13 @@ impl SystemUi {
                 if self.state.operator == OperatorKind::Federation {
                     return UiAction::None;
                 }
+                // XR: home_session_actions_enabled=false — do not advance without applying endpoints.
+                if !self.state.home_session_actions_enabled {
+                    self.state.home_status =
+                        "Operator select / login is Desktop-only (use Desktop client)".into();
+                    self.rebuild();
+                    return UiAction::None;
+                }
                 self.state.custom_host_focus = false;
                 self.state.shell = OnboardingShell::Step2Auth;
                 self.state.tab = DashTab::Home;
@@ -454,6 +461,12 @@ impl SystemUi {
         if self.state.shell == OnboardingShell::Step1Operator
             && self.state.operator != OperatorKind::Federation
         {
+            if !self.state.home_session_actions_enabled {
+                self.state.home_status =
+                    "Operator select / login is Desktop-only (use Desktop client)".into();
+                self.rebuild();
+                return UiAction::None;
+            }
             self.state.custom_host_focus = false;
             self.state.shell = OnboardingShell::Step2Auth;
             self.state.tab = DashTab::Home;

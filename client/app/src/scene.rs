@@ -272,22 +272,18 @@ impl SharedState {
             .clone()
     }
 
+    /// Apply operator endpoints. Always updates SharedState + syncs `ZENOH_CONNECT` env
+    /// so subsequent `open_zenoh_for` / zenoh-connect helpers see the same target.
+    /// UI ApplyOperatorEndpoints wins over a prior boot-time env for this process.
     pub fn apply_endpoints(&self, ep: &crate::operator_prefs::Endpoints) {
-        if let Ok(mut g) = self.auth_url.lock() {
-            *g = ep.auth_url.clone();
-        }
-        if let Ok(mut g) = self.world_url.lock() {
-            *g = ep.world_url.clone();
-        }
-        if let Ok(mut g) = self.assets_url.lock() {
-            *g = ep.assets_url.clone();
-        }
-        if let Ok(mut g) = self.zenoh_connect.lock() {
-            *g = ep.zenoh_connect.clone();
-        }
-        if std::env::var_os("ZENOH_CONNECT").is_none() {
-            std::env::set_var("ZENOH_CONNECT", &ep.zenoh_connect);
-        }
+        *self.auth_url.lock().unwrap_or_else(|p| p.into_inner()) = ep.auth_url.clone();
+        *self.world_url.lock().unwrap_or_else(|p| p.into_inner()) = ep.world_url.clone();
+        *self.assets_url.lock().unwrap_or_else(|p| p.into_inner()) = ep.assets_url.clone();
+        *self
+            .zenoh_connect
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = ep.zenoh_connect.clone();
+        std::env::set_var("ZENOH_CONNECT", &ep.zenoh_connect);
         self.world_jwks.retarget_world(&ep.world_url);
         if let Err(err) = self.world_jwks.refresh() {
             log::warn!("world JWKS refresh after operator switch: {err:#}");

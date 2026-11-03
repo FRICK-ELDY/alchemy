@@ -36,7 +36,7 @@ use crate::scene::{
 use crate::system_ui::{DashTab, OnboardingShell, SystemUi, UiAction};
 use crate::world_api;
 use crate::world_hit::{desktop_look_ray, pick_grabbable_desktop};
-use crate::{bind_room_after_join, join_room_with_access, leave_room};
+use crate::{bind_room_after_join, close_zenoh, join_room_with_access, leave_room};
 
 /// Radians per pixel (fixed; Settings Facet deferred).
 const LOOK_SENSITIVITY: f32 = 0.0025;
@@ -1005,6 +1005,11 @@ fn handle_ui_action(
             }
             let ep = endpoints_for(ui.state.operator, &ui.state.custom_host);
             shared.apply_endpoints(&ep);
+            // Drop any pre-join / stale session so join opens the new endpoint.
+            close_zenoh(zenoh);
+            shared
+                .room_bus_started
+                .store(false, std::sync::atomic::Ordering::SeqCst);
             let mut prefs = operator_prefs::load();
             prefs.operator_chosen = true;
             prefs.operator = ui.state.operator;
@@ -1013,9 +1018,10 @@ fn handle_ui_action(
             // Keep any existing refresh until login replaces it.
             operator_prefs::save(&prefs);
             log::info!(
-                "operator endpoints applied: auth={} world={}",
+                "operator endpoints applied: auth={} world={} zenoh={}",
                 ep.auth_url,
-                ep.world_url
+                ep.world_url,
+                ep.zenoh_connect
             );
         }
         UiAction::AuthLogin => {

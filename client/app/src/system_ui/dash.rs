@@ -893,13 +893,15 @@ fn rebuild_step1_operator(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0
     }
 
     let next = Rect::new(cx + cw - 140.0, cy0 + ch - 52.0, 120.0, 40.0);
-    let next_enabled = state.operator != OperatorKind::Federation;
+    // Federation stub / XR (no Desktop session actions): look disabled and no hit.
+    let next_enabled =
+        state.operator != OperatorKind::Federation && state.home_session_actions_enabled;
     let next_base = if next_enabled { ACCENT } else { BTN };
     tree.push_rect(next, state.interact(WidgetId::Step1Next, next_base));
     tree.push_label(
         Rect::new(next.x + 28.0, next.y + 10.0, 80.0, 20.0),
         "NEXT",
-        TEXT,
+        if next_enabled { TEXT } else { MUTED },
         1.5,
     );
     if next_enabled {

@@ -72,15 +72,17 @@ impl WorldJwks {
     }
 
     /// Point JWKS at a new world base URL and drop the cache (onboarding operator switch).
+    /// Cache is cleared only after the URL write succeeds (avoids empty cache + stale URL).
     pub fn retarget_world(&self, world_url: &str) {
         let base = world_url.trim_end_matches('/');
-        if let Ok(mut url) = self.jwks_url.lock() {
-            *url = format!("{base}/.well-known/jwks.json");
+        let new_url = format!("{base}/.well-known/jwks.json");
+        {
+            let mut url = self.jwks_url.lock().unwrap_or_else(|p| p.into_inner());
+            *url = new_url;
         }
-        if let Ok(mut cache) = self.cache.write() {
-            cache.keys.clear();
-            cache.fetched_at = Instant::now() - Duration::from_secs(3600);
-        }
+        let mut cache = self.cache.write().unwrap_or_else(|p| p.into_inner());
+        cache.keys.clear();
+        cache.fetched_at = Instant::now() - Duration::from_secs(3600);
     }
 
     /// Attach client metrics registry (x0049). Call once before verify traffic.

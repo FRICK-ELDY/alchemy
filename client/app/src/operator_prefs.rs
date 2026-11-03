@@ -3,6 +3,10 @@
 //! Guarantees: OFFICIAL vs CUSTOM endpoint expansion; disk prefs for operator choice,
 //! optional refresh_token, last_login_at (7-day gate); no secrets in logs.
 //! Non-guarantees: encrypted vault, OS keychain, Federation directory, host-server env sync.
+//!
+//! Security note: `refresh_token` is stored plaintext under the user config dir
+//! (`%APPDATA%/Alchemy/onboarding.json` on Windows). Treat the machine profile as the
+//! trust boundary; failed restore / logout clears the token from disk.
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -74,10 +78,17 @@ pub fn expand_custom(input: &str) -> Endpoints {
         let https = raw.starts_with("https://");
         let host_port = rest.split('/').next().unwrap_or(rest);
         let host = host_port.split(':').next().unwrap_or(host_port);
-        // Full auth URL (possibly with non-default port): keep as auth; siblings by port convention.
-        let auth_url = raw.trim_end_matches('/').to_string();
-        if host_port.contains(':') {
-            // Explicit port on auth URL — sibling ports relative to custom defaults on same host.
+        let port = host_port.split(':').nth(1);
+        // :443 / :80 count as "no explicit port" (same-origin reverse-proxy style).
+        let default_port = matches!(
+            (https, port),
+            (true, Some("443")) | (false, Some("80"))
+        );
+        let explicit_non_default_port = port.is_some() && !default_port;
+        let zenoh_scheme = if https { "tls" } else { "tcp" };
+        if explicit_non_default_port {
+            // Explicit non-default port: keep auth URL; sibling ports for world/assets.
+            let auth_url = raw.trim_end_matches('/').to_string();
             return Endpoints {
                 auth_url,
                 world_url: format!("http{}://{host}:{CUSTOM_WORLD_PORT}", if https { "s" } else { "" }),
@@ -85,23 +96,38 @@ pub fn expand_custom(input: &str) -> Endpoints {
                     "http{}://{host}:{CUSTOM_ASSETS_PORT}",
                     if https { "s" } else { "" }
                 ),
-                zenoh_connect: format!(
-                    "{}/{host}:{CUSTOM_ZENOH_PORT}",
-                    if https { "tls" } else { "tcp" }
-                ),
+                zenoh_connect: format!("{zenoh_scheme}/{host}:{CUSTOM_ZENOH_PORT}"),
             };
         }
-        // Host-only under scheme: treat as auth host with default ports (https → official-style ports not used).
-        let scheme = if https { "https" } else { "http" };
-        let zenoh_scheme = if https { "tls" } else { "tcp" };
+        // Host-only (or default 443/80): http keeps local-dev ports; https = same origin.
+        // Custom does not invent auth./world./assets. subdomains (Official-only layout).
+        if https {
+            return Endpoints {
+                auth_url: format!("https://{host}"),
+                world_url: format!("https://{host}"),
+                assets_url: format!("https://{host}"),
+                zenoh_connect: format!("{zenoh_scheme}/{host}:{CUSTOM_ZENOH_PORT}"),
+            };
+        }
         return Endpoints {
-            auth_url: format!("{scheme}://{host}:{CUSTOM_AUTH_PORT}"),
-            world_url: format!("{scheme}://{host}:{CUSTOM_WORLD_PORT}"),
-            assets_url: format!("{scheme}://{host}:{CUSTOM_ASSETS_PORT}"),
+            auth_url: format!("http://{host}:{CUSTOM_AUTH_PORT}"),
+            world_url: format!("http://{host}:{CUSTOM_WORLD_PORT}"),
+            assets_url: format!("http://{host}:{CUSTOM_ASSETS_PORT}"),
             zenoh_connect: format!("{zenoh_scheme}/{host}:{CUSTOM_ZENOH_PORT}"),
         };
     }
-    // Bare host (or host:port for auth).
+    // Bare host or `host:port` (no scheme). Explicit port is kept on auth only;
+    // world/assets/zenoh still use CUSTOM_* ports on the same host.
+    if let Some((host, port)) = raw.split_once(':') {
+        if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
+            return Endpoints {
+                auth_url: format!("http://{host}:{port}"),
+                world_url: format!("http://{host}:{CUSTOM_WORLD_PORT}"),
+                assets_url: format!("http://{host}:{CUSTOM_ASSETS_PORT}"),
+                zenoh_connect: format!("tcp/{host}:{CUSTOM_ZENOH_PORT}"),
+            };
+        }
+    }
     let host = raw.split(':').next().unwrap_or(raw);
     Endpoints {
         auth_url: format!("http://{host}:{CUSTOM_AUTH_PORT}"),
@@ -230,13 +256,16 @@ pub fn save(prefs: &OnboardingPrefs) {
     }
 }
 
-/// Resolve boot endpoints: env wins, else saved operator, else localhost custom.
+/// Resolve boot endpoints: process env wins per-field, else saved operator, else localhost.
+///
+/// Note: UI `ApplyOperatorEndpoints` later overrides SharedState + `ZENOH_CONNECT` for this
+/// process so Official/Custom selection is not stuck on a boot-time localhost env.
 pub fn boot_endpoints(prefs: &OnboardingPrefs) -> Endpoints {
     let env_auth = std::env::var("AUTH_URL").ok();
     let env_world = std::env::var("WORLD_URL").ok();
     let env_assets = std::env::var("ASSETS_URL").ok();
     let env_zenoh = std::env::var("ZENOH_CONNECT").ok();
-    if env_auth.is_some() || env_world.is_some() || env_assets.is_some() {
+    if env_auth.is_some() || env_world.is_some() || env_assets.is_some() || env_zenoh.is_some() {
         let fallback = if prefs.operator_chosen {
             prefs.endpoints()
         } else {
@@ -269,11 +298,47 @@ mod tests {
     }
 
     #[test]
+    fn expand_bare_host_keeps_explicit_auth_port() {
+        let ep = expand_custom("192.168.1.5:9999");
+        assert_eq!(ep.auth_url, "http://192.168.1.5:9999");
+        assert_eq!(ep.world_url, "http://192.168.1.5:4003");
+        assert_eq!(ep.zenoh_connect, "tcp/192.168.1.5:7447");
+    }
+
+    #[test]
     fn expand_http_auth_url() {
         let ep = expand_custom("http://192.168.1.5:4002");
         assert_eq!(ep.auth_url, "http://192.168.1.5:4002");
         assert_eq!(ep.world_url, "http://192.168.1.5:4003");
         assert_eq!(ep.zenoh_connect, "tcp/192.168.1.5:7447");
+    }
+
+    #[test]
+    fn expand_https_host_omits_dev_ports() {
+        let ep = expand_custom("https://example.com");
+        assert_eq!(ep.auth_url, "https://example.com");
+        assert_eq!(ep.world_url, "https://example.com");
+        assert_eq!(ep.zenoh_connect, "tls/example.com:7447");
+    }
+
+    #[test]
+    fn expand_https_443_matches_host_only() {
+        let a = expand_custom("https://example.com");
+        let b = expand_custom("https://example.com:443");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn boot_endpoints_honors_zenoh_env_alone() {
+        let prev = std::env::var("ZENOH_CONNECT").ok();
+        std::env::set_var("ZENOH_CONNECT", "tls/relay.example:7447");
+        let ep = boot_endpoints(&OnboardingPrefs::default());
+        assert_eq!(ep.zenoh_connect, "tls/relay.example:7447");
+        assert_eq!(ep.auth_url, "http://127.0.0.1:4002");
+        match prev {
+            Some(v) => std::env::set_var("ZENOH_CONNECT", v),
+            None => std::env::remove_var("ZENOH_CONNECT"),
+        }
     }
 
     #[test]
