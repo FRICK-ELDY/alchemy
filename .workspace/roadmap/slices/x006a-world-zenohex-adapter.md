@@ -1,6 +1,6 @@
 # x006a — world-server へ Zenohex 導入（Adapter 隔離）
 
-> **ID:** `x006a` · **slug:** `world-zenohex-adapter` · **status:** `in_progress` · **area:** `[world, zenoh, ci]` · **depends_on:** `[x004e, x0066]`
+> **ID:** `x006a` · **slug:** `world-zenohex-adapter` · **status:** `done` · **area:** `[world, zenoh, ci]` · **depends_on:** `[x004e, x0066]`
 
 目標: `world-server`（Elixir コントロールプレーン）から Zenoh 網へ接続する手段として **`zenohex`（Rustler プリコンパイル NIF）** を導入し、**`:ring` チャネル強制**と **Behaviour / Adapter 隔離**で BEAM 安定性と差し替え可能性を担保する。業務ロジック（Room / Verifier / contents）からの `Zenohex.*` 直接参照は禁止。
 
@@ -32,7 +32,7 @@
 | 1 | deps + `:ring` + `ZENOH_CONNECT` + test stub 切替 | done |
 | 2 | Adapter / Client / LocalStub / ZenohexAdapter（正規化・monitor・open リトライ） | done |
 | 3 | 単体テスト + credo / world CI | done |
-| 4 | PR マージ・status → done | planned |
+| 4 | PR マージ・status → done | done |
 
 ## 実装メモ
 

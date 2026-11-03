@@ -110,7 +110,7 @@ bash .scripts/smoke-assets-glb.sh   # Coin fixture → CAS
 
 ## 後続
 
-- **インベントリラダー（B+2→C+3）**: [inventory-ladder.md](../roadmap/inventory-ladder.md)。**x0054 done**（inventory `grant_required` PUT）。続きは x0055 ItemRef 草案 → x0058 Vault 薄皮 → x005c–x005d DriveNode → x005e Prefab → x0062–x0065 Vcs／Origin Cert
+- **インベントリラダー（B+2→C+3）**: [inventory-ladder.md](../roadmap/inventory-ladder.md)。Wave 0 **done**（x0054 inventory `grant_required` PUT · x0055 `ItemRef` blake3 草案）。続きは Wave 1 x0056 held Slot → x0058 Vault 薄皮 → x005c–x005d DriveNode → x005e Prefab → x0062–x0065 Vcs／Origin Cert
 - **案 B**: GET 既定を Grant 必須へ。room join 連動読取 Grant / 短命トークン（部屋を壊さない移行）
 - [assets-server-draft.md](assets-server-draft.md) の Vault / purchased / 5 層
 - [assets-threat-model.md](assets-threat-model.md) 目標列（予約期限ジョブ・Immutable Tag・配信ドメイン分離・Safe HTTP・jti 等）
