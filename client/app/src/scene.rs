@@ -279,10 +279,7 @@ impl SharedState {
         *self.auth_url.lock().unwrap_or_else(|p| p.into_inner()) = ep.auth_url.clone();
         *self.world_url.lock().unwrap_or_else(|p| p.into_inner()) = ep.world_url.clone();
         *self.assets_url.lock().unwrap_or_else(|p| p.into_inner()) = ep.assets_url.clone();
-        *self
-            .zenoh_connect
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = ep.zenoh_connect.clone();
+        *self.zenoh_connect.lock().unwrap_or_else(|p| p.into_inner()) = ep.zenoh_connect.clone();
         std::env::set_var("ZENOH_CONNECT", &ep.zenoh_connect);
         self.world_jwks.retarget_world(&ep.world_url);
         if let Err(err) = self.world_jwks.refresh() {

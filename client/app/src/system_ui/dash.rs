@@ -801,13 +801,15 @@ const FED_CARD: Color = Color::rgba(0.22, 0.14, 0.32, 1.0);
 const CUSTOM_CARD: Color = Color::rgba(0.12, 0.22, 0.32, 1.0);
 const SELECT_RING: Color = Color::rgba(0.45, 0.85, 0.95, 1.0);
 
-fn rebuild_step1_operator(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
-    tree.push_label(
-        Rect::new(cx, cy0, cw, 22.0),
-        "STEP 1 / 3",
-        MUTED,
-        1.2,
-    );
+fn rebuild_step1_operator(
+    tree: &mut LayoutTree,
+    state: &DashState,
+    cx: f32,
+    cy0: f32,
+    cw: f32,
+    ch: f32,
+) {
+    tree.push_label(Rect::new(cx, cy0, cw, 22.0), "STEP 1 / 3", MUTED, 1.2);
     tree.push_label(
         Rect::new(cx, cy0 + 28.0, cw, 28.0),
         "SELECT SERVER OPERATOR",
@@ -920,7 +922,14 @@ fn rebuild_step1_operator(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0
     tree.register_hit(WidgetId::Step1Back, back);
 }
 
-fn rebuild_federation_stub(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
+fn rebuild_federation_stub(
+    tree: &mut LayoutTree,
+    state: &DashState,
+    cx: f32,
+    cy0: f32,
+    cw: f32,
+    ch: f32,
+) {
     tree.push_label(
         Rect::new(cx, cy0, cw, 22.0),
         "STEP 1 / 3 — COMMUNITY FEDERATION",
@@ -956,7 +965,12 @@ fn rebuild_federation_stub(tree: &mut LayoutTree, state: &DashState, cx: f32, cy
         1.0,
     );
     tree.push_label(
-        Rect::new(detail.x + 12.0, detail.y + detail.h - 80.0, detail.w - 24.0, 40.0),
+        Rect::new(
+            detail.x + 12.0,
+            detail.y + detail.h - 80.0,
+            detail.w - 24.0,
+            40.0,
+        ),
         "CONNECT disabled",
         MUTED,
         1.2,
@@ -973,16 +987,8 @@ fn rebuild_federation_stub(tree: &mut LayoutTree, state: &DashState, cx: f32, cy
 }
 
 fn rebuild_main_hub(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
-    let who = state
-        .home_logged_in_as
-        .as_deref()
-        .unwrap_or("signed in");
-    tree.push_label(
-        Rect::new(cx, cy0, cw * 0.5, 24.0),
-        "Alchemy",
-        TEXT,
-        2.5,
-    );
+    let who = state.home_logged_in_as.as_deref().unwrap_or("signed in");
+    tree.push_label(Rect::new(cx, cy0, cw * 0.5, 24.0), "Alchemy", TEXT, 2.5);
     tree.push_label(
         Rect::new(cx + cw * 0.5, cy0, cw * 0.5, 20.0),
         format!("{who} · server operator"),
@@ -1002,7 +1008,10 @@ fn rebuild_main_hub(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32,
     let y = cy0 + 72.0;
 
     let play = Rect::new(cx, y, card_w, card_h);
-    tree.push_rect(play, state.interact(WidgetId::MainPlayTogether, CUSTOM_CARD));
+    tree.push_rect(
+        play,
+        state.interact(WidgetId::MainPlayTogether, CUSTOM_CARD),
+    );
     tree.push_label(
         Rect::new(cx + 20.0, y + 28.0, card_w - 40.0, 28.0),
         "PLAY TOGETHER",
@@ -1167,11 +1176,7 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
         state.shell,
         OnboardingShell::Dash | OnboardingShell::MainHub
     );
-    let by = if show_bottom_tabs {
-        h - BOTTOM_H
-    } else {
-        h
-    };
+    let by = if show_bottom_tabs { h - BOTTOM_H } else { h };
     if show_bottom_tabs {
         // --- Bottom bar: Home · Settings · Exit ---
         tree.push_rect(Rect::new(0.0, by, w, BOTTOM_H), BAR);

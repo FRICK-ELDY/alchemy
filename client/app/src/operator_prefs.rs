@@ -27,19 +27,14 @@ pub const CUSTOM_WORLD_PORT: u16 = 4003;
 pub const CUSTOM_ASSETS_PORT: u16 = 4004;
 pub const CUSTOM_ZENOH_PORT: u16 = 7447;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperatorKind {
+    #[default]
     Official,
     Custom,
     /// Selectable in UI but not connectable yet.
     Federation,
-}
-
-impl Default for OperatorKind {
-    fn default() -> Self {
-        Self::Official
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,10 +75,7 @@ pub fn expand_custom(input: &str) -> Endpoints {
         let host = host_port.split(':').next().unwrap_or(host_port);
         let port = host_port.split(':').nth(1);
         // :443 / :80 count as "no explicit port" (same-origin reverse-proxy style).
-        let default_port = matches!(
-            (https, port),
-            (true, Some("443")) | (false, Some("80"))
-        );
+        let default_port = matches!((https, port), (true, Some("443")) | (false, Some("80")));
         let explicit_non_default_port = port.is_some() && !default_port;
         let zenoh_scheme = if https { "tls" } else { "tcp" };
         if explicit_non_default_port {
@@ -91,7 +83,10 @@ pub fn expand_custom(input: &str) -> Endpoints {
             let auth_url = raw.trim_end_matches('/').to_string();
             return Endpoints {
                 auth_url,
-                world_url: format!("http{}://{host}:{CUSTOM_WORLD_PORT}", if https { "s" } else { "" }),
+                world_url: format!(
+                    "http{}://{host}:{CUSTOM_WORLD_PORT}",
+                    if https { "s" } else { "" }
+                ),
                 assets_url: format!(
                     "http{}://{host}:{CUSTOM_ASSETS_PORT}",
                     if https { "s" } else { "" }
@@ -222,7 +217,9 @@ pub fn now_unix_secs() -> u64 {
 
 pub fn prefs_path() -> PathBuf {
     if let Ok(appdata) = std::env::var("APPDATA") {
-        return PathBuf::from(appdata).join("Alchemy").join("onboarding.json");
+        return PathBuf::from(appdata)
+            .join("Alchemy")
+            .join("onboarding.json");
     }
     if let Ok(home) = std::env::var("HOME") {
         return PathBuf::from(home)
