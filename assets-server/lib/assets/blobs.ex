@@ -82,26 +82,30 @@ defmodule Assets.Blobs do
 
     case Assets.Quarantine.inspect_blob(blake3, data, mime) do
       :ok ->
-        case reserve_or_existing(owner_sub, blake3, size) do
-          {:ok, :existing, object} ->
-            # Ref already held — still ensure CAS bytes + owned grant (repair, no quota).
-            # access is first-writer; mismatch must not look like success.
-            with :ok <- assert_access_match(object, access) do
-              ensure_cas_bytes(owner_sub, blake3, data, object)
-            end
-
-          {:ok, :reserved} ->
-            put_and_finalize(owner_sub, blake3, data, size, mime, access)
-
-          {:error, reason} ->
-            {:error, reason}
-        end
+        continue_upload_after_quarantine(owner_sub, blake3, data, size, mime, access)
 
       {:quarantine, reason} ->
         {:error, {:quarantine, reason}}
 
       {:error, reason} ->
         {:error, {:quarantine_error, reason}}
+    end
+  end
+
+  defp continue_upload_after_quarantine(owner_sub, blake3, data, size, mime, access) do
+    case reserve_or_existing(owner_sub, blake3, size) do
+      {:ok, :existing, object} ->
+        # Ref already held — still ensure CAS bytes + owned grant (repair, no quota).
+        # access is first-writer; mismatch must not look like success.
+        with :ok <- assert_access_match(object, access) do
+          ensure_cas_bytes(owner_sub, blake3, data, object)
+        end
+
+      {:ok, :reserved} ->
+        put_and_finalize(owner_sub, blake3, data, size, mime, access)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

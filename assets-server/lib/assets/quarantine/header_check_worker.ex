@@ -15,12 +15,10 @@ defmodule Assets.Quarantine.HeaderCheckWorker do
   @impl true
   def inspect_blob(_blake3, data, mime)
       when is_binary(data) and is_binary(mime) do
-    cond do
-      glb_mime?(mime) and not glb_header?(data) ->
-        {:quarantine, :invalid_glb_header}
-
-      true ->
-        :ok
+    if glb_mime?(mime) and not glb_header?(data) do
+      {:quarantine, :invalid_glb_header}
+    else
+      :ok
     end
   end
 
