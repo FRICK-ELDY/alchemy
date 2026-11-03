@@ -7,6 +7,8 @@
 //! - [`wire_crypto`] sign/verify helpers for Intent / Frame (x0023).
 //! - [`wire_aead`] Room-key XChaCha20Poly1305 for Zenoh payloads (x0069).
 //! - [`sim_capability`] role → Intent/HTTP capability bits (x002a; not a wire schema).
+//! - [`item_ref`] CAS spawn pointer draft (`blake3` only; x0055; **does not bump** pin —
+//!   not on Manifest / Frame / Intent yet).
 //! - [`generation_gate`] monotonic `(host_generation, revision)` (x003a).
 //! - [`decode_limits`] class-specific pre/post decode ceilings (x003b; **does not bump** pin —
 //!   local validation, wire-compatible with x003a peers).
@@ -28,12 +30,14 @@
 //! - Router max-payload / per-peer QoS (app-level decode limits only; x003b).
 //! - Long-running fuzz campaigns (x004c ships short CI smoke + seed corpus only).
 //! - `wire_cap` topic-name secrecy (x0069: confidentiality is Room-key AEAD).
+//! - ItemRef `repo@rev` / spawn execution / wire carriage (x0055 draft only; → x0063+).
 
 pub use prost::Message;
 
 pub mod decode_limits;
 pub mod generation_gate;
 pub mod host_ipc;
+pub mod item_ref;
 pub mod sim_capability;
 pub mod wire_aead;
 pub mod wire_crypto;
