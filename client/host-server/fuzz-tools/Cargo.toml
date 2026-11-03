@@ -3,7 +3,7 @@ name = "host-server-fuzz-tools"
 version = "0.0.0"
 publish = false
 edition = "2021"
-license = "MIT"
+license = "MPL-2.0"
 description = "Helpers for host-server/fuzz corpus (not a cargo-fuzz target crate)"
 
 [[bin]]

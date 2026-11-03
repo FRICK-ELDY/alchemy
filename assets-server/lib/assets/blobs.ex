@@ -72,6 +72,7 @@ defmodule Assets.Blobs do
 
   # Client access race / first-writer conflict is not an infra put failure.
   defp record_upload_metrics({:error, :access_conflict}), do: :ok
+  defp record_upload_metrics({:error, {:quarantine, _}}), do: :ok
   defp record_upload_metrics({:error, _}), do: Metrics.inc(:cas_put_errors_total)
 
   defp do_upload(owner_sub, data, mime, access) do
@@ -79,19 +80,28 @@ defmodule Assets.Blobs do
     size = byte_size(data)
     mime = mime_or_default(mime)
 
-    case reserve_or_existing(owner_sub, blake3, size) do
-      {:ok, :existing, object} ->
-        # Ref already held — still ensure CAS bytes + owned grant (repair, no quota).
-        # access is first-writer; mismatch must not look like success.
-        with :ok <- assert_access_match(object, access) do
-          ensure_cas_bytes(owner_sub, blake3, data, object)
+    case Assets.Quarantine.inspect_blob(blake3, data, mime) do
+      :ok ->
+        case reserve_or_existing(owner_sub, blake3, size) do
+          {:ok, :existing, object} ->
+            # Ref already held — still ensure CAS bytes + owned grant (repair, no quota).
+            # access is first-writer; mismatch must not look like success.
+            with :ok <- assert_access_match(object, access) do
+              ensure_cas_bytes(owner_sub, blake3, data, object)
+            end
+
+          {:ok, :reserved} ->
+            put_and_finalize(owner_sub, blake3, data, size, mime, access)
+
+          {:error, reason} ->
+            {:error, reason}
         end
 
-      {:ok, :reserved} ->
-        put_and_finalize(owner_sub, blake3, data, size, mime, access)
+      {:quarantine, reason} ->
+        {:error, {:quarantine, reason}}
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, {:quarantine_error, reason}}
     end
   end
 

@@ -101,6 +101,53 @@ defmodule AssetsWeb.BlobControllerTest do
     assert CAS.exists?(blake3)
   end
 
+  test "quarantine rejects invalid GLB header with stable public reason", %{
+    conn: conn,
+    signer: signer,
+    sub: sub
+  } do
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> put_req_header("content-type", "model/gltf-binary; charset=binary")
+      |> post("/api/v1/blobs", "not-a-glb")
+
+    assert %{"error" => "quarantine", "reason" => "invalid_glb_header"} =
+             json_response(conn, 422)
+  end
+
+  test "quarantine maps unknown worker reasons to rejected without inspect leak", %{
+    conn: conn,
+    signer: signer,
+    sub: sub
+  } do
+    previous = Application.get_env(:assets, :quarantine_worker)
+
+    Application.put_env(
+      :assets,
+      :quarantine_worker,
+      AssetsWeb.BlobControllerTest.RejectWithOpaqueWorker
+    )
+
+    on_exit(fn ->
+      if previous do
+        Application.put_env(:assets, :quarantine_worker, previous)
+      else
+        Application.delete_env(:assets, :quarantine_worker)
+      end
+    end)
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> put_req_header("content-type", "application/octet-stream")
+      |> post("/api/v1/blobs", "opaque-reject")
+
+    body = json_response(conn, 422)
+    assert body == %{"error" => "quarantine", "reason" => "rejected"}
+    refute inspect(body) =~ "secret_threshold"
+  end
+
   test "quota exceeded", %{conn: conn, signer: signer, sub: sub} do
     # test limit is 1024 bytes
     big = :crypto.strong_rand_bytes(600)
@@ -599,5 +646,14 @@ defmodule AssetsWeb.BlobControllerTest do
       |> get("/api/v1/blobs/#{blake3}")
 
     assert %{"error" => "forbidden"} = json_response(conn, 403)
+  end
+end
+
+defmodule AssetsWeb.BlobControllerTest.RejectWithOpaqueWorker do
+  @behaviour Assets.Quarantine.Worker
+
+  @impl true
+  def inspect_blob(_blake3, _data, _mime) do
+    {:quarantine, {:secret_threshold, 0.87, %{internal: true}}}
   end
 end

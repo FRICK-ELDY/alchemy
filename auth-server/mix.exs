@@ -11,6 +11,9 @@ defmodule Auth.MixProject do
       releases: releases(),
       aliases: aliases(),
       deps: deps(),
+      package: [
+        licenses: ["MPL-2.0"]
+      ],
       listeners: [Phoenix.CodeReloader]
     ]
   end

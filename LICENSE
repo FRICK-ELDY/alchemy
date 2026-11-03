@@ -1,21 +1,41 @@
-MIT License
+Alchemy Platform Multi-License Notice
+=====================================
 
 Copyright (c) 2026 FRICK-ELDY
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+The Alchemy project (including AlchemyEngine and VRAlchemy) is licensed under a
+multi-license architecture designed to balance open ecosystem interoperability,
+core engine protection, and marketplace security.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Please check the `LICENSE` and `NOTICE` files in each respective component
+directory or submodule for the exact terms and copyright that apply:
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+1. Wire Contracts & Relay Specifications (`Apache-2.0`)
+   - Components: `protocol/`, `relay-server/` (formerly `zenoh-router`),
+     `relay-agent/`
+   - Licensed under the Apache License, Version 2.0.
+
+2. Core Infrastructure & Client Engine (`MPL-2.0`)
+   - Components: `auth-server/`, `assets-server/`, `world-server/`,
+     `client/` (including `client/host-server/` and `client/shared-sim/`),
+     `launcher/`, `shared/alchemy_auth_client/`, `shared/alchemy_client_ip/`
+   - Licensed under the Mozilla Public License, Version 2.0 (MPL-2.0).
+
+3. Quarantine & Anti-Cheat Heuristics (`Proprietary`)
+   - Components: 3D Perceptual Hash / pgvector Quarantine Workers,
+     Detailed Spot-Check Verifier Heuristics (maintained in separate private repositories).
+   - All rights reserved. Not licensed under an open-source license.
+   - OSS trees keep only abstract Behaviours / injection points
+     (`Assets.Quarantine.Worker`, `World.Verifier.AuditEngine`).
+
+4. Commercial Marketplace & Billing Extensions (`BSL-1.1`)
+   - Components: `market-server/`, `BillingProvider`
+   - Licensed under the Business Source License 1.1.
+   - Not present in this repository yet; create under BSL-1.1 when introduced.
+
+Trademarks
+----------
+Nothing in these licenses grants permission to use the trade names, trademarks,
+service marks, or product names of the Licensor ("VRAlchemy", "AlchemyEngine",
+and official logos), except as required for reasonable and customary use in
+describing the origin of the Work. See `TRADEMARKS.md` for details.

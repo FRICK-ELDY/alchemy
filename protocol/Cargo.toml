@@ -2,7 +2,7 @@
 name = "alchemy-protocol"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "Apache-2.0"
 description = "Alchemy wire contracts (Protobuf SSoT) — shared by client, host-server, and servers"
 
 [dependencies]

@@ -2,7 +2,7 @@
 name = "alchemy-relay-agent"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "Apache-2.0"
 description = "Relay Agent: Allocation Token → short-lived mTLS client certs (x004e / x0068)"
 
 [lib]

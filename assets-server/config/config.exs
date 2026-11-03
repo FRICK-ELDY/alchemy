@@ -19,7 +19,9 @@ config :assets,
   auth_jwks_fetch_on_start: true,
   auth_jwt_issuer: "alchemy-auth",
   auth_jwt_audience: "alchemy-platform",
-  max_upload_bytes: 100_000_000
+  max_upload_bytes: 100_000_000,
+  # OSS default: header-only quarantine. Proprietary pgvector workers inject here.
+  quarantine_worker: Assets.Quarantine.HeaderCheckWorker
 
 config :ex_aws,
   json_codec: Jason,
