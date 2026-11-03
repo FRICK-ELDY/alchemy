@@ -216,3 +216,16 @@ AUTH_CI_HOST=1 ./.scripts/ci.sh auth
 | `world` | Docker で format / compile / credo / `mix test` |
 | `assets` | Docker で format / compile / credo / ecto / `mix test` |
 | `launcher` | `launcher/` で fmt / clippy / build / test（x0047） |
+
+## ライセンス
+
+Alchemy は責務境界に沿った **4階層マルチライセンス**です。詳細は [`LICENSE`](LICENSE) と [`TRADEMARKS.md`](TRADEMARKS.md) を参照してください。
+
+| 階層 | 対象（現行パス） | SPDX | 公開形態 |
+|:---|:---|:---|:---|
+| ① ワイヤ契約・中継規格 | [`protocol/`](protocol/)、[`relay-server/`](relay-server/)、[`relay-agent/`](relay-agent/) | `Apache-2.0` | 完全 OSS |
+| ② 必須コア・クライアント | [`auth-server/`](auth-server/)、[`assets-server/`](assets-server/)、[`world-server/`](world-server/)、[`client/`](client/)（`host-server` / `shared-sim` 含む）、[`launcher/`](launcher/)、[`shared/alchemy_auth_client/`](shared/alchemy_auth_client/)、[`shared/alchemy_client_ip/`](shared/alchemy_client_ip/) | `MPL-2.0` | 完全 OSS |
+| ③ 検疫・監査アルゴリズム | pgvector 検疫ワーカー、Spot-Check 詳細ヒューリスティック（別リポジトリ） | Proprietary | 非公開（OSS 側は Behaviour のみ） |
+| ④ 決済・商用マーケット | `market-server` / `BillingProvider`（未導入） | `BSL-1.1` | Source-Available（商用競合制限） |
+
+「VRAlchemy」「AlchemyEngine」および公式ロゴ・公認バッジはオープンソース許諾の対象外です（[`TRADEMARKS.md`](TRADEMARKS.md)）。

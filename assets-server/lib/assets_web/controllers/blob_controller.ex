@@ -125,6 +125,11 @@ defmodule AssetsWeb.BlobController do
         |> put_status(:conflict)
         |> json(%{error: "access_conflict"})
 
+      {:error, {:quarantine, reason}} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "quarantine", reason: Assets.Quarantine.public_reason(reason)})
+
       {:error, reason} ->
         Logger.warning("blob upload failed: #{inspect(reason)}")
 

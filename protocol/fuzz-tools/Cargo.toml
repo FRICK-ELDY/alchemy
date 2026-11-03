@@ -3,7 +3,7 @@ name = "alchemy-protocol-fuzz-tools"
 version = "0.0.0"
 publish = false
 edition = "2021"
-license = "MIT"
+license = "Apache-2.0"
 description = "Helpers for protocol/fuzz corpus (not a cargo-fuzz target crate)"
 
 [[bin]]

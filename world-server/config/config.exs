@@ -29,7 +29,9 @@ config :world,
   trusted_proxies: [],
   # Zenoh control-plane adapter (NIF isolated behind World.Network.Zenoh.Client).
   zenoh_adapter: World.Network.Zenoh.ZenohexAdapter,
-  zenoh_connect: "tcp/127.0.0.1:7447"
+  zenoh_connect: "tcp/127.0.0.1:7447",
+  # OSS default: no-op Spot-Check. Proprietary heuristics inject here.
+  audit_engine: World.Verifier.NoopAuditEngine
 
 # Rule: :ring so Zenoh callbacks never block when the BEAM mailbox lags.
 config :zenohex,

@@ -33,7 +33,7 @@ defmodule AlchemyAuthClient.MixProject do
 
   defp package do
     [
-      licenses: ["MIT"],
+      licenses: ["MPL-2.0"],
       links: %{"GitHub" => "https://github.com/FRICK-ELDY/alchemy"}
     ]
   end
