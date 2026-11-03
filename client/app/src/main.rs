@@ -35,6 +35,7 @@ mod jwt_sub;
 mod manifest_seal;
 mod mesh;
 mod metrics;
+mod operator_prefs;
 mod scene;
 mod surface;
 mod system_ui;
@@ -81,10 +82,6 @@ use world_jwks::WorldJwks;
 use zenoh::bytes::ZBytes;
 use zenoh::Wait;
 
-const DEFAULT_ZENOH_CONNECT: &str = "tcp/127.0.0.1:7447";
-const DEFAULT_WORLD_URL: &str = "http://127.0.0.1:4003";
-const DEFAULT_AUTH_URL: &str = "http://127.0.0.1:4002";
-const DEFAULT_ASSETS_URL: &str = "http://127.0.0.1:4004";
 const DEFAULT_ROOM_ID: &str = "local";
 /// Match net frame rate so Grab hold aim stays smooth enough (x0011).
 const INPUT_HZ: u64 = 30;
@@ -127,15 +124,16 @@ fn gate_presence_pin(protocol_pin: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn zenoh_connect_endpoint() -> String {
-    std::env::var("ZENOH_CONNECT").unwrap_or_else(|_| DEFAULT_ZENOH_CONNECT.to_string())
+/// Keep process env in sync for zenoh-connect helpers that still read `ZENOH_CONNECT`.
+fn sync_zenoh_connect_env(endpoint: &str) {
+    std::env::set_var("ZENOH_CONNECT", endpoint);
 }
 
 /// Explicit close so bus threads stop even when another strong `Session` clone still exists.
 ///
 /// Zenoh 1.x only auto-`close`s on `Drop` when `strong_counter == 1`. Leaving App's slot as
 /// `None` alone is not enough if a spawn_* thread retained a clone (see presence historically).
-fn close_zenoh(zenoh: &mut Option<zenoh::Session>) {
+pub fn close_zenoh(zenoh: &mut Option<zenoh::Session>) {
     if let Some(session) = zenoh.take() {
         if let Err(err) = session.close().wait() {
             log::warn!("zenoh session close failed: {err}");
@@ -143,8 +141,11 @@ fn close_zenoh(zenoh: &mut Option<zenoh::Session>) {
     }
 }
 
-fn open_zenoh() -> Result<zenoh::Session> {
-    zenoh_connect::open_client(&zenoh_connect_endpoint())
+/// Open using SharedState endpoint (not a stale boot-time env snapshot).
+fn open_zenoh_for(shared: &SharedState) -> Result<zenoh::Session> {
+    let endpoint = shared.get_zenoh_connect();
+    sync_zenoh_connect_env(&endpoint);
+    zenoh_connect::open_client(&endpoint)
 }
 
 fn assets_http_agent() -> ureq::Agent {
@@ -1243,8 +1244,9 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     } else {
         (None, None)
     };
+    let world_url = shared.get_world_url();
     let guest = world_token::fetch_guest_token(
-        &shared.world_url,
+        &world_url,
         &shared.room_id,
         access_token,
         &session_pub_b64,
@@ -1395,12 +1397,13 @@ fn bind_room_after_join_inner(
     if mtls_pending || zenoh.is_none() {
         // Match Leave / orphan path: always close before replace (not only Drop-on-overwrite).
         close_zenoh(zenoh);
-        let session = open_zenoh().context("zenoh open/reopen after join")?;
+        let session = open_zenoh_for(shared).context("zenoh open/reopen after join")?;
         *zenoh = Some(session);
         shared.room_bus_started.store(false, Ordering::SeqCst);
         log::info!(
-            "zenoh session {} after join (mtls_pending={mtls_pending})",
-            if mtls_pending { "reopened" } else { "opened" }
+            "zenoh session {} after join (mtls_pending={mtls_pending}) endpoint={}",
+            if mtls_pending { "reopened" } else { "opened" },
+            shared.get_zenoh_connect()
         );
     }
     let bus = {
@@ -1414,7 +1417,7 @@ fn bind_room_after_join_inner(
         log::warn!("room bus spawn failed ({err:#}); closing session to clear orphans");
         close_zenoh(zenoh);
         shared.room_bus_started.store(false, Ordering::SeqCst);
-        *zenoh = Some(open_zenoh().context("zenoh reopen after bus spawn failure")?);
+        *zenoh = Some(open_zenoh_for(shared).context("zenoh reopen after bus spawn failure")?);
         let retry = {
             let session = zenoh
                 .as_ref()
@@ -1488,7 +1491,7 @@ fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                         .ok()
                         .and_then(|g| g.refresh_token.clone());
                     match refresh_token {
-                        Some(rt) => match auth::refresh(&shared.auth_url, &rt) {
+                        Some(rt) => match auth::refresh(&shared.get_auth_url(), &rt) {
                             Ok(session) => {
                                 if let Ok(mut gate) = shared.auth.lock() {
                                     gate.apply_auth_session(session);
@@ -1588,8 +1591,9 @@ fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                     } else {
                         (None, None)
                     };
+                    let world_url = shared.get_world_url();
                     match world_token::fetch_guest_token(
-                        &shared.world_url,
+                        &world_url,
                         &shared.room_id,
                         &access,
                         &session_pub_b64,
@@ -1784,9 +1788,13 @@ pub fn leave_room(shared: &SharedState, zenoh: &mut Option<zenoh::Session>) {
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let world_url = std::env::var("WORLD_URL").unwrap_or_else(|_| DEFAULT_WORLD_URL.to_string());
-    let auth_url = std::env::var("AUTH_URL").unwrap_or_else(|_| DEFAULT_AUTH_URL.to_string());
-    let assets_url = std::env::var("ASSETS_URL").unwrap_or_else(|_| DEFAULT_ASSETS_URL.to_string());
+    let prefs = operator_prefs::load();
+    let boot_ep = operator_prefs::boot_endpoints(&prefs);
+    let auth_url = boot_ep.auth_url.clone();
+    let world_url = boot_ep.world_url.clone();
+    let zenoh_connect = boot_ep.zenoh_connect.clone();
+    // SharedState is the source of truth; sync env only when we actually open Zenoh
+    // (open_zenoh_for) or when ApplyOperatorEndpoints updates endpoints.
     let room_id_raw = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
     let room_id = validate_room_id(&room_id_raw)
         .map_err(|e| anyhow::anyhow!("invalid ROOM_ID={room_id_raw:?}: {e}"))?
@@ -1800,6 +1808,30 @@ fn main() -> Result<()> {
     let mut gate = AuthGate::default();
     if let Some(session) = silent {
         gate.apply_auth_session(session);
+    } else if prefs.operator_chosen
+        && prefs.session_still_valid(operator_prefs::now_unix_secs())
+        && prefs.refresh_token.is_some()
+    {
+        // Restore remember-me session (≤7 days); failure falls through to UI Step2.
+        if let Some(rt) = prefs.refresh_token.clone() {
+            match auth::refresh(&auth_url, &rt) {
+                Ok(session) => {
+                    log::info!("onboarding: restored session via refresh_token");
+                    let mut prefs = prefs.clone();
+                    prefs.refresh_token = session.refresh_token.clone().or(Some(rt));
+                    prefs.username = Some(session.user.username.clone());
+                    prefs.last_login_at = Some(operator_prefs::now_unix_secs());
+                    operator_prefs::save(&prefs);
+                    gate.apply_auth_session(session);
+                }
+                Err(err) => {
+                    log::info!("onboarding: refresh restore failed ({err:#}) — UI login");
+                    let mut prefs = prefs.clone();
+                    prefs.clear_session();
+                    operator_prefs::save(&prefs);
+                }
+            }
+        }
     }
 
     let client_metrics = Arc::new(metrics::ClientMetrics::default());
@@ -1807,8 +1839,13 @@ fn main() -> Result<()> {
 
     let jwks = Arc::new(WorldJwks::new(&world_url));
     jwks.set_metrics(Arc::clone(&client_metrics));
-    jwks.refresh()
-        .context("initial world JWKS (ManifestSeal + HostAttestation)")?;
+    // UI-first boot may not have world up yet; soft-fail and retry after operator select.
+    if let Err(err) = jwks.refresh() {
+        if auth_mode == "silent" {
+            return Err(err).context("initial world JWKS (ManifestSeal + HostAttestation)");
+        }
+        log::warn!("initial world JWKS deferred (UI onboarding): {err:#}");
+    }
     jwks.spawn_background_refresh();
     let seal = Arc::new(ManifestSealVerifier::new(Arc::clone(&jwks), &room_id));
     let attest = Arc::new(HostAttestationVerifier::new(Arc::clone(&jwks), &room_id));
@@ -1820,11 +1857,13 @@ fn main() -> Result<()> {
         room_key: Mutex::new(None),
         room_bus_started: AtomicBool::new(false),
         mtls_reopen_pending: AtomicBool::new(false),
+        world_jwks: Arc::clone(&jwks),
         manifest_seal: Arc::clone(&seal),
         host_attest: Arc::clone(&attest),
-        auth_url: Arc::<str>::from(auth_url),
-        world_url: Arc::<str>::from(world_url),
-        assets_url: Arc::<str>::from(assets_url.clone()),
+        auth_url: Mutex::new(auth_url),
+        world_url: Mutex::new(world_url),
+        assets_url: Mutex::new(boot_ep.assets_url.clone()),
+        zenoh_connect: Mutex::new(zenoh_connect),
         auth: Mutex::new(gate),
         intent_session: Mutex::new(None),
         pending_intent_session: Mutex::new(None),
@@ -1843,20 +1882,12 @@ fn main() -> Result<()> {
         intent: Mutex::new(Default::default()),
     });
 
-    if shared
-        .auth
-        .lock()
-        .ok()
-        .and_then(|g| g.access_token.clone())
-        .is_some()
-    {
-        let access = shared
-            .auth
-            .lock()
-            .ok()
-            .and_then(|g| g.access_token.clone())
-            .expect("access just checked");
-        join_room_with_access(&shared, &access).context("silent join room")?;
+    // Auto-join + Zenoh open only for silent/CI. Remember-me restore authenticates only
+    // and lands on MainHub; SOLO/Join then opens the right endpoint (incl. mTLS).
+    if auth_mode == "silent" {
+        if let Some(access) = shared.auth.lock().ok().and_then(|g| g.access_token.clone()) {
+            join_room_with_access(&shared, &access).context("silent join room")?;
+        }
     }
 
     let wire_cap = shared.wire_cap();
@@ -1870,10 +1901,6 @@ fn main() -> Result<()> {
 
     spawn_token_refresh(Arc::clone(&shared))?;
 
-    // Allocate (if any) already set ZENOH_TLS_* during join — open picks them up.
-    let session = Some(open_zenoh().context("open zenoh session")?);
-    // Boot open consumed the cert; do not leave a stale one-shot for a later bind.
-    shared.mtls_reopen_pending.store(false, Ordering::SeqCst);
     let joined_with_cap = wire_cap.is_some()
         && shared
             .auth
@@ -1881,6 +1908,18 @@ fn main() -> Result<()> {
             .ok()
             .map(|g| g.is_joined())
             .unwrap_or(false);
+
+    // UI / pre-join: defer Zenoh open until bind_room_after_join so Step1 Official/Custom
+    // can retarget endpoints without leaving a localhost session glued open.
+    // Silent join: allocate may have set ZENOH_TLS_* — open picks them up now.
+    let session = if joined_with_cap {
+        let s = open_zenoh_for(&shared).context("open zenoh session")?;
+        shared.mtls_reopen_pending.store(false, Ordering::SeqCst);
+        Some(s)
+    } else {
+        log::info!("zenoh open deferred until Home→Join (operator endpoints may still change)");
+        None
+    };
 
     let (blake3_tx, blake3_rx) = mpsc::sync_channel::<Result<String, String>>(1);
     if joined_with_cap {
@@ -1938,13 +1977,16 @@ fn main() -> Result<()> {
     };
 
     let mesh = {
-        let outcome = if access_for_blob.is_empty() {
-            // Unauthenticated Home always intends Coin fixture; do not verify against
-            // Manifest blake3 (may differ before login). x0048 review.
-            log::info!("no auth yet — loading Coin fixture for Home (login via Home tab)");
+        // Remember-me may have access_token without join — still use Coin fixture until
+        // room bus / Manifest blake3 exist (avoid Official assets GET on Coin hash).
+        let outcome = if !joined_with_cap {
+            log::info!("not joined — loading Coin fixture for Home / MainHub");
+            load_unauth_home_mesh()
+        } else if access_for_blob.is_empty() {
+            log::info!("joined without access token — Coin fixture");
             load_unauth_home_mesh()
         } else {
-            load_auth_mesh(&assets_url, &blob_blake3, &access_for_blob)
+            load_auth_mesh(&shared.get_assets_url(), &blob_blake3, &access_for_blob)
         };
         match outcome {
             AuthMeshLoad::Ready(mesh) => mesh,

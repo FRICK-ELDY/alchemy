@@ -722,6 +722,11 @@ pub fn run_session(
                             }
                             exit_requested = true;
                         }
+                        UiAction::ApplyOperatorEndpoints => {
+                            ui.state.home_status =
+                                "Operator select / login text entry is Desktop-only".into();
+                            ui.rebuild();
+                        }
                         UiAction::AuthLogin | UiAction::AuthRegister => {
                             ui.state.home_status =
                                 "Login/register text entry is Desktop-only (x0018)".into();
@@ -732,8 +737,12 @@ pub fn run_session(
                             if let Ok(mut gate) = shared.auth.lock() {
                                 gate.clear_session();
                             }
+                            let mut prefs = crate::operator_prefs::load();
+                            prefs.clear_session();
+                            crate::operator_prefs::save(&prefs);
                             ui.state.home_logged_in_as = None;
                             ui.state.home_create_open = false;
+                            ui.state.shell = crate::system_ui::OnboardingShell::Step2Auth;
                             ui.state.home_status =
                                 "Signed out — Leave sent (host reclaim immediate)".into();
                             ui.rebuild();

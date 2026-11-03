@@ -49,6 +49,18 @@ pub enum WidgetId {
     HomeAccessFollowersPlus,
     HomeAccessPublic,
     HomeStartSession,
+    /// Onboarding Step1 (operator select).
+    OperatorOfficial,
+    OperatorFederation,
+    OperatorCustom,
+    OperatorCustomHost,
+    Step1Next,
+    Step1Back,
+    FederationStubBack,
+    Step2Back,
+    /// Main hub after login.
+    MainPlayTogether,
+    MainSoloHost,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
