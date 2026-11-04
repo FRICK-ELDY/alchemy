@@ -241,6 +241,10 @@ pub struct SharedState {
     pub asset_status: Mutex<Option<String>>,
     pub look: Mutex<CameraLook>,
     pub intent: Mutex<MoveIntent>,
+    /// XR ↔ Desktop present ownership (x0053). Desktop-only keeps `vr_active=false`.
+    pub presentation: crate::surface::PresentationGate,
+    /// Dash logical state shared Desktop ↔ XR (x0053). Layout/hover stay per-surface.
+    pub dash: Mutex<crate::system_ui::SharedDashStore>,
 }
 
 impl SharedState {
@@ -284,6 +288,13 @@ impl SharedState {
         self.world_jwks.retarget_world(&ep.world_url);
         if let Err(err) = self.world_jwks.refresh() {
             log::warn!("world JWKS refresh after operator switch: {err:#}");
+        }
+    }
+
+    /// Zero shared locomotion / Grab (x0053 present handoff). Call only on ownership edges.
+    pub fn clear_move_intent(&self) {
+        if let Ok(mut slot) = self.intent.lock() {
+            *slot = MoveIntent::default();
         }
     }
 

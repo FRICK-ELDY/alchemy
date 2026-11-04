@@ -7,6 +7,11 @@
 //! Look is never on Zenoh.
 //! Auth login/register/logout and room start/join HTTP run on a worker thread; the UI
 //! thread only polls the outcome (x002e / P3-9 / x0037).
+//! x0053 Companion: F8 toggles VR↔Desktop present; Intent/Grab only while
+//! `DesktopRole::owns_input`; present handoff zeros shared `MoveIntent`;
+//! exit mirrors XR `presentation.exit_requested`; Zenoh bind/leave/mTLS are
+//! owned here only. Companion still redraws while `vr_active` (best-effort
+//! mirror — extra GPU cost, not a hotswitch guarantee).
 //!
 //! Linux/WSL: prefer Confined + `CursorMoved` (recenter). `Locked` often succeeds but
 //! yields no `DeviceEvent::MouseMotion`, so look appears dead.
@@ -33,6 +38,7 @@ use crate::scene::{
     create_depth_view, create_wgpu_for_window, CameraLook, EntityPose, MoveIntent, SceneGpu,
     SharedState,
 };
+use crate::surface::hotswitch::DesktopRole;
 use crate::system_ui::{DashTab, OnboardingShell, SystemUi, UiAction};
 use crate::world_api;
 use crate::world_hit::{desktop_look_ray, pick_grabbable_desktop};
@@ -144,6 +150,7 @@ struct App {
     gpu: Option<DesktopGpu>,
     ui: SystemUi,
     zenoh: Option<zenoh::Session>,
+    role: DesktopRole,
     cursor: (f64, f64),
     primary_down: bool,
     keys_down: HashSet<KeyCode>,
@@ -166,6 +173,8 @@ struct App {
     last_grab_miss_log: Option<std::time::Instant>,
     /// In-flight Auth HTTP (+ join) worker result (x002e).
     auth_job: Option<Receiver<AuthJobOutcome>>,
+    /// Last observed Desktop input ownership (READY / vr_active edges).
+    last_owns_input: bool,
 }
 
 /// Outcome of Auth / world HTTP work off the UI thread (x002e / P3-9 / x0037).
@@ -199,8 +208,68 @@ where
 }
 
 impl App {
+    fn owns_input(&self) -> bool {
+        self.role.owns_input(&self.shared.presentation)
+    }
+
+    fn window_title(&self) -> &'static str {
+        match self.role {
+            DesktopRole::Solo => "Alchemy Client — Desktop",
+            DesktopRole::Companion if !self.shared.presentation.xr_session_live() => {
+                // XR init fail / exit → Solo-like.
+                "Alchemy Client — Desktop"
+            }
+            DesktopRole::Companion if !self.shared.presentation.xr_session_started() => {
+                "Alchemy Client — Desktop (XR starting…)"
+            }
+            DesktopRole::Companion if self.shared.presentation.vr_active() => {
+                "Alchemy Client — VR active (F8 → Desktop)"
+            }
+            DesktopRole::Companion => "Alchemy Client — Desktop (F8 → VR)",
+        }
+    }
+
+    fn refresh_window_title(&self) {
+        if let Some(window) = self.window.as_ref() {
+            window.set_title(self.window_title());
+        }
+    }
+
+    fn sync_hotswitch_ui(&mut self) {
+        let auto = self
+            .shared
+            .presentation
+            .hotswitch_auto
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let suppressed = self
+            .shared
+            .presentation
+            .auto_suppressed
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let prev_auto = self.ui.state.hotswitch_auto;
+        let prev_suppressed = self.ui.state.hotswitch_suppressed;
+        let prev_available = self.ui.state.hotswitch_available;
+        let prev_label = self.ui.state.hotswitch_label.clone();
+        // Hotswitch controls only after READY (same gate as F8). Local gate only.
+        // PresentationGate is SoT for auto/suppressed — not SharedDashLogic.
+        self.ui.state.hotswitch_available =
+            self.role == DesktopRole::Companion && self.shared.presentation.xr_session_started();
+        self.ui.state.hotswitch_auto = auto;
+        self.ui.state.hotswitch_suppressed = suppressed;
+        self.ui.state.refresh_hotswitch_label();
+        // Title depends on live|started|vr, not only owns_input — refresh with UI sync.
+        self.refresh_window_title();
+        let view_changed = prev_auto != auto
+            || prev_suppressed != suppressed
+            || prev_available != self.ui.state.hotswitch_available
+            || self.ui.state.hotswitch_label != prev_label;
+        if view_changed && self.ui.state.open {
+            self.ui.rebuild();
+        }
+    }
+
     fn apply_look_delta(&mut self, dx: f64, dy: f64) {
-        if !self.look_captured || self.ui.state.open {
+        if !self.owns_input() || !self.look_captured || self.ui.state.open {
             return;
         }
         if dx == 0.0 && dy == 0.0 {
@@ -209,6 +278,90 @@ impl App {
         if let Ok(mut look) = self.shared.look.lock() {
             *look = apply_mouse_look(*look, dx, dy, LOOK_SENSITIVITY, PITCH_LIMIT);
         }
+    }
+
+    /// Fires when Desktop gains/loses Intent ownership (READY edge or vr_active).
+    fn on_input_ownership_edge(&mut self) {
+        let owns = self.owns_input();
+        if owns == self.last_owns_input {
+            return;
+        }
+        self.last_owns_input = owns;
+        self.refresh_window_title();
+        // Ownership edge: drop look / Grab and zero shared Intent (no ghost WASD/stick).
+        self.set_look_capture(false);
+        self.held_grab = None;
+        self.grab_down = false;
+        self.keys_down.clear();
+        self.ui.clear_pointer();
+        self.shared.clear_move_intent();
+        if owns {
+            log::info!("hotswitch: Desktop took input ownership");
+        } else {
+            log::info!("hotswitch: Desktop cleared Intent / yielded to VR");
+        }
+    }
+
+    /// XR-requested leave / host shutdown (Desktop is the Zenoh owner).
+    fn poll_presentation_requests(&mut self) {
+        if self.shared.presentation.take_leave_requested() {
+            let had_zenoh = self.zenoh.is_some();
+            if !had_zenoh {
+                log::warn!(
+                    "hotswitch: leave requested but Zenoh is None — clearing auth without Leave put"
+                );
+            }
+            leave_room(&self.shared, &mut self.zenoh);
+            if let Ok(mut gate) = self.shared.auth.lock() {
+                gate.clear_session();
+            }
+            let mut prefs = operator_prefs::load();
+            prefs.clear_session();
+            operator_prefs::save(&prefs);
+            self.ui.state.home_logged_in_as = None;
+            self.ui.state.home_create_open = false;
+            self.ui.state.shell = OnboardingShell::Step2Auth;
+            self.ui.state.home_status = if had_zenoh {
+                "Signed out — Leave sent (host reclaim immediate)".into()
+            } else {
+                "Signed out — local only (no Zenoh; Leave put skipped)".into()
+            };
+            self.ui.state.open = true;
+            self.ui.state.tab = DashTab::Home;
+            self.ui.mark_dash_logic_dirty();
+            self.ui.rebuild();
+            log::info!("hotswitch: Desktop performed leave_room for XR AuthLogout");
+        }
+        if self.shared.presentation.take_host_shutdown_requested() {
+            if let Some(session) = self.zenoh.as_ref() {
+                let cap = self.shared.wire_cap();
+                host_control::request_host_shutdown(
+                    session,
+                    self.shared.room_id.as_ref(),
+                    cap.as_deref(),
+                );
+                log::info!("hotswitch: Desktop published host shutdown for XR Exit");
+            } else {
+                log::warn!(
+                    "hotswitch: host shutdown requested but Zenoh is None — client exits without host notify"
+                );
+            }
+            self.shared.presentation.request_exit();
+        }
+    }
+
+    fn toggle_hotswitch_manual(&mut self) {
+        if self.role != DesktopRole::Companion {
+            return;
+        }
+        // READY only — avoids flipping into a preferred-VR state before XR can write Intent.
+        if !self.shared.presentation.xr_session_started() {
+            log::info!("hotswitch: F8 ignored (XR not READY yet)");
+            return;
+        }
+        let now_vr = self.shared.presentation.toggle_vr_active();
+        log::info!("hotswitch: F8 → {}", if now_vr { "VR" } else { "Desktop" });
+        self.on_input_ownership_edge();
     }
 
     /// x0068: Token refresh installed new mTLS PEMs → reopen Zenoh while joined.
@@ -252,6 +405,7 @@ impl App {
             Some(Err(())) => {
                 self.auth_job = None;
                 self.ui.state.home_status = "Auth worker disconnected".into();
+                self.ui.mark_dash_form_dirty();
                 self.ui.rebuild();
                 log::warn!("auth worker disconnected before result");
             }
@@ -294,6 +448,7 @@ impl App {
                 self.ui.state.home_create_open = false;
                 self.ui.state.shell = OnboardingShell::MainHub;
                 self.ui.state.home_status = "Signed in — choose PLAY TOGETHER or SOLO".into();
+                self.ui.mark_dash_logic_dirty();
                 self.ui.rebuild();
                 log::info!("auth login ok (no auto-join)");
             }
@@ -304,16 +459,19 @@ impl App {
                 self.ui.state.home_create_open = false;
                 self.ui.state.shell = OnboardingShell::MainHub;
                 self.ui.state.home_status = "Account created — choose PLAY TOGETHER or SOLO".into();
+                self.ui.mark_dash_logic_dirty();
                 self.ui.rebuild();
                 log::info!("auth register ok (no auto-join)");
             }
             AuthJobOutcome::LoginFailed(err) => {
                 self.ui.state.home_status = format!("Login failed: {err}");
+                self.ui.mark_dash_form_dirty();
                 self.ui.rebuild();
                 log::warn!("login failed: {err}");
             }
             AuthJobOutcome::RegisterFailed(err) => {
                 self.ui.state.home_status = format!("Register failed: {err}");
+                self.ui.mark_dash_form_dirty();
                 self.ui.rebuild();
                 log::warn!("register failed: {err}");
             }
@@ -562,6 +720,11 @@ impl App {
     }
 
     fn rebuild_intent(&mut self) {
+        if !self.owns_input() {
+            // XR owns Intent while VR-present. Handoff zeros Intent in
+            // `on_input_ownership_edge` / XR edge — do not write here.
+            return;
+        }
         self.update_grab_hold();
 
         let dash_open = self.ui.state.open;
@@ -669,7 +832,7 @@ impl ApplicationHandler for App {
             }
         }
         let attrs = Window::default_attributes()
-            .with_title("Alchemy Client — x0013 (Desktop Grab)")
+            .with_title(self.window_title())
             .with_inner_size(LogicalSize::new(960.0, 540.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         let gpu = pollster::block_on(DesktopGpu::new(
@@ -689,8 +852,10 @@ impl ApplicationHandler for App {
             .expect("init system_ui gpu");
         self.window = Some(window);
         self.gpu = Some(gpu);
+        self.sync_hotswitch_ui();
+        self.ui.rebuild();
         log::info!(
-            "system_ui ready — Esc dash; click to look; aim box (look down, brightens) + LMB/RMB/E Grab; WASD+Space+C"
+            "system_ui ready — Esc dash; F8 hotswitch (XR companion); click to look; Grab LMB/RMB/E; WASD+Space+C"
         );
     }
 
@@ -710,7 +875,10 @@ impl ApplicationHandler for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.shared.presentation.request_exit();
+                event_loop.exit();
+            }
             WindowEvent::Focused(false) => {
                 self.set_look_capture(false);
             }
@@ -758,7 +926,7 @@ impl ApplicationHandler for App {
                             event_loop,
                         );
                     }
-                } else if pressed && !self.look_captured {
+                } else if pressed && !self.look_captured && self.owns_input() {
                     self.set_look_capture(true);
                 } else if !pressed && self.look_captured {
                     // Arm Grab on LMB only after the capture click is released.
@@ -771,7 +939,9 @@ impl ApplicationHandler for App {
                 button: MouseButton::Right,
                 ..
             } => {
-                self.grab_down = state == ElementState::Pressed;
+                if self.owns_input() {
+                    self.grab_down = state == ElementState::Pressed;
+                }
                 self.rebuild_intent();
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -781,6 +951,9 @@ impl ApplicationHandler for App {
                         self.keys_down.insert(code);
                     } else {
                         self.keys_down.remove(&code);
+                    }
+                    if pressed && !event.repeat && code == KeyCode::F8 {
+                        self.toggle_hotswitch_manual();
                     }
                     if pressed && !event.repeat && code == KeyCode::Escape {
                         self.ui.toggle();
@@ -828,16 +1001,31 @@ impl ApplicationHandler for App {
                 self.rebuild_intent();
             }
             WindowEvent::RedrawRequested => {
+                self.ui.pull_dash_logic(&self.shared);
+                self.on_input_ownership_edge();
+                self.refresh_window_title();
+                self.sync_hotswitch_ui();
+                self.poll_presentation_requests();
                 self.poll_auth_job();
                 self.poll_mtls_reopen();
-                self.maintain_look_capture();
-                self.rebuild_intent();
-                let highlight = self.aim_highlight();
+                if self.owns_input() {
+                    self.maintain_look_capture();
+                    self.rebuild_intent();
+                } else if self.look_captured {
+                    self.set_look_capture(false);
+                }
+                // Mirror while VR-active is intentional (non-guarantee GPU cost).
+                let highlight = if self.owns_input() {
+                    self.aim_highlight()
+                } else {
+                    None
+                };
                 if let Some(gpu) = self.gpu.as_mut() {
                     if let Err(err) = gpu.render(&mut self.ui, highlight) {
                         log::error!("render failed: {err:#}");
                     }
                 }
+                self.ui.push_dash_logic(&self.shared);
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -846,7 +1034,13 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.poll_presentation_requests();
+        if self.shared.presentation.exit_requested() {
+            event_loop.exit();
+            return;
+        }
+        self.on_input_ownership_edge();
         self.poll_auth_job();
         self.poll_mtls_reopen();
         // x0048: re-apply sticky asset failure after Login/Start/Join settle (skips "…").
@@ -856,6 +1050,9 @@ impl ApplicationHandler for App {
         {
             self.ui.state.open = true;
             self.ui.state.tab = DashTab::Home;
+            self.ui.mark_dash_logic_dirty();
+            // Publish before next Redraw so XR cannot interleave an older push.
+            self.ui.push_dash_logic(&self.shared);
         }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
@@ -942,6 +1139,7 @@ fn apply_start_session_result(
             log::warn!("start session join failed: {err}");
         }
     }
+    ui.mark_dash_logic_dirty();
     ui.rebuild();
 }
 
@@ -971,6 +1169,7 @@ fn apply_join_result(
             log::warn!("join failed (session kept): {err}");
         }
     }
+    ui.mark_dash_logic_dirty();
     ui.rebuild();
 }
 
@@ -983,8 +1182,25 @@ fn handle_ui_action(
     event_loop: &ActiveEventLoop,
 ) {
     match action {
+        UiAction::HotswitchAutoChanged => {
+            shared
+                .presentation
+                .set_hotswitch_auto(ui.state.hotswitch_auto);
+            // Clearing suppress lets the user re-enable auto after a bad sensor episode.
+            if ui.state.hotswitch_auto {
+                shared
+                    .presentation
+                    .auto_suppressed
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                ui.state.hotswitch_suppressed = false;
+                ui.state.refresh_hotswitch_label();
+            }
+            ui.rebuild();
+            log::info!("hotswitch auto stored → {}", ui.state.hotswitch_auto);
+        }
         UiAction::ExitClientOnly => {
             log::info!("system_ui: exit client only");
+            shared.presentation.request_exit();
             event_loop.exit();
         }
         UiAction::ExitClientAndHost => {
@@ -997,6 +1213,7 @@ fn handle_ui_action(
                     cap.as_deref(),
                 );
             }
+            shared.presentation.request_exit();
             event_loop.exit();
         }
         UiAction::ApplyOperatorEndpoints => {
@@ -1027,6 +1244,7 @@ fn handle_ui_action(
         UiAction::AuthLogin => {
             if auth_job.is_some() {
                 ui.state.home_status = "Auth busy…".into();
+                ui.mark_dash_form_dirty();
                 ui.rebuild();
                 return;
             }
@@ -1036,6 +1254,7 @@ fn handle_ui_action(
             let auth_url = shared.get_auth_url();
             let shared_job = Arc::clone(shared);
             ui.state.home_status = "Signing in…".into();
+            ui.mark_dash_form_dirty();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
             *auth_job = Some(rx);
@@ -1057,6 +1276,7 @@ fn handle_ui_action(
         UiAction::AuthRegister => {
             if auth_job.is_some() {
                 ui.state.home_status = "Auth busy…".into();
+                ui.mark_dash_form_dirty();
                 ui.rebuild();
                 return;
             }
@@ -1068,12 +1288,14 @@ fn handle_ui_action(
             let tos_agreed = ui.state.home_tos_agreed;
             if !tos_agreed {
                 ui.state.home_status = "Agree to the Terms of Service to register".into();
+                ui.mark_dash_form_dirty();
                 ui.rebuild();
                 return;
             }
             let auth_url = shared.get_auth_url();
             let shared_job = Arc::clone(shared);
             ui.state.home_status = "Creating account…".into();
+            ui.mark_dash_form_dirty();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
             *auth_job = Some(rx);
@@ -1115,6 +1337,7 @@ fn handle_ui_action(
             ui.state.shell = OnboardingShell::Step2Auth;
             ui.state.home_status = "Signed out — sign in again".into();
             ui.state.tab = DashTab::Home;
+            ui.mark_dash_logic_dirty();
             ui.rebuild();
             log::info!("auth logout — Leave + local session cleared");
             if let Some(access) = access {
@@ -1127,6 +1350,7 @@ fn handle_ui_action(
         UiAction::StartSession => {
             if auth_job.is_some() {
                 ui.state.home_status = "Auth busy…".into();
+                ui.mark_dash_form_dirty();
                 ui.rebuild();
                 return;
             }
@@ -1134,11 +1358,13 @@ fn handle_ui_action(
             let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
             let Some(access) = access else {
                 ui.state.home_status = "Sign in before starting a session".into();
+                ui.mark_dash_form_dirty();
                 ui.rebuild();
                 return;
             };
             let shared_job = Arc::clone(shared);
             ui.state.home_status = format!("Starting session ({})…", level.as_str());
+            ui.mark_dash_form_dirty();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
             *auth_job = Some(rx);
@@ -1163,17 +1389,20 @@ fn handle_ui_action(
         UiAction::JoinRoom => {
             if auth_job.is_some() {
                 ui.state.home_status = "Auth busy…".into();
+                ui.mark_dash_form_dirty();
                 ui.rebuild();
                 return;
             }
             let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
             let Some(access) = access else {
                 ui.state.home_status = "Sign in before joining".into();
+                ui.mark_dash_form_dirty();
                 ui.rebuild();
                 return;
             };
             let shared_job = Arc::clone(shared);
             ui.state.home_status = "Joining room…".into();
+            ui.mark_dash_form_dirty();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
             *auth_job = Some(rx);
@@ -1187,7 +1416,12 @@ fn handle_ui_action(
     }
 }
 
-pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session>) -> Result<()> {
+pub fn run(
+    mesh: CpuMesh,
+    shared: Arc<SharedState>,
+    zenoh: Option<zenoh::Session>,
+    role: DesktopRole,
+) -> Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut ui = SystemUi::new();
@@ -1195,6 +1429,16 @@ pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session
     let prefs = operator_prefs::load();
     ui.state.operator = prefs.operator;
     ui.state.custom_host = prefs.custom_host.clone();
+    ui.state.hotswitch_available = role == DesktopRole::Companion;
+    ui.state.hotswitch_auto = shared
+        .presentation
+        .hotswitch_auto
+        .load(std::sync::atomic::Ordering::SeqCst);
+    ui.state.hotswitch_suppressed = shared
+        .presentation
+        .auto_suppressed
+        .load(std::sync::atomic::Ordering::SeqCst);
+    ui.state.refresh_hotswitch_label();
     let (joined, authenticated, username) = shared
         .auth
         .lock()
@@ -1228,6 +1472,10 @@ pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session
             ui.state.shell = OnboardingShell::Dash;
         }
     }
+    // Seed SharedState so XR can pull the same logical shell before first redraw.
+    ui.mark_dash_logic_dirty();
+    ui.push_dash_logic(&shared);
+    let last_owns_input = role.owns_input(&shared.presentation);
     let mut app = App {
         mesh,
         shared,
@@ -1235,6 +1483,7 @@ pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session
         gpu: None,
         ui,
         zenoh,
+        role,
         cursor: (0.0, 0.0),
         primary_down: false,
         keys_down: HashSet::new(),
@@ -1248,6 +1497,7 @@ pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session
         lmb_grab_armed: false,
         last_grab_miss_log: None,
         auth_job: None,
+        last_owns_input,
     };
     event_loop.run_app(&mut app)?;
     Ok(())

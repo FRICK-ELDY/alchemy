@@ -10,9 +10,12 @@
 //! animatable node pose/visibility (x000d).
 //! Grab hold: squeeze (or Select when dash closed) → InputEvent GRAB + aim (x0011).
 //! XR 描画は wgpu SceneGpu + overlays 既定（x0052）。ash は Vulkan enable／hal interop のみ。
+//! x0053: session stays alive while Desktop companion presents; empty layers when
+//! `!vr_active`; `XR_EXT_user_presence` drives auto hotswitch when enabled.
 //! Non-guarantees: WSL HMD, Quest standalone, Vive trackpad-only,
 //! Facet rearrange / WorldRoot, Steal, CompositionLayerQuad dash,
-//! PBR maps, SteamVR rendermodels path loading; multiview; Bevy.
+//! PBR maps, SteamVR rendermodels path loading; multiview; Bevy;
+//! Virtual Desktop / broken near-sensor auto (F8 still works).
 
 mod input;
 mod loader;
@@ -63,7 +66,7 @@ pub fn probe() -> Result<bool> {
     }
 }
 
-pub fn run(mesh: CpuMesh, shared: Arc<SharedState>, zenoh: Option<zenoh::Session>) -> Result<()> {
-    log::info!("surface/xr: wgpu SceneGpu session (x0052)");
-    wgpu_session::run_session(mesh, shared, zenoh)
+pub fn run(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
+    log::info!("surface/xr: wgpu SceneGpu session (x0052); no Zenoh (Desktop owns)");
+    wgpu_session::run_session(mesh, shared)
 }

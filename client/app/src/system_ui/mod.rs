@@ -5,6 +5,9 @@
 //! create-world form (Desktop text input), Button hover/press color, client exit /
 //! auth / start-session action plumbing, Settings defaults (read-only).
 //! Dash is personal — never published on Room `frame`.
+//! x0053: logical [`SharedDashLogic`] is SharedState-owned; LayoutTree / UiGpu /
+//! hover / password stay per-surface. Chrome/form push are field-split with
+//! chrome CAS; `PresentationGate` is SoT for hotswitch auto/suppressed.
 //! Non-guarantees: OpenXR types inside this module, user Facet rearrange, Vault layout
 //! persist, WorldRoot, XR virtual keyboard, auth/world HTTP (surface modules), final UI art,
 //! Federation directory / PLAY TOGETHER session list.
@@ -16,14 +19,19 @@ mod gpu;
 mod icons;
 mod layout;
 
+#[allow(unused_imports)] // public re-export; store.logic type for callers
+pub use dash::SharedDashLogic;
 pub use dash::{
     access_level_from_widget, DashState, DashTab, HomeField, HomeMode, OnboardingShell,
-    SESSION_NAME_MAX,
+    SharedDashStore, SESSION_NAME_MAX,
 };
 pub use gpu::UiGpu;
 pub use layout::{LayoutTree, WidgetId};
 
+use std::sync::Mutex;
+
 use crate::operator_prefs::OperatorKind;
+use crate::scene::SharedState;
 use dash::rebuild;
 
 /// Owns dash state + retained layout tree.
@@ -36,6 +44,14 @@ pub struct SystemUi {
     last_fps_instant: std::time::Instant,
     frames_in_window: u32,
     fps: f32,
+    /// Last applied / published [`SharedDashStore::revision`] (form).
+    dash_logic_rev: u64,
+    /// Last applied / published [`SharedDashStore::chrome_revision`].
+    dash_chrome_rev: u64,
+    /// Local chrome edits not yet CAS-pushed.
+    dash_chrome_dirty: bool,
+    /// Local form edits not yet pushed.
+    dash_form_dirty: bool,
 }
 
 impl SystemUi {
@@ -48,7 +64,108 @@ impl SystemUi {
             last_fps_instant: std::time::Instant::now(),
             frames_in_window: 0,
             fps: 0.0,
+            dash_logic_rev: 0,
+            dash_chrome_rev: 0,
+            dash_chrome_dirty: false,
+            dash_form_dirty: false,
         }
+    }
+
+    /// Mark chrome (`open`/`tab`/`shell`/Settings) dirty.
+    pub fn mark_dash_chrome_dirty(&mut self) {
+        self.dash_chrome_dirty = true;
+    }
+
+    /// Mark form (Home / onboarding) dirty.
+    pub fn mark_dash_form_dirty(&mut self) {
+        self.dash_form_dirty = true;
+    }
+
+    /// Mark both chrome and form dirty (mixed shell+status updates).
+    pub fn mark_dash_logic_dirty(&mut self) {
+        self.dash_chrome_dirty = true;
+        self.dash_form_dirty = true;
+    }
+
+    /// Pull from a dash store (testable without full [`SharedState`]).
+    ///
+    /// Chrome merges while form-dirty (Esc/Menu during typing). Chrome pull is
+    /// skipped while chrome-dirty so a pending Esc is not wiped before CAS push.
+    /// Form merges only when form-clean.
+    pub fn pull_dash_store(&mut self, dash: &Mutex<SharedDashStore>) -> bool {
+        let Ok(store) = dash.lock() else {
+            return false;
+        };
+        let mut changed = false;
+        if !self.dash_chrome_dirty && store.chrome_revision != self.dash_chrome_rev {
+            changed |= store.logic.apply_chrome_to(&mut self.state);
+            self.dash_chrome_rev = store.chrome_revision;
+        }
+        if !self.dash_form_dirty && store.revision != self.dash_logic_rev {
+            changed |= store.logic.apply_form_to(&mut self.state);
+            self.dash_logic_rev = store.revision;
+        }
+        drop(store);
+        if changed {
+            self.state.refresh_hotswitch_label();
+            self.rebuild();
+        }
+        changed
+    }
+
+    pub fn pull_dash_logic(&mut self, shared: &SharedState) -> bool {
+        self.pull_dash_store(&shared.dash)
+    }
+
+    /// Push dirty chrome/form separately. Chrome uses CAS on `chrome_revision`.
+    pub fn push_dash_store(&mut self, dash: &Mutex<SharedDashStore>) {
+        if !self.dash_chrome_dirty && !self.dash_form_dirty {
+            return;
+        }
+        let Ok(mut store) = dash.lock() else {
+            return;
+        };
+        let mut rebuild_after = false;
+
+        if self.dash_form_dirty {
+            if !store.logic.form_eq(&self.state) {
+                store.logic.write_form_from(&self.state);
+                store.revision = store.revision.saturating_add(1);
+            }
+            self.dash_logic_rev = store.revision;
+            self.dash_form_dirty = false;
+        }
+
+        if self.dash_chrome_dirty {
+            if store.chrome_revision == self.dash_chrome_rev {
+                if !store.logic.chrome_eq(&self.state) {
+                    store.logic.write_chrome_from(&self.state);
+                    store.chrome_revision = store.chrome_revision.saturating_add(1);
+                }
+                self.dash_chrome_rev = store.chrome_revision;
+                self.dash_chrome_dirty = false;
+            } else {
+                // Peer chrome advanced: adopt it; do not clobber with stale local.
+                // Concurrent Esc/Menu: the side that lost the CAS drops its intent.
+                log::info!(
+                    "dash chrome CAS miss: local_rev={} store_rev={} — adopting peer chrome",
+                    self.dash_chrome_rev,
+                    store.chrome_revision
+                );
+                rebuild_after = store.logic.apply_chrome_to(&mut self.state);
+                self.dash_chrome_rev = store.chrome_revision;
+                self.dash_chrome_dirty = false;
+            }
+        }
+        drop(store);
+        if rebuild_after {
+            self.state.refresh_hotswitch_label();
+            self.rebuild();
+        }
+    }
+
+    pub fn push_dash_logic(&mut self, shared: &SharedState) {
+        self.push_dash_store(&shared.dash)
     }
 
     pub fn init_gpu(
@@ -81,6 +198,7 @@ impl SystemUi {
             self.state.hover = None;
             self.state.pressed = None;
         }
+        self.mark_dash_chrome_dirty();
         self.rebuild();
     }
 
@@ -158,6 +276,7 @@ impl SystemUi {
         };
         if let Some(level) = access_level_from_widget(hit) {
             self.state.home_access_level = level;
+            self.mark_dash_form_dirty();
             self.rebuild();
             return UiAction::None;
         }
@@ -165,12 +284,14 @@ impl SystemUi {
             WidgetId::TabExit | WidgetId::CloseSession => {
                 self.state.shell = OnboardingShell::Dash;
                 self.state.tab = DashTab::Exit;
+                self.mark_dash_chrome_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::TabSettings => {
                 self.state.shell = OnboardingShell::Dash;
                 self.state.tab = DashTab::Settings;
+                self.mark_dash_chrome_dirty();
                 self.rebuild();
                 UiAction::None
             }
@@ -183,12 +304,14 @@ impl SystemUi {
                     self.state.shell = OnboardingShell::Dash;
                     self.state.tab = DashTab::Home;
                 }
+                self.mark_dash_chrome_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::OperatorOfficial => {
                 self.state.operator = OperatorKind::Official;
                 self.state.custom_host_focus = false;
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
@@ -196,18 +319,21 @@ impl SystemUi {
                 self.state.operator = OperatorKind::Federation;
                 self.state.custom_host_focus = false;
                 self.state.shell = OnboardingShell::Step1FederationStub;
+                self.mark_dash_logic_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::OperatorCustom => {
                 self.state.operator = OperatorKind::Custom;
                 self.state.custom_host_focus = true;
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::OperatorCustomHost => {
                 self.state.operator = OperatorKind::Custom;
                 self.state.custom_host_focus = true;
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
@@ -219,6 +345,7 @@ impl SystemUi {
                 if !self.state.home_session_actions_enabled {
                     self.state.home_status =
                         "Operator select / login is Desktop-only (use Desktop client)".into();
+                    self.mark_dash_form_dirty();
                     self.rebuild();
                     return UiAction::None;
                 }
@@ -227,29 +354,32 @@ impl SystemUi {
                 self.state.tab = DashTab::Home;
                 self.state.home_focus = Some(HomeField::Identifier);
                 self.state.home_status = "Sign in to continue".into();
+                self.mark_dash_logic_dirty();
                 self.rebuild();
                 UiAction::ApplyOperatorEndpoints
             }
             WidgetId::Step1Back => {
                 // First-launch: no prior step. Keep Step1.
-                self.rebuild();
                 UiAction::None
             }
             WidgetId::FederationStubBack => {
                 self.state.shell = OnboardingShell::Step1Operator;
                 self.state.operator = OperatorKind::Official;
+                self.mark_dash_logic_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::Step2Back => {
                 self.state.shell = OnboardingShell::Step1Operator;
                 self.state.custom_host_focus = self.state.operator == OperatorKind::Custom;
+                self.mark_dash_logic_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::MainPlayTogether => {
                 self.state.home_status =
                     "PLAY TOGETHER session list is a stub (not available yet)".into();
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
@@ -259,6 +389,7 @@ impl SystemUi {
                 self.state.home_create_open = false;
                 self.state.home_status =
                     "SOLO — create or join (host must use the same AUTH/WORLD URLs)".into();
+                self.mark_dash_logic_dirty();
                 self.rebuild();
                 UiAction::None
             }
@@ -266,42 +397,64 @@ impl SystemUi {
             WidgetId::ExitClientAndHost => UiAction::ExitClientAndHost,
             WidgetId::TurnModeToggle => {
                 self.state.toggle_turn_mode();
+                self.mark_dash_chrome_dirty();
                 self.rebuild();
                 log::info!("turn mode → {}", self.state.turn.mode.label());
                 UiAction::None
             }
+            WidgetId::HotswitchAutoToggle => {
+                // PresentationGate is SoT; surface writes Gate from UiAction.
+                self.state.toggle_hotswitch_auto();
+                self.rebuild();
+                log::info!(
+                    "hotswitch auto → {}",
+                    if self.state.hotswitch_auto {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
+                );
+                UiAction::HotswitchAutoChanged
+            }
             WidgetId::HomeFieldIdentifier => {
                 self.state.home_focus = Some(HomeField::Identifier);
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::HomeFieldPassword => {
                 self.state.home_focus = Some(HomeField::Password);
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::HomeFieldUsername => {
                 self.state.home_focus = Some(HomeField::Username);
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::HomeFieldEmail => {
                 self.state.home_focus = Some(HomeField::Email);
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::HomeFieldBirthday => {
                 self.state.home_focus = Some(HomeField::Birthday);
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::HomeRememberMe => {
                 self.state.home_remember_me = !self.state.home_remember_me;
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::HomeTosAgreed => {
                 self.state.home_tos_agreed = !self.state.home_tos_agreed;
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
@@ -310,6 +463,7 @@ impl SystemUi {
                 self.state.home_focus = Some(HomeField::Identifier);
                 // Do not carry Register checkbox across mode switches.
                 self.state.home_tos_agreed = false;
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
@@ -317,6 +471,7 @@ impl SystemUi {
                 self.state.home_mode = HomeMode::Register;
                 self.state.home_focus = Some(HomeField::Username);
                 self.state.home_tos_agreed = false;
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
@@ -327,6 +482,7 @@ impl SystemUi {
             WidgetId::HomeLogout => {
                 self.state.home_create_open = false;
                 self.state.shell = OnboardingShell::Step2Auth;
+                self.mark_dash_logic_dirty();
                 UiAction::AuthLogout
             }
             WidgetId::HomeNewWorld => {
@@ -337,6 +493,7 @@ impl SystemUi {
                 } else {
                     "Create panel (browse only) — Start/Join HTTP is Desktop-only".into()
                 };
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
@@ -344,23 +501,23 @@ impl SystemUi {
                 self.state.home_create_open = false;
                 self.state.home_focus = None;
                 self.state.home_status = "Signed in — create or join a world".into();
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::HomeCreateName => {
                 self.state.home_focus = Some(HomeField::SessionName);
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
-            WidgetId::HomeTemplateGrid => {
-                self.rebuild();
-                UiAction::None
-            }
+            WidgetId::HomeTemplateGrid => UiAction::None,
             WidgetId::HomeStartSession => {
                 if self.state.home_session_actions_enabled {
                     UiAction::StartSession
                 } else {
                     self.state.home_status = "Start session HTTP is Desktop-only this Slice".into();
+                    self.mark_dash_form_dirty();
                     self.rebuild();
                     UiAction::None
                 }
@@ -370,6 +527,7 @@ impl SystemUi {
                     UiAction::JoinRoom
                 } else {
                     self.state.home_status = "Join room HTTP is Desktop-only this Slice".into();
+                    self.mark_dash_form_dirty();
                     self.rebuild();
                     UiAction::None
                 }
@@ -401,6 +559,7 @@ impl SystemUi {
         }
         if self.state.shell == OnboardingShell::Step1Operator {
             self.state.append_home_text(text);
+            self.mark_dash_form_dirty();
             self.rebuild();
             return;
         }
@@ -422,6 +581,7 @@ impl SystemUi {
             return;
         }
         self.state.append_home_text(text);
+        self.mark_dash_form_dirty();
         self.rebuild();
     }
 
@@ -431,6 +591,7 @@ impl SystemUi {
         }
         if self.state.shell == OnboardingShell::Step1Operator {
             self.state.home_backspace();
+            self.mark_dash_form_dirty();
             self.rebuild();
             return;
         }
@@ -442,6 +603,7 @@ impl SystemUi {
             return;
         }
         self.state.home_backspace();
+        self.mark_dash_form_dirty();
         self.rebuild();
     }
 
@@ -458,6 +620,7 @@ impl SystemUi {
         }
         // Hub: cycle is a no-op (see DashState::cycle_home_focus).
         self.state.cycle_home_focus();
+        self.mark_dash_form_dirty();
         self.rebuild();
     }
 
@@ -472,10 +635,12 @@ impl SystemUi {
             if !self.state.home_session_actions_enabled {
                 self.state.home_status =
                     "Operator select / login is Desktop-only (use Desktop client)".into();
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 return UiAction::None;
             }
             self.state.custom_host_focus = false;
+            self.mark_dash_logic_dirty();
             self.state.shell = OnboardingShell::Step2Auth;
             self.state.tab = DashTab::Home;
             self.state.home_focus = Some(HomeField::Identifier);
@@ -496,6 +661,7 @@ impl SystemUi {
                     return UiAction::StartSession;
                 }
                 self.state.home_status = "Start session HTTP is Desktop-only this Slice".into();
+                self.mark_dash_form_dirty();
                 self.rebuild();
             }
             return UiAction::None;
@@ -583,6 +749,8 @@ pub enum UiAction {
     StartSession,
     /// Hub: guest join current `ROOM_ID` without create (x0037).
     JoinRoom,
+    /// Settings: VR hotswitch auto toggled (surface writes PresentationGate).
+    HotswitchAutoChanged,
 }
 
 fn chrono_lite_now() -> String {
@@ -713,5 +881,140 @@ mod tests {
             .hits
             .iter()
             .any(|(id, _)| *id == WidgetId::MainSoloHost));
+    }
+
+    #[test]
+    fn chrome_only_push_does_not_clobber_peer_form() {
+        let dash = Mutex::new(SharedDashStore::default());
+        {
+            let mut store = dash.lock().unwrap();
+            store.logic.home_identifier = "peer-typed".into();
+            store.revision = 3;
+            store.chrome_revision = 1;
+            store.logic.open = false;
+        }
+
+        let mut ui = SystemUi::new();
+        ui.dash_logic_rev = 3;
+        ui.dash_chrome_rev = 1;
+        ui.state.open = false;
+        ui.state.home_identifier.clear();
+        ui.toggle(); // chrome-only dirty
+        ui.push_dash_store(&dash);
+
+        let store = dash.lock().unwrap();
+        assert!(store.logic.open);
+        assert_eq!(store.chrome_revision, 2);
+        assert_eq!(store.revision, 3, "form revision must stay");
+        assert_eq!(store.logic.home_identifier, "peer-typed");
+    }
+
+    #[test]
+    fn form_dirty_still_pulls_peer_chrome() {
+        let dash = Mutex::new(SharedDashStore::default());
+        {
+            let mut store = dash.lock().unwrap();
+            store.logic.open = true;
+            store.logic.tab = DashTab::Settings;
+            store.logic.home_identifier = "seed".into();
+            store.revision = 1;
+            store.chrome_revision = 2;
+        }
+
+        let mut ui = SystemUi::new();
+        ui.dash_logic_rev = 1;
+        ui.dash_chrome_rev = 1;
+        ui.state.open = false;
+        ui.state.tab = DashTab::Home;
+        ui.state.home_identifier = "typing…".into();
+        ui.mark_dash_form_dirty();
+
+        assert!(ui.pull_dash_store(&dash));
+        assert!(ui.state.open);
+        assert_eq!(ui.state.tab, DashTab::Settings);
+        assert_eq!(ui.state.home_identifier, "typing…");
+        assert!(ui.dash_form_dirty);
+    }
+
+    #[test]
+    fn stale_chrome_push_does_not_clobber_newer_peer_chrome() {
+        let dash = Mutex::new(SharedDashStore::default());
+        {
+            let mut store = dash.lock().unwrap();
+            store.logic.open = false;
+            store.chrome_revision = 1;
+            store.revision = 1;
+        }
+
+        let mut a = SystemUi::new();
+        a.dash_chrome_rev = 1;
+        a.dash_logic_rev = 1;
+        a.state.open = false;
+        a.toggle(); // local open=true, chrome_dirty, still thinks rev=1
+
+        // Peer B publishes open=false→ already false, but advances chrome via tab.
+        {
+            let mut store = dash.lock().unwrap();
+            store.logic.open = false;
+            store.logic.tab = DashTab::Exit;
+            store.chrome_revision = 2;
+        }
+
+        a.push_dash_store(&dash);
+        let store = dash.lock().unwrap();
+        assert_eq!(store.chrome_revision, 2);
+        assert!(!store.logic.open);
+        assert_eq!(store.logic.tab, DashTab::Exit);
+        assert!(!a.state.open);
+        assert_eq!(a.state.tab, DashTab::Exit);
+        assert!(!a.dash_chrome_dirty);
+    }
+
+    #[test]
+    fn form_only_push_does_not_rewrite_chrome() {
+        let dash = Mutex::new(SharedDashStore::default());
+        {
+            let mut store = dash.lock().unwrap();
+            store.logic.open = true;
+            store.logic.tab = DashTab::Settings;
+            store.chrome_revision = 5;
+            store.revision = 2;
+        }
+
+        let mut ui = SystemUi::new();
+        ui.dash_chrome_rev = 5;
+        ui.dash_logic_rev = 2;
+        ui.state.open = false; // stale local chrome — must not be written
+        ui.state.tab = DashTab::Home;
+        ui.state.home_identifier = "alice".into();
+        ui.mark_dash_form_dirty();
+        ui.push_dash_store(&dash);
+
+        let store = dash.lock().unwrap();
+        assert!(store.logic.open);
+        assert_eq!(store.logic.tab, DashTab::Settings);
+        assert_eq!(store.chrome_revision, 5);
+        assert_eq!(store.revision, 3);
+        assert_eq!(store.logic.home_identifier, "alice");
+    }
+
+    #[test]
+    fn noop_form_dirty_does_not_bump_revision() {
+        let dash = Mutex::new(SharedDashStore::default());
+        {
+            let mut store = dash.lock().unwrap();
+            store.logic.home_status = "same".into();
+            store.revision = 4;
+        }
+
+        let mut ui = SystemUi::new();
+        ui.dash_logic_rev = 4;
+        ui.state.home_status = "same".into();
+        ui.mark_dash_form_dirty();
+        ui.push_dash_store(&dash);
+
+        let store = dash.lock().unwrap();
+        assert_eq!(store.revision, 4);
+        assert!(!ui.dash_form_dirty);
     }
 }
