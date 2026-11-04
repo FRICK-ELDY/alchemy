@@ -5,7 +5,7 @@ defmodule Assets do
   Drive folder/blob/prefab（x005c/x005d）+ Prefab.Payload schema（x005e）+
   Drive take-out helpers（x005f）+ Drive put-back/save_prefab（x0060）+
   Vcs promote/commit/ref/cert（x0062–x0065）+ ItemRef blake3|repo@rev（x0063）+
-  PlaceRead（x006b）+ GET option B（x006c）.
+  PlaceRead（x006b）+ GET option B（x006c）+ Drive put_back HTTP（x006e）.
 
   ## Guarantees
 
@@ -25,6 +25,7 @@ defmodule Assets do
   - Drive.resolve_for_take_out/2: BlobGrant verified before returning refs to host (x005f)
   - Drive.save_prefab/4: Payload validated + uploaded grant_required + DriveNode upserted
     (x0060; invariant: save→reload→from_json round-trip is lossless — x0061)
+  - HTTP `POST /api/v1/drive/put_back` wraps save_prefab for Desktop Inventory (x006e)
   - Vcs.promote_prefab/2: DriveNode(prefab)→VcsRepo + initial Commit in one TX;
     Commit.tree_json ≡ Prefab payload; old blake3 path remains readable (x0062)
   - ItemRef.resolve/2: {:blake3, hash} and {:repo_rev, repo_id, rev} paths;

@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x006d`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x006f`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -160,11 +160,12 @@ depends_on: [x0006]
 | x006b | — | done | PlaceRead（場所スコープ読取・seal 連動／案 B 発行境界） | [x006b-place-read-capability.md](slices/x006b-place-read-capability.md) |
 | x006c | — | done | BlobGrant 案 B（GET 常時 Grant / PlaceRead） | [x006c-blob-grant-option-b.md](slices/x006c-blob-grant-option-b.md) |
 | x006d | — | done | host take-out（Drive HTTP + Inventory UI + Zenoh 制御面） | [x006d-host-take-out-control.md](slices/x006d-host-take-out-control.md) |
+| x006e | — | done | Inventory put-back UI（Drive HTTP + scene mesh 選択） | [x006e-inventory-put-back-ui.md](slices/x006e-inventory-put-back-ui.md) |
 
-**現在の次:** **[x006d](slices/x006d-host-take-out-control.md)** host take-out **done**。次候補: put-back UI。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
+**現在の次:** **[x006e](slices/x006e-inventory-put-back-ui.md)** Inventory put-back UI **done**。次候補: P3 衛生 / verifier。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
-次の空き番号は **`x006e`**。
+次の空き番号は **`x006f`**。
 
 ## 関連
 

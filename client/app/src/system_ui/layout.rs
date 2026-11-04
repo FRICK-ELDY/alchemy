@@ -18,10 +18,11 @@ pub enum WidgetId {
     TabHome,
     TabExit,
     TabSettings,
-    /// Inventory take-out (x006d).
+    /// Inventory take-out / put-back (x006d / x006e).
     TabInventory,
     InventoryRefresh,
     InventoryTakeOut,
+    InventoryPutBack,
     InventoryRow0,
     InventoryRow1,
     InventoryRow2,
@@ -30,6 +31,10 @@ pub enum WidgetId {
     InventoryRow5,
     InventoryRow6,
     InventoryRow7,
+    SceneMeshRow0,
+    SceneMeshRow1,
+    SceneMeshRow2,
+    SceneMeshRow3,
     ExitClientOnly,
     ExitClientAndHost,
     SettingsPlaceholder,

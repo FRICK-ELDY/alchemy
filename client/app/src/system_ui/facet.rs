@@ -78,6 +78,7 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         WidgetId::TabInventory
         | WidgetId::InventoryRefresh
         | WidgetId::InventoryTakeOut
+        | WidgetId::InventoryPutBack
         | WidgetId::InventoryRow0
         | WidgetId::InventoryRow1
         | WidgetId::InventoryRow2
@@ -85,7 +86,11 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::InventoryRow4
         | WidgetId::InventoryRow5
         | WidgetId::InventoryRow6
-        | WidgetId::InventoryRow7 => FacetId::Inventory,
+        | WidgetId::InventoryRow7
+        | WidgetId::SceneMeshRow0
+        | WidgetId::SceneMeshRow1
+        | WidgetId::SceneMeshRow2
+        | WidgetId::SceneMeshRow3 => FacetId::Inventory,
         WidgetId::TabHome
         | WidgetId::HomeFieldIdentifier
         | WidgetId::HomeFieldPassword

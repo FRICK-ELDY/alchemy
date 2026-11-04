@@ -86,8 +86,143 @@ defmodule AssetsWeb.DriveControllerTest do
     assert %{"error" => "node_id_required"} = json_response(conn, 422)
   end
 
+  test "put_back saves single-child prefab", %{conn: conn, signer: signer} do
+    blake3 = String.duplicate("a", 64)
+
+    body = %{
+      name: "putback-item",
+      payload: %{
+        schema_version: 1,
+        children: [%{local_id: "mesh_0", blake3: blake3}]
+      }
+    }
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "application/json")
+      |> post("/api/v1/drive/put_back", Jason.encode!(body))
+
+    assert %{
+             "node" => %{
+               "kind" => "prefab",
+               "name" => "putback-item",
+               "blake3" => payload_blake3
+             }
+           } = json_response(conn, 200)
+
+    assert byte_size(payload_blake3) == 64
+  end
+
+  test "put_back upserts same name", %{conn: conn, signer: signer} do
+    blake3_a = String.duplicate("a", 64)
+    blake3_b = String.duplicate("b", 64)
+
+    body1 = %{
+      name: "shared-putback",
+      payload: %{schema_version: 1, children: [%{local_id: "c0", blake3: blake3_a}]}
+    }
+
+    conn1 =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "application/json")
+      |> post("/api/v1/drive/put_back", Jason.encode!(body1))
+
+    assert %{"node" => %{"node_id" => id1, "blake3" => b1}} = json_response(conn1, 200)
+
+    body2 = %{
+      name: "shared-putback",
+      payload: %{schema_version: 1, children: [%{local_id: "c1", blake3: blake3_b}]}
+    }
+
+    conn2 =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "application/json")
+      |> post("/api/v1/drive/put_back", Jason.encode!(body2))
+
+    assert %{"node" => %{"node_id" => id2, "blake3" => b2}} = json_response(conn2, 200)
+    assert id1 == id2
+    assert b1 != b2
+  end
+
+  test "put_back without name is 422", %{conn: conn, signer: signer} do
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "application/json")
+      |> post(
+        "/api/v1/drive/put_back",
+        Jason.encode!(%{payload: %{schema_version: 1, children: []}})
+      )
+
+    assert %{"error" => "name_required"} = json_response(conn, 422)
+  end
+
+  test "put_back name too long is 422", %{conn: conn, signer: signer} do
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "application/json")
+      |> post(
+        "/api/v1/drive/put_back",
+        Jason.encode!(%{
+          name: String.duplicate("n", 256),
+          payload: %{schema_version: 1, children: []}
+        })
+      )
+
+    assert %{"error" => "name_too_long"} = json_response(conn, 422)
+  end
+
+  test "put_back invalid payload is 422 without internal detail", %{conn: conn, signer: signer} do
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "application/json")
+      |> post(
+        "/api/v1/drive/put_back",
+        Jason.encode!(%{name: "bad", payload: %{schema_version: 99, children: []}})
+      )
+
+    body = json_response(conn, 422)
+    assert body["error"] == "invalid_payload"
+    refute Map.has_key?(body, "detail")
+  end
+
+  test "put_back other parent is forbidden", %{conn: conn, signer: signer} do
+    {:ok, folder} = Drive.create_folder(@sub_b, "Other")
+
+    body = %{
+      name: "nested",
+      parent_id: folder.node_id,
+      payload: %{schema_version: 1, children: []}
+    }
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "application/json")
+      |> post("/api/v1/drive/put_back", Jason.encode!(body))
+
+    assert %{"error" => "forbidden"} = json_response(conn, 403)
+  end
+
   test "rejects without auth", %{conn: conn} do
     conn = get(conn, "/api/v1/drive/nodes")
+    assert %{"error" => "missing_auth_token"} = json_response(conn, 401)
+  end
+
+  test "put_back rejects without auth", %{conn: conn} do
+    conn =
+      conn
+      |> put_req_header("content-type", "application/json")
+      |> post(
+        "/api/v1/drive/put_back",
+        Jason.encode!(%{name: "x", payload: %{schema_version: 1, children: []}})
+      )
+
     assert %{"error" => "missing_auth_token"} = json_response(conn, 401)
   end
 end

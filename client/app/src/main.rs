@@ -597,6 +597,20 @@ fn spawn_manifest_subscriber(
                                 mesh_blake3 = Some(entry.blake3.clone());
                             }
                         }
+                        // x006e put-back list: 64 ascii-hex blake3 only (CAS key).
+                        // shared-sim treats any non-empty blake3 as Mesh; short/non-hex
+                        // hashes may still draw but are intentionally omitted here.
+                        let scene_meshes: Vec<(u32, String)> = manifest
+                            .entries
+                            .iter()
+                            .filter(|e| {
+                                !alchemy_protocol::scene_entry_is_user_root(e.entity_id)
+                                    && e.blake3.len() == 64
+                                    && e.blake3.bytes().all(|b| b.is_ascii_hexdigit())
+                            })
+                            .map(|e| (e.entity_id, e.blake3.clone()))
+                            .collect();
+                        shared.set_scene_meshes(scene_meshes);
                         if let Ok(mut world) = shared.world.lock() {
                             for entry in &manifest.entries {
                                 let (r, g, b, a) = scene_entry_color_rgba(entry);
@@ -1929,6 +1943,7 @@ fn main() -> Result<()> {
         metrics: Arc::clone(&client_metrics),
         box_defs: Mutex::new(Arc::new(scene::BoxDefs::default())),
         mesh_entity_id: AtomicU32::new(0),
+        scene_meshes: Mutex::new(Vec::new()),
         asset_status: Mutex::new(None),
         look: Mutex::new(Default::default()),
         intent: Mutex::new(Default::default()),

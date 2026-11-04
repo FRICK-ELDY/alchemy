@@ -1,9 +1,10 @@
-//! Inventory take-out client helpers (x006d).
+//! Inventory take-out / put-back client helpers (x006d / x006e).
 //!
-//! Guarantees: Drive list / take_out over assets HTTP; spawn put on Zenoh
-//! `inventory/spawn` sealed with [`AeadKind::InventorySpawn`] (host Room Token
-//! never leaves the room AEAD boundary); no Drive node_id on the wire to host.
-//! Non-guarantees: put-back; Prefab multi-child; XR Inventory polish.
+//! Guarantees: Drive list / take_out / put_back over assets HTTP; spawn put on
+//! Zenoh `inventory/spawn` sealed with [`AeadKind::InventorySpawn`] (host Room
+//! Token never leaves the room AEAD boundary); no Drive node_id on the wire to
+//! host. Put-back is Bearer→assets only (no Zenoh); room entity is left in place.
+//! Non-guarantees: scene despawn; Prefab multi-child UI; XR Inventory polish.
 
 use alchemy_protocol::inventory_spawn_key;
 use alchemy_protocol::wire_aead::{self, AeadKind};
@@ -92,6 +93,63 @@ pub fn take_out_blob_blake3(
             Err(anyhow!("take_out status={code} body={body}"))
         }
         Err(err) => Err(anyhow!("take_out failed: {err:#}")),
+    }
+}
+
+/// Save a single-child Prefab via assets put-back (x006e). Returns Drive node.
+pub fn put_back_prefab(
+    assets_url: &str,
+    access_token: &str,
+    name: &str,
+    blake3: &str,
+    trs: Option<([f64; 3], [f64; 4], [f64; 3])>,
+) -> Result<DriveNodeDto> {
+    let base = assets_url.trim_end_matches('/');
+    let url = format!("{base}/api/v1/drive/put_back");
+    let authz = format!("Bearer {access_token}");
+    let mut child = json!({
+        "local_id": "mesh_0",
+        "blake3": blake3,
+    });
+    if let Some((translation, rotation, scale)) = trs {
+        child["trs"] = json!({
+            "translation": translation,
+            "rotation": rotation,
+            "scale": scale,
+        });
+    }
+    let body = json!({
+        "name": name,
+        "payload": {
+            "schema_version": 1,
+            "children": [child],
+        },
+    });
+    match ureq::agent()
+        .post(&url)
+        .set("authorization", &authz)
+        .set("content-type", "application/json")
+        .send_json(&body)
+    {
+        Ok(resp) => {
+            #[derive(Deserialize)]
+            struct PutBackResponse {
+                node: DriveNodeDto,
+            }
+            let parsed: PutBackResponse = resp.into_json().context("parse put_back")?;
+            if parsed.node.kind != "prefab" {
+                return Err(anyhow!(
+                    "put_back expected prefab (got kind={})",
+                    parsed.node.kind
+                ));
+            }
+            Ok(parsed.node)
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(anyhow!("put_back status={code} body={body}"))
+        }
+        Err(err) => Err(anyhow!("put_back failed: {err:#}")),
     }
 }
 
