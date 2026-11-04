@@ -3,7 +3,8 @@ defmodule World.Rooms do
   Room ledger facade (x0028).
 
   Guarantees: create / owner / scene / visibility backed by Ash + SQLite (survives restart).
-  Non-guarantees: UGC scene edits; multi-node replication; Postgres (swap path documented);
+  x006d: host may append a single mesh SceneEntry via `append_scene_entry/2` (revision bump).
+  Non-guarantees: full UGC editor; multi-node replication; Postgres (swap path documented);
   Room Token revocation on visibility / friendship change (TTL-only; see RoomAccess).
 
   x0021: `owner_sub` set only via `create/3` (`{:ok, room_id, visibility, wire_cap}` · x004e).
@@ -153,6 +154,148 @@ defmodule World.Rooms do
   end
 
   def scene(_), do: {:error, :invalid_room_id}
+
+  @doc """
+  Append one mesh SceneEntry for inventory take-out (x006d).
+
+  Assigns the next free `entity_id` (max existing + 1, skipping nothing —
+  caller must not collide with reserved bands by sending entity_id).
+  Bumps `revision`. Returns the updated scene map.
+  """
+  @spec append_scene_entry(room_id(), map()) ::
+          {:ok, map()}
+          | {:error,
+             :invalid_room_id
+             | :not_found
+             | :invalid_entry
+             | :duplicate_blake3
+             | storage_error()}
+  def append_scene_entry(room_id, entry) when is_binary(room_id) and is_map(entry) do
+    with :ok <- validate_room_id(room_id),
+         {:ok, %Room{} = room} <- fetch_room(room_id),
+         {:ok, normalized} <- normalize_mesh_entry(entry),
+         {:ok, next_scene} <- build_appended_scene(room.scene, normalized),
+         {:ok, _} <- Room.set_scene(room, %{scene: next_scene}) do
+      {:ok, next_scene}
+    end
+  end
+
+  def append_scene_entry(_, _), do: {:error, :invalid_room_id}
+
+  defp fetch_room(room_id) do
+    case Room.get_by_room_id(room_id) do
+      {:ok, %Room{} = room} -> {:ok, room}
+      {:ok, nil} -> {:error, :not_found}
+      {:error, error} -> map_read_error(error, :append_scene_entry)
+    end
+  end
+
+  defp normalize_mesh_entry(entry) do
+    blake3 = entry_string(entry, "blake3") || entry_string(entry, :blake3)
+
+    cond do
+      not is_binary(blake3) or byte_size(blake3) != 64 ->
+        {:error, :invalid_entry}
+
+      not Regex.match?(~r/^[0-9a-f]{64}$/, blake3) ->
+        {:error, :invalid_entry}
+
+      true ->
+        {:ok,
+         %{
+           "blake3" => blake3,
+           "x" => entry_float(entry, "x", :x, 0.0),
+           "y" => entry_float(entry, "y", :y, 1.5),
+           "z" => entry_float(entry, "z", :z, 2.0),
+           "qx" => entry_float(entry, "qx", :qx, 0.0),
+           "qy" => entry_float(entry, "qy", :qy, 0.0),
+           "qz" => entry_float(entry, "qz", :qz, 0.0),
+           "qw" => entry_float(entry, "qw", :qw, 1.0),
+           "sx" => entry_float(entry, "sx", :sx, 1.0),
+           "sy" => entry_float(entry, "sy", :sy, 1.0),
+           "sz" => entry_float(entry, "sz", :sz, 1.0),
+           "r" => entry_float(entry, "r", :r, 0.85),
+           "g" => entry_float(entry, "g", :g, 0.85),
+           "b" => entry_float(entry, "b", :b, 0.9),
+           "a" => entry_float(entry, "a", :a, 1.0),
+           "half_extent" => 0.0,
+           "flags" => 0
+         }}
+    end
+  end
+
+  defp build_appended_scene(scene, normalized) when is_map(scene) do
+    entries = Map.get(scene, "entries") || Map.get(scene, :entries) || []
+
+    if not is_list(entries) do
+      {:error, :invalid_entry}
+    else
+      blake3 = normalized["blake3"]
+
+      if Enum.any?(entries, fn e -> entry_string(e, "blake3") == blake3 end) do
+        {:error, :duplicate_blake3}
+      else
+        next_id = next_entity_id(entries)
+        revision = (Map.get(scene, "revision") || Map.get(scene, :revision) || 1) + 1
+
+        entry = Map.put(normalized, "entity_id", next_id)
+
+        next = %{
+          "revision" => revision,
+          "locomotion" => Map.get(scene, "locomotion") || Map.get(scene, :locomotion),
+          "entries" => entries ++ [entry]
+        }
+
+        {:ok, next}
+      end
+    end
+  end
+
+  defp build_appended_scene(_, _), do: {:error, :invalid_entry}
+
+  defp next_entity_id(entries) do
+    max_id =
+      entries
+      |> Enum.map(fn e ->
+        case entry_string(e, "entity_id") || Map.get(e, :entity_id) do
+          id when is_integer(id) -> id
+          id when is_binary(id) -> String.to_integer(id)
+          _ -> 0
+        end
+      end)
+      |> Enum.max(fn -> 0 end)
+
+    # Prefer ids above demo boxes (10–18) and user_roots; never reuse.
+    max(max_id + 1, 100)
+  end
+
+  defp entry_string(map, key) when is_map(map) do
+    case Map.get(map, key) || Map.get(map, to_string(key)) do
+      v when is_binary(v) -> v
+      v when is_atom(v) -> Atom.to_string(v)
+      v when is_integer(v) -> Integer.to_string(v)
+      _ -> nil
+    end
+  end
+
+  defp entry_float(map, bin_key, atom_key, default) do
+    case Map.get(map, bin_key) || Map.get(map, atom_key) do
+      v when is_float(v) ->
+        v
+
+      v when is_integer(v) ->
+        v * 1.0
+
+      v when is_binary(v) ->
+        case Float.parse(v) do
+          {f, _} -> f
+          :error -> default
+        end
+
+      _ ->
+        default
+    end
+  end
 
   @doc "Return visibility for an existing room (x0034)."
   @spec visibility(room_id()) ::

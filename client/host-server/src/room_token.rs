@@ -1052,12 +1052,16 @@ impl HostPublishSnapshot {
 }
 
 /// Inputs owned by the credential worker after bootstrap (x003d).
+///
+/// `scene` is shared with the physics thread so x006d take-out can append entries
+/// and force a ManifestSeal rebuild (`force_reseal`).
 pub struct CredentialWorkerConfig {
     pub auth_url: String,
     pub world_url: String,
     pub room_id: String,
     pub host_pub: Vec<u8>,
-    pub scene: RoomScene,
+    pub scene: Arc<RwLock<RoomScene>>,
+    pub force_reseal: Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn combined_hard_expire(
@@ -1186,7 +1190,10 @@ pub fn spawn_credential_worker(
                     creds.host_refresh_at,
                     creds.attest_refresh_at,
                 );
-                let seal_due = pending_seal || now >= seal_cache.refresh_at;
+                let external_reseal = cfg
+                    .force_reseal
+                    .swap(false, Ordering::SeqCst);
+                let seal_due = pending_seal || external_reseal || now >= seal_cache.refresh_at;
                 if plan.is_none() && !seal_due {
                     thread::sleep(CREDENTIAL_WORKER_IDLE);
                     continue;
@@ -1205,9 +1212,14 @@ pub fn spawn_credential_worker(
                         )?;
                     }
                     if attest_rotated || seal_due || seal_cache.seal.is_empty() {
+                        let scene = cfg
+                            .scene
+                            .read()
+                            .map_err(|_| anyhow!("scene RwLock poisoned"))?
+                            .clone();
                         let manifest = ensure_sealed_manifest(
                             &cfg.room_id,
-                            &cfg.scene,
+                            &scene,
                             &cfg.host_pub,
                             &creds,
                             &cfg.world_url,
@@ -1215,6 +1227,10 @@ pub fn spawn_credential_worker(
                         )
                         .inspect_err(|_| {
                             force_seal_retry(&mut seal_cache, &mut pending_seal);
+                            // Retry take-out reseal after transient seal failure.
+                            if external_reseal {
+                                cfg.force_reseal.store(true, Ordering::SeqCst);
+                            }
                         })?;
                         pending_seal = false;
                         let hard = combined_hard_expire(&creds, &seal_cache);
@@ -1339,6 +1355,48 @@ fn loco_mode_from_str(mode: &str) -> alchemy_protocol::LocomotionMode {
     }
 }
 
+fn scene_from_response(parsed: SceneResponseJson) -> RoomScene {
+    let entries = parsed
+        .entries
+        .into_iter()
+        .map(|e| {
+            let mut entry = alchemy_protocol::SceneEntry {
+                entity_id: e.entity_id,
+                blake3: e.blake3,
+                x: e.x,
+                y: e.y,
+                z: e.z,
+                half_extent: e.half_extent,
+                flags: e.flags,
+                r: e.r,
+                g: e.g,
+                b: e.b,
+                a: e.a,
+                qx: e.qx,
+                qy: e.qy,
+                qz: e.qz,
+                qw: e.qw,
+                sx: e.sx,
+                sy: e.sy,
+                sz: e.sz,
+            };
+            alchemy_protocol::normalize_scene_entry_trs(&mut entry);
+            entry
+        })
+        .collect();
+    let locomotion = parsed
+        .locomotion
+        .map(|l| alchemy_protocol::LocomotionConfig {
+            mode: loco_mode_from_str(&l.mode).into(),
+            move_speed: l.move_speed,
+        });
+    RoomScene {
+        revision: parsed.revision,
+        entries,
+        locomotion,
+    }
+}
+
 /// Fetch world DemoScene for this room (host Room Token).
 pub fn fetch_room_scene(
     world_url: &str,
@@ -1355,51 +1413,75 @@ pub fn fetch_room_scene(
     {
         Ok(resp) => {
             let parsed: SceneResponseJson = resp.into_json().context("parse scene response")?;
-            let entries = parsed
-                .entries
-                .into_iter()
-                .map(|e| {
-                    let mut entry = alchemy_protocol::SceneEntry {
-                        entity_id: e.entity_id,
-                        blake3: e.blake3,
-                        x: e.x,
-                        y: e.y,
-                        z: e.z,
-                        half_extent: e.half_extent,
-                        flags: e.flags,
-                        r: e.r,
-                        g: e.g,
-                        b: e.b,
-                        a: e.a,
-                        qx: e.qx,
-                        qy: e.qy,
-                        qz: e.qz,
-                        qw: e.qw,
-                        sx: e.sx,
-                        sy: e.sy,
-                        sz: e.sz,
-                    };
-                    alchemy_protocol::normalize_scene_entry_trs(&mut entry);
-                    entry
-                })
-                .collect();
-            let locomotion = parsed
-                .locomotion
-                .map(|l| alchemy_protocol::LocomotionConfig {
-                    mode: loco_mode_from_str(&l.mode).into(),
-                    move_speed: l.move_speed,
-                });
-            Ok(RoomScene {
-                revision: parsed.revision,
-                entries,
-                locomotion,
-            })
+            Ok(scene_from_response(parsed))
         }
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();
             Err(anyhow!("scene fetch failed status={code} body={body}"))
         }
         Err(err) => Err(anyhow!("scene fetch request failed: {err:#}")),
+    }
+}
+
+/// Append one mesh entry to world scene (x006d). Returns updated scene + new entry.
+pub fn append_room_scene_entry(
+    world_url: &str,
+    room_id: &str,
+    host_room_token: &str,
+    blake3: &str,
+    x: f64,
+    y: f64,
+    z: f64,
+    qx: f64,
+    qy: f64,
+    qz: f64,
+    qw: f64,
+    sx: f64,
+    sy: f64,
+    sz: f64,
+) -> Result<(RoomScene, alchemy_protocol::SceneEntry)> {
+    if !is_blake3_hex(blake3) {
+        return Err(anyhow!("invalid blake3 for scene append"));
+    }
+    let base = world_url.trim_end_matches('/');
+    let url = format!("{base}/api/v1/rooms/{room_id}/scene/entries");
+    let authz = format!("Bearer {host_room_token}");
+    let body = serde_json::json!({
+        "blake3": blake3,
+        "x": x,
+        "y": y,
+        "z": z,
+        "qx": qx,
+        "qy": qy,
+        "qz": qz,
+        "qw": qw,
+        "sx": sx,
+        "sy": sy,
+        "sz": sz,
+    });
+    match credential_agent()
+        .post(&url)
+        .set("authorization", &authz)
+        .set("content-type", "application/json")
+        .send_json(&body)
+    {
+        Ok(resp) => {
+            let parsed: SceneResponseJson = resp.into_json().context("parse scene append")?;
+            let scene = scene_from_response(parsed);
+            let entry = scene
+                .entries
+                .iter()
+                .rev()
+                .find(|e| e.blake3.eq_ignore_ascii_case(blake3))
+                .cloned()
+                .ok_or_else(|| anyhow!("appended blake3 missing from scene response"))?;
+            Ok((scene, entry))
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(anyhow!("scene append failed status={code} body={body}"))
+        }
+        Err(err) => Err(anyhow!("scene append request failed: {err:#}")),
     }
 }
 

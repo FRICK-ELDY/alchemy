@@ -25,7 +25,7 @@
 //! Non-guarantees:
 //! - Steal / rotation follow / Formula / polished Walk / verifier
 //! - Authenticated remote (WAN) host shutdown
-//! - Re-fetch of world `GET …/scene` after boot (room redefinition requires host restart)
+//! - Full UGC scene editor (x006d only appends one mesh entry via world HTTP)
 //! - rkyv / bytemuck wire (encode is protobuf inside network worker today)
 //! - Intent temporary ban / Zenoh peer ACL
 //! - Unlimited Ed25519 cost on unbound steady floods (no sub bucket until bind)
@@ -33,6 +33,7 @@
 mod finite;
 mod host_control;
 mod host_ipc;
+mod inventory_spawn;
 mod network_worker;
 mod pose_delta;
 mod sim;
@@ -40,6 +41,7 @@ mod wire_tick;
 
 use host_server::{intent_rate, metrics, room_token, session};
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -71,9 +73,9 @@ use network_worker::{
     PresenceJob,
 };
 use room_token::{
-    default_auth_url, earliest_hard_expire, ensure_sealed_manifest, fetch_room_scene,
-    publish_allowed_at, spawn_credential_worker, CredentialWorkerConfig, HostCredentialChain,
-    HostPublishSnapshot, ManifestSealCache, RoomTokenVerifier,
+    append_room_scene_entry, default_auth_url, earliest_hard_expire, ensure_sealed_manifest,
+    fetch_room_scene, publish_allowed_at, spawn_credential_worker, CredentialWorkerConfig,
+    HostCredentialChain, HostPublishSnapshot, ManifestSealCache, RoomScene, RoomTokenVerifier,
 };
 use session::SessionTable;
 use sim::{LocoMode, PhysicsWorld, USER_ROOT_ENTITY_FIRST};
@@ -391,13 +393,64 @@ fn pose_with_trs(
     }
 }
 
-fn moving_pose_from_sim(world: &PhysicsWorld) -> Option<(u32, Pose)> {
-    let id = world.mesh_entity_id()?;
-    let (t, q) = world.moving_pose();
-    Some((
-        id,
-        pose_with_trs(t, q, world.scale_for(id), world.color_for(id)),
-    ))
+fn mesh_poses_from_sim(world: &PhysicsWorld) -> Vec<(u32, Pose)> {
+    world
+        .mesh_entity_ids()
+        .filter_map(|id| {
+            let (t, q) = world.mesh_pose_for(id)?;
+            Some((
+                id,
+                pose_with_trs(t, q, world.scale_for(id), world.color_for(id)),
+            ))
+        })
+        .collect()
+}
+
+/// World append + Rapier spawn + shared scene update for re-seal (x006d).
+///
+/// On Rapier failure after world append succeeded, returns error (scene already
+/// mutated on world — next host restart will load the entry; no partial Rapier).
+fn apply_inventory_spawn(
+    world_url: &str,
+    room_id: &str,
+    req: &inventory_spawn::SpawnRequest,
+    shared_scene: &Arc<RwLock<RoomScene>>,
+    force_reseal: &AtomicBool,
+    physics: &mut PhysicsWorld,
+) -> Result<u32> {
+    let (next_scene, entry) = append_room_scene_entry(
+        world_url,
+        room_id,
+        &req.room_token,
+        &req.blake3,
+        req.x,
+        req.y,
+        req.z,
+        req.qx,
+        req.qy,
+        req.qz,
+        req.qw,
+        req.sx,
+        req.sy,
+        req.sz,
+    )
+    .context("world scene append")?;
+
+    if !physics.spawn_mesh_entry(&entry) {
+        return Err(anyhow::anyhow!(
+            "Rapier spawn rejected for entity_id={} (duplicate or non-mesh)",
+            entry.entity_id
+        ));
+    }
+
+    {
+        let mut guard = shared_scene
+            .write()
+            .map_err(|_| anyhow::anyhow!("shared scene RwLock poisoned"))?;
+        *guard = next_scene;
+    }
+    force_reseal.store(true, Ordering::SeqCst);
+    Ok(entry.entity_id)
 }
 
 fn user_root_pose_from_sim(world: &PhysicsWorld, slot: usize) -> Pose {
@@ -824,7 +877,7 @@ fn main() -> Result<()> {
         PRESENCE_SLOT_TTL.as_secs()
     );
 
-    // Scene is fetched once at boot (x0027 Non-guarantee: no re-fetch on world redefinition).
+    // Scene is fetched at boot; x006d take-out may append mesh entries via world HTTP.
     let room_scene = fetch_room_scene(&world_url, &room_id, &creds.host_token)
         .context("fetch world DemoScene (GET …/scene)")?;
     // x0039: scene body is sealed against world DB — local blake3 override cannot get a seal.
@@ -842,6 +895,8 @@ fn main() -> Result<()> {
         room_scene.revision,
         room_scene.entries.len()
     );
+    let shared_scene = Arc::new(RwLock::new(room_scene.clone()));
+    let force_reseal = Arc::new(AtomicBool::new(false));
 
     let presence = Arc::new(Mutex::new(PresenceIntents::with_slots(user_root_slots)));
     let sessions = Arc::new(Mutex::new(SessionTable::default()));
@@ -878,6 +933,20 @@ fn main() -> Result<()> {
     spawn_liveliness_watcher(session.clone(), &room_id, &wire_cap, Arc::clone(&presence))?;
     host_control::spawn_listener(session.clone(), &room_id, &wire_cap)?;
     host_ipc::spawn_listener().context("launcher IPC listener")?;
+    let spawn_verifier = Arc::clone(&verifier);
+    let spawn_inbox = inventory_spawn::spawn_listener(
+        session.clone(),
+        &room_id,
+        &wire_cap,
+        move |token| {
+            let claims = spawn_verifier.verify(token)?;
+            if claims.role != "host" {
+                anyhow::bail!("inventory spawn requires role=host (got {})", claims.role);
+            }
+            Ok(())
+        },
+    )
+    .context("inventory spawn listener")?;
 
     let manifest_pub = session
         .declare_publisher(manifest_key_expr)
@@ -928,6 +997,7 @@ fn main() -> Result<()> {
         &mut seal_cache,
     )
     .context("initial ManifestSeal")?;
+    // room_scene moved into shared_scene above; keep local clone for physics boot only.
     let loco = manifest.locomotion.unwrap_or(LocomotionConfig {
         mode: LocomotionMode::Noclip.into(),
         move_speed: DEFAULT_MOVE_SPEED,
@@ -965,7 +1035,8 @@ fn main() -> Result<()> {
             world_url: world_url.clone(),
             room_id: room_id.clone(),
             host_pub: host_pub.clone(),
-            scene: room_scene.clone(),
+            scene: Arc::clone(&shared_scene),
+            force_reseal: Arc::clone(&force_reseal),
         },
     );
     log::info!("credential worker spawned (HTTP refresh off physics thread)");
@@ -1040,6 +1111,24 @@ fn main() -> Result<()> {
         let late_ms = started.saturating_duration_since(scheduled).as_millis() as u64;
         host_metrics.set_tick_lateness_ms(late_ms);
         next_physics = scheduled + physics_period;
+
+        // x006d: drain inventory spawn (world append → Rapier → force re-seal).
+        while let Some(req) = spawn_inbox.try_recv() {
+            match apply_inventory_spawn(
+                &world_url,
+                &room_id,
+                &req,
+                &shared_scene,
+                &force_reseal,
+                &mut physics,
+            ) {
+                Ok(entity_id) => log::info!(
+                    "inventory spawn ok entity_id={entity_id} blake3={}",
+                    &req.blake3[..8.min(req.blake3.len())]
+                ),
+                Err(err) => log::warn!("inventory spawn apply failed: {err:#}"),
+            }
+        }
 
         // x003d: credentials / seal live on the worker; physics reads gate + hard expiry.
         let pub_snap = read_publish_gate(&publish_snapshot, now);
@@ -1178,11 +1267,11 @@ fn main() -> Result<()> {
         }
 
         // Pose sample only on net ticks (delta/encode/put live on zenoh-publish).
-        let mut all_poses: Vec<(u32, Pose)> =
-            Vec::with_capacity(1 + physics.user_root_slot_count() + physics.boxes.len());
-        if let Some((id, pose)) = moving_pose_from_sim(&physics) {
-            all_poses.push((id, pose));
-        }
+        let mesh_poses = mesh_poses_from_sim(&physics);
+        let mut all_poses: Vec<(u32, Pose)> = Vec::with_capacity(
+            mesh_poses.len() + physics.user_root_slot_count() + physics.boxes.len(),
+        );
+        all_poses.extend(mesh_poses);
         for (slot, occupied_sub) in occupied.iter().enumerate().take(slot_count) {
             if occupied_sub.is_some() {
                 all_poses.push((

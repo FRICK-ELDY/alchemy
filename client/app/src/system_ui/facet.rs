@@ -33,6 +33,8 @@ pub enum FacetId {
     Home,
     /// Settings tab body + turn toggle.
     Settings,
+    /// Inventory take-out (x006d).
+    Inventory,
     /// Exit tab body + exit actions. **Pinned** — cannot be removed.
     Exit,
 }
@@ -47,6 +49,7 @@ impl FacetId {
             Self::Chrome => "Chrome",
             Self::Home => "Home",
             Self::Settings => "Settings",
+            Self::Inventory => "Inventory",
             Self::Exit => "Exit",
         }
     }
@@ -56,6 +59,7 @@ impl FacetId {
 pub const OFFICIAL_DEFAULT_FACETS: &[FacetId] = &[
     FacetId::Chrome,
     FacetId::Home,
+    FacetId::Inventory,
     FacetId::Settings,
     FacetId::Exit,
 ];
@@ -71,6 +75,17 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::TurnModeToggle
         | WidgetId::HotswitchAutoToggle
         | WidgetId::SettingsPlaceholder => FacetId::Settings,
+        WidgetId::TabInventory
+        | WidgetId::InventoryRefresh
+        | WidgetId::InventoryTakeOut
+        | WidgetId::InventoryRow0
+        | WidgetId::InventoryRow1
+        | WidgetId::InventoryRow2
+        | WidgetId::InventoryRow3
+        | WidgetId::InventoryRow4
+        | WidgetId::InventoryRow5
+        | WidgetId::InventoryRow6
+        | WidgetId::InventoryRow7 => FacetId::Inventory,
         WidgetId::TabHome
         | WidgetId::HomeFieldIdentifier
         | WidgetId::HomeFieldPassword

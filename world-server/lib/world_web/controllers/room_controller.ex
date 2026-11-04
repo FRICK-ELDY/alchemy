@@ -448,6 +448,68 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
+  x006d: append one mesh SceneEntry to the room scene (host Room Token).
+
+  Body: `%{"blake3" => 64-hex, optional pose/color}`. Assigns `entity_id`,
+  bumps revision. Returned scene is the new canonical seal input.
+  """
+  def create_scene_entry(conn, %{"room_id" => room_id} = params) do
+    entry = Map.get(params, "entry") || Map.drop(params, ["room_id"])
+
+    with {:ok, bearer} <- fetch_bearer(conn),
+         {:ok, claims} <- Token.verify(bearer),
+         :ok <- require_host_token(claims, room_id),
+         {:ok, scene} <- Rooms.append_scene_entry(room_id, entry) do
+      json(conn, Map.put(scene, "room_id", room_id))
+    else
+      {:error, :missing_bearer} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "missing_room_token"})
+
+      {:error, :not_host_token} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "host_role_required"})
+
+      {:error, :room_mismatch} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "room_id_mismatch"})
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "room_not_found"})
+
+      {:error, :invalid_entry} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_entry"})
+
+      {:error, :duplicate_blake3} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "duplicate_blake3"})
+
+      {:error, :invalid_room_id} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_room_id"})
+
+      {:error, :storage_error} ->
+        storage_unavailable(conn)
+
+      {:error, reason} ->
+        Logger.warning("invalid Room Token (scene entry path): #{inspect(reason)}")
+
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "invalid_room_token"})
+    end
+  end
+
+  @doc """
   x0026 / x0039: issue ManifestSeal JWT for **canonical** DB scene body.
 
   Authorization must be a **host** Room Token. Body requires `host_attestation`

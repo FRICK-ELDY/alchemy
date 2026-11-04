@@ -33,6 +33,7 @@ mod auth;
 mod host_attestation;
 mod host_control;
 mod intent_session;
+mod inventory;
 mod jwt_sub;
 mod manifest_seal;
 mod mesh;

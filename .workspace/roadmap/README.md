@@ -159,11 +159,12 @@ depends_on: [x0006]
 | x006a | — | done | world-server へ Zenohex 導入（Adapter 隔離 / :ring） | [x006a-world-zenohex-adapter.md](slices/x006a-world-zenohex-adapter.md) |
 | x006b | — | done | PlaceRead（場所スコープ読取・seal 連動／案 B 発行境界） | [x006b-place-read-capability.md](slices/x006b-place-read-capability.md) |
 | x006c | — | done | BlobGrant 案 B（GET 常時 Grant / PlaceRead） | [x006c-blob-grant-option-b.md](slices/x006c-blob-grant-option-b.md) |
+| x006d | — | done | host take-out（Drive HTTP + Inventory UI + Zenoh 制御面） | [x006d-host-take-out-control.md](slices/x006d-host-take-out-control.md) |
 
-**現在の次:** **[x006c](slices/x006c-blob-grant-option-b.md)** BlobGrant 案 B **done**。次候補: host take-out UI。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
+**現在の次:** **[x006d](slices/x006d-host-take-out-control.md)** host take-out **done**。次候補: put-back UI。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
-次の空き番号は **`x006d`**。
+次の空き番号は **`x006e`**。
 
 ## 関連
 

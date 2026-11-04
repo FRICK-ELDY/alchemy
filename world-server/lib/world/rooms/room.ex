@@ -85,6 +85,11 @@ defmodule World.Rooms.Room do
       accept [:visibility]
     end
 
+    # x006d: host take-out appends a SceneEntry and bumps revision (canonical seal input).
+    update :set_scene do
+      accept [:scene]
+    end
+
     # host_generation / attested_host_pub: only via Rooms.claim_host_generation CAS SQL
     # (x003a). No Ash update action — avoids a non-CAS write path.
 
@@ -98,6 +103,7 @@ defmodule World.Rooms.Room do
   code_interface do
     define :create, action: :create
     define :get_by_room_id, action: :get_by_room_id, args: [:room_id]
+    define :set_scene, action: :set_scene
     define :set_visibility, action: :set_visibility
   end
 end
