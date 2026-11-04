@@ -137,8 +137,12 @@ pub fn register(
     email: &str,
     password: &str,
     birthday: &str,
+    tos_agreed: bool,
     remember_me: bool,
 ) -> Result<AuthSession> {
+    if !tos_agreed {
+        bail!("tos_agreed required");
+    }
     let base = auth_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/auth/register");
     let resp = ureq::post(&url)
@@ -148,7 +152,7 @@ pub fn register(
             "email": email,
             "password": password,
             "birthday": birthday,
-            "tos_agreed": true,
+            "tos_agreed": tos_agreed,
             "remember_me": remember_me,
         }))
         .context("auth register failed")?;

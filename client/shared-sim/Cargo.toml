@@ -3,7 +3,7 @@ name = "alchemy-shared-sim"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Shared EntityKind / ManifestIndex (host + client; no Rapier)"
+description = "Shared EntityKind / ManifestIndex / SlotGraph (host + client; no Rapier)"
 
 [lints]
 workspace = true

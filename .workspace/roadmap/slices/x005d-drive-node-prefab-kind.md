@@ -1,6 +1,6 @@
 # x005d — DriveNode kind=prefab
 
-> **ID:** `x005d` · **slug:** `drive-node-prefab-kind` · **status:** `planned` · **area:** `[assets]` · **depends_on:** `[x005c]`  
+> **ID:** `x005d` · **slug:** `drive-node-prefab-kind` · **status:** `done` · **area:** `[assets]` · **depends_on:** `[x005c]`  
 > **ladder:** Wave 2 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: DriveNode に **`kind=prefab`** を追加する。ペイロード中身の正本スキーマは [x005e](x005e-prefab-payload-schema.md)。本 Slice は **ノード種別と参照の器**まで。

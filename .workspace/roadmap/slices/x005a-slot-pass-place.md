@@ -1,6 +1,6 @@
 # x005a — 渡す・置く（Slot 操作）
 
-> **ID:** `x005a` · **slug:** `slot-pass-place` · **status:** `planned` · **area:** `[host, sim]` · **depends_on:** `[x0057, x0059]`  
+> **ID:** `x005a` · **slug:** `slot-pass-place` · **status:** `done` · **area:** `[host, sim]` · **depends_on:** `[x0057, x0059]`  
 > **ladder:** Wave 2 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: 空間内で **渡す**（他 user_root の held へ）と **置く**（parent 解除＝世界）を host が保証する。
@@ -18,12 +18,13 @@
 
 - 権限ゲートは「渡す側が現 held 保持者」程度の最小。role capability 深掘りは別
 - 遷移の履歴化・手元 undo/redo は [x005b](x005b-slot-session-undo.md)（Resonite: A→B のあと undo で B→A）
+- host: `PhysicsWorld::pass_held` / `place_held`
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | 本 Slice | planned |
-| 1 | pass / place API + host 配線 | planned |
-| 2 | テスト + client.md 注記 | planned |
+| 0 | 本 Slice | done |
+| 1 | pass / place API + host 配線 | done |
+| 2 | テスト + client.md 注記 | done |
 
 ## 完了条件
 

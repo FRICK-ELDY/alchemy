@@ -1,6 +1,6 @@
 # x0057 — host Grab ↔ held Slot 同期
 
-> **ID:** `x0057` · **slug:** `host-grab-held-slot` · **status:** `planned` · **area:** `[host, sim]` · **depends_on:** `[x0056, x0041]`  
+> **ID:** `x0057` · **slug:** `host-grab-held-slot` · **status:** `done` · **area:** `[host, sim]` · **depends_on:** `[x0056, x0041]`  
 > **ladder:** Wave 1 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: 既存 Grab hold が立っている間、当該 entity の parent が **掴んでいる user_root** になるよう host が SlotGraph を同期する。
@@ -21,9 +21,9 @@
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | 本 Slice | planned |
-| 1 | PhysicsWorld / ループから SlotGraph 同期 | planned |
-| 2 | host 単体テスト | planned |
+| 0 | 本 Slice | done |
+| 1 | PhysicsWorld / ループから SlotGraph 同期 | done |
+| 2 | host 単体テスト | done |
 
 ## 完了条件
 

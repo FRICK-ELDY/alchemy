@@ -1,6 +1,6 @@
 # x005f — インベントリ取り出し（spawn）
 
-> **ID:** `x005f` · **slug:** `inventory-take-out` · **status:** `planned` · **area:** `[host, assets, client]` · **depends_on:** `[x0057, x005e]`  
+> **ID:** `x005f` · **slug:** `inventory-take-out` · **status:** `done` · **area:** `[host, assets, client]` · **depends_on:** `[x0057, x005e]`  
 > **ladder:** Wave 3 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: 所有者の Prefab／blob DriveNode から **ItemRef を解決し部屋に spawn** する。永続からの「取り出し」。

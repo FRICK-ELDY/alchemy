@@ -2,15 +2,21 @@
 //!
 //! Guarantees: [`EntityKind`] + [`classify_scene_entry`] priority matches x0027;
 //! [`ManifestIndex`] one-pass mesh / box / grabbable maps; shared interaction +
-//! demo id constants; [`scene_entry_color_rgba`].
+//! demo id constants; [`scene_entry_color_rgba`]; runtime held slots via
+//! [`slot_graph::SlotGraph`] (x0056).
 //! Non-guarantees: Rapier / Formula / prediction; Elixir `DemoScene` codegen
-//! (manual sync via [`demo`] constants).
+//! (manual sync via [`demo`] constants); arbitrary-depth Slot graphs (→ x0059).
 
 use std::collections::{HashMap, HashSet};
 
 use alchemy_protocol::{scene_entry_grabbable, scene_entry_is_user_root, SceneEntry};
 
 pub mod demo;
+pub mod slot_graph;
+pub mod slot_undo;
+
+pub use slot_graph::{ReparentError, SlotGraph};
+pub use slot_undo::{SlotTransition, SlotUndoStack};
 
 /// Max Grab start / client pick / hold aim·offset distance (meters).
 /// Host `finite` (start gate + hold clamp x0041) + client `world_hit`.

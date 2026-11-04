@@ -300,6 +300,11 @@ impl SystemUi {
                 self.rebuild();
                 UiAction::None
             }
+            WidgetId::HomeTosAgreed => {
+                self.state.home_tos_agreed = !self.state.home_tos_agreed;
+                self.rebuild();
+                UiAction::None
+            }
             WidgetId::HomeModeLogin => {
                 self.state.home_mode = HomeMode::Login;
                 self.state.home_focus = Some(HomeField::Identifier);

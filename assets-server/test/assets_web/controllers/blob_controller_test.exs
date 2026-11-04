@@ -482,11 +482,11 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"error" => "forbidden"} = json_response(conn, 403)
   end
 
-  test "inventory PUT conflicts when same bytes already authenticated", %{
+  test "inventory PUT coexists when same bytes already authenticated", %{
     conn: conn,
     signer: signer
   } do
-    body = "inventory-cannot-privatize-existing"
+    body = "inventory-coexist-with-authenticated"
 
     conn =
       conn
@@ -502,8 +502,11 @@ defmodule AssetsWeb.BlobControllerTest do
       |> put_req_header("content-type", "text/plain")
       |> post("/api/v1/inventory/blobs", body)
 
-    assert %{"error" => "access_conflict"} = json_response(conn, 409)
-    assert Repo.get_by(BlobGrant, grantee_sub: @sub_b, blake3: blake3) == nil
+    assert %{"blake3" => ^blake3, "access" => "authenticated", "status" => "created"} =
+             json_response(conn, 201)
+
+    assert %CasObject{access: "authenticated"} = Repo.get(CasObject, blake3)
+    assert %BlobGrant{} = Repo.get_by(BlobGrant, grantee_sub: @sub_b, blake3: blake3)
 
     conn =
       build_conn()
@@ -539,11 +542,11 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"error" => "invalid_access"} = json_response(conn, 400)
   end
 
-  test "first-writer access wins: later grant_required conflicts", %{
+  test "first-writer access kept: later grant_required still gets Grant", %{
     conn: conn,
     signer: signer
   } do
-    body = "access-first-writer"
+    body = "access-first-writer-coexist"
 
     conn =
       conn
@@ -560,11 +563,13 @@ defmodule AssetsWeb.BlobControllerTest do
       |> put_req_header("x-alchemy-blob-access", "grant_required")
       |> post("/api/v1/blobs", body)
 
-    assert %{"error" => "access_conflict"} = json_response(conn, 409)
+    assert %{"blake3" => ^blake3, "access" => "authenticated", "status" => "created"} =
+             json_response(conn, 201)
+
     assert %CasObject{access: "authenticated"} = Repo.get(CasObject, blake3)
-    assert Repo.get_by(BlobGrant, grantee_sub: @sub_b, blake3: blake3) == nil
-    # Loser reserved then compensate — must not leave reserved_bytes stuck.
-    assert Blobs.quota(@sub_b) == %{used_bytes: 0, reserved_bytes: 0, limit_bytes: 1024}
+    assert %BlobGrant{} = Repo.get_by(BlobGrant, grantee_sub: @sub_b, blake3: blake3)
+    assert Blobs.quota(@sub_b).used_bytes == byte_size(body)
+    assert Blobs.quota(@sub_b).reserved_bytes == 0
   end
 
   test "cross-owner grant_required: second owner with matching access can GET", %{

@@ -136,29 +136,29 @@ depends_on: [x0006]
 | x0053 | — | planned | XR ↔ Desktop ホットスイッチ（presence / 明示トグル） | [x0053-xr-desktop-hotswitch.md](slices/x0053-xr-desktop-hotswitch.md) |
 | x0054 | — | done | inventory PUT 常時 grant_required（Wave 0） | [x0054-inventory-grant-required-put.md](slices/x0054-inventory-grant-required-put.md) |
 | x0055 | — | done | ItemRef blake3 草案（Wave 0） | [x0055-item-ref-blake3-draft.md](slices/x0055-item-ref-blake3-draft.md) |
-| x0056 | — | planned | shared-sim held Slot（Wave 1） | [x0056-shared-sim-held-slot.md](slices/x0056-shared-sim-held-slot.md) |
-| x0057 | — | planned | host Grab ↔ held Slot 同期（Wave 1） | [x0057-host-grab-held-slot.md](slices/x0057-host-grab-held-slot.md) |
-| x0058 | — | planned | StorageVault Personal 薄皮（Wave 1） | [x0058-vault-personal-peel.md](slices/x0058-vault-personal-peel.md) |
-| x0059 | — | planned | Slot グラフ一般化（Wave 2） | [x0059-slot-graph-general.md](slices/x0059-slot-graph-general.md) |
-| x005a | — | planned | 渡す・置く（Wave 2） | [x005a-slot-pass-place.md](slices/x005a-slot-pass-place.md) |
-| x005b | — | planned | Slot セッション undo/redo（Wave 2） | [x005b-slot-session-undo.md](slices/x005b-slot-session-undo.md) |
-| x005c | — | planned | DriveNode folder/blob（Wave 2） | [x005c-drive-node-folder-blob.md](slices/x005c-drive-node-folder-blob.md) |
-| x005d | — | planned | DriveNode kind=prefab（Wave 2） | [x005d-drive-node-prefab-kind.md](slices/x005d-drive-node-prefab-kind.md) |
-| x005e | — | planned | Prefab 論理 Tree スキーマ（Wave 3） | [x005e-prefab-payload-schema.md](slices/x005e-prefab-payload-schema.md) |
-| x005f | — | planned | インベントリ取り出し spawn（Wave 3） | [x005f-inventory-take-out.md](slices/x005f-inventory-take-out.md) |
-| x0060 | — | planned | インベントリ戻す Prefab 保存（Wave 3） | [x0060-inventory-put-back.md](slices/x0060-inventory-put-back.md) |
-| x0061 | — | planned | 退出→再入室→取り出し＝B+2（Wave 3） | [x0061-inventory-rejoin-roundtrip.md](slices/x0061-inventory-rejoin-roundtrip.md) |
-| x0062 | — | planned | Prefab→VcsRepo 昇格（Wave 4） | [x0062-prefab-promote-vcs.md](slices/x0062-prefab-promote-vcs.md) |
-| x0063 | — | planned | ItemRef repo@rev（Wave 4） | [x0063-item-ref-repo-rev.md](slices/x0063-item-ref-repo-rev.md) |
-| x0064 | — | planned | Vcs Branch/Tag 最小（Wave 4） | [x0064-vcs-branch-tag-minimal.md](slices/x0064-vcs-branch-tag-minimal.md) |
-| x0065 | — | planned | Origin Cert 薄皮＝C+3（Wave 4） | [x0065-origin-cert-thin.md](slices/x0065-origin-cert-thin.md) |
+| x0056 | — | done | shared-sim held Slot（Wave 1） | [x0056-shared-sim-held-slot.md](slices/x0056-shared-sim-held-slot.md) |
+| x0057 | — | done | host Grab ↔ held Slot 同期（Wave 1） | [x0057-host-grab-held-slot.md](slices/x0057-host-grab-held-slot.md) |
+| x0058 | — | done | StorageVault Personal 薄皮（Wave 1） | [x0058-vault-personal-peel.md](slices/x0058-vault-personal-peel.md) |
+| x0059 | — | done | Slot グラフ一般化（Wave 2） | [x0059-slot-graph-general.md](slices/x0059-slot-graph-general.md) |
+| x005a | — | done | 渡す・置く（Wave 2） | [x005a-slot-pass-place.md](slices/x005a-slot-pass-place.md) |
+| x005b | — | done | Slot セッション undo/redo（Wave 2） | [x005b-slot-session-undo.md](slices/x005b-slot-session-undo.md) |
+| x005c | — | done | DriveNode folder/blob（Wave 2） | [x005c-drive-node-folder-blob.md](slices/x005c-drive-node-folder-blob.md) |
+| x005d | — | done | DriveNode kind=prefab（Wave 2） | [x005d-drive-node-prefab-kind.md](slices/x005d-drive-node-prefab-kind.md) |
+| x005e | — | done | Prefab 論理 Tree スキーマ（Wave 3） | [x005e-prefab-payload-schema.md](slices/x005e-prefab-payload-schema.md) |
+| x005f | — | done | インベントリ取り出し spawn（Wave 3） | [x005f-inventory-take-out.md](slices/x005f-inventory-take-out.md) |
+| x0060 | — | done | インベントリ戻す Prefab 保存（Wave 3） | [x0060-inventory-put-back.md](slices/x0060-inventory-put-back.md) |
+| x0061 | — | done | 退出→再入室→取り出し＝B+2（Wave 3） | [x0061-inventory-rejoin-roundtrip.md](slices/x0061-inventory-rejoin-roundtrip.md) |
+| x0062 | — | done | Prefab→VcsRepo 昇格（Wave 4） | [x0062-prefab-promote-vcs.md](slices/x0062-prefab-promote-vcs.md) |
+| x0063 | — | done | ItemRef repo@rev（Wave 4） | [x0063-item-ref-repo-rev.md](slices/x0063-item-ref-repo-rev.md) |
+| x0064 | — | done | Vcs Branch/Tag 最小（Wave 4） | [x0064-vcs-branch-tag-minimal.md](slices/x0064-vcs-branch-tag-minimal.md) |
+| x0065 | — | done | Origin Cert 薄皮＝C+3（Wave 4） | [x0065-origin-cert-thin.md](slices/x0065-origin-cert-thin.md) |
 | x0066 | — | done | Ephemeral mTLS（world 発行）+ Zenoh ACL（第1壁 CN / 第2壁 wire_cap） | [x0066-ephemeral-mtls-world-issue.md](slices/x0066-ephemeral-mtls-world-issue.md) |
 | x0067 | — | done | zenohd ACL: キー族 put 分離を非対称 ingress/egress + interest で復帰 | [x0067-zenohd-acl-put-family-host-guest.md](slices/x0067-zenohd-acl-put-family-host-guest.md) |
 | x0068 | — | done | relay 契約（NotAfter ≈ TTL / JWKS·body bound / CI） | [x0068-relay-mtls-ttl-bound-ci.md](slices/x0068-relay-mtls-ttl-bound-ci.md) |
 | x0069 | — | done | 部屋隔離（Room 鍵 AEAD / XChaCha20Poly1305） | [x0069-room-key-aead.md](slices/x0069-room-key-aead.md) |
 | x006a | — | done | world-server へ Zenohex 導入（Adapter 隔離 / :ring） | [x006a-world-zenohex-adapter.md](slices/x006a-world-zenohex-adapter.md) |
 
-**現在の次:** Wave 0 **done**（[x0054](slices/x0054-inventory-grant-required-put.md) · [x0055](slices/x0055-item-ref-blake3-draft.md)）。inventory ladder 続きは Wave 1 **[x0056](slices/x0056-shared-sim-held-slot.md)**。体感並行: **[x0053](slices/x0053-xr-desktop-hotswitch.md)**（同一 PR 禁止）。案 B 本体・launcher・verifier は保留。  
+**現在の次:** inventory ladder Wave 0–4 **done**（[x0054](slices/x0054-inventory-grant-required-put.md)–[x0065](slices/x0065-origin-cert-thin.md)；host take-out UI / XR 配線は薄皮 API まで）。体感並行: **[x0053](slices/x0053-xr-desktop-hotswitch.md)**。案 B 本体・verifier は保留。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
 次の空き番号は **`x006b`**。
@@ -169,6 +169,7 @@ depends_on: [x0006]
 |:---|:---|
 | [ローカル CI](ci.md) | `make ci` など |
 | [inventory-ladder.md](inventory-ladder.md) | インベントリ B+2→C+3 交互ラダー |
+| [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md) | 未完了帯の優先度ビュー（2026-11-04） |
 | [x006a-zenohex-intro-spec.md](x006a-zenohex-intro-spec.md) | x006a 入力仕様（Adapter / :ring / stub；読み替え注記付き） |
 | [architecture/overview.md](../0_doc/architecture/overview.md) | 目標アーキテクチャ |
 | [README.md](../../README.md) | リポジトリ入口・起動手順 |

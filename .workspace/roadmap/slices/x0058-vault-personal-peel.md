@@ -1,6 +1,6 @@
 # x0058 — StorageVault Personal 薄皮
 
-> **ID:** `x0058` · **slug:** `vault-personal-peel` · **status:** `planned` · **area:** `[assets]` · **depends_on:** `[x003f, x004f]`  
+> **ID:** `x0058` · **slug:** `vault-personal-peel` · **status:** `done` · **area:** `[assets]` · **depends_on:** `[x003f, x004f]`  
 > **ladder:** Wave 1 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: `QuotaLedger` の上に **Personal StorageVault の読み取りビュー**を置き、後続 Drive／Grant が `vault` 語彙で話せるようにする。スキーマ大移行はしない。
@@ -21,9 +21,9 @@
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | 本 Slice | planned |
-| 1 | Vault モジュール + テスト | planned |
-| 2 | assets-server.md / draft 注記 | planned |
+| 0 | 本 Slice | done |
+| 1 | Vault モジュール + テスト | done |
+| 2 | assets-server.md / draft 注記 | done |
 
 ## 完了条件
 

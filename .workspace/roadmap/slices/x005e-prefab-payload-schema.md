@@ -1,6 +1,6 @@
 # x005e — Prefab ペイロードスキーマ（論理 Tree）
 
-> **ID:** `x005e` · **slug:** `prefab-payload-schema` · **status:** `planned` · **area:** `[assets, protocol, docs]` · **depends_on:** `[x0055, x005d]`  
+> **ID:** `x005e` · **slug:** `prefab-payload-schema` · **status:** `done` · **area:** `[assets, protocol, docs]` · **depends_on:** `[x0055, x005d]`  
 > **ladder:** Wave 3 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: Prefab の中身を **論理 Tree**（`schema_version` / 子 `local_id` + `blake3` + ローカル TRS + 任意 Slot 名）として固定する。CAS 上は grant_required の 1 オブジェクトだが、**意味は opaque ではない**。

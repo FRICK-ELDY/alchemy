@@ -1,23 +1,24 @@
-//! Rapier world driven by SceneManifest entries (x0027 / x002c / x0030 / x0041 / x004d).
+//! Rapier world driven by SceneManifest entries (x0027 / x002c / x0030 / x0041 / x004d / x0057).
 //!
 //! Guarantees: floor (host-local) + mesh ball + boxes + user_roots from Manifest;
 //! Manifest initial **rotation** → Rapier spawn; Manifest **scale** → Frame Pose seed
 //! (`scales` map; collider stays `half_extent`); per-slot Grab; no Steal;
 //! hold aim / offset capped by [`alchemy_shared_sim::MAX_GRAB_HIT_DISTANCE`] (x0041);
+//! Grab on/off syncs [`alchemy_shared_sim::SlotGraph`] held parent (x0057);
 //! `release_slot` resets translation+rotation to Manifest spawn;
 //! Presence capacity = contiguous Manifest user_root entries (x004d).
 //! Classification via `alchemy-shared-sim` [`EntityKind`] (x0030).
 //! Non-guarantees: Grab aim **rotation** follow (translation only); throw impulse;
 //! non-uniform collider scale (client OBB uses Frame scale,
 //! host physics / grab distance use `half_extent` only — x002c). Frame emits Rapier
-//! rotation + Manifest scale (x0029 / x002c).
+//! rotation + Manifest scale (x0029 / x002c). Frame parent fields / pass-place.
 
 use alchemy_protocol::{
     scene_entry_grabbable, scene_entry_quat_xyzw, scene_entry_scale, user_root_slots_from_entries,
     LocomotionMode, SceneEntry, DEFAULT_MOVE_SPEED,
 };
 use alchemy_shared_sim::{
-    classify_scene_entry, scene_entry_color_rgba, EntityKind, PHYS_BALL_RADIUS,
+    classify_scene_entry, scene_entry_color_rgba, EntityKind, SlotGraph, PHYS_BALL_RADIUS,
 };
 use rapier3d::na::{Isometry3, Quaternion, Translation3, UnitQuaternion};
 use rapier3d::prelude::*;
@@ -102,6 +103,8 @@ pub struct PhysicsWorld {
     loco_mode: LocoMode,
     move_speed: f32,
     grabs: [Option<ActiveGrab>; USER_ROOT_SLOTS_MAX],
+    /// Logical held parents (`user_root → held`). Rapier follow stays kinematic.
+    slots: SlotGraph,
 }
 
 fn entry_unit_quat(entry: &SceneEntry) -> UnitQuaternion<f32> {
@@ -267,7 +270,60 @@ impl PhysicsWorld {
             loco_mode,
             move_speed: speed,
             grabs: [None; USER_ROOT_SLOTS_MAX],
+            slots: SlotGraph::new(),
         }
+    }
+
+    /// Logical held SlotGraph (x0056 / x0057 / x0059). World-rooted when not held.
+    pub fn slot_graph(&self) -> &SlotGraph {
+        &self.slots
+    }
+
+    /// Pass held entity from `from_slot` to `to_slot` held (x005a). No Steal.
+    pub fn pass_held(&mut self, from_slot: usize, to_slot: usize) -> bool {
+        if from_slot >= self.slot_count || to_slot >= self.slot_count || from_slot == to_slot {
+            return false;
+        }
+        let Some(g) = self.grabs[from_slot] else {
+            return false;
+        };
+        if self.grabs[to_slot].is_some() {
+            return false;
+        }
+        let (fx, fy, fz) = self.user_root_translation(from_slot);
+        let (tx, ty, tz) = self.user_root_translation(to_slot);
+        if !crate::finite::within_grab_start_distance((fx, fy, fz), (tx, ty, tz)) {
+            return false;
+        }
+        let held_id = self.boxes.entity_ids[g.index];
+        let holder_to = Self::user_root_entity_id(to_slot);
+        let aim = vector![tx, ty, tz];
+        let handle = self.boxes.handles[g.index];
+        let Some(body) = self.rigid_body_set.get(handle) else {
+            return false;
+        };
+        let t = *body.translation();
+        let raw = t - aim;
+        let (ox, oy, oz) = crate::finite::clamp_hold_offset(raw.x, raw.y, raw.z);
+        let offset = vector![ox, oy, oz];
+        let new_g = ActiveGrab {
+            index: g.index,
+            offset,
+        };
+        self.grabs[from_slot] = None;
+        self.grabs[to_slot] = Some(new_g);
+        self.slots.attach_held(holder_to, held_id);
+        self.follow_grab(new_g, aim);
+        true
+    }
+
+    /// Place: release held to world (parent None + Dynamic). Alias of grab off (x005a).
+    pub fn place_held(&mut self, slot: usize) -> bool {
+        if slot >= self.slot_count || self.grabs[slot].is_none() {
+            return false;
+        }
+        self.release_grab(slot);
+        true
     }
 
     /// Manifest-derived Presence / user_root capacity (x004d).
@@ -357,6 +413,9 @@ impl PhysicsWorld {
         body.set_next_kinematic_translation(t);
         let g = ActiveGrab { index, offset };
         self.grabs[slot] = Some(g);
+        let held_id = self.boxes.entity_ids[index];
+        let holder = Self::user_root_entity_id(slot);
+        self.slots.attach_held(holder, held_id);
         self.follow_grab(g, aim_v);
     }
 
@@ -372,6 +431,8 @@ impl PhysicsWorld {
         let Some(g) = self.grabs[slot].take() else {
             return;
         };
+        let held_id = self.boxes.entity_ids[g.index];
+        self.slots.clear_held(held_id);
         let handle = self.boxes.handles[g.index];
         let Some(body) = self.rigid_body_set.get_mut(handle) else {
             return;
@@ -828,6 +889,8 @@ mod tests {
         let aim0 = (bx - 0.1, by, bz - 0.2);
         world.apply_grab(0, true, id, aim0);
         assert_eq!(world.grab_entity_id(0), Some(id));
+        let holder = PhysicsWorld::user_root_entity_id(0);
+        assert_eq!(world.slot_graph().parent(id), Some(holder));
         let aim1 = (aim0.0 + 3.0, aim0.1 + 2.5, aim0.2);
         for _ in 0..10 {
             world.apply_grab(0, true, id, aim1);
@@ -840,11 +903,55 @@ mod tests {
         );
         world.apply_grab(0, false, 0, aim1);
         assert!(world.grab_entity_id(0).is_none());
+        assert_eq!(world.slot_graph().parent(id), None);
         for _ in 0..300 {
             world.step();
         }
         let (_, y_after, _) = world.box_pose(4).0;
         assert!(y_after < 1.0 && y_after < y - 1.0);
+    }
+
+    #[test]
+    fn grab_syncs_slot_graph_held_parent() {
+        let mut world = test_world();
+        for _ in 0..60 {
+            world.step();
+        }
+        let id = 14u32;
+        let (bx, by, bz) = world.box_pose(4).0;
+        let holder = PhysicsWorld::user_root_entity_id(0);
+        world.apply_grab(0, true, id, (bx, by, bz));
+        assert!(world.slot_graph().is_held_by(id, holder));
+        world.release_slot(0);
+        assert_eq!(world.slot_graph().parent(id), None);
+    }
+
+    #[test]
+    fn pass_held_moves_to_other_slot_place_clears() {
+        let mut world = test_world();
+        for _ in 0..60 {
+            world.step();
+        }
+        let id = 14u32;
+        let (bx, by, bz) = world.box_pose(4).0;
+        // Move slot 1 near slot 0 so pass distance gate passes.
+        let (x0, y0, z0) = world.user_root_translation(0);
+        if let Some(handle) = world.user_roots[1] {
+            if let Some(body) = world.rigid_body_set.get_mut(handle) {
+                body.set_next_kinematic_translation(vector![x0 + 0.5, y0, z0]);
+                body.set_translation(vector![x0 + 0.5, y0, z0], true);
+            }
+        }
+        world.apply_grab(0, true, id, (bx, by, bz));
+        assert_eq!(world.grab_entity_id(0), Some(id));
+        assert!(world.pass_held(0, 1));
+        assert!(world.grab_entity_id(0).is_none());
+        assert_eq!(world.grab_entity_id(1), Some(id));
+        let holder1 = PhysicsWorld::user_root_entity_id(1);
+        assert!(world.slot_graph().is_held_by(id, holder1));
+        assert!(world.place_held(1));
+        assert!(world.grab_entity_id(1).is_none());
+        assert_eq!(world.slot_graph().parent(id), None);
     }
 
     #[test]
