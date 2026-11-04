@@ -27,7 +27,7 @@ defmodule Assets.DriveTest do
 
   test "blob leaf requires grant; other owner forbidden parent" do
     body = "drive-blob-leaf"
-    assert {:ok, obj, _} = Blobs.upload(@sub_a, body, "text/plain", access: :grant_required)
+    assert {:ok, obj, _} = Blobs.upload(@sub_a, body, "text/plain")
     assert {:ok, folder} = Drive.create_folder(@sub_a, "Inv")
     assert {:ok, leaf} = Drive.create_blob(@sub_a, "item", obj.blake3, folder.node_id)
     assert leaf.kind == "blob"
@@ -52,7 +52,7 @@ defmodule Assets.DriveTest do
 
   test "resolve_for_take_out and save_prefab round-trip" do
     mesh = "mesh-bytes"
-    assert {:ok, mesh_obj, _} = Blobs.upload(@sub_a, mesh, "text/plain", access: :grant_required)
+    assert {:ok, mesh_obj, _} = Blobs.upload(@sub_a, mesh, "text/plain")
 
     {:ok, payload} =
       Payload.new(1, [

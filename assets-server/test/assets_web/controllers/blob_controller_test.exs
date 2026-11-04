@@ -305,7 +305,7 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %QuotaLedger{reserved_bytes: 0} = Repo.get(QuotaLedger, sub)
   end
 
-  test "default upload is authenticated; other user needs Grant or PlaceRead (x006c)", %{
+  test "default upload: owner Grant GET 200; other user needs PlaceRead (x006c/x006f)", %{
     conn: conn,
     signer: signer
   } do
@@ -317,11 +317,13 @@ defmodule AssetsWeb.BlobControllerTest do
       |> put_req_header("content-type", "text/plain")
       |> post("/api/v1/blobs", body)
 
-    assert %{"blake3" => blake3, "access" => "authenticated", "status" => "created"} =
-             json_response(conn, 201)
+    assert %{"blake3" => blake3, "status" => "created"} = body_json = json_response(conn, 201)
+    refute Map.has_key?(body_json, "access")
 
     assert %BlobGrant{grant_type: "owned"} =
              Repo.get_by(BlobGrant, grantee_sub: @sub_a, blake3: blake3)
+
+    assert %CasObject{blake3: ^blake3} = Repo.get(CasObject, blake3)
 
     conn =
       build_conn()
@@ -338,7 +340,7 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"error" => "forbidden"} = json_response(conn, 403)
   end
 
-  test "authenticated CasObject GET allowed via PlaceRead (x006c)", %{
+  test "CasObject GET allowed via PlaceRead (x006c)", %{
     conn: conn,
     signer: signer
   } do
@@ -352,7 +354,7 @@ defmodule AssetsWeb.BlobControllerTest do
       |> put_req_header("content-type", "text/plain")
       |> post("/api/v1/blobs", body)
 
-    assert %{"blake3" => blake3, "access" => "authenticated"} = json_response(conn, 201)
+    assert %{"blake3" => blake3} = json_response(conn, 201)
 
     TestPlaceReadHelpers.seed_scene_hashes("local", 1, manifest, [blake3])
 
@@ -373,7 +375,7 @@ defmodule AssetsWeb.BlobControllerTest do
     assert response(conn, 200) == body
   end
 
-  test "grant_required upload: owner GET 200, other user 403", %{
+  test "upload: owner GET 200, other user 403", %{
     conn: conn,
     signer: signer
   } do
@@ -383,11 +385,9 @@ defmodule AssetsWeb.BlobControllerTest do
       conn
       |> TestAuthHelpers.put_auth(signer, @sub_a)
       |> put_req_header("content-type", "text/plain")
-      |> put_req_header("x-alchemy-blob-access", "grant_required")
       |> post("/api/v1/blobs", body)
 
-    assert %{"blake3" => blake3, "access" => "grant_required", "status" => "created"} =
-             json_response(conn, 201)
+    assert %{"blake3" => blake3, "status" => "created"} = json_response(conn, 201)
 
     conn =
       build_conn()
@@ -404,7 +404,7 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"error" => "forbidden"} = json_response(conn, 403)
   end
 
-  test "grant_required GET allowed via PlaceRead covering scene hash (x006b)", %{
+  test "GET allowed via PlaceRead covering scene hash (x006b)", %{
     conn: conn,
     signer: signer
   } do
@@ -416,7 +416,6 @@ defmodule AssetsWeb.BlobControllerTest do
       conn
       |> TestAuthHelpers.put_auth(signer, @sub_a)
       |> put_req_header("content-type", "text/plain")
-      |> put_req_header("x-alchemy-blob-access", "grant_required")
       |> post("/api/v1/blobs", body)
 
     assert %{"blake3" => blake3} = json_response(conn, 201)
@@ -449,7 +448,6 @@ defmodule AssetsWeb.BlobControllerTest do
       conn
       |> TestAuthHelpers.put_auth(signer, @sub_a)
       |> put_req_header("content-type", "text/plain")
-      |> put_req_header("x-alchemy-blob-access", "grant_required")
       |> post("/api/v1/blobs", body)
 
     assert %{"blake3" => blake3} = json_response(conn, 201)
@@ -485,7 +483,6 @@ defmodule AssetsWeb.BlobControllerTest do
       conn
       |> TestAuthHelpers.put_auth(signer, @sub_a)
       |> put_req_header("content-type", "text/plain")
-      |> put_req_header("x-alchemy-blob-access", "grant_required")
       |> post("/api/v1/blobs", body)
 
     assert %{"blake3" => blake3} = json_response(conn, 201)
@@ -520,7 +517,6 @@ defmodule AssetsWeb.BlobControllerTest do
       conn
       |> TestAuthHelpers.put_auth(signer, @sub_a)
       |> put_req_header("content-type", "text/plain")
-      |> put_req_header("x-alchemy-blob-access", "grant_required")
       |> post("/api/v1/blobs", body)
 
     assert %{"blake3" => blake3} = json_response(conn, 201)
@@ -544,7 +540,7 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"error" => "forbidden"} = json_response(conn, 403)
   end
 
-  test "inventory PUT always grant_required: owner GET 200, other user 403", %{
+  test "inventory PUT: owner GET 200, other user 403", %{
     conn: conn,
     signer: signer
   } do
@@ -556,13 +552,12 @@ defmodule AssetsWeb.BlobControllerTest do
       |> put_req_header("content-type", "text/plain")
       |> post("/api/v1/inventory/blobs", body)
 
-    assert %{"blake3" => blake3, "access" => "grant_required", "status" => "created"} =
-             json_response(conn, 201)
+    assert %{"blake3" => blake3, "status" => "created"} = json_response(conn, 201)
 
     assert %BlobGrant{grant_type: "owned"} =
              Repo.get_by(BlobGrant, grantee_sub: @sub_a, blake3: blake3)
 
-    assert %CasObject{access: "grant_required"} = Repo.get(CasObject, blake3)
+    assert %CasObject{blake3: ^blake3} = Repo.get(CasObject, blake3)
 
     conn =
       build_conn()
@@ -579,48 +574,20 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"error" => "forbidden"} = json_response(conn, 403)
   end
 
-  test "inventory PUT rejects authenticated access header with 400", %{
+  test "obsolete x-alchemy-blob-access header is ignored on inventory PUT (x006f)", %{
     conn: conn,
     signer: signer
   } do
+    body = "inventory-ignores-access-header"
+
     conn =
       conn
       |> TestAuthHelpers.put_auth(signer, @sub_a)
       |> put_req_header("content-type", "text/plain")
       |> put_req_header("x-alchemy-blob-access", "authenticated")
-      |> post("/api/v1/inventory/blobs", "inventory-cannot-weaken")
-
-    assert %{"error" => "invalid_access"} = json_response(conn, 400)
-  end
-
-  test "inventory PUT rejects unknown access header with 400", %{
-    conn: conn,
-    signer: signer
-  } do
-    conn =
-      conn
-      |> TestAuthHelpers.put_auth(signer, @sub_a)
-      |> put_req_header("content-type", "text/plain")
-      |> put_req_header("x-alchemy-blob-access", "public")
-      |> post("/api/v1/inventory/blobs", "inventory-unknown-access")
-
-    assert %{"error" => "invalid_access"} = json_response(conn, 400)
-  end
-
-  test "inventory PUT accepts explicit grant_required header", %{
-    conn: conn,
-    signer: signer
-  } do
-    body = "inventory-explicit-grant-required"
-
-    conn =
-      conn
-      |> TestAuthHelpers.put_auth(signer, @sub_a)
-      |> put_req_header("content-type", "text/plain")
-      |> put_req_header("x-alchemy-blob-access", "grant_required")
       |> post("/api/v1/inventory/blobs", body)
 
-    assert %{"access" => "grant_required", "status" => "created"} = json_response(conn, 201)
+    assert %{"blake3" => _blake3, "status" => "created"} = json_response(conn, 201)
   end
 
   test "room-mesh and inventory paths stay separated for different bodies (x006c)", %{
@@ -638,8 +605,7 @@ defmodule AssetsWeb.BlobControllerTest do
       |> put_req_header("content-type", "text/plain")
       |> post("/api/v1/blobs", mesh)
 
-    assert %{"blake3" => mesh_blake3, "access" => "authenticated", "status" => "created"} =
-             json_response(conn, 201)
+    assert %{"blake3" => mesh_blake3, "status" => "created"} = json_response(conn, 201)
 
     conn =
       build_conn()
@@ -647,8 +613,7 @@ defmodule AssetsWeb.BlobControllerTest do
       |> put_req_header("content-type", "text/plain")
       |> post("/api/v1/inventory/blobs", inventory)
 
-    assert %{"blake3" => inv_blake3, "access" => "grant_required", "status" => "created"} =
-             json_response(conn, 201)
+    assert %{"blake3" => inv_blake3, "status" => "created"} = json_response(conn, 201)
 
     assert mesh_blake3 != inv_blake3
 
@@ -695,38 +660,51 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"error" => "forbidden"} = json_response(conn, 403)
   end
 
-  test "inventory PUT coexists when same bytes already authenticated", %{
+  test "mesh then inventory PUT coexist on same blake3 without conflict (x006f)", %{
     conn: conn,
     signer: signer
   } do
-    body = "inventory-coexist-with-authenticated"
+    body = "mesh-inventory-same-bytes-coexist"
+    assert_cross_path_coexist(conn, signer, body, :blobs_first)
+  end
 
-    conn =
+  test "inventory then mesh PUT coexist on same blake3 without conflict (x006f)", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "inventory-mesh-same-bytes-coexist"
+    assert_cross_path_coexist(conn, signer, body, :inventory_first)
+  end
+
+  test "/blobs and /inventory/blobs upload responses match for same body (x006f)", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "path-alias-same-behaviour"
+
+    conn_a =
       conn
       |> TestAuthHelpers.put_auth(signer, @sub_a)
       |> put_req_header("content-type", "text/plain")
       |> post("/api/v1/blobs", body)
 
-    assert %{"blake3" => blake3, "access" => "authenticated"} = json_response(conn, 201)
+    assert %{"blake3" => blake3, "size" => size, "mime" => mime, "status" => "created"} =
+             json_response(conn_a, 201)
 
-    conn =
+    conn_b =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, @sub_b)
       |> put_req_header("content-type", "text/plain")
       |> post("/api/v1/inventory/blobs", body)
 
-    assert %{"blake3" => ^blake3, "access" => "authenticated", "status" => "created"} =
-             json_response(conn, 201)
+    assert %{
+             "blake3" => ^blake3,
+             "size" => ^size,
+             "mime" => ^mime,
+             "status" => "created"
+           } = body_b = json_response(conn_b, 201)
 
-    assert %CasObject{access: "authenticated"} = Repo.get(CasObject, blake3)
-    assert %BlobGrant{} = Repo.get_by(BlobGrant, grantee_sub: @sub_b, blake3: blake3)
-
-    conn =
-      build_conn()
-      |> TestAuthHelpers.put_auth(signer, @sub_b)
-      |> get("/api/v1/blobs/#{blake3}")
-
-    assert response(conn, 200) == body
+    refute Map.has_key?(body_b, "access")
   end
 
   test "rejects GET without auth", %{conn: conn, signer: signer, sub: sub} do
@@ -744,48 +722,22 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"error" => "missing_auth_token"} = json_response(conn, 401)
   end
 
-  test "invalid access header is 400", %{conn: conn, signer: signer, sub: sub} do
+  test "obsolete x-alchemy-blob-access header is ignored on /blobs (x006f)", %{
+    conn: conn,
+    signer: signer,
+    sub: sub
+  } do
     conn =
       conn
       |> TestAuthHelpers.put_auth(signer, sub)
       |> put_req_header("content-type", "text/plain")
       |> put_req_header("x-alchemy-blob-access", "public")
-      |> post("/api/v1/blobs", "nope")
+      |> post("/api/v1/blobs", "header-ignored")
 
-    assert %{"error" => "invalid_access"} = json_response(conn, 400)
+    assert %{"blake3" => _blake3, "status" => "created"} = json_response(conn, 201)
   end
 
-  test "first-writer access kept: later grant_required still gets Grant", %{
-    conn: conn,
-    signer: signer
-  } do
-    body = "access-first-writer-coexist"
-
-    conn =
-      conn
-      |> TestAuthHelpers.put_auth(signer, @sub_a)
-      |> put_req_header("content-type", "text/plain")
-      |> post("/api/v1/blobs", body)
-
-    assert %{"blake3" => blake3, "access" => "authenticated"} = json_response(conn, 201)
-
-    conn =
-      build_conn()
-      |> TestAuthHelpers.put_auth(signer, @sub_b)
-      |> put_req_header("content-type", "text/plain")
-      |> put_req_header("x-alchemy-blob-access", "grant_required")
-      |> post("/api/v1/blobs", body)
-
-    assert %{"blake3" => ^blake3, "access" => "authenticated", "status" => "created"} =
-             json_response(conn, 201)
-
-    assert %CasObject{access: "authenticated"} = Repo.get(CasObject, blake3)
-    assert %BlobGrant{} = Repo.get_by(BlobGrant, grantee_sub: @sub_b, blake3: blake3)
-    assert Blobs.quota(@sub_b).used_bytes == byte_size(body)
-    assert Blobs.quota(@sub_b).reserved_bytes == 0
-  end
-
-  test "cross-owner grant_required: second owner with matching access can GET", %{
+  test "cross-owner same bytes: second owner gets Grant and can GET (x006f)", %{
     conn: conn,
     signer: signer
   } do
@@ -795,22 +747,23 @@ defmodule AssetsWeb.BlobControllerTest do
       conn
       |> TestAuthHelpers.put_auth(signer, @sub_a)
       |> put_req_header("content-type", "text/plain")
-      |> put_req_header("x-alchemy-blob-access", "grant_required")
       |> post("/api/v1/blobs", body)
 
-    assert %{"blake3" => blake3, "access" => "grant_required"} = json_response(conn, 201)
+    assert %{"blake3" => blake3, "status" => "created"} = json_response(conn, 201)
 
     conn =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, @sub_b)
       |> put_req_header("content-type", "text/plain")
-      |> put_req_header("x-alchemy-blob-access", "grant_required")
       |> post("/api/v1/blobs", body)
 
     assert %{"blake3" => ^blake3, "status" => "created"} = json_response(conn, 201)
 
     assert %BlobGrant{grant_type: "owned"} =
              Repo.get_by(BlobGrant, grantee_sub: @sub_b, blake3: blake3)
+
+    assert Blobs.quota(@sub_b).used_bytes == byte_size(body)
+    assert Blobs.quota(@sub_b).reserved_bytes == 0
 
     conn =
       build_conn()
@@ -820,47 +773,52 @@ defmodule AssetsWeb.BlobControllerTest do
     assert response(conn, 200) == body
   end
 
-  test "unknown CasObject.access is fail-closed forbidden", %{
-    conn: conn,
-    signer: signer,
-    sub: sub
-  } do
-    body = "corrupt-access-row"
-    blake3 = Blobs.blake3_hex(body)
-    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
-
-    # Bypass changeset inclusion to simulate corrupt/legacy DB value.
-    {1, _} =
-      Repo.insert_all(CasObject, [
-        %{
-          blake3: blake3,
-          size: byte_size(body),
-          mime: "text/plain",
-          access: "legacy_open",
-          inserted_at: now
-        }
-      ])
-
-    assert :created = CAS.put_if_absent(blake3, body)
-
-    {_n, _} =
-      Repo.insert_all(
-        BlobGrant,
-        [
-          %{
-            grantee_sub: sub,
-            blake3: blake3,
-            grant_type: "owned",
-            inserted_at: now
-          }
-        ],
-        on_conflict: :nothing,
-        conflict_target: [:grantee_sub, :blake3]
-      )
+  defp assert_cross_path_coexist(conn, signer, body, order) do
+    {first_path, second_path} =
+      case order do
+        :blobs_first -> {"/api/v1/blobs", "/api/v1/inventory/blobs"}
+        :inventory_first -> {"/api/v1/inventory/blobs", "/api/v1/blobs"}
+      end
 
     conn =
       conn
-      |> TestAuthHelpers.put_auth(signer, sub)
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> post(first_path, body)
+
+    assert %{"blake3" => blake3, "status" => "created"} = json_response(conn, 201)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> put_req_header("content-type", "text/plain")
+      |> post(second_path, body)
+
+    assert %{"blake3" => ^blake3, "status" => "created"} = json_response(conn, 201)
+
+    assert %CasObject{blake3: ^blake3} = Repo.get(CasObject, blake3)
+    assert %BlobGrant{} = Repo.get_by(BlobGrant, grantee_sub: @sub_a, blake3: blake3)
+    assert %BlobGrant{} = Repo.get_by(BlobGrant, grantee_sub: @sub_b, blake3: blake3)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert response(conn, 200) == body
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert response(conn, 200) == body
+
+    stranger = "44444444-4444-4444-4444-444444444444"
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, stranger)
       |> get("/api/v1/blobs/#{blake3}")
 
     assert %{"error" => "forbidden"} = json_response(conn, 403)

@@ -5,35 +5,25 @@ defmodule AssetsWeb.BlobController do
 
   alias Assets.Blobs
 
-  def create(conn, _params) do
-    case parse_access_header(conn) do
-      {:ok, access} ->
-        read_and_upload(conn, access)
+  @doc """
+  Room / general PUT. Always issues `:owned` BlobGrant (x006f).
 
-      {:error, :invalid_access} ->
-        conn
-        |> put_status(:bad_request)
-        |> json(%{error: "invalid_access"})
-    end
+  Behaviour is identical to `create_inventory/2` today — only the path differs
+  (inventory clients keep a dedicated URL as the x0054 contract).
+  """
+  def create(conn, _params) do
+    read_and_upload(conn)
   end
 
   @doc """
-  Inventory PUT (x0054). Always `access=grant_required`; path is the API contract.
+  Inventory PUT path (x0054 / x006f).
 
-  `x-alchemy-blob-access` may be omitted or `grant_required`. Any other value
-  (including `authenticated`) is 400 — the path cannot be weakened, and unknown
-  values match `/blobs` fail-closed behavior.
+  Behaviour is identical to `create/2` (same `read_and_upload/1`): owned Grant,
+  no access header parsing. Path is kept so inventory clients have a stable URL;
+  diverge here only when inventory needs a distinct contract again.
   """
   def create_inventory(conn, _params) do
-    case parse_inventory_access_header(conn) do
-      :ok ->
-        read_and_upload(conn, :grant_required)
-
-      {:error, :invalid_access} ->
-        conn
-        |> put_status(:bad_request)
-        |> json(%{error: "invalid_access"})
-    end
+    read_and_upload(conn)
   end
 
   def show(conn, %{"blake3" => blake3}) do
@@ -72,12 +62,12 @@ defmodule AssetsWeb.BlobController do
     end
   end
 
-  defp read_and_upload(conn, access) do
+  defp read_and_upload(conn) do
     max = Application.fetch_env!(:assets, :max_upload_bytes)
 
     case Plug.Conn.read_body(conn, length: max) do
       {:ok, body, conn} ->
-        respond_upload(conn, body, access)
+        respond_upload(conn, body)
 
       {:more, _partial, conn} ->
         conn
@@ -93,10 +83,10 @@ defmodule AssetsWeb.BlobController do
     end
   end
 
-  defp respond_upload(conn, body, access) do
+  defp respond_upload(conn, body) do
     mime = request_mime(conn)
 
-    case Blobs.upload(conn.assigns.auth_sub, body, mime, access: access) do
+    case Blobs.upload(conn.assigns.auth_sub, body, mime) do
       {:ok, blob, status} ->
         code = if status == :created, do: :created, else: :ok
 
@@ -106,7 +96,6 @@ defmodule AssetsWeb.BlobController do
           blake3: blob.blake3,
           size: blob.size,
           mime: blob.mime,
-          access: blob.access,
           status: Atom.to_string(status)
         })
 
@@ -120,17 +109,6 @@ defmodule AssetsWeb.BlobController do
         |> put_status(413)
         |> json(%{error: "too_large"})
 
-      {:error, :invalid_access} ->
-        conn
-        |> put_status(:bad_request)
-        |> json(%{error: "invalid_access"})
-
-      {:error, :access_conflict} ->
-        # First writer owns CasObject.access; requested access differs from existing.
-        conn
-        |> put_status(:conflict)
-        |> json(%{error: "access_conflict"})
-
       {:error, {:quarantine, reason}} ->
         conn
         |> put_status(:unprocessable_entity)
@@ -142,24 +120,6 @@ defmodule AssetsWeb.BlobController do
         conn
         |> put_status(:internal_server_error)
         |> json(%{error: "upload_failed"})
-    end
-  end
-
-  defp parse_access_header(conn) do
-    case get_req_header(conn, "x-alchemy-blob-access") do
-      [] -> {:ok, :authenticated}
-      ["authenticated"] -> {:ok, :authenticated}
-      ["grant_required"] -> {:ok, :grant_required}
-      _ -> {:error, :invalid_access}
-    end
-  end
-
-  # Inventory path: only absent or grant_required. authenticated / unknown → 400.
-  defp parse_inventory_access_header(conn) do
-    case get_req_header(conn, "x-alchemy-blob-access") do
-      [] -> :ok
-      ["grant_required"] -> :ok
-      _ -> {:error, :invalid_access}
     end
   end
 

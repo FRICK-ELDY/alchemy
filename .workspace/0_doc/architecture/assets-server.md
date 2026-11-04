@@ -1,7 +1,7 @@
 # assets-server
 
 > **正本コード**: [`assets-server/`](../../../assets-server/)  
-> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳 + `access`）+ **x0054**（inventory PUT 常時 `grant_required`）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）+ **x006e**（Drive HTTP put_back）  
+> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳）+ **x0054**（inventory PUT 経路）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）+ **x006e**（Drive HTTP put_back）+ **x006f**（CasObject.access 列廃止）  
 
 > **目標たたき台**: [assets-server-draft.md](assets-server-draft.md)（5 層全体）  
 > **脅威（手口×対策）**: [assets-threat-model.md](assets-threat-model.md)
@@ -10,12 +10,12 @@
 
 [overview.md](overview.md) の⑤⑥⑦経路のサーバー側。バイナリ置き場は **local disk** または **S3 互換（R2）**（env 切替）。s3 時の GET は **presigned URL へ 302**（client → R2 直 DL）。
 
-## 方針（現行 = 案 B）
+## 方針（現行 = 案 B + x006f）
 
 | | 内容 |
 |:---|:---|
-| **現行（x006c 案 B）** | GET 可否の SSoT は常に **BlobGrant** またはカバーする **PlaceRead**（x006b）。`access=authenticated` は PUT メタ／先勝ちのみで、Bearer 単独の読取 capability ではない |
-| **移行段（x004f 案 A・完了）** | 台帳 + 任意 `grant_required`。GET 既定 capability は x006c で廃止済み |
+| **現行（x006c 案 B + x006f）** | GET 可否の SSoT は常に **BlobGrant** またはカバーする **PlaceRead**（x006b）。`CasObject` は bytes メタのみ（`access` 列なし） |
+| **移行段（x004f 案 A・完了）** | 台帳 + 任意 `grant_required`。GET 既定 capability は x006c で廃止。列は x006f で削除 |
 
 ## 保証すること / しないこと
 
@@ -24,15 +24,15 @@
 | メタ（CasObject / BlobRef / BlobGrant / QuotaLedger）を SQLite に置く | GLB/KTX2 本体を DB に置く |
 | 不変バイナリを CAS（BLAKE3 キー）に置く | Folder / Commit（Spatial VCS）・Group Vault |
 | `Assets.Vault.personal/1` が Quota と一致する used/reserved/limit を返す（vault_id=`owner_sub` 暫定・x0058） | UUID vault_id 移行・`:read_only`・課金プラン連動 |
-| `CasObject`（物理・所有者なし）と `BlobRef`（owner×blake3）を分離（x003f） | StorageVault / `:purchased` / `:mail_temp` |
-| PUT finalize で uploader に `:owned` `BlobGrant`（x004f） | room スコープ grant・Manifest 連動付与（→ 案 B） |
-| `POST /api/v1/inventory/blobs` は常に `access=grant_required`（x0054）。access ヘッダは省略/`grant_required` のみ（他は 400） | DriveNode / Prefab / Vault 表・client UI |
-| 既存 `authenticated` 同一 blake3 へ後続 `grant_required` PUT は **共存**（CasObject.access は先勝ち・Grant は付与・P1-1 peel） | `CasObject.access` 列廃止・真の私有同一 hash の access→Grant 本移設 |
+| `CasObject`（物理・所有者なし・size/mime のみ）と `BlobRef`（owner×blake3）を分離（x003f / x006f） | StorageVault / `:purchased` / `:mail_temp` |
+| PUT finalize で uploader に `:owned` `BlobGrant`（x004f） | room スコープ grant・Manifest 連動付与以外の Grant 種別 |
+| `POST /api/v1/inventory/blobs` は inventory 用パス契約（x0054）。中身は通常 PUT と同じ（常に owned Grant・x006f） | DriveNode / Prefab / Vault 表・client UI |
+| 同一 blake3 を `/blobs` と `/inventory/blobs` から別 owner が PUT しても共存（x006f） | mime/size 先勝ちの変更；orphan CAS GC |
 | PUT: `reserved_bytes` 予約 → TX 外 CAS put → used 振替。失敗時は**予約解放のみ**（CAS は消さない＝並行同一 hash 安全） | Oban・予約期限切れジョブ・署名 URL 直 PUT・orphan CAS の定期 GC |
 | `ASSETS_CAS_BACKEND=local\|s3` で置き場切替（x001c）。**test では runtime が CAS env を無視**（x001e） | 公開バケット・CDN カスタムドメイン |
 | s3 時 GET は短命署名 URL へ 302（x001d） | Upload の署名 URL 直 PUT |
 | Quota 超過のアップロード拒否（既定 1GiB；`used + reserved`） | 課金連動 Quota / pgvector / Origin Cert / Ash 本格 |
-| auth `sub` を **PUT・Quota の所有者キー**、Grant の `grantee_sub` として使う | PUT 既定の `grant_required` 強制 |
+| auth `sub` を **PUT・Quota の所有者キー**、Grant の `grantee_sub` として使う | — |
 | GET は常に **当該 `auth_sub` の BlobGrant**、またはカバーする **PlaceRead**（x006b / x006c） | License Token / market Webhook；Bearer 単独の認証済み capability |
 | PlaceRead 検証は world JWKS（`WORLD_JWKS_URL` / `WORLD_JWT_ISSUER`）。`sub` 一致必須。hash ∈ **seal-time scene** のみ（`extra_blake3` 無効）。place_hashes 応答の identity 照合 | PlaceRead TTL 専用 UI；連合ミラー；extra による inventory バイパス |
 | client は受理済み `world_seal` + Room Token で PlaceRead を取得し `x-alchemy-place-read` 付き GET（x006c） | PlaceRead 期限前の専用リフレッシュ UI |
@@ -46,7 +46,6 @@
 |:---|:---|:---|
 | Bearer JWT（auth JWKS） | **必須** | `AuthenticateUser` → `auth_sub`。未認証は 401 |
 | blake3 が `cas_objects` に存在 | **必須** | なければ 404 |
-| `CasObject.access` | **必須・fail-closed** | 既知値のみ許可。`authenticated` / `grant_required`。**未知・不正値は 403**（公開に落とさない）。値は GET 能力を分けない |
 | `auth_sub` が当該 hash の `BlobGrant` を持つ **または** PlaceRead がカバー | **常時**（x006c） | どちらも無ければ 403 |
 | License / 購入証明 | **しない** | draft / market 後続 |
 | 公開バケット直リンク | **しない** | s3 でも API 経由の短命 presigned GET（302） |
@@ -55,13 +54,13 @@
 
 意図する運用前提: 部屋メッシュは **入室済み client** が PlaceRead（または uploader の `:owned` Grant）で GET。inventory / Drive は Grant。公開読取 API は `Blobs.fetch/2` のみ（門番なし `download/1` は置かない）。
 
-PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。任意ヘッダ `x-alchemy-blob-access: grant_required`（未指定=`authenticated`、未知値=400）。インベントリ用は **`POST /api/v1/inventory/blobs`**（x0054）で常に `grant_required`（ヘッダ省略または `grant_required` のみ可。`authenticated` / 未知値は 400）。`auth_sub` で `reserved_bytes` 予約 → TX 外 CAS put → `BlobRef` + `:owned` `BlobGrant` 確定と used 振替。同一 owner の再 PUT は `:existing`（Quota 非加算）。**別 owner の同 bytes は自 ref + 自 Grant を作成し自 Quota を消費**（CAS は put_if_absent；`access` / mime は先勝ち）。**要求 `access` が既存 CasObject と不一致なら 409 `access_conflict`**（黙って先勝ち成功にはしない。inventory 経路でも既存 `authenticated` を私有化しない）。補償パスは **予約解放のみで CAS.delete しない**。
+PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。`x-alchemy-blob-access` はパースしない（x006f）。インベントリ用は **`POST /api/v1/inventory/blobs`**（x0054）で同じ upload（常に `:owned` Grant）。`auth_sub` で `reserved_bytes` 予約 → TX 外 CAS put → `BlobRef` + `:owned` `BlobGrant` 確定と used 振替。同一 owner の再 PUT は `:existing`（Quota 非加算）。**別 owner の同 bytes は自 ref + 自 Grant を作成し自 Quota を消費**（CAS は put_if_absent；mime/size は先勝ち）。補償パスは **予約解放のみで CAS.delete しない**。
 
 ## 層の境界
 
 | 層 | 置くもの | 置かないもの |
 |:---|:---|:---|
-| DB (Ecto SQLite) | CasObject(size/mime/access)、BlobRef(owner×blake3)、BlobGrant(grantee×blake3)、used/reserved | GLB/KTX2 本体 |
+| DB (Ecto SQLite) | CasObject(size/mime)、BlobRef(owner×blake3)、BlobGrant(grantee×blake3)、used/reserved | GLB/KTX2 本体；`access` 列 |
 | CAS local | 不変バイナリ（BLAKE3 hex ファイル名） | ユーザー階層・権限 |
 | CAS s3（R2） | 同上（キー = prefix + BLAKE3） | JWT / Quota |
 | HTTP API | 門番・PUT 代理・GET（local=代理 / s3=302） | ストレージ固有の永続 URL 契約 |
@@ -72,9 +71,9 @@ PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。任意ヘッ
 | Method | Path | Auth | 内容 |
 |:---|:---|:---|:---|
 | GET | `/health` | 不要 | 生存確認 |
-| POST | `/api/v1/blobs` | Bearer | raw body アップロード。任意 `x-alchemy-blob-access`。既存と不一致は 409 |
-| POST | `/api/v1/inventory/blobs` | Bearer | インベントリ用。常に `grant_required`（x0054）。access ヘッダは省略/`grant_required` のみ（他は 400） |
-| GET | `/api/v1/blobs/:blake3` | Bearer（任意 `x-alchemy-place-read`） | 常時 Grant **または** PlaceRead カバー（x006c）。未知 access は 403。local: 200 / s3: 302 |
+| POST | `/api/v1/blobs` | Bearer | raw body アップロード。owned Grant 付与 |
+| POST | `/api/v1/inventory/blobs` | Bearer | インベントリ用パス（x0054）。中身は通常 PUT と同じ（x006f） |
+| GET | `/api/v1/blobs/:blake3` | Bearer（任意 `x-alchemy-place-read`） | 常時 Grant **または** PlaceRead カバー（x006c）。local: 200 / s3: 302 |
 | GET | `/api/v1/drive/nodes` | Bearer | owner Drive 一覧（`parent_id` 任意・x006d） |
 | POST | `/api/v1/drive/take_out` | Bearer + JSON `{node_id}` | Grant 検証済み blake3 列（x006d；host には node_id を渡さない） |
 | POST | `/api/v1/drive/put_back` | Bearer + JSON `{name, payload, parent_id?}` | Prefab.Payload 検証 → `save_prefab`（x006e；部屋 entity は変更しない） |
@@ -84,7 +83,7 @@ PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。任意ヘッ
 
 | エンティティ | 役割 |
 |:---|:---|
-| CasObject | `blake3` PK + `size` + `mime` + `access`（**物理メタ。所有者なし**） |
+| CasObject | `blake3` PK + `size` + `mime`（**物理メタ。所有者なし・access なし・x006f**） |
 | BlobRef | UNIQUE(`owner_sub`, `blake3`) → CasObject（**Quota 単位**） |
 | BlobGrant | UNIQUE(`grantee_sub`, `blake3`) + `grant_type`（**権利台帳。GET の SSoT の一方・x006c**） |
 | QuotaLedger | `owner_sub` + `used_bytes` + `reserved_bytes` + `limit_bytes` |
@@ -125,7 +124,7 @@ bash .scripts/smoke-assets-glb.sh   # Coin fixture → CAS
 ## 後続
 
 - **インベントリラダー（B+2→C+3）**: [inventory-ladder.md](../roadmap/inventory-ladder.md)。Wave 0–4 **done**（x0054–x0065）。**x006d** take-out + **x006e** put-back UI（単一 mesh→Prefab・部屋は残す）。Prefab 多子 / scene despawn / XR は後続。
-- **PlaceRead（x006b）+ 案 B（x006c）**: 発行境界と GET 常時 Grant/PlaceRead **done**。PlaceRead TTL UI / take-out `extra_blake3` は後続（x006d は world scene 追記 + 再 seal で guest PlaceRead カバー）
+- **PlaceRead（x006b）+ 案 B（x006c）+ access 列廃止（x006f）**: **done**。PlaceRead TTL UI / take-out `extra_blake3` は後続
 - [assets-server-draft.md](assets-server-draft.md) の Vault / purchased / 5 層
 - [assets-threat-model.md](assets-threat-model.md) 目標列（予約期限ジョブ・Immutable Tag・配信ドメイン分離・Safe HTTP・jti 等）
 - カスタムドメイン / CDN キャッシュ本配信
