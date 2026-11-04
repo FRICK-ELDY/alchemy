@@ -1,7 +1,6 @@
 defmodule Auth.Accounts.UserNotifierTest do
   use Auth.DataCase, async: true
 
-  import Auth.AccountsFixtures
   import Swoosh.TestAssertions
 
   alias Auth.Accounts.{User, UserEmail, UserNotifier}

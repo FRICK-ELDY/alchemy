@@ -31,6 +31,9 @@ config :swoosh, :api_client, false
 # Print only warnings and errors during test
 config :logger, level: :warning
 
+# Ecto.Repo.transaction + Ash updates; no Ash notifiers yet. Drop when notifiers are added.
+config :ash, :missed_notifications, :ignore
+
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
 
