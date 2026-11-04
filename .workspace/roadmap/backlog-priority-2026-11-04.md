@@ -2,7 +2,7 @@
 
 正本の進捗目次は [README.md](README.md)。本ファイルは **未完了帯の優先度ビュー**。
 
-**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**。空き ID = `x006e`。
+**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**。空き ID = `x006f`。
 
 ---
 
@@ -15,7 +15,8 @@
 | **P0-発行** | [x006b](slices/x006b-place-read-capability.md) | PlaceRead（場所で付与・seal 連動） | **done** |
 | **P0-案B** | [x006c](slices/x006c-blob-grant-option-b.md) | BlobGrant 案 B（GET 常時 Grant / PlaceRead） | **done** |
 | **P0-take-out** | [x006d](slices/x006d-host-take-out-control.md) | host take-out（制御面・Drive HTTP・Inventory UI） | **done** |
-| **P0-次** | put-back UI | Inventory put-back 配線 | planned |
+| **P0-put-back** | [x006e](slices/x006e-inventory-put-back-ui.md) | Inventory put-back UI | **done** |
+| **P0-次** | P3 衛生 / P1 残り | reaper / metrics / CAS access 列移設 等 | planned |
 | **P0-隣接** | verifier | Spot-Check | planned / 保留 |
 
 ---
@@ -88,8 +89,8 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 
 ## 推奨着手順（要約・本作業後）
 
-1. put-back UI（次 Slice / `x006e`）
-2. P3 衛生の残り（reaper / metrics / Port 化）
+1. P3 衛生の残り（reaper / metrics / Port 化）または P1-1 CAS access 列移設
+2. scene despawn（put-back の逆・任意）
 3. verifier / Formula / market / 検疫（条件: seal / gen-rev 済み）
 
 ← [Roadmap 目次](README.md)

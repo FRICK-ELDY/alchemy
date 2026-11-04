@@ -304,6 +304,7 @@ impl SystemUi {
             }
             WidgetId::InventoryRefresh => UiAction::InventoryRefresh,
             WidgetId::InventoryTakeOut => UiAction::InventoryTakeOut,
+            WidgetId::InventoryPutBack => UiAction::InventoryPutBack,
             WidgetId::InventoryRow0
             | WidgetId::InventoryRow1
             | WidgetId::InventoryRow2
@@ -325,6 +326,25 @@ impl SystemUi {
                 };
                 if idx < self.state.inventory_nodes.len() {
                     self.state.inventory_selected = Some(idx);
+                    self.state.scene_selected = None;
+                    self.rebuild();
+                }
+                UiAction::None
+            }
+            WidgetId::SceneMeshRow0
+            | WidgetId::SceneMeshRow1
+            | WidgetId::SceneMeshRow2
+            | WidgetId::SceneMeshRow3 => {
+                let idx = match hit {
+                    WidgetId::SceneMeshRow0 => 0,
+                    WidgetId::SceneMeshRow1 => 1,
+                    WidgetId::SceneMeshRow2 => 2,
+                    WidgetId::SceneMeshRow3 => 3,
+                    _ => 0,
+                };
+                if idx < self.state.scene_meshes.len() {
+                    self.state.scene_selected = Some(idx);
+                    self.state.inventory_selected = None;
                     self.rebuild();
                 }
                 UiAction::None
@@ -789,6 +809,8 @@ pub enum UiAction {
     InventoryRefresh,
     /// Inventory: take-out selected blob via host control plane (x006d).
     InventoryTakeOut,
+    /// Inventory: put-back selected scene mesh as Prefab (x006e).
+    InventoryPutBack,
 }
 
 fn chrono_lite_now() -> String {

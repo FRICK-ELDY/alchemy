@@ -113,6 +113,9 @@ pub struct DashState {
     /// Inventory Drive rows (x006d); filled by surface after refresh.
     pub inventory_nodes: Vec<(String, String, String)>, // node_id, kind, name
     pub inventory_selected: Option<usize>,
+    /// Scene mesh rows for put-back (x006e); `(entity_id, blake3)`.
+    pub scene_meshes: Vec<(u32, String)>,
+    pub scene_selected: Option<usize>,
     pub inventory_status: String,
 }
 
@@ -161,6 +164,8 @@ impl Default for DashState {
             custom_host_focus: false,
             inventory_nodes: Vec::new(),
             inventory_selected: None,
+            scene_meshes: Vec::new(),
+            scene_selected: None,
             inventory_status: String::new(),
         }
     }
@@ -686,6 +691,13 @@ const INVENTORY_ROW_IDS: [WidgetId; 8] = [
     WidgetId::InventoryRow7,
 ];
 
+const SCENE_MESH_ROW_IDS: [WidgetId; 4] = [
+    WidgetId::SceneMeshRow0,
+    WidgetId::SceneMeshRow1,
+    WidgetId::SceneMeshRow2,
+    WidgetId::SceneMeshRow3,
+];
+
 fn rebuild_inventory(
     tree: &mut LayoutTree,
     state: &DashState,
@@ -694,7 +706,7 @@ fn rebuild_inventory(
     cw: f32,
     ch: f32,
 ) {
-    let panel = Rect::new(cx, cy0, cw, ch.min(420.0));
+    let panel = Rect::new(cx, cy0, cw, ch.min(480.0));
     tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
     tree.push_label(
         Rect::new(cx + 24.0, cy0 + 16.0, cw - 48.0, 24.0),
@@ -705,7 +717,7 @@ fn rebuild_inventory(
     tree.push_label(
         Rect::new(cx + 24.0, cy0 + 44.0, cw - 48.0, 18.0),
         if state.inventory_status.is_empty() {
-            "Refresh Drive, select a blob, Take out (host role)."
+            "Drive→Take out (host). Scene→Put back (stays in room)."
         } else {
             &state.inventory_status
         },
@@ -713,28 +725,45 @@ fn rebuild_inventory(
         1.0,
     );
 
-    let refresh = Rect::new(cx + 24.0, cy0 + 72.0, 120.0, 40.0);
+    let refresh = Rect::new(cx + 24.0, cy0 + 72.0, 100.0, 40.0);
     tree.push_rect(refresh, state.interact(WidgetId::InventoryRefresh, BTN));
     tree.push_label(
-        Rect::new(cx + 36.0, cy0 + 84.0, 100.0, 20.0),
+        Rect::new(cx + 36.0, cy0 + 84.0, 80.0, 20.0),
         "Refresh",
         TEXT,
         1.5,
     );
     tree.register_hit(WidgetId::InventoryRefresh, refresh);
 
-    let take = Rect::new(cx + 156.0, cy0 + 72.0, 140.0, 40.0);
+    let take = Rect::new(cx + 136.0, cy0 + 72.0, 120.0, 40.0);
     tree.push_rect(take, state.interact(WidgetId::InventoryTakeOut, ACCENT));
     tree.push_label(
-        Rect::new(cx + 168.0, cy0 + 84.0, 120.0, 20.0),
+        Rect::new(cx + 148.0, cy0 + 84.0, 100.0, 20.0),
         "Take out",
         TEXT,
         1.5,
     );
     tree.register_hit(WidgetId::InventoryTakeOut, take);
 
-    let mut y = cy0 + 128.0;
-    let row_h = 36.0;
+    let put = Rect::new(cx + 268.0, cy0 + 72.0, 120.0, 40.0);
+    tree.push_rect(put, state.interact(WidgetId::InventoryPutBack, ACCENT));
+    tree.push_label(
+        Rect::new(cx + 280.0, cy0 + 84.0, 100.0, 20.0),
+        "Put back",
+        TEXT,
+        1.5,
+    );
+    tree.register_hit(WidgetId::InventoryPutBack, put);
+
+    let mut y = cy0 + 120.0;
+    let row_h = 32.0;
+    tree.push_label(
+        Rect::new(cx + 24.0, y, cw - 48.0, 16.0),
+        "Drive",
+        MUTED,
+        1.0,
+    );
+    y += 22.0;
     for (i, (node_id, kind, name)) in state.inventory_nodes.iter().take(8).enumerate() {
         let id = INVENTORY_ROW_IDS[i];
         let row = Rect::new(cx + 24.0, y, cw - 48.0, row_h);
@@ -746,13 +775,41 @@ fn rebuild_inventory(
         };
         tree.push_rect(row, state.interact(id, base));
         tree.push_label(
-            Rect::new(cx + 36.0, y + 8.0, cw - 72.0, 20.0),
+            Rect::new(cx + 36.0, y + 6.0, cw - 72.0, 20.0),
             format!("[{kind}] {name} ({})", &node_id[..8.min(node_id.len())]),
             TEXT,
-            1.2,
+            1.1,
         );
         tree.register_hit(id, row);
-        y += row_h + 8.0;
+        y += row_h + 6.0;
+    }
+
+    y += 8.0;
+    tree.push_label(
+        Rect::new(cx + 24.0, y, cw - 48.0, 16.0),
+        "Scene meshes",
+        MUTED,
+        1.0,
+    );
+    y += 22.0;
+    for (i, (entity_id, blake3)) in state.scene_meshes.iter().take(4).enumerate() {
+        let id = SCENE_MESH_ROW_IDS[i];
+        let row = Rect::new(cx + 24.0, y, cw - 48.0, row_h);
+        let selected = state.scene_selected == Some(i);
+        let base = if selected {
+            Color::rgba(0.28, 0.30, 0.42, 1.0)
+        } else {
+            BTN
+        };
+        tree.push_rect(row, state.interact(id, base));
+        tree.push_label(
+            Rect::new(cx + 36.0, y + 6.0, cw - 72.0, 20.0),
+            format!("[mesh] #{entity_id} {}", &blake3[..8.min(blake3.len())]),
+            TEXT,
+            1.1,
+        );
+        tree.register_hit(id, row);
+        y += row_h + 6.0;
     }
 }
 

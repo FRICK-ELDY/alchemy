@@ -1415,6 +1415,8 @@ fn handle_ui_action(
         UiAction::InventoryRefresh => {
             let assets = shared.get_assets_url();
             let token = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+            ui.state.scene_meshes = shared.scene_meshes();
+            ui.state.scene_selected = None;
             match token {
                 Some(access) => match crate::inventory::list_drive_nodes(&assets, &access) {
                     Ok(nodes) => {
@@ -1423,8 +1425,11 @@ fn handle_ui_action(
                             .map(|n| (n.node_id, n.kind, n.name))
                             .collect();
                         ui.state.inventory_selected = None;
-                        ui.state.inventory_status =
-                            format!("{} node(s)", ui.state.inventory_nodes.len());
+                        ui.state.inventory_status = format!(
+                            "{} drive / {} scene",
+                            ui.state.inventory_nodes.len(),
+                            ui.state.scene_meshes.len()
+                        );
                     }
                     Err(err) => {
                         ui.state.inventory_status = format!("refresh failed: {err:#}");
@@ -1515,6 +1520,64 @@ fn handle_ui_action(
                 Err(err) => {
                     ui.state.inventory_status = format!("take_out failed: {err:#}");
                     log::warn!("inventory take_out: {err:#}");
+                }
+            }
+            ui.rebuild();
+        }
+        UiAction::InventoryPutBack => {
+            let selected = ui.state.scene_selected.and_then(|i| {
+                ui.state
+                    .scene_meshes
+                    .get(i)
+                    .map(|(eid, b3)| (*eid, b3.clone()))
+            });
+            let Some((entity_id, blake3)) = selected else {
+                ui.state.inventory_status = "select a scene mesh first".into();
+                ui.rebuild();
+                return;
+            };
+            let assets = shared.get_assets_url();
+            let access = {
+                let Ok(auth) = shared.auth.lock() else {
+                    ui.state.inventory_status = "auth lock failed".into();
+                    ui.rebuild();
+                    return;
+                };
+                auth.access_token.clone()
+            };
+            let Some(access) = access else {
+                ui.state.inventory_status = "sign in required".into();
+                ui.rebuild();
+                return;
+            };
+            let trs = shared.world.lock().ok().and_then(|world| {
+                world.entities.get(&entity_id).map(|p| {
+                    (
+                        [p.x as f64, p.y as f64, p.z as f64],
+                        [p.qx as f64, p.qy as f64, p.qz as f64, p.qw as f64],
+                        [p.sx as f64, p.sy as f64, p.sz as f64],
+                    )
+                })
+            });
+            let name = format!("putback-{}", &blake3[..8.min(blake3.len())]);
+            match crate::inventory::put_back_prefab(&assets, &access, &name, &blake3, trs) {
+                Ok(node) => {
+                    ui.state.inventory_status = format!(
+                        "put-back ok {} (entity #{} stays in room)",
+                        node.name, entity_id
+                    );
+                    // Refresh Drive list so the new prefab is visible.
+                    if let Ok(nodes) = crate::inventory::list_drive_nodes(&assets, &access) {
+                        ui.state.inventory_nodes = nodes
+                            .into_iter()
+                            .map(|n| (n.node_id, n.kind, n.name))
+                            .collect();
+                    }
+                    ui.state.scene_meshes = shared.scene_meshes();
+                }
+                Err(err) => {
+                    ui.state.inventory_status = format!("put_back failed: {err:#}");
+                    log::warn!("inventory put_back: {err:#}");
                 }
             }
             ui.rebuild();

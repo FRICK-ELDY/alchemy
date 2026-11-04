@@ -13,9 +13,10 @@ defmodule AssetsWeb.Router do
     post "/inventory/blobs", BlobController, :create_inventory
     get "/blobs/:blake3", BlobController, :show
     get "/quota", QuotaController, :show
-    # x006d: Drive list + take-out resolve (owner + Grant).
+    # x006d / x006e: Drive list + take-out resolve + put-back save_prefab.
     get "/drive/nodes", DriveController, :index
     post "/drive/take_out", DriveController, :take_out
+    post "/drive/put_back", DriveController, :put_back
   end
 
   scope "/", AssetsWeb do

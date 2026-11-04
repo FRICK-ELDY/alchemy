@@ -238,6 +238,8 @@ pub struct SharedState {
     pub box_defs: Mutex<Arc<BoxDefs>>,
     /// Primary mesh entity id from Manifest (`blake3` entry); 0 until set.
     pub mesh_entity_id: AtomicU32,
+    /// Scene mesh blake3 map for Inventory put-back (x006e); updated on Manifest.
+    pub scene_meshes: Mutex<Vec<(u32, String)>>,
     /// Authenticated asset-load failure message for dash Home status (x0048).
     /// `None` when mesh came from assets GET or unauthenticated Coin Home fixture.
     pub asset_status: Mutex<Option<String>>,
@@ -369,6 +371,21 @@ impl SharedState {
         self.mesh_entity_id.store(mesh_id, Ordering::Relaxed);
     }
 
+    /// Replace scene mesh list used by Inventory put-back (x006e).
+    pub fn set_scene_meshes(&self, meshes: Vec<(u32, String)>) {
+        if let Ok(mut slot) = self.scene_meshes.lock() {
+            *slot = meshes;
+        }
+    }
+
+    /// Snapshot of Manifest mesh entries `(entity_id, blake3)`.
+    pub fn scene_meshes(&self) -> Vec<(u32, String)> {
+        self.scene_meshes
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
     /// Current Zenoh `wire_cap` after join (x004e).
     pub fn wire_cap(&self) -> Option<Arc<str>> {
         self.wire_cap.lock().ok().and_then(|g| g.clone())
@@ -434,6 +451,7 @@ impl SharedState {
             *slot = Arc::new(BoxDefs::default());
         }
         self.mesh_entity_id.store(0, Ordering::Relaxed);
+        self.set_scene_meshes(Vec::new());
         if let Ok(mut token) = self.liveliness.lock() {
             *token = None;
         }
@@ -455,6 +473,7 @@ impl SharedState {
             *slot = Arc::new(BoxDefs::default());
         }
         self.mesh_entity_id.store(0, Ordering::Relaxed);
+        self.set_scene_meshes(Vec::new());
         if let Ok(mut seal) = self.last_world_seal.lock() {
             *seal = None;
         }

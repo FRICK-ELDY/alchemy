@@ -1,6 +1,7 @@
 defmodule Assets.Drive do
   @moduledoc """
-  Personal Drive CRUD (x005c folder/blob, x005d prefab kind, x005f take-out, x0060 put-back).
+  Personal Drive CRUD (x005c folder/blob, x005d prefab kind, x005f take-out, x0060 put-back,
+  x006e HTTP put_back).
 
   Guarantees:
   - Owner-only CRUD for DriveNode (folder / blob / prefab).
