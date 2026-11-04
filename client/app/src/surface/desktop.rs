@@ -1414,11 +1414,7 @@ fn handle_ui_action(
         }
         UiAction::InventoryRefresh => {
             let assets = shared.get_assets_url();
-            let token = shared
-                .auth
-                .lock()
-                .ok()
-                .and_then(|g| g.access_token.clone());
+            let token = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
             match token {
                 Some(access) => match crate::inventory::list_drive_nodes(&assets, &access) {
                     Ok(nodes) => {
@@ -1472,6 +1468,12 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             };
+            if crate::inventory::room_token_role_unverified(&room_token).as_deref() != Some("host")
+            {
+                ui.state.inventory_status = "host role required for take-out".into();
+                ui.rebuild();
+                return;
+            }
             let Some(session) = zenoh.as_ref() else {
                 ui.state.inventory_status = "zenoh not connected".into();
                 ui.rebuild();
@@ -1482,12 +1484,18 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             };
+            let Some(room_key) = shared.room_key() else {
+                ui.state.inventory_status = "room_key missing".into();
+                ui.rebuild();
+                return;
+            };
             match crate::inventory::take_out_blob_blake3(&assets, &access, &node_id) {
                 Ok((_node, blake3)) => {
                     match crate::inventory::publish_inventory_spawn(
                         session,
                         shared.room_id.as_ref(),
                         wire_cap.as_ref(),
+                        room_key.as_ref(),
                         &room_token,
                         &blake3,
                         0.0,

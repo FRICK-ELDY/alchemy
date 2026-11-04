@@ -1424,6 +1424,7 @@ pub fn fetch_room_scene(
 }
 
 /// Append one mesh entry to world scene (x006d). Returns updated scene + new entry.
+#[allow(clippy::too_many_arguments)] // world HTTP body fields (TRS) stay flat at the wire edge
 pub fn append_room_scene_entry(
     world_url: &str,
     room_id: &str,

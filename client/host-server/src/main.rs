@@ -41,7 +41,7 @@ mod wire_tick;
 
 use host_server::{intent_rate, metrics, room_token, session};
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -73,9 +73,9 @@ use network_worker::{
     PresenceJob,
 };
 use room_token::{
-    append_room_scene_entry, default_auth_url, earliest_hard_expire, ensure_sealed_manifest,
-    fetch_room_scene, publish_allowed_at, spawn_credential_worker, CredentialWorkerConfig,
-    HostCredentialChain, HostPublishSnapshot, ManifestSealCache, RoomScene, RoomTokenVerifier,
+    default_auth_url, earliest_hard_expire, ensure_sealed_manifest, fetch_room_scene,
+    publish_allowed_at, spawn_credential_worker, CredentialWorkerConfig, HostCredentialChain,
+    HostPublishSnapshot, ManifestSealCache, RoomTokenVerifier,
 };
 use session::SessionTable;
 use sim::{LocoMode, PhysicsWorld, USER_ROOT_ENTITY_FIRST};
@@ -404,53 +404,6 @@ fn mesh_poses_from_sim(world: &PhysicsWorld) -> Vec<(u32, Pose)> {
             ))
         })
         .collect()
-}
-
-/// World append + Rapier spawn + shared scene update for re-seal (x006d).
-///
-/// On Rapier failure after world append succeeded, returns error (scene already
-/// mutated on world — next host restart will load the entry; no partial Rapier).
-fn apply_inventory_spawn(
-    world_url: &str,
-    room_id: &str,
-    req: &inventory_spawn::SpawnRequest,
-    shared_scene: &Arc<RwLock<RoomScene>>,
-    force_reseal: &AtomicBool,
-    physics: &mut PhysicsWorld,
-) -> Result<u32> {
-    let (next_scene, entry) = append_room_scene_entry(
-        world_url,
-        room_id,
-        &req.room_token,
-        &req.blake3,
-        req.x,
-        req.y,
-        req.z,
-        req.qx,
-        req.qy,
-        req.qz,
-        req.qw,
-        req.sx,
-        req.sy,
-        req.sz,
-    )
-    .context("world scene append")?;
-
-    if !physics.spawn_mesh_entry(&entry) {
-        return Err(anyhow::anyhow!(
-            "Rapier spawn rejected for entity_id={} (duplicate or non-mesh)",
-            entry.entity_id
-        ));
-    }
-
-    {
-        let mut guard = shared_scene
-            .write()
-            .map_err(|_| anyhow::anyhow!("shared scene RwLock poisoned"))?;
-        *guard = next_scene;
-    }
-    force_reseal.store(true, Ordering::SeqCst);
-    Ok(entry.entity_id)
 }
 
 fn user_root_pose_from_sim(world: &PhysicsWorld, slot: usize) -> Pose {
@@ -938,6 +891,8 @@ fn main() -> Result<()> {
         session.clone(),
         &room_id,
         &wire_cap,
+        Arc::clone(&room_key),
+        world_url.clone(),
         move |token| {
             let claims = spawn_verifier.verify(token)?;
             if claims.role != "host" {
@@ -1112,19 +1067,24 @@ fn main() -> Result<()> {
         host_metrics.set_tick_lateness_ms(late_ms);
         next_physics = scheduled + physics_period;
 
-        // x006d: drain inventory spawn (world append → Rapier → force re-seal).
-        while let Some(req) = spawn_inbox.try_recv() {
-            match apply_inventory_spawn(
-                &world_url,
-                &room_id,
-                &req,
+        // x006d: apply at most one ready spawn per tick (HTTP already done on worker).
+        if let Some(ready) = spawn_inbox.try_recv() {
+            let blake3 = ready.entry.blake3.clone();
+            match inventory_spawn::apply_ready_spawn(
+                ready,
                 &shared_scene,
                 &force_reseal,
-                &mut physics,
+                |entry| physics.spawn_mesh_entry(entry),
             ) {
-                Ok(entity_id) => log::info!(
-                    "inventory spawn ok entity_id={entity_id} blake3={}",
-                    &req.blake3[..8.min(req.blake3.len())]
+                Ok(out) if out.rapier_ok => log::info!(
+                    "inventory spawn applied entity_id={} blake3={} (rapier+scene+reseal)",
+                    out.entity_id,
+                    &blake3[..8.min(blake3.len())]
+                ),
+                Ok(out) => log::warn!(
+                    "inventory spawn scene+reseal only entity_id={} blake3={} (rapier refused; physics may need host restart)",
+                    out.entity_id,
+                    &blake3[..8.min(blake3.len())]
                 ),
                 Err(err) => log::warn!("inventory spawn apply failed: {err:#}"),
             }

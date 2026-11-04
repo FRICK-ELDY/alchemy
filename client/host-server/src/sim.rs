@@ -385,8 +385,7 @@ impl PhysicsWorld {
             &mut self.rigid_body_set,
         );
         self.colors.insert(entry.entity_id, color);
-        self.scales
-            .insert(entry.entity_id, entry_scale_f32(entry));
+        self.scales.insert(entry.entity_id, entry_scale_f32(entry));
         self.meshes.push((entry.entity_id, handle));
         true
     }

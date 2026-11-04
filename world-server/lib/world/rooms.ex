@@ -226,47 +226,61 @@ defmodule World.Rooms do
 
   defp build_appended_scene(scene, normalized) when is_map(scene) do
     entries = Map.get(scene, "entries") || Map.get(scene, :entries) || []
-
-    if not is_list(entries) do
-      {:error, :invalid_entry}
-    else
-      blake3 = normalized["blake3"]
-
-      if Enum.any?(entries, fn e -> entry_string(e, "blake3") == blake3 end) do
-        {:error, :duplicate_blake3}
-      else
-        next_id = next_entity_id(entries)
-        revision = (Map.get(scene, "revision") || Map.get(scene, :revision) || 1) + 1
-
-        entry = Map.put(normalized, "entity_id", next_id)
-
-        next = %{
-          "revision" => revision,
-          "locomotion" => Map.get(scene, "locomotion") || Map.get(scene, :locomotion),
-          "entries" => entries ++ [entry]
-        }
-
-        {:ok, next}
-      end
-    end
+    append_normalized_entry(scene, entries, normalized)
   end
 
   defp build_appended_scene(_, _), do: {:error, :invalid_entry}
 
+  defp append_normalized_entry(_scene, entries, _normalized) when not is_list(entries) do
+    {:error, :invalid_entry}
+  end
+
+  defp append_normalized_entry(scene, entries, normalized) do
+    blake3 = normalized["blake3"]
+
+    if Enum.any?(entries, fn e -> entry_string(e, "blake3") == blake3 end) do
+      {:error, :duplicate_blake3}
+    else
+      put_appended_entry(scene, entries, normalized)
+    end
+  end
+
+  defp put_appended_entry(scene, entries, normalized) do
+    next_id = next_entity_id(entries)
+    revision = (Map.get(scene, "revision") || Map.get(scene, :revision) || 1) + 1
+    entry = Map.put(normalized, "entity_id", next_id)
+
+    {:ok,
+     %{
+       "revision" => revision,
+       "locomotion" => Map.get(scene, "locomotion") || Map.get(scene, :locomotion),
+       "entries" => entries ++ [entry]
+     }}
+  end
+
   defp next_entity_id(entries) do
     max_id =
       entries
-      |> Enum.map(fn e ->
-        case entry_string(e, "entity_id") || Map.get(e, :entity_id) do
-          id when is_integer(id) -> id
-          id when is_binary(id) -> String.to_integer(id)
-          _ -> 0
-        end
-      end)
+      |> Enum.map(&entry_entity_id/1)
       |> Enum.max(fn -> 0 end)
 
     # Prefer ids above demo boxes (10–18) and user_roots; never reuse.
     max(max_id + 1, 100)
+  end
+
+  defp entry_entity_id(e) do
+    case Map.get(e, "entity_id") || Map.get(e, :entity_id) do
+      id when is_integer(id) and id >= 0 -> id
+      id when is_binary(id) -> parse_nonneg_int(id)
+      _ -> 0
+    end
+  end
+
+  defp parse_nonneg_int(id) do
+    case Integer.parse(id) do
+      {n, ""} when n >= 0 -> n
+      _ -> 0
+    end
   end
 
   defp entry_string(map, key) when is_map(map) do

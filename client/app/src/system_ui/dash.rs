@@ -686,7 +686,14 @@ const INVENTORY_ROW_IDS: [WidgetId; 8] = [
     WidgetId::InventoryRow7,
 ];
 
-fn rebuild_inventory(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
+fn rebuild_inventory(
+    tree: &mut LayoutTree,
+    state: &DashState,
+    cx: f32,
+    cy0: f32,
+    cw: f32,
+    ch: f32,
+) {
     let panel = Rect::new(cx, cy0, cw, ch.min(420.0));
     tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
     tree.push_label(

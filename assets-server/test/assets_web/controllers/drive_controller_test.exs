@@ -2,7 +2,9 @@ defmodule AssetsWeb.DriveControllerTest do
   use AssetsWeb.ConnCase, async: false
 
   alias Assets.Blobs
+  alias Assets.Blobs.BlobGrant
   alias Assets.Drive
+  alias Assets.Repo
   alias Assets.TestAuthHelpers
 
   @sub_a "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -56,6 +58,22 @@ defmodule AssetsWeb.DriveControllerTest do
       |> post("/api/v1/drive/take_out", Jason.encode!(%{node_id: node.node_id}))
 
     assert %{"error" => "not_found"} = json_response(conn, 404)
+  end
+
+  test "take_out without grant is forbidden", %{conn: conn, signer: signer} do
+    {:ok, cas_obj, _} = Blobs.upload(@sub_a, "orphan-grant", "application/octet-stream")
+    {:ok, node} = Drive.create_blob(@sub_a, "mesh", cas_obj.blake3)
+
+    grant = Repo.get_by!(BlobGrant, grantee_sub: @sub_a, blake3: cas_obj.blake3)
+    {:ok, _} = Repo.delete(grant)
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "application/json")
+      |> post("/api/v1/drive/take_out", Jason.encode!(%{node_id: node.node_id}))
+
+    assert %{"error" => "no_grant"} = json_response(conn, 403)
   end
 
   test "take_out without node_id is 422", %{conn: conn, signer: signer} do

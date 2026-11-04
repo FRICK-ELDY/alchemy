@@ -1,10 +1,12 @@
 //! Inventory take-out client helpers (x006d).
 //!
 //! Guarantees: Drive list / take_out over assets HTTP; spawn put on Zenoh
-//! `inventory/spawn` with Room Token + blake3 (no Drive node_id on the wire to host).
+//! `inventory/spawn` sealed with [`AeadKind::InventorySpawn`] (host Room Token
+//! never leaves the room AEAD boundary); no Drive node_id on the wire to host.
 //! Non-guarantees: put-back; Prefab multi-child; XR Inventory polish.
 
 use alchemy_protocol::inventory_spawn_key;
+use alchemy_protocol::wire_aead::{self, AeadKind};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::json;
@@ -41,11 +43,7 @@ pub fn list_drive_nodes(assets_url: &str, access_token: &str) -> Result<Vec<Driv
     let base = assets_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/drive/nodes");
     let authz = format!("Bearer {access_token}");
-    match ureq::agent()
-        .get(&url)
-        .set("authorization", &authz)
-        .call()
-    {
+    match ureq::agent().get(&url).set("authorization", &authz).call() {
         Ok(resp) => {
             let parsed: NodesResponse = resp.into_json().context("parse drive nodes")?;
             Ok(parsed.nodes)
@@ -97,11 +95,26 @@ pub fn take_out_blob_blake3(
     }
 }
 
-/// Put spawn request on Zenoh (plaintext JSON for now; room AEAD can wrap later).
+/// Best-effort role peek from an unverified JWT payload (UI gate only).
+///
+/// Host still verifies signature + role after AEAD open. This avoids guest UX
+/// that reports "spawn requested" when host will reject.
+pub fn room_token_role_unverified(room_token: &str) -> Option<String> {
+    let payload = room_token.split('.').nth(1)?;
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload)
+        .or_else(|_| base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE, payload))
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    v.get("role")?.as_str().map(|s| s.to_string())
+}
+
+/// Put AEAD-sealed spawn request on Zenoh (x006d / x0069).
+#[allow(clippy::too_many_arguments)] // room + pose wire args; mirrors host spawn payload
 pub fn publish_inventory_spawn(
     session: &zenoh::Session,
     room_id: &str,
     wire_cap: &str,
+    room_key: &[u8; wire_aead::ROOM_KEY_LEN],
     room_token: &str,
     blake3: &str,
     x: f64,
@@ -120,16 +133,18 @@ pub fn publish_inventory_spawn(
         "sy": 1.0,
         "sz": 1.0,
     });
-    let bytes = serde_json::to_vec(&payload).context("encode spawn JSON")?;
+    let plain = serde_json::to_vec(&payload).context("encode spawn JSON")?;
+    let envelope = wire_aead::seal(room_key, room_id, AeadKind::InventorySpawn, &plain)
+        .map_err(|e| anyhow!("AEAD seal inventory spawn: {e}"))?;
     let publisher = session
         .declare_publisher(key.clone())
         .wait()
         .map_err(|e| anyhow!("declare_publisher inventory/spawn: {e}"))?;
     publisher
-        .put(bytes)
+        .put(envelope)
         .wait()
         .map_err(|e| anyhow!("inventory spawn put: {e}"))?;
-    log::info!("inventory spawn published on {key}");
+    log::info!("inventory spawn published on {key} (AEAD)");
     Ok(())
 }
 
@@ -142,5 +157,16 @@ mod tests {
         let raw = r#"{"nodes":[{"node_id":"n1","kind":"blob","name":"mesh","blake3":"aa"}]}"#;
         let parsed: NodesResponse = serde_json::from_str(raw).unwrap();
         assert_eq!(parsed.nodes[0].kind, "blob");
+    }
+
+    #[test]
+    fn role_unverified_reads_payload() {
+        // header.payload.sig — payload = {"role":"host"}
+        let payload = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            br#"{"role":"host"}"#,
+        );
+        let tok = format!("x.{payload}.y");
+        assert_eq!(room_token_role_unverified(&tok).as_deref(), Some("host"));
     }
 }

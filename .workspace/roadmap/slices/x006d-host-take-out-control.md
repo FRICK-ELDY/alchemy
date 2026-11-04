@@ -15,21 +15,23 @@
 | Desktop Inventory 最小 UI（一覧 + 取り出す）。単一 blob ノードのみ | XR Inventory・Drive フォルダ UX 完成 |
 | host role のみが Zenoh inventory spawn で要求可能。host は **Drive `node_id` を受け取らない** | guest take-out；Intent / PROTOCOL_PIN 拡張 |
 | world: host が `POST …/scene/entries` で mesh 追記・revision bump（canonical seal 入力） | フル UGC エディタ |
-| spawn 成功時 Rapier + shared scene 更新 → **再 seal**。Rapier 失敗時は部分物理 insert なし | `extra_blake3`；PlaceRead TTL UI |
+| world 追記成功後は **shared scene + 再 seal を必ず適用**（Manifest/PlaceRead 優先）。Rapier はその後；拒否時も scene は残し物理のみ欠ける | `extra_blake3`；PlaceRead TTL UI；分散 TX ロールバック |
 | 再 seal 後の scene hash で guest PlaceRead が新 mesh をカバー可能 | 同時多発 spawn の公平スケジューリング |
 
 ## 設計（要点）
 
 ```
 Client UI ─Bearer─► assets GET /drive/nodes · POST /drive/take_out
-Client ─Room Token + blake3─► Zenoh …/inventory/spawn
-host ─verify host role─► world POST …/scene/entries
-host ─► Rapier spawn_mesh_entry + force_reseal
+Client ─Room AEAD (InventorySpawn)─► Zenoh …/inventory/spawn
+spawn worker ─open+host role─► world POST …/scene/entries
+physics tick ─► Rapier (+ shared scene / force_reseal; HTTP なし)
 ```
 
 - 定義 = assets Drive；実行 = host（client は解決・要求）
+- 平文 Room Token を Zenoh に載せない（x0069 `AeadKind::InventorySpawn`）
+- world HTTP は spawn worker（物理 60Hz 外）。Rapier 拒否時も scene+再 seal は適用
 - 未認証 `host_control` shutdown トピックは使わない
-- WAN ACL: guest put + host sub on `inventory/spawn`（app が role 検証）
+- WAN ACL: guest put + host sub on `inventory/spawn`（app が role 検証後に rate limit；Intent と同順）
 
 ## Phase
 
