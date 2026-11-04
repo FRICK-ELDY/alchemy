@@ -7,7 +7,7 @@ defmodule Assets.Prefab.Payload do
   - blake3: 64-char hex hash of the child blob (mesh etc.)
   - trs: optional Transform {translation[3], rotation[4], scale[3]} (all finite floats)
 
-  The payload is stored as JSON in CAS (access=grant_required).
+  The payload is stored as JSON in CAS (uploader gets owned BlobGrant).
   Future (x0062): VcsTree has the same logical structure — Assets.Prefab.Payload.from_json/1
   decodes both.
 

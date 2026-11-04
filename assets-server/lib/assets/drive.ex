@@ -205,7 +205,7 @@ defmodule Assets.Drive do
 
   Steps:
   1. Validate payload via Assets.Prefab.Payload (rejects non-finite TRS, bad schema).
-  2. Upload payload JSON as grant_required blob via Assets.Blobs (Quota + BlobGrant).
+  2. Upload payload JSON via Assets.Blobs (Quota + owned BlobGrant; x006f).
   3. Upsert DriveNode(kind=prefab, name=name, blake3=new_blake3).
      If a prefab with the same owner+name+parent already exists, its blake3 is updated.
 
@@ -217,8 +217,7 @@ defmodule Assets.Drive do
     # Parent/authz checks before upload so :forbidden does not consume quota or orphan CAS.
     with :ok <- maybe_assert_parent_owner(owner_sub, parent_id),
          {:ok, json} <- Payload.to_json(payload),
-         {:ok, cas_obj, _status} <-
-           Blobs.upload(owner_sub, json, "application/json", access: :grant_required) do
+         {:ok, cas_obj, _status} <- Blobs.upload(owner_sub, json, "application/json") do
       upsert_prefab_node(owner_sub, name, cas_obj.blake3, parent_id)
     end
   end

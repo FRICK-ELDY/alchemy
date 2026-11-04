@@ -16,7 +16,7 @@
 | 単一 DB トランザクション境界で Drive / Comms / Vcs / Shop → Grant を結ぶ方針 | Stage 2+ PostgreSQL・Ash Domain 分割のスケジュール |
 | auth / market+billing / world+zenoh / client(+盗難特徴量) を **別プロセス境界** に切る | それらのサーバーが既に存在する／本リポジトリに揃っていること |
 
-**現行との関係**: **CasObject / BlobRef + reserved put**（x003f）、**BlobGrant 台帳**（x004f）、**PlaceRead**（x006b）、**GET 案 B**（x006c・常時 Grant/PlaceRead）は正本済み。本 draft の残りは **StorageVault / 5 層** と購入・メール一時・出品ロック等の Grant 種別拡張。GET 認可の正本は [assets-server.md](assets-server.md) を見ること（本 draft は層構造の目標像）。
+**現行との関係**: **CasObject / BlobRef + reserved put**（x003f）、**BlobGrant 台帳**（x004f）、**PlaceRead**（x006b）、**GET 案 B**（x006c・常時 Grant/PlaceRead）、**access 列廃止**（x006f）は正本済み。本 draft の残りは **StorageVault / 5 層** と購入・メール一時・出品ロック等の Grant 種別拡張。GET 認可の正本は [assets-server.md](assets-server.md) を見ること（本 draft は層構造の目標像）。
 
 ---
 

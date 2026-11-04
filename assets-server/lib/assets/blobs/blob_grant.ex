@@ -1,10 +1,10 @@
 defmodule Assets.Blobs.BlobGrant do
   @moduledoc """
-  Read/hold right for a CasObject (x004f).
+  Read/hold right for a CasObject (x004f / x006c / x006f).
 
-  MVP grants `:owned` on PUT finalize. GET uses this only when
-  `CasObject.access == "grant_required"`. Default access remains authenticated
-  capability (room mesh). Target end-state (option B): all GET gated by grant.
+  PUT finalize issues `:owned` for the uploader. GET is gated by BlobGrant for
+  `auth_sub` **or** a covering PlaceRead (option B). Grant presence is the
+  capability — there is no `access` column on CasObject or BlobGrant.
   """
 
   use Ecto.Schema

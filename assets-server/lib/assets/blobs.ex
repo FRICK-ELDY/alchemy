@@ -2,18 +2,15 @@ defmodule Assets.Blobs do
   @moduledoc """
   Blob upload/download with quota reservation (x003f) and BlobGrant ledger (x004f).
 
-  `upload/4` still accepts `:authenticated` or `:grant_required`. Forcing inventory
-  uploads to `grant_required` is an HTTP-boundary concern (`BlobController.create_inventory/2`,
-  x0054), not a guarantee of this module.
-
   Flow: reserve (short TX) → CAS.put outside TX → finalize meta + owned grant + used.
   Failure after reserve releases reserved_bytes only. CAS bytes are never deleted
   on compensate — concurrent same-blake3 PUT (cross-owner PoP) must not race on
   delete. Orphan CAS objects without CasObject rows are out of scope (no GC yet).
 
-  GET (x006c 案 B): always gated by BlobGrant for auth_sub **or** a covering
-  PlaceRead JWT (x006b). `CasObject.access=authenticated` no longer grants a
-  Bearer-only read capability. Unknown access stays fail-closed.
+  GET (x006c / x006f): always gated by BlobGrant for auth_sub **or** a covering
+  PlaceRead JWT (x006b). CasObject holds bytes meta only (no `access` column).
+  Inventory path (`POST /api/v1/inventory/blobs`) is an HTTP-boundary alias that
+  uses the same upload (x0054 / x006f).
   """
 
   import Ecto.Query
@@ -28,8 +25,6 @@ defmodule Assets.Blobs do
   alias Assets.Quota.QuotaLedger
   alias Assets.Repo
 
-  @access_authenticated "authenticated"
-  @access_grant_required "grant_required"
   @grant_owned "owned"
 
   @spec blake3_hex(binary()) :: String.t()
@@ -38,30 +33,31 @@ defmodule Assets.Blobs do
   end
 
   @doc """
-  Upload bytes. `opts[:access]` is `:authenticated` (default) or `:grant_required`.
+  Upload bytes. Always issues an `:owned` BlobGrant for `owner_sub`.
 
-  First CasObject writer wins for `access` / mime / size. A later PUT that requests a
-  different `access` than the existing object returns `{:error, :access_conflict}`
-  (HTTP 409); reserved quota is released and no BlobRef/Grant is created for the loser.
+  First CasObject writer wins for mime / size. Later PUT with the same blake3
+  adds the caller's BlobRef + Grant without access conflict (x006f).
   """
+  @spec upload(String.t(), binary(), String.t()) ::
+          {:ok, CasObject.t(), :created | :existing} | {:error, term()}
   @spec upload(String.t(), binary(), String.t(), keyword()) ::
           {:ok, CasObject.t(), :created | :existing} | {:error, term()}
   def upload(owner_sub, data, mime, opts \\ [])
       when is_binary(owner_sub) and is_binary(data) and is_binary(mime) and is_list(opts) do
+    # opts retained for call-site compatibility; access is ignored (x006f).
+    _ = opts
     max = Application.fetch_env!(:assets, :max_upload_bytes)
 
-    with {:ok, access} <- normalize_access(Keyword.get(opts, :access, :authenticated)) do
-      if byte_size(data) > max do
-        Metrics.inc(:cas_put_errors_total)
-        {:error, :too_large}
-      else
-        t0 = System.monotonic_time(:millisecond)
+    if byte_size(data) > max do
+      Metrics.inc(:cas_put_errors_total)
+      {:error, :too_large}
+    else
+      t0 = System.monotonic_time(:millisecond)
 
-        result = do_upload(owner_sub, data, mime, access)
-        Metrics.observe_ms(:cas_put_last_ms, System.monotonic_time(:millisecond) - t0)
-        record_upload_metrics(result)
-        result
-      end
+      result = do_upload(owner_sub, data, mime)
+      Metrics.observe_ms(:cas_put_last_ms, System.monotonic_time(:millisecond) - t0)
+      record_upload_metrics(result)
+      result
     end
   end
 
@@ -72,19 +68,17 @@ defmodule Assets.Blobs do
     Metrics.inc(:cas_put_errors_total)
   end
 
-  # Client access race / first-writer conflict is not an infra put failure.
-  defp record_upload_metrics({:error, :access_conflict}), do: :ok
   defp record_upload_metrics({:error, {:quarantine, _}}), do: :ok
   defp record_upload_metrics({:error, _}), do: Metrics.inc(:cas_put_errors_total)
 
-  defp do_upload(owner_sub, data, mime, access) do
+  defp do_upload(owner_sub, data, mime) do
     blake3 = blake3_hex(data)
     size = byte_size(data)
     mime = mime_or_default(mime)
 
     case Assets.Quarantine.inspect_blob(blake3, data, mime) do
       :ok ->
-        continue_upload_after_quarantine(owner_sub, blake3, data, size, mime, access)
+        continue_upload_after_quarantine(owner_sub, blake3, data, size, mime)
 
       {:quarantine, reason} ->
         {:error, {:quarantine, reason}}
@@ -94,17 +88,14 @@ defmodule Assets.Blobs do
     end
   end
 
-  defp continue_upload_after_quarantine(owner_sub, blake3, data, size, mime, access) do
+  defp continue_upload_after_quarantine(owner_sub, blake3, data, size, mime) do
     case reserve_or_existing(owner_sub, blake3, size) do
       {:ok, :existing, object} ->
         # Ref already held — still ensure CAS bytes + owned grant (repair, no quota).
-        # access is first-writer; mismatch must not look like success.
-        with :ok <- assert_access_match(object, access) do
-          ensure_cas_bytes(owner_sub, blake3, data, object)
-        end
+        ensure_cas_bytes(owner_sub, blake3, data, object)
 
       {:ok, :reserved} ->
-        put_and_finalize(owner_sub, blake3, data, size, mime, access)
+        put_and_finalize(owner_sub, blake3, data, size, mime)
 
       {:error, reason} ->
         {:error, reason}
@@ -168,15 +159,15 @@ defmodule Assets.Blobs do
     end
   end
 
-  defp put_and_finalize(owner_sub, blake3, data, size, mime, access) do
+  defp put_and_finalize(owner_sub, blake3, data, size, mime) do
     # Always put_if_absent — even if CasObject row exists — so a missing CAS body
     # (orphan meta / prior crash) is repaired instead of skipping forever.
     case CAS.put_if_absent(blake3, data) do
       :created ->
-        finalize_or_compensate(owner_sub, blake3, size, mime, access)
+        finalize_or_compensate(owner_sub, blake3, size, mime)
 
       :existing ->
-        finalize_or_compensate(owner_sub, blake3, size, mime, access)
+        finalize_or_compensate(owner_sub, blake3, size, mime)
 
       {:error, reason} ->
         _ = release_reserved(owner_sub, size)
@@ -184,10 +175,10 @@ defmodule Assets.Blobs do
     end
   end
 
-  defp finalize_or_compensate(owner_sub, blake3, size, mime, access) do
+  defp finalize_or_compensate(owner_sub, blake3, size, mime) do
     case maybe_fail_finalize_for_test(blake3) do
       :ok ->
-        case finalize(owner_sub, blake3, size, mime, access) do
+        case finalize(owner_sub, blake3, size, mime) do
           {:ok, object, status} ->
             {:ok, object, status}
 
@@ -212,9 +203,9 @@ defmodule Assets.Blobs do
     end
   end
 
-  defp finalize(owner_sub, blake3, size, mime, access) do
+  defp finalize(owner_sub, blake3, size, mime) do
     Repo.transaction(fn ->
-      object = upsert_cas_object!(blake3, size, mime, access)
+      object = upsert_cas_object!(blake3, size, mime)
       _ = insert_blob_grant(owner_sub, blake3)
 
       case insert_blob_ref(owner_sub, blake3) do
@@ -240,59 +231,38 @@ defmodule Assets.Blobs do
     :ok
   end
 
-  defp upsert_cas_object!(blake3, size, mime, access) do
+  defp upsert_cas_object!(blake3, size, mime) do
     case Repo.get(CasObject, blake3) do
-      # First writer wins for mime/size/access. Later PUT must request the same access
-      # or fail with :access_conflict (do not silently ignore grant_required).
+      # First writer wins for mime/size.
       %CasObject{} = object ->
-        case assert_access_match(object, access) do
-          :ok -> object
-          {:error, :access_conflict} -> Repo.rollback(:access_conflict)
-        end
+        object
 
       nil ->
-        insert_cas_object!(blake3, size, mime, access)
+        insert_cas_object!(blake3, size, mime)
     end
   end
 
-  defp insert_cas_object!(blake3, size, mime, access) do
+  defp insert_cas_object!(blake3, size, mime) do
     changeset =
       CasObject.changeset(%CasObject{}, %{
         blake3: blake3,
         size: size,
-        mime: mime,
-        access: access
+        mime: mime
       })
 
     case Repo.insert(changeset) do
       {:ok, object} -> object
-      {:error, changeset} -> cas_object_insert_conflict!(blake3, access, changeset)
+      {:error, changeset} -> cas_object_insert_conflict!(blake3, changeset)
     end
   end
 
-  defp cas_object_insert_conflict!(blake3, access, changeset) do
+  defp cas_object_insert_conflict!(blake3, changeset) do
     if unique_constraint_conflict?(changeset) do
-      object = fetch_cas_object!(blake3)
-
-      case assert_access_match(object, access) do
-        :ok -> object
-        {:error, :access_conflict} -> Repo.rollback(:access_conflict)
-      end
+      fetch_cas_object!(blake3)
     else
       Repo.rollback({:invalid_cas_object, changeset})
     end
   end
-
-  defp assert_access_match(%CasObject{access: existing}, requested)
-       when existing == requested,
-       do: :ok
-
-  # P1-1 peel: first-writer CasObject.access may stay authenticated while a later
-  # inventory PUT adds BlobRef + owned Grant. GET is always Grant/PlaceRead (x006c).
-  defp assert_access_match(%CasObject{access: @access_authenticated}, @access_grant_required),
-    do: :ok
-
-  defp assert_access_match(%CasObject{}, _requested), do: {:error, :access_conflict}
 
   defp fetch_cas_object!(blake3) do
     case Repo.get(CasObject, blake3) do
@@ -349,12 +319,6 @@ defmodule Assets.Blobs do
     )
   end
 
-  defp normalize_access(:authenticated), do: {:ok, @access_authenticated}
-  defp normalize_access("authenticated"), do: {:ok, @access_authenticated}
-  defp normalize_access(:grant_required), do: {:ok, @access_grant_required}
-  defp normalize_access("grant_required"), do: {:ok, @access_grant_required}
-  defp normalize_access(_), do: {:error, :invalid_access}
-
   defp unique_constraint_conflict?(%Ecto.Changeset{errors: errors}) do
     Enum.any?(errors, fn
       {_field, {_, opts}} ->
@@ -373,11 +337,8 @@ defmodule Assets.Blobs do
   @doc """
   Resolve blob for HTTP GET: local proxies bytes; s3 returns a signed redirect URL (x001d).
 
-  `auth_sub` is required (x004f / x006c). Fail-closed: known `access` values only.
-  Read requires BlobGrant for `auth_sub` **or** covering PlaceRead via
-  `opts[:place_read]` (x006b). `access=authenticated` is storage metadata only —
-  it does not grant Bearer-only GET (案 B).
-  Unknown/corrupt `access` → `:forbidden` (never treat as open).
+  `auth_sub` is required (x004f / x006c / x006f). Read requires BlobGrant for
+  `auth_sub` **or** covering PlaceRead via `opts[:place_read]` (x006b).
   """
   @spec fetch(String.t(), String.t()) ::
           {:ok, binary(), CasObject.t()}
@@ -408,13 +369,7 @@ defmodule Assets.Blobs do
     result
   end
 
-  defp authorize_and_fetch(
-         %CasObject{access: access} = object,
-         blake3,
-         auth_sub,
-         place_read
-       )
-       when access in [@access_authenticated, @access_grant_required] do
+  defp authorize_and_fetch(%CasObject{} = object, blake3, auth_sub, place_read) do
     cond do
       has_blob_grant?(auth_sub, blake3) ->
         fetch_object(object, blake3)
@@ -426,10 +381,6 @@ defmodule Assets.Blobs do
         {:error, :forbidden}
     end
   end
-
-  # Unknown access must not fall open.
-  defp authorize_and_fetch(%CasObject{}, _blake3, _auth_sub, _place_read),
-    do: {:error, :forbidden}
 
   defp record_fetch_metrics({:ok, _, _}), do: Metrics.inc(:cas_get_total)
   defp record_fetch_metrics({:redirect, _, _}), do: Metrics.inc(:cas_get_total)

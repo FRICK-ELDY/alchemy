@@ -107,8 +107,8 @@
 
 | | 内容 |
 |:---|:---|
-| **現状の防御** | GET は常時 BlobGrant または PlaceRead（x006c 案 B）。`CasObject.access` 未知値は fail-closed（403）。Drive / Comms 未実装 |
-| **目標の防御** | Ash Policy（または同等）で Read/Action すべてに **actor が有効 BlobGrant 保有** をクエリに注入。書き忘れで公開に落ちないこと。access→Grant 本移設 |
+| **現状の防御** | GET は常時 BlobGrant または PlaceRead（x006c 案 B）。`CasObject.access` 列は廃止（x006f）。Drive / Comms 未実装 |
+| **目標の防御** | Ash Policy（または同等）で Read/Action すべてに **actor が有効 BlobGrant 保有** をクエリに注入。書き忘れで公開に落ちないこと |
 | **保証しない** | PlaceRead カバー済み scene hash の「部屋外秘密性」。GET の 403/404 による存在オラクル |
 
 ### ⑦ 決済・購入トークンのリプレイと偽造

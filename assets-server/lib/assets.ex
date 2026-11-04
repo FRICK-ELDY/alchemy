@@ -1,21 +1,22 @@
 defmodule Assets do
   @moduledoc """
   assets-server — CAS + Quota（x0003）+ object/ref（x003f）+ BlobGrant ledger（x004f）+
-  inventory PUT grant_required（x0054）+ Personal Vault view（x0058）+
+  inventory PUT path（x0054）+ Personal Vault view（x0058）+
   Drive folder/blob/prefab（x005c/x005d）+ Prefab.Payload schema（x005e）+
   Drive take-out helpers（x005f）+ Drive put-back/save_prefab（x0060）+
   Vcs promote/commit/ref/cert（x0062–x0065）+ ItemRef blake3|repo@rev（x0063）+
-  PlaceRead（x006b）+ GET option B（x006c）+ Drive put_back HTTP（x006e）.
+  PlaceRead（x006b）+ GET option B（x006c）+ Drive put_back HTTP（x006e）+
+  CasObject access column removed（x006f）.
 
   ## Guarantees
 
   - auth-gated PUT/GET, CasObject + per-owner BlobRef + owned BlobGrant
   - reserved→put→used; failure releases reservation only (no CAS.delete)
-  - GET always BlobGrant or covering PlaceRead (x006c option B); `access` is PUT
-    metadata / first-writer only — Bearer alone is never a read capability
-  - HTTP inventory PUT (`POST /api/v1/inventory/blobs`) always grant_required (x0054)
-  - authenticated CasObject may coexist with later grant_required PUT; CasObject.access
-    stays first-writer
+  - GET always BlobGrant or covering PlaceRead (x006c); CasObject is bytes meta
+    only (no `access` column — x006f). Bearer alone is never a read capability
+  - PUT always issues `:owned` Grant; same blake3 may be claimed via `/blobs` and
+    `/inventory/blobs` by different owners without access conflict (x006f)
+  - HTTP inventory PUT (`POST /api/v1/inventory/blobs`) remains a path alias (x0054)
   - `Assets.Vault.personal/1` thin view over QuotaLedger; vault_id = owner_sub (x0058)
   - BLAKE3 CAS (local|s3), fixed quota
   - DriveNode CRUD (folder/blob/prefab/vcs_repo): owner-only, BlobGrant required for
@@ -23,7 +24,7 @@ defmodule Assets do
   - Prefab.Payload validates schema_version=1, children blake3 (64-char hex), finite-float
     TRS (non-finite NaN/Inf rejected) (x005e)
   - Drive.resolve_for_take_out/2: BlobGrant verified before returning refs to host (x005f)
-  - Drive.save_prefab/4: Payload validated + uploaded grant_required + DriveNode upserted
+  - Drive.save_prefab/4: Payload validated + uploaded + DriveNode upserted
     (x0060; invariant: save→reload→from_json round-trip is lossless — x0061)
   - HTTP `POST /api/v1/drive/put_back` wraps save_prefab for Desktop Inventory (x006e)
   - Vcs.promote_prefab/2: DriveNode(prefab)→VcsRepo + initial Commit in one TX;
@@ -37,11 +38,11 @@ defmodule Assets do
 
   ## Non-guarantees
 
-  - CasObject.access column removal / access→Grant peel (P1-1 remainder)
   - Group Vault/purchased/mail_temp, room-scoped grants, signed direct PUT, LOD
   - PlaceRead TTL refresh UI; client mesh render; existence oracle (403 vs 404)
   - Group Vault, sharing, Mail/Comms, Shopfront
   - VcsRepo fork/transfer, CA chain, cert revocation, License Token
   - CRDT, Formula VM, non-FF merge, 3D Diff
+  - mime/size first-writer change; orphan CAS GC (P3)
   """
 end

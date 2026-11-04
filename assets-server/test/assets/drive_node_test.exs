@@ -128,9 +128,7 @@ defmodule Assets.DriveNodeTest do
 
   test "create_prefab_node succeeds with grant" do
     {:ok, cas_obj, _} =
-      Blobs.upload(@sub_a, ~s({"schema_version":1,"children":[]}), "application/json",
-        access: :grant_required
-      )
+      Blobs.upload(@sub_a, ~s({"schema_version":1,"children":[]}), "application/json")
 
     assert {:ok, %Node{kind: "prefab", blake3: b3}} =
              Drive.create_prefab_node(@sub_a, "my-prefab", cas_obj.blake3)
@@ -142,17 +140,10 @@ defmodule Assets.DriveNodeTest do
     {:ok, parent} = Drive.create_folder(@sub_a, "Container")
     {:ok, cas_obj, _} = Blobs.upload(@sub_a, "raw-mesh-bytes", "application/octet-stream")
 
-    {:ok, _prefab_cas, _} =
-      Blobs.upload(@sub_a, ~s({"schema_version":1,"children":[]}), "application/json",
-        access: :grant_required
-      )
-
     {:ok, blob_node} = Drive.create_blob(@sub_a, "mesh", cas_obj.blake3, parent.node_id)
 
     {:ok, prefab_cas, _} =
-      Blobs.upload(@sub_a, ~s({"schema_version":1,"children":[]}), "application/json",
-        access: :grant_required
-      )
+      Blobs.upload(@sub_a, ~s({"schema_version":1,"children":[]}), "application/json")
 
     {:ok, prefab_node} =
       Drive.create_prefab_node(@sub_a, "my-prefab", prefab_cas.blake3, parent.node_id)
