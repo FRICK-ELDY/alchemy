@@ -34,7 +34,8 @@
 | Quota 超過のアップロード拒否（既定 1GiB；`used + reserved`） | 課金連動 Quota / pgvector / Origin Cert / Ash 本格 |
 | auth `sub` を **PUT・Quota の所有者キー**、Grant の `grantee_sub` として使う | GET 既定を Grant 必須にすること（案 B） |
 | GET 既定（`access=authenticated`）は **認証済み読み取り capability**（下表） | 部屋配布済み hash の秘密性 |
-| GET `access=grant_required` は **当該 `auth_sub` の BlobGrant 必須**（無ければ 403） | License Token / market Webhook |
+| GET `access=grant_required` は **当該 `auth_sub` の BlobGrant**、またはカバーする **PlaceRead**（x006b・`x-alchemy-place-read`） | License Token / market Webhook；GET 既定の capability 廃止（案 B） |
+| PlaceRead 検証は world JWKS（`WORLD_JWKS_URL` / `WORLD_JWT_ISSUER`）。`sub` 一致必須。hash ∈ **seal-time scene** のみ（`extra_blake3` 無効）。place_hashes 応答の identity 照合 | client 自動取得配線；連合ミラー；extra による inventory バイパス |
 | `ASSETS_METRICS_ADDR`（または `ASSETS_METRICS=1`→`127.0.0.1:9103`）時のみ **専用 loopback Bandit** で `GET /metrics`（x0049）。公開 Endpoint には載せない | OTLP / PromEx / Tunnel・公網スクレイプ；Phoenix 同一ポート上の `/metrics` |
 
 ## GET capability モデル（現行・コード一致）
@@ -73,7 +74,7 @@ PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。任意ヘッ
 | GET | `/health` | 不要 | 生存確認 |
 | POST | `/api/v1/blobs` | Bearer | raw body アップロード。任意 `x-alchemy-blob-access`。既存と不一致は 409 |
 | POST | `/api/v1/inventory/blobs` | Bearer | インベントリ用。常に `grant_required`（x0054）。access ヘッダは省略/`grant_required` のみ（他は 400） |
-| GET | `/api/v1/blobs/:blake3` | Bearer | 既定: 認証済み capability。`grant_required`: Grant 必須（無ければ 403）。未知 access は 403。local: 200 / s3: 302 |
+| GET | `/api/v1/blobs/:blake3` | Bearer（任意 `x-alchemy-place-read`） | 既定: 認証済み capability。`grant_required`: Grant **または** PlaceRead カバー（x006b）。未知 access は 403。local: 200 / s3: 302 |
 | GET | `/api/v1/quota` | Bearer | `{used_bytes, reserved_bytes, limit_bytes}`（自 `auth_sub`） |
 
 ## 最小オブジェクトモデル
@@ -121,7 +122,8 @@ bash .scripts/smoke-assets-glb.sh   # Coin fixture → CAS
 ## 後続
 
 - **インベントリラダー（B+2→C+3）**: [inventory-ladder.md](../roadmap/inventory-ladder.md)。Wave 0–4 **done**（x0054–x0065）。B+2（DriveNode/Prefab）+ C+3（Vcs/OriginCert）薄皮が揃った。host take-out UI / XR 配線は薄皮 API まで（x005f assets-side のみ）。
-- **案 B**: GET 既定を Grant 必須へ。room join 連動読取 Grant / 短命トークン（部屋を壊さない移行）
+- **PlaceRead（x006b）**: 場所の world が短命 JWT 発行（seal 連動）。assets は検証のみ。案 B（GET 常時 Grant）の発行境界
+- **案 B**: GET 既定を Grant / PlaceRead 必須へ（`authenticated` capability 廃止）。client 配線は後続
 - [assets-server-draft.md](assets-server-draft.md) の Vault / purchased / 5 層
 - [assets-threat-model.md](assets-threat-model.md) 目標列（予約期限ジョブ・Immutable Tag・配信ドメイン分離・Safe HTTP・jti 等）
 - カスタムドメイン / CDN キャッシュ本配信

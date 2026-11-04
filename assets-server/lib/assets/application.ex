@@ -10,12 +10,15 @@ defmodule Assets.Application do
     end
 
     Assets.Metrics.ensure_table()
+    Assets.PlaceRead.ensure_verify_cache!()
 
     children = [
       AssetsWeb.Telemetry,
       Assets.Repo,
       {Phoenix.PubSub, name: Assets.PubSub},
       Assets.Auth.Jwks,
+      Assets.World.Jwks,
+      Assets.PlaceHashCache,
       # x0049: dedicated loopback Bandit — never on Endpoint (Tunnel peer spoof)
       Assets.Metrics.Server,
       AssetsWeb.Endpoint

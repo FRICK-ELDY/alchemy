@@ -1,3 +1,3 @@
 # Goal
 
-x0053 XR ↔ Desktop ホットスイッチ（F8 / presence / Settings）
+BlobGrant 案 B（GET 常時 Grant / PlaceRead）— x006b の後続

@@ -12,7 +12,8 @@ defmodule Assets.Blobs do
   delete. Orphan CAS objects without CasObject rows are out of scope (no GC yet).
 
   GET: default `access=authenticated` (Bearer + CasObject). `grant_required` needs
-  a BlobGrant for auth_sub. Target end-state (option B): all GET gated by grant.
+  a BlobGrant for auth_sub, **or** a covering PlaceRead JWT (x006b).
+  Target end-state (option B): all GET gated by grant / PlaceRead.
   """
 
   import Ecto.Query
@@ -23,6 +24,7 @@ defmodule Assets.Blobs do
   alias Assets.CAS
   alias Assets.CAS.S3, as: CasS3
   alias Assets.Metrics
+  alias Assets.PlaceRead
   alias Assets.Quota.QuotaLedger
   alias Assets.Repo
 
@@ -373,16 +375,24 @@ defmodule Assets.Blobs do
   Resolve blob for HTTP GET: local proxies bytes; s3 returns a signed redirect URL (x001d).
 
   `auth_sub` is required for access checks (x004f). Fail-closed: only known `access`
-  values are served (`authenticated` capability, or `grant_required` with BlobGrant).
+  values are served (`authenticated` capability, or `grant_required` with BlobGrant
+  **or** covering PlaceRead via `opts[:place_read]` — x006b).
   Unknown/corrupt `access` → `:forbidden` (never treat as open).
   """
   @spec fetch(String.t(), String.t()) ::
           {:ok, binary(), CasObject.t()}
           | {:redirect, String.t(), CasObject.t()}
           | {:error, :not_found | :forbidden | :presign_failed}
-  def fetch(blake3, auth_sub)
-      when is_binary(blake3) and is_binary(auth_sub) do
+  @spec fetch(String.t(), String.t(), keyword()) ::
+          {:ok, binary(), CasObject.t()}
+          | {:redirect, String.t(), CasObject.t()}
+          | {:error, :not_found | :forbidden | :presign_failed}
+  def fetch(blake3, auth_sub, opts \\ [])
+
+  def fetch(blake3, auth_sub, opts)
+      when is_binary(blake3) and is_binary(auth_sub) and is_list(opts) do
     t0 = System.monotonic_time(:millisecond)
+    place_read = Keyword.get(opts, :place_read)
 
     result =
       case Repo.get(CasObject, blake3) do
@@ -390,7 +400,7 @@ defmodule Assets.Blobs do
           {:error, :not_found}
 
         %CasObject{} = object ->
-          authorize_and_fetch(object, blake3, auth_sub)
+          authorize_and_fetch(object, blake3, auth_sub, place_read)
       end
 
     Metrics.observe_ms(:cas_get_last_ms, System.monotonic_time(:millisecond) - t0)
@@ -401,7 +411,8 @@ defmodule Assets.Blobs do
   defp authorize_and_fetch(
          %CasObject{access: @access_authenticated} = object,
          blake3,
-         _auth_sub
+         _auth_sub,
+         _place_read
        ) do
     fetch_object(object, blake3)
   end
@@ -409,17 +420,24 @@ defmodule Assets.Blobs do
   defp authorize_and_fetch(
          %CasObject{access: @access_grant_required} = object,
          blake3,
-         auth_sub
+         auth_sub,
+         place_read
        ) do
-    if has_blob_grant?(auth_sub, blake3) do
-      fetch_object(object, blake3)
-    else
-      {:error, :forbidden}
+    cond do
+      has_blob_grant?(auth_sub, blake3) ->
+        fetch_object(object, blake3)
+
+      is_binary(place_read) and PlaceRead.allows_blake3?(place_read, auth_sub, blake3) ->
+        fetch_object(object, blake3)
+
+      true ->
+        {:error, :forbidden}
     end
   end
 
   # Unknown access must not fall open to authenticated capability.
-  defp authorize_and_fetch(%CasObject{}, _blake3, _auth_sub), do: {:error, :forbidden}
+  defp authorize_and_fetch(%CasObject{}, _blake3, _auth_sub, _place_read),
+    do: {:error, :forbidden}
 
   defp record_fetch_metrics({:ok, _, _}), do: Metrics.inc(:cas_get_total)
   defp record_fetch_metrics({:redirect, _, _}), do: Metrics.inc(:cas_get_total)
