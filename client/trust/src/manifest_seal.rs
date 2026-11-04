@@ -3,7 +3,7 @@
 //! Guarantees: RS256 via shared [`WorldJwks`]; typ/aud/room_id/revision/host_generation/manifest_blake3 match.
 //! Non-guarantees: SceneManifest-driven content (P4); offline JWKS beyond hard TTL (x0044).
 
-use crate::world_jwks::WorldJwks;
+use crate::WorldJwks;
 use anyhow::{anyhow, Context, Result};
 use jsonwebtoken::{Algorithm, Validation};
 use serde::Deserialize;

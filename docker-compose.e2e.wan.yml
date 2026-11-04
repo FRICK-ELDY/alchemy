@@ -1,0 +1,24 @@
+# x0070 — WAN overlay for hermetic Compose (mTLS + ACL).
+# Usage (after certs exist under E2E_TLS_DIR):
+#   docker compose -f docker-compose.e2e.yml -f docker-compose.e2e.wan.yml up -d --build
+#   bash .scripts/smoke-compose-wan-e2e.sh
+#
+# Guarantees: zenohd uses config.wan.e2e.json5; world signs client certs with same CA.
+# Non-guarantees: host-server Frame path (trust-probe WAN is self-contained).
+
+name: alchemy-e2e
+
+services:
+  zenohd:
+    volumes:
+      - ./relay-server/config.wan.e2e.json5:/config.json5:ro
+      - ${E2E_TLS_DIR}:/e2e-tls:ro
+    command: ["--config", "/config.json5"]
+
+  world:
+    environment:
+      MTLS_CA_CERT_PATH: /e2e-tls/client-ca-cert.pem
+      MTLS_CA_KEY_PATH: /e2e-tls/client-ca-key.pem
+      MTLS_WORK_DIR: /tmp/alchemy-mtls-work
+    volumes:
+      - ${E2E_TLS_DIR}:/e2e-tls:ro

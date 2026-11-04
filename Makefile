@@ -67,6 +67,9 @@ smoke-assets-r2:
 ci-e2e smoke-compose-e2e:
 	./.scripts/smoke-compose-e2e.sh
 
+ci-e2e-wan smoke-compose-wan-e2e:
+	./.scripts/smoke-compose-wan-e2e.sh
+
 smoke-prod-compose:
 	./.scripts/smoke-prod-compose.sh
 

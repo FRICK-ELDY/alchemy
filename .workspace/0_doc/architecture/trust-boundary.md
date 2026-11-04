@@ -91,3 +91,4 @@ flowchart TB
 | x004e | Relay Agent Allocation → mTLS（互換）；role ACL；`wire_cap` キー式（ルーティング） |
 | x0066 | world が CSR から短命 mTLS を署名；zenohd は同一 client CA で検証；IP allowlist 非保証 |
 | x0069 | Room 鍵 AEAD（XChaCha20Poly1305）；部屋機密性の第2壁；`wire_cap` 秘匿は非保証 |
+| x0070 | headless trust consumer + WAN 否定系 E2E（偽 seal で watermark 不変；wildcard でも他室平文不可） |

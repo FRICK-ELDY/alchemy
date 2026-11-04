@@ -30,12 +30,10 @@
 
 mod access_level;
 mod auth;
-mod host_attestation;
 mod host_control;
 mod intent_session;
 mod inventory;
 mod jwt_sub;
-mod manifest_seal;
 mod mesh;
 mod metrics;
 mod operator_prefs;
@@ -46,7 +44,6 @@ mod system_ui;
 mod turn;
 mod world_api;
 mod world_hit;
-mod world_jwks;
 mod world_token;
 
 use std::io::Read;
@@ -57,32 +54,28 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use alchemy_client_trust::{
+    gate_presence_pin, process_manifest_plaintext, DiscardReason, HostAttestationVerifier,
+    ManifestSealVerifier, TrustOutcome, TrustWatermarks, WorldJwks,
+};
 use alchemy_protocol::decode_limits::{
-    check_frame, check_manifest, check_payload_bytes, check_presence, WireClass,
+    check_frame, check_payload_bytes, check_presence, WireClass,
 };
-use alchemy_protocol::generation_gate::{
-    decide_gen_rev, decide_presence_gen_rev, GenRev, GenRevDecision,
-};
+use alchemy_protocol::generation_gate::{decide_presence_gen_rev, GenRev, GenRevDecision};
 use alchemy_protocol::wire_aead::{self, AeadKind};
-use alchemy_protocol::wire_crypto::{
-    frame_entities_finite, manifest_seal_blake3_hex, verify_frame, verify_presence,
-};
+use alchemy_protocol::wire_crypto::{frame_entities_finite, verify_frame, verify_presence};
 use alchemy_protocol::{
     decide_frame_tick, frame_key, input_key, liveliness_key, manifest_key, presence_key,
-    protocol_pin_matches, scene_entry_quat_xyzw, scene_entry_scale, snapshot_key, validate_room_id,
-    FrameTickDecision, Message, PresenceState, RenderFrame, SceneManifest, FRAME_TICK_GAP_RESYNC,
-    PROTOCOL_PIN,
+    scene_entry_quat_xyzw, scene_entry_scale, snapshot_key, validate_room_id, FrameTickDecision,
+    Message, PresenceState, RenderFrame, FRAME_TICK_GAP_RESYNC, PROTOCOL_PIN,
 };
 use alchemy_shared_sim::{scene_entry_color_rgba, ManifestIndex};
 use anyhow::{Context, Result};
 use auth::AuthGate;
-use host_attestation::HostAttestationVerifier;
-use manifest_seal::ManifestSealVerifier;
 use mesh::{
     blake3_hex, load_mesh_from_glb, placeholder_error_mesh, verify_blake3, CpuMesh, COIN_BLAKE3_HEX,
 };
 use scene::{EntityPose, SharedState, LOCAL_USER_ROOT_UNSET};
-use world_jwks::WorldJwks;
 use zenoh::bytes::ZBytes;
 use zenoh::Wait;
 
@@ -100,33 +93,6 @@ const GATE_LOG_INTERVAL: Duration = Duration::from_secs(5);
 const ASSETS_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Assets blob GET: read bound (cancels stalled body / R2 transfer — x0048).
 const ASSETS_HTTP_READ_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// x0038: Manifest identity checks. Failure → discard sample (never leave).
-fn gate_manifest_identity(
-    protocol_pin: &str,
-    room_id: &str,
-    host_pub_len: usize,
-    expected_room: &str,
-) -> Result<(), &'static str> {
-    if !protocol_pin_matches(protocol_pin) {
-        return Err("protocol_pin mismatch");
-    }
-    if room_id != expected_room {
-        return Err("room_id mismatch");
-    }
-    if host_pub_len != 32 {
-        return Err("host_pub length");
-    }
-    Ok(())
-}
-
-/// x0038: Presence pin check. Failure → discard sample (never leave).
-fn gate_presence_pin(protocol_pin: &str) -> Result<(), &'static str> {
-    if !protocol_pin_matches(protocol_pin) {
-        return Err("protocol_pin mismatch");
-    }
-    Ok(())
-}
 
 /// Keep process env in sync for zenoh-connect helpers that still read `ZENOH_CONNECT`.
 fn sync_zenoh_connect_env(endpoint: &str) {
@@ -438,259 +404,173 @@ fn spawn_manifest_subscriber(
                         break 'sample;
                     }
                 };
-                if let Err(err) = check_payload_bytes(WireClass::Manifest, payload.len()) {
-                    dropped_limits += 1;
-                    log::warn!("drop SceneManifest: {err}");
-                    break 'sample;
-                }
-                match SceneManifest::decode(payload.as_ref()) {
-                    Ok(manifest) => {
-                        if let Err(err) = check_manifest(&manifest) {
-                            dropped_limits += 1;
-                            log::warn!("drop SceneManifest: {err}");
-                            break 'sample;
-                        }
-                        if let Err(reason) = gate_manifest_identity(
-                            &manifest.protocol_pin,
-                            &manifest.room_id,
-                            manifest.host_pub.len(),
-                            shared.room_id.as_ref(),
-                        ) {
-                            dropped_identity += 1;
-                            log::warn!(
-                                "drop SceneManifest: {reason} (pin={:?} room={:?} host_pub_len={} want_pin={PROTOCOL_PIN} want_room={})",
-                                manifest.protocol_pin,
-                                manifest.room_id,
-                                manifest.host_pub.len(),
-                                shared.room_id
-                            );
-                            break 'sample;
-                        }
-                        let body_hex = manifest_seal_blake3_hex(&manifest);
-                        if let Err(err) = seal.verify(
-                            &manifest.world_seal,
-                            manifest.revision,
-                            manifest.host_generation,
-                            &body_hex,
-                        ) {
-                            dropped_seal += 1;
-                            log::warn!("drop SceneManifest: world_seal rejected: {err:#}");
-                            break 'sample;
-                        }
-                        let (attested_pub, attested_gen) = match attest.verify_and_host_pub(
-                            &manifest.host_attestation,
-                            &manifest.host_pub,
-                            manifest.host_generation,
-                        ) {
-                            Ok(pair) => pair,
-                            Err(err) => {
-                                dropped_attest += 1;
-                                log::warn!(
-                                    "drop SceneManifest: host_attestation rejected: {err:#}"
-                                );
-                                break 'sample;
-                            }
-                        };
-                        let incoming = GenRev {
-                            host_generation: attested_gen,
-                            revision: manifest.revision,
-                        };
-                        // Hold both locks while gating + applying so poison / same-gen
-                        // host_pub mismatch cannot leave host_pub updated alone (x003a).
-                        let apply_outcome = match (
-                            shared.host_pub.lock(),
-                            shared.manifest_gen_rev.lock(),
-                        ) {
-                            (Ok(mut host_slot), Ok(mut gen_slot)) => {
-                                let known = *gen_slot;
-                                let decision = decide_gen_rev(known, incoming);
-                                match decision {
-                                    GenRevDecision::RejectRegression
-                                    | GenRevDecision::RejectInvalidGeneration => {
-                                        Err((
-                                            "gen/rev gate",
-                                            format!(
-                                                "{decision:?} (incoming gen={} rev={} known={known:?})",
-                                                incoming.host_generation, incoming.revision
-                                            ),
-                                        ))
-                                    }
-                                    GenRevDecision::AcceptSameOrForward => {
-                                        // Same generation ⇒ host_pub is frozen (no swap, no
-                                        // reinstall if leave cleared the key mid-flight).
-                                        match host_slot.as_ref() {
-                                            Some(prev) if prev == &attested_pub => {
-                                                *gen_slot = Some(incoming);
-                                                Ok(false)
-                                            }
-                                            Some(_) => Err((
-                                                "same-generation host_pub mismatch",
-                                                format!(
-                                                    "gen={} (Frame key must not swap without generation bump)",
-                                                    incoming.host_generation
-                                                ),
-                                            )),
-                                            None => Err((
-                                                "same-generation host_pub missing",
-                                                format!(
-                                                    "gen={} (watermark set but key cleared; reject reinstall)",
-                                                    incoming.host_generation
-                                                ),
-                                            )),
-                                        }
-                                    }
-                                    GenRevDecision::AcceptFirst => {
-                                        *host_slot = Some(attested_pub.clone());
-                                        *gen_slot = Some(incoming);
-                                        Ok(false)
-                                    }
-                                    GenRevDecision::AcceptNewGeneration => {
-                                        *host_slot = Some(attested_pub.clone());
-                                        *gen_slot = Some(incoming);
-                                        Ok(true)
-                                    }
-                                }
-                            }
-                            _ => {
-                                log::error!(
-                                    "host_pub/manifest_gen_rev lock poisoned; skip Manifest apply"
-                                );
-                                break 'sample;
-                            }
-                        };
-                        let generation_changed = match apply_outcome {
-                            Ok(changed) => changed,
-                            Err((reason, detail)) => {
-                                dropped_gen_rev += 1;
-                                log::warn!("drop SceneManifest: {reason}: {detail}");
-                                break 'sample;
-                            }
-                        };
-                        if generation_changed {
-                            log::info!(
-                                "SceneManifest host_generation advanced to {}; reset world + renew Intent session",
-                                incoming.host_generation
-                            );
-                            shared.reset_for_host_generation();
-                            snapshot_ok = false;
-                        }
-                        // Accepted Manifest only — PlaceRead needs this seal (x006c).
-                        if let Ok(mut slot) = shared.last_world_seal.lock() {
-                            *slot = Some(manifest.world_seal.clone());
-                        }
-                        // Classification: ManifestIndex (shared-sim / x0030; priority = x0027).
-                        // x003c: send mesh blake3 BEFORE snapshot GET — boot wait must not
-                        // depend on snapshot latency (auth path bails on Manifest timeout).
-                        let index = ManifestIndex::from_entries(&manifest.entries);
-                        let mesh_id = index.mesh_entity_id.unwrap_or(0);
-                        let mut mesh_blake3: Option<String> = None;
-                        if let Some(mid) = index.mesh_entity_id {
-                            if let Some(entry) =
-                                manifest.entries.iter().find(|e| e.entity_id == mid)
-                            {
-                                if entry.half_extent > 0.0 {
-                                    log::warn!(
-                                        "scene entry {} has blake3 + half_extent; mesh wins (box ignored)",
-                                        entry.entity_id
-                                    );
-                                }
-                                mesh_blake3 = Some(entry.blake3.clone());
-                            }
-                        }
-                        // x006e put-back list: 64 ascii-hex blake3 only (CAS key).
-                        // shared-sim treats any non-empty blake3 as Mesh; short/non-hex
-                        // hashes may still draw but are intentionally omitted here.
-                        let scene_meshes: Vec<(u32, String)> = manifest
-                            .entries
-                            .iter()
-                            .filter(|e| {
-                                !alchemy_protocol::scene_entry_is_user_root(e.entity_id)
-                                    && e.blake3.len() == 64
-                                    && e.blake3.bytes().all(|b| b.is_ascii_hexdigit())
-                            })
-                            .map(|e| (e.entity_id, e.blake3.clone()))
-                            .collect();
-                        shared.set_scene_meshes(scene_meshes);
-                        if let Ok(mut world) = shared.world.lock() {
-                            for entry in &manifest.entries {
-                                let (r, g, b, a) = scene_entry_color_rgba(entry);
-                                match world.entities.entry(entry.entity_id) {
-                                    std::collections::hash_map::Entry::Vacant(v) => {
-                                        let [qx, qy, qz, qw] = scene_entry_quat_xyzw(entry);
-                                        let [sx, sy, sz] = scene_entry_scale(entry);
-                                        v.insert(EntityPose {
-                                            x: entry.x as f32,
-                                            y: entry.y as f32,
-                                            z: entry.z as f32,
-                                            qx: qx as f32,
-                                            qy: qy as f32,
-                                            qz: qz as f32,
-                                            qw: qw as f32,
-                                            sx: sx as f32,
-                                            sy: sy as f32,
-                                            sz: sz as f32,
-                                            r,
-                                            g,
-                                            b,
-                                            a,
-                                        });
-                                    }
-                                    std::collections::hash_map::Entry::Occupied(mut o) => {
-                                        // Frame owns pose (quat/scale); Manifest revises tint only
-                                        // — no TRS reseed on revision (x002c).
-                                        if entry.a > 0.0 {
-                                            let p = o.get_mut();
-                                            p.r = r;
-                                            p.g = g;
-                                            p.b = b;
-                                            p.a = a;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        shared.apply_manifest_defs(
-                            index.grabbable,
-                            index.half_extents,
-                            mesh_id,
-                        );
-                        if !sent_blake3 {
-                            let msg = match mesh_blake3 {
-                                Some(hex) => Ok(hex),
-                                None => Err(
-                                    "SceneManifest has no mesh entity blake3".to_string(),
-                                ),
+                // Hold host_pub + gen-rev locks across gate+apply (x003a / x0070).
+                let (generation_changed, manifest, accepted_seal) =
+                    match (shared.host_pub.lock(), shared.manifest_gen_rev.lock()) {
+                        (Ok(mut host_slot), Ok(mut gen_slot)) => {
+                            // Gate only needs host_pub + gen-rev; seal is written on Accept.
+                            let mut watermarks = TrustWatermarks {
+                                host_pub: host_slot.clone(),
+                                manifest_gen_rev: *gen_slot,
+                                last_world_seal: None,
                             };
-                            let _ = blake3_tx.send(msg);
-                            sent_blake3 = true;
-                        } else if mesh_blake3.is_some() {
-                            // Boot download already consumed the channel; live mesh swap is out of scope.
-                            log::info!(
-                                "Manifest mesh blake3 updated after boot download; remount not applied"
+                            let outcome = process_manifest_plaintext(
+                                payload.as_ref(),
+                                shared.room_id.as_ref(),
+                                &mut watermarks,
+                                seal.as_ref(),
+                                attest.as_ref(),
                             );
-                        }
-                        if !snapshot_ok {
-                            if let Some(cap) = shared.wire_cap() {
-                                snapshot_ok = fetch_snapshot(
-                                    &session,
-                                    shared.room_id.as_ref(),
-                                    &cap,
-                                    &shared,
-                                );
+                            match outcome {
+                                TrustOutcome::Discard { reason, detail } => {
+                                    match reason {
+                                        // AEAD is opened before this gate; Aead here is a bug.
+                                        DiscardReason::Aead => {
+                                            log::error!(
+                                                "bug: AEAD discard after open_zenoh_payload: {detail}"
+                                            );
+                                            dropped_aead += 1;
+                                        }
+                                        DiscardReason::Limits => dropped_limits += 1,
+                                        DiscardReason::Decode => dropped_decode += 1,
+                                        DiscardReason::Identity => dropped_identity += 1,
+                                        DiscardReason::Seal => dropped_seal += 1,
+                                        DiscardReason::Attest => dropped_attest += 1,
+                                        DiscardReason::GenRev => dropped_gen_rev += 1,
+                                    }
+                                    log::warn!("drop SceneManifest: {reason:?}: {detail}");
+                                    break 'sample;
+                                }
+                                TrustOutcome::Accept {
+                                    generation_changed,
+                                    manifest,
+                                } => {
+                                    *host_slot = watermarks.host_pub;
+                                    *gen_slot = watermarks.manifest_gen_rev;
+                                    (generation_changed, manifest, watermarks.last_world_seal)
+                                }
                             }
                         }
-                        log::info!(
-                            "SceneManifest generation={} revision={} entries={} pin_ok attested snapshot_ok={snapshot_ok}",
-                            manifest.host_generation,
-                            manifest.revision,
-                            manifest.entries.len()
-                        );
-                    }
-                    Err(err) => {
-                        dropped_decode += 1;
-                        log::warn!("drop SceneManifest: decode failed: {err}");
+                        _ => {
+                            log::error!(
+                                "host_pub/manifest_gen_rev lock poisoned; skip Manifest apply"
+                            );
+                            break 'sample;
+                        }
+                    };
+                if generation_changed {
+                    log::info!(
+                        "SceneManifest host_generation advanced to {}; reset world + renew Intent session",
+                        manifest.host_generation
+                    );
+                    shared.reset_for_host_generation();
+                    snapshot_ok = false;
+                }
+                // Accepted Manifest only — PlaceRead needs this seal (x006c).
+                // After generation reset (clears seal), re-apply the accepted seal.
+                if let Ok(mut slot) = shared.last_world_seal.lock() {
+                    *slot = accepted_seal;
+                }
+                // Classification: ManifestIndex (shared-sim / x0030; priority = x0027).
+                // x003c: send mesh blake3 BEFORE snapshot GET — boot wait must not
+                // depend on snapshot latency (auth path bails on Manifest timeout).
+                let index = ManifestIndex::from_entries(&manifest.entries);
+                let mesh_id = index.mesh_entity_id.unwrap_or(0);
+                let mut mesh_blake3: Option<String> = None;
+                if let Some(mid) = index.mesh_entity_id {
+                    if let Some(entry) = manifest.entries.iter().find(|e| e.entity_id == mid)
+                    {
+                        if entry.half_extent > 0.0 {
+                            log::warn!(
+                                "scene entry {} has blake3 + half_extent; mesh wins (box ignored)",
+                                entry.entity_id
+                            );
+                        }
+                        mesh_blake3 = Some(entry.blake3.clone());
                     }
                 }
+                // x006e put-back list: 64 ascii-hex blake3 only (CAS key).
+                // shared-sim treats any non-empty blake3 as Mesh; short/non-hex
+                // hashes may still draw but are intentionally omitted here.
+                let scene_meshes: Vec<(u32, String)> = manifest
+                    .entries
+                    .iter()
+                    .filter(|e| {
+                        !alchemy_protocol::scene_entry_is_user_root(e.entity_id)
+                            && e.blake3.len() == 64
+                            && e.blake3.bytes().all(|b| b.is_ascii_hexdigit())
+                    })
+                    .map(|e| (e.entity_id, e.blake3.clone()))
+                    .collect();
+                shared.set_scene_meshes(scene_meshes);
+                if let Ok(mut world) = shared.world.lock() {
+                    for entry in &manifest.entries {
+                        let (r, g, b, a) = scene_entry_color_rgba(entry);
+                        match world.entities.entry(entry.entity_id) {
+                            std::collections::hash_map::Entry::Vacant(v) => {
+                                let [qx, qy, qz, qw] = scene_entry_quat_xyzw(entry);
+                                let [sx, sy, sz] = scene_entry_scale(entry);
+                                v.insert(EntityPose {
+                                    x: entry.x as f32,
+                                    y: entry.y as f32,
+                                    z: entry.z as f32,
+                                    qx: qx as f32,
+                                    qy: qy as f32,
+                                    qz: qz as f32,
+                                    qw: qw as f32,
+                                    sx: sx as f32,
+                                    sy: sy as f32,
+                                    sz: sz as f32,
+                                    r,
+                                    g,
+                                    b,
+                                    a,
+                                });
+                            }
+                            std::collections::hash_map::Entry::Occupied(mut o) => {
+                                // Frame owns pose (quat/scale); Manifest revises tint only
+                                // — no TRS reseed on revision (x002c).
+                                if entry.a > 0.0 {
+                                    let p = o.get_mut();
+                                    p.r = r;
+                                    p.g = g;
+                                    p.b = b;
+                                    p.a = a;
+                                }
+                            }
+                        }
+                    }
+                }
+                shared.apply_manifest_defs(index.grabbable, index.half_extents, mesh_id);
+                if !sent_blake3 {
+                    let msg = match mesh_blake3 {
+                        Some(hex) => Ok(hex),
+                        None => Err("SceneManifest has no mesh entity blake3".to_string()),
+                    };
+                    let _ = blake3_tx.send(msg);
+                    sent_blake3 = true;
+                } else if mesh_blake3.is_some() {
+                    // Boot download already consumed the channel; live mesh swap is out of scope.
+                    log::info!(
+                        "Manifest mesh blake3 updated after boot download; remount not applied"
+                    );
+                }
+                if !snapshot_ok {
+                    if let Some(cap) = shared.wire_cap() {
+                        snapshot_ok = fetch_snapshot(
+                            &session,
+                            shared.room_id.as_ref(),
+                            &cap,
+                            &shared,
+                        );
+                    }
+                }
+                log::info!(
+                    "SceneManifest generation={} revision={} entries={} pin_ok attested snapshot_ok={snapshot_ok}",
+                    manifest.host_generation,
+                    manifest.revision,
+                    manifest.entries.len()
+                );
                 } // 'sample
                 if last_gate_log.elapsed() >= GATE_LOG_INTERVAL {
                     if dropped_identity
@@ -1903,7 +1783,7 @@ fn main() -> Result<()> {
     metrics::maybe_spawn_from_env(Arc::clone(&client_metrics));
 
     let jwks = Arc::new(WorldJwks::new(&world_url));
-    jwks.set_metrics(Arc::clone(&client_metrics));
+    jwks.set_metrics(Arc::clone(&client_metrics) as Arc<dyn alchemy_client_trust::JwksMetrics>);
     // UI-first boot may not have world up yet; soft-fail and retry after operator select.
     if let Err(err) = jwks.refresh() {
         if auth_mode == "silent" {
@@ -2194,69 +2074,5 @@ mod tests {
         assert!((world.entities.get(&1).unwrap().x - 9.0).abs() < f32::EPSILON);
     }
 
-    /// x0038: identity / pin failures are discard reasons (Err), never a leave signal.
-    #[test]
-    fn manifest_identity_gate_rejects_bad_pin_room_and_host_pub_len() {
-        assert!(gate_manifest_identity(PROTOCOL_PIN, "local", 32, "local").is_ok());
-        assert_eq!(
-            gate_manifest_identity("bogus-pin", "local", 32, "local"),
-            Err("protocol_pin mismatch")
-        );
-        assert_eq!(
-            gate_manifest_identity(PROTOCOL_PIN, "other", 32, "local"),
-            Err("room_id mismatch")
-        );
-        assert_eq!(
-            gate_manifest_identity(PROTOCOL_PIN, "local", 16, "local"),
-            Err("host_pub length")
-        );
-    }
-
-    #[test]
-    fn presence_pin_gate_rejects_mismatch() {
-        assert!(gate_presence_pin(PROTOCOL_PIN).is_ok());
-        assert_eq!(gate_presence_pin("bogus-pin"), Err("protocol_pin mismatch"));
-    }
-
-    /// x003a: old signed Manifest replay must not roll back accepted watermark.
-    #[test]
-    fn manifest_gen_rev_gate_rejects_revision_regression() {
-        let known = Some(GenRev {
-            host_generation: 1,
-            revision: 5,
-        });
-        let older = GenRev {
-            host_generation: 1,
-            revision: 3,
-        };
-        assert_eq!(
-            decide_gen_rev(known, older),
-            GenRevDecision::RejectRegression
-        );
-        let handoff = GenRev {
-            host_generation: 2,
-            revision: 0,
-        };
-        assert_eq!(
-            decide_gen_rev(known, handoff),
-            GenRevDecision::AcceptNewGeneration
-        );
-    }
-
-    /// Same generation keeps AcceptSameOrForward; caller must still reject host_pub swap.
-    #[test]
-    fn same_generation_forward_does_not_imply_host_pub_handoff() {
-        let known = Some(GenRev {
-            host_generation: 1,
-            revision: 1,
-        });
-        let forward = GenRev {
-            host_generation: 1,
-            revision: 2,
-        };
-        assert_eq!(
-            decide_gen_rev(known, forward),
-            GenRevDecision::AcceptSameOrForward
-        );
-    }
+    // Identity / presence pin / gen-rev unit tables live in alchemy-client-trust (x0070).
 }

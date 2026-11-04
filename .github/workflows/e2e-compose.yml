@@ -1,16 +1,20 @@
-name: E2E Compose (x001f)
+name: E2E Compose (x001f / x0070)
 
 on:
   workflow_dispatch:
   pull_request:
     paths:
       - "docker-compose.e2e.yml"
+      - "docker-compose.e2e.wan.yml"
       - ".scripts/smoke-compose-e2e.sh"
+      - ".scripts/smoke-compose-wan-e2e.sh"
       - "Makefile"
       - "client/Cargo.toml"
       - "client/Cargo.lock"
       - "client/e2e-probe/**"
+      - "client/trust/**"
       - "client/host-server/**"
+      - "client/app/**"
       - "protocol/**"
       - "auth-server/**"
       - "world-server/**"
@@ -18,17 +22,24 @@ on:
       - "shared/alchemy_auth_client/**"
       - "shared/alchemy_client_ip/**"
       - "relay-server/config.json5"
+      - "relay-server/config.wan.json5"
+      - "relay-server/config.wan.e2e.json5"
+      - "relay-server/scripts/gen-wan-dev-certs.sh"
       - ".github/workflows/e2e-compose.yml"
   push:
     branches: ["main"]
     paths:
       - "docker-compose.e2e.yml"
+      - "docker-compose.e2e.wan.yml"
       - ".scripts/smoke-compose-e2e.sh"
+      - ".scripts/smoke-compose-wan-e2e.sh"
       - "Makefile"
       - "client/Cargo.toml"
       - "client/Cargo.lock"
       - "client/e2e-probe/**"
+      - "client/trust/**"
       - "client/host-server/**"
+      - "client/app/**"
       - "protocol/**"
       - "auth-server/**"
       - "world-server/**"
@@ -36,6 +47,9 @@ on:
       - "shared/alchemy_auth_client/**"
       - "shared/alchemy_client_ip/**"
       - "relay-server/config.json5"
+      - "relay-server/config.wan.json5"
+      - "relay-server/config.wan.e2e.json5"
+      - "relay-server/scripts/gen-wan-dev-certs.sh"
       - ".github/workflows/e2e-compose.yml"
 
 concurrency:
@@ -76,3 +90,32 @@ jobs:
       - name: Compose down
         if: always()
         run: docker compose -f docker-compose.e2e.yml down -v
+
+  wan-negative-e2e:
+    name: "WAN negative E2E (x0070)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system packages
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          pkg-config curl openssl
+          libxkbcommon-dev libwayland-dev
+          libx11-dev libxcursor-dev libxi-dev libxrandr-dev
+
+      - name: Smoke WAN negative E2E
+        env:
+          HEALTH_WAIT_SECS: "300"
+          E2E_TIMEOUT_SECS: "90"
+          COMPOSE_DOWN: "1"
+        run: bash .scripts/smoke-compose-wan-e2e.sh
+
+      - name: Compose logs on failure
+        if: failure()
+        run: >
+          docker compose -f docker-compose.e2e.yml -f docker-compose.e2e.wan.yml
+          logs --no-color --tail=200 || true

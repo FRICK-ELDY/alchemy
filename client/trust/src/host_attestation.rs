@@ -3,7 +3,7 @@
 //! Guarantees: RS256 via shared [`WorldJwks`]; typ/aud/room_id/host_pub/host_generation match.
 //! Non-guarantees: Manifest body integrity (see ManifestSeal); offline JWKS beyond soft TTL.
 
-use crate::world_jwks::WorldJwks;
+use crate::WorldJwks;
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use jsonwebtoken::{Algorithm, Validation};

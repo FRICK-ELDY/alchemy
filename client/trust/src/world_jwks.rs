@@ -1,4 +1,4 @@
-//! Shared world-server JWKS cache for RS256 JWT verification (x0025 / x0026 / **x0044**).
+//! Shared world-server JWKS cache for RS256 JWT verification (x0025 / x0026 / **x0044** / x0070).
 //!
 //! Guarantees: soft TTL SWR + hard stale fail-closed; unknown kid kicks bg refresh with
 //! cooldown; **decode path never does HTTP** (parity with host `room_token` / P2-3).
@@ -23,6 +23,12 @@ const JWKS_HARD_TTL: Duration = Duration::from_secs(300);
 const JWKS_HTTP_TIMEOUT: Duration = Duration::from_secs(2);
 const JWKS_BG_POLL: Duration = Duration::from_secs(30);
 const UNKNOWN_KID_COOLDOWN: Duration = Duration::from_secs(1);
+
+/// Optional JWKS scrape hooks (GUI metrics / headless no-op).
+pub trait JwksMetrics: Send + Sync {
+    fn set_jwks_fetched_at(&self, at: Instant);
+    fn inc_jwks_hard_stale(&self);
+}
 
 #[derive(Debug, Deserialize)]
 struct Jwks {
@@ -50,8 +56,7 @@ pub struct WorldJwks {
     cache: RwLock<KeyCache>,
     refresh_tx: Mutex<Option<SyncSender<()>>>,
     bg_started: AtomicBool,
-    /// Optional x0049 client metrics (JWKS age / hard-stale).
-    metrics: Mutex<Option<Arc<crate::metrics::ClientMetrics>>>,
+    metrics: Mutex<Option<Arc<dyn JwksMetrics>>>,
 }
 
 impl WorldJwks {
@@ -85,18 +90,18 @@ impl WorldJwks {
         cache.fetched_at = Instant::now() - Duration::from_secs(3600);
     }
 
-    /// Attach client metrics registry (x0049). Call once before verify traffic.
-    pub fn set_metrics(&self, metrics: Arc<crate::metrics::ClientMetrics>) {
+    /// Attach optional metrics hooks (x0049 / x0070). Call once before verify traffic.
+    pub fn set_metrics(&self, metrics: Arc<dyn JwksMetrics>) {
         if let Ok(mut slot) = self.metrics.lock() {
             *slot = Some(metrics);
         }
         self.publish_jwks_age();
     }
 
-    fn with_metrics(&self, f: impl FnOnce(&crate::metrics::ClientMetrics)) {
+    fn with_metrics(&self, f: impl FnOnce(&dyn JwksMetrics)) {
         if let Ok(slot) = self.metrics.lock() {
             if let Some(m) = slot.as_ref() {
-                f(m);
+                f(m.as_ref());
             }
         }
     }
@@ -303,11 +308,23 @@ mod tests {
     use pkcs8::EncodePublicKey;
     use rsa::RsaPrivateKey;
     use serde::{Deserialize, Serialize};
+    use std::sync::atomic::AtomicU64;
 
     #[derive(Debug, Serialize, Deserialize)]
     struct TinyClaims {
         sub: String,
         exp: i64,
+    }
+
+    struct CountingMetrics {
+        hard_stale: AtomicU64,
+    }
+
+    impl JwksMetrics for CountingMetrics {
+        fn set_jwks_fetched_at(&self, _at: Instant) {}
+        fn inc_jwks_hard_stale(&self) {
+            self.hard_stale.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     fn test_rsa_jwt() -> (WorldJwks, String, EncodingKey) {
@@ -368,10 +385,12 @@ mod tests {
     }
 
     #[test]
-    fn hard_stale_increments_client_metrics() {
+    fn hard_stale_increments_metrics_hook() {
         let (jwks, token, _) = test_rsa_jwt();
-        let metrics = Arc::new(crate::metrics::ClientMetrics::default());
-        jwks.set_metrics(Arc::clone(&metrics));
+        let metrics = Arc::new(CountingMetrics {
+            hard_stale: AtomicU64::new(0),
+        });
+        jwks.set_metrics(Arc::clone(&metrics) as Arc<dyn JwksMetrics>);
         let mut validation = Validation::new(Algorithm::RS256);
         validation.validate_aud = false;
         validation.set_required_spec_claims(&["exp", "sub"]);
@@ -380,7 +399,7 @@ mod tests {
         let _ = jwks
             .decode_claims::<TinyClaims>(&token, &validation)
             .expect_err("hard-stale");
-        assert_eq!(metrics.jwks_hard_stale_total(), 1);
+        assert_eq!(metrics.hard_stale.load(Ordering::Relaxed), 1);
     }
 
     #[test]
