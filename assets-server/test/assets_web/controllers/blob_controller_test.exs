@@ -305,7 +305,7 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %QuotaLedger{reserved_bytes: 0} = Repo.get(QuotaLedger, sub)
   end
 
-  test "default upload is authenticated and other user can GET", %{
+  test "default upload is authenticated; other user needs Grant or PlaceRead (x006c)", %{
     conn: conn,
     signer: signer
   } do
@@ -325,7 +325,49 @@ defmodule AssetsWeb.BlobControllerTest do
 
     conn =
       build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert response(conn, 200) == body
+
+    conn =
+      build_conn()
       |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert %{"error" => "forbidden"} = json_response(conn, 403)
+  end
+
+  test "authenticated CasObject GET allowed via PlaceRead (x006c)", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "authenticated-place-read-scene"
+    %{signer: world_signer} = TestPlaceReadHelpers.install_test_world_jwks!()
+    manifest = String.duplicate("22", 32)
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"blake3" => blake3, "access" => "authenticated"} = json_response(conn, 201)
+
+    TestPlaceReadHelpers.seed_scene_hashes("local", 1, manifest, [blake3])
+
+    place_read =
+      TestPlaceReadHelpers.place_read_token(world_signer,
+        sub: @sub_b,
+        room_id: "local",
+        revision: 1,
+        manifest_blake3: manifest
+      )
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> put_req_header("x-alchemy-place-read", place_read)
       |> get("/api/v1/blobs/#{blake3}")
 
     assert response(conn, 200) == body
@@ -581,12 +623,14 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"access" => "grant_required", "status" => "created"} = json_response(conn, 201)
   end
 
-  test "room-mesh and inventory paths stay separated for different bodies", %{
+  test "room-mesh and inventory paths stay separated for different bodies (x006c)", %{
     conn: conn,
     signer: signer
   } do
     mesh = "room-mesh-still-authenticated"
     inventory = "inventory-private-sibling"
+    %{signer: world_signer} = TestPlaceReadHelpers.install_test_world_jwks!()
+    manifest = String.duplicate("33", 32)
 
     conn =
       conn
@@ -608,16 +652,44 @@ defmodule AssetsWeb.BlobControllerTest do
 
     assert mesh_blake3 != inv_blake3
 
+    # Case B: Bearer alone cannot read room mesh or inventory.
     conn =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, @sub_b)
       |> get("/api/v1/blobs/#{mesh_blake3}")
 
-    assert response(conn, 200) == mesh
+    assert %{"error" => "forbidden"} = json_response(conn, 403)
 
     conn =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> get("/api/v1/blobs/#{inv_blake3}")
+
+    assert %{"error" => "forbidden"} = json_response(conn, 403)
+
+    TestPlaceReadHelpers.seed_scene_hashes("local", 1, manifest, [mesh_blake3])
+
+    place_read =
+      TestPlaceReadHelpers.place_read_token(world_signer,
+        sub: @sub_b,
+        room_id: "local",
+        revision: 1,
+        manifest_blake3: manifest
+      )
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> put_req_header("x-alchemy-place-read", place_read)
+      |> get("/api/v1/blobs/#{mesh_blake3}")
+
+    assert response(conn, 200) == mesh
+
+    # PlaceRead covers seal-time scene only — inventory stays private.
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> put_req_header("x-alchemy-place-read", place_read)
       |> get("/api/v1/blobs/#{inv_blake3}")
 
     assert %{"error" => "forbidden"} = json_response(conn, 403)

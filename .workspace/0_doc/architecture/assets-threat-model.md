@@ -47,7 +47,7 @@
 
 | | 内容 |
 |:---|:---|
-| **現状の防御** | 同一 owner の再 PUT は自 `BlobRef` で `:existing`（Quota 非加算）。別 owner は実バイト再送で自 ref + Quota（owner 付け替えなし・x003f）。hash-only 登録 API は無い。GET は認証済み capability のため、**hash を知る認証主体は読める**（confidentiality 非保証） |
+| **現状の防御** | 同一 owner の再 PUT は自 `BlobRef` で `:existing`（Quota 非加算）。別 owner は実バイト再送で自 ref + Quota（owner 付け替えなし・x003f）。hash-only 登録 API は無い。GET は常時 BlobGrant または PlaceRead（x006c）— **hash を知るだけでは読めない**。部屋配布済み scene hash は PlaceRead カバーで読める（部屋外秘密性は非保証） |
 | **目標の防御** | (1) **Proof of Possession**: 既存 hash でも別 vault が `:owned` を得るには実バイト再送＋サーバ側 blake3 再計算、またはチャンク範囲 PoP を必須にする。(2) **先願原産地ロック**: Origin Cert / `is_locked_by_sale` 付き hash は、`parent_origin_id` なしの「新規オリジナル」Commit・署名を DB で拒否。(3) 頂点ずらし等は出品時 **3D 指紋（pgvector 等）** で隔離（Optional ワーカー） |
 | **保証しない** | hash 秘匿そのもの（部屋内配布で hash は見える）。指紋照合の完全再現率 |
 
@@ -107,9 +107,9 @@
 
 | | 内容 |
 |:---|:---|
-| **現状の防御** | Drive / Comms 未実装。`access=authenticated`（既定）は認証済みなら hash 既知で読める。`access=grant_required` は BlobGrant 必須。**未知 `access` は fail-closed（403）**（x004f / 案 A） |
-| **目標の防御** | GET 既定も Grant 必須（案 B）+ Ash Policy（または同等）で Read/Action すべてに **actor が有効 BlobGrant 保有** をクエリに注入。書き忘れで公開に落ちないこと |
-| **保証しない** | `authenticated` かつ hash が既に部屋・公開フィードで配布済みのオブジェクトの「秘密性」。GET の 403/404 による存在オラクル |
+| **現状の防御** | GET は常時 BlobGrant または PlaceRead（x006c 案 B）。`CasObject.access` 未知値は fail-closed（403）。Drive / Comms 未実装 |
+| **目標の防御** | Ash Policy（または同等）で Read/Action すべてに **actor が有効 BlobGrant 保有** をクエリに注入。書き忘れで公開に落ちないこと。access→Grant 本移設 |
+| **保証しない** | PlaceRead カバー済み scene hash の「部屋外秘密性」。GET の 403/404 による存在オラクル |
 
 ### ⑦ 決済・購入トークンのリプレイと偽造
 
@@ -191,9 +191,9 @@ flowchart TB
 
 | 項目 | 現行 assets |
 |:---|:---|
-| GET | Bearer 必須・owner 照合なし（①⑥の confidentiality は非保証として文書化済み） |
+| GET | Bearer +（BlobGrant **または** PlaceRead）必須（x006c）。Bearer 単独の読取 capability は無し。存在オラクル・PlaceRead カバー済み scene の部屋外秘密性は非保証（①⑥） |
 | PUT / Quota | サーバ代理 + `reserved_bytes` 同期予約／振替。補償は予約解放のみ・CAS 非削除（x003f）；直 PUT・期限切れジョブ・orphan GC は未 |
-| Dedup | CasObject は共有。cross-owner は実バイト再送で自 BlobRef + 自 Quota（owner 付け替えなし）。**Grant 層が無い**ため①の本格面は draft 以降 |
-| Drive / Vcs / Shop / 連合 / billing | 未（③④⑤⑥⑦の目標列） |
+| Dedup | CasObject は共有。cross-owner は実バイト再送で自 BlobRef + 自 Quota + `:owned` Grant（owner 付け替えなし・x004f）。①の Origin Cert / 指紋は目標列 |
+| Drive / Vcs / Shop / 連合 / billing | Drive/Vcs 薄皮あり（x005c–x0065）。Shop / 連合 / billing は未（③④⑤⑦の目標列） |
 
 スライス化するときは、本表の **目標の防御** を完了条件に写し、保証表とコードを一致させてから「現状の防御」へ昇格する。

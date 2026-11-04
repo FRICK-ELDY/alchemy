@@ -1,8 +1,8 @@
 # assets-server（設計たたき台）
 
 > **ステータス**: **draft** — 目標アーキテクチャのたたき台。実装正本ではない。  
-> **現行正本**: [assets-server.md](assets-server.md)（GET capability モデル含む。x0003 / x001c / x001d）  
-> **動機**: 現行 GET（認証済み読み取り capability）の先にある **BlobGrant / 5 層 + 外部境界** の目標像。課金・市場連動は改善計画の billing / market 帯（評価版で ID が変わりうる）  
+> **現行正本**: [assets-server.md](assets-server.md)（GET = 案 B / x006c。Grant または PlaceRead）  
+> **動機**: 正本の先にある **StorageVault / 5 層 + 外部境界** の目標像。課金・市場連動は改善計画の billing / market 帯（評価版で ID が変わりうる）  
 > **関連**: [trust-boundary.md](trust-boundary.md)、[assets-threat-model.md](assets-threat-model.md)（手口×対策）、[overview.md](overview.md)
 
 ---
@@ -16,7 +16,7 @@
 | 単一 DB トランザクション境界で Drive / Comms / Vcs / Shop → Grant を結ぶ方針 | Stage 2+ PostgreSQL・Ash Domain 分割のスケジュール |
 | auth / market+billing / world+zenoh / client(+盗難特徴量) を **別プロセス境界** に切る | それらのサーバーが既に存在する／本リポジトリに揃っていること |
 
-**現行との関係**: GET capability 文書化（P1-1）と **CasObject / BlobRef + reserved put**（x003f / P1-2）は正本済み。**BlobGrant 台帳 + `access=grant_required`（x004f / 案 A）** も正本化済み（GET 既定はまだ capability）。本 draft の残りは **StorageVault / 5 層** と **GET 既定を常に Grant 必須にする案 B**（room 連動読取 Grant）。案 B 採用時は保証表とコードを揃えてから正本へ昇格する。
+**現行との関係**: **CasObject / BlobRef + reserved put**（x003f）、**BlobGrant 台帳**（x004f）、**PlaceRead**（x006b）、**GET 案 B**（x006c・常時 Grant/PlaceRead）は正本済み。本 draft の残りは **StorageVault / 5 層** と購入・メール一時・出品ロック等の Grant 種別拡張。GET 認可の正本は [assets-server.md](assets-server.md) を見ること（本 draft は層構造の目標像）。
 
 ---
 
@@ -26,8 +26,8 @@
 |:---|:---|
 | `CasObject`（物理）+ `BlobRef` UNIQUE(owner_sub, blake3)（x003f） | `AssetBlob`（=CasObject）+ `BlobGrant`（権利・Quota 単位）に昇格 |
 | `QuotaLedger`（used + reserved） | `StorageVault`（Personal / Group）+ Grant の `quota_exempt` |
-| GET: Bearer 存在のみ（所有者照合なし） | Grant 有無で GET 可否（購入・メール一時・出品ロックを含む） |
-| Vault / Folder / Commit は「保証しない」 | Drive / Vcs / Shop を同一 TX 境界の上位層として置く |
+| GET: BlobGrant または PlaceRead（x006c 案 B） | Grant 種別拡張（購入・メール一時・出品ロック）+ StorageVault |
+| Drive / Vcs 薄皮あり；Shop は「保証しない」 | Drive / Vcs / Shop を同一 TX 境界の上位層として置く |
 | 課金・Ash・Origin Cert は後続 | market/billing・Origin Cert・client LOD を外部境界へ明示 |
 
 ---

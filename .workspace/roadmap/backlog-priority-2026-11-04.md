@@ -2,7 +2,7 @@
 
 正本の進捗目次は [README.md](README.md)。本ファイルは **未完了帯の優先度ビュー**。
 
-**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**。空き ID = `x006c`。
+**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**。空き ID = `x006d`。
 
 ---
 
@@ -13,7 +13,7 @@
 | **P0-ladder** | x0054–x0065 | inventory Wave 0–4 | **done（host take-out UI は後続）** |
 | **P0-体感** | [x0053](slices/x0053-xr-desktop-hotswitch.md) | XR ↔ Desktop ホットスイッチ | **done** |
 | **P0-発行** | [x006b](slices/x006b-place-read-capability.md) | PlaceRead（場所で付与・seal 連動） | **done** |
-| **P0-次** | BlobGrant 案 B | GET 常時 Grant（PlaceRead で部屋メッシュ維持） | planned |
+| **P0-次** | [x006c](slices/x006c-blob-grant-option-b.md) | BlobGrant 案 B（GET 常時 Grant / PlaceRead） | **done** |
 | **P0-隣接** | host take-out UI / verifier | Intent 配線・Spot-Check | planned / 保留 |
 
 ---
@@ -24,8 +24,8 @@
 
 | 優先 | 項目 | 根拠 |
 |:---|:---|:---|
-| **P1-1** | **CAS access を Grant/ref へ移設**（先着固定解消） | **partial（本作業）**: authenticated→後続 grant_required PUT は共存。案 B（GET 常時 Grant）は残 |
-| **P1-2** | **BlobGrant 案 B**（GET 常時 Grant + room 連動読取） | x004f は案 A のみ done。ladder 外後続として README でも保留 |
+| **P1-1** | **CAS access を Grant/ref へ移設**（先着固定解消） | **partial**: authenticated→後続 grant_required PUT は共存。GET 案 B は x006c。列廃止は残 |
+| **P1-2** | **BlobGrant 案 B**（GET 常時 Grant + room 連動読取） | **→ x006c done** |
 | **P1-3** | **headless client trust + WAN 否定系 E2E** | improvement P1-2。偽 seal / wildcard を CI 固定 |
 | **P1-4** | **world rate limit shared 化 + Room per-owner 上限** | improvement P1-3。P3-7（BLAKE3 ストリーミング）は **マージしない**方針のまま |
 | **P1-5** | launcher discovery（host restart 後の IPC 再通知） | improvement P1-4。最小 launcher は done、制御面の穴 |
@@ -86,9 +86,8 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 
 ## 推奨着手順（要約・本作業後）
 
-1. **BlobGrant 案 B**（GET 常時 Grant / PlaceRead）— 部屋メッシュは x006b で維持
-2. host take-out / put-back **UI・Intent 配線**（API は x005f/x0060 済み；extra_blake3 再設計を含む）
-3. P3 衛生の残り（reaper / metrics / Port 化）
-4. verifier / Formula / market / 検疫（条件: seal / gen-rev 済み）
+1. host take-out / put-back **UI・Intent 配線**（API は x005f/x0060 済み；extra_blake3 再設計を含む）
+2. P3 衛生の残り（reaper / metrics / Port 化）
+3. verifier / Formula / market / 検疫（条件: seal / gen-rev 済み）
 
 ← [Roadmap 目次](README.md)

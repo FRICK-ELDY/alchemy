@@ -11,9 +11,9 @@ defmodule Assets.Blobs do
   on compensate — concurrent same-blake3 PUT (cross-owner PoP) must not race on
   delete. Orphan CAS objects without CasObject rows are out of scope (no GC yet).
 
-  GET: default `access=authenticated` (Bearer + CasObject). `grant_required` needs
-  a BlobGrant for auth_sub, **or** a covering PlaceRead JWT (x006b).
-  Target end-state (option B): all GET gated by grant / PlaceRead.
+  GET (x006c 案 B): always gated by BlobGrant for auth_sub **or** a covering
+  PlaceRead JWT (x006b). `CasObject.access=authenticated` no longer grants a
+  Bearer-only read capability. Unknown access stays fail-closed.
   """
 
   import Ecto.Query
@@ -287,9 +287,8 @@ defmodule Assets.Blobs do
        when existing == requested,
        do: :ok
 
-  # P1-1 peel: public mesh (authenticated) + inventory grant_required may share blake3.
-  # CasObject.access stays first-writer; second writer still gets BlobRef + owned Grant.
-  # True private-only GET for shared hashes needs full access→Grant move (案 B).
+  # P1-1 peel: first-writer CasObject.access may stay authenticated while a later
+  # inventory PUT adds BlobRef + owned Grant. GET is always Grant/PlaceRead (x006c).
   defp assert_access_match(%CasObject{access: @access_authenticated}, @access_grant_required),
     do: :ok
 
@@ -374,9 +373,10 @@ defmodule Assets.Blobs do
   @doc """
   Resolve blob for HTTP GET: local proxies bytes; s3 returns a signed redirect URL (x001d).
 
-  `auth_sub` is required for access checks (x004f). Fail-closed: only known `access`
-  values are served (`authenticated` capability, or `grant_required` with BlobGrant
-  **or** covering PlaceRead via `opts[:place_read]` — x006b).
+  `auth_sub` is required (x004f / x006c). Fail-closed: known `access` values only.
+  Read requires BlobGrant for `auth_sub` **or** covering PlaceRead via
+  `opts[:place_read]` (x006b). `access=authenticated` is storage metadata only —
+  it does not grant Bearer-only GET (案 B).
   Unknown/corrupt `access` → `:forbidden` (never treat as open).
   """
   @spec fetch(String.t(), String.t()) ::
@@ -409,20 +409,12 @@ defmodule Assets.Blobs do
   end
 
   defp authorize_and_fetch(
-         %CasObject{access: @access_authenticated} = object,
-         blake3,
-         _auth_sub,
-         _place_read
-       ) do
-    fetch_object(object, blake3)
-  end
-
-  defp authorize_and_fetch(
-         %CasObject{access: @access_grant_required} = object,
+         %CasObject{access: access} = object,
          blake3,
          auth_sub,
          place_read
-       ) do
+       )
+       when access in [@access_authenticated, @access_grant_required] do
     cond do
       has_blob_grant?(auth_sub, blake3) ->
         fetch_object(object, blake3)
@@ -435,7 +427,7 @@ defmodule Assets.Blobs do
     end
   end
 
-  # Unknown access must not fall open to authenticated capability.
+  # Unknown access must not fall open.
   defp authorize_and_fetch(%CasObject{}, _blake3, _auth_sub, _place_read),
     do: {:error, :forbidden}
 

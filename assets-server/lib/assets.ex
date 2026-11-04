@@ -4,13 +4,15 @@ defmodule Assets do
   inventory PUT grant_required（x0054）+ Personal Vault view（x0058）+
   Drive folder/blob/prefab（x005c/x005d）+ Prefab.Payload schema（x005e）+
   Drive take-out helpers（x005f）+ Drive put-back/save_prefab（x0060）+
-  Vcs promote/commit/ref/cert（x0062–x0065）+ ItemRef blake3|repo@rev（x0063）.
+  Vcs promote/commit/ref/cert（x0062–x0065）+ ItemRef blake3|repo@rev（x0063）+
+  PlaceRead（x006b）+ GET option B（x006c）.
 
   ## Guarantees
 
   - auth-gated PUT/GET, CasObject + per-owner BlobRef + owned BlobGrant
   - reserved→put→used; failure releases reservation only (no CAS.delete)
-  - access=authenticated (default capability) or grant_required
+  - GET always BlobGrant or covering PlaceRead (x006c option B); `access` is PUT
+    metadata / first-writer only — Bearer alone is never a read capability
   - HTTP inventory PUT (`POST /api/v1/inventory/blobs`) always grant_required (x0054)
   - authenticated CasObject may coexist with later grant_required PUT; CasObject.access
     stays first-writer
@@ -34,8 +36,9 @@ defmodule Assets do
 
   ## Non-guarantees
 
-  - GET always grant-gated (option B), Group Vault/purchased/mail_temp
-  - room-scoped grants, signed direct PUT, LOD, client mesh render
+  - CasObject.access column removal / access→Grant peel (P1-1 remainder)
+  - Group Vault/purchased/mail_temp, room-scoped grants, signed direct PUT, LOD
+  - PlaceRead TTL refresh UI; client mesh render; existence oracle (403 vs 404)
   - Group Vault, sharing, Mail/Comms, Shopfront
   - VcsRepo fork/transfer, CA chain, cert revocation, License Token
   - CRDT, Formula VM, non-FF merge, 3D Diff

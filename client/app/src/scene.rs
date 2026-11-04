@@ -222,6 +222,8 @@ pub struct SharedState {
     pub host_pub: Mutex<Option<Vec<u8>>>,
     /// Last accepted Manifest `(host_generation, revision)` watermark (x003a).
     pub manifest_gen_rev: Mutex<Option<alchemy_protocol::generation_gate::GenRev>>,
+    /// Last accepted Manifest `world_seal` for PlaceRead issuance (x006c).
+    pub last_world_seal: Mutex<Option<String>>,
     /// Last accepted Presence watermark (x003a); generation must match Manifest.
     pub presence_gen_rev: Mutex<Option<alchemy_protocol::generation_gate::GenRev>>,
     /// Zenoh liveliness token while joined (x0022 `sub`+`jti`). Drop/undeclare on leave.
@@ -419,6 +421,9 @@ impl SharedState {
             }
             _ => log::error!("leave_room_local: host_pub/manifest_gen_rev lock poisoned"),
         }
+        if let Ok(mut seal) = self.last_world_seal.lock() {
+            *seal = None;
+        }
         if let Ok(mut slot) = self.presence_gen_rev.lock() {
             *slot = None;
         }
@@ -438,6 +443,8 @@ impl SharedState {
     }
 
     /// Host generation change: clear world + Presence watermark (x0023 / x003a).
+    /// Also clears `last_world_seal` (same lifetime as `leave_room_local`) so a mid-reset
+    /// failure cannot keep a prior generation's seal for PlaceRead (x006c).
     /// x003e: mint new Intent key into `pending_intent_session` only; live publisher keeps
     /// old key + old Token until Room Token for the new pub arrives, then **atomic** swap.
     pub fn reset_for_host_generation(&self) {
@@ -448,6 +455,9 @@ impl SharedState {
             *slot = Arc::new(BoxDefs::default());
         }
         self.mesh_entity_id.store(0, Ordering::Relaxed);
+        if let Ok(mut seal) = self.last_world_seal.lock() {
+            *seal = None;
+        }
         if let Ok(mut slot) = self.presence_gen_rev.lock() {
             *slot = None;
         }
