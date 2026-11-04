@@ -15,7 +15,7 @@
 //! - PROTOCOL_PIN mismatch on Manifest/Presence rejects apply (x0023 / x0038 discard)
 //! - CI fallback: `AUTH_USER` or `ALCHEMY_AUTH_TOKEN` skips UI and joins
 //! - Subscribes to SceneManifest / PresenceState / RenderFrame; downloads blob; wgpu mesh
-//! - Authenticated assets GET: connect/read timeout; failure → error placeholder mesh + dash
+//! - Assets GET (Grant or PlaceRead, x006c): connect/read timeout; failure → error placeholder mesh + dash
 //!   status (not Coin fixture). Fixture fallback only with debug + `ALCHEMY_ALLOW_FIXTURE_FALLBACK`
 //!   (x0048 / P3-3)
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
@@ -38,6 +38,7 @@ mod manifest_seal;
 mod mesh;
 mod metrics;
 mod operator_prefs;
+mod place_read;
 mod scene;
 mod surface;
 mod system_ui;
@@ -181,15 +182,20 @@ fn placeholder_from_err(kind: &str, err: &anyhow::Error) -> AuthMeshLoad {
     }
 }
 
-fn fetch_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<Vec<u8>> {
+fn fetch_blob_bytes(
+    assets_url: &str,
+    blake3: &str,
+    auth_token: &str,
+    place_read: Option<&str>,
+) -> Result<Vec<u8>> {
     let base = assets_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/blobs/{blake3}");
     let authz = format!("Bearer {auth_token}");
-    let resp = assets_http_agent()
-        .get(&url)
-        .set("authorization", &authz)
-        .call()
-        .context("assets blob download failed")?;
+    let mut req = assets_http_agent().get(&url).set("authorization", &authz);
+    if let Some(token) = place_read.filter(|t| !t.is_empty()) {
+        req = req.set("x-alchemy-place-read", token);
+    }
+    let resp = req.call().context("assets blob download failed")?;
     let mut bytes = Vec::new();
     resp.into_reader()
         .read_to_end(&mut bytes)
@@ -202,8 +208,13 @@ fn fixture_fallback_allowed() -> bool {
     cfg!(debug_assertions) && std::env::var_os("ALCHEMY_ALLOW_FIXTURE_FALLBACK").is_some()
 }
 
-fn load_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<Vec<u8>> {
-    match fetch_blob_bytes(assets_url, blake3, auth_token) {
+fn load_blob_bytes(
+    assets_url: &str,
+    blake3: &str,
+    auth_token: &str,
+    place_read: Option<&str>,
+) -> Result<Vec<u8>> {
+    match fetch_blob_bytes(assets_url, blake3, auth_token, place_read) {
         Ok(bytes) => {
             log::info!(
                 "downloaded blob via assets GET ({} bytes, blake3={}; may follow R2 redirect)",
@@ -213,7 +224,7 @@ fn load_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<V
             Ok(bytes)
         }
         Err(err) => {
-            // x003c / x0048: authenticated path requires assets. Fixture is debug-only escape hatch.
+            // x003c / x0048: Grant/PlaceRead path requires assets. Fixture is debug-only escape hatch.
             if fixture_fallback_allowed() {
                 log::warn!(
                     "assets download failed ({err:#}); ALCHEMY_ALLOW_FIXTURE_FALLBACK → fixture"
@@ -221,7 +232,7 @@ fn load_blob_bytes(assets_url: &str, blake3: &str, auth_token: &str) -> Result<V
                 return load_fixture_bytes();
             }
             Err(err).context(
-                "assets blob download required (upload demo coin / ensure CAS; debug: ALCHEMY_ALLOW_FIXTURE_FALLBACK=1)",
+                "assets blob download required (Grant or PlaceRead; upload demo coin / ensure CAS; debug: ALCHEMY_ALLOW_FIXTURE_FALLBACK=1)",
             )
         }
     }
@@ -251,8 +262,13 @@ fn debug_fixture_or_placeholder(kind: &str, err: &anyhow::Error) -> AuthMeshLoad
     }
 }
 
-fn load_auth_mesh(assets_url: &str, blake3: &str, auth_token: &str) -> AuthMeshLoad {
-    let primary = match load_blob_bytes(assets_url, blake3, auth_token) {
+fn load_auth_mesh(
+    assets_url: &str,
+    blake3: &str,
+    auth_token: &str,
+    place_read: Option<&str>,
+) -> AuthMeshLoad {
+    let primary = match load_blob_bytes(assets_url, blake3, auth_token, place_read) {
         Ok(bytes) => bytes,
         Err(err) => {
             // load_blob_bytes already applied debug fixture escape on download failure.
@@ -265,6 +281,34 @@ fn load_auth_mesh(assets_url: &str, blake3: &str, auth_token: &str) -> AuthMeshL
             Err(err) => debug_fixture_or_placeholder("Asset GLB decode failed", &err),
         },
         Err(err) => debug_fixture_or_placeholder("Asset blake3 mismatch", &err),
+    }
+}
+
+/// x006c: Room Token + last accepted `world_seal` → PlaceRead for assets GET.
+fn try_place_read_for_mesh(shared: &SharedState) -> Option<String> {
+    let room_token = shared.auth.lock().ok().and_then(|g| g.room_token.clone())?;
+    let world_seal = shared
+        .last_world_seal
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .filter(|s| !s.is_empty())?;
+    let world_url = shared.get_world_url();
+    match place_read::fetch_place_read(
+        &world_url,
+        shared.room_id.as_ref(),
+        &room_token,
+        &world_seal,
+    ) {
+        Ok(token) => {
+            log::info!("PlaceRead issued for assets mesh GET (x006c)");
+            Some(token)
+        }
+        Err(err) => {
+            // Owner may still succeed via BlobGrant alone; guests need PlaceRead.
+            log::warn!("PlaceRead issue failed (assets GET may rely on Grant only): {err:#}");
+            None
+        }
     }
 }
 
@@ -528,6 +572,10 @@ fn spawn_manifest_subscriber(
                             );
                             shared.reset_for_host_generation();
                             snapshot_ok = false;
+                        }
+                        // Accepted Manifest only — PlaceRead needs this seal (x006c).
+                        if let Ok(mut slot) = shared.last_world_seal.lock() {
+                            *slot = Some(manifest.world_seal.clone());
                         }
                         // Classification: ManifestIndex (shared-sim / x0030; priority = x0027).
                         // x003c: send mesh blake3 BEFORE snapshot GET — boot wait must not
@@ -1872,6 +1920,7 @@ fn main() -> Result<()> {
         pending_retry: Mutex::new(None),
         host_pub: Mutex::new(None),
         manifest_gen_rev: Mutex::new(None),
+        last_world_seal: Mutex::new(None),
         presence_gen_rev: Mutex::new(None),
         liveliness: Mutex::new(None),
         liveliness_prev: Mutex::new(None),
@@ -1990,7 +2039,13 @@ fn main() -> Result<()> {
             log::info!("joined without access token — Coin fixture");
             load_unauth_home_mesh()
         } else {
-            load_auth_mesh(&shared.get_assets_url(), &blob_blake3, &access_for_blob)
+            let place_read = try_place_read_for_mesh(&shared);
+            load_auth_mesh(
+                &shared.get_assets_url(),
+                &blob_blake3,
+                &access_for_blob,
+                place_read.as_deref(),
+            )
         };
         match outcome {
             AuthMeshLoad::Ready(mesh) => mesh,
