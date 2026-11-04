@@ -133,7 +133,7 @@ depends_on: [x0006]
 | x0050 | — | done | XR swapchain → wgpu（P4-1 / 1/3・clear-only） | [x0050-xr-swapchain-wgpu.md](slices/x0050-xr-swapchain-wgpu.md) |
 | x0051 | — | done | XR SceneGpu 一本化（P4-1 / 2/3・dual-eye） | [x0051-xr-scene-gpu-unify.md](slices/x0051-xr-scene-gpu-unify.md) |
 | x0052 | — | done | XR vk_loop GPU 削除（P4-1 / 3/3） | [x0052-xr-vk-loop-gpu-remove.md](slices/x0052-xr-vk-loop-gpu-remove.md) |
-| x0053 | — | planned | XR ↔ Desktop ホットスイッチ（presence / 明示トグル） | [x0053-xr-desktop-hotswitch.md](slices/x0053-xr-desktop-hotswitch.md) |
+| x0053 | — | done | XR ↔ Desktop ホットスイッチ（F8 / presence / Settings） | [x0053-xr-desktop-hotswitch.md](slices/x0053-xr-desktop-hotswitch.md) |
 | x0054 | — | done | inventory PUT 常時 grant_required（Wave 0） | [x0054-inventory-grant-required-put.md](slices/x0054-inventory-grant-required-put.md) |
 | x0055 | — | done | ItemRef blake3 草案（Wave 0） | [x0055-item-ref-blake3-draft.md](slices/x0055-item-ref-blake3-draft.md) |
 | x0056 | — | done | shared-sim held Slot（Wave 1） | [x0056-shared-sim-held-slot.md](slices/x0056-shared-sim-held-slot.md) |
@@ -158,7 +158,7 @@ depends_on: [x0006]
 | x0069 | — | done | 部屋隔離（Room 鍵 AEAD / XChaCha20Poly1305） | [x0069-room-key-aead.md](slices/x0069-room-key-aead.md) |
 | x006a | — | done | world-server へ Zenohex 導入（Adapter 隔離 / :ring） | [x006a-world-zenohex-adapter.md](slices/x006a-world-zenohex-adapter.md) |
 
-**現在の次:** inventory ladder Wave 0–4 **done**（[x0054](slices/x0054-inventory-grant-required-put.md)–[x0065](slices/x0065-origin-cert-thin.md)；host take-out UI / XR 配線は薄皮 API まで）。体感並行: **[x0053](slices/x0053-xr-desktop-hotswitch.md)**。案 B 本体・verifier は保留。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
+**現在の次:** inventory ladder Wave 0–4 **done**（[x0054](slices/x0054-inventory-grant-required-put.md)–[x0065](slices/x0065-origin-cert-thin.md)；host take-out UI / XR 配線は薄皮 API まで）。体感 **[x0053](slices/x0053-xr-desktop-hotswitch.md)** **done**。次候補: BlobGrant 案 B / host take-out UI。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
 次の空き番号は **`x006b`**。

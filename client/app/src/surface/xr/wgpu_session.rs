@@ -4,12 +4,14 @@
 //! drop 順: `render_models.clear` → aim/view/stage Spaces → swapchain/textures →
 //! frame_stream/wait → session → bridge（EXT handle / Space を session より先に破棄）;
 //! `frame_stream.begin` 後は成功／失敗／panic とも `end` 必須;
-//! actions / Intent / Grab / Menu / UiAction.
-//! Non-guarantees: multiview; Bevy; CompositionLayerQuad.
+//! actions / Intent / Grab / Menu / UiAction;
+//! x0053: `!vr_active` → wait/begin/end_empty（session 維持・Intent 全ゼロ化して移譲）;
+//! Zenoh は受け取らない（Desktop 正本。leave / host shutdown は PresentationGate 経由）.
+//! Non-guarantees: multiview; Bevy; CompositionLayerQuad; VD presence.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, ensure, Context, Result};
 use glam::{Mat4, Quat, Vec3};
@@ -17,6 +19,7 @@ use openxr as xr;
 
 use alchemy_protocol::{input_buttons, DEFAULT_MOVE_SPEED};
 
+use super::super::hotswitch::{HotswitchConfig, HotswitchController};
 use super::input::{
     dash_quad_model, laser_length, laser_length_world, laser_model, openxr_pose_to_isometry,
     pose_to_ray, ray_hit_dash_quad, Ray,
@@ -26,9 +29,6 @@ use super::math::{projection_from_fov_default, view_from_pose};
 use super::render_model::{enable_if_available, RenderModelCache};
 use super::wgpu_interop::{self, FrameEndGuard, SwapchainReleaseGuard, XrWgpuBridge, VIEW_COUNT};
 use super::wgpu_overlays::{GpuController, XrOverlays};
-use crate::bind_room_after_join;
-use crate::host_control;
-use crate::leave_room;
 use crate::mesh::CpuMesh;
 use crate::scene::{
     create_depth_view, EntityPose, MoveIntent, SceneGpu, SharedState, BOX_HALF_EXTENT,
@@ -49,11 +49,7 @@ const WORLD_CLEAR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-pub fn run_session(
-    mesh: CpuMesh,
-    shared: Arc<SharedState>,
-    mut zenoh: Option<zenoh::Session>,
-) -> Result<()> {
+pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
     let running = Arc::new(AtomicBool::new(true));
     let _ = ctrlc_set(Arc::clone(&running));
 
@@ -65,7 +61,15 @@ pub fn run_session(
     }
     let mut enabled = xr::ExtensionSet::default();
     enabled.khr_vulkan_enable2 = true;
+    let presence_ext = available.ext_user_presence;
+    if presence_ext {
+        enabled.ext_user_presence = true;
+        log::info!("OpenXR: enabling XR_EXT_user_presence (x0053 hotswitch)");
+    } else {
+        log::info!("OpenXR: XR_EXT_user_presence unavailable — F8 / Settings only");
+    }
     let rm_support = enable_if_available(&available, &mut enabled);
+    let mut hotswitch = HotswitchController::new(presence_ext, HotswitchConfig::default());
     let xr_instance = entry.create_instance(
         &xr::ApplicationInfo {
             application_name: "Alchemy",
@@ -191,6 +195,17 @@ pub fn run_session(
     let mut ui = SystemUi::new();
     ui.state.home_session_actions_enabled = false;
     ui.state.home_room_id = shared.room_id.to_string();
+    // Match Desktop: hotswitch row only after READY (`xr_session_started`).
+    ui.state.hotswitch_available = false;
+    ui.state.hotswitch_auto = shared
+        .presentation
+        .hotswitch_auto
+        .load(std::sync::atomic::Ordering::SeqCst);
+    ui.state.hotswitch_suppressed = shared
+        .presentation
+        .auto_suppressed
+        .load(std::sync::atomic::Ordering::SeqCst);
+    ui.state.refresh_hotswitch_label();
     if shared.overlay_asset_home_status(&mut ui.state.home_status) {
         ui.state.open = true;
         ui.state.tab = crate::system_ui::DashTab::Home;
@@ -216,28 +231,18 @@ pub fn run_session(
     let mut logged_box_count: Option<usize> = None;
     let mut view_yaw = 0.0_f32;
     let mut snap_armed = true;
+    let mut was_vr_active = true;
 
     'main_loop: loop {
+        if shared.presentation.exit_requested() {
+            exit_requested = true;
+        }
         if !running.load(Ordering::Relaxed) || exit_requested {
+            shared.presentation.request_exit();
             match session.request_exit() {
                 Ok(()) => {}
                 Err(xr::sys::Result::ERROR_SESSION_NOT_RUNNING) => break,
                 Err(e) => log::warn!("request_exit: {e}"),
-            }
-        }
-
-        // x0068: guest Token refresh installed new mTLS PEMs → reopen Zenoh while joined.
-        let joined = shared
-            .auth
-            .lock()
-            .ok()
-            .map(|g| g.is_joined())
-            .unwrap_or(false);
-        if joined && shared.mtls_reopen_pending.load(Ordering::SeqCst) {
-            match bind_room_after_join(&shared, &mut zenoh) {
-                Ok(()) => log::info!("XR mTLS refresh: Zenoh reopened + room bus rebound"),
-                // pending restore is owned by bind_room_after_join (leave_room clears it).
-                Err(err) => log::warn!("XR mTLS refresh reopen failed (will retry): {err:#}"),
             }
         }
 
@@ -248,6 +253,7 @@ pub fn run_session(
                     xr::SessionState::READY => {
                         session.begin(VIEW_TYPE)?;
                         session_running = true;
+                        shared.presentation.mark_xr_started();
                         log::info!("OpenXR session READY (wgpu)");
                     }
                     xr::SessionState::FOCUSED => {
@@ -262,6 +268,11 @@ pub fn run_session(
                     }
                     _ => {}
                 },
+                UserPresenceChangedEXT(e) => {
+                    let present = e.is_user_present();
+                    log::debug!("XR user presence → {present}");
+                    hotswitch.on_presence(present, Instant::now());
+                }
                 InteractionRenderModelsChangedEXT => {
                     log::info!("XR InteractionRenderModelsChanged");
                     render_models.mark_dirty();
@@ -271,10 +282,21 @@ pub fn run_session(
             }
         }
 
+        hotswitch.tick(&shared.presentation, Instant::now());
+        sync_xr_hotswitch_ui(&mut ui, &shared);
+
         if !session_running {
             std::thread::sleep(Duration::from_millis(50));
             continue;
         }
+
+        let vr_active = shared.presentation.vr_active();
+        if was_vr_active && !vr_active {
+            held_grab = None;
+            shared.clear_move_intent();
+            log::info!("hotswitch: XR cleared Intent / yielded to Desktop");
+        }
+        was_vr_active = vr_active;
 
         let xr_frame_state = frame_wait.wait()?;
         frame_stream.begin()?;
@@ -284,7 +306,8 @@ pub fn run_session(
             environment_blend_mode,
         );
 
-        if !xr_frame_state.should_render {
+        // Desktop companion owns present: keep session timed but submit no layers.
+        if !vr_active || !xr_frame_state.should_render {
             frame_end.end_empty()?;
             continue;
         }
@@ -711,15 +734,8 @@ pub fn run_session(
                             exit_requested = true;
                         }
                         UiAction::ExitClientAndHost => {
-                            log::info!("XR UI: exit client + host stub");
-                            if let Some(ref z) = zenoh {
-                                let cap = shared.wire_cap();
-                                host_control::request_host_shutdown(
-                                    z,
-                                    shared.room_id.as_ref(),
-                                    cap.as_deref(),
-                                );
-                            }
+                            log::info!("XR UI: exit client + host (via Desktop Zenoh owner)");
+                            shared.presentation.request_host_shutdown();
                             exit_requested = true;
                         }
                         UiAction::ApplyOperatorEndpoints => {
@@ -733,24 +749,33 @@ pub fn run_session(
                             ui.rebuild();
                         }
                         UiAction::AuthLogout => {
-                            leave_room(&shared, &mut zenoh);
-                            if let Ok(mut gate) = shared.auth.lock() {
-                                gate.clear_session();
-                            }
-                            let mut prefs = crate::operator_prefs::load();
-                            prefs.clear_session();
-                            crate::operator_prefs::save(&prefs);
+                            // Desktop owns Zenoh + auth clear (needs room_token for Leave put).
+                            shared.presentation.request_leave();
                             ui.state.home_logged_in_as = None;
                             ui.state.home_create_open = false;
                             ui.state.shell = crate::system_ui::OnboardingShell::Step2Auth;
                             ui.state.home_status =
-                                "Signed out — Leave sent (host reclaim immediate)".into();
+                                "Signing out… (Desktop owns Zenoh leave)".into();
                             ui.rebuild();
                         }
                         UiAction::StartSession | UiAction::JoinRoom => {
                             ui.state.home_status =
                                 "Start/Join session HTTP is Desktop-only this Slice (use silent login or Desktop)".into();
                             ui.rebuild();
+                        }
+                        UiAction::HotswitchAutoChanged => {
+                            shared
+                                .presentation
+                                .set_hotswitch_auto(ui.state.hotswitch_auto);
+                            if ui.state.hotswitch_auto {
+                                shared.presentation.auto_suppressed.store(
+                                    false,
+                                    std::sync::atomic::Ordering::SeqCst,
+                                );
+                                ui.state.hotswitch_suppressed = false;
+                                ui.state.refresh_hotswitch_label();
+                                ui.rebuild();
+                            }
                         }
                         UiAction::None => {}
                     }
@@ -780,6 +805,30 @@ pub fn run_session(
     drop(bridge);
     let _ = entry;
     Ok(())
+}
+
+/// Keep XR Settings hotswitch row gated on READY (same as Desktop / F8).
+fn sync_xr_hotswitch_ui(ui: &mut SystemUi, shared: &SharedState) {
+    let started = shared.presentation.xr_session_started();
+    let auto = shared
+        .presentation
+        .hotswitch_auto
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let suppressed = shared
+        .presentation
+        .auto_suppressed
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let prev_label = ui.state.hotswitch_label.clone();
+    let gate_changed = ui.state.hotswitch_available != started
+        || ui.state.hotswitch_auto != auto
+        || ui.state.hotswitch_suppressed != suppressed;
+    ui.state.hotswitch_available = started;
+    ui.state.hotswitch_auto = auto;
+    ui.state.hotswitch_suppressed = suppressed;
+    ui.state.refresh_hotswitch_label();
+    if (gate_changed || ui.state.hotswitch_label != prev_label) && ui.state.open {
+        ui.rebuild();
+    }
 }
 
 fn ray_to_world(stage_ray: Ray, floor_model: Mat4) -> Ray {

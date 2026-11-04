@@ -67,9 +67,10 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::CloseSession
         | WidgetId::ExitClientOnly
         | WidgetId::ExitClientAndHost => FacetId::Exit,
-        WidgetId::TabSettings | WidgetId::TurnModeToggle | WidgetId::SettingsPlaceholder => {
-            FacetId::Settings
-        }
+        WidgetId::TabSettings
+        | WidgetId::TurnModeToggle
+        | WidgetId::HotswitchAutoToggle
+        | WidgetId::SettingsPlaceholder => FacetId::Settings,
         WidgetId::TabHome
         | WidgetId::HomeFieldIdentifier
         | WidgetId::HomeFieldPassword

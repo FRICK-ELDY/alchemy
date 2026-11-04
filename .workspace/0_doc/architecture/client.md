@@ -40,8 +40,8 @@
 | ESC（Desktop）/ Menu（OpenXR）ダッシュ・下タブ Home/Settings/Exit・Pinned Exit・Home アカウント殻（x0018）・Button hover・client 終了・host 終了は `ALCHEMY_HOST_PID`（Zenoh `host_control` は opt-in・x001e）。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 / XR 仮想キーボード / 認証付きリモート shutdown |
 | Home ログイン後: 新規ワールド作成パネル（仮 UI）でセッション名 + **アクセスレベル**（=`visibility`）→ Start で create/PUT + guest 入室（x0037）。owner 同一アカウント時のみ選択レベルが載る；非 owner は既存 ACL のまま入室し status で区別。`ROOM_ID` 固定。ログインは自動入室しない（CI サイレントは従来どおり入室） | UI アート最終化 / テンプレ本実装 / XR Start HTTP / 表示名の永続 |
 | visibility 正本は world DB。host `ROOM_VISIBILITY` は **初回 create 既定**；owner の client PUT が後勝ち。起動順は host 先（同一アカウント）を前提 | 異アカウントが先に create したときの host 昇格 |
-| OpenXR ランタイムあり → XR、なし／`ALCHEMY_FORCE_DESKTOP` → Desktop | WSL2 実 HMD；**実行中の XR↔Desktop ホットスイッチ**（候補 [x0053](../roadmap/slices/x0053-xr-desktop-hotswitch.md)） |
-| OpenXR: XR Vulkan を wgpu-hal で採用し SceneGpu dual-eye＋UI／レーザー／コントローラ overlay（x0052 既定）。ash は enable／interop のみ | multiview；CompositionLayerQuad；Bevy |
+| OpenXR ランタイムあり → XR session **+ Desktop companion**（[x0053](../roadmap/slices/x0053-xr-desktop-hotswitch.md)）。なし／`ALCHEMY_FORCE_DESKTOP` → Desktop のみ。**READY 前は Desktop が Intent 所有**（SteamVR 待ちのデッドゾーンなし）。READY 後 F8 / Settings / presence で切替。`ALCHEMY_HOTSWITCH=0` で auto 初期 OFF。**init 失敗は Desktop Solo 相当継続**。Zenoh 正本は Desktop のみ。XR スレッド panic でも `xr_session_live` をクリア | WSL2 実 HMD；Quest/WebXR 同等 UX；Virtual Desktop presence 完全一致；壊れた近接センサの万能救済（auto 抑止＋F8）；companion 窓の VR 中ミラー描画コスト；Zenoh 無し時の Leave/host shutdown put |
+| OpenXR: XR Vulkan を wgpu-hal で採用し SceneGpu dual-eye＋UI／レーザー／コントローラ overlay（x0052 既定）。ash は enable／interop のみ。Desktop 非 active 時は empty layers で session 維持 | multiview；CompositionLayerQuad；Bevy；単一 GPU での窓+swapchain 共有 |
 
 ## チャネル分離（C-C + E + x0009）
 
@@ -60,10 +60,11 @@
 | 入力 | 役割 |
 |:---|:---|
 | Esc | ダッシュ開閉（開いている間は移動 Intent = 0） |
-| WASD | 前/左/後/右（固定 look・yaw=0 相対） |
+| F8 | XR companion 時: VR↔Desktop present 切替（x0053。Resonite 相当） |
+| WASD | 前/左/後/右（固定 look・yaw=0 相対）※Desktop が入力所有のときのみ |
 | Space / C | 上昇 / 下降（Noclip・Fly） |
 | Y / T / R | Primary / Context / Secondary（キーのみスタブ） |
-| マウス | ダッシュ開: UI。閉: LMB で look capture、移動で yaw/pitch（x0012）；look 中は箱を下向き照準（明るい）＋ LMB/RMB/E 長押しで Grab（x0013） |
+| マウス | ダッシュ開: UI。閉: LMB で look capture、移動で yaw/pitch（x0012）；look 中は箱を下向き照準（明るい）＋ LMB/RMB/E 長押しで Grab（x0013）。VR present 中は look/Grab を Desktop 側で出さない |
 
 ## OpenXR バインド（x000a / x000b / x000c / x000d / x000e）
 
@@ -84,7 +85,7 @@
 - 詳細: [`client/fixtures/README.md`](../../../client/fixtures/README.md)
 - Icons: [`client/app/assets/icons/README.md`](../../../client/app/assets/icons/README.md)
 
-環境変数: `ASSETS_URL`（既定 `:4004`）、任意 `ROOM_ID`（既定 `local`・Zenoh キーと Room Token に反映・x0017）、任意 `ZENOH_CONNECT`（既定 `tcp/127.0.0.1:7447`）、任意 `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（設定時は Home UI をスキップしてサイレント login・x0018。**release では seed 既定なし**・x001e）、任意 `ALCHEMY_BLOB_BLAKE3`、任意 `ALCHEMY_HOST_PID`、任意 `ALCHEMY_HOST_CONTROL=1`（Zenoh shutdown・ローカル専用）、任意 `ALCHEMY_FORCE_DESKTOP=1`、任意 `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。  
+環境変数: `ASSETS_URL`（既定 `:4004`）、任意 `ROOM_ID`（既定 `local`・Zenoh キーと Room Token に反映・x0017）、任意 `ZENOH_CONNECT`（既定 `tcp/127.0.0.1:7447`）、任意 `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（設定時は Home UI をスキップしてサイレント login・x0018。**release では seed 既定なし**・x001e）、任意 `ALCHEMY_BLOB_BLAKE3`、任意 `ALCHEMY_HOST_PID`、任意 `ALCHEMY_HOST_CONTROL=1`（Zenoh shutdown・ローカル専用）、任意 `ALCHEMY_FORCE_DESKTOP=1`、任意 `ALCHEMY_HOTSWITCH=0`（x0053 auto 初期 OFF・F8 は有効）、任意 `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。  
 未設定時は Desktop で Home タブが開き、login/register 後に入室する。
 
 ## 関連

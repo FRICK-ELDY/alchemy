@@ -270,6 +270,15 @@ impl SystemUi {
                 log::info!("turn mode → {}", self.state.turn.mode.label());
                 UiAction::None
             }
+            WidgetId::HotswitchAutoToggle => {
+                self.state.toggle_hotswitch_auto();
+                self.rebuild();
+                log::info!(
+                    "hotswitch auto → {}",
+                    if self.state.hotswitch_auto { "ON" } else { "OFF" }
+                );
+                UiAction::HotswitchAutoChanged
+            }
             WidgetId::HomeFieldIdentifier => {
                 self.state.home_focus = Some(HomeField::Identifier);
                 self.rebuild();
@@ -583,6 +592,8 @@ pub enum UiAction {
     StartSession,
     /// Hub: guest join current `ROOM_ID` without create (x0037).
     JoinRoom,
+    /// Settings: VR hotswitch auto toggled (surface writes PresentationGate).
+    HotswitchAutoChanged,
 }
 
 fn chrono_lite_now() -> String {

@@ -23,6 +23,8 @@ pub enum WidgetId {
     SettingsPlaceholder,
     /// Toggle Snap ↔ Smooth comfort turn.
     TurnModeToggle,
+    /// Toggle XR↔Desktop auto hotswitch (x0053).
+    HotswitchAutoToggle,
     /// Home / account shell (x0018).
     HomeFieldIdentifier,
     HomeFieldPassword,

@@ -69,6 +69,11 @@ pub struct DashState {
     pub turn_mode_label: String,
     pub snap_degrees_label: String,
     pub smooth_turn_label: String,
+    /// XR companion present (x0053); when false, hotswitch row is muted.
+    pub hotswitch_available: bool,
+    pub hotswitch_auto: bool,
+    pub hotswitch_suppressed: bool,
+    pub hotswitch_label: String,
     /// Front-most hit under pointer / laser (Button hover).
     pub hover: Option<WidgetId>,
     /// Hit while primary is down (Button press).
@@ -119,6 +124,10 @@ impl Default for DashState {
             turn_mode_label: format!("Turn: {} (tap to toggle)", turn.mode.label()),
             snap_degrees_label: format!("Snap angle: {DEFAULT_SNAP_DEGREES:.0}°"),
             smooth_turn_label: format!("Smooth rate: {DEFAULT_SMOOTH_TURN_DEG_PER_SEC:.0}°/s"),
+            hotswitch_available: false,
+            hotswitch_auto: true,
+            hotswitch_suppressed: false,
+            hotswitch_label: "VR hotswitch: Desktop-only".into(),
             hover: None,
             pressed: None,
             home_mode: HomeMode::Login,
@@ -180,6 +189,26 @@ impl DashState {
     pub fn toggle_turn_mode(&mut self) {
         self.turn.mode = self.turn.mode.toggle();
         self.refresh_turn_labels();
+    }
+
+    pub fn refresh_hotswitch_label(&mut self) {
+        self.hotswitch_label = if !self.hotswitch_available {
+            "VR hotswitch: Desktop-only (needs OpenXR)".into()
+        } else if self.hotswitch_suppressed {
+            "VR hotswitch auto: suppressed (F8 still works)".into()
+        } else if self.hotswitch_auto {
+            "VR hotswitch auto: ON (F8 manual)".into()
+        } else {
+            "VR hotswitch auto: OFF (F8 manual)".into()
+        };
+    }
+
+    pub fn toggle_hotswitch_auto(&mut self) {
+        if !self.hotswitch_available {
+            return;
+        }
+        self.hotswitch_auto = !self.hotswitch_auto;
+        self.refresh_hotswitch_label();
     }
 
     pub fn append_home_text(&mut self, text: &str) {
@@ -1360,7 +1389,7 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
         }
         // Official Settings Facet body
         DashTab::Settings => {
-            let panel = Rect::new(cx, cy0, cw, ch.min(320.0));
+            let panel = Rect::new(cx, cy0, cw, ch.min(380.0));
             tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
             tree.push_label(
                 Rect::new(cx + 24.0, cy0 + 24.0, cw - 48.0, 24.0),
@@ -1415,6 +1444,23 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
                 MUTED,
                 1.0,
             );
+
+            let hs = Rect::new(cx + 24.0, cy0 + 310.0, (cw - 48.0).min(520.0), 44.0);
+            let hs_color = if state.hotswitch_available {
+                state.interact(WidgetId::HotswitchAutoToggle, ACCENT)
+            } else {
+                Color::rgba(0.25, 0.26, 0.28, 1.0)
+            };
+            tree.push_rect(hs, hs_color);
+            tree.push_label(
+                Rect::new(hs.x + 16.0, hs.y + 10.0, hs.w - 32.0, 24.0),
+                &state.hotswitch_label,
+                TEXT,
+                1.5,
+            );
+            if state.hotswitch_available {
+                tree.register_hit(WidgetId::HotswitchAutoToggle, hs);
+            }
         }
     }
 }
@@ -1562,6 +1608,30 @@ mod tests {
         rebuild(&mut tree, &DashState::default());
         assert!(tree.hits.is_empty());
         assert!(tree.draws.is_empty());
+    }
+
+    #[test]
+    fn settings_tab_shows_hotswitch_when_available() {
+        let mut tree = LayoutTree::default();
+        let mut state = DashState {
+            open: true,
+            shell: OnboardingShell::Dash,
+            tab: DashTab::Settings,
+            canvas_w: 960.0,
+            canvas_h: 540.0,
+            hotswitch_available: true,
+            hotswitch_auto: true,
+            ..Default::default()
+        };
+        state.refresh_hotswitch_label();
+        rebuild(&mut tree, &state);
+        assert!(tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::HotswitchAutoToggle));
+        state.toggle_hotswitch_auto();
+        assert!(!state.hotswitch_auto);
+        assert!(state.hotswitch_label.contains("OFF"));
     }
 
     #[test]

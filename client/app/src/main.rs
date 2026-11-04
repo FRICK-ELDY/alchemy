@@ -22,9 +22,11 @@
 //! - Desktop WASD/Space/C → Intent; Grab / OpenXR paths unchanged when joined
 //! - Camera follows Presence-assigned local user_root; remotes as colored boxes
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit
+//! - XR boot keeps a Desktop companion; F8 / HMD presence hotswitch (x0053)
 //!
 //! Non-guarantees: Steal, XR login keyboard, email verify UI, Quest standalone, WSL HMD,
-//! reliable-delivery ACK channel, live mesh swap / cancel mid-stream beyond HTTP timeout
+//! reliable-delivery ACK channel, live mesh swap / cancel mid-stream beyond HTTP timeout,
+//! Quest/WebXR hotswitch; Virtual Desktop presence parity
 
 mod access_level;
 mod auth;
@@ -1880,6 +1882,7 @@ fn main() -> Result<()> {
         asset_status: Mutex::new(None),
         look: Mutex::new(Default::default()),
         intent: Mutex::new(Default::default()),
+        presentation: crate::surface::PresentationGate::default(),
     });
 
     // Auto-join + Zenoh open only for silent/CI. Remember-me restore authenticates only

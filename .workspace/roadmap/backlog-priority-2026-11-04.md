@@ -2,7 +2,7 @@
 
 正本の進捗目次は [README.md](README.md)。本ファイルは **未完了帯の優先度ビュー**。
 
-**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI。空き ID = `x006b`。
+**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**。空き ID = `x006b`。
 
 ---
 
@@ -11,8 +11,9 @@
 | 優先 | ID | 内容 | 状態 |
 |:---|:---|:---|:---|
 | **P0-ladder** | x0054–x0065 | inventory Wave 0–4 | **done（本作業；host take-out UI は後続）** |
-| **P0-次** | [x0053](slices/x0053-xr-desktop-hotswitch.md) | XR ↔ Desktop ホットスイッチ | planned |
-| **P0-隣接** | BlobGrant 案 B / verifier | GET 常時 Grant・Spot-Check | planned / 保留 |
+| **P0-体感** | [x0053](slices/x0053-xr-desktop-hotswitch.md) | XR ↔ Desktop ホットスイッチ | **done** |
+| **P0-次** | BlobGrant 案 B | GET 常時 Grant | planned |
+| **P0-隣接** | host take-out UI / verifier | Intent 配線・Spot-Check | planned / 保留 |
 
 ---
 
@@ -84,10 +85,9 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 
 ## 推奨着手順（要約・本作業後）
 
-1. **x0053** XR↔Desktop ホットスイッチ（体感）
-2. **BlobGrant 案 B**（GET 常時 Grant）— 真の私有同一 hash
-3. host take-out / put-back **UI・Intent 配線**（API は x005f/x0060 済み）
-4. P3 衛生の残り（reaper / metrics / Port 化）
-5. verifier / Formula / market / 検疫（条件: seal / gen-rev 済み）
+1. **BlobGrant 案 B**（GET 常時 Grant）— 真の私有同一 hash
+2. host take-out / put-back **UI・Intent 配線**（API は x005f/x0060 済み）
+3. P3 衛生の残り（reaper / metrics / Port 化）
+4. verifier / Formula / market / 検疫（条件: seal / gen-rev 済み）
 
 ← [Roadmap 目次](README.md)
