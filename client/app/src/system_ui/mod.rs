@@ -295,6 +295,40 @@ impl SystemUi {
                 self.rebuild();
                 UiAction::None
             }
+            WidgetId::TabInventory => {
+                self.state.shell = OnboardingShell::Dash;
+                self.state.tab = DashTab::Inventory;
+                self.mark_dash_chrome_dirty();
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::InventoryRefresh => UiAction::InventoryRefresh,
+            WidgetId::InventoryTakeOut => UiAction::InventoryTakeOut,
+            WidgetId::InventoryRow0
+            | WidgetId::InventoryRow1
+            | WidgetId::InventoryRow2
+            | WidgetId::InventoryRow3
+            | WidgetId::InventoryRow4
+            | WidgetId::InventoryRow5
+            | WidgetId::InventoryRow6
+            | WidgetId::InventoryRow7 => {
+                let idx = match hit {
+                    WidgetId::InventoryRow0 => 0,
+                    WidgetId::InventoryRow1 => 1,
+                    WidgetId::InventoryRow2 => 2,
+                    WidgetId::InventoryRow3 => 3,
+                    WidgetId::InventoryRow4 => 4,
+                    WidgetId::InventoryRow5 => 5,
+                    WidgetId::InventoryRow6 => 6,
+                    WidgetId::InventoryRow7 => 7,
+                    _ => 0,
+                };
+                if idx < self.state.inventory_nodes.len() {
+                    self.state.inventory_selected = Some(idx);
+                    self.rebuild();
+                }
+                UiAction::None
+            }
             WidgetId::TabHome => {
                 if self.state.home_logged_in_as.is_some() && !self.state.home_create_open {
                     // Return to PLAY TOGETHER / SOLO hub when signed in.
@@ -751,6 +785,10 @@ pub enum UiAction {
     JoinRoom,
     /// Settings: VR hotswitch auto toggled (surface writes PresentationGate).
     HotswitchAutoChanged,
+    /// Inventory: reload Drive nodes from assets (x006d).
+    InventoryRefresh,
+    /// Inventory: take-out selected blob via host control plane (x006d).
+    InventoryTakeOut,
 }
 
 fn chrono_lite_now() -> String {

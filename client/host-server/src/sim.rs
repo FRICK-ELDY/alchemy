@@ -88,8 +88,8 @@ pub struct PhysicsWorld {
     impulse_joint_set: ImpulseJointSet,
     multibody_joint_set: MultibodyJointSet,
     ccd_solver: CCDSolver,
-    /// Primary mesh entity (dynamic ball), if any.
-    mesh: Option<(u32, RigidBodyHandle)>,
+    /// Mesh entities (dynamic balls). Index 0 is the primary coin when present (x006d+).
+    meshes: Vec<(u32, RigidBodyHandle)>,
     /// Live indices are `0..slot_count` (Manifest-derived; x004d). Rest stay `None`.
     user_roots: [Option<RigidBodyHandle>; USER_ROOT_SLOTS_MAX],
     user_root_spawns: [(f32, f32, f32); USER_ROOT_SLOTS_MAX],
@@ -146,7 +146,7 @@ impl PhysicsWorld {
             &mut rigid_body_set,
         );
 
-        let mut mesh: Option<(u32, RigidBodyHandle)> = None;
+        let mut meshes: Vec<(u32, RigidBodyHandle)> = Vec::new();
         let mut boxes = CuboidBoxes::empty();
         let mut user_root_spawns = [(0.0_f32, 1.6_f32, 6.0_f32); USER_ROOT_SLOTS_MAX];
         let mut user_root_quats = [[0.0_f32, 0.0, 0.0, 1.0]; USER_ROOT_SLOTS_MAX];
@@ -176,7 +176,12 @@ impl PhysicsWorld {
                             entry.entity_id
                         );
                     }
-                    if mesh.is_none() {
+                    if meshes.iter().any(|(id, _)| *id == entry.entity_id) {
+                        log::warn!(
+                            "duplicate mesh entity_id {}; skipping collider",
+                            entry.entity_id
+                        );
+                    } else {
                         let ball = RigidBodyBuilder::dynamic()
                             .position(pose)
                             .linvel(vector![0.1, 0.0, 0.05])
@@ -189,7 +194,7 @@ impl PhysicsWorld {
                             handle,
                             &mut rigid_body_set,
                         );
-                        mesh = Some((entry.entity_id, handle));
+                        meshes.push((entry.entity_id, handle));
                     }
                 }
                 EntityKind::Box => {
@@ -259,7 +264,7 @@ impl PhysicsWorld {
             impulse_joint_set: ImpulseJointSet::new(),
             multibody_joint_set: MultibodyJointSet::new(),
             ccd_solver: CCDSolver::new(),
-            mesh,
+            meshes,
             user_roots,
             user_root_spawns,
             user_root_quats,
@@ -343,7 +348,56 @@ impl PhysicsWorld {
     }
 
     pub fn mesh_entity_id(&self) -> Option<u32> {
-        self.mesh.map(|(id, _)| id)
+        self.meshes.first().map(|(id, _)| *id)
+    }
+
+    /// All mesh entity ids currently in the Rapier world (x006d).
+    pub fn mesh_entity_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.meshes.iter().map(|(id, _)| *id)
+    }
+
+    /// Spawn one additional mesh from a sealed SceneEntry (x006d take-out).
+    ///
+    /// Fails (returns `false`, no partial insert) when `entity_id` is already used
+    /// or the entry is not classified as Mesh.
+    pub fn spawn_mesh_entry(&mut self, entry: &SceneEntry) -> bool {
+        if classify_scene_entry(entry) != EntityKind::Mesh {
+            return false;
+        }
+        if self.meshes.iter().any(|(id, _)| *id == entry.entity_id)
+            || self.boxes.entity_ids.contains(&entry.entity_id)
+            || self.colors.contains_key(&entry.entity_id)
+        {
+            return false;
+        }
+        let color = scene_entry_color_rgba(entry);
+        let pose = entry_isometry(entry);
+        let ball = RigidBodyBuilder::dynamic()
+            .position(pose)
+            .linvel(vector![0.05, 0.0, 0.02])
+            .build();
+        let handle = self.rigid_body_set.insert(ball);
+        self.collider_set.insert_with_parent(
+            ColliderBuilder::ball(PHYS_BALL_RADIUS)
+                .restitution(0.15)
+                .build(),
+            handle,
+            &mut self.rigid_body_set,
+        );
+        self.colors.insert(entry.entity_id, color);
+        self.scales.insert(entry.entity_id, entry_scale_f32(entry));
+        self.meshes.push((entry.entity_id, handle));
+        true
+    }
+
+    /// Pose for a mesh by entity id (x006d multi-mesh).
+    pub fn mesh_pose_for(&self, entity_id: u32) -> Option<((f32, f32, f32), [f32; 4])> {
+        let handle = self
+            .meshes
+            .iter()
+            .find(|(id, _)| *id == entity_id)
+            .map(|(_, h)| *h)?;
+        self.rigid_body_set.get(handle).map(body_translation_quat)
     }
 
     pub fn color_for(&self, entity_id: u32) -> (f32, f32, f32, f32) {
@@ -539,11 +593,11 @@ impl PhysicsWorld {
 
     /// Translation + unit quaternion (xyzw) for a rigid body (x0029).
     pub fn moving_pose(&self) -> ((f32, f32, f32), [f32; 4]) {
-        let Some((_, handle)) = self.mesh else {
+        let Some((_, handle)) = self.meshes.first() else {
             return ((0.0, 5.0, 0.0), [0.0, 0.0, 0.0, 1.0]);
         };
         self.rigid_body_set
-            .get(handle)
+            .get(*handle)
             .map(body_translation_quat)
             .unwrap_or(((0.0, 5.0, 0.0), [0.0, 0.0, 0.0, 1.0]))
     }
@@ -1032,6 +1086,42 @@ mod tests {
         ));
         world.apply_grab(0, true, id, (bx, by, bz));
         assert!(world.grab_entity_id(0).is_none());
+    }
+
+    #[test]
+    fn spawn_mesh_entry_adds_second_mesh() {
+        let mut world = PhysicsWorld::from_entries(
+            &demo_entries_for_test(),
+            LocoMode::Noclip,
+            DEFAULT_MOVE_SPEED,
+        );
+        let before = world.mesh_entity_ids().count();
+        let entry = SceneEntry {
+            entity_id: 100,
+            blake3: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+            half_extent: 0.0,
+            flags: 0,
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            qw: 1.0,
+            sx: 1.0,
+            sy: 1.0,
+            sz: 1.0,
+        };
+        assert!(world.spawn_mesh_entry(&entry));
+        assert_eq!(world.mesh_entity_ids().count(), before + 1);
+        assert!(world.mesh_pose_for(100).is_some());
+        // Duplicate entity_id must not partially insert.
+        assert!(!world.spawn_mesh_entry(&entry));
+        assert_eq!(world.mesh_entity_ids().count(), before + 1);
     }
 
     #[test]

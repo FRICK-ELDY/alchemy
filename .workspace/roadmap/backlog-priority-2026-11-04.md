@@ -2,7 +2,7 @@
 
 正本の進捗目次は [README.md](README.md)。本ファイルは **未完了帯の優先度ビュー**。
 
-**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**。空き ID = `x006d`。
+**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**。空き ID = `x006e`。
 
 ---
 
@@ -10,11 +10,13 @@
 
 | 優先 | ID | 内容 | 状態 |
 |:---|:---|:---|:---|
-| **P0-ladder** | x0054–x0065 | inventory Wave 0–4 | **done（host take-out UI は後続）** |
+| **P0-ladder** | x0054–x0065 | inventory Wave 0–4 | **done（host take-out UI は x006d）** |
 | **P0-体感** | [x0053](slices/x0053-xr-desktop-hotswitch.md) | XR ↔ Desktop ホットスイッチ | **done** |
 | **P0-発行** | [x006b](slices/x006b-place-read-capability.md) | PlaceRead（場所で付与・seal 連動） | **done** |
-| **P0-次** | [x006c](slices/x006c-blob-grant-option-b.md) | BlobGrant 案 B（GET 常時 Grant / PlaceRead） | **done** |
-| **P0-隣接** | host take-out UI / verifier | Intent 配線・Spot-Check | planned / 保留 |
+| **P0-案B** | [x006c](slices/x006c-blob-grant-option-b.md) | BlobGrant 案 B（GET 常時 Grant / PlaceRead） | **done** |
+| **P0-take-out** | [x006d](slices/x006d-host-take-out-control.md) | host take-out（制御面・Drive HTTP・Inventory UI） | **done** |
+| **P0-次** | put-back UI | Inventory put-back 配線 | planned |
+| **P0-隣接** | verifier | Spot-Check | planned / 保留 |
 
 ---
 
@@ -86,7 +88,7 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 
 ## 推奨着手順（要約・本作業後）
 
-1. host take-out / put-back **UI・Intent 配線**（API は x005f/x0060 済み；extra_blake3 再設計を含む）
+1. put-back UI（次 Slice / `x006e`）
 2. P3 衛生の残り（reaper / metrics / Port 化）
 3. verifier / Formula / market / 検疫（条件: seal / gen-rev 済み）
 

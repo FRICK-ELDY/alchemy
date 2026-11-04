@@ -37,6 +37,8 @@ pub enum AeadKind {
     Presence,
     Snapshot,
     Input,
+    /// Low-frequency inventory take-out spawn (x006d); carries host Room Token.
+    InventorySpawn,
 }
 
 impl AeadKind {
@@ -47,6 +49,7 @@ impl AeadKind {
             Self::Presence => "presence",
             Self::Snapshot => "snapshot",
             Self::Input => "input",
+            Self::InventorySpawn => "inventory_spawn",
         }
     }
 
@@ -56,7 +59,7 @@ impl AeadKind {
             Self::Manifest => WireClass::Manifest,
             Self::Frame | Self::Snapshot => WireClass::Frame,
             Self::Presence => WireClass::Presence,
-            Self::Input => WireClass::Input,
+            Self::Input | Self::InventorySpawn => WireClass::Input,
         }
     }
 }
@@ -194,6 +197,19 @@ mod tests {
         assert!(env.len() >= AEAD_OVERHEAD + pt.len());
         let out = open(&key(), "local", AeadKind::Manifest, &env).unwrap();
         assert_eq!(out, pt);
+    }
+
+    #[test]
+    fn roundtrip_inventory_spawn() {
+        let pt = br#"{"room_token":"t","blake3":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
+        let env = seal(&key(), "local", AeadKind::InventorySpawn, pt).unwrap();
+        let out = open(&key(), "local", AeadKind::InventorySpawn, &env).unwrap();
+        assert_eq!(out, pt);
+        // Cross-kind swap with Input must fail (distinct AAD).
+        assert_eq!(
+            open(&key(), "local", AeadKind::Input, &env),
+            Err(WireAeadError::CryptographicFailure)
+        );
     }
 
     #[test]

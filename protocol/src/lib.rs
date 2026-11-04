@@ -204,6 +204,10 @@ pub const MANIFEST_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap0000
 pub const HOST_CONTROL_KEY_LOCAL: &str =
     "alchemy/dev/room/local/localdevwirecap00000001/host_control";
 
+/// Default Zenoh key for local inventory spawn (x006d).
+pub const INVENTORY_SPAWN_KEY_LOCAL: &str =
+    "alchemy/dev/room/local/localdevwirecap00000001/inventory/spawn";
+
 /// Default Zenoh key for local room presence (low-frequency sub→entity; x0015).
 pub const PRESENCE_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/presence";
 
@@ -352,6 +356,11 @@ pub fn manifest_key(room_id: &str, wire_cap: &str) -> String {
 /// Build a host-control key (caller should [`validate_room_id`] + [`validate_wire_cap`]).
 pub fn host_control_key(room_id: &str, wire_cap: &str) -> String {
     format!("{}/host_control", room_prefix(room_id, wire_cap))
+}
+
+/// Low-frequency inventory spawn request (x006d). Not Intent; host verifies Room Token.
+pub fn inventory_spawn_key(room_id: &str, wire_cap: &str) -> String {
+    format!("{}/inventory/spawn", room_prefix(room_id, wire_cap))
 }
 
 /// Build a presence key (caller should [`validate_room_id`] + [`validate_wire_cap`]).
@@ -774,6 +783,7 @@ mod tests {
         assert_eq!(input_key("local", cap), INPUT_KEY_LOCAL);
         assert_eq!(manifest_key("local", cap), MANIFEST_KEY_LOCAL);
         assert_eq!(host_control_key("local", cap), HOST_CONTROL_KEY_LOCAL);
+        assert_eq!(inventory_spawn_key("local", cap), INVENTORY_SPAWN_KEY_LOCAL);
         assert_eq!(presence_key("local", cap), PRESENCE_KEY_LOCAL);
         assert_eq!(snapshot_key("local", cap), SNAPSHOT_KEY_LOCAL);
         assert_eq!(

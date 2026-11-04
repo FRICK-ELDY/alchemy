@@ -38,6 +38,8 @@ pub enum DashTab {
     Exit,
     /// Official Settings Facet body.
     Settings,
+    /// Inventory take-out (x006d).
+    Inventory,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,6 +110,10 @@ pub struct DashState {
     pub custom_host: String,
     /// Focus for Step1 custom host field.
     pub custom_host_focus: bool,
+    /// Inventory Drive rows (x006d); filled by surface after refresh.
+    pub inventory_nodes: Vec<(String, String, String)>, // node_id, kind, name
+    pub inventory_selected: Option<usize>,
+    pub inventory_status: String,
 }
 
 impl Default for DashState {
@@ -153,6 +159,9 @@ impl Default for DashState {
             operator: OperatorKind::Official,
             custom_host: CUSTOM_DEFAULT_HOST.into(),
             custom_host_focus: false,
+            inventory_nodes: Vec::new(),
+            inventory_selected: None,
+            inventory_status: String::new(),
         }
     }
 }
@@ -664,6 +673,87 @@ fn push_field(
     );
     tree.register_hit(id, r);
     y + 16.0 + h + 10.0
+}
+
+const INVENTORY_ROW_IDS: [WidgetId; 8] = [
+    WidgetId::InventoryRow0,
+    WidgetId::InventoryRow1,
+    WidgetId::InventoryRow2,
+    WidgetId::InventoryRow3,
+    WidgetId::InventoryRow4,
+    WidgetId::InventoryRow5,
+    WidgetId::InventoryRow6,
+    WidgetId::InventoryRow7,
+];
+
+fn rebuild_inventory(
+    tree: &mut LayoutTree,
+    state: &DashState,
+    cx: f32,
+    cy0: f32,
+    cw: f32,
+    ch: f32,
+) {
+    let panel = Rect::new(cx, cy0, cw, ch.min(420.0));
+    tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
+    tree.push_label(
+        Rect::new(cx + 24.0, cy0 + 16.0, cw - 48.0, 24.0),
+        "Inventory",
+        TEXT,
+        2.5,
+    );
+    tree.push_label(
+        Rect::new(cx + 24.0, cy0 + 44.0, cw - 48.0, 18.0),
+        if state.inventory_status.is_empty() {
+            "Refresh Drive, select a blob, Take out (host role)."
+        } else {
+            &state.inventory_status
+        },
+        MUTED,
+        1.0,
+    );
+
+    let refresh = Rect::new(cx + 24.0, cy0 + 72.0, 120.0, 40.0);
+    tree.push_rect(refresh, state.interact(WidgetId::InventoryRefresh, BTN));
+    tree.push_label(
+        Rect::new(cx + 36.0, cy0 + 84.0, 100.0, 20.0),
+        "Refresh",
+        TEXT,
+        1.5,
+    );
+    tree.register_hit(WidgetId::InventoryRefresh, refresh);
+
+    let take = Rect::new(cx + 156.0, cy0 + 72.0, 140.0, 40.0);
+    tree.push_rect(take, state.interact(WidgetId::InventoryTakeOut, ACCENT));
+    tree.push_label(
+        Rect::new(cx + 168.0, cy0 + 84.0, 120.0, 20.0),
+        "Take out",
+        TEXT,
+        1.5,
+    );
+    tree.register_hit(WidgetId::InventoryTakeOut, take);
+
+    let mut y = cy0 + 128.0;
+    let row_h = 36.0;
+    for (i, (node_id, kind, name)) in state.inventory_nodes.iter().take(8).enumerate() {
+        let id = INVENTORY_ROW_IDS[i];
+        let row = Rect::new(cx + 24.0, y, cw - 48.0, row_h);
+        let selected = state.inventory_selected == Some(i);
+        let base = if selected {
+            Color::rgba(0.22, 0.36, 0.30, 1.0)
+        } else {
+            BTN
+        };
+        tree.push_rect(row, state.interact(id, base));
+        tree.push_label(
+            Rect::new(cx + 36.0, y + 8.0, cw - 72.0, 20.0),
+            format!("[{kind}] {name} ({})", &node_id[..8.min(node_id.len())]),
+            TEXT,
+            1.2,
+        );
+        tree.register_hit(id, row);
+        y += row_h + 8.0;
+    }
 }
 
 fn rebuild_home(
@@ -1517,12 +1607,12 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
     );
     let by = if show_bottom_tabs { h - BOTTOM_H } else { h };
     if show_bottom_tabs {
-        // --- Bottom bar: Home · Settings · Exit ---
+        // --- Bottom bar: Home · Inventory · Settings · Exit ---
         tree.push_rect(Rect::new(0.0, by, w, BOTTOM_H), BAR);
 
-        let tab_w = 88.0;
-        let gap = 16.0;
-        let tabs_total = tab_w * 3.0 + gap * 2.0;
+        let tab_w = 78.0;
+        let gap = 10.0;
+        let tabs_total = tab_w * 4.0 + gap * 3.0;
         let tab0_x = (w - tabs_total) * 0.5;
 
         let draw_tab = |tree: &mut LayoutTree,
@@ -1570,6 +1660,16 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
             tree,
             state,
             tab0_x + tab_w + gap,
+            DashTab::Inventory,
+            WidgetId::TabInventory,
+            "inventory_2",
+            FacetId::Inventory.label(),
+            Color::rgba(0.16, 0.30, 0.26, 0.95),
+        );
+        draw_tab(
+            tree,
+            state,
+            tab0_x + (tab_w + gap) * 2.0,
             DashTab::Settings,
             WidgetId::TabSettings,
             "settings",
@@ -1579,7 +1679,7 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
         draw_tab(
             tree,
             state,
-            tab0_x + (tab_w + gap) * 2.0,
+            tab0_x + (tab_w + gap) * 3.0,
             DashTab::Exit,
             WidgetId::TabExit,
             "power",
@@ -1617,6 +1717,9 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
     match state.tab {
         DashTab::Home => {
             rebuild_home(tree, state, cx, cy0, cw, ch, false);
+        }
+        DashTab::Inventory => {
+            rebuild_inventory(tree, state, cx, cy0, cw, ch);
         }
         // Pinned Exit Facet body
         DashTab::Exit => {

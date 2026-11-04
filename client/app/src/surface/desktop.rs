@@ -1412,6 +1412,113 @@ fn handle_ui_action(
                 let _ = tx.send(AuthJobOutcome::JoinRoom { result });
             });
         }
+        UiAction::InventoryRefresh => {
+            let assets = shared.get_assets_url();
+            let token = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+            match token {
+                Some(access) => match crate::inventory::list_drive_nodes(&assets, &access) {
+                    Ok(nodes) => {
+                        ui.state.inventory_nodes = nodes
+                            .into_iter()
+                            .map(|n| (n.node_id, n.kind, n.name))
+                            .collect();
+                        ui.state.inventory_selected = None;
+                        ui.state.inventory_status =
+                            format!("{} node(s)", ui.state.inventory_nodes.len());
+                    }
+                    Err(err) => {
+                        ui.state.inventory_status = format!("refresh failed: {err:#}");
+                        log::warn!("inventory refresh: {err:#}");
+                    }
+                },
+                None => {
+                    ui.state.inventory_status = "sign in required".into();
+                }
+            }
+            ui.rebuild();
+        }
+        UiAction::InventoryTakeOut => {
+            let selected = ui.state.inventory_selected.and_then(|i| {
+                ui.state
+                    .inventory_nodes
+                    .get(i)
+                    .map(|(id, kind, _)| (id.clone(), kind.clone()))
+            });
+            let Some((node_id, kind)) = selected else {
+                ui.state.inventory_status = "select a blob node first".into();
+                ui.rebuild();
+                return;
+            };
+            if kind != "blob" {
+                ui.state.inventory_status = "x006d: blob nodes only".into();
+                ui.rebuild();
+                return;
+            }
+            let assets = shared.get_assets_url();
+            let (access, room_token) = {
+                let Ok(auth) = shared.auth.lock() else {
+                    ui.state.inventory_status = "auth lock failed".into();
+                    ui.rebuild();
+                    return;
+                };
+                (auth.access_token.clone(), auth.room_token.clone())
+            };
+            let (Some(access), Some(room_token)) = (access, room_token) else {
+                ui.state.inventory_status = "join a room as host first".into();
+                ui.rebuild();
+                return;
+            };
+            if crate::inventory::room_token_role_unverified(&room_token).as_deref() != Some("host")
+            {
+                ui.state.inventory_status = "host role required for take-out".into();
+                ui.rebuild();
+                return;
+            }
+            let Some(session) = zenoh.as_ref() else {
+                ui.state.inventory_status = "zenoh not connected".into();
+                ui.rebuild();
+                return;
+            };
+            let Some(wire_cap) = shared.wire_cap() else {
+                ui.state.inventory_status = "no wire_cap".into();
+                ui.rebuild();
+                return;
+            };
+            let Some(room_key) = shared.room_key() else {
+                ui.state.inventory_status = "room_key missing".into();
+                ui.rebuild();
+                return;
+            };
+            match crate::inventory::take_out_blob_blake3(&assets, &access, &node_id) {
+                Ok((_node, blake3)) => {
+                    match crate::inventory::publish_inventory_spawn(
+                        session,
+                        shared.room_id.as_ref(),
+                        wire_cap.as_ref(),
+                        room_key.as_ref(),
+                        &room_token,
+                        &blake3,
+                        0.0,
+                        1.5,
+                        2.0,
+                    ) {
+                        Ok(()) => {
+                            ui.state.inventory_status =
+                                format!("spawn requested {}", &blake3[..8.min(blake3.len())]);
+                        }
+                        Err(err) => {
+                            ui.state.inventory_status = format!("spawn put failed: {err:#}");
+                            log::warn!("inventory spawn: {err:#}");
+                        }
+                    }
+                }
+                Err(err) => {
+                    ui.state.inventory_status = format!("take_out failed: {err:#}");
+                    log::warn!("inventory take_out: {err:#}");
+                }
+            }
+            ui.rebuild();
+        }
         UiAction::None => {}
     }
 }

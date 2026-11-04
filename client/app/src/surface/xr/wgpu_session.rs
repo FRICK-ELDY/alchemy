@@ -775,6 +775,10 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                             ui.mark_dash_form_dirty();
                             ui.rebuild();
                         }
+                        UiAction::InventoryRefresh | UiAction::InventoryTakeOut => {
+                            // Desktop owns assets HTTP + Zenoh spawn for x006d.
+                            log::info!("inventory actions are Desktop-only this Slice");
+                        }
                         UiAction::HotswitchAutoChanged => {
                             shared
                                 .presentation

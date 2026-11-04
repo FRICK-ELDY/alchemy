@@ -1,7 +1,7 @@
 # assets-server
 
 > **正本コード**: [`assets-server/`](../../../assets-server/)  
-> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳 + `access`）+ **x0054**（inventory PUT 常時 `grant_required`）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）  
+> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳 + `access`）+ **x0054**（inventory PUT 常時 `grant_required`）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）  
 
 > **目標たたき台**: [assets-server-draft.md](assets-server-draft.md)（5 層全体）  
 > **脅威（手口×対策）**: [assets-threat-model.md](assets-threat-model.md)
@@ -75,6 +75,8 @@ PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。任意ヘッ
 | POST | `/api/v1/blobs` | Bearer | raw body アップロード。任意 `x-alchemy-blob-access`。既存と不一致は 409 |
 | POST | `/api/v1/inventory/blobs` | Bearer | インベントリ用。常に `grant_required`（x0054）。access ヘッダは省略/`grant_required` のみ（他は 400） |
 | GET | `/api/v1/blobs/:blake3` | Bearer（任意 `x-alchemy-place-read`） | 常時 Grant **または** PlaceRead カバー（x006c）。未知 access は 403。local: 200 / s3: 302 |
+| GET | `/api/v1/drive/nodes` | Bearer | owner Drive 一覧（`parent_id` 任意・x006d） |
+| POST | `/api/v1/drive/take_out` | Bearer + JSON `{node_id}` | Grant 検証済み blake3 列（x006d；host には node_id を渡さない） |
 | GET | `/api/v1/quota` | Bearer | `{used_bytes, reserved_bytes, limit_bytes}`（自 `auth_sub`） |
 
 ## 最小オブジェクトモデル
@@ -121,8 +123,8 @@ bash .scripts/smoke-assets-glb.sh   # Coin fixture → CAS
 
 ## 後続
 
-- **インベントリラダー（B+2→C+3）**: [inventory-ladder.md](../roadmap/inventory-ladder.md)。Wave 0–4 **done**（x0054–x0065）。B+2（DriveNode/Prefab）+ C+3（Vcs/OriginCert）薄皮が揃った。host take-out UI / XR 配線は薄皮 API まで（x005f assets-side のみ）。
-- **PlaceRead（x006b）+ 案 B（x006c）**: 発行境界と GET 常時 Grant/PlaceRead **done**。PlaceRead TTL UI / take-out `extra_blake3` は後続
+- **インベントリラダー（B+2→C+3）**: [inventory-ladder.md](../roadmap/inventory-ladder.md)。Wave 0–4 **done**（x0054–x0065）。**x006d** で Drive HTTP + Desktop Inventory + host 制御面 take-out（単一 blob）。put-back UI / Prefab 多子 / XR は後続。
+- **PlaceRead（x006b）+ 案 B（x006c）**: 発行境界と GET 常時 Grant/PlaceRead **done**。PlaceRead TTL UI / take-out `extra_blake3` は後続（x006d は world scene 追記 + 再 seal で guest PlaceRead カバー）
 - [assets-server-draft.md](assets-server-draft.md) の Vault / purchased / 5 層
 - [assets-threat-model.md](assets-threat-model.md) 目標列（予約期限ジョブ・Immutable Tag・配信ドメイン分離・Safe HTTP・jti 等）
 - カスタムドメイン / CDN キャッシュ本配信
