@@ -1,0 +1,38 @@
+[package]
+name = "alchemy-client-trust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless Manifest/Presence trust gates shared by GUI client and E2E (x0070)"
+
+[lints]
+workspace = true
+
+[lib]
+name = "alchemy_client_trust"
+path = "src/lib.rs"
+
+[[bin]]
+name = "trust-probe"
+path = "src/bin/trust-probe.rs"
+
+[dependencies]
+alchemy-protocol = { workspace = true }
+anyhow = { workspace = true }
+blake3 = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
+prost = { workspace = true }
+zenoh = { workspace = true }
+zenoh-connect = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+jsonwebtoken = "9"
+base64 = "0.22"
+
+[dev-dependencies]
+rsa = { version = "0.9", features = ["pem"] }
+pkcs1 = { version = "0.7", features = ["std"] }
+pkcs8 = { version = "0.10", features = ["pem", "std"] }
+rand = "0.8"

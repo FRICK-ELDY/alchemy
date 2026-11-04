@@ -92,10 +92,10 @@ wait_http "${WORLD_URL}/health" "world"
 wait_http "${ASSETS_URL}/health" "assets"
 wait_tcp "${ZENOH_CONNECT}"
 
-echo "smoke-compose-e2e: building host-server + e2e-probe …"
+echo "smoke-compose-e2e: building host-server + e2e-probe + trust-probe …"
 (
   cd "${ROOT}/client"
-  cargo build -p host-server -p e2e-probe
+  cargo build -p host-server -p e2e-probe -p alchemy-client-trust
 )
 
 rm -f "${HOST_READY_FILE}"
@@ -141,4 +141,16 @@ if ! (
   exit 1
 fi
 
-echo "smoke-compose-e2e: ok (login→token→input→frame)"
+echo "smoke-compose-e2e: running trust-probe (x0070 hermetic) …"
+export TRUST_PROBE_MODE=hermetic
+if ! (
+  cd "${ROOT}/client"
+  cargo run -q -p alchemy-client-trust --bin trust-probe
+); then
+  echo "smoke-compose-e2e: FAILED — trust-probe" >&2
+  echo "---- host-server log ----" >&2
+  cat "${HOST_LOG}" >&2 || true
+  exit 1
+fi
+
+echo "smoke-compose-e2e: ok (login→token→input→frame + trust-probe)"

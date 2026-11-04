@@ -2,7 +2,7 @@
 
 正本の進捗目次は [README.md](README.md)。本ファイルは **未完了帯の優先度ビュー**。
 
-**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**。空き ID = `x0070`。
+**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**。空き ID = `x0071`。
 
 ---
 
@@ -17,7 +17,7 @@
 | **P0-take-out** | [x006d](slices/x006d-host-take-out-control.md) | host take-out（制御面・Drive HTTP・Inventory UI） | **done** |
 | **P0-put-back** | [x006e](slices/x006e-inventory-put-back-ui.md) | Inventory put-back UI | **done** |
 | **P0-access** | [x006f](slices/x006f-cas-access-grant-peel.md) | CAS access → Grant/ref 移設（P1-1） | **done** |
-| **P0-次** | P1-3〜5 / P3 衛生 | headless trust E2E / world RL / launcher discovery / reaper | planned |
+| **P0-次** | P1-4〜5 / P3 衛生 | world RL / launcher discovery / reaper | planned |
 | **P0-隣接** | verifier | Spot-Check | planned / 保留 |
 
 ---
@@ -30,7 +30,7 @@
 |:---|:---|:---|
 | **P1-1** | **CAS access を Grant/ref へ移設**（先着固定解消） | **→ x006f done** |
 | **P1-2** | **BlobGrant 案 B**（GET 常時 Grant + room 連動読取） | **→ x006c done** |
-| **P1-3** | **headless client trust + WAN 否定系 E2E** | improvement P1-2。偽 seal / wildcard を CI 固定 |
+| **P1-3** | **headless client trust + WAN 否定系 E2E** | improvement P1-2。**→ [x0070](slices/x0070-headless-trust-wan-e2e.md) done** |
 | **P1-4** | **world rate limit shared 化 + Room per-owner 上限** | improvement P1-3。P3-7（BLAKE3 ストリーミング）は **マージしない**方針のまま |
 | **P1-5** | launcher discovery（host restart 後の IPC 再通知） | improvement P1-4。最小 launcher は done、制御面の穴 |
 
@@ -90,7 +90,7 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 
 ## 推奨着手順（要約・本作業後）
 
-1. P1-3〜5（headless trust E2E / world RL / launcher discovery）または P3 衛生
+1. P1-4〜5（world RL / launcher discovery）または P3 衛生
 2. scene despawn（put-back の逆・任意）
 3. verifier / Formula / market / 検疫（条件: seal / gen-rev 済み）
 

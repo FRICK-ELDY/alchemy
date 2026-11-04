@@ -1,0 +1,613 @@
+//! x0070 headless trust consumer — same gates as GUI client.
+//!
+//! Guarantees (hermetic): login → Room Token → Accept host Manifest → adversarial
+//! fake-seal / wrong-key Discard leaves [`TrustWatermarks`] unchanged.
+//! Guarantees (WAN mode via `TRUST_PROBE_MODE=wan`): wildcard `*/*/manifest` may
+//! deliver other-room ciphertext, but open with own `room_key` fails (unreadable);
+//! connect without client cert fails.
+//! Non-guarantees: GUI leave, valid old-seal JWT matrix (unit), L7 room isolation.
+
+use std::env;
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use alchemy_client_trust::{
+    process_manifest_bytes, DiscardReason, HostAttestationVerifier, ManifestSealVerifier,
+    TrustOutcome, TrustWatermarks, WorldJwks,
+};
+use alchemy_protocol::wire_aead::{self, AeadKind};
+use alchemy_protocol::wire_crypto::{generate_signing_key, public_key_bytes};
+use alchemy_protocol::{
+    frame_key, input_key, manifest_key, validate_room_id, InputEvent, Message, RenderFrame,
+    SceneManifest, PROTOCOL_PIN,
+};
+use anyhow::{anyhow, bail, Context, Result};
+use serde::Deserialize;
+use zenoh::bytes::ZBytes;
+use zenoh::Wait;
+
+const DEFAULT_AUTH_URL: &str = "http://127.0.0.1:4102";
+const DEFAULT_WORLD_URL: &str = "http://127.0.0.1:4103";
+const DEFAULT_ZENOH_CONNECT: &str = "tcp/127.0.0.1:7547";
+const DEFAULT_ROOM_ID: &str = "local";
+const DEFAULT_AUTH_USER: &str = "alice";
+const DEFAULT_AUTH_PASSWORD: &str = "Password1";
+const DEFAULT_TIMEOUT_SECS: u64 = 45;
+
+#[derive(Debug, Deserialize)]
+struct AuthSession {
+    access_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenResponse {
+    token: String,
+    #[serde(default)]
+    wire_cap: String,
+    #[serde(default)]
+    room_key: String,
+    #[serde(default)]
+    mtls: Option<MtlsResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MtlsResponse {
+    client_cert_pem: String,
+    #[serde(default)]
+    ca_cert_pem: String,
+}
+
+fn env_or(key: &str, default: &str) -> String {
+    env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn session_pub_b64(pub_bytes: &[u8]) -> Result<String> {
+    if pub_bytes.len() != 32 {
+        bail!("session_pub must be 32 bytes");
+    }
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(43);
+    let mut i = 0;
+    while i + 3 <= pub_bytes.len() {
+        let n = (u32::from(pub_bytes[i]) << 16)
+            | (u32::from(pub_bytes[i + 1]) << 8)
+            | u32::from(pub_bytes[i + 2]);
+        out.push(T[((n >> 18) & 63) as usize] as char);
+        out.push(T[((n >> 12) & 63) as usize] as char);
+        out.push(T[((n >> 6) & 63) as usize] as char);
+        out.push(T[(n & 63) as usize] as char);
+        i += 3;
+    }
+    let n = (u32::from(pub_bytes[30]) << 16) | (u32::from(pub_bytes[31]) << 8);
+    out.push(T[((n >> 18) & 63) as usize] as char);
+    out.push(T[((n >> 12) & 63) as usize] as char);
+    out.push(T[((n >> 6) & 63) as usize] as char);
+    Ok(out)
+}
+
+fn create_room(world_url: &str, access: &str, room_id: &str) -> Result<()> {
+    let base = world_url.trim_end_matches('/');
+    match ureq::post(&format!("{base}/api/v1/rooms"))
+        .set("authorization", &format!("Bearer {access}"))
+        .set("content-type", "application/json")
+        .timeout(Duration::from_secs(15))
+        .send_json(serde_json::json!({
+            "room_id": room_id,
+            "visibility": "public",
+        })) {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(409, _)) => Ok(()),
+        Err(err) => Err(err).context(format!("create room {room_id}")),
+    }
+}
+
+fn login(auth_url: &str, user: &str, password: &str) -> Result<String> {
+    let base = auth_url.trim_end_matches('/');
+    let resp: AuthSession = ureq::post(&format!("{base}/api/v1/auth/login"))
+        .set("content-type", "application/json")
+        .timeout(Duration::from_secs(15))
+        .send_json(serde_json::json!({
+            "identifier": user,
+            "password": password,
+            "remember_me": false
+        }))
+        .context("auth login")?
+        .into_json()
+        .context("parse auth session")?;
+    if resp.access_token.is_empty() {
+        bail!("login returned empty access_token");
+    }
+    Ok(resp.access_token)
+}
+
+struct RoomBundle {
+    token: String,
+    wire_cap: String,
+    room_key: [u8; wire_aead::ROOM_KEY_LEN],
+    mtls: Option<MtlsResponse>,
+}
+
+fn fetch_room_token(
+    world_url: &str,
+    room_id: &str,
+    access: &str,
+    role: &str,
+    session_pub: &[u8],
+    csr_pem: Option<&str>,
+) -> Result<RoomBundle> {
+    let base = world_url.trim_end_matches('/');
+    let spk = session_pub_b64(session_pub)?;
+    let mut body = serde_json::json!({
+        "role": role,
+        "session_pub": spk,
+    });
+    if let Some(csr) = csr_pem {
+        body["csr_pem"] = serde_json::Value::String(csr.to_string());
+    }
+    let resp: TokenResponse = ureq::post(&format!("{base}/api/v1/rooms/{room_id}/tokens"))
+        .set("authorization", &format!("Bearer {access}"))
+        .set("content-type", "application/json")
+        .timeout(Duration::from_secs(15))
+        .send_json(body)
+        .context("room token")?
+        .into_json()
+        .context("parse room token")?;
+    if resp.token.is_empty() || resp.wire_cap.is_empty() || resp.room_key.is_empty() {
+        bail!("room token missing fields");
+    }
+    Ok(RoomBundle {
+        token: resp.token,
+        wire_cap: resp.wire_cap,
+        room_key: wire_aead::decode_room_key_b64(&resp.room_key).context("room_key")?,
+        mtls: resp.mtls,
+    })
+}
+
+fn fake_manifest(room_id: &str) -> SceneManifest {
+    SceneManifest {
+        room_id: room_id.into(),
+        revision: 0,
+        entries: vec![],
+        locomotion: None,
+        protocol_pin: "bogus-pin-x0070".into(),
+        host_pub: vec![0u8; 32],
+        host_attestation: String::new(),
+        world_seal: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.e30.e30".into(),
+        host_generation: 1,
+    }
+}
+
+fn put_aead_manifest(
+    session: &zenoh::Session,
+    key: &str,
+    room_id: &str,
+    room_key: &[u8],
+    manifest: &SceneManifest,
+) -> Result<()> {
+    let plain = manifest.encode_to_vec();
+    let env = wire_aead::seal(room_key, room_id, AeadKind::Manifest, &plain)
+        .map_err(|e| anyhow!("seal fake manifest: {e}"))?;
+    session
+        .put(key, env)
+        .wait()
+        .map_err(|e| anyhow!("put fake manifest: {e}"))?;
+    Ok(())
+}
+
+fn open_zenoh(endpoint: &str) -> Result<zenoh::Session> {
+    zenoh_connect::open_client(endpoint)
+}
+
+fn run_hermetic() -> Result<()> {
+    let auth_url = env_or("AUTH_URL", DEFAULT_AUTH_URL);
+    let world_url = env_or("WORLD_URL", DEFAULT_WORLD_URL);
+    let zenoh_connect = env_or("ZENOH_CONNECT", DEFAULT_ZENOH_CONNECT);
+    let room_id = validate_room_id(&env_or("ROOM_ID", DEFAULT_ROOM_ID))
+        .map_err(|e| anyhow!("ROOM_ID: {e}"))?
+        .to_string();
+    let user = env_or("AUTH_USER", DEFAULT_AUTH_USER);
+    let password = env_or("AUTH_PASSWORD", DEFAULT_AUTH_PASSWORD);
+    let timeout_secs: u64 = env_or("E2E_TIMEOUT_SECS", &DEFAULT_TIMEOUT_SECS.to_string())
+        .parse()
+        .context("E2E_TIMEOUT_SECS")?;
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+
+    log::info!(
+        "trust-probe hermetic; pin={PROTOCOL_PIN} auth={auth_url} world={world_url} zenoh={zenoh_connect} room={room_id}"
+    );
+
+    let access = login(&auth_url, &user, &password)?;
+    let session_key = generate_signing_key();
+    let room = fetch_room_token(
+        &world_url,
+        &room_id,
+        &access,
+        "guest",
+        &public_key_bytes(&session_key),
+        None,
+    )?;
+
+    let jwks = Arc::new(WorldJwks::new(&world_url));
+    jwks.refresh().context("JWKS refresh")?;
+    let seal = ManifestSealVerifier::new(Arc::clone(&jwks), &room_id);
+    let attest = HostAttestationVerifier::new(Arc::clone(&jwks), &room_id);
+    let mut watermarks = TrustWatermarks::default();
+
+    let session = open_zenoh(&zenoh_connect)?;
+    let manifest_k = manifest_key(&room_id, &room.wire_cap);
+    let frame_k = frame_key(&room_id, &room.wire_cap);
+    let input_k = input_key(&room_id, &room.wire_cap);
+
+    let manifest_sub = session
+        .declare_subscriber(manifest_k.clone())
+        .wait()
+        .map_err(|e| anyhow!("subscribe manifest: {e}"))?;
+    let frame_sub = session
+        .declare_subscriber(frame_k.clone())
+        .wait()
+        .map_err(|e| anyhow!("subscribe frame: {e}"))?;
+
+    // Nudge host with a bind Intent so Manifest/Frame flow.
+    let mut event = InputEvent {
+        room_token: room.token.clone(),
+        client_time_ms: Instant::now().elapsed().as_millis() as u64,
+        move_x: 0.0,
+        move_y: 0.0,
+        move_z: 0.0,
+        buttons: 0,
+        grab_entity_id: 0,
+        aim_x: 0.0,
+        aim_y: 1.6,
+        aim_z: 0.0,
+        leave: false,
+        session_pub: public_key_bytes(&session_key),
+        intent_seq: 1,
+        intent_sig: vec![],
+    };
+    alchemy_protocol::wire_crypto::sign_input(&session_key, &mut event);
+    let env = wire_aead::seal(
+        &room.room_key,
+        &room_id,
+        AeadKind::Input,
+        &event.encode_to_vec(),
+    )
+    .map_err(|e| anyhow!("seal input: {e}"))?;
+    session
+        .put(&input_k, env)
+        .wait()
+        .map_err(|e| anyhow!("put input: {e}"))?;
+
+    let mut accepted = false;
+    while Instant::now() < deadline {
+        if let Ok(Some(sample)) = manifest_sub.try_recv() {
+            let bytes: ZBytes = sample.payload().clone();
+            match process_manifest_bytes(
+                &room_id,
+                &room.room_key,
+                bytes.to_bytes().as_ref(),
+                &room_id,
+                &mut watermarks,
+                &seal,
+                &attest,
+            ) {
+                TrustOutcome::Accept { .. } => {
+                    accepted = true;
+                    log::info!(
+                        "trust-probe: Accept host Manifest (gen_rev={:?})",
+                        watermarks.manifest_gen_rev
+                    );
+                    break;
+                }
+                TrustOutcome::Discard { reason, detail } => {
+                    log::debug!("pre-accept discard {reason:?}: {detail}");
+                }
+            }
+        } else {
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+    if !accepted {
+        bail!("timeout waiting for Accept host Manifest");
+    }
+    if watermarks.host_pub.is_none() || watermarks.last_world_seal.is_none() {
+        bail!("Accept left watermarks incomplete");
+    }
+    let snapshot = watermarks.clone();
+
+    // Wrong room_key envelope → AEAD discard, watermarks unchanged.
+    let wrong_key = [0xABu8; wire_aead::ROOM_KEY_LEN];
+    put_aead_manifest(
+        &session,
+        &manifest_k,
+        &room_id,
+        &wrong_key,
+        &fake_manifest(&room_id),
+    )?;
+    let step_deadline = Instant::now() + Duration::from_secs(8);
+    let mut saw_aead = false;
+    while Instant::now() < step_deadline {
+        if let Ok(Some(sample)) = manifest_sub.try_recv() {
+            let bytes: ZBytes = sample.payload().clone();
+            match process_manifest_bytes(
+                &room_id,
+                &room.room_key,
+                bytes.to_bytes().as_ref(),
+                &room_id,
+                &mut watermarks,
+                &seal,
+                &attest,
+            ) {
+                TrustOutcome::Discard {
+                    reason: DiscardReason::Aead,
+                    ..
+                } => {
+                    saw_aead = true;
+                    break;
+                }
+                TrustOutcome::Accept { .. } => {
+                    // Concurrent host republish — keep waiting for our adversarial sample.
+                }
+                TrustOutcome::Discard { reason, .. } => {
+                    log::debug!("unexpected discard while waiting Aead: {reason:?}");
+                }
+            }
+        } else {
+            thread::sleep(Duration::from_millis(40));
+        }
+    }
+    if !saw_aead {
+        bail!("expected AEAD Discard for wrong-key Manifest");
+    }
+    if watermarks != snapshot {
+        bail!("watermarks mutated after wrong-key Discard");
+    }
+    log::info!("trust-probe: wrong-key AEAD Discard + watermark stable ok");
+
+    // Correct AEAD wrapping fake seal → Seal/Identity Discard, watermarks unchanged.
+    put_aead_manifest(
+        &session,
+        &manifest_k,
+        &room_id,
+        &room.room_key,
+        &fake_manifest(&room_id),
+    )?;
+    let step_deadline = Instant::now() + Duration::from_secs(8);
+    let mut saw_post = false;
+    while Instant::now() < step_deadline {
+        if let Ok(Some(sample)) = manifest_sub.try_recv() {
+            let bytes: ZBytes = sample.payload().clone();
+            match process_manifest_bytes(
+                &room_id,
+                &room.room_key,
+                bytes.to_bytes().as_ref(),
+                &room_id,
+                &mut watermarks,
+                &seal,
+                &attest,
+            ) {
+                TrustOutcome::Discard {
+                    reason: DiscardReason::Identity | DiscardReason::Seal | DiscardReason::Attest,
+                    ..
+                } => {
+                    saw_post = true;
+                    break;
+                }
+                TrustOutcome::Accept { .. } => {}
+                TrustOutcome::Discard { reason, .. } => {
+                    log::debug!("other discard while waiting fake seal: {reason:?}");
+                }
+            }
+        } else {
+            thread::sleep(Duration::from_millis(40));
+        }
+    }
+    if !saw_post {
+        bail!("expected post-AEAD Discard for fake-seal Manifest");
+    }
+    if watermarks != snapshot {
+        bail!("watermarks mutated after fake-seal Discard");
+    }
+    log::info!("trust-probe: fake-seal Discard + watermark stable ok");
+
+    // Host still alive (optional Frame sample).
+    let frame_deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_frame = false;
+    while Instant::now() < frame_deadline {
+        if let Ok(Some(sample)) = frame_sub.try_recv() {
+            let bytes: ZBytes = sample.payload().clone();
+            if let Ok(pt) = wire_aead::open(
+                &room.room_key,
+                &room_id,
+                AeadKind::Frame,
+                bytes.to_bytes().as_ref(),
+            ) {
+                if RenderFrame::decode(pt.as_ref()).is_ok() {
+                    saw_frame = true;
+                    break;
+                }
+            }
+        } else {
+            thread::sleep(Duration::from_millis(40));
+        }
+    }
+    if !saw_frame {
+        log::warn!(
+            "no Frame after adversarial (host may be slow); watermark asserts already passed"
+        );
+    }
+
+    log::info!("trust-probe hermetic ok");
+    Ok(())
+}
+
+fn run_wan() -> Result<()> {
+    let world_url = env_or("WORLD_URL", DEFAULT_WORLD_URL);
+    let auth_url = env_or("AUTH_URL", DEFAULT_AUTH_URL);
+    let zenoh_connect = env_or("ZENOH_CONNECT", "tls/127.0.0.1:7547");
+    let user = env_or("AUTH_USER", DEFAULT_AUTH_USER);
+    let password = env_or("AUTH_PASSWORD", DEFAULT_AUTH_PASSWORD);
+    let room_a = validate_room_id(&env_or("ROOM_ID", "local"))
+        .map_err(|e| anyhow!("ROOM_ID: {e}"))?
+        .to_string();
+    let room_b = validate_room_id(&env_or("ROOM_ID_B", "wanb"))
+        .map_err(|e| anyhow!("ROOM_ID_B: {e}"))?
+        .to_string();
+
+    log::info!("trust-probe WAN; zenoh={zenoh_connect} room_a={room_a} room_b={room_b}");
+
+    // 1) No client cert → open must fail.
+    std::env::remove_var("ZENOH_TLS_CONNECT_CERT");
+    std::env::remove_var("ZENOH_TLS_CONNECT_KEY");
+    match open_zenoh(&zenoh_connect) {
+        Ok(_) => bail!("WAN open without client cert must fail"),
+        Err(err) => log::info!("no-cert reject ok: {err}"),
+    }
+
+    let access = login(&auth_url, &user, &password)?;
+    create_room(&world_url, &access, &room_a)?;
+    create_room(&world_url, &access, &room_b)?;
+
+    let key_a = generate_signing_key();
+    let eph = zenoh_connect::EphemeralMtlsIdentity::generate().context("CSR A")?;
+    let bundle_a = fetch_room_token(
+        &world_url,
+        &room_a,
+        &access,
+        "guest",
+        &public_key_bytes(&key_a),
+        Some(&eph.csr_pem),
+    )?;
+    let mtls_a = bundle_a
+        .mtls
+        .as_ref()
+        .ok_or_else(|| anyhow!("room A token missing mtls (is world MTLS_CA configured?)"))?;
+    if !mtls_a.ca_cert_pem.is_empty() {
+        // Prefer token CA; smoke script also sets ZENOH_TLS_ROOT_CA.
+        let _ = mtls_a.ca_cert_pem;
+    }
+    zenoh_connect::install_world_mtls_pems(
+        &mtls_a.client_cert_pem,
+        eph.private_key_pem(),
+        &bundle_a.wire_cap,
+        "guest",
+        None,
+    )
+    .context("install guest A mTLS")?;
+
+    let session = open_zenoh(&zenoh_connect).context("open with guest mTLS")?;
+
+    // Wildcard subscribe — samples from other rooms may arrive (non-guarantee of isolation).
+    let wild = "alchemy/dev/room/*/*/manifest";
+    let wild_sub = session
+        .declare_subscriber(wild)
+        .wait()
+        .map_err(|e| anyhow!("wildcard subscribe: {e}"))?;
+    log::info!("subscribed {wild}");
+
+    // Put other-room AEAD ciphertext (room B key) onto a synthetic key expr.
+    // We seal with room_b key and publish under room_b/wire_cap so ACL allows guest put egress
+    // only for sim? Actually guest cannot put ingress on manifest — so we need a second
+    // session as host, or publish from this process if ACL allows put egress that peers see.
+    // Guest sim put ingress is deny; put egress is for receiving host traffic.
+    // So another peer must put. For CI without a second host, seal locally and put as host CN.
+    let key_b = generate_signing_key();
+    let eph_host = zenoh_connect::EphemeralMtlsIdentity::generate().context("CSR host B")?;
+    // Create room B as host role to obtain host CN + room_key B.
+    let access_host = login(&auth_url, &user, &password)?;
+    // Ensure room B exists: create via host token on room_a owner path may fail; use alice create.
+    // Minimal: request host token for room_b (world creates on first token if allowed).
+    let bundle_b = fetch_room_token(
+        &world_url,
+        &room_b,
+        &access_host,
+        "host",
+        &public_key_bytes(&key_b),
+        Some(&eph_host.csr_pem),
+    )?;
+    let mtls_b = bundle_b
+        .mtls
+        .as_ref()
+        .ok_or_else(|| anyhow!("room B host token missing mtls"))?;
+    // Separate process identity for host put: write temp env and open second session.
+    let host_cert_path = std::env::temp_dir().join("alchemy-trust-probe-host-cert.pem");
+    let host_key_path = std::env::temp_dir().join("alchemy-trust-probe-host-key.pem");
+    std::fs::write(&host_cert_path, &mtls_b.client_cert_pem)?;
+    std::fs::write(&host_key_path, eph_host.private_key_pem())?;
+    let host_session = zenoh_connect::open_client_mtls(
+        &zenoh_connect,
+        host_cert_path.to_str().unwrap(),
+        host_key_path.to_str().unwrap(),
+    )
+    .context("open host B mTLS")?;
+
+    let other_key = manifest_key(&room_b, &bundle_b.wire_cap);
+    let other_manifest = SceneManifest {
+        room_id: room_b.clone(),
+        revision: 1,
+        entries: vec![],
+        locomotion: None,
+        protocol_pin: PROTOCOL_PIN.into(),
+        host_pub: vec![1u8; 32],
+        host_attestation: String::new(),
+        world_seal: "other-room-seal".into(),
+        host_generation: 1,
+    };
+    put_aead_manifest(
+        &host_session,
+        &other_key,
+        &room_b,
+        &bundle_b.room_key,
+        &other_manifest,
+    )?;
+    log::info!("host B put AEAD Manifest on {other_key}");
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut saw_unreadable = false;
+    while Instant::now() < deadline {
+        if let Ok(Some(sample)) = wild_sub.try_recv() {
+            let key = sample.key_expr().as_str().to_string();
+            let bytes: ZBytes = sample.payload().clone();
+            // Own room_key A must not open room B ciphertext.
+            match wire_aead::open(
+                &bundle_a.room_key,
+                &room_a,
+                AeadKind::Manifest,
+                bytes.to_bytes().as_ref(),
+            ) {
+                Err(_) => {
+                    if key.contains(&room_b) || key.contains(&bundle_b.wire_cap) {
+                        saw_unreadable = true;
+                        log::info!("wildcard sample on {key} unreadable with room A key (ok)");
+                        break;
+                    }
+                    // May be own-room noise or AAD mismatch; keep waiting for room B key.
+                    log::debug!("AEAD fail on {key} (keep waiting for room B)");
+                }
+                Ok(_) => {
+                    log::debug!("opened sample on {key} with room A key (own room?)");
+                }
+            }
+        } else {
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+    if !saw_unreadable {
+        bail!(
+            "WAN wildcard: did not observe other-room ciphertext that fails open with room A key"
+        );
+    }
+
+    let _ = std::fs::remove_file(&host_cert_path);
+    let _ = std::fs::remove_file(&host_key_path);
+    log::info!("trust-probe WAN ok");
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    match env_or("TRUST_PROBE_MODE", "hermetic").as_str() {
+        "wan" => run_wan(),
+        _ => run_hermetic(),
+    }
+}

@@ -162,11 +162,12 @@ depends_on: [x0006]
 | x006d | — | done | host take-out（Drive HTTP + Inventory UI + Zenoh 制御面） | [x006d-host-take-out-control.md](slices/x006d-host-take-out-control.md) |
 | x006e | — | done | Inventory put-back UI（Drive HTTP + scene mesh 選択） | [x006e-inventory-put-back-ui.md](slices/x006e-inventory-put-back-ui.md) |
 | x006f | — | done | CAS access → Grant/ref 移設（列廃止・先着固定解消） | [x006f-cas-access-grant-peel.md](slices/x006f-cas-access-grant-peel.md) |
+| x0070 | — | done | headless client trust + WAN 否定系 E2E（偽 seal / wildcard） | [x0070-headless-trust-wan-e2e.md](slices/x0070-headless-trust-wan-e2e.md) |
 
-**現在の次:** **[x006f](slices/x006f-cas-access-grant-peel.md)** CAS access → Grant/ref 移設 **done**。次候補: P1-3〜5 / P3 衛生。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
+**現在の次:** P1-4〜5 / P3 衛生。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
 **P3-7**（BLAKE3 ストリーミング・Room 作成上限）は **CI が完了しなくなるためマージしない**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-28.md)）。
 
-次の空き番号は **`x0070`**。
+次の空き番号は **`x0071`**。
 
 ## 関連
 

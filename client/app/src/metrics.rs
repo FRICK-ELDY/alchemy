@@ -4,6 +4,7 @@
 //! frame age + JWKS gauges/counters with fixed low-cardinality names.
 //! Non-guarantees: OTLP; public scrape; histogram buckets; `sub`/`room_id` labels.
 
+use alchemy_client_trust::JwksMetrics;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,6 +18,16 @@ pub struct ClientMetrics {
     last_frame_at: Mutex<Option<Instant>>,
     jwks_fetched_at: Mutex<Option<Instant>>,
     jwks_hard_stale_total: AtomicU64,
+}
+
+impl JwksMetrics for ClientMetrics {
+    fn set_jwks_fetched_at(&self, at: Instant) {
+        ClientMetrics::set_jwks_fetched_at(self, at);
+    }
+
+    fn inc_jwks_hard_stale(&self) {
+        ClientMetrics::inc_jwks_hard_stale(self);
+    }
 }
 
 impl ClientMetrics {

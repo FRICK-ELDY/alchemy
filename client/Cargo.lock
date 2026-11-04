@@ -68,6 +68,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "alchemy-client-trust"
+version = "0.1.0"
+dependencies = [
+ "alchemy-protocol",
+ "anyhow",
+ "base64 0.22.1",
+ "blake3",
+ "env_logger",
+ "jsonwebtoken",
+ "log",
+ "pkcs1",
+ "pkcs8",
+ "prost",
+ "rand 0.8.8",
+ "rsa",
+ "serde",
+ "serde_json",
+ "ureq",
+ "zenoh",
+ "zenoh-connect",
+]
+
+[[package]]
 name = "alchemy-protocol"
 version = "0.1.0"
 dependencies = [
@@ -571,6 +594,7 @@ dependencies = [
 name = "client"
 version = "0.1.0"
 dependencies = [
+ "alchemy-client-trust",
  "alchemy-protocol",
  "alchemy-shared-sim",
  "anyhow",
@@ -585,13 +609,9 @@ dependencies = [
  "libc",
  "log",
  "openxr",
- "pkcs1",
- "pkcs8",
  "png 0.17.16",
  "pollster",
  "prost",
- "rand 0.8.8",
- "rsa",
  "serde",
  "serde_json",
  "ureq",

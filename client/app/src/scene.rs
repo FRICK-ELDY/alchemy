@@ -198,10 +198,10 @@ pub struct SharedState {
     /// Env alone must not trigger reopen (would orphan subscribers on an already-running bus).
     pub mtls_reopen_pending: std::sync::atomic::AtomicBool,
     /// World JWKS cache (retargeted when onboarding switches operator).
-    pub world_jwks: Arc<crate::world_jwks::WorldJwks>,
+    pub world_jwks: Arc<alchemy_client_trust::WorldJwks>,
     /// World JWKS verifiers for Manifest path (needed for late Home→Join bus start).
-    pub manifest_seal: Arc<crate::manifest_seal::ManifestSealVerifier>,
-    pub host_attest: Arc<crate::host_attestation::HostAttestationVerifier>,
+    pub manifest_seal: Arc<alchemy_client_trust::ManifestSealVerifier>,
+    pub host_attest: Arc<alchemy_client_trust::HostAttestationVerifier>,
     /// Mutable so onboarding Step1 can switch Official / Custom without restart.
     pub auth_url: Mutex<String>,
     pub world_url: Mutex<String>,
