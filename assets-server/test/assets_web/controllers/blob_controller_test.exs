@@ -8,6 +8,7 @@ defmodule AssetsWeb.BlobControllerTest do
   alias Assets.Quota.QuotaLedger
   alias Assets.Repo
   alias Assets.TestAuthHelpers
+  alias Assets.TestPlaceReadHelpers
 
   @sub_a "22222222-2222-2222-2222-222222222222"
   @sub_b "33333333-3333-3333-3333-333333333333"
@@ -356,6 +357,146 @@ defmodule AssetsWeb.BlobControllerTest do
     conn =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert %{"error" => "forbidden"} = json_response(conn, 403)
+  end
+
+  test "grant_required GET allowed via PlaceRead covering scene hash (x006b)", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "place-read-scene-bytes"
+    %{signer: world_signer} = TestPlaceReadHelpers.install_test_world_jwks!()
+    manifest = String.duplicate("11", 32)
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> put_req_header("x-alchemy-blob-access", "grant_required")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"blake3" => blake3} = json_response(conn, 201)
+
+    TestPlaceReadHelpers.seed_scene_hashes("local", 1, manifest, [blake3])
+
+    place_read =
+      TestPlaceReadHelpers.place_read_token(world_signer,
+        sub: @sub_b,
+        room_id: "local",
+        revision: 1,
+        manifest_blake3: manifest
+      )
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> put_req_header("x-alchemy-place-read", place_read)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert response(conn, 200) == body
+  end
+
+  test "PlaceRead sub mismatch is forbidden (x006b)", %{conn: conn, signer: signer} do
+    body = "place-read-sub-mismatch"
+    %{signer: world_signer} = TestPlaceReadHelpers.install_test_world_jwks!()
+    manifest = String.duplicate("33", 32)
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> put_req_header("x-alchemy-blob-access", "grant_required")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"blake3" => blake3} = json_response(conn, 201)
+    TestPlaceReadHelpers.seed_scene_hashes("local", 1, manifest, [blake3])
+
+    place_read =
+      TestPlaceReadHelpers.place_read_token(world_signer,
+        sub: @sub_a,
+        room_id: "local",
+        revision: 1,
+        manifest_blake3: manifest
+      )
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> put_req_header("x-alchemy-place-read", place_read)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert %{"error" => "forbidden"} = json_response(conn, 403)
+  end
+
+  test "PlaceRead does not cover hash outside seal allowlist (x006b)", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "place-read-uncovered"
+    %{signer: world_signer} = TestPlaceReadHelpers.install_test_world_jwks!()
+    manifest = String.duplicate("44", 32)
+    other = String.duplicate("55", 32)
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> put_req_header("x-alchemy-blob-access", "grant_required")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"blake3" => blake3} = json_response(conn, 201)
+    TestPlaceReadHelpers.seed_scene_hashes("local", 1, manifest, [other])
+
+    place_read =
+      TestPlaceReadHelpers.place_read_token(world_signer,
+        sub: @sub_b,
+        room_id: "local",
+        revision: 1,
+        manifest_blake3: manifest
+      )
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> put_req_header("x-alchemy-place-read", place_read)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert %{"error" => "forbidden"} = json_response(conn, 403)
+  end
+
+  test "PlaceRead with non-empty extra_blake3 claim is rejected (x006b)", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "place-read-extra-disabled"
+    %{signer: world_signer} = TestPlaceReadHelpers.install_test_world_jwks!()
+    manifest = String.duplicate("66", 32)
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> put_req_header("x-alchemy-blob-access", "grant_required")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"blake3" => blake3} = json_response(conn, 201)
+    TestPlaceReadHelpers.seed_scene_hashes("local", 1, manifest, [blake3])
+
+    place_read =
+      TestPlaceReadHelpers.place_read_token(world_signer,
+        sub: @sub_b,
+        room_id: "local",
+        revision: 1,
+        manifest_blake3: manifest,
+        extra_blake3: [blake3]
+      )
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> put_req_header("x-alchemy-place-read", place_read)
       |> get("/api/v1/blobs/#{blake3}")
 
     assert %{"error" => "forbidden"} = json_response(conn, 403)

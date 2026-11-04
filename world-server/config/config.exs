@@ -33,6 +33,9 @@ config :world,
   # OSS default: no-op Spot-Check. Proprietary heuristics inject here.
   audit_engine: World.Verifier.NoopAuditEngine
 
+# x006b: PlaceHashCache TTL defaults to room_token_ttl_seconds (JWT lifetime).
+# Optional override `:place_hashes_ttl_ms` must be >= that lifetime (enforced in code).
+
 # Rule: :ring so Zenoh callbacks never block when the BEAM mailbox lags.
 config :zenohex,
   channel_kind: :ring,

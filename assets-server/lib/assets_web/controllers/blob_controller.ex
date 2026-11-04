@@ -37,7 +37,13 @@ defmodule AssetsWeb.BlobController do
   end
 
   def show(conn, %{"blake3" => blake3}) do
-    case Blobs.fetch(blake3, conn.assigns.auth_sub) do
+    opts =
+      case get_req_header(conn, "x-alchemy-place-read") do
+        [token] when byte_size(token) > 0 -> [place_read: token]
+        _ -> []
+      end
+
+    case Blobs.fetch(blake3, conn.assigns.auth_sub, opts) do
       {:ok, data, blob} ->
         conn
         |> put_resp_content_type(blob.mime)

@@ -27,12 +27,21 @@ defmodule AuthWeb.Plugs.RateLimitTest do
   setup do
     RateLimit.reset()
     previous = Application.get_env(:auth, RateLimit)
-    Application.put_env(:auth, RateLimit, Keyword.put(previous, :limits, @strict_limits))
+    previous_proxies = Application.get_env(:auth, :trusted_proxies)
+
+    Application.put_env(:auth, RateLimit, Keyword.put(previous || [], :limits, @strict_limits))
+    # with_ip/2 pins peer to 127.0.0.1; keep that peer trusted so XFF is honored.
+    Application.put_env(:auth, :trusted_proxies, ["127.0.0.1", "::1"])
 
     on_exit(fn ->
       case previous do
         nil -> Application.delete_env(:auth, RateLimit)
         value -> Application.put_env(:auth, RateLimit, value)
+      end
+
+      case previous_proxies do
+        nil -> Application.delete_env(:auth, :trusted_proxies)
+        value -> Application.put_env(:auth, :trusted_proxies, value)
       end
     end)
 
@@ -41,7 +50,20 @@ defmodule AuthWeb.Plugs.RateLimitTest do
 
   defp with_ip(conn, ip) do
     conn
+    |> Map.put(:remote_ip, {127, 0, 0, 1})
     |> Plug.Conn.put_req_header("x-forwarded-for", ip)
+  end
+
+  # Public TEST-NET ranges only — RemoteIp drops reserved/private XFF hops.
+  defp unique_client_ip do
+    n = System.unique_integer([:positive, :monotonic])
+    host = rem(n, 254) + 1
+
+    case rem(div(n, 254), 3) do
+      0 -> "192.0.2.#{host}"
+      1 -> "198.51.100.#{host}"
+      2 -> "203.0.113.#{host}"
+    end
   end
 
   describe "POST /api/v1/auth/login" do
@@ -51,27 +73,29 @@ defmodule AuthWeb.Plugs.RateLimitTest do
     end
 
     test "returns 429 when the IP limit is exceeded", %{conn: conn} do
-      conn = with_ip(conn, "10.20.30.40")
+      client_ip = unique_client_ip()
+      conn = with_ip(conn, client_ip)
+      assert AuthWeb.ClientIp.from_conn(conn) == client_ip
 
       for _ <- 1..2 do
-        conn =
+        response =
           post(conn, ~p"/api/v1/auth/login", %{
             "identifier" => "rate@example.com",
             "password" => "Wrong-password1"
           })
 
-        assert json_response(conn, 401)
+        assert json_response(response, 401)
       end
 
-      conn =
+      response =
         post(conn, ~p"/api/v1/auth/login", %{
           "identifier" => "rate@example.com",
           "password" => "Wrong-password1"
         })
 
-      assert %{"errors" => %{"detail" => "Too many requests"}} = json_response(conn, 429)
+      assert %{"errors" => %{"detail" => "Too many requests"}} = json_response(response, 429)
 
-      [retry_after] = get_resp_header(conn, "retry-after")
+      [retry_after] = get_resp_header(response, "retry-after")
       assert String.to_integer(retry_after) in 1..60
     end
 
@@ -238,7 +262,7 @@ defmodule AuthWeb.Plugs.RateLimitTest do
   describe "POST /api/v1/social/follows/:user_id (x0043)" do
     defp put_social_limits(limits) do
       previous = Application.get_env(:auth, RateLimit)
-      Application.put_env(:auth, RateLimit, Keyword.put(previous, :limits, limits))
+      Application.put_env(:auth, RateLimit, Keyword.put(previous || [], :limits, limits))
       RateLimit.reset()
 
       on_exit(fn ->

@@ -8,6 +8,8 @@ defmodule WorldWeb.RoomController do
   alias World.HostAttestation
   alias World.ManifestSeal
   alias World.MtlsIssuer
+  alias World.PlaceHashes
+  alias World.PlaceRead
   alias World.RoomAccess
   alias World.Rooms
   alias World.Token
@@ -463,7 +465,8 @@ defmodule WorldWeb.RoomController do
          {:ok, revision, host_generation, blake3} <-
            CanonicalManifest.canonical_blake3(room_id, host_attestation),
          :ok <- match_revision(host_revision, revision),
-         :ok <- match_blake3(host_blake3, blake3) do
+         :ok <- match_blake3(host_blake3, blake3),
+         {:ok, _scene_blake3s} <- PlaceHashes.put_for_seal(room_id, revision, blake3) do
       case ManifestSeal.generate(room_id, revision, host_generation, blake3, claims["sub"]) do
         {:ok, seal, ttl} ->
           json(conn, %{
@@ -593,11 +596,264 @@ defmodule WorldWeb.RoomController do
     end
   end
 
+  @doc """
+  x006b: issue PlaceRead JWT. Authorization is any Room Token for `room_id`.
+  Body requires `world_seal` (ManifestSeal). `extra_blake3` must be absent/empty
+  (arbitrary hash carriage disabled until take-out ownership binding).
+  Allowlist comes from PlaceHashes captured at seal time — not live scene reload.
+  """
+  def create_place_read(conn, %{"room_id" => room_id} = params) do
+    with {:ok, bearer} <- fetch_bearer(conn),
+         {:ok, room_claims} <- Token.verify(bearer),
+         :ok <- require_room_token(room_claims, room_id),
+         {:ok, world_seal} <- require_world_seal(params),
+         {:ok, seal_claims} <- verify_world_seal(world_seal),
+         :ok <- match_seal_room(seal_claims, room_id),
+         {:ok, revision} <- seal_revision(seal_claims),
+         {:ok, host_generation} <- seal_host_generation(seal_claims),
+         {:ok, manifest_blake3} <- seal_manifest_blake3(seal_claims),
+         {:ok, extra} <- PlaceRead.parse_extra_blake3(Map.get(params, "extra_blake3")),
+         {:ok, seal_exp} <- PlaceRead.seal_exp_from_claims(seal_claims),
+         {:ok, scene_blake3s} <- PlaceHashes.resolve(room_id, revision, manifest_blake3),
+         :ok <- touch_place_hashes(room_id, revision, manifest_blake3, seal_exp),
+         {:ok, place_read, expires_in} <-
+           PlaceRead.generate(
+             room_id,
+             room_claims["sub"],
+             revision,
+             host_generation,
+             manifest_blake3,
+             extra,
+             seal_exp
+           ) do
+      json(conn, %{
+        place_read: place_read,
+        expires_in: expires_in,
+        room_id: room_id,
+        revision: revision,
+        host_generation: host_generation,
+        manifest_blake3: manifest_blake3,
+        blake3_count: length(scene_blake3s),
+        extra_blake3: [],
+        token_type: "Bearer"
+      })
+    else
+      {:error, :missing_bearer} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "missing_room_token"})
+
+      {:error, :room_mismatch} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "room_id_mismatch"})
+
+      {:error, :missing_world_seal} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "missing_world_seal"})
+
+      {:error, :seal_room_mismatch} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "seal_room_mismatch"})
+
+      {:error, :revision_mismatch} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "revision_mismatch"})
+
+      {:error, :extra_blake3_disabled} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "extra_blake3_disabled"})
+
+      {:error, :invalid_extra_blake3} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_extra_blake3"})
+
+      {:error, :place_hashes_unavailable} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "place_hashes_unavailable"})
+
+      {:error, :seal_expired} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "seal_expired"})
+
+      {:error, :invalid_seal_exp} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_world_seal"})
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "room_not_found"})
+
+      {:error, :invalid_room_id} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_room_id"})
+
+      {:error, :storage_error} ->
+        storage_unavailable(conn)
+
+      {:error, {:invalid_world_seal, reason}} ->
+        Logger.warning("place_read invalid world_seal: #{inspect(reason)}")
+
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_world_seal"})
+
+      {:error, reason} ->
+        Logger.warning("place_read issue failed: #{inspect(reason)}")
+
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "invalid_place_read_request"})
+    end
+  end
+
+  @doc """
+  x006b: return seal-time scene blake3s for a PlaceRead identity.
+  Authorization must be a PlaceRead JWT for `room_id`.
+  """
+  def show_place_hashes(conn, %{"room_id" => room_id}) do
+    with {:ok, bearer} <- fetch_bearer(conn),
+         {:ok, claims} <- PlaceRead.verify(bearer),
+         :ok <- match_place_read_room(claims, room_id),
+         {:ok, revision} <- seal_revision(claims),
+         {:ok, manifest_blake3} <- seal_manifest_blake3(claims),
+         {:ok, blake3s} <- PlaceHashes.resolve(room_id, revision, manifest_blake3) do
+      json(conn, %{
+        room_id: room_id,
+        revision: revision,
+        host_generation: claims["host_generation"],
+        manifest_blake3: manifest_blake3,
+        blake3s: blake3s,
+        extra_blake3: []
+      })
+    else
+      {:error, :missing_bearer} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "missing_place_read"})
+
+      {:error, :room_mismatch} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "room_id_mismatch"})
+
+      {:error, :place_hashes_unavailable} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "place_hashes_unavailable"})
+
+      {:error, :revision_mismatch} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "revision_mismatch"})
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "room_not_found"})
+
+      {:error, :storage_error} ->
+        storage_unavailable(conn)
+
+      {:error, reason} ->
+        Logger.warning("place_hashes failed: #{inspect(reason)}")
+
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "invalid_place_read"})
+    end
+  end
+
   defp require_host_attestation(%{"host_attestation" => token})
        when is_binary(token) and byte_size(token) > 0,
        do: {:ok, token}
 
   defp require_host_attestation(_), do: {:error, :missing_host_attestation}
+
+  defp require_world_seal(%{"world_seal" => token})
+       when is_binary(token) and byte_size(token) > 0,
+       do: {:ok, token}
+
+  defp require_world_seal(_), do: {:error, :missing_world_seal}
+
+  defp touch_place_hashes(room_id, revision, manifest_blake3, seal_exp) do
+    case PlaceHashes.touch_until(room_id, revision, manifest_blake3, seal_exp) do
+      :ok -> :ok
+      :miss -> {:error, :place_hashes_unavailable}
+      {:error, :seal_expired} = err -> err
+    end
+  end
+
+  # Tag seal verify failures so Room Token Joken lists are not mistaken for bad seals.
+  # Exp failures map to :seal_expired for a stable client contract.
+  defp verify_world_seal(token) do
+    case ManifestSeal.verify(token) do
+      {:ok, claims} ->
+        {:ok, claims}
+
+      {:error, reason} ->
+        if exp_claim_failure?(reason) do
+          {:error, :seal_expired}
+        else
+          {:error, {:invalid_world_seal, reason}}
+        end
+    end
+  end
+
+  defp exp_claim_failure?(reason) when is_list(reason) do
+    Keyword.get(reason, :claim) == "exp" or
+      Enum.any?(reason, fn
+        {:claim, "exp"} -> true
+        _ -> false
+      end)
+  end
+
+  defp exp_claim_failure?(:expired), do: true
+  defp exp_claim_failure?({:error, :expired}), do: true
+  defp exp_claim_failure?(_), do: false
+
+  defp require_room_token(%{"room_id" => token_room}, room_id) do
+    if token_room == room_id, do: :ok, else: {:error, :room_mismatch}
+  end
+
+  defp require_room_token(_, _), do: {:error, :room_mismatch}
+
+  defp match_seal_room(%{"room_id" => seal_room}, room_id) do
+    if seal_room == room_id, do: :ok, else: {:error, :seal_room_mismatch}
+  end
+
+  defp match_seal_room(_, _), do: {:error, :seal_room_mismatch}
+
+  defp match_place_read_room(%{"room_id" => token_room}, room_id) do
+    if token_room == room_id, do: :ok, else: {:error, :room_mismatch}
+  end
+
+  defp match_place_read_room(_, _), do: {:error, :room_mismatch}
+
+  defp seal_revision(%{"revision" => rev}) when is_integer(rev) and rev >= 0, do: {:ok, rev}
+  defp seal_revision(_), do: {:error, :invalid_revision}
+
+  defp seal_host_generation(%{"host_generation" => gen})
+       when is_integer(gen) and gen >= 1,
+       do: {:ok, gen}
+
+  defp seal_host_generation(_), do: {:error, :invalid_host_generation}
+
+  defp seal_manifest_blake3(%{"manifest_blake3" => hex}) when is_binary(hex) do
+    ManifestSeal.parse_blake3(hex)
+  end
+
+  defp seal_manifest_blake3(_), do: {:error, :invalid_manifest_blake3}
 
   defp match_revision(host, canon) when host == canon, do: :ok
   defp match_revision(_, _), do: {:error, :revision_mismatch}

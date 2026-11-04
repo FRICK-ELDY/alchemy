@@ -17,6 +17,9 @@ config :assets,
   quota_limit_bytes: 1024,
   auth_jwks_url: "http://127.0.0.1:9/.well-known/jwks.json",
   auth_jwks_fetch_on_start: false,
+  world_jwks_url: "http://127.0.0.1:9/.well-known/jwks.json",
+  world_jwks_fetch_on_start: false,
+  world_base_url: nil,
   max_upload_bytes: 10_000
 
 config :logger, level: :warning

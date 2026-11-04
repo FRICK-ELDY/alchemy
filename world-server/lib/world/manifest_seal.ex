@@ -64,6 +64,25 @@ defmodule World.ManifestSeal do
 
   def generate(_, _, _, _, _), do: {:error, :invalid_args}
 
+  @doc """
+  Verify a ManifestSeal JWT with world Room Token keys (x006b PlaceRead issuer path).
+
+  Returns claims map on success. Does not recompute canonical blake3.
+  """
+  @spec verify(String.t()) :: {:ok, map()} | {:error, term()}
+  def verify(token) when is_binary(token) do
+    with {:ok, %{"kid" => kid}} <- peek_kid(token),
+         {:ok, signer} <- Keys.signer_for_kid(kid),
+         {:ok, claims} <- Joken.verify_and_validate(verify_config(), token, signer) do
+      {:ok, claims}
+    else
+      {:error, reason} -> {:error, reason}
+      other -> {:error, {:unexpected, other}}
+    end
+  end
+
+  def verify(_), do: {:error, :invalid_token}
+
   @doc "Parse revision from API body (integer or decimal string)."
   @spec parse_revision(term()) :: {:ok, non_neg_integer()} | {:error, :invalid_revision}
   def parse_revision(value) when is_integer(value) and value >= 0, do: {:ok, value}
@@ -96,6 +115,33 @@ defmodule World.ManifestSeal do
 
   @doc "typ claim value."
   def typ, do: @typ
+
+  defp verify_config do
+    ttl = Application.fetch_env!(:world, :room_token_ttl_seconds)
+    issuer = Application.fetch_env!(:world, :room_token_issuer)
+
+    Joken.Config.default_claims(default_exp: ttl, iss: issuer, aud: @aud)
+    |> Joken.Config.add_claim("typ", fn -> nil end, &(&1 == @typ))
+    |> Joken.Config.add_claim("sub", fn -> nil end, &is_binary/1)
+    |> Joken.Config.add_claim("room_id", fn -> nil end, &is_binary/1)
+    |> Joken.Config.add_claim("revision", fn -> nil end, &is_integer/1)
+    |> Joken.Config.add_claim("host_generation", fn -> nil end, &is_integer/1)
+    |> Joken.Config.add_claim("manifest_blake3", fn -> nil end, &is_binary/1)
+    |> Joken.Config.add_claim("jti", fn -> nil end, &is_binary/1)
+  end
+
+  defp peek_kid(token) do
+    case Joken.peek_header(token) do
+      {:ok, %{"kid" => kid}} when is_binary(kid) and kid != "" ->
+        {:ok, %{"kid" => kid}}
+
+      {:ok, _} ->
+        {:error, :missing_kid}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   defp validate_blake3(hex) do
     if valid_blake3_hex?(String.downcase(hex)) do

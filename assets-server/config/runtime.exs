@@ -86,6 +86,27 @@ if config_env() != :test do
     config :assets, auth_jwks_fetch_on_start: false
   end
 
+  # x006b PlaceRead
+  if url = System.get_env("WORLD_JWKS_URL") do
+    config :assets, world_jwks_url: url
+  end
+
+  if System.get_env("WORLD_JWKS_FETCH_ON_START") in ~w(true 1) do
+    config :assets, world_jwks_fetch_on_start: true
+  end
+
+  if base = System.get_env("WORLD_BASE_URL") do
+    config :assets, world_base_url: base
+  end
+
+  if iss = System.get_env("WORLD_JWT_ISSUER") do
+    config :assets, world_jwt_issuer: iss
+  end
+
+  if ttl = System.get_env("PLACE_HASHES_TTL_MS") do
+    config :assets, place_hashes_ttl_ms: String.to_integer(ttl)
+  end
+
   if System.get_env("BIND_ALL") in ~w(true 1) do
     config :assets, AssetsWeb.Endpoint,
       http: [ip: {0, 0, 0, 0}, port: port],

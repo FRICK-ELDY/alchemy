@@ -24,6 +24,9 @@ defmodule WorldWeb.Router do
     post "/rooms/:room_id/host_keys", RoomController, :create_host_key
     post "/rooms/:room_id/manifest_seal", RoomController, :create_manifest_seal
     get "/rooms/:room_id/scene", RoomController, :show_scene
+    # x006b: PlaceRead — any valid Room Token for the room + verified world_seal.
+    post "/rooms/:room_id/place_read", RoomController, :create_place_read
+    get "/rooms/:room_id/place_hashes", RoomController, :show_place_hashes
   end
 
   scope "/", WorldWeb do

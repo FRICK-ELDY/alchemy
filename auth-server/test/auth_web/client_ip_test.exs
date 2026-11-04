@@ -4,7 +4,8 @@ defmodule AuthWeb.ClientIpTest do
   `shared/alchemy_client_ip`.
   """
 
-  use ExUnit.Case, async: true
+  # Mutates Application env (:trusted_proxies) — must not race other modules.
+  use ExUnit.Case, async: false
 
   import Plug.Test
 

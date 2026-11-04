@@ -3,6 +3,9 @@ import Config
 # world → auth S2S (dev only; prod requires AUTH_INTERNAL_TOKEN)
 config :auth, :internal_token, "dev-internal-token"
 
+# Ecto.Repo.transaction + Ash updates; no Ash notifiers yet. Drop when notifiers are added.
+config :ash, :missed_notifications, :ignore
+
 # Configure your database
 config :auth, Auth.Repo,
   username: "alchemy_auth",

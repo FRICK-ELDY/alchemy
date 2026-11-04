@@ -806,4 +806,149 @@ defmodule WorldWeb.RoomControllerTest do
     # x003b: Repo restart leaves Sandbox in auto; restore manual for later DataCase owners.
     Sandbox.mode(World.Repo, :manual)
   end
+
+  defp issue_seal(host_token, room_id) do
+    attestation = issue_attestation(host_token, room_id, host_pub_b64())
+
+    assert {:ok, revision, host_generation, blake3} =
+             World.CanonicalManifest.canonical_blake3(room_id, attestation)
+
+    body =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{host_token}")
+      |> post("/api/v1/rooms/#{room_id}/manifest_seal", %{
+        revision: revision,
+        manifest_blake3: blake3,
+        host_attestation: attestation
+      })
+      |> json_response(200)
+
+    {body["seal"], revision, host_generation, blake3}
+  end
+
+  test "place_read issues JWT for guest with verified world_seal (x006b)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "22222222-2222-2222-2222-222222222222"
+    guest = "33333333-3333-3333-3333-333333333333"
+    room = "place-read"
+
+    conn
+    |> TestAuthHelpers.put_auth(signer, owner)
+    |> post("/api/v1/rooms", %{room_id: room})
+    |> json_response(201)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post("/api/v1/rooms/#{room}/tokens", token_params(%{role: "host"}))
+      |> json_response(200)
+
+    {seal, revision, host_generation, manifest_blake3} = issue_seal(host_token, room)
+
+    %{"token" => guest_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> post("/api/v1/rooms/#{room}/tokens", token_params(%{role: "guest"}))
+      |> json_response(200)
+
+    body =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{guest_token}")
+      |> post("/api/v1/rooms/#{room}/place_read", %{world_seal: seal})
+      |> json_response(200)
+
+    assert is_binary(body["place_read"])
+    assert body["expires_in"] > 0
+    assert body["revision"] == revision
+    assert body["host_generation"] == host_generation
+    assert body["manifest_blake3"] == manifest_blake3
+    assert body["blake3_count"] >= 1
+    assert body["extra_blake3"] == []
+
+    assert {:ok, claims} = World.PlaceRead.verify(body["place_read"])
+    assert claims["sub"] == guest
+    assert claims["typ"] == "place_read"
+    assert claims["room_id"] == room
+
+    coin = World.DemoScene.build()["entries"] |> Enum.find(&(&1["blake3"] != ""))
+
+    assert coin["blake3"] in (World.PlaceHashes.resolve(room, revision, manifest_blake3)
+                              |> elem(1))
+
+    hashes =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{body["place_read"]}")
+      |> get("/api/v1/rooms/#{room}/place_hashes")
+      |> json_response(200)
+
+    assert coin["blake3"] in hashes["blake3s"]
+    assert hashes["manifest_blake3"] == manifest_blake3
+  end
+
+  test "place_read rejects missing seal, forged seal, wrong-room seal, extra_blake3 (x006b)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "22222222-2222-2222-2222-222222222222"
+    room = "place-read-bad"
+    other = "place-read-other"
+
+    conn
+    |> TestAuthHelpers.put_auth(signer, owner)
+    |> post("/api/v1/rooms", %{room_id: room})
+    |> json_response(201)
+
+    build_conn()
+    |> TestAuthHelpers.put_auth(signer, owner)
+    |> post("/api/v1/rooms", %{room_id: other})
+    |> json_response(201)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post("/api/v1/rooms/#{room}/tokens", token_params(%{role: "host"}))
+      |> json_response(200)
+
+    %{"token" => other_host} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post("/api/v1/rooms/#{other}/tokens", token_params(%{role: "host"}))
+      |> json_response(200)
+
+    {seal, _rev, _gen, _blake3} = issue_seal(host_token, room)
+    {other_seal, _, _, _} = issue_seal(other_host, other)
+
+    assert %{"error" => "missing_world_seal"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> post("/api/v1/rooms/#{room}/place_read", %{})
+             |> json_response(422)
+
+    assert %{"error" => "invalid_world_seal"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> post("/api/v1/rooms/#{room}/place_read", %{
+               world_seal: seal <> "tampered"
+             })
+             |> json_response(422)
+
+    assert %{"error" => "seal_room_mismatch"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> post("/api/v1/rooms/#{room}/place_read", %{world_seal: other_seal})
+             |> json_response(403)
+
+    one_extra = [String.duplicate("ab", 32)]
+
+    assert %{"error" => "extra_blake3_disabled"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> post("/api/v1/rooms/#{room}/place_read", %{
+               world_seal: seal,
+               extra_blake3: one_extra
+             })
+             |> json_response(422)
+  end
 end

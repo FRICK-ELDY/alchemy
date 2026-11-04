@@ -12,6 +12,7 @@ defmodule World.Application do
         {Phoenix.PubSub, name: World.PubSub},
         World.Token.Keys,
         World.Auth.Jwks,
+        World.PlaceHashes,
         WorldWeb.Endpoint
       ] ++ zenoh_children()
 
