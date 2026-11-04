@@ -27,6 +27,17 @@ defmodule Assets.Repo.Migrations.CreateDriveNodes do
     create index(:drive_nodes, [:owner_sub])
     create index(:drive_nodes, [:parent_id])
     create index(:drive_nodes, [:owner_sub, :parent_id])
+
+    # Prefab upsert key (x0060). Split indexes: SQLite UNIQUE treats NULL as distinct.
+    create unique_index(:drive_nodes, [:owner_sub, :name, :parent_id],
+             name: :drive_nodes_prefab_owner_name_parent,
+             where: "kind = 'prefab' AND parent_id IS NOT NULL"
+           )
+
+    create unique_index(:drive_nodes, [:owner_sub, :name],
+             name: :drive_nodes_prefab_owner_name_root,
+             where: "kind = 'prefab' AND parent_id IS NULL"
+           )
   end
 
   def down do

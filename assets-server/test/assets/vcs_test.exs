@@ -194,6 +194,26 @@ defmodule Assets.VcsTest do
     assert {:error, %Ecto.Changeset{}} = Vcs.create_branch(repo.repo_id, "main", commit.commit_id)
   end
 
+  test "create_branch rejects commit from another repo" do
+    {node_a, _} = build_prefab_node(@sub_a, "prefab-a")
+    {node_b, _} = build_prefab_node(@sub_a, "prefab-b")
+    {:ok, %{repo: repo_a}} = Vcs.promote_prefab(@sub_a, node_a.node_id)
+    {:ok, %{commit: commit_b}} = Vcs.promote_prefab(@sub_a, node_b.node_id)
+
+    assert {:error, :not_found} =
+             Vcs.create_branch(repo_a.repo_id, "main", commit_b.commit_id)
+  end
+
+  test "advance_branch rejects commit from another repo" do
+    {node_a, _} = build_prefab_node(@sub_a, "prefab-a2")
+    {node_b, _} = build_prefab_node(@sub_a, "prefab-b2")
+    {:ok, %{repo: repo_a, commit: c_a}} = Vcs.promote_prefab(@sub_a, node_a.node_id)
+    {:ok, %{commit: c_b}} = Vcs.promote_prefab(@sub_a, node_b.node_id)
+    {:ok, _} = Vcs.create_branch(repo_a.repo_id, "main", c_a.commit_id)
+
+    assert {:error, :not_found} = Vcs.advance_branch(repo_a.repo_id, "main", c_b.commit_id)
+  end
+
   test "advance_branch moves branch head to new commit" do
     {node, _} = build_prefab_node(@sub_a)
     {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
@@ -298,6 +318,19 @@ defmodule Assets.VcsTest do
     Assets.Repo.update_all(
       from(c in Cert, where: c.cert_id == ^cert.cert_id),
       set: [signature: Base.encode64("bad_signature_bytes_padded_to_64_xxxxxxxxxxxx")]
+    )
+
+    assert {:error, :tampered} = Vcs.verify_cert(cert.cert_id)
+  end
+
+  test "verify_cert returns :tampered for corrupt Base64 signature" do
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", commit.commit_id)
+
+    Assets.Repo.update_all(
+      from(c in Cert, where: c.cert_id == ^cert.cert_id),
+      set: [signature: "%%%not-valid-base64%%%"]
     )
 
     assert {:error, :tampered} = Vcs.verify_cert(cert.cert_id)

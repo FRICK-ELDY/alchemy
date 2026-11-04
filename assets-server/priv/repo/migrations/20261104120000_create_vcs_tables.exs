@@ -52,7 +52,8 @@ defmodule Assets.Repo.Migrations.CreateVcsTables do
     end
 
     create index(:vcs_refs, [:repo_id])
-    create unique_index(:vcs_refs, [:repo_id, :name], name: :vcs_refs_repo_id_name_unique)
+    # Default Ecto name (`…_index`) — ecto_sqlite3 maps unique violations to this name.
+    create unique_index(:vcs_refs, [:repo_id, :name], name: :vcs_refs_repo_id_name_index)
 
     # Immutable certs — no updated_at.
     create table(:vcs_certs, primary_key: false) do

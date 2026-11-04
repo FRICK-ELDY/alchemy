@@ -180,4 +180,7 @@ defmodule Assets.Prefab.Payload do
       "trs" => %{"translation" => t, "rotation" => r, "scale" => s}
     }
   end
+
+  # Incomplete / unexpected child shape → validate_child/1 → {:invalid_child, idx, :invalid_child_shape}.
+  defp child_to_map(_), do: %{}
 end

@@ -79,21 +79,14 @@ defmodule Assets.ItemRef do
   end
 
   defp resolve_rev(%VcsRepo{repo_id: repo_id}, rev) do
-    # 1. Try as VcsRef name (branch or tag)
+    # 1. Try as VcsRef name (branch or tag) — commit must still belong to this repo.
     case Repo.get_by(VcsRef, repo_id: repo_id, name: rev) do
       %VcsRef{commit_id: commit_id} ->
-        fetch_commit(commit_id)
+        fetch_commit_in_repo(repo_id, commit_id)
 
       nil ->
         # 2. Try as commit_id directly (UUID format)
         fetch_commit_in_repo(repo_id, rev)
-    end
-  end
-
-  defp fetch_commit(commit_id) do
-    case Repo.get(Commit, commit_id) do
-      nil -> {:error, :not_found}
-      %Commit{} = commit -> {:ok, commit}
     end
   end
 

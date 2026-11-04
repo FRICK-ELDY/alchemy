@@ -1079,13 +1079,7 @@ fn handle_ui_action(
             *auth_job = Some(rx);
             spawn_auth_http(move || {
                 match auth::register(
-                    &auth_url,
-                    &username,
-                    &email,
-                    &password,
-                    &birthday,
-                    tos_agreed,
-                    remember,
+                    &auth_url, &username, &email, &password, &birthday, tos_agreed, remember,
                 ) {
                     Ok(session) => {
                         let username = session.user.username.clone();

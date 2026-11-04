@@ -39,6 +39,11 @@ defmodule Assets.Drive.Node do
     |> validate_inclusion(:kind, @kind_values)
     |> validate_length(:name, min: 1, max: 255)
     |> validate_blake3_for_kind()
+    # Migration index names + ecto_sqlite3 reported names (column-derived `…_index`).
+    |> unique_constraint(:name, name: :drive_nodes_prefab_owner_name_parent)
+    |> unique_constraint(:name, name: :drive_nodes_prefab_owner_name_root)
+    |> unique_constraint(:name, name: :drive_nodes_owner_sub_name_parent_id_index)
+    |> unique_constraint(:name, name: :drive_nodes_owner_sub_name_index)
   end
 
   defp validate_blake3_for_kind(changeset) do

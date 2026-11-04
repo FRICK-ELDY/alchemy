@@ -1,9 +1,11 @@
 //! Per-operator session undo/redo for Slot reparent transitions (x005b).
 //!
 //! Guarantees: reverse/reapply last reparent recorded for an operator stack;
-//! stack cap with drop-oldest on overflow.
+//! stack cap with drop-oldest on overflow; failed reparent leaves stacks unchanged.
 //! Non-guarantees: persistence across leave; undoing another operator's moves;
-//! physics velocity restore; UI wiring.
+//! physics velocity restore; host/UI wiring (library peel only).
+
+use std::collections::VecDeque;
 
 use crate::slot_graph::{ReparentError, SlotGraph};
 
@@ -28,8 +30,8 @@ impl SlotTransition {
 /// Per-operator undo/redo stacks (session-local).
 #[derive(Clone, Debug)]
 pub struct SlotUndoStack {
-    undo: Vec<SlotTransition>,
-    redo: Vec<SlotTransition>,
+    undo: VecDeque<SlotTransition>,
+    redo: VecDeque<SlotTransition>,
     cap: usize,
 }
 
@@ -42,37 +44,51 @@ impl Default for SlotUndoStack {
 impl SlotUndoStack {
     pub fn new(cap: usize) -> Self {
         Self {
-            undo: Vec::new(),
-            redo: Vec::new(),
+            undo: VecDeque::new(),
+            redo: VecDeque::new(),
             cap: cap.max(1),
         }
     }
 
     pub fn push(&mut self, t: SlotTransition) {
         if self.undo.len() >= self.cap {
-            self.undo.remove(0);
+            let _ = self.undo.pop_front();
         }
-        self.undo.push(t);
+        self.undo.push_back(t);
         self.redo.clear();
     }
 
     pub fn undo(&mut self, graph: &mut SlotGraph) -> Result<Option<SlotTransition>, ReparentError> {
-        let Some(t) = self.undo.pop() else {
+        let Some(t) = self.undo.pop_back() else {
             return Ok(None);
         };
         let inv = t.inverse();
-        graph.reparent(inv.child, inv.to)?;
-        self.redo.push(t);
-        Ok(Some(inv))
+        match graph.reparent(inv.child, inv.to) {
+            Ok(()) => {
+                self.redo.push_back(t);
+                Ok(Some(inv))
+            }
+            Err(e) => {
+                self.undo.push_back(t);
+                Err(e)
+            }
+        }
     }
 
     pub fn redo(&mut self, graph: &mut SlotGraph) -> Result<Option<SlotTransition>, ReparentError> {
-        let Some(t) = self.redo.pop() else {
+        let Some(t) = self.redo.pop_back() else {
             return Ok(None);
         };
-        graph.reparent(t.child, t.to)?;
-        self.undo.push(t);
-        Ok(Some(t))
+        match graph.reparent(t.child, t.to) {
+            Ok(()) => {
+                self.undo.push_back(t);
+                Ok(Some(t))
+            }
+            Err(e) => {
+                self.redo.push_back(t);
+                Err(e)
+            }
+        }
     }
 }
 
@@ -85,7 +101,7 @@ mod tests {
         let mut g = SlotGraph::new();
         let mut stack = SlotUndoStack::new(8);
         // A(1) holds 10 → pass to B(2)
-        g.attach_held(1, 10);
+        g.attach_held(1, 10).unwrap();
         let t = SlotTransition {
             child: 10,
             from: Some(1),
@@ -131,5 +147,25 @@ mod tests {
         let u = stack.undo(&mut g).unwrap().unwrap();
         assert_eq!(u.child, 2);
         assert!(stack.undo(&mut g).unwrap().is_none());
+    }
+
+    #[test]
+    fn undo_failure_restores_stack() {
+        let mut g = SlotGraph::new();
+        let mut stack = SlotUndoStack::new(8);
+        // Record a transition whose inverse would create a cycle on current graph.
+        stack.push(SlotTransition {
+            child: 1,
+            from: Some(2),
+            to: Some(3),
+        });
+        // Graph: 2 → 1 → 3; undo wants 1 → 2 (cycle).
+        g.reparent(1, Some(3)).unwrap();
+        g.reparent(2, Some(1)).unwrap();
+        assert!(stack.undo(&mut g).is_err());
+        // Transition still on undo; redo empty.
+        assert_eq!(stack.undo.len(), 1);
+        assert!(stack.redo.is_empty());
+        assert_eq!(g.parent(1), Some(3));
     }
 }

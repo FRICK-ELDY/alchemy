@@ -91,6 +91,39 @@ defmodule Assets.DriveTakeOutTest do
     assert node1.blake3 != node2.blake3
   end
 
+  test "duplicate prefab insert surfaces as changeset unique (not ConstraintError)" do
+    alias Assets.Drive.Node
+
+    {:ok, payload} = Payload.new(1, [%{local_id: "c0", blake3: @blake3, trs: nil}])
+    {:ok, existing} = Drive.save_prefab(@sub_a, "uniq-prefab", payload)
+
+    other_blake3 = String.duplicate("d", 64)
+
+    cs =
+      Node.changeset(%Node{}, %{
+        node_id: Ecto.UUID.generate(),
+        owner_sub: @sub_a,
+        parent_id: nil,
+        kind: "prefab",
+        name: "uniq-prefab",
+        blake3: other_blake3
+      })
+
+    # Must be Changeset error (ecto_sqlite3 name mapped), never raise ConstraintError.
+    assert {:error, %Ecto.Changeset{errors: errors}} = Repo.insert(cs)
+
+    assert Enum.any?(errors, fn
+             {_field, {_msg, opts}} -> opts[:constraint] == :unique
+             _ -> false
+           end)
+
+    # save_prefab still updates the existing row via find/upsert.
+    {:ok, p2} = Payload.new(1, [%{local_id: "c1", blake3: other_blake3, trs: nil}])
+    assert {:ok, updated} = Drive.save_prefab(@sub_a, "uniq-prefab", p2)
+    assert updated.node_id == existing.node_id
+    assert updated.blake3 != existing.blake3
+  end
+
   test "save_prefab for different names creates separate nodes" do
     {:ok, payload} = Payload.new(1, [])
     {:ok, n1} = Drive.save_prefab(@sub_a, "prefab-one", payload)

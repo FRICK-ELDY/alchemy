@@ -91,7 +91,8 @@ defmodule Assets.Vcs do
   def advance_branch(repo_id, name, new_commit_id) do
     with {:ok, vref} <- fetch_ref(repo_id, name),
          :ok <- assert_not_frozen(vref),
-         :ok <- assert_fast_forward(vref.commit_id, new_commit_id) do
+         :ok <- assert_commit_in_repo(repo_id, new_commit_id),
+         :ok <- assert_fast_forward(repo_id, vref.commit_id, new_commit_id) do
       changeset = VcsRef.advance_changeset(vref, %{commit_id: new_commit_id})
       Repo.update(changeset)
     end
@@ -174,17 +175,19 @@ defmodule Assets.Vcs do
   end
 
   defp create_ref(repo_id, name, kind, commit_id, is_frozen) do
-    changeset =
-      VcsRef.changeset(%VcsRef{}, %{
-        ref_id: generate_id(),
-        repo_id: repo_id,
-        name: name,
-        kind: kind,
-        commit_id: commit_id,
-        is_frozen: is_frozen
-      })
+    with :ok <- assert_commit_in_repo(repo_id, commit_id) do
+      changeset =
+        VcsRef.changeset(%VcsRef{}, %{
+          ref_id: generate_id(),
+          repo_id: repo_id,
+          name: name,
+          kind: kind,
+          commit_id: commit_id,
+          is_frozen: is_frozen
+        })
 
-    Repo.insert(changeset)
+      Repo.insert(changeset)
+    end
   end
 
   defp fetch_ref(repo_id, name) do
@@ -197,20 +200,40 @@ defmodule Assets.Vcs do
   defp assert_not_frozen(%VcsRef{is_frozen: true}), do: {:error, :frozen}
   defp assert_not_frozen(%VcsRef{}), do: :ok
 
-  @max_ff_depth 64
+  defp assert_commit_in_repo(repo_id, commit_id) do
+    import Ecto.Query, only: [from: 2]
 
-  # Walk new_commit_id's ancestry to find old_commit_id.
-  # If found, the branch advance is a valid fast-forward.
-  defp assert_fast_forward(old_commit_id, new_commit_id) do
-    do_ff_check(old_commit_id, new_commit_id, @max_ff_depth)
+    case Repo.one(
+           from(c in Commit,
+             where: c.commit_id == ^commit_id and c.repo_id == ^repo_id,
+             select: 1
+           )
+         ) do
+      nil -> {:error, :not_found}
+      _ -> :ok
+    end
   end
 
-  defp do_ff_check(_old_id, _new_id, 0), do: {:error, :not_fast_forward}
+  @max_ff_depth 64
 
-  defp do_ff_check(old_id, new_id, _depth) when old_id == new_id, do: :ok
+  # Walk new_commit_id's ancestry (same repo only) to find old_commit_id.
+  # If found, the branch advance is a valid fast-forward.
+  defp assert_fast_forward(repo_id, old_commit_id, new_commit_id) do
+    do_ff_check(repo_id, old_commit_id, new_commit_id, @max_ff_depth)
+  end
 
-  defp do_ff_check(old_id, current_id, depth) do
-    case Repo.get(Commit, current_id) do
+  defp do_ff_check(_repo_id, _old_id, _new_id, 0), do: {:error, :not_fast_forward}
+
+  defp do_ff_check(_repo_id, old_id, new_id, _depth) when old_id == new_id, do: :ok
+
+  defp do_ff_check(repo_id, old_id, current_id, depth) do
+    import Ecto.Query, only: [from: 2]
+
+    case Repo.one(
+           from(c in Commit,
+             where: c.commit_id == ^current_id and c.repo_id == ^repo_id
+           )
+         ) do
       nil ->
         {:error, :not_fast_forward}
 
@@ -218,7 +241,7 @@ defmodule Assets.Vcs do
         {:error, :not_fast_forward}
 
       %Commit{parent_commit_id: parent_id} ->
-        do_ff_check(old_id, parent_id, depth - 1)
+        do_ff_check(repo_id, old_id, parent_id, depth - 1)
     end
   end
 

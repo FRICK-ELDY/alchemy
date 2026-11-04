@@ -6,13 +6,18 @@
 //! Non-guarantees: Rapier / Intent / Zenoh; persistence / blake3 / Drive;
 //! pass/place semantics (→ x005a); undo (→ x005b).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-/// Error from [`SlotGraph::reparent`].
+/// Bound walks over possibly corrupted / deserialized graphs.
+const MAX_GRAPH_HOPS: usize = 256;
+
+/// Error from [`SlotGraph::reparent`] / [`SlotGraph::attach_held`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReparentError {
     /// `child == parent` or ancestor cycle.
     Cycle,
+    /// Parent chain longer than [`MAX_GRAPH_HOPS`] (corrupt graph).
+    DepthExceeded,
 }
 
 /// Runtime parent links (`child → parent`). World-rooted entities have no entry.
@@ -43,9 +48,15 @@ impl SlotGraph {
     /// Attach `held` under `holder` (held Slot). Overwrites prior parent.
     ///
     /// Deterministic: same inputs → same graph. Does not validate entity kinds
-    /// (caller / host owns that). Self-parent is a no-op (held API special case).
-    pub fn attach_held(&mut self, holder: u32, held: u32) {
-        let _ = self.reparent(held, Some(holder));
+    /// (caller / host owns that). Self-parent is a no-op (`Ok(())`).
+    ///
+    /// Returns [`ReparentError::DepthExceeded`] / [`ReparentError::Cycle`] when
+    /// the graph is corrupt — callers must not ignore `DepthExceeded`.
+    pub fn attach_held(&mut self, holder: u32, held: u32) -> Result<(), ReparentError> {
+        if holder == held {
+            return Ok(());
+        }
+        self.reparent(held, Some(holder))
     }
 
     /// Clear held parent for `held` (world-rooted again).
@@ -70,10 +81,14 @@ impl SlotGraph {
     }
 
     /// Walk ancestors of `start` (exclusive of `start`).
+    /// Stops after [`MAX_GRAPH_HOPS`] to avoid infinite loops on corrupt cycles.
     pub fn ancestors(&self, start: u32) -> Vec<u32> {
         let mut out = Vec::new();
         let mut cur = start;
-        while let Some(p) = self.parent(cur) {
+        for _ in 0..MAX_GRAPH_HOPS {
+            let Some(p) = self.parent(cur) else {
+                break;
+            };
             out.push(p);
             cur = p;
         }
@@ -81,10 +96,20 @@ impl SlotGraph {
     }
 
     /// Descendants of `root` (not including `root`), depth-first.
+    ///
+    /// Bounded by visit-set + [`MAX_GRAPH_HOPS`] so a corrupt cycle cannot
+    /// loop forever or grow without bound.
     pub fn descendants(&self, root: u32) -> Vec<u32> {
         let mut out = Vec::new();
+        let mut seen = HashSet::new();
         let mut stack = self.children_of(root);
         while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            if out.len() >= MAX_GRAPH_HOPS {
+                break;
+            }
             out.push(id);
             stack.extend(self.children_of(id));
         }
@@ -101,16 +126,19 @@ impl SlotGraph {
             }
             // Would create cycle if `child` is an ancestor of `p`.
             let mut cur = p;
-            while let Some(next) = self.parent(cur) {
+            for _ in 0..MAX_GRAPH_HOPS {
+                let Some(next) = self.parent(cur) else {
+                    self.parent_of.insert(child, p);
+                    return Ok(());
+                };
                 if next == child {
                     return Err(ReparentError::Cycle);
                 }
                 cur = next;
             }
-            self.parent_of.insert(child, p);
-        } else {
-            self.parent_of.remove(&child);
+            return Err(ReparentError::DepthExceeded);
         }
+        self.parent_of.remove(&child);
         Ok(())
     }
 }
@@ -126,7 +154,7 @@ mod tests {
         let box_id = 10;
 
         assert_eq!(g.parent(box_id), None);
-        g.attach_held(root, box_id);
+        g.attach_held(root, box_id).unwrap();
         assert_eq!(g.parent(box_id), Some(root));
         assert!(g.is_held_by(box_id, root));
         assert_eq!(g.children_of(root), vec![box_id]);
@@ -140,8 +168,8 @@ mod tests {
     #[test]
     fn attach_held_overwrites_prior_parent() {
         let mut g = SlotGraph::new();
-        g.attach_held(1_000_001, 10);
-        g.attach_held(1_000_002, 10);
+        g.attach_held(1_000_001, 10).unwrap();
+        g.attach_held(1_000_002, 10).unwrap();
         assert_eq!(g.parent(10), Some(1_000_002));
         assert!(g.children_of(1_000_001).is_empty());
         assert_eq!(g.children_of(1_000_002), vec![10]);
@@ -151,9 +179,9 @@ mod tests {
     fn clear_held_by_releases_all_children() {
         let mut g = SlotGraph::new();
         let root = 1_000_001;
-        g.attach_held(root, 10);
-        g.attach_held(root, 11);
-        g.attach_held(1_000_002, 12);
+        g.attach_held(root, 10).unwrap();
+        g.attach_held(root, 11).unwrap();
+        g.attach_held(1_000_002, 12).unwrap();
         g.clear_held_by(root);
         assert_eq!(g.parent(10), None);
         assert_eq!(g.parent(11), None);
@@ -161,9 +189,9 @@ mod tests {
     }
 
     #[test]
-    fn attach_held_rejects_self_parent() {
+    fn attach_held_self_parent_is_ok_noop() {
         let mut g = SlotGraph::new();
-        g.attach_held(10, 10);
+        assert!(g.attach_held(10, 10).is_ok());
         assert_eq!(g.parent(10), None);
     }
 
@@ -189,5 +217,16 @@ mod tests {
         g.reparent(10, None).unwrap();
         assert_eq!(g.parent(10), None);
         assert_eq!(g.parent(11), Some(10));
+    }
+
+    #[test]
+    fn descendants_terminates_on_corrupt_cycle() {
+        let mut g = SlotGraph::new();
+        // Inject cycle via raw map (reparent would refuse).
+        g.parent_of.insert(10, 20);
+        g.parent_of.insert(20, 10);
+        let desc = g.descendants(10);
+        assert!(desc.len() <= 2);
+        assert!(desc.contains(&20));
     }
 }

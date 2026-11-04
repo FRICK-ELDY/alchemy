@@ -8,9 +8,12 @@ defmodule Assets.Drive do
   - parent_id must point to an owner-controlled folder (not another kind).
   - Circular parent chain is rejected (bounded hop walk).
   - resolve_for_take_out/2 verifies grant ownership before host spawn (x005f).
-  - save_prefab/4 validates Prefab.Payload schema before upload + DriveNode upsert (x0060).
+  - save_prefab/4 validates Prefab.Payload schema and parent authz before upload (x0060).
 
-  Non-guarantees: Group Vault, sharing, Mail/Comms, Shop, VcsRepo ops (→ Assets.Vcs).
+  Non-guarantees:
+  - Group Vault, sharing, Mail/Comms, Shop, VcsRepo ops (→ Assets.Vcs).
+  - Compensating delete when upload succeeds but DriveNode upsert fails (CAS bytes +
+    quota/Grant may remain; same orphan policy as Assets.Blobs — no GC yet).
   """
 
   import Ecto.Query
@@ -138,7 +141,8 @@ defmodule Assets.Drive do
   # ---------------------------------------------------------------------------
 
   @doc "Delete a node (must be owner; folder must be empty first)."
-  @spec delete_node(String.t(), String.t()) :: :ok | {:error, :not_found | :not_empty}
+  @spec delete_node(String.t(), String.t()) ::
+          :ok | {:error, :not_found | :not_empty | Ecto.Changeset.t()}
   def delete_node(owner_sub, node_id) do
     case get_node(owner_sub, node_id) do
       nil ->
@@ -148,13 +152,18 @@ defmodule Assets.Drive do
         if folder_has_children?(owner_sub, node_id) do
           {:error, :not_empty}
         else
-          Repo.delete(node)
-          :ok
+          delete_ok(node)
         end
 
       %Node{} = node ->
-        Repo.delete(node)
-        :ok
+        delete_ok(node)
+    end
+  end
+
+  defp delete_ok(%Node{} = node) do
+    case Repo.delete(node) do
+      {:ok, _} -> :ok
+      {:error, changeset} -> {:error, changeset}
     end
   end
 
@@ -204,10 +213,11 @@ defmodule Assets.Drive do
   @spec save_prefab(String.t(), String.t(), Payload.t(), String.t() | nil) ::
           {:ok, Node.t()} | {:error, term()}
   def save_prefab(owner_sub, name, %Payload{} = payload, parent_id \\ nil) do
-    with {:ok, json} <- Payload.to_json(payload),
+    # Parent/authz checks before upload so :forbidden does not consume quota or orphan CAS.
+    with :ok <- maybe_assert_parent_owner(owner_sub, parent_id),
+         {:ok, json} <- Payload.to_json(payload),
          {:ok, cas_obj, _status} <-
-           Blobs.upload(owner_sub, json, "application/json", access: :grant_required),
-         :ok <- maybe_assert_parent_owner(owner_sub, parent_id) do
+           Blobs.upload(owner_sub, json, "application/json", access: :grant_required) do
       upsert_prefab_node(owner_sub, name, cas_obj.blake3, parent_id)
     end
   end
@@ -276,22 +286,82 @@ defmodule Assets.Drive do
   defp upsert_prefab_node(owner_sub, name, blake3, parent_id) do
     case find_prefab_node(owner_sub, name, parent_id) do
       nil ->
-        changeset =
-          Node.changeset(%Node{}, %{
-            node_id: generate_id(),
-            owner_sub: owner_sub,
-            parent_id: parent_id,
-            kind: "prefab",
-            name: name,
-            blake3: blake3
-          })
-
-        Repo.insert(changeset)
+        insert_or_update_prefab(owner_sub, name, blake3, parent_id)
 
       existing_node ->
-        changeset = Node.changeset(existing_node, %{blake3: blake3})
-        Repo.update(changeset)
+        Repo.update(Node.changeset(existing_node, %{blake3: blake3}))
     end
+  end
+
+  defp insert_or_update_prefab(owner_sub, name, blake3, parent_id) do
+    changeset =
+      Node.changeset(%Node{}, %{
+        node_id: generate_id(),
+        owner_sub: owner_sub,
+        parent_id: parent_id,
+        kind: "prefab",
+        name: name,
+        blake3: blake3
+      })
+
+    try do
+      case Repo.insert(changeset) do
+        {:ok, node} ->
+          {:ok, node}
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          recover_prefab_unique_conflict(cs, owner_sub, name, blake3, parent_id)
+      end
+    rescue
+      # ecto_sqlite3 may raise when unique_constraint name does not match adapter report.
+      e in Ecto.ConstraintError ->
+        if prefab_unique_constraint_error?(e) do
+          update_existing_prefab({:error, e}, owner_sub, name, blake3, parent_id)
+        else
+          reraise e, __STACKTRACE__
+        end
+    end
+  end
+
+  # Race: concurrent insert hit unique (owner,name,parent) — reload and update.
+  defp recover_prefab_unique_conflict(cs, owner_sub, name, blake3, parent_id) do
+    if unique_name_conflict?(cs) do
+      update_existing_prefab(cs, owner_sub, name, blake3, parent_id)
+    else
+      {:error, cs}
+    end
+  end
+
+  defp update_existing_prefab(err, owner_sub, name, blake3, parent_id) do
+    case find_prefab_node(owner_sub, name, parent_id) do
+      nil -> err
+      existing -> Repo.update(Node.changeset(existing, %{blake3: blake3}))
+    end
+  end
+
+  # Accept any :unique on the changeset — name strings differ across adapters
+  # (ecto_sqlite3 has reported `…_index` vs migration `…_unique` elsewhere).
+  defp unique_name_conflict?(%Ecto.Changeset{errors: errors}) do
+    Enum.any?(errors, fn
+      {_field, {_, opts}} -> opts[:constraint] == :unique
+      _ -> false
+    end)
+  end
+
+  defp prefab_unique_constraint_error?(%Ecto.ConstraintError{constraint: name, type: type}) do
+    type == :unique and prefab_unique_name?(name)
+  end
+
+  defp prefab_unique_name?(name) when is_atom(name), do: prefab_unique_name?(Atom.to_string(name))
+
+  defp prefab_unique_name?(name) when is_binary(name) do
+    name in [
+      "drive_nodes_prefab_owner_name_parent",
+      "drive_nodes_prefab_owner_name_root",
+      "drive_nodes_owner_sub_name_parent_id_index",
+      "drive_nodes_owner_sub_name_index"
+    ] or String.contains?(name, "prefab_owner_name") or
+      String.contains?(name, "owner_sub_name")
   end
 
   defp find_prefab_node(owner_sub, name, parent_id) do

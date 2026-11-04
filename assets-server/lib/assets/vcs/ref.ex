@@ -39,6 +39,8 @@ defmodule Assets.Vcs.Ref do
     |> validate_format(:name, ~r/^[^\x00-\x1f\/\\:*?"<>|]+$/,
       message: "contains invalid characters"
     )
+    # ecto_sqlite3 reports this unique violation as `…_index` even when the
+    # migration index is named `…_unique` — match the adapter's constraint name.
     |> unique_constraint([:repo_id, :name], name: :vcs_refs_repo_id_name_index)
   end
 

@@ -12,11 +12,12 @@ defmodule Assets.Vcs.Cert do
   - Production: inject via runtime config / secrets manager; never commit to VCS.
 
   Canonical message (what is signed):
-    `"target_kind:target_id:target_hash:subject_sub"` (fields joined by `:`)
+    `"target_kind:target_id:subject_sub"` (fields joined by `:`).
+    `target_hash` on the cert row is blake3 of that message (tamper anchor), not a signed field.
 
   Guarantees:
   - issue/2 rejects unknown target_kind.
-  - verify/1 returns {:error, :tampered} for any mismatch.
+  - verify/1 returns {:error, :tampered} for any mismatch (incl. corrupt Base64 signature).
   - Private key is never returned or logged.
 
   Non-guarantees: CA chain, revocation, multi-sig, License Token.
@@ -127,27 +128,42 @@ defmodule Assets.Vcs.Cert do
     if expected_hash != stored_hash do
       {:error, :tampered}
     else
-      sig_bin = Base.decode64!(signature)
-      pub_key = signing_pub_key!()
+      verify_signature(message, signature)
+    end
+  end
 
-      if :crypto.verify(:eddsa, :none, message, sig_bin, [pub_key, :ed25519]) do
-        :ok
-      else
+  defp verify_signature(message, signature) do
+    case Base.decode64(signature) do
+      :error ->
         {:error, :tampered}
-      end
+
+      {:ok, sig_bin} ->
+        if :crypto.verify(:eddsa, :none, message, sig_bin, [signing_pub_key!(), :ed25519]) do
+          :ok
+        else
+          {:error, :tampered}
+        end
     end
   end
 
   @doc """
   Generate a fresh Ed25519 keypair and install it in Application config.
-  Use in test setup only — never in production code.
+  Test-only — raises outside `Mix.env() == :test`.
   """
   @spec install_test_key!() :: :ok
   def install_test_key! do
+    unless mix_test_env?() do
+      raise "Assets.Vcs.Cert.install_test_key!/0 is only allowed in Mix test"
+    end
+
     {pub, priv} = :crypto.generate_key(:eddsa, :ed25519)
     Application.put_env(:assets, :cert_signing_priv_key, Base.encode64(priv))
     Application.put_env(:assets, :cert_signing_pub_key, Base.encode64(pub))
     :ok
+  end
+
+  defp mix_test_env? do
+    Code.ensure_loaded?(Mix) and function_exported?(Mix, :env, 0) and Mix.env() == :test
   end
 
   @doc "Canonical message that is signed. Public so callers can verify external certs."

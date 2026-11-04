@@ -310,9 +310,14 @@ impl PhysicsWorld {
             index: g.index,
             offset,
         };
+        // Intentionally bypass `release_grab`: that path clears Slot + sets Dynamic.
+        // Pass keeps Kinematic hold and only reparents held → `to_slot` user_root.
+        if self.slots.attach_held(holder_to, held_id).is_err() {
+            // Corrupt / over-deep SlotGraph — leave grabs unchanged.
+            return false;
+        }
         self.grabs[from_slot] = None;
         self.grabs[to_slot] = Some(new_g);
-        self.slots.attach_held(holder_to, held_id);
         self.follow_grab(new_g, aim);
         true
     }
@@ -411,11 +416,15 @@ impl PhysicsWorld {
         body.set_linvel(vector![0.0, 0.0, 0.0], true);
         body.set_angvel(vector![0.0, 0.0, 0.0], true);
         body.set_next_kinematic_translation(t);
-        let g = ActiveGrab { index, offset };
-        self.grabs[slot] = Some(g);
         let held_id = self.boxes.entity_ids[index];
         let holder = Self::user_root_entity_id(slot);
-        self.slots.attach_held(holder, held_id);
+        if self.slots.attach_held(holder, held_id).is_err() {
+            // DepthExceeded / Cycle on corrupt graph — do not leave a grab without Slot.
+            body.set_body_type(RigidBodyType::Dynamic, true);
+            return;
+        }
+        let g = ActiveGrab { index, offset };
+        self.grabs[slot] = Some(g);
         self.follow_grab(g, aim_v);
     }
 
