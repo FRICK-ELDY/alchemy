@@ -13,6 +13,7 @@ const {
   preflightJsonText,
   validateDocument,
 } = require("./validate-coverage-ledger.cjs");
+const { cliOutput, cliStderrBody } = require("./cli-test-helpers.cjs");
 
 const validatorPath = path.join(__dirname, "validate-coverage-ledger.cjs");
 const CLI_TIMEOUT_MS = 5000;
@@ -70,10 +71,6 @@ function runCli(contents, options = {}) {
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
-}
-
-function cliOutput(result) {
-  return `${result.stdout}${result.stderr}`;
 }
 
 const TERMINAL_CONTROL_PAYLOAD = "\u001b\u0007\u0085\u202e";
@@ -143,7 +140,7 @@ test("accepts an empty ledger and complete units", () => {
   assert.deepEqual(errorsFor([covered]), []);
 });
 
-test("accepts a complete ledger through the CLI", { skip: !HAS_SAFE_INPUT_OPEN }, () => {
+test("accepts a complete ledger through the CLI", () => {
   const result = runCli(JSON.stringify([unit()]));
   assert.equal(result.status, 0, cliOutput(result));
   assert.match(result.stdout, /PASS: 1 coverage units valid/);
@@ -160,10 +157,8 @@ test("text preflight ignores structural characters and escapes inside strings", 
   const contents = JSON.stringify([value]);
   assert.doesNotThrow(() => preflightJsonText(contents));
   assert.deepEqual(JSON.parse(contents), [value]);
-  if (HAS_SAFE_INPUT_OPEN) {
-    const result = runCli(contents);
-    assert.equal(result.status, 0, cliOutput(result));
-  }
+  const result = runCli(contents);
+  assert.equal(result.status, 0, cliOutput(result));
 });
 
 test("text preflight enforces structural cardinality limits", () => {
@@ -563,7 +558,7 @@ test("quotes input-derived controls in direct validation errors", () => {
   assertNoInjectedControlBytes(output);
 });
 
-test("quotes input-derived controls in CLI validation errors", { skip: !HAS_SAFE_INPUT_OPEN }, () => {
+test("quotes input-derived controls in CLI validation errors", () => {
   const value = unit({
     status: `invalid-${TERMINAL_CONTROL_PAYLOAD}`,
     result_fingerprints: ["force-state-error"],
@@ -576,7 +571,7 @@ test("quotes input-derived controls in CLI validation errors", { skip: !HAS_SAFE
   assertNoInjectedControlBytes(result.stderr);
 });
 
-test("returns a generic syntax error without parser-supplied controls", { skip: !HAS_SAFE_INPUT_OPEN }, () => {
+test("returns a generic syntax error without parser-supplied controls", () => {
   const malformed = Buffer.concat([
     Buffer.from("["),
     Buffer.from(TERMINAL_CONTROL_PAYLOAD),
@@ -585,7 +580,7 @@ test("returns a generic syntax error without parser-supplied controls", { skip: 
   const result = runCli(malformed);
 
   assert.equal(result.status, 1, cliOutput(result));
-  assert.equal(result.stderr, "Failed to parse coverage ledger: invalid JSON syntax\n");
+  assert.equal(cliStderrBody(result.stderr), "Failed to parse coverage ledger: invalid JSON syntax\n");
   assertNoInjectedControlBytes(result.stderr);
 });
 
@@ -605,7 +600,7 @@ test("does not reflect controls from a failed CLI input path", () => {
   }
 });
 
-test("rejects invalid UTF-8 through the CLI", { skip: !HAS_SAFE_INPUT_OPEN }, () => {
+test("rejects invalid UTF-8 through the CLI", () => {
   const encoded = Buffer.from(JSON.stringify([unit()]));
   const marker = Buffer.from("Update-user route");
   const markerOffset = encoded.indexOf(marker);
@@ -644,7 +639,7 @@ test("rejects a FIFO through the CLI without blocking", { skip: process.platform
   }
 });
 
-test("rejects a symlink through the CLI", { skip: process.platform === "win32" || !HAS_SAFE_INPUT_OPEN }, () => {
+test("rejects a symlink through the CLI", { skip: !HAS_SAFE_INPUT_OPEN }, () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "validate-coverage-ledger-symlink-"));
   const targetPath = path.join(directory, "target.json");
   const symlinkPath = path.join(directory, "coverage-ledger.json");
@@ -665,11 +660,40 @@ test("rejects a symlink through the CLI", { skip: process.platform === "win32" |
   }
 });
 
+test("Alchemy fallback CLI rejects a symlink via lstat", { skip: HAS_SAFE_INPUT_OPEN }, (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "validate-coverage-ledger-symlink-fallback-"));
+  const targetPath = path.join(directory, "target.json");
+  const symlinkPath = path.join(directory, "coverage-ledger.json");
+  try {
+    fs.writeFileSync(targetPath, JSON.stringify([unit()]));
+    try {
+      fs.symlinkSync(targetPath, symlinkPath);
+    } catch (error) {
+      if (process.platform === "win32" && error && (error.code === "EPERM" || error.code === "EACCES")) {
+        t.skip("Windows symlink creation requires privilege or Developer Mode");
+        return;
+      }
+      throw error;
+    }
+    const result = spawnSync(process.execPath, [validatorPath, symlinkPath], {
+      encoding: "utf8",
+      timeout: CLI_TIMEOUT_MS,
+    });
+    const output = cliOutput(result);
+    assert.notEqual(result.error && result.error.code, "ETIMEDOUT", output);
+    assert.equal(result.status, 1, output);
+    assert.match(output, /input must not be a symlink/);
+    assert.match(result.stderr, /Alchemy host fallback/);
+    assert.doesNotMatch(output, /stack|at validate-coverage-ledger/i);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("rejects deeply nested input without recursion failure", () => {
   let nested = 0;
   for (let depth = 0; depth < 20000; depth++) nested = [nested];
   assert(errorsFor(nested).some((error) => error.includes("exceeds nesting depth limit 64")));
-  if (!HAS_SAFE_INPUT_OPEN) return;
 
   const result = runCli(`${"[".repeat(20000)}0${"]".repeat(20000)}`);
   const output = cliOutput(result);
@@ -700,7 +724,6 @@ test("rejects multi-megabyte nesting under a constrained Node heap", { skip: !HA
 
 test("caps malformed 10000-unit validation output", () => {
   assert.equal(errorsFor(Array.from({ length: LIMITS.units }, () => null)).length, LIMITS.validationErrors);
-  if (!HAS_SAFE_INPUT_OPEN) return;
 
   const result = runCli(JSON.stringify(Array.from({ length: LIMITS.units }, () => null)));
   const output = cliOutput(result);
@@ -733,8 +756,6 @@ test("accepts a canonical ID derived from near-maximum multibyte references", ()
   assert(value.coverage_id.length <= 65536, `coverage_id length ${value.coverage_id.length}`);
   assert.deepEqual(errorsFor([value]), []);
 
-  if (HAS_SAFE_INPUT_OPEN) {
-    const result = runCli(JSON.stringify([value]));
-    assert.equal(result.status, 0, cliOutput(result));
-  }
+  const result = runCli(JSON.stringify([value]));
+  assert.equal(result.status, 0, cliOutput(result));
 });

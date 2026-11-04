@@ -11,6 +11,7 @@ const {
   collectSchemaErrors,
   validateDocument,
 } = require("./validate-findings.cjs");
+const { cliOutput, cliStderrBody } = require("./cli-test-helpers.cjs");
 
 const validatorPath = path.join(__dirname, "validate-findings.cjs");
 const CLI_TIMEOUT_MS = 5000;
@@ -111,10 +112,6 @@ function runCli(contents, options = {}) {
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
-}
-
-function cliOutput(result) {
-  return `${result.stdout}${result.stderr}`;
 }
 
 function assertNoInjectedControlBytes(output) {
@@ -400,7 +397,7 @@ test("CLI rejects invalid UTF-8 without replacement or an exception trace", () =
   assert.doesNotMatch(output, /TypeError|stack|at validate-findings/i);
 });
 
-test("quotes input-derived controls in CLI validation errors", { skip: !HAS_SAFE_INPUT_OPEN }, () => {
+test("quotes input-derived controls in CLI validation errors", () => {
   const finding = confirmed();
   finding.trace[0].kind = `invalid-${TERMINAL_CONTROL_PAYLOAD}`;
   finding.execution[`extra-${TERMINAL_CONTROL_PAYLOAD}`] = "value";
@@ -413,7 +410,7 @@ test("quotes input-derived controls in CLI validation errors", { skip: !HAS_SAFE
   assertNoInjectedControlBytes(result.stderr);
 });
 
-test("returns a generic syntax error without parser-supplied controls", { skip: !HAS_SAFE_INPUT_OPEN }, () => {
+test("returns a generic syntax error without parser-supplied controls", () => {
   const malformed = Buffer.concat([
     Buffer.from("["),
     Buffer.from(TERMINAL_CONTROL_PAYLOAD),
@@ -422,7 +419,7 @@ test("returns a generic syntax error without parser-supplied controls", { skip: 
   const result = runCli(malformed);
 
   assert.equal(result.status, 1, cliOutput(result));
-  assert.equal(result.stderr, "Failed to parse findings JSON: invalid JSON syntax\n");
+  assert.equal(cliStderrBody(result.stderr), "Failed to parse findings JSON: invalid JSON syntax\n");
   assertNoInjectedControlBytes(result.stderr);
 });
 
@@ -483,7 +480,7 @@ test("CLI rejects a FIFO without blocking", { skip: process.platform === "win32"
   }
 });
 
-test("CLI rejects a symlink without following it", { skip: process.platform === "win32" || !HAS_SAFE_INPUT_OPEN }, () => {
+test("CLI rejects a symlink without following it", { skip: !HAS_SAFE_INPUT_OPEN }, () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "validate-findings-symlink-"));
   const targetPath = path.join(directory, "target.json");
   const symlinkPath = path.join(directory, "findings.json");
@@ -498,6 +495,36 @@ test("CLI rejects a symlink without following it", { skip: process.platform === 
     assert.notEqual(result.error && result.error.code, "ETIMEDOUT", output);
     assert.equal(result.status, 1, output);
     assert.match(output, /input must not be a symlink/);
+    assert.doesNotMatch(output, /stack|at validate-findings/i);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Alchemy fallback CLI rejects a symlink via lstat", { skip: HAS_SAFE_INPUT_OPEN }, (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "validate-findings-symlink-fallback-"));
+  const targetPath = path.join(directory, "target.json");
+  const symlinkPath = path.join(directory, "findings.json");
+  try {
+    fs.writeFileSync(targetPath, JSON.stringify(producerShapedFindings()));
+    try {
+      fs.symlinkSync(targetPath, symlinkPath);
+    } catch (error) {
+      if (process.platform === "win32" && error && (error.code === "EPERM" || error.code === "EACCES")) {
+        t.skip("Windows symlink creation requires privilege or Developer Mode");
+        return;
+      }
+      throw error;
+    }
+    const result = spawnSync(process.execPath, [validatorPath, symlinkPath], {
+      encoding: "utf8",
+      timeout: CLI_TIMEOUT_MS,
+    });
+    const output = cliOutput(result);
+    assert.notEqual(result.error && result.error.code, "ETIMEDOUT", output);
+    assert.equal(result.status, 1, output);
+    assert.match(output, /input must not be a symlink/);
+    assert.match(result.stderr, /Alchemy host fallback/);
     assert.doesNotMatch(output, /stack|at validate-findings/i);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
@@ -538,7 +565,6 @@ test("rejects unsupported and malformed schema keywords", () => {
 
 test("caps malformed 1000-finding validation output", () => {
   assert.equal(errorsFor(Array.from({ length: LIMITS.arrayItems }, () => null)).length, LIMITS.validationErrors);
-  if (!HAS_SAFE_INPUT_OPEN) return;
 
   const result = runCli(JSON.stringify(Array.from({ length: LIMITS.arrayItems }, () => null)));
   const output = cliOutput(result);
