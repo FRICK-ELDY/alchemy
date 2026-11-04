@@ -246,8 +246,12 @@ impl App {
             .presentation
             .auto_suppressed
             .load(std::sync::atomic::Ordering::SeqCst);
+        let prev_auto = self.ui.state.hotswitch_auto;
+        let prev_suppressed = self.ui.state.hotswitch_suppressed;
+        let prev_available = self.ui.state.hotswitch_available;
         let prev_label = self.ui.state.hotswitch_label.clone();
-        // Hotswitch controls only after READY (same gate as F8).
+        // Hotswitch controls only after READY (same gate as F8). Local gate only.
+        // PresentationGate is SoT for auto/suppressed — not SharedDashLogic.
         self.ui.state.hotswitch_available = self.role == DesktopRole::Companion
             && self.shared.presentation.xr_session_started();
         self.ui.state.hotswitch_auto = auto;
@@ -255,7 +259,11 @@ impl App {
         self.ui.state.refresh_hotswitch_label();
         // Title depends on live|started|vr, not only owns_input — refresh with UI sync.
         self.refresh_window_title();
-        if self.ui.state.hotswitch_label != prev_label && self.ui.state.open {
+        let view_changed = prev_auto != auto
+            || prev_suppressed != suppressed
+            || prev_available != self.ui.state.hotswitch_available
+            || self.ui.state.hotswitch_label != prev_label;
+        if view_changed && self.ui.state.open {
             self.ui.rebuild();
         }
     }
@@ -320,6 +328,7 @@ impl App {
             };
             self.ui.state.open = true;
             self.ui.state.tab = DashTab::Home;
+            self.ui.mark_dash_logic_dirty();
             self.ui.rebuild();
             log::info!("hotswitch: Desktop performed leave_room for XR AuthLogout");
         }
@@ -399,6 +408,7 @@ impl App {
             Some(Err(())) => {
                 self.auth_job = None;
                 self.ui.state.home_status = "Auth worker disconnected".into();
+                self.ui.mark_dash_form_dirty();
                 self.ui.rebuild();
                 log::warn!("auth worker disconnected before result");
             }
@@ -441,6 +451,7 @@ impl App {
                 self.ui.state.home_create_open = false;
                 self.ui.state.shell = OnboardingShell::MainHub;
                 self.ui.state.home_status = "Signed in — choose PLAY TOGETHER or SOLO".into();
+                self.ui.mark_dash_logic_dirty();
                 self.ui.rebuild();
                 log::info!("auth login ok (no auto-join)");
             }
@@ -451,16 +462,19 @@ impl App {
                 self.ui.state.home_create_open = false;
                 self.ui.state.shell = OnboardingShell::MainHub;
                 self.ui.state.home_status = "Account created — choose PLAY TOGETHER or SOLO".into();
+                self.ui.mark_dash_logic_dirty();
                 self.ui.rebuild();
                 log::info!("auth register ok (no auto-join)");
             }
             AuthJobOutcome::LoginFailed(err) => {
                 self.ui.state.home_status = format!("Login failed: {err}");
+                self.ui.mark_dash_form_dirty();
                 self.ui.rebuild();
                 log::warn!("login failed: {err}");
             }
             AuthJobOutcome::RegisterFailed(err) => {
                 self.ui.state.home_status = format!("Register failed: {err}");
+                self.ui.mark_dash_form_dirty();
                 self.ui.rebuild();
                 log::warn!("register failed: {err}");
             }
@@ -990,6 +1004,7 @@ impl ApplicationHandler for App {
                 self.rebuild_intent();
             }
             WindowEvent::RedrawRequested => {
+                self.ui.pull_dash_logic(&self.shared);
                 self.on_input_ownership_edge();
                 self.refresh_window_title();
                 self.sync_hotswitch_ui();
@@ -1013,6 +1028,7 @@ impl ApplicationHandler for App {
                         log::error!("render failed: {err:#}");
                     }
                 }
+                self.ui.push_dash_logic(&self.shared);
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -1037,6 +1053,9 @@ impl ApplicationHandler for App {
         {
             self.ui.state.open = true;
             self.ui.state.tab = DashTab::Home;
+            self.ui.mark_dash_logic_dirty();
+            // Publish before next Redraw so XR cannot interleave an older push.
+            self.ui.push_dash_logic(&self.shared);
         }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
@@ -1123,6 +1142,7 @@ fn apply_start_session_result(
             log::warn!("start session join failed: {err}");
         }
     }
+    ui.mark_dash_logic_dirty();
     ui.rebuild();
 }
 
@@ -1152,6 +1172,7 @@ fn apply_join_result(
             log::warn!("join failed (session kept): {err}");
         }
     }
+    ui.mark_dash_logic_dirty();
     ui.rebuild();
 }
 
@@ -1176,8 +1197,8 @@ fn handle_ui_action(
                     .store(false, std::sync::atomic::Ordering::SeqCst);
                 ui.state.hotswitch_suppressed = false;
                 ui.state.refresh_hotswitch_label();
-                ui.rebuild();
             }
+            ui.rebuild();
             log::info!(
                 "hotswitch auto stored → {}",
                 ui.state.hotswitch_auto
@@ -1229,6 +1250,7 @@ fn handle_ui_action(
         UiAction::AuthLogin => {
             if auth_job.is_some() {
                 ui.state.home_status = "Auth busy…".into();
+                ui.mark_dash_form_dirty();
                 ui.rebuild();
                 return;
             }
@@ -1238,6 +1260,7 @@ fn handle_ui_action(
             let auth_url = shared.get_auth_url();
             let shared_job = Arc::clone(shared);
             ui.state.home_status = "Signing in…".into();
+            ui.mark_dash_form_dirty();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
             *auth_job = Some(rx);
@@ -1259,6 +1282,7 @@ fn handle_ui_action(
         UiAction::AuthRegister => {
             if auth_job.is_some() {
                 ui.state.home_status = "Auth busy…".into();
+                ui.mark_dash_form_dirty();
                 ui.rebuild();
                 return;
             }
@@ -1270,12 +1294,14 @@ fn handle_ui_action(
             let tos_agreed = ui.state.home_tos_agreed;
             if !tos_agreed {
                 ui.state.home_status = "Agree to the Terms of Service to register".into();
+                ui.mark_dash_form_dirty();
                 ui.rebuild();
                 return;
             }
             let auth_url = shared.get_auth_url();
             let shared_job = Arc::clone(shared);
             ui.state.home_status = "Creating account…".into();
+            ui.mark_dash_form_dirty();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
             *auth_job = Some(rx);
@@ -1317,6 +1343,7 @@ fn handle_ui_action(
             ui.state.shell = OnboardingShell::Step2Auth;
             ui.state.home_status = "Signed out — sign in again".into();
             ui.state.tab = DashTab::Home;
+            ui.mark_dash_logic_dirty();
             ui.rebuild();
             log::info!("auth logout — Leave + local session cleared");
             if let Some(access) = access {
@@ -1329,6 +1356,7 @@ fn handle_ui_action(
         UiAction::StartSession => {
             if auth_job.is_some() {
                 ui.state.home_status = "Auth busy…".into();
+                ui.mark_dash_form_dirty();
                 ui.rebuild();
                 return;
             }
@@ -1336,11 +1364,13 @@ fn handle_ui_action(
             let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
             let Some(access) = access else {
                 ui.state.home_status = "Sign in before starting a session".into();
+                ui.mark_dash_form_dirty();
                 ui.rebuild();
                 return;
             };
             let shared_job = Arc::clone(shared);
             ui.state.home_status = format!("Starting session ({})…", level.as_str());
+            ui.mark_dash_form_dirty();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
             *auth_job = Some(rx);
@@ -1365,17 +1395,20 @@ fn handle_ui_action(
         UiAction::JoinRoom => {
             if auth_job.is_some() {
                 ui.state.home_status = "Auth busy…".into();
+                ui.mark_dash_form_dirty();
                 ui.rebuild();
                 return;
             }
             let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
             let Some(access) = access else {
                 ui.state.home_status = "Sign in before joining".into();
+                ui.mark_dash_form_dirty();
                 ui.rebuild();
                 return;
             };
             let shared_job = Arc::clone(shared);
             ui.state.home_status = "Joining room…".into();
+            ui.mark_dash_form_dirty();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
             *auth_job = Some(rx);
@@ -1445,6 +1478,9 @@ pub fn run(
             ui.state.shell = OnboardingShell::Dash;
         }
     }
+    // Seed SharedState so XR can pull the same logical shell before first redraw.
+    ui.mark_dash_logic_dirty();
+    ui.push_dash_logic(&shared);
     let last_owns_input = role.owns_input(&shared.presentation);
     let mut app = App {
         mesh,

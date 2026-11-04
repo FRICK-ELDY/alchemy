@@ -243,6 +243,8 @@ pub struct SharedState {
     pub intent: Mutex<MoveIntent>,
     /// XR ↔ Desktop present ownership (x0053). Desktop-only keeps `vr_active=false`.
     pub presentation: crate::surface::PresentationGate,
+    /// Dash logical state shared Desktop ↔ XR (x0053). Layout/hover stay per-surface.
+    pub dash: Mutex<crate::system_ui::SharedDashStore>,
 }
 
 impl SharedState {

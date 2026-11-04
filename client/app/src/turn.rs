@@ -37,7 +37,7 @@ impl TurnMode {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TurnSettings {
     pub mode: TurnMode,
     pub snap_degrees: f32,

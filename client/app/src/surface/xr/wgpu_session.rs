@@ -209,7 +209,11 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
     if shared.overlay_asset_home_status(&mut ui.state.home_status) {
         ui.state.open = true;
         ui.state.tab = crate::system_ui::DashTab::Home;
+        ui.mark_dash_logic_dirty();
     }
+    // Prefer Desktop-seeded logic when companion already pushed
+    // (`home_session_actions_enabled` / `hotswitch_available` stay local).
+    ui.pull_dash_logic(&shared);
     ui.init_cpu_canvas(UI_CANVAS_W, UI_CANVAS_H)?;
     ui.rebuild();
 
@@ -283,9 +287,11 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         }
 
         hotswitch.tick(&shared.presentation, Instant::now());
+        ui.pull_dash_logic(&shared);
         sync_xr_hotswitch_ui(&mut ui, &shared);
 
         if !session_running {
+            ui.push_dash_logic(&shared);
             std::thread::sleep(Duration::from_millis(50));
             continue;
         }
@@ -307,7 +313,9 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         );
 
         // Desktop companion owns present: keep session timed but submit no layers.
+        // Still publish/pull dash logic so hotswitch keeps shell/settings in sync.
         if !vr_active || !xr_frame_state.should_render {
+            ui.push_dash_logic(&shared);
             frame_end.end_empty()?;
             continue;
         }
@@ -482,6 +490,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         if shared.overlay_asset_home_status(&mut ui.state.home_status) {
             ui.state.open = true;
             ui.state.tab = crate::system_ui::DashTab::Home;
+            ui.mark_dash_logic_dirty();
         }
         if ui.state.open {
             held_grab = None;
@@ -741,11 +750,13 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                         UiAction::ApplyOperatorEndpoints => {
                             ui.state.home_status =
                                 "Operator select / login text entry is Desktop-only".into();
+                            ui.mark_dash_form_dirty();
                             ui.rebuild();
                         }
                         UiAction::AuthLogin | UiAction::AuthRegister => {
                             ui.state.home_status =
                                 "Login/register text entry is Desktop-only (x0018)".into();
+                            ui.mark_dash_form_dirty();
                             ui.rebuild();
                         }
                         UiAction::AuthLogout => {
@@ -756,11 +767,13 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                             ui.state.shell = crate::system_ui::OnboardingShell::Step2Auth;
                             ui.state.home_status =
                                 "Signing out… (Desktop owns Zenoh leave)".into();
+                            ui.mark_dash_logic_dirty();
                             ui.rebuild();
                         }
                         UiAction::StartSession | UiAction::JoinRoom => {
                             ui.state.home_status =
                                 "Start/Join session HTTP is Desktop-only this Slice (use silent login or Desktop)".into();
+                            ui.mark_dash_form_dirty();
                             ui.rebuild();
                         }
                         UiAction::HotswitchAutoChanged => {
@@ -774,8 +787,8 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                                 );
                                 ui.state.hotswitch_suppressed = false;
                                 ui.state.refresh_hotswitch_label();
-                                ui.rebuild();
                             }
+                            ui.rebuild();
                         }
                         UiAction::None => {}
                     }
@@ -783,6 +796,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             }
         }
         select_was_down = select_down_for_ui;
+        ui.push_dash_logic(&shared);
     }
 
     // OpenXR lifetime: destroy EXT handles + Spaces before session.
@@ -819,14 +833,19 @@ fn sync_xr_hotswitch_ui(ui: &mut SystemUi, shared: &SharedState) {
         .auto_suppressed
         .load(std::sync::atomic::Ordering::SeqCst);
     let prev_label = ui.state.hotswitch_label.clone();
-    let gate_changed = ui.state.hotswitch_available != started
-        || ui.state.hotswitch_auto != auto
-        || ui.state.hotswitch_suppressed != suppressed;
+    let prev_auto = ui.state.hotswitch_auto;
+    let prev_suppressed = ui.state.hotswitch_suppressed;
+    let prev_available = ui.state.hotswitch_available;
+    // `hotswitch_available` + label are per-surface; auto/suppressed SoT is PresentationGate.
     ui.state.hotswitch_available = started;
     ui.state.hotswitch_auto = auto;
     ui.state.hotswitch_suppressed = suppressed;
     ui.state.refresh_hotswitch_label();
-    if (gate_changed || ui.state.hotswitch_label != prev_label) && ui.state.open {
+    let view_changed = prev_auto != auto
+        || prev_suppressed != suppressed
+        || prev_available != ui.state.hotswitch_available
+        || ui.state.hotswitch_label != prev_label;
+    if view_changed && ui.state.open {
         ui.rebuild();
     }
 }

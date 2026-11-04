@@ -4,6 +4,9 @@
 //! Home holds account / create-world form strings only — no auth/world HTTP here.
 //! Create panel visuals are placeholders (swap later).
 //! Onboarding shell: Step1 operator → Step2 auth → Main hub (minimal chrome).
+//!
+//! x0053: logical fields live in [`SharedDashLogic`] (SharedState); LayoutTree / hover /
+//! canvas / `hotswitch_available` / derived `hotswitch_label` stay per-surface.
 
 use super::facet::{facet_of, DashRoot, FacetId};
 use super::layout::{Color, LayoutTree, Rect, WidgetId};
@@ -152,6 +155,291 @@ impl Default for DashState {
             custom_host_focus: false,
         }
     }
+}
+
+/// Logical dash fields shared Desktop ↔ XR (x0053).
+///
+/// Conflict policy:
+/// - **Chrome** (`open` / `tab` / `shell` / Settings): own `chrome_revision`.
+///   Pull while not chrome-dirty (form-dirty OK). Push is CAS on
+///   `chrome_revision` and writes chrome fields only.
+/// - **Form** (Home / onboarding strings): own `revision`. Pull blocked while
+///   form-dirty; push writes form fields only (never clobbers peer chrome).
+///
+/// Not shared (per-surface): `time_label` / `fps_label` / `canvas_*` / `hover` /
+/// `pressed` / `home_session_actions_enabled` / `hotswitch_available` /
+/// derived `hotswitch_label` / `home_password`.
+/// Hotswitch auto/suppressed SoT is [`crate::surface::PresentationGate`], not here.
+#[derive(Clone, Debug)]
+pub struct SharedDashLogic {
+    pub open: bool,
+    pub tab: DashTab,
+    pub shell: OnboardingShell,
+    pub max_speed: f32,
+    pub max_speed_label: String,
+    pub turn: TurnSettings,
+    pub turn_mode_label: String,
+    pub snap_degrees_label: String,
+    pub smooth_turn_label: String,
+    pub home_mode: HomeMode,
+    pub home_focus: Option<HomeField>,
+    pub home_identifier: String,
+    pub home_username: String,
+    pub home_email: String,
+    pub home_birthday: String,
+    pub home_remember_me: bool,
+    pub home_tos_agreed: bool,
+    pub home_status: String,
+    pub home_logged_in_as: Option<String>,
+    pub home_create_open: bool,
+    pub home_session_name: String,
+    pub home_access_level: AccessLevel,
+    pub home_room_id: String,
+    pub operator: OperatorKind,
+    pub custom_host: String,
+    pub custom_host_focus: bool,
+}
+
+impl Default for SharedDashLogic {
+    fn default() -> Self {
+        Self::from_state(&DashState::default())
+    }
+}
+
+impl SharedDashLogic {
+    pub fn from_state(s: &DashState) -> Self {
+        Self {
+            open: s.open,
+            tab: s.tab,
+            shell: s.shell,
+            max_speed: s.max_speed,
+            max_speed_label: s.max_speed_label.clone(),
+            turn: s.turn,
+            turn_mode_label: s.turn_mode_label.clone(),
+            snap_degrees_label: s.snap_degrees_label.clone(),
+            smooth_turn_label: s.smooth_turn_label.clone(),
+            home_mode: s.home_mode,
+            home_focus: s.home_focus,
+            home_identifier: s.home_identifier.clone(),
+            home_username: s.home_username.clone(),
+            home_email: s.home_email.clone(),
+            home_birthday: s.home_birthday.clone(),
+            home_remember_me: s.home_remember_me,
+            home_tos_agreed: s.home_tos_agreed,
+            home_status: s.home_status.clone(),
+            home_logged_in_as: s.home_logged_in_as.clone(),
+            home_create_open: s.home_create_open,
+            home_session_name: s.home_session_name.clone(),
+            home_access_level: s.home_access_level,
+            home_room_id: s.home_room_id.clone(),
+            operator: s.operator,
+            custom_host: s.custom_host.clone(),
+            custom_host_focus: s.custom_host_focus,
+        }
+    }
+
+    pub fn chrome_eq(&self, s: &DashState) -> bool {
+        self.open == s.open
+            && self.tab == s.tab
+            && self.shell == s.shell
+            && self.max_speed == s.max_speed
+            && self.max_speed_label == s.max_speed_label
+            && self.turn == s.turn
+            && self.turn_mode_label == s.turn_mode_label
+            && self.snap_degrees_label == s.snap_degrees_label
+            && self.smooth_turn_label == s.smooth_turn_label
+    }
+
+    pub fn form_eq(&self, s: &DashState) -> bool {
+        self.home_mode == s.home_mode
+            && self.home_focus == s.home_focus
+            && self.home_identifier == s.home_identifier
+            && self.home_username == s.home_username
+            && self.home_email == s.home_email
+            && self.home_birthday == s.home_birthday
+            && self.home_remember_me == s.home_remember_me
+            && self.home_tos_agreed == s.home_tos_agreed
+            && self.home_status == s.home_status
+            && self.home_logged_in_as == s.home_logged_in_as
+            && self.home_create_open == s.home_create_open
+            && self.home_session_name == s.home_session_name
+            && self.home_access_level == s.home_access_level
+            && self.home_room_id == s.home_room_id
+            && self.operator == s.operator
+            && self.custom_host == s.custom_host
+            && self.custom_host_focus == s.custom_host_focus
+    }
+
+    /// Write chrome fields only (push path — does not touch form).
+    pub fn write_chrome_from(&mut self, s: &DashState) {
+        self.open = s.open;
+        self.tab = s.tab;
+        self.shell = s.shell;
+        self.max_speed = s.max_speed;
+        self.max_speed_label = s.max_speed_label.clone();
+        self.turn = s.turn;
+        self.turn_mode_label = s.turn_mode_label.clone();
+        self.snap_degrees_label = s.snap_degrees_label.clone();
+        self.smooth_turn_label = s.smooth_turn_label.clone();
+    }
+
+    /// Write form fields only (push path — does not touch chrome / password).
+    pub fn write_form_from(&mut self, s: &DashState) {
+        self.home_mode = s.home_mode;
+        self.home_focus = s.home_focus;
+        self.home_identifier = s.home_identifier.clone();
+        self.home_username = s.home_username.clone();
+        self.home_email = s.home_email.clone();
+        self.home_birthday = s.home_birthday.clone();
+        self.home_remember_me = s.home_remember_me;
+        self.home_tos_agreed = s.home_tos_agreed;
+        self.home_status = s.home_status.clone();
+        self.home_logged_in_as = s.home_logged_in_as.clone();
+        self.home_create_open = s.home_create_open;
+        self.home_session_name = s.home_session_name.clone();
+        self.home_access_level = s.home_access_level;
+        self.home_room_id = s.home_room_id.clone();
+        self.operator = s.operator;
+        self.custom_host = s.custom_host.clone();
+        self.custom_host_focus = s.custom_host_focus;
+    }
+
+    /// Apply Esc/Menu chrome + Settings. Clears hover when layout identity changes.
+    pub fn apply_chrome_to(&self, s: &mut DashState) -> bool {
+        let layout_changed =
+            s.open != self.open || s.tab != self.tab || s.shell != self.shell;
+        let mut changed = layout_changed;
+        if s.open != self.open {
+            s.open = self.open;
+        }
+        if s.tab != self.tab {
+            s.tab = self.tab;
+        }
+        if s.shell != self.shell {
+            s.shell = self.shell;
+        }
+        if s.max_speed != self.max_speed {
+            s.max_speed = self.max_speed;
+            changed = true;
+        }
+        if s.max_speed_label != self.max_speed_label {
+            s.max_speed_label = self.max_speed_label.clone();
+            changed = true;
+        }
+        if s.turn != self.turn {
+            s.turn = self.turn;
+            changed = true;
+        }
+        if s.turn_mode_label != self.turn_mode_label {
+            s.turn_mode_label = self.turn_mode_label.clone();
+            changed = true;
+        }
+        if s.snap_degrees_label != self.snap_degrees_label {
+            s.snap_degrees_label = self.snap_degrees_label.clone();
+            changed = true;
+        }
+        if s.smooth_turn_label != self.smooth_turn_label {
+            s.smooth_turn_label = self.smooth_turn_label.clone();
+            changed = true;
+        }
+        if layout_changed || !s.open {
+            s.hover = None;
+            s.pressed = None;
+        }
+        changed
+    }
+
+    /// Apply Home / onboarding form fields (not password).
+    pub fn apply_form_to(&self, s: &mut DashState) -> bool {
+        let mut changed = false;
+        if s.home_mode != self.home_mode {
+            s.home_mode = self.home_mode;
+            changed = true;
+        }
+        if s.home_focus != self.home_focus {
+            s.home_focus = self.home_focus;
+            changed = true;
+        }
+        if s.home_identifier != self.home_identifier {
+            s.home_identifier = self.home_identifier.clone();
+            changed = true;
+        }
+        if s.home_username != self.home_username {
+            s.home_username = self.home_username.clone();
+            changed = true;
+        }
+        if s.home_email != self.home_email {
+            s.home_email = self.home_email.clone();
+            changed = true;
+        }
+        if s.home_birthday != self.home_birthday {
+            s.home_birthday = self.home_birthday.clone();
+            changed = true;
+        }
+        if s.home_remember_me != self.home_remember_me {
+            s.home_remember_me = self.home_remember_me;
+            changed = true;
+        }
+        if s.home_tos_agreed != self.home_tos_agreed {
+            s.home_tos_agreed = self.home_tos_agreed;
+            changed = true;
+        }
+        if s.home_status != self.home_status {
+            s.home_status = self.home_status.clone();
+            changed = true;
+        }
+        if s.home_logged_in_as != self.home_logged_in_as {
+            s.home_logged_in_as = self.home_logged_in_as.clone();
+            changed = true;
+        }
+        if s.home_create_open != self.home_create_open {
+            s.home_create_open = self.home_create_open;
+            changed = true;
+        }
+        if s.home_session_name != self.home_session_name {
+            s.home_session_name = self.home_session_name.clone();
+            changed = true;
+        }
+        if s.home_access_level != self.home_access_level {
+            s.home_access_level = self.home_access_level;
+            changed = true;
+        }
+        if s.home_room_id != self.home_room_id {
+            s.home_room_id = self.home_room_id.clone();
+            changed = true;
+        }
+        if s.operator != self.operator {
+            s.operator = self.operator;
+            changed = true;
+        }
+        if s.custom_host != self.custom_host {
+            s.custom_host = self.custom_host.clone();
+            changed = true;
+        }
+        if s.custom_host_focus != self.custom_host_focus {
+            s.custom_host_focus = self.custom_host_focus;
+            changed = true;
+        }
+        changed
+    }
+
+    /// Full apply (chrome + form). Per-surface fields untouched.
+    pub fn apply_to(&self, s: &mut DashState) {
+        self.apply_chrome_to(s);
+        self.apply_form_to(s);
+    }
+}
+
+/// Revisioned store for [`SharedDashLogic`] inside `SharedState`.
+#[derive(Clone, Debug, Default)]
+pub struct SharedDashStore {
+    /// Form-field revision. Pull skipped while local form-dirty; push bumps only
+    /// when form content actually changes (`form_eq` short-circuit).
+    pub revision: u64,
+    /// Chrome / Settings revision. Pull skipped while local chrome-dirty; push
+    /// is CAS on this value and writes chrome fields only.
+    pub chrome_revision: u64,
+    pub logic: SharedDashLogic,
 }
 
 /// Button / hit target color: press darkens, hover lightens.
@@ -1710,5 +1998,87 @@ mod tests {
             color_after.r > color_before.r || color_after.g > color_before.g,
             "hover should lighten button before={color_before:?} after={color_after:?}"
         );
+    }
+
+    #[test]
+    fn shared_dash_logic_roundtrip_leaves_surface_locals() {
+        let src = DashState {
+            open: true,
+            tab: DashTab::Settings,
+            shell: OnboardingShell::Dash,
+            max_speed: 2.5,
+            home_status: "from desktop".into(),
+            home_logged_in_as: Some("alice".into()),
+            home_password: "secret".into(),
+            hotswitch_auto: true,
+            hotswitch_available: true,
+            home_session_actions_enabled: true,
+            hover: Some(WidgetId::CloseSession),
+            pressed: Some(WidgetId::TabHome),
+            time_label: "12:00".into(),
+            fps_label: "60 FPS".into(),
+            canvas_w: 1280.0,
+            canvas_h: 540.0,
+            ..Default::default()
+        };
+        let logic = SharedDashLogic::from_state(&src);
+
+        let mut dst = DashState {
+            open: false,
+            tab: DashTab::Home,
+            shell: OnboardingShell::Step2Auth,
+            home_password: "xr-local".into(),
+            hotswitch_auto: false,
+            hotswitch_available: false,
+            home_session_actions_enabled: false,
+            hover: Some(WidgetId::TabExit),
+            pressed: Some(WidgetId::ExitClientOnly),
+            time_label: "xr-clock".into(),
+            fps_label: "90 FPS".into(),
+            canvas_w: 960.0,
+            canvas_h: 540.0,
+            ..Default::default()
+        };
+        logic.apply_to(&mut dst);
+
+        assert!(dst.open);
+        assert_eq!(dst.tab, DashTab::Settings);
+        assert_eq!(dst.shell, OnboardingShell::Dash);
+        assert!((dst.max_speed - 2.5).abs() < f32::EPSILON);
+        assert_eq!(dst.home_status, "from desktop");
+        assert_eq!(dst.home_logged_in_as.as_deref(), Some("alice"));
+        // Password + hotswitch stay per-surface / Gate — not in SharedDashLogic.
+        assert_eq!(dst.home_password, "xr-local");
+        assert!(!dst.hotswitch_auto);
+        assert!(!dst.hotswitch_available);
+        assert!(!dst.home_session_actions_enabled);
+        assert_eq!(dst.time_label, "xr-clock");
+        assert_eq!(dst.fps_label, "90 FPS");
+        assert!((dst.canvas_w - 960.0).abs() < f32::EPSILON);
+        // Layout identity changed → hover/pressed cleared.
+        assert!(dst.hover.is_none());
+        assert!(dst.pressed.is_none());
+    }
+
+    #[test]
+    fn apply_chrome_clears_hover_on_tab_change_while_open() {
+        let logic = SharedDashLogic {
+            open: true,
+            tab: DashTab::Settings,
+            shell: OnboardingShell::Dash,
+            ..Default::default()
+        };
+        let mut s = DashState {
+            open: true,
+            tab: DashTab::Home,
+            shell: OnboardingShell::Dash,
+            hover: Some(WidgetId::HomeSubmit),
+            pressed: Some(WidgetId::TabHome),
+            ..Default::default()
+        };
+        assert!(logic.apply_chrome_to(&mut s));
+        assert_eq!(s.tab, DashTab::Settings);
+        assert!(s.hover.is_none());
+        assert!(s.pressed.is_none());
     }
 }

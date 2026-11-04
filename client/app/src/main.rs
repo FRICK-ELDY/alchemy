@@ -1883,6 +1883,7 @@ fn main() -> Result<()> {
         look: Mutex::new(Default::default()),
         intent: Mutex::new(Default::default()),
         presentation: crate::surface::PresentationGate::default(),
+        dash: Mutex::new(crate::system_ui::SharedDashStore::default()),
     });
 
     // Auto-join + Zenoh open only for silent/CI. Remember-me restore authenticates only
