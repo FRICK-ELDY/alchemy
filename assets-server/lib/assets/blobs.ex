@@ -37,15 +37,12 @@ defmodule Assets.Blobs do
 
   First CasObject writer wins for mime / size. Later PUT with the same blake3
   adds the caller's BlobRef + Grant without access conflict (x006f).
+  There is no access option — capability lives on BlobGrant / PlaceRead only.
   """
   @spec upload(String.t(), binary(), String.t()) ::
           {:ok, CasObject.t(), :created | :existing} | {:error, term()}
-  @spec upload(String.t(), binary(), String.t(), keyword()) ::
-          {:ok, CasObject.t(), :created | :existing} | {:error, term()}
-  def upload(owner_sub, data, mime, opts \\ [])
-      when is_binary(owner_sub) and is_binary(data) and is_binary(mime) and is_list(opts) do
-    # opts retained for call-site compatibility; access is ignored (x006f).
-    _ = opts
+  def upload(owner_sub, data, mime)
+      when is_binary(owner_sub) and is_binary(data) and is_binary(mime) do
     max = Application.fetch_env!(:assets, :max_upload_bytes)
 
     if byte_size(data) > max do

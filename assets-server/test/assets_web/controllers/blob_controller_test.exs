@@ -660,54 +660,51 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"error" => "forbidden"} = json_response(conn, 403)
   end
 
-  test "mesh and inventory PUT coexist on same blake3 without conflict (x006f)", %{
+  test "mesh then inventory PUT coexist on same blake3 without conflict (x006f)", %{
     conn: conn,
     signer: signer
   } do
     body = "mesh-inventory-same-bytes-coexist"
+    assert_cross_path_coexist(conn, signer, body, :blobs_first)
+  end
 
-    conn =
+  test "inventory then mesh PUT coexist on same blake3 without conflict (x006f)", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "inventory-mesh-same-bytes-coexist"
+    assert_cross_path_coexist(conn, signer, body, :inventory_first)
+  end
+
+  test "/blobs and /inventory/blobs upload responses match for same body (x006f)", %{
+    conn: conn,
+    signer: signer
+  } do
+    body = "path-alias-same-behaviour"
+
+    conn_a =
       conn
       |> TestAuthHelpers.put_auth(signer, @sub_a)
       |> put_req_header("content-type", "text/plain")
       |> post("/api/v1/blobs", body)
 
-    assert %{"blake3" => blake3, "status" => "created"} = json_response(conn, 201)
+    assert %{"blake3" => blake3, "size" => size, "mime" => mime, "status" => "created"} =
+             json_response(conn_a, 201)
 
-    conn =
+    conn_b =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, @sub_b)
       |> put_req_header("content-type", "text/plain")
       |> post("/api/v1/inventory/blobs", body)
 
-    assert %{"blake3" => ^blake3, "status" => "created"} = json_response(conn, 201)
+    assert %{
+             "blake3" => ^blake3,
+             "size" => ^size,
+             "mime" => ^mime,
+             "status" => "created"
+           } = body_b = json_response(conn_b, 201)
 
-    assert %CasObject{blake3: ^blake3} = Repo.get(CasObject, blake3)
-    assert %BlobGrant{} = Repo.get_by(BlobGrant, grantee_sub: @sub_a, blake3: blake3)
-    assert %BlobGrant{} = Repo.get_by(BlobGrant, grantee_sub: @sub_b, blake3: blake3)
-
-    conn =
-      build_conn()
-      |> TestAuthHelpers.put_auth(signer, @sub_a)
-      |> get("/api/v1/blobs/#{blake3}")
-
-    assert response(conn, 200) == body
-
-    conn =
-      build_conn()
-      |> TestAuthHelpers.put_auth(signer, @sub_b)
-      |> get("/api/v1/blobs/#{blake3}")
-
-    assert response(conn, 200) == body
-
-    stranger = "44444444-4444-4444-4444-444444444444"
-
-    conn =
-      build_conn()
-      |> TestAuthHelpers.put_auth(signer, stranger)
-      |> get("/api/v1/blobs/#{blake3}")
-
-    assert %{"error" => "forbidden"} = json_response(conn, 403)
+    refute Map.has_key?(body_b, "access")
   end
 
   test "rejects GET without auth", %{conn: conn, signer: signer, sub: sub} do
@@ -774,6 +771,57 @@ defmodule AssetsWeb.BlobControllerTest do
       |> get("/api/v1/blobs/#{blake3}")
 
     assert response(conn, 200) == body
+  end
+
+  defp assert_cross_path_coexist(conn, signer, body, order) do
+    {first_path, second_path} =
+      case order do
+        :blobs_first -> {"/api/v1/blobs", "/api/v1/inventory/blobs"}
+        :inventory_first -> {"/api/v1/inventory/blobs", "/api/v1/blobs"}
+      end
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "text/plain")
+      |> post(first_path, body)
+
+    assert %{"blake3" => blake3, "status" => "created"} = json_response(conn, 201)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> put_req_header("content-type", "text/plain")
+      |> post(second_path, body)
+
+    assert %{"blake3" => ^blake3, "status" => "created"} = json_response(conn, 201)
+
+    assert %CasObject{blake3: ^blake3} = Repo.get(CasObject, blake3)
+    assert %BlobGrant{} = Repo.get_by(BlobGrant, grantee_sub: @sub_a, blake3: blake3)
+    assert %BlobGrant{} = Repo.get_by(BlobGrant, grantee_sub: @sub_b, blake3: blake3)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert response(conn, 200) == body
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, @sub_b)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert response(conn, 200) == body
+
+    stranger = "44444444-4444-4444-4444-444444444444"
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, stranger)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert %{"error" => "forbidden"} = json_response(conn, 403)
   end
 end
 

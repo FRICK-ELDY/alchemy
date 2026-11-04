@@ -5,15 +5,22 @@ defmodule AssetsWeb.BlobController do
 
   alias Assets.Blobs
 
+  @doc """
+  Room / general PUT. Always issues `:owned` BlobGrant (x006f).
+
+  Behaviour is identical to `create_inventory/2` today — only the path differs
+  (inventory clients keep a dedicated URL as the x0054 contract).
+  """
   def create(conn, _params) do
     read_and_upload(conn)
   end
 
   @doc """
-  Inventory PUT path (x0054 / x006f). Same upload as `/blobs` (always owned Grant).
+  Inventory PUT path (x0054 / x006f).
 
-  Kept as a dedicated path contract for inventory clients; access headers are not
-  parsed (CasObject has no access column).
+  Behaviour is identical to `create/2` (same `read_and_upload/1`): owned Grant,
+  no access header parsing. Path is kept so inventory clients have a stable URL;
+  diverge here only when inventory needs a distinct contract again.
   """
   def create_inventory(conn, _params) do
     read_and_upload(conn)
