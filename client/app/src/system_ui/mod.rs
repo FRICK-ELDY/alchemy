@@ -300,15 +300,23 @@ impl SystemUi {
                 self.rebuild();
                 UiAction::None
             }
+            WidgetId::HomeTosAgreed => {
+                self.state.home_tos_agreed = !self.state.home_tos_agreed;
+                self.rebuild();
+                UiAction::None
+            }
             WidgetId::HomeModeLogin => {
                 self.state.home_mode = HomeMode::Login;
                 self.state.home_focus = Some(HomeField::Identifier);
+                // Do not carry Register checkbox across mode switches.
+                self.state.home_tos_agreed = false;
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::HomeModeRegister => {
                 self.state.home_mode = HomeMode::Register;
                 self.state.home_focus = Some(HomeField::Username);
+                self.state.home_tos_agreed = false;
                 self.rebuild();
                 UiAction::None
             }

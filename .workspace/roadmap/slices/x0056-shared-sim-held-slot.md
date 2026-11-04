@@ -1,6 +1,6 @@
 # x0056 — shared-sim held Slot（root → held）
 
-> **ID:** `x0056` · **slug:** `shared-sim-held-slot` · **status:** `planned` · **area:** `[sim]` · **depends_on:** `[x0030]`  
+> **ID:** `x0056` · **slug:** `shared-sim-held-slot` · **status:** `done` · **area:** `[sim]` · **depends_on:** `[x0030]`  
 > **ladder:** Wave 1 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: `alchemy-shared-sim` に **実行時親子**の最小 API を置く。最低保証は `user_root → held_entity`。
@@ -21,9 +21,9 @@
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | 本 Slice | planned |
-| 1 | SlotGraph held API + tests | planned |
-| 2 | shared-sim / client.md 注記 | planned |
+| 0 | 本 Slice | done |
+| 1 | SlotGraph held API + tests | done |
+| 2 | shared-sim / client.md 注記 | done |
 
 ## 完了条件
 

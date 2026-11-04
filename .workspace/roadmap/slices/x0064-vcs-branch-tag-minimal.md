@@ -1,6 +1,6 @@
 # x0064 — Vcs Branch / Tag 最小
 
-> **ID:** `x0064` · **slug:** `vcs-branch-tag-minimal` · **status:** `planned` · **area:** `[assets]` · **depends_on:** `[x0062]`  
+> **ID:** `x0064` · **slug:** `vcs-branch-tag-minimal` · **status:** `done` · **area:** `[assets]` · **depends_on:** `[x0062]`  
 > **ladder:** Wave 4 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: `VcsRef` として **Branch と Tag の最小**（名前 → Commit）を保証する。Merge / 3D Diff はしない。

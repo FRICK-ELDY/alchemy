@@ -1065,6 +1065,12 @@ fn handle_ui_action(
             let password = ui.state.home_password.clone();
             let birthday = ui.state.home_birthday.clone();
             let remember = ui.state.home_remember_me;
+            let tos_agreed = ui.state.home_tos_agreed;
+            if !tos_agreed {
+                ui.state.home_status = "Agree to the Terms of Service to register".into();
+                ui.rebuild();
+                return;
+            }
             let auth_url = shared.get_auth_url();
             let shared_job = Arc::clone(shared);
             ui.state.home_status = "Creating account…".into();
@@ -1072,7 +1078,9 @@ fn handle_ui_action(
             let (tx, rx) = mpsc::channel();
             *auth_job = Some(rx);
             spawn_auth_http(move || {
-                match auth::register(&auth_url, &username, &email, &password, &birthday, remember) {
+                match auth::register(
+                    &auth_url, &username, &email, &password, &birthday, tos_agreed, remember,
+                ) {
                     Ok(session) => {
                         let username = session.user.username.clone();
                         if let Ok(mut gate) = shared_job.auth.lock() {

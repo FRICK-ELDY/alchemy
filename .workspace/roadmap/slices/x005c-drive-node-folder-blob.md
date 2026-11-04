@@ -1,6 +1,6 @@
 # x005c — DriveNode（folder / blob）
 
-> **ID:** `x005c` · **slug:** `drive-node-folder-blob` · **status:** `planned` · **area:** `[assets]` · **depends_on:** `[x0054, x0058]`  
+> **ID:** `x005c` · **slug:** `drive-node-folder-blob` · **status:** `done` · **area:** `[assets]` · **depends_on:** `[x0054, x0058]`  
 > **ladder:** Wave 2 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: 個人 Drive の最小階層 — **folder** と **blob 葉**（blake3 参照）— を同一 TX 境界で持てる。

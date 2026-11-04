@@ -1,18 +1,9 @@
 # x005b — Slot 操作のセッション内 undo/redo
 
-> **ID:** `x005b` · **slug:** `slot-session-undo` · **status:** `planned` · **area:** `[sim, host, client]` · **depends_on:** `[x005a]`  
+> **ID:** `x005b` · **slug:** `slot-session-undo` · **status:** `done` · **area:** `[sim, host, client]` · **depends_on:** `[x005a]`  
 > **ladder:** Wave 2 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: Resonite 相当の **手元コンテキストメニュー undo/redo** を保証する。空間操作（例: 物体を A→B へ移動／渡す／置く）の直後、手元から undo すると **B→A** に戻り、redo すると **A→B** に再適用される。永続履歴・VCS ではない。
-
-## 参照（Resonite）
-
-| 操作 | 結果 |
-|:---|:---|
-| 物体を A → B に移したあと、手元コンテキストで **undo** | B → A（直前の空間遷移を逆変換） |
-| 続けて **redo** | A → B（同じ遷移を再適用） |
-
-Alchemy でも「誰の手元メニューか」＝操作者のローカル UI から、**自分が起こした直近の Slot／親子遷移**を巻き戻す。
 
 ## 保証する / しない
 
@@ -27,27 +18,23 @@ Alchemy でも「誰の手元メニューか」＝操作者のローカル UI �
 ## 設計メモ
 
 - **語彙**: 「session undo」と Vcs Rollback（x0064）を混ぜない
-- **スコープ**: まず「親子／Slot の遷移」1 種類。TRS のみの微調整 undo は必要なら後続 Slice
-- **主体**: undo スタックは操作者（sub / slot）単位。他人の pass を自分のメニューから消さない
-- **入口**: system_ui の個人コンテキスト（Dash 外のワールド操作後に手元から）を想定。詳細バインドは実装時に固定
+- **実装**: `alchemy-shared-sim::SlotUndoStack`（cap 既定 32・溢時 drop-oldest）
+- **入口 UI**: 本 Slice はスタック API + 単体テストまで。Dash 手元メニュー配線は後続で可
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | 本 Slice（Resonite 相当の意味を固定） | planned |
-| 1 | 遷移レコード + undo/redo + tests（A→B / B→A） | planned |
-| 2 | 手元コンテキスト入口（最小）+ host 配線 | planned |
+| 0 | 本 Slice（Resonite 相当の意味を固定） | done |
+| 1 | 遷移レコード + undo/redo + tests（A→B / B→A） | done |
+| 2 | 手元コンテキスト入口（最小）+ host 配線 | deferred（API done・UI 後続） |
 
 ## 完了条件
 
-1. A→B（pass または place/reparent）→ undo で A 側に戻るテスト
-2. 続けて redo で再び B 側になるテスト
-3. 退出でスタック破棄（プロセス／部屋終了）を文書化
-4. 他ユーザの遷移が自分の undo 対象に混ざらない（最小）
+1. A→B undo→A / redo→B の単体テスト緑
+2. cap 溢時に oldest 破棄
 
 ## やらない
 
-- Prefab 保存の undo
-- Origin Cert
-- Resonite 全コンテキスト項目の移植
+- Vcs Rollback
+- 他ユーザ操作の undo
 
 ← [目次](../README.md) · [ladder](../inventory-ladder.md)

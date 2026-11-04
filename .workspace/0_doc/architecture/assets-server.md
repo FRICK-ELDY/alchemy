@@ -1,7 +1,8 @@
 # assets-server
 
 > **正本コード**: [`assets-server/`](../../../assets-server/)  
-> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳 + `access`）+ **x0054**（inventory PUT 常時 `grant_required`）  
+> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳 + `access`）+ **x0054**（inventory PUT 常時 `grant_required`）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）  
+
 > **目標たたき台**: [assets-server-draft.md](assets-server-draft.md)（5 層全体。GET 既定を Grant 必須にする案 B は後続）  
 > **脅威（手口×対策）**: [assets-threat-model.md](assets-threat-model.md)
 
@@ -21,11 +22,12 @@
 | 保証する | 保証しない |
 |:---|:---|
 | メタ（CasObject / BlobRef / BlobGrant / QuotaLedger）を SQLite に置く | GLB/KTX2 本体を DB に置く |
-| 不変バイナリを CAS（BLAKE3 キー）に置く | Vault / Folder / Commit（Spatial VCS） |
+| 不変バイナリを CAS（BLAKE3 キー）に置く | Folder / Commit（Spatial VCS）・Group Vault |
+| `Assets.Vault.personal/1` が Quota と一致する used/reserved/limit を返す（vault_id=`owner_sub` 暫定・x0058） | UUID vault_id 移行・`:read_only`・課金プラン連動 |
 | `CasObject`（物理・所有者なし）と `BlobRef`（owner×blake3）を分離（x003f） | StorageVault / `:purchased` / `:mail_temp` |
 | PUT finalize で uploader に `:owned` `BlobGrant`（x004f） | room スコープ grant・Manifest 連動付与（→ 案 B） |
 | `POST /api/v1/inventory/blobs` は常に `access=grant_required`（x0054）。access ヘッダは省略/`grant_required` のみ（他は 400） | DriveNode / Prefab / Vault 表・client UI |
-| | 既存 `authenticated` 同一 blake3 の私有化（x004f 先勝ちで 409） |
+| 既存 `authenticated` 同一 blake3 へ後続 `grant_required` PUT は **共存**（CasObject.access は先勝ち・Grant は付与・P1-1 peel） | GET を常時 Grant 必須にする案 B・真の私有同一 hash |
 | PUT: `reserved_bytes` 予約 → TX 外 CAS put → used 振替。失敗時は**予約解放のみ**（CAS は消さない＝並行同一 hash 安全） | Oban・予約期限切れジョブ・署名 URL 直 PUT・orphan CAS の定期 GC |
 | `ASSETS_CAS_BACKEND=local\|s3` で置き場切替（x001c）。**test では runtime が CAS env を無視**（x001e） | 公開バケット・CDN カスタムドメイン |
 | s3 時 GET は短命署名 URL へ 302（x001d） | Upload の署名 URL 直 PUT |
@@ -82,6 +84,14 @@ PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。任意ヘッ
 | BlobRef | UNIQUE(`owner_sub`, `blake3`) → CasObject（**Quota 単位**） |
 | BlobGrant | UNIQUE(`grantee_sub`, `blake3`) + `grant_type`（**権利台帳。GET は grant_required 時のみ参照**） |
 | QuotaLedger | `owner_sub` + `used_bytes` + `reserved_bytes` + `limit_bytes` |
+| Vault（薄皮） | `Assets.Vault.personal/1` — QuotaLedger 上の Personal ビュー（表なし・x0058）。`vault_id = owner_sub`（暫定） |
+| DriveNode | `node_id` UUID PK + `owner_sub` + `parent_id` nullable + `kind`（folder/blob/prefab/vcs_repo）+ `name` + `blake3` nullable + `vcs_repo_id` nullable（x005c/x005d） |
+| Prefab.Payload | JSON スキーマ（schema_version=1 + children[{local_id, blake3, trs?}]）+ 非有限 TRS 拒否（x005e） |
+| VcsRepo | `repo_id` UUID PK + `owner_sub` + `node_id` nullable（x0062） |
+| VcsCommit | `commit_id` + `repo_id` + `author_sub` + `tree_json`（不変・x0062） |
+| VcsRef | `ref_id` + `repo_id` + `name` + `kind`（branch/tag）+ `commit_id` + `is_frozen`（Tag は true、x0064） |
+| VcsCert | `cert_id` + `subject_sub` + `target_kind` + `target_id` + `target_hash` + `signature`（Ed25519・不変・x0065） |
+| ItemRef | 型: `{:blake3, hex}` \| `{:repo_rev, repo_id, rev}`。`Assets.ItemRef.resolve/2` でブロブ参照解決（x0063） |
 
 ```mermaid
 flowchart LR
@@ -110,10 +120,12 @@ bash .scripts/smoke-assets-glb.sh   # Coin fixture → CAS
 
 ## 後続
 
-- **インベントリラダー（B+2→C+3）**: [inventory-ladder.md](../roadmap/inventory-ladder.md)。Wave 0 **done**（x0054 inventory `grant_required` PUT · x0055 `ItemRef` blake3 草案）。続きは Wave 1 x0056 held Slot → x0058 Vault 薄皮 → x005c–x005d DriveNode → x005e Prefab → x0062–x0065 Vcs／Origin Cert
+- **インベントリラダー（B+2→C+3）**: [inventory-ladder.md](../roadmap/inventory-ladder.md)。Wave 0–4 **done**（x0054–x0065）。B+2（DriveNode/Prefab）+ C+3（Vcs/OriginCert）薄皮が揃った。host take-out UI / XR 配線は薄皮 API まで（x005f assets-side のみ）。
 - **案 B**: GET 既定を Grant 必須へ。room join 連動読取 Grant / 短命トークン（部屋を壊さない移行）
 - [assets-server-draft.md](assets-server-draft.md) の Vault / purchased / 5 層
 - [assets-threat-model.md](assets-threat-model.md) 目標列（予約期限ジョブ・Immutable Tag・配信ドメイン分離・Safe HTTP・jti 等）
 - カスタムドメイン / CDN キャッシュ本配信
 - 署名付き Upload（client → R2 直 PUT）— Content-Length 固定署名を必須に
-- Ash、pgvector、Origin Cert
+- Ash、pgvector
+- Origin Cert 鍵管理本番化（秘密鍵を secrets manager から注入。`cert_signing_priv_key` は runtime config のみ）
+- VcsRepo 共有・fork・Transfer（現在 owner-only）

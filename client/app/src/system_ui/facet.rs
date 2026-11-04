@@ -77,6 +77,7 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::HomeFieldEmail
         | WidgetId::HomeFieldBirthday
         | WidgetId::HomeRememberMe
+        | WidgetId::HomeTosAgreed
         | WidgetId::HomeModeLogin
         | WidgetId::HomeModeRegister
         | WidgetId::HomeSubmit

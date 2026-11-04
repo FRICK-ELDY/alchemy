@@ -18,10 +18,10 @@ ID は roadmap 規約どおり **`x` + 4桁ゼロ埋め小文字 16進**（`x005
 | Wave | 到達 | Slice |
 |:---|:---|:---|
 | **0 権利楔** | 私有 blob を Grant 保有者だけが GET | [x0054](slices/x0054-inventory-grant-required-put.md) **done** · [x0055](slices/x0055-item-ref-blake3-draft.md) **done** |
-| **1 箱庭・身体** | 「掴んでいる」が親子として表せる（未永続） | [x0056](slices/x0056-shared-sim-held-slot.md) · [x0057](slices/x0057-host-grab-held-slot.md) · [x0058](slices/x0058-vault-personal-peel.md) |
-| **2 空間グラフ + Drive 薄皮** | 渡す／置く／undo + DriveNode | [x0059](slices/x0059-slot-graph-general.md) · [x005a](slices/x005a-slot-pass-place.md) · [x005b](slices/x005b-slot-session-undo.md) · [x005c](slices/x005c-drive-node-folder-blob.md) · [x005d](slices/x005d-drive-node-prefab-kind.md) |
-| **3 B+2 保存** | 退出→再入室→取り出し | [x005e](slices/x005e-prefab-payload-schema.md) · [x005f](slices/x005f-inventory-take-out.md) · [x0060](slices/x0060-inventory-put-back.md) · [x0061](slices/x0061-inventory-rejoin-roundtrip.md) |
-| **4 C+3 昇格** | Prefab→VcsRepo・`repo@rev` | [x0062](slices/x0062-prefab-promote-vcs.md) · [x0063](slices/x0063-item-ref-repo-rev.md) · [x0064](slices/x0064-vcs-branch-tag-minimal.md) · [x0065](slices/x0065-origin-cert-thin.md) |
+| **1 箱庭・身体** | 「掴んでいる」が親子として表せる（未永続） | [x0056](slices/x0056-shared-sim-held-slot.md) **done** · [x0057](slices/x0057-host-grab-held-slot.md) **done** · [x0058](slices/x0058-vault-personal-peel.md) **done** |
+| **2 空間グラフ + Drive 薄皮** | 渡す／置く／undo + DriveNode | [x0059](slices/x0059-slot-graph-general.md)–[x005d](slices/x005d-drive-node-prefab-kind.md) **done** |
+| **3 B+2 保存** | 退出→再入室→取り出し | [x005e](slices/x005e-prefab-payload-schema.md)–[x0061](slices/x0061-inventory-rejoin-roundtrip.md) **done**（host/UI 配線は API 薄皮） |
+| **4 C+3 昇格** | Prefab→VcsRepo・`repo@rev` | [x0062](slices/x0062-prefab-promote-vcs.md)–[x0065](slices/x0065-origin-cert-thin.md) **done** |
 
 ## ラダー外（依存・後続）
 

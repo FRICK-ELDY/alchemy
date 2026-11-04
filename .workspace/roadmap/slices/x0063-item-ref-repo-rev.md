@@ -1,6 +1,6 @@
 # x0063 — ItemRef `repo@rev`
 
-> **ID:** `x0063` · **slug:** `item-ref-repo-rev` · **status:** `planned` · **area:** `[protocol, host, assets]` · **depends_on:** `[x0055, x0062]`  
+> **ID:** `x0063` · **slug:** `item-ref-repo-rev` · **status:** `done` · **area:** `[protocol, host, assets]` · **depends_on:** `[x0055, x0062]`  
 > **ladder:** Wave 4 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: ItemRef が **blake3** に加え **`repo_id` + `rev`（Commit または Ref 名）** を取れる。旧 blake3 パスは残す。

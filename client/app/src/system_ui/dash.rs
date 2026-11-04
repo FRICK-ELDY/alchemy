@@ -82,6 +82,8 @@ pub struct DashState {
     pub home_email: String,
     pub home_birthday: String,
     pub home_remember_me: bool,
+    /// Register: ToS checkbox (must be true to submit; x P3 hygiene).
+    pub home_tos_agreed: bool,
     pub home_status: String,
     pub home_logged_in_as: Option<String>,
     /// When true, Home shows create-world placeholder panel (x0037).
@@ -127,6 +129,7 @@ impl Default for DashState {
             home_email: String::new(),
             home_birthday: "2000-01-01".into(),
             home_remember_me: true,
+            home_tos_agreed: false,
             home_status: "Sign in to create or join a world".into(),
             home_logged_in_as: None,
             home_create_open: false,
@@ -568,7 +571,27 @@ fn rebuild_home(
         1.0,
     );
     tree.register_hit(WidgetId::HomeRememberMe, remember);
-    y += 40.0;
+    y += 36.0;
+
+    if matches!(state.home_mode, HomeMode::Register) {
+        let tos = Rect::new(x, y, 280.0, 28.0);
+        let tos_label = if state.home_tos_agreed {
+            "[x] I agree to the Terms of Service"
+        } else {
+            "[ ] I agree to the Terms of Service"
+        };
+        tree.push_rect(tos, state.interact(WidgetId::HomeTosAgreed, BTN));
+        tree.push_label(
+            Rect::new(x + 8.0, y + 6.0, 260.0, 18.0),
+            tos_label,
+            TEXT,
+            1.0,
+        );
+        tree.register_hit(WidgetId::HomeTosAgreed, tos);
+        y += 40.0;
+    } else {
+        y += 4.0;
+    }
 
     let submit = Rect::new(x, y, 200.0, 44.0);
     let submit_label = if step2 {

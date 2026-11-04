@@ -1,6 +1,6 @@
 # x0062 — Prefab → VcsRepo 昇格
 
-> **ID:** `x0062` · **slug:** `prefab-promote-vcs` · **status:** `planned` · **area:** `[assets]` · **depends_on:** `[x0061]`  
+> **ID:** `x0062` · **slug:** `prefab-promote-vcs` · **status:** `done` · **area:** `[assets]` · **depends_on:** `[x0061]`  
 > **ladder:** Wave 4 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: 既存 Prefab DriveNode を **`VcsRepo` に昇格**し、初回 Commit の Tree を現行 Prefab ペイロードと同一論理にする（C+3 入口）。

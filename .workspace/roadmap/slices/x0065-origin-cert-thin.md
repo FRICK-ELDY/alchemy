@@ -1,6 +1,6 @@
 # x0065 — Origin Certificate 薄皮
 
-> **ID:** `x0065` · **slug:** `origin-cert-thin` · **status:** `planned` · **area:** `[assets, docs]` · **depends_on:** `[x0062, x0064]`  
+> **ID:** `x0065` · **slug:** `origin-cert-thin` · **status:** `done` · **area:** `[assets, docs]` · **depends_on:** `[x0062, x0064]`  
 > **ladder:** Wave 4 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: Commit または Tag に紐づく **原産地署名の薄い版**（作者 `sub` + 対象ハッシュ + 署名）を置く。verifier 本実装・着用監査は別帯。

@@ -1,6 +1,6 @@
 # x0059 — Slot グラフ一般化（任意 parent）
 
-> **ID:** `x0059` · **slug:** `slot-graph-general` · **status:** `planned` · **area:** `[sim]` · **depends_on:** `[x0056]`  
+> **ID:** `x0059` · **slug:** `slot-graph-general` · **status:** `done` · **area:** `[sim]` · **depends_on:** `[x0056]`  
 > **ladder:** Wave 2 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: held 専用を超え、entity の **任意 parent**（世界ルート＝parent 無し）を SlotGraph が表せるようにする。
@@ -20,9 +20,9 @@
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | 本 Slice | planned |
-| 1 | 一般 reparent + 循環検査 + tests | planned |
-| 2 | held API との関係を docs | planned |
+| 0 | 本 Slice | done |
+| 1 | 一般 reparent + 循環検査 + tests | done |
+| 2 | held API との関係を docs | done |
 
 ## 完了条件
 

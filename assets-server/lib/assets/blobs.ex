@@ -285,6 +285,12 @@ defmodule Assets.Blobs do
        when existing == requested,
        do: :ok
 
+  # P1-1 peel: public mesh (authenticated) + inventory grant_required may share blake3.
+  # CasObject.access stays first-writer; second writer still gets BlobRef + owned Grant.
+  # True private-only GET for shared hashes needs full access→Grant move (案 B).
+  defp assert_access_match(%CasObject{access: @access_authenticated}, @access_grant_required),
+    do: :ok
+
   defp assert_access_match(%CasObject{}, _requested), do: {:error, :access_conflict}
 
   defp fetch_cas_object!(blake3) do

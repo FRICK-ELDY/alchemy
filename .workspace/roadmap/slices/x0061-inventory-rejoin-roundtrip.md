@@ -1,6 +1,6 @@
 # x0061 — 退出→再入室→取り出し（B+2 完了）
 
-> **ID:** `x0061` · **slug:** `inventory-rejoin-roundtrip` · **status:** `planned` · **area:** `[host, assets, client, ci]` · **depends_on:** `[x005f, x0060]`  
+> **ID:** `x0061` · **slug:** `inventory-rejoin-roundtrip` · **status:** `done` · **area:** `[host, assets, client, ci]` · **depends_on:** `[x005f, x0060]`  
 > **ladder:** Wave 3 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: **B+2 の定義完了** — put-back した Prefab が、退出・再入室のあと take-out で同じ論理内容として戻る。

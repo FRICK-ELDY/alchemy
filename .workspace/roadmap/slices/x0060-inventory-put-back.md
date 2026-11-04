@@ -1,6 +1,6 @@
 # x0060 — インベントリ戻す（Prefab 保存）
 
-> **ID:** `x0060` · **slug:** `inventory-put-back` · **status:** `planned` · **area:** `[host, assets, client]` · **depends_on:** `[x005d, x005e, x005f]`  
+> **ID:** `x0060` · **slug:** `inventory-put-back` · **status:** `done` · **area:** `[host, assets, client]` · **depends_on:** `[x005d, x005e, x005f]`  
 > **ladder:** Wave 3 · [inventory-ladder.md](../inventory-ladder.md)
 
 目標: 部屋内 subtree（held または選択範囲の最小）を **Prefab ペイロードとして保存**し DriveNode（kind=prefab）に戻す。

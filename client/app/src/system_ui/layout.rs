@@ -30,6 +30,7 @@ pub enum WidgetId {
     HomeFieldEmail,
     HomeFieldBirthday,
     HomeRememberMe,
+    HomeTosAgreed,
     HomeModeLogin,
     HomeModeRegister,
     HomeSubmit,
