@@ -1524,7 +1524,35 @@ fn handle_ui_action(
             }
             ui.rebuild();
         }
+        UiAction::InventoryOpen => {
+            // Scene list is Manifest-derived; refresh without Drive HTTP (x006e).
+            ui.state.scene_meshes = shared.scene_meshes();
+            if ui
+                .state
+                .scene_selected
+                .is_some_and(|i| i >= ui.state.scene_meshes.len())
+            {
+                ui.state.scene_selected = None;
+            }
+            ui.rebuild();
+        }
         UiAction::InventoryPutBack => {
+            // Always re-sync from SharedState so Put back sees post-spawn Manifest (x006e).
+            let prev_entity = ui
+                .state
+                .scene_selected
+                .and_then(|i| ui.state.scene_meshes.get(i).map(|(eid, _)| *eid));
+            ui.state.scene_meshes = shared.scene_meshes();
+            if let Some(eid) = prev_entity {
+                ui.state.scene_selected =
+                    ui.state.scene_meshes.iter().position(|(id, _)| *id == eid);
+            } else if ui
+                .state
+                .scene_selected
+                .is_some_and(|i| i >= ui.state.scene_meshes.len())
+            {
+                ui.state.scene_selected = None;
+            }
             let selected = ui.state.scene_selected.and_then(|i| {
                 ui.state
                     .scene_meshes
@@ -1532,7 +1560,7 @@ fn handle_ui_action(
                     .map(|(eid, b3)| (*eid, b3.clone()))
             });
             let Some((entity_id, blake3)) = selected else {
-                ui.state.inventory_status = "select a scene mesh first".into();
+                ui.state.inventory_status = "select a scene mesh first (Refresh if empty)".into();
                 ui.rebuild();
                 return;
             };
@@ -1559,7 +1587,8 @@ fn handle_ui_action(
                     )
                 })
             });
-            let name = format!("putback-{}", &blake3[..8.min(blake3.len())]);
+            // Include entity_id so same blake3 / different entities do not upsert-collide.
+            let name = format!("putback-e{entity_id}-{}", &blake3[..8.min(blake3.len())]);
             match crate::inventory::put_back_prefab(&assets, &access, &name, &blake3, trs) {
                 Ok(node) => {
                     ui.state.inventory_status = format!(

@@ -300,7 +300,8 @@ impl SystemUi {
                 self.state.tab = DashTab::Inventory;
                 self.mark_dash_chrome_dirty();
                 self.rebuild();
-                UiAction::None
+                // Desktop syncs Manifest scene mesh list without Drive HTTP (x006e).
+                UiAction::InventoryOpen
             }
             WidgetId::InventoryRefresh => UiAction::InventoryRefresh,
             WidgetId::InventoryTakeOut => UiAction::InventoryTakeOut,
@@ -805,6 +806,8 @@ pub enum UiAction {
     JoinRoom,
     /// Settings: VR hotswitch auto toggled (surface writes PresentationGate).
     HotswitchAutoChanged,
+    /// Inventory: tab opened — sync scene mesh list from SharedState (x006e).
+    InventoryOpen,
     /// Inventory: reload Drive nodes from assets (x006d).
     InventoryRefresh,
     /// Inventory: take-out selected blob via host control plane (x006d).

@@ -8,6 +8,8 @@ defmodule AssetsWeb.DriveController do
 
   use AssetsWeb, :controller
 
+  require Logger
+
   alias Assets.Drive
   alias Assets.Prefab.Payload
 
@@ -83,7 +85,6 @@ defmodule AssetsWeb.DriveController do
           |> json(%{error: "parent_not_folder"})
 
         {:error, reason} ->
-          require Logger
           Logger.warning("drive put_back save_failed: #{inspect(reason)}")
 
           conn
@@ -112,7 +113,6 @@ defmodule AssetsWeb.DriveController do
         |> json(%{error: "invalid_json"})
 
       {:error, reason} ->
-        require Logger
         Logger.warning("drive put_back invalid_payload: #{inspect(reason)}")
 
         conn

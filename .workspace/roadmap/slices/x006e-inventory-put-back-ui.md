@@ -14,8 +14,8 @@
 | assets: `POST /drive/put_back` が owner Bearer + 検証済み Prefab.Payload で `save_prefab` する | scene からの entity 削除 / reseal；Zenoh put-back 制御面 |
 | Desktop Inventory: Manifest 由来の scene mesh 一覧 + **Put back**（単一 child Prefab） | Prefab 多子 UI；XR Inventory；held-grab 必須導線 |
 | 保存後も **元 entity は部屋に残る**（コピー保存。方針は本 Slice で固定） | take-out の逆トランザクション；分散 TX |
-| put-back 名は非空・255 以内。同一 owner+name+parent は upsert（x0060） | 名前入力 UI の完成（既定名 `putback-{blake3[0..8]}`） |
-| 保証表・architecture・テストが一致 | `extra_blake3`；guest の他人 mesh 無断保存の追加防壁（Grant は payload のみ） |
+| put-back 名は非空・255 以内。同一 owner+name+parent は upsert（x0060） | 名前入力 UI の完成（既定名 `putback-e{entity_id}-{blake3[0..8]}`） |
+| 保証表・architecture・テストが一致 | `extra_blake3`；Prefab 子 blake3 の Grant 検証（後続）；UI スレッド同期 HTTP（take-out と同型） |
 
 ## 設計（要点）
 

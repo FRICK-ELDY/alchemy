@@ -597,7 +597,9 @@ fn spawn_manifest_subscriber(
                                 mesh_blake3 = Some(entry.blake3.clone());
                             }
                         }
-                        // x006e: Inventory put-back targets = mesh blake3 entries.
+                        // x006e put-back list: only 64-hex blake3 (valid CAS key).
+                        // shared-sim treats any non-empty blake3 as Mesh; short/invalid
+                        // hashes may still draw but are intentionally omitted here.
                         let scene_meshes: Vec<(u32, String)> = manifest
                             .entries
                             .iter()
