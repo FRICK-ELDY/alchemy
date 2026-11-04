@@ -16,8 +16,6 @@ x-assets-environment: &assets-environment
   ASSETS_CAS_PATH: /data/cas
   ASSETS_CAS_BACKEND: ${ASSETS_CAS_BACKEND:-local}
   AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://host.docker.internal:4002/.well-known/jwks.json}
-  WORLD_JWKS_URL: ${WORLD_JWKS_URL:-http://host.docker.internal:4003/.well-known/jwks.json}
-  WORLD_BASE_URL: ${WORLD_BASE_URL:-http://host.docker.internal:4003}
   ASSETS_S3_BUCKET: ${ASSETS_S3_BUCKET:-}
   ASSETS_S3_ENDPOINT: ${ASSETS_S3_ENDPOINT:-}
   ASSETS_S3_ACCESS_KEY_ID: ${ASSETS_S3_ACCESS_KEY_ID:-}

@@ -16,9 +16,6 @@ services:
       DATABASE_PATH: /app/priv/assets_dev.sqlite3
       ASSETS_CAS_PATH: /app/priv/cas
       AUTH_JWKS_URL: http://host.docker.internal:4002/.well-known/jwks.json
-      # x006b/x006c: PlaceRead verify + place_hashes fetch (must reach host world, not container loopback)
-      WORLD_JWKS_URL: http://host.docker.internal:4003/.well-known/jwks.json
-      WORLD_BASE_URL: http://host.docker.internal:4003
       # x001c: set in assets-server/.env (gitignored). Default stays local.
       ASSETS_CAS_BACKEND: ${ASSETS_CAS_BACKEND:-local}
       ASSETS_S3_BUCKET: ${ASSETS_S3_BUCKET:-}

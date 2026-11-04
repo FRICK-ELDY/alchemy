@@ -1592,8 +1592,8 @@ fn handle_ui_action(
             match crate::inventory::put_back_prefab(&assets, &access, &name, &blake3, trs) {
                 Ok(node) => {
                     ui.state.inventory_status = format!(
-                        "put-back ok {} (entity #{} stays in room)",
-                        node.name, entity_id
+                        "put-back ok {} (#{entity_id} stays; Take out is blob-only)",
+                        node.name
                     );
                     // Refresh Drive list so the new prefab is visible.
                     if let Ok(nodes) = crate::inventory::list_drive_nodes(&assets, &access) {

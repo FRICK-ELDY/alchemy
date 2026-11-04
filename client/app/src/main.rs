@@ -597,8 +597,8 @@ fn spawn_manifest_subscriber(
                                 mesh_blake3 = Some(entry.blake3.clone());
                             }
                         }
-                        // x006e put-back list: only 64-hex blake3 (valid CAS key).
-                        // shared-sim treats any non-empty blake3 as Mesh; short/invalid
+                        // x006e put-back list: 64 ascii-hex blake3 only (CAS key).
+                        // shared-sim treats any non-empty blake3 as Mesh; short/non-hex
                         // hashes may still draw but are intentionally omitted here.
                         let scene_meshes: Vec<(u32, String)> = manifest
                             .entries
@@ -606,6 +606,7 @@ fn spawn_manifest_subscriber(
                             .filter(|e| {
                                 !alchemy_protocol::scene_entry_is_user_root(e.entity_id)
                                     && e.blake3.len() == 64
+                                    && e.blake3.bytes().all(|b| b.is_ascii_hexdigit())
                             })
                             .map(|e| (e.entity_id, e.blake3.clone()))
                             .collect();

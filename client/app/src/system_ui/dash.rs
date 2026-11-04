@@ -706,21 +706,21 @@ fn rebuild_inventory(
     cw: f32,
     ch: f32,
 ) {
-    // Keep Drive+Scene rows inside the panel (x006e review): 4+3 rows fit ~480px.
-    let panel_h = ch.min(480.0);
+    // Drive 8 + Scene 4 with compact rows; clip hits to panel (x006e).
+    let panel_h = ch.min(520.0);
     let panel = Rect::new(cx, cy0, cw, panel_h);
     let panel_bottom = cy0 + panel_h;
     tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
     tree.push_label(
-        Rect::new(cx + 24.0, cy0 + 16.0, cw - 48.0, 24.0),
+        Rect::new(cx + 24.0, cy0 + 12.0, cw - 48.0, 22.0),
         "Inventory",
         TEXT,
         2.5,
     );
     tree.push_label(
-        Rect::new(cx + 24.0, cy0 + 44.0, cw - 48.0, 18.0),
+        Rect::new(cx + 24.0, cy0 + 36.0, cw - 48.0, 16.0),
         if state.inventory_status.is_empty() {
-            "Drive→Take out (host). Scene→Put back (stays in room)."
+            "Drive→Take out blob (host). Scene→Put back (stays; prefab Take out 未)."
         } else {
             &state.inventory_status
         },
@@ -728,46 +728,46 @@ fn rebuild_inventory(
         1.0,
     );
 
-    let refresh = Rect::new(cx + 24.0, cy0 + 72.0, 100.0, 40.0);
+    let refresh = Rect::new(cx + 24.0, cy0 + 58.0, 100.0, 36.0);
     tree.push_rect(refresh, state.interact(WidgetId::InventoryRefresh, BTN));
     tree.push_label(
-        Rect::new(cx + 36.0, cy0 + 84.0, 80.0, 20.0),
+        Rect::new(cx + 36.0, cy0 + 68.0, 80.0, 18.0),
         "Refresh",
         TEXT,
         1.5,
     );
     tree.register_hit(WidgetId::InventoryRefresh, refresh);
 
-    let take = Rect::new(cx + 136.0, cy0 + 72.0, 120.0, 40.0);
+    let take = Rect::new(cx + 136.0, cy0 + 58.0, 120.0, 36.0);
     tree.push_rect(take, state.interact(WidgetId::InventoryTakeOut, ACCENT));
     tree.push_label(
-        Rect::new(cx + 148.0, cy0 + 84.0, 100.0, 20.0),
+        Rect::new(cx + 148.0, cy0 + 68.0, 100.0, 18.0),
         "Take out",
         TEXT,
         1.5,
     );
     tree.register_hit(WidgetId::InventoryTakeOut, take);
 
-    let put = Rect::new(cx + 268.0, cy0 + 72.0, 120.0, 40.0);
+    let put = Rect::new(cx + 268.0, cy0 + 58.0, 120.0, 36.0);
     tree.push_rect(put, state.interact(WidgetId::InventoryPutBack, ACCENT));
     tree.push_label(
-        Rect::new(cx + 280.0, cy0 + 84.0, 100.0, 20.0),
+        Rect::new(cx + 280.0, cy0 + 68.0, 100.0, 18.0),
         "Put back",
         TEXT,
         1.5,
     );
     tree.register_hit(WidgetId::InventoryPutBack, put);
 
-    let mut y = cy0 + 120.0;
-    let row_h = 28.0;
+    let mut y = cy0 + 102.0;
+    let row_h = 26.0;
     tree.push_label(
-        Rect::new(cx + 24.0, y, cw - 48.0, 16.0),
+        Rect::new(cx + 24.0, y, cw - 48.0, 14.0),
         "Drive",
         MUTED,
         1.0,
     );
-    y += 20.0;
-    for (i, (node_id, kind, name)) in state.inventory_nodes.iter().take(4).enumerate() {
+    y += 16.0;
+    for (i, (node_id, kind, name)) in state.inventory_nodes.iter().take(8).enumerate() {
         if y + row_h > panel_bottom {
             break;
         }
@@ -781,26 +781,26 @@ fn rebuild_inventory(
         };
         tree.push_rect(row, state.interact(id, base));
         tree.push_label(
-            Rect::new(cx + 36.0, y + 4.0, cw - 72.0, 20.0),
+            Rect::new(cx + 36.0, y + 4.0, cw - 72.0, 18.0),
             format!("[{kind}] {name} ({})", &node_id[..8.min(node_id.len())]),
             TEXT,
-            1.1,
+            1.0,
         );
         tree.register_hit(id, row);
-        y += row_h + 4.0;
+        y += row_h + 3.0;
     }
 
-    y += 6.0;
-    if y + 16.0 <= panel_bottom {
+    y += 4.0;
+    if y + 14.0 <= panel_bottom {
         tree.push_label(
-            Rect::new(cx + 24.0, y, cw - 48.0, 16.0),
+            Rect::new(cx + 24.0, y, cw - 48.0, 14.0),
             "Scene meshes",
             MUTED,
             1.0,
         );
-        y += 20.0;
+        y += 16.0;
     }
-    for (i, (entity_id, blake3)) in state.scene_meshes.iter().take(3).enumerate() {
+    for (i, (entity_id, blake3)) in state.scene_meshes.iter().take(4).enumerate() {
         if y + row_h > panel_bottom {
             break;
         }
@@ -814,13 +814,13 @@ fn rebuild_inventory(
         };
         tree.push_rect(row, state.interact(id, base));
         tree.push_label(
-            Rect::new(cx + 36.0, y + 4.0, cw - 72.0, 20.0),
+            Rect::new(cx + 36.0, y + 4.0, cw - 72.0, 18.0),
             format!("[mesh] #{entity_id} {}", &blake3[..8.min(blake3.len())]),
             TEXT,
-            1.1,
+            1.0,
         );
         tree.register_hit(id, row);
-        y += row_h + 4.0;
+        y += row_h + 3.0;
     }
 }
 
