@@ -13,8 +13,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use alchemy_client_trust::{
-    process_manifest_bytes, DiscardReason, HostAttestationVerifier, ManifestSealVerifier,
-    TrustOutcome, TrustWatermarks, WorldJwks,
+    open_manifest_aead, process_manifest_bytes, DiscardReason, HostAttestationVerifier,
+    ManifestSealVerifier, TrustOutcome, TrustWatermarks, WorldJwks,
 };
 use alchemy_protocol::wire_aead::{self, AeadKind};
 use alchemy_protocol::wire_crypto::{generate_signing_key, public_key_bytes};
@@ -54,8 +54,6 @@ struct TokenResponse {
 #[derive(Debug, Deserialize)]
 struct MtlsResponse {
     client_cert_pem: String,
-    #[serde(default)]
-    ca_cert_pem: String,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -164,17 +162,57 @@ fn fetch_room_token(
     })
 }
 
-fn fake_manifest(room_id: &str) -> SceneManifest {
+/// Post-identity adversarial Manifest: valid pin/room/host_pub len, forged `world_seal`.
+/// Hits Seal Discard (not Identity) so the hermetic assert matches x0070「偽 seal」.
+fn fake_seal_manifest(room_id: &str) -> SceneManifest {
     SceneManifest {
         room_id: room_id.into(),
         revision: 0,
         entries: vec![],
         locomotion: None,
-        protocol_pin: "bogus-pin-x0070".into(),
+        protocol_pin: PROTOCOL_PIN.into(),
         host_pub: vec![0u8; 32],
         host_attestation: String::new(),
         world_seal: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.e30.e30".into(),
         host_generation: 1,
+    }
+}
+
+/// Temp PEM paths for a second mTLS identity; always unlink on drop (incl. bail).
+struct TempPemPair {
+    cert: std::path::PathBuf,
+    key: std::path::PathBuf,
+}
+
+impl TempPemPair {
+    fn write(cert_pem: &str, key_pem: &str) -> Result<Self> {
+        let cert = std::env::temp_dir().join(format!(
+            "alchemy-trust-probe-host-{}.cert.pem",
+            std::process::id()
+        ));
+        let key = std::env::temp_dir().join(format!(
+            "alchemy-trust-probe-host-{}.key.pem",
+            std::process::id()
+        ));
+        std::fs::write(&cert, cert_pem).context("write host cert pem")?;
+        std::fs::write(&key, key_pem).context("write host key pem")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600));
+        }
+        Ok(Self { cert, key })
+    }
+}
+
+impl Drop for TempPemPair {
+    fn drop(&mut self) {
+        if let Err(err) = std::fs::remove_file(&self.cert) {
+            log::warn!("temp cert cleanup {}: {err}", self.cert.display());
+        }
+        if let Err(err) = std::fs::remove_file(&self.key) {
+            log::warn!("temp key cleanup {}: {err}", self.key.display());
+        }
     }
 }
 
@@ -313,28 +351,43 @@ fn run_hermetic() -> Result<()> {
     if watermarks.host_pub.is_none() || watermarks.last_world_seal.is_none() {
         bail!("Accept left watermarks incomplete");
     }
+    // Concurrent host Manifest may Accept; process each sample on a scratch copy so
+    // Accept never mutates joined watermarks (CI false negatives after e2e-probe).
+    // Watermark freeze is asserted on `trial` after Discard (+ unit tests).
     let snapshot = watermarks.clone();
 
-    // Wrong room_key envelope → AEAD discard, watermarks unchanged.
+    // Wrong room_key envelope: drain → put → require sample openable with wrong_key
+    // but not room_key (avoids false positive on unrelated AEAD fails).
+    while let Ok(Some(_)) = manifest_sub.try_recv() {}
     let wrong_key = [0xABu8; wire_aead::ROOM_KEY_LEN];
     put_aead_manifest(
         &session,
         &manifest_k,
         &room_id,
         &wrong_key,
-        &fake_manifest(&room_id),
+        &fake_seal_manifest(&room_id),
     )?;
     let step_deadline = Instant::now() + Duration::from_secs(8);
-    let mut saw_aead = false;
+    let mut saw_wrong_key = false;
     while Instant::now() < step_deadline {
         if let Ok(Some(sample)) = manifest_sub.try_recv() {
             let bytes: ZBytes = sample.payload().clone();
+            let envelope = bytes.to_bytes();
+            let opens_with_wrong =
+                open_manifest_aead(&room_id, &wrong_key, envelope.as_ref()).is_ok();
+            let opens_with_room =
+                open_manifest_aead(&room_id, &room.room_key, envelope.as_ref()).is_ok();
+            if !(opens_with_wrong && !opens_with_room) {
+                // Host republish or unrelated noise — keep waiting for our put.
+                continue;
+            }
+            let mut trial = snapshot.clone();
             match process_manifest_bytes(
                 &room_id,
                 &room.room_key,
-                bytes.to_bytes().as_ref(),
+                envelope.as_ref(),
                 &room_id,
-                &mut watermarks,
+                &mut trial,
                 &seal,
                 &attest,
             ) {
@@ -342,58 +395,60 @@ fn run_hermetic() -> Result<()> {
                     reason: DiscardReason::Aead,
                     ..
                 } => {
-                    saw_aead = true;
+                    if trial != snapshot {
+                        bail!("scratch watermarks mutated on wrong-key AEAD Discard");
+                    }
+                    saw_wrong_key = true;
                     break;
                 }
-                TrustOutcome::Accept { .. } => {
-                    // Concurrent host republish — keep waiting for our adversarial sample.
-                }
-                TrustOutcome::Discard { reason, .. } => {
-                    log::debug!("unexpected discard while waiting Aead: {reason:?}");
-                }
+                other => bail!("wrong-key sample: expected Aead Discard, got {other:?}"),
             }
         } else {
             thread::sleep(Duration::from_millis(40));
         }
     }
-    if !saw_aead {
-        bail!("expected AEAD Discard for wrong-key Manifest");
+    if !saw_wrong_key {
+        bail!("expected attributable wrong-key AEAD Discard");
     }
-    if watermarks != snapshot {
-        bail!("watermarks mutated after wrong-key Discard");
-    }
-    log::info!("trust-probe: wrong-key AEAD Discard + watermark stable ok");
+    log::info!("trust-probe: wrong-key AEAD Discard + scratch watermark stable ok");
 
-    // Correct AEAD wrapping fake seal → Seal/Identity Discard, watermarks unchanged.
+    // Correct AEAD wrapping forged seal → Seal Discard; scratch stays at snapshot.
+    while let Ok(Some(_)) = manifest_sub.try_recv() {}
     put_aead_manifest(
         &session,
         &manifest_k,
         &room_id,
         &room.room_key,
-        &fake_manifest(&room_id),
+        &fake_seal_manifest(&room_id),
     )?;
     let step_deadline = Instant::now() + Duration::from_secs(8);
-    let mut saw_post = false;
+    let mut saw_seal = false;
     while Instant::now() < step_deadline {
         if let Ok(Some(sample)) = manifest_sub.try_recv() {
             let bytes: ZBytes = sample.payload().clone();
+            let mut trial = snapshot.clone();
             match process_manifest_bytes(
                 &room_id,
                 &room.room_key,
                 bytes.to_bytes().as_ref(),
                 &room_id,
-                &mut watermarks,
+                &mut trial,
                 &seal,
                 &attest,
             ) {
                 TrustOutcome::Discard {
-                    reason: DiscardReason::Identity | DiscardReason::Seal | DiscardReason::Attest,
+                    reason: DiscardReason::Seal,
                     ..
                 } => {
-                    saw_post = true;
+                    if trial != snapshot {
+                        bail!("scratch watermarks mutated on fake-seal Discard");
+                    }
+                    saw_seal = true;
                     break;
                 }
-                TrustOutcome::Accept { .. } => {}
+                TrustOutcome::Accept { .. } => {
+                    // Concurrent host republish on scratch — ignore.
+                }
                 TrustOutcome::Discard { reason, .. } => {
                     log::debug!("other discard while waiting fake seal: {reason:?}");
                 }
@@ -402,13 +457,10 @@ fn run_hermetic() -> Result<()> {
             thread::sleep(Duration::from_millis(40));
         }
     }
-    if !saw_post {
-        bail!("expected post-AEAD Discard for fake-seal Manifest");
+    if !saw_seal {
+        bail!("expected Seal Discard for fake-seal Manifest");
     }
-    if watermarks != snapshot {
-        bail!("watermarks mutated after fake-seal Discard");
-    }
-    log::info!("trust-probe: fake-seal Discard + watermark stable ok");
+    log::info!("trust-probe: fake-seal Discard + scratch watermark stable ok");
 
     // Host still alive (optional Frame sample).
     let frame_deadline = Instant::now() + Duration::from_secs(5);
@@ -482,10 +534,7 @@ fn run_wan() -> Result<()> {
         .mtls
         .as_ref()
         .ok_or_else(|| anyhow!("room A token missing mtls (is world MTLS_CA configured?)"))?;
-    if !mtls_a.ca_cert_pem.is_empty() {
-        // Prefer token CA; smoke script also sets ZENOH_TLS_ROOT_CA.
-        let _ = mtls_a.ca_cert_pem;
-    }
+    // Root CA comes from smoke `ZENOH_TLS_ROOT_CA` (same material as world signer).
     zenoh_connect::install_world_mtls_pems(
         &mtls_a.client_cert_pem,
         eph.private_key_pem(),
@@ -529,38 +578,36 @@ fn run_wan() -> Result<()> {
         .mtls
         .as_ref()
         .ok_or_else(|| anyhow!("room B host token missing mtls"))?;
-    // Separate process identity for host put: write temp env and open second session.
-    let host_cert_path = std::env::temp_dir().join("alchemy-trust-probe-host-cert.pem");
-    let host_key_path = std::env::temp_dir().join("alchemy-trust-probe-host-key.pem");
-    std::fs::write(&host_cert_path, &mtls_b.client_cert_pem)?;
-    std::fs::write(&host_key_path, eph_host.private_key_pem())?;
-    let host_session = zenoh_connect::open_client_mtls(
-        &zenoh_connect,
-        host_cert_path.to_str().unwrap(),
-        host_key_path.to_str().unwrap(),
-    )
-    .context("open host B mTLS")?;
-
+    let host_pems = TempPemPair::write(&mtls_b.client_cert_pem, eph_host.private_key_pem())?;
     let other_key = manifest_key(&room_b, &bundle_b.wire_cap);
-    let other_manifest = SceneManifest {
-        room_id: room_b.clone(),
-        revision: 1,
-        entries: vec![],
-        locomotion: None,
-        protocol_pin: PROTOCOL_PIN.into(),
-        host_pub: vec![1u8; 32],
-        host_attestation: String::new(),
-        world_seal: "other-room-seal".into(),
-        host_generation: 1,
-    };
-    put_aead_manifest(
-        &host_session,
-        &other_key,
-        &room_b,
-        &bundle_b.room_key,
-        &other_manifest,
-    )?;
-    log::info!("host B put AEAD Manifest on {other_key}");
+    {
+        // Close host session before TempPemPair drop (Windows may block unlink while open).
+        let host_session = zenoh_connect::open_client_mtls(
+            &zenoh_connect,
+            host_pems.cert.to_str().context("host cert path utf8")?,
+            host_pems.key.to_str().context("host key path utf8")?,
+        )
+        .context("open host B mTLS")?;
+        let other_manifest = SceneManifest {
+            room_id: room_b.clone(),
+            revision: 1,
+            entries: vec![],
+            locomotion: None,
+            protocol_pin: PROTOCOL_PIN.into(),
+            host_pub: vec![1u8; 32],
+            host_attestation: String::new(),
+            world_seal: "other-room-seal".into(),
+            host_generation: 1,
+        };
+        put_aead_manifest(
+            &host_session,
+            &other_key,
+            &room_b,
+            &bundle_b.room_key,
+            &other_manifest,
+        )?;
+        log::info!("host B put AEAD Manifest on {other_key}");
+    }
 
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut saw_unreadable = false;
@@ -598,8 +645,7 @@ fn run_wan() -> Result<()> {
         );
     }
 
-    let _ = std::fs::remove_file(&host_cert_path);
-    let _ = std::fs::remove_file(&host_key_path);
+    drop(host_pems);
     log::info!("trust-probe WAN ok");
     Ok(())
 }

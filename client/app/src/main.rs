@@ -424,7 +424,13 @@ fn spawn_manifest_subscriber(
                             match outcome {
                                 TrustOutcome::Discard { reason, detail } => {
                                     match reason {
-                                        DiscardReason::Aead => dropped_aead += 1,
+                                        // AEAD is opened before this gate; Aead here is a bug.
+                                        DiscardReason::Aead => {
+                                            log::error!(
+                                                "bug: AEAD discard after open_zenoh_payload: {detail}"
+                                            );
+                                            dropped_aead += 1;
+                                        }
                                         DiscardReason::Limits => dropped_limits += 1,
                                         DiscardReason::Decode => dropped_decode += 1,
                                         DiscardReason::Identity => dropped_identity += 1,

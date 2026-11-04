@@ -19,7 +19,6 @@ path = "src/bin/trust-probe.rs"
 [dependencies]
 alchemy-protocol = { workspace = true }
 anyhow = { workspace = true }
-blake3 = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
 prost = { workspace = true }
