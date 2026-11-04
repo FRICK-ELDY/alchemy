@@ -275,11 +275,15 @@ impl PhysicsWorld {
     }
 
     /// Logical held SlotGraph (x0056 / x0057 / x0059). World-rooted when not held.
+    /// Intent/UI wiring is deferred (x005a/x005b); kept for unit tests + future host entry.
+    #[allow(dead_code)]
     pub fn slot_graph(&self) -> &SlotGraph {
         &self.slots
     }
 
     /// Pass held entity from `from_slot` to `to_slot` held (x005a). No Steal.
+    /// Intent/UI wiring deferred — exercised by unit tests until wired.
+    #[allow(dead_code)]
     pub fn pass_held(&mut self, from_slot: usize, to_slot: usize) -> bool {
         if from_slot >= self.slot_count || to_slot >= self.slot_count || from_slot == to_slot {
             return false;
@@ -323,6 +327,8 @@ impl PhysicsWorld {
     }
 
     /// Place: release held to world (parent None + Dynamic). Alias of grab off (x005a).
+    /// Intent/UI wiring deferred — exercised by unit tests until wired.
+    #[allow(dead_code)]
     pub fn place_held(&mut self, slot: usize) -> bool {
         if slot >= self.slot_count || self.grabs[slot].is_none() {
             return false;
