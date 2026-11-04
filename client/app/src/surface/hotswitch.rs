@@ -76,8 +76,7 @@ impl PresentationGate {
     }
 
     pub fn hotswitch_auto(&self) -> bool {
-        self.hotswitch_auto.load(Ordering::SeqCst)
-            && !self.auto_suppressed.load(Ordering::SeqCst)
+        self.hotswitch_auto.load(Ordering::SeqCst) && !self.auto_suppressed.load(Ordering::SeqCst)
     }
 
     pub fn set_hotswitch_auto(&self, enabled: bool) {
@@ -139,9 +138,7 @@ impl DesktopRole {
         match self {
             Self::Solo => true,
             Self::Companion => {
-                !gate.xr_session_live()
-                    || !gate.xr_session_started()
-                    || !gate.vr_active()
+                !gate.xr_session_live() || !gate.xr_session_started() || !gate.vr_active()
             }
         }
     }
@@ -255,10 +252,7 @@ impl HotswitchController {
 
         self.last_applied_present = want;
         gate.set_vr_active(want);
-        log::info!(
-            "hotswitch: auto → {}",
-            if want { "VR" } else { "Desktop" }
-        );
+        log::info!("hotswitch: auto → {}", if want { "VR" } else { "Desktop" });
     }
 
     /// Keep controller in sync when user toggles manually (avoids immediate auto-revert).

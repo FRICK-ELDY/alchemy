@@ -306,8 +306,7 @@ impl SharedDashLogic {
 
     /// Apply Esc/Menu chrome + Settings. Clears hover when layout identity changes.
     pub fn apply_chrome_to(&self, s: &mut DashState) -> bool {
-        let layout_changed =
-            s.open != self.open || s.tab != self.tab || s.shell != self.shell;
+        let layout_changed = s.open != self.open || s.tab != self.tab || s.shell != self.shell;
         let mut changed = layout_changed;
         if s.open != self.open {
             s.open = self.open;

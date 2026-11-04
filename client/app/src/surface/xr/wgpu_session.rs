@@ -765,8 +765,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                             ui.state.home_logged_in_as = None;
                             ui.state.home_create_open = false;
                             ui.state.shell = crate::system_ui::OnboardingShell::Step2Auth;
-                            ui.state.home_status =
-                                "Signing out… (Desktop owns Zenoh leave)".into();
+                            ui.state.home_status = "Signing out… (Desktop owns Zenoh leave)".into();
                             ui.mark_dash_logic_dirty();
                             ui.rebuild();
                         }
@@ -781,10 +780,10 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                                 .presentation
                                 .set_hotswitch_auto(ui.state.hotswitch_auto);
                             if ui.state.hotswitch_auto {
-                                shared.presentation.auto_suppressed.store(
-                                    false,
-                                    std::sync::atomic::Ordering::SeqCst,
-                                );
+                                shared
+                                    .presentation
+                                    .auto_suppressed
+                                    .store(false, std::sync::atomic::Ordering::SeqCst);
                                 ui.state.hotswitch_suppressed = false;
                                 ui.state.refresh_hotswitch_label();
                             }

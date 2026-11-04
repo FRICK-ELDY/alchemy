@@ -19,12 +19,12 @@ mod gpu;
 mod icons;
 mod layout;
 
+#[allow(unused_imports)] // public re-export; store.logic type for callers
+pub use dash::SharedDashLogic;
 pub use dash::{
     access_level_from_widget, DashState, DashTab, HomeField, HomeMode, OnboardingShell,
     SharedDashStore, SESSION_NAME_MAX,
 };
-#[allow(unused_imports)] // public re-export; store.logic type for callers
-pub use dash::SharedDashLogic;
 pub use gpu::UiGpu;
 pub use layout::{LayoutTree, WidgetId};
 
@@ -408,7 +408,11 @@ impl SystemUi {
                 self.rebuild();
                 log::info!(
                     "hotswitch auto → {}",
-                    if self.state.hotswitch_auto { "ON" } else { "OFF" }
+                    if self.state.hotswitch_auto {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
                 );
                 UiAction::HotswitchAutoChanged
             }

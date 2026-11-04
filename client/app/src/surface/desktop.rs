@@ -252,8 +252,8 @@ impl App {
         let prev_label = self.ui.state.hotswitch_label.clone();
         // Hotswitch controls only after READY (same gate as F8). Local gate only.
         // PresentationGate is SoT for auto/suppressed — not SharedDashLogic.
-        self.ui.state.hotswitch_available = self.role == DesktopRole::Companion
-            && self.shared.presentation.xr_session_started();
+        self.ui.state.hotswitch_available =
+            self.role == DesktopRole::Companion && self.shared.presentation.xr_session_started();
         self.ui.state.hotswitch_auto = auto;
         self.ui.state.hotswitch_suppressed = suppressed;
         self.ui.state.refresh_hotswitch_label();
@@ -360,10 +360,7 @@ impl App {
             return;
         }
         let now_vr = self.shared.presentation.toggle_vr_active();
-        log::info!(
-            "hotswitch: F8 → {}",
-            if now_vr { "VR" } else { "Desktop" }
-        );
+        log::info!("hotswitch: F8 → {}", if now_vr { "VR" } else { "Desktop" });
         self.on_input_ownership_edge();
     }
 
@@ -1199,10 +1196,7 @@ fn handle_ui_action(
                 ui.state.refresh_hotswitch_label();
             }
             ui.rebuild();
-            log::info!(
-                "hotswitch auto stored → {}",
-                ui.state.hotswitch_auto
-            );
+            log::info!("hotswitch auto stored → {}", ui.state.hotswitch_auto);
         }
         UiAction::ExitClientOnly => {
             log::info!("system_ui: exit client only");
