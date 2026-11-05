@@ -9,7 +9,7 @@
 //! Non-guarantees: XR swapchain ownership, system_ui layout, avatar GLB;
 //! live mesh swap after boot.
 //! Grab hits use OBB in `world_hit` (x002b; draw TRS aligned).
-//! Leave / liveliness token ownership lives here; put/undeclare is `main::leave_room`.
+//! Leave / liveliness token ownership lives here; put/undeclare is `room::leave_room` (re-exported as `crate::leave_room`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};

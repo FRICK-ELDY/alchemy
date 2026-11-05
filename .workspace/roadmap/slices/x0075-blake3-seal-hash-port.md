@@ -28,7 +28,7 @@
 
 | 項目 | 予定 |
 |:---|:---|
-| host `room_token.rs` / client `main.rs` 分割 | 別 Slice |
+| host `room_token.rs` / client `main.rs` 分割 | **x0076** |
 | bind 送信元分割・mTLS temp・DemoScene ベクタ・metrics+jti | 別 Slice |
 | BLAKE3 ストリーミング NIF（旧 P3-7） | マージしない |
 

@@ -59,7 +59,7 @@ improvement-plan P2 帯。本線を止めないが放置すると DX/運用が�
 
 - reserved reaper / orphan CAS GC（**done: x0074**）
 - BLAKE3・seal-hash の常駐 Port（**done: x0075**）
-- auth Keys `:persistent_term`（**done: x0073**）、host `room_token.rs` / client `main.rs` 分割
+- auth Keys `:persistent_term`（**done: x0073**）、host `room_token.rs` / client `main.rs` 分割（**done: x0076**）
 - bind バケット送信元分割、`tos_agreed` UI 同意（**done**: チェックボックス必須）
 - prod compose publish 既定 loopback（**done: x0073**）、cargo deny launcher/relay（**done: x0073 / x0068**）
 - mTLS 鍵 temp の権限・掃除、腐った smoke（`smoke-host-token` **done: x0073**）
@@ -95,7 +95,7 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 
 ## 推奨着手順（要約・本作業後）
 
-1. P3 残衛生（分割 / bind 送信元 / mTLS temp / DemoScene ベクタ / metrics+jti）または scene despawn
+1. P3 残衛生（bind 送信元 / mTLS temp / DemoScene ベクタ / metrics+jti）または scene despawn
 2. verifier / Formula / market / 検疫（条件: seal / gen-rev 済み）
 
 ← [Roadmap 目次](README.md)
