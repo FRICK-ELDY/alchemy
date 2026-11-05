@@ -9,7 +9,7 @@ help:
 	@echo "Targets:"
 	@echo "  make ci            # rust + launcher + relay + protocol + auth + world + assets + prod-compose config"
 	@echo "  make ci-rust"
-	@echo "  make ci-launcher       # x0047 alchemy-launcher fmt/clippy/build/test"
+	@echo "  make ci-launcher       # x0047/x0073 alchemy-launcher fmt/clippy/deny/build/test"
 	@echo "  make ci-relay          # x0068 alchemy-relay-agent fmt/clippy/deny/build/test"
 	@echo "  make ci-protocol"
 	@echo "  make ci-fuzz           # x004c cargo-fuzz smoke (Linux/macOS + nightly)"

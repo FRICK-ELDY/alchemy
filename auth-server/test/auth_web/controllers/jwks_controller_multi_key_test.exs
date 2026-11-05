@@ -50,27 +50,6 @@ defmodule AuthWeb.JwksControllerMultiKeyTest do
       {:error, reason} -> flunk("failed to restart Auth.Token.Keys: #{inspect(reason)}")
     end
 
-    wait_for_keys!()
-  end
-
-  defp wait_for_keys! do
-    Enum.reduce_while(1..100, :error, fn _, _ ->
-      case Keys.jwks() do
-        %{"keys" => [_ | _]} ->
-          {:halt, :ok}
-
-        _ ->
-          Process.sleep(20)
-          {:cont, :error}
-      end
-    end)
-    |> case do
-      :ok -> :ok
-      :error -> flunk("Auth.Token.Keys did not become ready")
-    end
-  catch
-    :exit, {:noproc, _} ->
-      Process.sleep(50)
-      wait_for_keys!()
+    Keys.await_ready()
   end
 end
