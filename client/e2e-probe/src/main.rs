@@ -176,8 +176,10 @@ fn put_input(
 ) -> Result<()> {
     let env = wire_aead::seal(room_key, room_id, AeadKind::Input, &event.encode_to_vec())
         .map_err(|e| anyhow!("AEAD seal input: {e}"))?;
+    // x0077: stamp so host bind rate keys off this session's ZenohId.
     session
         .put(key, env)
+        .timestamp(session.new_timestamp())
         .wait()
         .map_err(|e| anyhow!("zenoh put input: {e}"))?;
     Ok(())

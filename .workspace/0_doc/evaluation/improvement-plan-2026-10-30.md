@@ -50,7 +50,7 @@
 | P2-2 | BLAKE3 / seal-hash 常駐 Port | -1 | CLI 毎回起動を廃止（NIF 回避）— **done x0075** |
 | P2-3 | auth Keys の `:persistent_term` | -1 | GenServer 直列化解消 |
 | P2-4 | host `room_token.rs` / client `main.rs` 分割 | -1 | 保証単位でファイル分割 — **done x0076** |
-| P2-5 | bind 全体バケットの送信元分割 | -1 | 未知鍵洪水での入室 DoS 緩和 |
+| P2-5 | bind 全体バケットの送信元分割 | -1 | per-ZenohId バケット — **done x0077** |
 | P2-6 | tos_agreed UI 同意 | -1 | 固定 true 廃止 |
 | P2-7 | prod compose BIND_ADDR 既定 loopback | -1 | postgres と同様に絞る |
 | P2-8 | cargo deny を launcher / relay にも | -1 | 独立 lock を監査 |
