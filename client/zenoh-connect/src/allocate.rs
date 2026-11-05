@@ -2,10 +2,12 @@
 //!
 //! Guarantees: POST Allocation Token → write cert/key PEM files under a work dir;
 //! world `mtls` PEMs + in-memory key install the same way (short-lived owner-only files);
-//! Unix `0600` / Windows user-only DACL (x0078); replace + stale sweep of managed PEMs;
+//! Unix `0600` / Windows user-only DACL (x0078); PEM bytes are written only after restrict;
+//! replace + stale sweep of managed `{client,world-mtls}-*.{cert,key}.pem` only;
 //! **both** paths set `ZENOH_TLS_CONNECT_CERT` / `KEY` (Agent 併存に必須).
 //! Non-guarantees: agent discovery; soft TTL enforcement; zero disk for Zenoh paths;
-//! DPAPI/TPM; exclusive locking of a shared work dir across processes.
+//! DPAPI/TPM; create-with-ACL atomicity (empty placeholder may exist briefly before restrict);
+//! exclusive locking of a shared work dir across processes.
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -18,6 +20,12 @@ const ALLOCATE_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 pub const WORLD_MTLS_SOFT_TTL_SECS: u64 = 300;
 /// Orphan managed PEM GC threshold: soft TTL + clock/skew grace (x0078).
 const MTLS_TEMP_STALE_SECS: u64 = WORLD_MTLS_SOFT_TTL_SECS + 120;
+/// Filename prefix for Relay Agent allocate PEMs (`{prefix}-{stamp}.key.pem`).
+const MTLS_PEM_PREFIX_CLIENT: &str = "client";
+/// Filename prefix for world-issued PEMs.
+const MTLS_PEM_PREFIX_WORLD: &str = "world-mtls";
+/// Sweep / replace only touch names under these prefixes (keep in sync with writers).
+const MANAGED_MTLS_PEM_PREFIXES: &[&str] = &[MTLS_PEM_PREFIX_CLIENT, MTLS_PEM_PREFIX_WORLD];
 
 /// Parse world `mtls.expires_at` (ISO-8601 / RFC3339 UTC) into remaining seconds.
 pub fn soft_ttl_secs_from_expires_at(expires_at: &str) -> Option<u64> {
@@ -150,7 +158,7 @@ pub fn install_world_mtls_pems(
         private_key_pem,
         wire_cap,
         role,
-        "world-mtls",
+        MTLS_PEM_PREFIX_WORLD,
         &role_cn(role),
         ttl,
     )?;
@@ -225,7 +233,7 @@ pub fn allocate(allocate_url: &str, allocation_token: &str) -> Result<AllocatedI
         &resp.key_pem,
         &resp.wire_cap,
         &resp.role,
-        "client",
+        MTLS_PEM_PREFIX_CLIENT,
         &resp.cn,
         resp.expires_in,
     )?;
@@ -251,8 +259,11 @@ fn write_identity_pems(
     let cert_path = work.join(format!("{prefix}-{stamp}.cert.pem"));
     let key_path = work.join(format!("{prefix}-{stamp}.key.pem"));
     write_secret(&cert_path, cert_pem)?;
-    write_secret(&key_path, key_pem)?;
-    // Best-effort: crash/orphan PEMs from prior runs (x0078). Keep the files we just wrote.
+    if let Err(err) = write_secret(&key_path, key_pem) {
+        let _ = fs::remove_file(&cert_path);
+        return Err(err);
+    }
+    // Best-effort: crash/orphan managed PEMs from prior runs (x0078). Keep the files we just wrote.
     sweep_stale_mtls_temps(&work, &[&cert_path, &key_path]);
 
     Ok(AllocatedIdentity {
@@ -265,11 +276,16 @@ fn write_identity_pems(
     })
 }
 
+/// Create empty → restrict → write PEM so secret bytes never sit on a default/loose ACL.
 fn write_secret(path: &Path, pem: &str) -> Result<()> {
-    fs::write(path, pem).with_context(|| format!("write {}", path.display()))?;
+    fs::File::create(path).with_context(|| format!("create {}", path.display()))?;
     if let Err(err) = restrict_secret_permissions(path) {
         let _ = fs::remove_file(path);
         return Err(err).with_context(|| format!("restrict {}", path.display()));
+    }
+    if let Err(err) = fs::write(path, pem) {
+        let _ = fs::remove_file(path);
+        return Err(err).with_context(|| format!("write {}", path.display()));
     }
     Ok(())
 }
@@ -293,6 +309,9 @@ fn restrict_secret_permissions(path: &Path) -> Result<()> {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
+        return Err(anyhow!(
+            "mTLS PEM permission hardening is unsupported on this OS (fail-closed)"
+        ));
     }
     Ok(())
 }
@@ -341,7 +360,22 @@ fn windows_acl_principal() -> Result<String> {
     }
 }
 
-/// Remove managed `*.pem` under `work` older than [`MTLS_TEMP_STALE_SECS`], keeping `keep`.
+/// True for names we write: `{prefix}-*.{cert|key}.pem` under [`MANAGED_MTLS_PEM_PREFIXES`].
+fn is_managed_mtls_pem_name(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    let managed_prefix = MANAGED_MTLS_PEM_PREFIXES.iter().any(|p| {
+        lower
+            .strip_prefix(p)
+            .is_some_and(|rest| rest.starts_with('-'))
+    });
+    managed_prefix && (lower.ends_with(".cert.pem") || lower.ends_with(".key.pem"))
+}
+
+/// Remove managed identity PEMs under `work` older than [`MTLS_TEMP_STALE_SECS`], keeping `keep`.
+/// Non-managed names (e.g. CA PEMs colocated by mistake) are never deleted.
 fn sweep_stale_mtls_temps(work: &Path, keep: &[&Path]) {
     let Ok(entries) = fs::read_dir(work) else {
         return;
@@ -350,10 +384,7 @@ fn sweep_stale_mtls_temps(work: &Path, keep: &[&Path]) {
     let stale = Duration::from_secs(MTLS_TEMP_STALE_SECS);
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("pem"))
-        {
+        if !is_managed_mtls_pem_name(&path) {
             continue;
         }
         if keep.contains(&path.as_path()) {
@@ -628,17 +659,24 @@ mod tests {
         fs::create_dir_all(&work).unwrap();
         std::env::set_var("RELAY_MTLS_WORK_DIR", work.display().to_string());
 
-        let orphan = work.join("orphan-stale.key.pem");
-        fs::write(&orphan, "orphan-key").unwrap();
         let aged = SystemTime::now()
             .checked_sub(Duration::from_secs(MTLS_TEMP_STALE_SECS + 30))
             .expect("clock");
+        let orphan = work.join("client-orphan-stale.key.pem");
+        fs::write(&orphan, "orphan-key").unwrap();
         let file = fs::File::options().write(true).open(&orphan).unwrap();
         file.set_modified(aged).unwrap();
         drop(file);
 
-        let fresh = work.join("orphan-fresh.key.pem");
+        let fresh = work.join("world-mtls-orphan-fresh.key.pem");
         fs::write(&fresh, "fresh-key").unwrap();
+
+        // Non-managed name must never be swept even when aged.
+        let foreign = work.join("ca-cert.pem");
+        fs::write(&foreign, "ca").unwrap();
+        let file = fs::File::options().write(true).open(&foreign).unwrap();
+        file.set_modified(aged).unwrap();
+        drop(file);
 
         let id = install_world_mtls_pems(
             "-----BEGIN CERTIFICATE-----\nSWEEP\n-----END CERTIFICATE-----\n",
@@ -649,11 +687,12 @@ mod tests {
         )
         .expect("install");
 
-        assert!(!orphan.exists(), "stale orphan must be swept");
+        assert!(!orphan.exists(), "stale managed orphan must be swept");
         assert!(
             fresh.is_file(),
-            "fresh orphan under stale threshold must remain"
+            "fresh managed orphan under stale threshold must remain"
         );
+        assert!(foreign.is_file(), "non-managed PEM must not be swept");
         assert!(id.cert_path.is_file());
         assert!(id.key_path.is_file());
 
@@ -677,6 +716,8 @@ mod tests {
     fn write_secret_sets_unix_0600() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use std::os::unix::fs::PermissionsExt;
+        let prev_cert = std::env::var("ZENOH_TLS_CONNECT_CERT").ok();
+        let prev_key = std::env::var("ZENOH_TLS_CONNECT_KEY").ok();
         let prev_work = std::env::var("RELAY_MTLS_WORK_DIR").ok();
         let stamp = SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -697,6 +738,14 @@ mod tests {
         assert_eq!(mode, 0o600);
 
         let _ = fs::remove_dir_all(&work);
+        match prev_cert {
+            Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_CERT", v),
+            None => std::env::remove_var("ZENOH_TLS_CONNECT_CERT"),
+        }
+        match prev_key {
+            Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_KEY", v),
+            None => std::env::remove_var("ZENOH_TLS_CONNECT_KEY"),
+        }
         match prev_work {
             Some(v) => std::env::set_var("RELAY_MTLS_WORK_DIR", v),
             None => std::env::remove_var("RELAY_MTLS_WORK_DIR"),
@@ -725,17 +774,38 @@ mod tests {
             Some(60),
         )
         .expect("install with icacls");
+        let principal = windows_acl_principal().expect("principal");
         let out = std::process::Command::new("icacls")
             .arg(id.key_path.display().to_string())
             .output()
             .expect("icacls read");
         assert!(out.status.success());
         let listing = String::from_utf8_lossy(&out.stdout);
-        // Inheritance removed → listing should not advertise "(I)" inherited ACEs.
+        let listing_lower = listing.to_ascii_lowercase();
+        // Assert DACL content, not icacls line wrapping (long paths may put ACE on the next line).
         assert!(
             !listing.contains("(I)"),
             "expected non-inherited DACL, got:\n{listing}"
         );
+        assert!(
+            listing_lower.contains(&principal.to_ascii_lowercase()),
+            "expected current-user ACE for {principal}, got:\n{listing}"
+        );
+        assert!(
+            listing.contains("(R,W)") || listing.contains("(W,R)"),
+            "expected (R,W) for current user, got:\n{listing}"
+        );
+        for forbidden in [
+            "everyone",
+            "builtin\\users",
+            "builtin\\administrators",
+            "nt authority\\system",
+        ] {
+            assert!(
+                !listing_lower.contains(forbidden),
+                "{forbidden} must not remain on DACL:\n{listing}"
+            );
+        }
 
         let _ = fs::remove_dir_all(&work);
         match prev_cert {

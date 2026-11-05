@@ -10,17 +10,18 @@
 
 | 保証する | 保証しない |
 |:---|:---|
-| 新規書き込み PEM は Unix `0600` / Windows 現行ユーザーのみ DACL（継承切断） | DPAPI / TPM 保管；メモリのみ（Zenoh 1.x がパス要求） |
-| 権限設定失敗は fail-closed（ファイルを残して「緩い ACL」で続行しない） | `icacls` / `USERNAME` 欠落環境での接続継続 |
+| 新規書き込み PEM は Unix `0600` / Windows 現行ユーザーのみ DACL（継承切断）。**PEM 本体は restrict 後に書く** | DPAPI / TPM 保管；メモリのみ（Zenoh 1.x がパス要求）；create-with-ACL の OS 原子性（空ファイルが一瞬存在する） |
+| 権限設定失敗は fail-closed（ファイルを残して「緩い ACL」で続行しない）。非 unix/windows も fail-closed | `icacls` / `USERNAME` 欠落環境での接続継続 |
 | 置換時に直前の **managed** PEM を削除（静的 `ZENOH_TLS_CONNECT_*` は触らない） | プロセス外の静的証明書の寿命管理 |
-| install 時に work dir 内の古い managed `*.pem`（mtime > soft TTL + skew）を掃除 | 他プロセスが同時に触る同一 work dir の完全排他 |
+| install 時に古い managed `{client\|world-mtls}-*.{cert\|key}.pem`（mtime > soft TTL + skew）のみ掃除。非 managed 名は触らない | 他プロセスが同時に触る同一 work dir の完全排他 |
+| cert 成功・key 失敗時は cert もロールバック | — |
 | 新規 Hex / Cargo 依存なし（Windows は `icacls`） | `windows-sys` ネイティブ ACL API |
 
 ## 設計
 
-1. **`write_secret`**: Unix `chmod 0600`；Windows `icacls /inheritance:r /grant:r USER:(R,W)`。失敗時は当該ファイルを消して `Err`
+1. **`write_secret`**: 空ファイル作成 → Unix `chmod 0600` / Windows `icacls /inheritance:r /grant:r USER:(R,W)` → PEM 書き込み。失敗時は当該ファイルを消して `Err`
 2. **`install_identity_env`**: 既存どおり、置換された managed パスのみ `remove_file`
-3. **`sweep_stale_mtls_temps`**: `write_identity_pems` 後に work dir を走査。keep（今回の cert/key）以外で mtime が `WORLD_MTLS_SOFT_TTL_SECS + 120` を超えた `*.pem` を削除（best-effort）
+3. **`sweep_stale_mtls_temps`**: `write_identity_pems` 後に work dir を走査。`client-` / `world-mtls-` かつ `*.cert.pem` / `*.key.pem` で、keep 以外かつ mtime が `WORLD_MTLS_SOFT_TTL_SECS + 120` 超を削除（best-effort）
 
 ## 本 Slice に含めない
 
@@ -34,7 +35,7 @@
 ## 完了条件
 
 1. Windows で新規 key/cert PEM にユーザー限定 DACL；Unix は 0600 維持
-2. 再 install で直前 managed PEM が消え、古い孤児 `*.pem` も sweep される
+2. 再 install で直前 managed PEM が消え、古い managed `{client|world-mtls}-*.{cert|key}.pem` も sweep される（非 managed は残る）
 3. 静的 env パスは削除されない（既存テスト維持）
 4. `cargo test -p zenoh-connect` 緑
 5. Slice / backlog / README 鮮度一致
