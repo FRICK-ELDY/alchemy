@@ -57,6 +57,7 @@ defmodule Auth.MixProject do
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.14"},
       {:alchemy_client_ip, path: "../shared/alchemy_client_ip"},
+      {:alchemy_rate_limit, path: "../shared/alchemy_rate_limit"},
       {:remote_ip, "~> 1.2"},
       {:ash, "~> 3.37"},
       {:ash_postgres, "~> 2.6"},

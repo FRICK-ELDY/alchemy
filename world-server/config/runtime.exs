@@ -116,4 +116,53 @@ if config_env() == :prod do
     room_token_generate_key_on_startup:
       System.get_env("ROOM_TOKEN_GENERATE_KEY", "false") in ~w(true 1),
     allow_anon_tokens: System.get_env("WORLD_ALLOW_ANON_TOKENS", "false") in ~w(true 1)
+
+  # x0071: Room per-owner cap + HTTP rate limits (optional env override).
+  rate_limit_env_integer = fn name, default ->
+    case System.get_env(name) do
+      nil -> default
+      value -> String.to_integer(value)
+    end
+  end
+
+  if max_rooms = System.get_env("WORLD_MAX_ROOMS_PER_OWNER") do
+    config :world, max_rooms_per_owner: String.to_integer(max_rooms)
+  end
+
+  config :world, World.RateLimit,
+    limits: %{
+      room_create: %{
+        ip: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_CREATE_IP_LIMIT", 30),
+          period_ms: rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_CREATE_IP_PERIOD_MS", 60_000)
+        },
+        user: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_CREATE_USER_LIMIT", 10),
+          period_ms:
+            rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_CREATE_USER_PERIOD_MS", 60_000)
+        }
+      },
+      room_token: %{
+        ip: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_TOKEN_IP_LIMIT", 60),
+          period_ms: rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_TOKEN_IP_PERIOD_MS", 60_000)
+        },
+        user: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_TOKEN_USER_LIMIT", 30),
+          period_ms: rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_TOKEN_USER_PERIOD_MS", 60_000)
+        }
+      },
+      room_visibility: %{
+        ip: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_VISIBILITY_IP_LIMIT", 60),
+          period_ms:
+            rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_VISIBILITY_IP_PERIOD_MS", 60_000)
+        },
+        user: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_VISIBILITY_USER_LIMIT", 30),
+          period_ms:
+            rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_VISIBILITY_USER_PERIOD_MS", 60_000)
+        }
+      }
+    }
 end

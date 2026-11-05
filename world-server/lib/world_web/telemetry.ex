@@ -18,7 +18,11 @@ defmodule WorldWeb.Telemetry do
   def metrics do
     [
       summary("phoenix.endpoint.start.system_time", unit: {:native, :millisecond}),
-      summary("phoenix.endpoint.stop.duration", unit: {:native, :millisecond})
+      summary("phoenix.endpoint.stop.duration", unit: {:native, :millisecond}),
+      counter("world.rate_limit.throttle.count",
+        tags: [:action, :axis],
+        tag_values: &%{action: &1.action, axis: &1.axis}
+      )
     ]
   end
 

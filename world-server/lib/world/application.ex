@@ -8,6 +8,7 @@ defmodule World.Application do
     children =
       [
         WorldWeb.Telemetry,
+        World.RateLimit,
         World.Repo,
         {Phoenix.PubSub, name: World.PubSub},
         World.Token.Keys,

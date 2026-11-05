@@ -1,6 +1,23 @@
 import Config
 
 config :world, auth_internal_token: "dev-internal-token"
+config :world, max_rooms_per_owner: 100
+
+config :world, World.RateLimit,
+  limits: %{
+    room_create: %{
+      ip: %{limit: 300, period_ms: 60_000},
+      user: %{limit: 300, period_ms: 60_000}
+    },
+    room_token: %{
+      ip: %{limit: 300, period_ms: 60_000},
+      user: %{limit: 300, period_ms: 60_000}
+    },
+    room_visibility: %{
+      ip: %{limit: 300, period_ms: 60_000},
+      user: %{limit: 300, period_ms: 60_000}
+    }
+  }
 
 config :world, World.Repo,
   database: Path.expand("../priv/data/world_dev.db", __DIR__),

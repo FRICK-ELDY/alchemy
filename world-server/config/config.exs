@@ -6,6 +6,8 @@ config :world,
   ecto_repos: [World.Repo],
   ash_domains: [World.Domain],
   generators: [timestamp_type: :utc_datetime],
+  # x0071: structural Room quota per owner (rate limit is separate / temporal).
+  max_rooms_per_owner: 32,
   room_token_ttl_seconds: 300,
   room_token_issuer: "alchemy-world",
   room_token_audience: "alchemy-room",
@@ -32,6 +34,23 @@ config :world,
   zenoh_connect: "tcp/127.0.0.1:7447",
   # OSS default: no-op Spot-Check. Proprietary heuristics inject here.
   audit_engine: World.Verifier.NoopAuditEngine
+
+config :world, World.RateLimit,
+  enabled: true,
+  limits: %{
+    room_create: %{
+      ip: %{limit: 30, period_ms: 60_000},
+      user: %{limit: 10, period_ms: 60_000}
+    },
+    room_token: %{
+      ip: %{limit: 60, period_ms: 60_000},
+      user: %{limit: 30, period_ms: 60_000}
+    },
+    room_visibility: %{
+      ip: %{limit: 60, period_ms: 60_000},
+      user: %{limit: 30, period_ms: 60_000}
+    }
+  }
 
 # x006b: PlaceHashCache TTL defaults to room_token_ttl_seconds (JWT lifetime).
 # Optional override `:place_hashes_ttl_ms` must be >= that lifetime (enforced in code).

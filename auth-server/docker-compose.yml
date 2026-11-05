@@ -42,6 +42,7 @@ services:
     volumes:
       - .:/app
       - ../shared/alchemy_client_ip:/shared/alchemy_client_ip
+      - ../shared/alchemy_rate_limit:/shared/alchemy_rate_limit
       - auth_deps:/app/deps
       - auth_build:/app/_build
     depends_on:

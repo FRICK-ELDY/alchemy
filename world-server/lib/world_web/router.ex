@@ -9,8 +9,12 @@ defmodule WorldWeb.Router do
     plug WorldWeb.Plugs.AuthenticateUser
   end
 
+  pipeline :rate_limited do
+    plug WorldWeb.Plugs.RateLimit
+  end
+
   scope "/api/v1", WorldWeb do
-    pipe_through [:api, :user_auth]
+    pipe_through [:api, :user_auth, :rate_limited]
 
     post "/rooms", RoomController, :create
     post "/rooms/:room_id/tokens", RoomController, :create_token

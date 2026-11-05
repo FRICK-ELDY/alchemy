@@ -25,6 +25,33 @@ defmodule WorldWeb.RoomControllerTest do
     assert %{"error" => "missing_auth_token"} = json_response(conn, 401)
   end
 
+  test "rejects room create when owner cap is exceeded (x0071)", %{conn: conn, signer: signer} do
+    previous = Application.get_env(:world, :max_rooms_per_owner)
+    Application.put_env(:world, :max_rooms_per_owner, 1)
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:world, :max_rooms_per_owner)
+        value -> Application.put_env(:world, :max_rooms_per_owner, value)
+      end
+    end)
+
+    sub = "66666666-6666-6666-6666-666666666666"
+
+    assert %{"room_id" => "cap-http-1"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, sub)
+             |> post("/api/v1/rooms", %{room_id: "cap-http-1"})
+             |> json_response(201)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> post("/api/v1/rooms", %{room_id: "cap-http-2"})
+
+    assert %{"error" => "room_cap_exceeded"} = json_response(conn, 403)
+  end
+
   test "creates room and issues host token to owner", %{conn: conn, signer: signer} do
     sub = "22222222-2222-2222-2222-222222222222"
     conn = TestAuthHelpers.put_auth(conn, signer, sub)

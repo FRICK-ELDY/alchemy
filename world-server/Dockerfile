@@ -11,7 +11,7 @@ WORKDIR /src/protocol
 RUN cargo build --release --bin manifest-seal-hash \
  && cp target/release/manifest-seal-hash /manifest-seal-hash
 
-# Build context: repository root (shared path deps · x002f / x004b).
+# Build context: repository root (shared path deps · x002f / x004b / x0071).
 FROM ${ELIXIR_IMAGE} AS dev
 
 # openssl: x0066 MtlsIssuer (CSR → short-lived client cert)
@@ -24,6 +24,7 @@ RUN mix local.hex --force && mix local.rebar --force
 
 COPY shared/alchemy_auth_client /shared/alchemy_auth_client
 COPY shared/alchemy_client_ip /shared/alchemy_client_ip
+COPY shared/alchemy_rate_limit /shared/alchemy_rate_limit
 COPY world-server/mix.exs world-server/mix.lock ./
 RUN mix deps.get || true
 
@@ -52,6 +53,7 @@ ENV MIX_ENV=prod
 
 COPY shared/alchemy_auth_client /shared/alchemy_auth_client
 COPY shared/alchemy_client_ip /shared/alchemy_client_ip
+COPY shared/alchemy_rate_limit /shared/alchemy_rate_limit
 COPY world-server/mix.exs world-server/mix.lock ./
 RUN mix deps.get --only prod
 

@@ -36,6 +36,35 @@ defmodule World.RoomsTest do
     assert {:error, :missing_owner} = Rooms.create("ok-id", "")
   end
 
+  test "create rejects when owner room cap is exceeded (x0071)" do
+    previous = Application.get_env(:world, :max_rooms_per_owner)
+    Application.put_env(:world, :max_rooms_per_owner, 1)
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:world, :max_rooms_per_owner)
+        value -> Application.put_env(:world, :max_rooms_per_owner, value)
+      end
+    end)
+
+    assert {:ok, "cap-1", _, _} = Rooms.create("cap-1", @owner)
+    assert {:error, :owner_room_cap_exceeded} = Rooms.create("cap-2", @owner)
+  end
+
+  test "create returns storage_error when max_rooms_per_owner is invalid (x0071)" do
+    previous = Application.get_env(:world, :max_rooms_per_owner)
+    Application.put_env(:world, :max_rooms_per_owner, 0)
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:world, :max_rooms_per_owner)
+        value -> Application.put_env(:world, :max_rooms_per_owner, value)
+      end
+    end)
+
+    assert {:error, :storage_error} = Rooms.create("bad-cap-room", @owner)
+  end
+
   test "require_existing and scene return not_found for missing rooms" do
     assert {:error, :not_found} = Rooms.require_existing("ghost-room")
     assert {:error, :not_found} = Rooms.scene("ghost-room")

@@ -20,46 +20,60 @@ defmodule WorldWeb.RoomController do
 
     case resolve_sub(conn, params) do
       {:ok, owner_sub} ->
-        case Rooms.create(room_id, owner_sub, visibility) do
-          {:ok, id, stored_visibility, wire_cap} ->
-            conn
-            |> put_status(:created)
-            |> json(%{
-              room_id: id,
-              owner_sub: owner_sub,
-              visibility: stored_visibility,
-              wire_cap: wire_cap
-            })
-
-          {:error, :already_exists} ->
-            conn
-            |> put_status(:conflict)
-            |> json(%{error: "room_already_exists"})
-
-          {:error, :missing_owner} ->
-            conn
-            |> put_status(:unprocessable_entity)
-            |> json(%{error: "missing_owner"})
-
-          {:error, :invalid_room_id} ->
-            conn
-            |> put_status(:unprocessable_entity)
-            |> json(%{error: "invalid_room_id"})
-
-          {:error, :invalid_visibility} ->
-            conn
-            |> put_status(:unprocessable_entity)
-            |> json(%{error: "invalid_visibility"})
-
-          {:error, :storage_error} ->
-            storage_unavailable(conn)
-        end
+        room_id
+        |> Rooms.create(owner_sub, visibility)
+        |> render_create(conn, owner_sub)
 
       {:error, :anon_disabled} ->
         conn
         |> put_status(:unauthorized)
         |> json(%{error: "anon_tokens_disabled"})
     end
+  end
+
+  defp render_create({:ok, id, stored_visibility, wire_cap}, conn, owner_sub) do
+    conn
+    |> put_status(:created)
+    |> json(%{
+      room_id: id,
+      owner_sub: owner_sub,
+      visibility: stored_visibility,
+      wire_cap: wire_cap
+    })
+  end
+
+  defp render_create({:error, :already_exists}, conn, _owner_sub) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "room_already_exists"})
+  end
+
+  defp render_create({:error, :owner_room_cap_exceeded}, conn, _owner_sub) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{error: "room_cap_exceeded"})
+  end
+
+  defp render_create({:error, :missing_owner}, conn, _owner_sub) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "missing_owner"})
+  end
+
+  defp render_create({:error, :invalid_room_id}, conn, _owner_sub) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "invalid_room_id"})
+  end
+
+  defp render_create({:error, :invalid_visibility}, conn, _owner_sub) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "invalid_visibility"})
+  end
+
+  defp render_create({:error, :storage_error}, conn, _owner_sub) do
+    storage_unavailable(conn)
   end
 
   # Typical ECDSA/RSA CSR PEM is a few KB; cap rejects disk/openssl DoS bodies.
