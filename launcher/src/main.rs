@@ -1,18 +1,21 @@
-//! alchemy-launcher — minimal process manager (x0032 / x0047).
+//! alchemy-launcher — minimal process manager (x0032 / x0047 / x0072).
 //!
 //! Guarantees:
 //! - Spawn host-server then client after `ALCHEMY_HOST_READY_FILE` (includes bound IPC addr)
+//! - Session-fixed discovery (`ALCHEMY_LAUNCHER_DISCOVERY_ADDR`) republishes host gen/IPC
 //! - Exit Client only: client dies, host kept
 //! - Exit Client+Host / IPC SHUTDOWN: host exits 0 → launcher stops (no crash-restart)
 //! - Host crash (non-zero): bounded backoff restart ([`restart`] policy); Ctrl+C → IPC shutdown
 //!
 //! Non-guarantees: alchemy:// deep links, tray UI, host handoff, Zenoh liveliness watch,
-//! Compose integration, installer.
+//! Compose integration, installer, well-known discovery ports.
 
+mod discovery;
 mod restart;
 
-use alchemy_protocol::host_ipc::{self, ENV_ADDR, ENV_TOKEN};
+use alchemy_protocol::host_ipc::{self, ENV_ADDR, ENV_DISCOVERY_ADDR, ENV_TOKEN};
 use anyhow::{bail, Context, Result};
+use discovery::DiscoveryHub;
 use restart::{decide_host_exit, HostExitAction, MAX_HOST_RESTARTS};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -36,7 +39,7 @@ fn run() -> Result<()> {
 
     let client_dir = resolve_client_dir();
     log::info!(
-        "alchemy-launcher x0047; client_dir={}",
+        "alchemy-launcher x0072; client_dir={}",
         client_dir.display()
     );
 
@@ -51,6 +54,8 @@ fn run() -> Result<()> {
     }
 
     let ipc_token = make_token()?;
+    let discovery = DiscoveryHub::spawn(&ipc_token).context("spawn launcher discovery")?;
+
     let ready_path =
         std::env::temp_dir().join(format!("alchemy-host-ready-{}.txt", std::process::id()));
     let _ = fs::remove_file(&ready_path);
@@ -67,10 +72,15 @@ fn run() -> Result<()> {
             return Err(err);
         }
     };
+    discovery
+        .publish(&ipc_addr)
+        .context("discovery publish initial ipc")?;
     log::info!("host IPC addr from ready file: {ipc_addr}");
 
-    let mut client =
-        Some(spawn_client(&client_dir, &ipc_addr, &ipc_token).context("spawn client")?);
+    let mut client = Some(
+        spawn_client(&client_dir, &ipc_addr, &ipc_token, &discovery.addr)
+            .context("spawn client")?,
+    );
     if let Some(ref c) = client {
         log::info!("client pid={}", c.id());
     }
@@ -146,11 +156,15 @@ fn run() -> Result<()> {
                     log::info!("host-server restarted pid={}", host.id());
                     match wait_ready(&ready_path, &mut host, &shutting_down) {
                         Ok(addr) => {
-                            // Launcher Ctrl+C uses the fresh addr. Client process still has the
-                            // old ALCHEMY_HOST_IPC_ADDR — Exit Client+Host after restart is
-                            // non-guaranteed (see architecture/launcher.md).
+                            // Client resolves via discovery LOOKUP (x0072); launcher keeps
+                            // the same snapshot for Ctrl+C shutdown.
                             log::info!("host IPC addr after restart: {addr}");
-                            ipc_addr = addr;
+                            if let Err(err) = discovery.publish(&addr) {
+                                log::error!("discovery publish after restart: {err:#}");
+                                shutting_down.store(true, Ordering::SeqCst);
+                            } else {
+                                ipc_addr = addr;
+                            }
                         }
                         Err(err) => {
                             // Ready-wait failure (crash-before-ready / timeout) is **outside**
@@ -169,8 +183,9 @@ fn run() -> Result<()> {
         }
     }
 
-    log::info!("launcher shutting down — IPC stop host");
-    if let Err(err) = host_ipc::request_shutdown(&ipc_addr, &ipc_token) {
+    let shutdown_addr = discovery.current_ipc().unwrap_or_else(|| ipc_addr.clone());
+    log::info!("launcher shutting down — IPC stop host at {shutdown_addr}");
+    if let Err(err) = host_ipc::request_shutdown(&shutdown_addr, &ipc_token) {
         log::warn!("IPC shutdown: {err}; killing host");
         let _ = host.kill();
     }
@@ -228,11 +243,17 @@ fn spawn_host(client_dir: &Path, ipc_token: &str, ready_path: &Path) -> Result<C
     cmd.spawn().context("spawn host process")
 }
 
-fn spawn_client(client_dir: &Path, ipc_addr: &str, ipc_token: &str) -> Result<Child> {
+fn spawn_client(
+    client_dir: &Path,
+    ipc_addr: &str,
+    ipc_token: &str,
+    discovery_addr: &str,
+) -> Result<Child> {
     let mut cmd = client_command(client_dir);
     cmd.current_dir(client_dir)
         .env(ENV_ADDR, ipc_addr)
         .env(ENV_TOKEN, ipc_token)
+        .env(ENV_DISCOVERY_ADDR, discovery_addr)
         .env("ALCHEMY_FORCE_DESKTOP", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())

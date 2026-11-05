@@ -1,14 +1,16 @@
-//! Host shutdown (Slice E / x001e / x0032). Isolated from system_ui layout knowledge.
+//! Host shutdown (Slice E / x001e / x0032 / x0072). Isolated from system_ui layout knowledge.
 //!
 //! Guarantees: best-effort stop of local host via launcher IPC, then PID, then opt-in Zenoh.
+//! Prefer discovery LOOKUP (x0072) so Exit Client+Host still hits a restarted host.
 //! Non-guarantees: remote hosts, multi-host.
 //!
-//! Order (x0032):
-//! 1. `ALCHEMY_HOST_IPC_ADDR` + `ALCHEMY_HOST_IPC_TOKEN` → TCP `SHUTDOWN <token>` (loopback only)
-//! 2. `ALCHEMY_HOST_PID` SIGTERM (Unix)
-//! 3. Zenoh `host_control` only when `ALCHEMY_HOST_CONTROL=1`
+//! Order (x0032 / x0072):
+//! 1. Optional `ALCHEMY_LAUNCHER_DISCOVERY_ADDR` LOOKUP → fresh IPC addr
+//! 2. `ALCHEMY_HOST_IPC_ADDR` (+ token) → TCP `SHUTDOWN <token>` (loopback only)
+//! 3. `ALCHEMY_HOST_PID` SIGTERM (Unix)
+//! 4. Zenoh `host_control` only when `ALCHEMY_HOST_CONTROL=1`
 
-use alchemy_protocol::host_ipc::{self, ENV_ADDR, ENV_TOKEN};
+use alchemy_protocol::host_ipc::{self, ENV_ADDR, ENV_DISCOVERY_ADDR, ENV_TOKEN};
 use alchemy_protocol::{host_control_key, host_control_zenoh_enabled, HOST_CONTROL_SHUTDOWN};
 use anyhow::Result;
 use zenoh::Wait;
@@ -37,22 +39,23 @@ pub fn request_host_shutdown(session: &zenoh::Session, room_id: &str, wire_cap: 
 }
 
 fn try_launcher_ipc() -> bool {
-    let Ok(addr) = std::env::var(ENV_ADDR) else {
-        return false;
-    };
     let Ok(token) = std::env::var(ENV_TOKEN) else {
         return false;
     };
-    let addr = addr.trim();
-    let token = token.trim();
-    if addr.is_empty() || token.is_empty() {
+    let token = token.trim().to_string();
+    if token.is_empty() {
         return false;
     }
-    if !host_ipc::is_loopback_addr(addr) {
+
+    let addr = resolve_host_ipc_addr(&token);
+    let Some(addr) = addr else {
+        return false;
+    };
+    if !host_ipc::is_loopback_addr(&addr) {
         log::warn!("{ENV_ADDR} refused (not loopback): {addr}");
         return false;
     }
-    match host_ipc::request_shutdown(addr, token) {
+    match host_ipc::request_shutdown(&addr, &token) {
         Ok(()) => {
             log::info!("sent launcher IPC shutdown to {addr}");
             true
@@ -61,6 +64,44 @@ fn try_launcher_ipc() -> bool {
             log::warn!("launcher IPC shutdown failed: {err}");
             false
         }
+    }
+}
+
+/// Prefer discovery LOOKUP (fresh after host restart); fall back to spawn-time env addr.
+fn resolve_host_ipc_addr(token: &str) -> Option<String> {
+    if let Ok(discovery) = std::env::var(ENV_DISCOVERY_ADDR) {
+        let discovery = discovery.trim();
+        if !discovery.is_empty() {
+            if !host_ipc::is_loopback_addr(discovery) {
+                log::warn!("{ENV_DISCOVERY_ADDR} refused (not loopback): {discovery}");
+            } else {
+                match host_ipc::request_lookup(discovery, token) {
+                    Ok(ok) => {
+                        log::info!("discovery LOOKUP gen={} ipc={}", ok.gen, ok.ipc_addr);
+                        if host_ipc::is_loopback_addr(&ok.ipc_addr) {
+                            return Some(ok.ipc_addr);
+                        }
+                        log::warn!(
+                            "discovery returned non-loopback ipc (ignored): {}",
+                            ok.ipc_addr
+                        );
+                    }
+                    Err(err) => {
+                        log::warn!("discovery LOOKUP failed ({err}); falling back to {ENV_ADDR}");
+                    }
+                }
+            }
+        }
+    }
+
+    let Ok(addr) = std::env::var(ENV_ADDR) else {
+        return None;
+    };
+    let addr = addr.trim();
+    if addr.is_empty() {
+        None
+    } else {
+        Some(addr.to_string())
     }
 }
 

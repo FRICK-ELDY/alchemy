@@ -2,7 +2,7 @@
 
 正本の進捗目次は [README.md](README.md)。本ファイルは **未完了帯の優先度ビュー**。
 
-**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**、**x0070 trust WAN E2E**。空き ID = `x0072`。
+**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**、**x0070 trust WAN E2E**、**x0071 world RL / Room cap**、**x0072 launcher discovery**。空き ID = `x0073`。
 
 ---
 
@@ -17,7 +17,8 @@
 | **P0-take-out** | [x006d](slices/x006d-host-take-out-control.md) | host take-out（制御面・Drive HTTP・Inventory UI） | **done** |
 | **P0-put-back** | [x006e](slices/x006e-inventory-put-back-ui.md) | Inventory put-back UI | **done** |
 | **P0-access** | [x006f](slices/x006f-cas-access-grant-peel.md) | CAS access → Grant/ref 移設（P1-1） | **done** |
-| **P0-次** | P1-5 / P3 衛生 | launcher discovery / reaper | planned |
+| **P0-次** | P3 衛生 | reserved reaper / orphan CAS GC 等 | planned |
+| **P0-閉** | [x0072](slices/x0072-launcher-discovery.md) | launcher discovery（P1-5） | **done** |
 | **P0-閉** | [x0071](slices/x0071-world-rate-limit-room-cap.md) | world RL + Room per-owner cap（P1-4） | **done** |
 | **P0-隣接** | verifier | Spot-Check | planned / 保留 |
 
@@ -33,7 +34,7 @@
 | **P1-2** | **BlobGrant 案 B**（GET 常時 Grant + room 連動読取） | **→ x006c done** |
 | **P1-3** | **headless client trust + WAN 否定系 E2E** | improvement P1-2。**→ [x0070](slices/x0070-headless-trust-wan-e2e.md) done** |
 | **P1-4** | **world rate limit shared 化 + Room per-owner 上限** | improvement P1-3。**→ [x0071](slices/x0071-world-rate-limit-room-cap.md) done**。P3-7（BLAKE3）は **マージしない** |
-| **P1-5** | launcher discovery（host restart 後の IPC 再通知） | improvement P1-4。最小 launcher は done、制御面の穴 |
+| **P1-5** | **launcher discovery**（host restart 後の IPC 再通知） | improvement P1-4。**→ [x0072](slices/x0072-launcher-discovery.md) done** |
 
 ---
 
@@ -91,7 +92,7 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 
 ## 推奨着手順（要約・本作業後）
 
-1. P1-5（launcher discovery）または P3 衛生
+1. P3 衛生（reserved reaper / orphan CAS GC 等）
 2. scene despawn（put-back の逆・任意）
 3. verifier / Formula / market / 検疫（条件: seal / gen-rev 済み）
 

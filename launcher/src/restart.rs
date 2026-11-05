@@ -4,10 +4,10 @@
 //! respawn; non-success exits restart with exponential backoff up to
 //! [`MAX_HOST_RESTARTS`] attempts. Shutdown-in-progress ignores further restarts.
 //!
-//! Non-guarantees: OS-specific exit codes beyond success/failure; refreshing the
-//! client's `ALCHEMY_HOST_IPC_ADDR` after restart; **ready-wait failure after a
-//! respawn** (crash-before-ready / timeout) — that path stops the launcher without
-//! another [`decide_host_exit`] (see `main` / architecture/launcher.md).
+//! Non-guarantees: OS-specific exit codes beyond success/failure; **ready-wait
+//! failure after a respawn** (crash-before-ready / timeout) — that path stops the
+//! launcher without another [`decide_host_exit`] (see `main` / architecture/launcher.md).
+//! Client IPC refresh after restart is discovery (`discovery` / x0072), not this module.
 
 use std::time::Duration;
 
