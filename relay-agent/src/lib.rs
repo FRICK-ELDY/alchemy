@@ -1,12 +1,16 @@
-//! Alchemy Relay Agent (x004e / x0068).
+//! Alchemy Relay Agent (x004e / x0068 / x007a).
 //!
 //! Guarantees: `POST /v1/allocate` verifies Allocation Token (`aud=alchemy-relay`) via world JWKS
 //! (soft refresh + hard TTL), then issues a client cert with CN `alchemy-host` / `alchemy-guest`
 //! whose **NotAfter ≈ `expires_in` (300s)**. Body size, in-flight concurrency, and `jti` reuse are
-//! bounded. Non-guarantees: CCU/QoS, multi-relay discovery, L7 Zenoh proxy, CSR-only allocate (P0-4).
+//! bounded. Optional loopback `/metrics` + `room_jti` log correlation (x007a).
+//! Non-guarantees: CCU/QoS, multi-relay discovery, L7 Zenoh proxy, CSR-only allocate (P0-4).
+
+mod metrics;
 
 use anyhow::{anyhow, Context, Result};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+use metrics::RelayMetrics;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -14,9 +18,14 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+fn relay_metrics() -> &'static Arc<RelayMetrics> {
+    static M: OnceLock<Arc<RelayMetrics>> = OnceLock::new();
+    M.get_or_init(|| Arc::new(RelayMetrics::default()))
+}
 
 pub const ISSUER: &str = "alchemy-world";
 pub const AUDIENCE: &str = "alchemy-relay";
@@ -56,6 +65,8 @@ pub struct AllocClaims {
     pub wire_cap: String,
     pub relay_id: String,
     pub jti: String,
+    /// Room Token `jti` for cross-service log correlation (x007a).
+    pub room_jti: String,
     #[allow(dead_code)]
     pub exp: i64,
 }
@@ -263,6 +274,7 @@ pub fn run() -> Result<()> {
     }
 
     state.refresh_jwks().context("initial JWKS fetch")?;
+    metrics::maybe_spawn_from_env(Arc::clone(relay_metrics()));
     let listener = TcpListener::bind(&listen).with_context(|| format!("bind {listen}"))?;
     log::info!(
         "relay-agent x0068 listening on http://{listen} relay_id={} jwks={} cert_ttl_secs={CERT_TTL_SECS} max_body={MAX_BODY_BYTES} max_in_flight={MAX_IN_FLIGHT} max_connections={MAX_CONNECTIONS}",
@@ -443,6 +455,9 @@ impl AgentState {
         }
         if data.claims.role != "host" && data.claims.role != "guest" {
             return Err(anyhow!("invalid role"));
+        }
+        if data.claims.room_jti.is_empty() || data.claims.room_jti.contains('/') {
+            return Err(anyhow!("room_jti missing or contains '/'"));
         }
         Ok(data.claims)
     }
@@ -635,33 +650,33 @@ pub fn handle_client(mut stream: TcpStream, state: &AgentState) -> Result<()> {
 
     let _inflight = match CounterGuard::try_acquire(&state.in_flight, MAX_IN_FLIGHT) {
         Some(g) => g,
-        None => return write_http(&mut stream, 503, "{\"error\":\"too_many_requests\"}"),
+        None => return allocate_deny(&mut stream, 503, "{\"error\":\"too_many_requests\"}"),
     };
 
     let body = match find_body_start(&buf) {
         Some(i) => &buf[i..],
-        None => return write_http(&mut stream, 400, "{\"error\":\"bad_request\"}"),
+        None => return allocate_deny(&mut stream, 400, "{\"error\":\"bad_request\"}"),
     };
     if body.len() > MAX_BODY_BYTES {
-        return write_http(&mut stream, 413, "{\"error\":\"too_large\"}");
+        return allocate_deny(&mut stream, 413, "{\"error\":\"too_large\"}");
     }
     let req_json: AllocateRequest = match serde_json::from_slice(body) {
         Ok(v) => v,
-        Err(_) => return write_http(&mut stream, 400, "{\"error\":\"invalid_json\"}"),
+        Err(_) => return allocate_deny(&mut stream, 400, "{\"error\":\"invalid_json\"}"),
     };
 
     let claims = match state.verify_allocation(&req_json.allocation_token) {
         Ok(c) => c,
         Err(e) => {
             log::warn!("allocate deny: {e:#}");
-            return write_http(&mut stream, 401, "{\"error\":\"invalid_allocation_token\"}");
+            return allocate_deny(&mut stream, 401, "{\"error\":\"invalid_allocation_token\"}");
         }
     };
 
     // Reserve jti before openssl so parallel same-jti cannot both issue; release on fail.
     if let Err(e) = state.try_reserve_jti(&claims.jti) {
         log::warn!("allocate deny: {e:#}");
-        return write_http(&mut stream, 401, "{\"error\":\"jti_reused\"}");
+        return allocate_deny(&mut stream, 401, "{\"error\":\"jti_reused\"}");
     }
 
     let (cert_pem, key_pem, ca_pem) = match state.issue_cert(&claims.role) {
@@ -669,7 +684,7 @@ pub fn handle_client(mut stream: TcpStream, state: &AgentState) -> Result<()> {
         Err(e) => {
             state.release_jti(&claims.jti);
             log::error!("cert issue: {e:#}");
-            return write_http(&mut stream, 500, "{\"error\":\"cert_issue_failed\"}");
+            return allocate_deny(&mut stream, 500, "{\"error\":\"cert_issue_failed\"}");
         }
     };
 
@@ -678,6 +693,8 @@ pub fn handle_client(mut stream: TcpStream, state: &AgentState) -> Result<()> {
     } else {
         CN_GUEST
     };
+    let room_jti = claims.room_jti.clone();
+    let alloc_jti = claims.jti.clone();
     let resp = AllocateResponse {
         role: claims.role,
         room_id: claims.room_id,
@@ -693,16 +710,31 @@ pub fn handle_client(mut stream: TcpStream, state: &AgentState) -> Result<()> {
         Ok(b) => b,
         Err(e) => {
             state.release_jti(&claims.jti);
+            relay_metrics().inc_allocate_err();
             return Err(e.into());
         }
     };
     match write_http(&mut stream, 200, &body) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            relay_metrics().inc_allocate_ok();
+            log::info!(
+                "allocate ok room_jti={room_jti} jti={alloc_jti} room_id={} role={}",
+                resp.room_id,
+                resp.role
+            );
+            Ok(())
+        }
         Err(e) => {
             state.release_jti(&claims.jti);
+            relay_metrics().inc_allocate_err();
             Err(e)
         }
     }
+}
+
+fn allocate_deny(stream: &mut TcpStream, status: u16, body: &str) -> Result<()> {
+    relay_metrics().inc_allocate_err();
+    write_http(stream, status, body)
 }
 
 pub fn write_http(stream: &mut TcpStream, status: u16, body: &str) -> Result<()> {
@@ -917,6 +949,97 @@ mod tests {
     }
 
     #[test]
+    fn room_jti_empty_rejected_after_decode() {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct Claims<'a> {
+            sub: &'a str,
+            room_id: &'a str,
+            role: &'a str,
+            wire_cap: &'a str,
+            relay_id: &'a str,
+            jti: &'a str,
+            room_jti: &'a str,
+            exp: i64,
+            iss: &'a str,
+            aud: &'a str,
+        }
+
+        let openssl = openssl_bin();
+        let work = std::env::temp_dir().join(format!(
+            "alchemy-relay-room-jti-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&work).unwrap();
+        let priv_pem = work.join("jwt.key.pem");
+        let pub_pem = work.join("jwt.pub.pem");
+        run_openssl(
+            &openssl,
+            &["genrsa", "-out", priv_pem.to_str().unwrap(), "2048"],
+        )
+        .unwrap();
+        run_openssl(
+            &openssl,
+            &[
+                "rsa",
+                "-in",
+                priv_pem.to_str().unwrap(),
+                "-pubout",
+                "-out",
+                pub_pem.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+
+        let mut state = test_state_minimal();
+        state.openssl = openssl;
+        let decoding =
+            DecodingKey::from_rsa_pem(&fs::read(&pub_pem).unwrap()).expect("DecodingKey");
+        let mut keys = HashMap::new();
+        keys.insert("test-kid".into(), decoding);
+        state.install_jwks_for_test(keys, Instant::now());
+
+        let encoding =
+            EncodingKey::from_rsa_pem(&fs::read(&priv_pem).unwrap()).expect("EncodingKey");
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("test-kid".into());
+        let exp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 600;
+        let token = encode(
+            &header,
+            &Claims {
+                sub: "u1",
+                room_id: "r1",
+                role: "guest",
+                wire_cap: "wire-a",
+                relay_id: "alchemy-official",
+                jti: "alloc-1",
+                room_jti: "",
+                exp,
+                iss: ISSUER,
+                aud: AUDIENCE,
+            },
+            &encoding,
+        )
+        .unwrap();
+
+        let err = state.verify_allocation(&token).unwrap_err();
+        assert!(
+            err.to_string().contains("room_jti"),
+            "expected room_jti error, got {err:#}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
     fn http_allocate_401_jti_reused() {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
         use serde::Serialize;
@@ -929,6 +1052,7 @@ mod tests {
             wire_cap: &'a str,
             relay_id: &'a str,
             jti: &'a str,
+            room_jti: &'a str,
             exp: i64,
             iss: &'a str,
             aud: &'a str,
@@ -989,6 +1113,7 @@ mod tests {
                 wire_cap: "wire-a",
                 relay_id: "alchemy-official",
                 jti: "reuse-me",
+                room_jti: "room-jti-1",
                 exp,
                 iss: ISSUER,
                 aud: AUDIENCE,

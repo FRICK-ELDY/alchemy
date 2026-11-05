@@ -75,7 +75,7 @@ config :world, WorldWeb.Endpoint,
 
 config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",
-  metadata: [:request_id]
+  metadata: [:request_id, :jti]
 
 config :phoenix, :json_library, Jason
 

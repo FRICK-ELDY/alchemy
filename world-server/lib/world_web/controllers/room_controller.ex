@@ -200,10 +200,18 @@ defmodule WorldWeb.RoomController do
          :ok <- RoomAccess.authorize(conn, room.owner_sub, sub, room.visibility),
          :ok <- authorize_role_cached(room, role, sub),
          {:ok, room_key_b64} <- Rooms.room_key_for_token(room.room_key),
-         {:ok, token, ttl} <- Token.generate(room_id, role, sub, session_pub),
-         {:ok, allocation_token, _} <-
-           AllocationToken.generate(room_id, role, sub, room.wire_cap, relay_id),
+         {:ok, token, room_jti, ttl} <- Token.generate(room_id, role, sub, session_pub),
+         {:ok, allocation_token, alloc_jti, _} <-
+           AllocationToken.generate(room_id, role, sub, room.wire_cap, relay_id, room_jti),
          {:ok, mtls} <- maybe_issue_mtls(csr_pem, role) do
+      Logger.metadata(jti: room_jti)
+
+      Logger.info(
+        "room token issued room_jti=#{room_jti} alloc_jti=#{alloc_jti} sub=#{sub} room_id=#{room_id}"
+      )
+
+      World.Metrics.inc(:token_issue_total)
+
       body = %{
         token: token,
         expires_in: ttl,
@@ -230,76 +238,102 @@ defmodule WorldWeb.RoomController do
 
       json(conn, body)
     else
-      {:error, :openssl_failed} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{error: "mtls_sign_failed"})
-
-      {:error, :sign_failed} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{error: "mtls_sign_failed"})
-
-      {:error, :chmod_failed} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{error: "mtls_sign_failed"})
-
-      {:error, :invalid_args} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: "invalid_csr_pem"})
-
-      {:error, :invalid_room_id} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: "invalid_room_id"})
-
-      {:error, :invalid_room_key} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{error: "invalid_room_key"})
-
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "room_not_found"})
-
-      {:error, :forbidden_host} ->
-        conn
-        |> put_status(:forbidden)
-        |> json(%{error: "host_role_owner_only"})
-
-      {:error, :forbidden_visibility} ->
-        conn
-        |> put_status(:forbidden)
-        |> json(%{error: "visibility_forbidden"})
-
-      {:error, :lan_required} ->
-        conn
-        |> put_status(:forbidden)
-        |> json(%{error: "lan_required"})
-
-      {:error, :auth_unavailable} ->
-        conn
-        |> put_status(:service_unavailable)
-        |> json(%{error: "auth_access_unavailable"})
-
-      {:error, :invalid_role} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: "invalid_role"})
-
-      {:error, :storage_error} ->
-        storage_unavailable(conn)
-
-      {:error, reason} ->
-        Logger.error("Room Token issue failed: #{inspect(reason)}")
-
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{error: "token_issue_failed"})
+      reason ->
+        World.Metrics.inc(:token_issue_errors_total)
+        issue_token_error(conn, reason)
     end
+  end
+
+  defp issue_token_error(conn, {:error, :openssl_failed}) do
+    conn
+    |> put_status(:internal_server_error)
+    |> json(%{error: "mtls_sign_failed"})
+  end
+
+  defp issue_token_error(conn, {:error, :sign_failed}) do
+    conn
+    |> put_status(:internal_server_error)
+    |> json(%{error: "mtls_sign_failed"})
+  end
+
+  defp issue_token_error(conn, {:error, :chmod_failed}) do
+    conn
+    |> put_status(:internal_server_error)
+    |> json(%{error: "mtls_sign_failed"})
+  end
+
+  defp issue_token_error(conn, {:error, :invalid_args}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "invalid_csr_pem"})
+  end
+
+  defp issue_token_error(conn, {:error, :invalid_room_id}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "invalid_room_id"})
+  end
+
+  defp issue_token_error(conn, {:error, :invalid_room_key}) do
+    conn
+    |> put_status(:internal_server_error)
+    |> json(%{error: "invalid_room_key"})
+  end
+
+  defp issue_token_error(conn, {:error, :not_found}) do
+    conn
+    |> put_status(:not_found)
+    |> json(%{error: "room_not_found"})
+  end
+
+  defp issue_token_error(conn, {:error, :forbidden_host}) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{error: "host_role_owner_only"})
+  end
+
+  defp issue_token_error(conn, {:error, :forbidden_visibility}) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{error: "visibility_forbidden"})
+  end
+
+  defp issue_token_error(conn, {:error, :lan_required}) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{error: "lan_required"})
+  end
+
+  defp issue_token_error(conn, {:error, :auth_unavailable}) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{error: "auth_access_unavailable"})
+  end
+
+  defp issue_token_error(conn, {:error, :invalid_role}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "invalid_role"})
+  end
+
+  defp issue_token_error(conn, {:error, :storage_error}) do
+    storage_unavailable(conn)
+  end
+
+  defp issue_token_error(conn, {:error, reason}) do
+    Logger.error("Room Token issue failed: #{inspect(reason)}")
+
+    conn
+    |> put_status(:internal_server_error)
+    |> json(%{error: "token_issue_failed"})
+  end
+
+  defp issue_token_error(conn, reason) do
+    Logger.error("Room Token issue failed: #{inspect(reason)}")
+
+    conn
+    |> put_status(:internal_server_error)
+    |> json(%{error: "token_issue_failed"})
   end
 
   # x0066: csr_pem present → sign; absent → no mtls field (Relay Agent path may still apply).

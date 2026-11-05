@@ -146,6 +146,10 @@ defmodule WorldWeb.RoomControllerTest do
     assert alloc_claims["aud"] == "alchemy-relay"
     assert alloc_claims["wire_cap"] == body["wire_cap"]
     assert alloc_claims["role"] == "guest"
+    # x007a: room_jti correlates with Room Token jti
+    assert {:ok, room_claims} = World.Token.verify(body["token"])
+    assert alloc_claims["room_jti"] == room_claims["jti"]
+    assert alloc_claims["jti"] != room_claims["jti"]
     # x0069: room_key is URL-safe base64 of 32 bytes; not in Allocation JWT
     assert is_binary(body["room_key"]) and body["room_key"] != ""
     assert {:ok, room_key_raw} = Base.url_decode64(body["room_key"], padding: false)
@@ -534,7 +538,7 @@ defmodule WorldWeb.RoomControllerTest do
     _ = signer
     owner = "22222222-2222-2222-2222-222222222222"
     # Token.generate does not require the room registry entry (API create_token does).
-    assert {:ok, ghost_token, _ttl} =
+    assert {:ok, ghost_token, _jti, _ttl} =
              World.Token.generate("ghost-scene", "host", owner, sample_session_pub_bytes())
 
     assert %{"error" => "room_not_found"} =
@@ -768,7 +772,7 @@ defmodule WorldWeb.RoomControllerTest do
              |> json_response(403)
 
     # Token.generate does not require the room registry entry (API create_token does).
-    assert {:ok, ghost_token, _ttl} =
+    assert {:ok, ghost_token, _jti, _ttl} =
              World.Token.generate("ghost-seal", "host", owner, sample_session_pub_bytes())
 
     assert %{"error" => "room_not_found"} =

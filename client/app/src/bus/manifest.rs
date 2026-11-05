@@ -118,6 +118,26 @@ pub(crate) fn spawn_manifest_subscriber(
                                 } => {
                                     *host_slot = watermarks.host_pub;
                                     *gen_slot = watermarks.manifest_gen_rev;
+                                    // x007a: Room Token jti + accepted (gen, rev) for join correlation.
+                                    if let Some((_, jti)) = shared
+                                        .auth
+                                        .lock()
+                                        .ok()
+                                        .and_then(|g| g.room_token.clone())
+                                        .and_then(|tok| {
+                                            crate::jwt_sub::sub_jti_unverified(&tok).ok()
+                                        })
+                                    {
+                                        if let Some(gr) = *gen_slot {
+                                            log::info!(
+                                                "manifest accept: jti={jti} gen={} rev={}",
+                                                gr.host_generation,
+                                                gr.revision
+                                            );
+                                        } else {
+                                            log::info!("manifest accept: jti={jti}");
+                                        }
+                                    }
                                     (generation_changed, manifest, watermarks.last_world_seal)
                                 }
                             }

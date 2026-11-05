@@ -83,7 +83,10 @@ defmodule Auth.Accounts do
   """
   @spec issue_session(User.t(), boolean()) :: {:ok, session()} | {:error, any()}
   def issue_session(%User{} = user, remember_me?) do
-    with {:ok, access_token, _jti, expires_in} <- Token.generate(user) do
+    with {:ok, access_token, jti, expires_in} <- Token.generate(user) do
+      # x007a: access jti as auxiliary correlation (Room jti is the join key).
+      Logger.metadata(jti: jti)
+
       session = %{
         access_token: access_token,
         token_type: "Bearer",

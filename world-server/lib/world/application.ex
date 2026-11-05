@@ -5,6 +5,8 @@ defmodule World.Application do
 
   @impl true
   def start(_type, _args) do
+    World.Metrics.ensure_table()
+
     children =
       [
         WorldWeb.Telemetry,
@@ -16,6 +18,8 @@ defmodule World.Application do
         World.PlaceHashes,
         # x0075: permanent manifest-seal-hash Port (replaces per-request CLI)
         World.ManifestSealHash.Worker,
+        # x007a: dedicated loopback Bandit — never on Endpoint
+        World.Metrics.Server,
         WorldWeb.Endpoint
       ] ++ zenoh_children()
 
