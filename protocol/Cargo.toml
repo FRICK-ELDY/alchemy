@@ -25,6 +25,10 @@ path = "src/bin/manifest_seal_hash.rs"
 name = "blake3-hash"
 path = "src/bin/blake3_hash.rs"
 
+[[bin]]
+name = "demo-scene-vector-yaw-bits"
+path = "src/bin/demo_scene_vector_yaw_bits.rs"
+
 [build-dependencies]
 prost-build = "0.14"
 protoc-bin-vendored = "3"

@@ -19,7 +19,8 @@ defmodule World.DemoScene do
   @box_spacing 0.8
   @box_center_z 3.5
   # 45° yaw (xyzw) for center grabbable box — exercises Manifest→Rapier rotation.
-  # Mirror constants in host-server `demo_entries_for_test` (x002c).
+  # Rust mirror: `alchemy_shared_sim::demo` uses post-normalize `f64::from_bits`
+  # (Jason decimal ≠ Rust literal by 1 ULP; regenerate via scripts/regen_demo_scene_vector.exs).
   @yaw45_qy 0.3826834323650898
   @yaw45_qw 0.9238795325112867
 

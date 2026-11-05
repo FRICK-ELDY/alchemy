@@ -19,7 +19,30 @@
 1. **`alchemy_protocol::demo_scene_vector`**: 固定 `room_id` / `host_generation` / `host_pub_hex` / attestation + 期待 `DEMO_SCENE_VECTOR_BLAKE3`
 2. **`alchemy_shared_sim::demo::demo_scene_entries`**: Elixir `DemoScene` の Rust ミラー。host テストはこれを呼ぶ
 3. **`World.DemoSceneVector`**: 同定数の Elixir 側。`CanonicalManifest.build_payload` + `ManifestSealHash` で照合
-4. DemoScene 変更時は Elixir テストを落とし、期待 hex + `protocol/testdata/demo_scene_seal.json` を再生成。Rust ミラー（特に yaw の `f64::from_bits`）も fixture に合わせる — Jason 小数と Rust リテラルは 1 ULP ズレうる
+4. DemoScene 変更時は下記 **再生成手順** で JSON / hex / yaw bits を更新する（手作業コピペはあるが、出力元は定型スクリプト）
+
+## 再生成手順
+
+手作業前提のコピペはあるが、**正本ファイルと hex の算出はスクリプト化済み**。
+
+```bash
+# cwd 不問（出力は scripts/ からの相対で repo の protocol/testdata へ）
+mix run world-server/scripts/regen_demo_scene_vector.exs
+# または cd world-server && mix run scripts/regen_demo_scene_vector.exs
+```
+
+スクリプトが行うこと:
+
+1. `DemoSceneVector.payload/0`（`DemoScene` + 固定 seal フィールド）を組み立てる
+2. `__DIR__` 基準で `protocol/testdata/demo_scene_seal.json` を上書き
+3. Port 経由の `blake3=` を stdout に出す
+4. `cargo` があれば `demo-scene-vector-yaw-bits` で center box（entity 14）の paste-ready `YAW45_*` `from_bits` 行を出す（fixture JSON → Rust 正規化後。Elixir 小数ではない）
+
+その後の人手:
+
+1. `blake3=` → `World.DemoSceneVector` `@blake3` と `DEMO_SCENE_VECTOR_BLAKE3`
+2. `YAW45_*` 行が変わっていれば → `alchemy_shared_sim::demo`（**`@yaw45_*` 小数のコピー禁止**）
+3. `cargo test -p alchemy-protocol` / `-p alchemy-shared-sim`
 
 ## 本 Slice に含めない
 

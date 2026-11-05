@@ -1,14 +1,17 @@
 defmodule World.DemoSceneVector do
   @moduledoc """
-  Shared DemoScene ManifestSeal test vector (x0079).
+  Shared DemoScene ManifestSeal **test vector** constants (x0079).
 
-  Keep constants in lockstep with `alchemy_protocol::demo_scene_vector`.
-  Elixir SSoT for entries is `World.DemoScene`; this module only pins the
-  fixed seal fields + expected blake3 used by both Elixir and Rust tests.
+  Not used by Room create / seal issuance. Keep in lockstep with
+  `alchemy_protocol::demo_scene_vector`. Entries SSoT remains `World.DemoScene`.
 
-  When DemoScene layout changes: update `@blake3` here and
-  `DEMO_SCENE_VECTOR_BLAKE3` / `protocol/testdata/demo_scene_seal.json`,
-  then align `alchemy_shared_sim::demo` (yaw may need `f64::from_bits`).
+  Regen after DemoScene / PROTOCOL_PIN changes (cwd-independent):
+
+      mix run scripts/regen_demo_scene_vector.exs
+
+  Paste printed `blake3=` into `@blake3` here and `DEMO_SCENE_VECTOR_BLAKE3`.
+  Paste printed `YAW45_QY` / `YAW45_QW` `from_bits` lines into
+  `alchemy_shared_sim::demo` when they change (never copy `@yaw45_*` decimals).
   """
 
   @room_id "demo-scene-vector"
@@ -48,4 +51,17 @@ defmodule World.DemoSceneVector do
   @doc "Expected canonical ManifestSeal blake3 (lowercase hex)."
   @spec blake3() :: String.t()
   def blake3, do: @blake3
+
+  @doc "Canonical seal payload map for the shared vector (DemoScene entries)."
+  @spec payload() :: map()
+  def payload do
+    World.CanonicalManifest.build_payload(
+      room_id(),
+      revision(),
+      host_generation(),
+      World.DemoScene.build(),
+      host_pub(),
+      host_attestation()
+    )
+  end
 end

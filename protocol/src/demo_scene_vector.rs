@@ -1,11 +1,14 @@
-//! Shared DemoScene ManifestSeal test vector (x0079).
+//! Shared DemoScene ManifestSeal **test vector** (x0079).
+//!
+//! Not a wire API. Constants + helpers exist so Elixir / Rust CI can pin the
+//! same seal blake3. Do not use these room_id / attestation values in production.
 //!
 //! Elixir SSoT: `World.DemoScene` → `World.CanonicalManifest.build_payload/6`.
-//! Rust mirror: `alchemy-shared-sim::demo::demo_scene_entries` (+ host `demo_entries_for_test`).
+//! Rust mirror: `alchemy-shared-sim::demo::demo_scene_entries`.
 //!
-//! Both sides assemble a SceneManifest with these fixed seal fields and must
-//! produce [`DEMO_SCENE_VECTOR_BLAKE3`]. Update the hex when DemoScene layout
-//! changes (recompute via either side's vector test / `manifest-seal-hash`).
+//! Regen (cwd-independent): `mix run world-server/scripts/regen_demo_scene_vector.exs`
+//! — writes `protocol/testdata/demo_scene_seal.json`, prints `blake3=`, and
+//! (via `demo-scene-vector-yaw-bits`) paste-ready `YAW45_*` `from_bits` lines.
 
 use crate::{LocomotionConfig, LocomotionMode, SceneManifest, DEFAULT_MOVE_SPEED, PROTOCOL_PIN};
 
@@ -27,7 +30,8 @@ pub const DEMO_SCENE_VECTOR_HOST_ATTESTATION: &str = "x0079-demo-scene-vector-at
 
 /// Canonical ManifestSeal blake3 (lowercase hex) for DemoScene + the fields above.
 ///
-/// Recompute when `World.DemoScene` / Rust mirror / [`PROTOCOL_PIN`] change.
+/// Recompute via `mix run world-server/scripts/regen_demo_scene_vector.exs`
+/// when `World.DemoScene` / Rust mirror / [`PROTOCOL_PIN`] change.
 pub const DEMO_SCENE_VECTOR_BLAKE3: &str =
     "3c3b29b829830ee00a41a384d8f86f193795020bd7b35096ba47e3618f84dc4f";
 
@@ -61,96 +65,52 @@ pub fn demo_scene_vector_manifest(entries: Vec<crate::SceneEntry>) -> SceneManif
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest_seal_json::{
+        blake3_hex_from_json_str, scene_manifest_from_json_str, ManifestSealJson,
+    };
     use crate::wire_crypto::manifest_seal_blake3_hex;
-    use crate::{normalize_scene_entry_trs, SceneEntry};
-    use serde::Deserialize;
 
-    #[derive(Deserialize)]
-    struct Input {
-        #[serde(default)]
-        entries: Vec<EntryJson>,
-    }
+    const FIXTURE: &str = include_str!("../testdata/demo_scene_seal.json");
 
-    #[derive(Deserialize)]
-    struct EntryJson {
-        entity_id: u32,
-        #[serde(default)]
-        blake3: String,
-        #[serde(default)]
-        x: f64,
-        #[serde(default)]
-        y: f64,
-        #[serde(default)]
-        z: f64,
-        #[serde(default)]
-        half_extent: f32,
-        #[serde(default)]
-        flags: u32,
-        #[serde(default)]
-        r: f32,
-        #[serde(default)]
-        g: f32,
-        #[serde(default)]
-        b: f32,
-        #[serde(default)]
-        a: f32,
-        #[serde(default)]
-        qx: f64,
-        #[serde(default)]
-        qy: f64,
-        #[serde(default)]
-        qz: f64,
-        #[serde(default)]
-        qw: f64,
-        #[serde(default)]
-        sx: f64,
-        #[serde(default)]
-        sy: f64,
-        #[serde(default)]
-        sz: f64,
-    }
-
-    fn fixture_entries() -> Vec<SceneEntry> {
-        let raw = include_str!("../testdata/demo_scene_seal.json");
-        let input: Input = serde_json::from_str(raw).expect("fixture json");
-        input
-            .entries
-            .into_iter()
-            .map(|e| {
-                let mut entry = SceneEntry {
-                    entity_id: e.entity_id,
-                    blake3: e.blake3,
-                    x: e.x,
-                    y: e.y,
-                    z: e.z,
-                    half_extent: e.half_extent,
-                    flags: e.flags,
-                    r: e.r,
-                    g: e.g,
-                    b: e.b,
-                    a: e.a,
-                    qx: e.qx,
-                    qy: e.qy,
-                    qz: e.qz,
-                    qw: e.qw,
-                    sx: e.sx,
-                    sy: e.sy,
-                    sz: e.sz,
-                };
-                normalize_scene_entry_trs(&mut entry);
-                entry
-            })
-            .collect()
+    #[test]
+    fn fixture_metadata_matches_vector_constants() {
+        let input: ManifestSealJson = serde_json::from_str(FIXTURE).expect("fixture json");
+        assert_eq!(input.room_id, DEMO_SCENE_VECTOR_ROOM_ID);
+        assert_eq!(input.revision, DEMO_SCENE_VECTOR_REVISION);
+        assert_eq!(input.host_generation, DEMO_SCENE_VECTOR_HOST_GENERATION);
+        assert_eq!(input.host_pub_hex, DEMO_SCENE_VECTOR_HOST_PUB_HEX);
+        assert_eq!(input.host_attestation, DEMO_SCENE_VECTOR_HOST_ATTESTATION);
+        assert_eq!(
+            input.protocol_pin.as_deref(),
+            Some(PROTOCOL_PIN),
+            "fixture protocol_pin drifted from PROTOCOL_PIN"
+        );
+        let loco = input.locomotion.expect("fixture locomotion");
+        assert_eq!(loco.mode.to_ascii_lowercase(), "noclip");
+        assert_eq!(loco.move_speed, DEFAULT_MOVE_SPEED);
     }
 
     #[test]
-    fn elixir_fixture_json_matches_expected_blake3() {
-        let entries = fixture_entries();
-        let manifest = demo_scene_vector_manifest(entries);
-        let got = manifest_seal_blake3_hex(&manifest);
+    fn fixture_json_hashes_via_seal_json_path() {
+        let got = blake3_hex_from_json_str(FIXTURE, true).expect("hash fixture");
         assert_eq!(
             got, DEMO_SCENE_VECTOR_BLAKE3,
-            "update DEMO_SCENE_VECTOR_BLAKE3 from Elixir/CLI fixture hash"
+            "update DEMO_SCENE_VECTOR_BLAKE3 via regen_demo_scene_vector.exs"
         );
+    }
+
+    #[test]
+    fn fixture_manifest_matches_vector_shell_hash() {
+        let from_json = scene_manifest_from_json_str(FIXTURE, true).expect("parse fixture");
+        let via_shell = demo_scene_vector_manifest(from_json.entries.clone());
+        assert_eq!(
+            manifest_seal_blake3_hex(&from_json),
+            manifest_seal_blake3_hex(&via_shell)
+        );
+        assert_eq!(from_json.room_id, via_shell.room_id);
+        assert_eq!(from_json.protocol_pin, via_shell.protocol_pin);
+        assert_eq!(from_json.host_generation, via_shell.host_generation);
+        assert_eq!(from_json.host_pub, via_shell.host_pub);
+        assert_eq!(from_json.host_attestation, via_shell.host_attestation);
     }
 }

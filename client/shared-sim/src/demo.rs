@@ -26,8 +26,9 @@ pub const DEMO_COIN_BLAKE3: &str =
 
 /// 45° yaw (xyzw) for center grabbable box.
 ///
-/// Bits match Jason → serde parse of `World.DemoScene` `@yaw45_*` after
-/// `normalize_scene_entry_trs` (Rust decimal literals differ by 1 ULP; x0079).
+/// Do **not** paste Elixir `@yaw45_*` decimals — Jason→serde differs by 1 ULP.
+/// Regen prints paste-ready lines via `demo-scene-vector-yaw-bits`
+/// (`mix run world-server/scripts/regen_demo_scene_vector.exs`).
 const YAW45_QY: f64 = f64::from_bits(0x3fd8_7de2_a6ae_a963);
 const YAW45_QW: f64 = f64::from_bits(0x3fed_906b_cf32_8d47);
 
