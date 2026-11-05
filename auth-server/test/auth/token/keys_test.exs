@@ -53,14 +53,29 @@ defmodule Auth.Token.KeysTest do
     Application.put_env(:auth, :jwt_verification_key_paths, [@primary_path])
 
     _ = Supervisor.terminate_child(Auth.Supervisor, Keys)
-    assert {:ok, pid} = Supervisor.restart_child(Auth.Supervisor, Keys)
 
-    ref = Process.monitor(pid)
+    # Sync init (x0073): duplicate kids fail inside init → restart_child errors.
+    assert {:error, {%ArgumentError{message: message}, _stack}} =
+             Supervisor.restart_child(Auth.Supervisor, Keys)
 
-    assert_receive {:DOWN, ^ref, :process, _, {%ArgumentError{message: message}, _}}, 5_000
     assert message =~ "duplicate JWT key ids"
 
     Application.put_env(:auth, :jwt_verification_key_paths, [])
+    restart_keys!()
+  end
+
+  test "jwks raises when keys are not ready (fail-closed)" do
+    pid = Process.whereis(Keys)
+    assert is_pid(pid)
+    assert :ok = Supervisor.terminate_child(Auth.Supervisor, Keys)
+    refute Process.alive?(pid)
+    assert is_nil(Process.whereis(Keys))
+
+    # Public contract: process down → raise (never empty JWKS 200). PT may still
+    # linger if shutdown was brutal; key_state! checks whereis first.
+    assert_raise RuntimeError, ~r/not ready/, fn -> Keys.jwks() end
+    assert_raise RuntimeError, ~r/not ready/, fn -> Keys.signer() end
+
     restart_keys!()
   end
 
@@ -94,7 +109,8 @@ defmodule Auth.Token.KeysTest do
       {:error, reason} -> flunk("failed to restart Auth.Token.Keys: #{inspect(reason)}")
     end
 
-    # Synchronize past handle_continue → :persistent_term.put (x0073).
+    # Sync init already put `:persistent_term` before start_link returned; this
+    # only asserts the registered process answers (test helper / docs symmetry).
     Keys.await_ready()
   end
 

@@ -198,7 +198,7 @@ make ci-protocol
 make ci-auth
 make ci-world
 make ci-assets
-make ci-launcher   # x0047（client workspace 外の alchemy-launcher）
+make ci-launcher   # x0047/x0073 alchemy-launcher fmt/clippy/deny/build/test
 make ci-e2e   # x001f（compose スタック起動後）
 make smoke-desktop-handthrough  # x0020（日常スタック起動後）
 ```
@@ -216,7 +216,7 @@ AUTH_CI_HOST=1 ./.scripts/ci.sh auth
 | `auth` | Docker で format / compile / credo / ecto / `mix test` |
 | `world` | Docker で format / compile / credo / `mix test` |
 | `assets` | Docker で format / compile / credo / ecto / `mix test` |
-| `launcher` | `launcher/` で fmt / clippy / build / test（x0047） |
+| `launcher` | `launcher/` で fmt / clippy / deny / build / test（x0047 / x0073） |
 
 ## ライセンス
 

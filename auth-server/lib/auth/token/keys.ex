@@ -7,21 +7,37 @@ defmodule Auth.Token.Keys do
   key rotation grace periods.
 
   Hot-path reads (`signer/0`, `jwks/0`, `signer_for_kid/1`) use `:persistent_term`
-  so login/refresh do not serialize through this GenServer (x0073). The process
-  still owns load / restart lifecycle and refreshes the term on boot.
+  so login/refresh do not serialize through this GenServer (x0073). Keys are
+  loaded **synchronously in `init/1`** so `start_link` does not return until the
+  term is populated (same “ready before Endpoint” ordering as the old
+  `GenServer.call` gate). Unready reads fail closed (raise) — never an empty JWKS.
   """
 
   use GenServer
 
   @pt_key {__MODULE__, :key_state}
 
+  # Explicit shutdown so supervisor stop invokes `terminate/2` (PT erase), not brutal_kill.
+  def child_spec(opts) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [opts]},
+      type: :worker,
+      restart: :permanent,
+      shutdown: 5_000
+    }
+  end
+
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc """
-  Block until keys are loaded into `:persistent_term` (after `handle_continue`).
-  Used by tests that restart this process under new Application env.
+  Confirm this process finished `init/1` (keys already in `:persistent_term`).
+
+  With sync init, registration implies readiness; this call is for tests that
+  restart the child under a new Application env and need a barrier after
+  `Supervisor.restart_child/2`.
   """
   @spec await_ready(timeout()) :: :ok
   def await_ready(timeout \\ 5_000), do: GenServer.call(__MODULE__, :await_ready, timeout)
@@ -30,12 +46,7 @@ defmodule Auth.Token.Keys do
   def signer, do: key_state!().active_signer
 
   @spec jwks() :: map()
-  def jwks do
-    case :persistent_term.get(@pt_key, :missing) do
-      :missing -> %{"keys" => []}
-      %{jwks: jwks} -> jwks
-    end
-  end
+  def jwks, do: key_state!().jwks
 
   @spec signer_for_kid(String.t()) :: {:ok, Joken.Signer.t()} | {:error, :unknown_kid}
   def signer_for_kid(kid) when is_binary(kid) do
@@ -47,14 +58,9 @@ defmodule Auth.Token.Keys do
 
   @impl true
   def init(_opts) do
-    {:ok, :loading, {:continue, :load_keys}}
-  end
-
-  @impl true
-  def handle_continue(:load_keys, :loading) do
     state = load_key_state!()
     :persistent_term.put(@pt_key, state)
-    {:noreply, :ready}
+    {:ok, :ready}
   end
 
   @impl true
@@ -62,11 +68,18 @@ defmodule Auth.Token.Keys do
 
   @impl true
   def terminate(_reason, _state) do
-    :persistent_term.erase(@pt_key)
+    # Best-effort cleanup. Readers also fail closed when `whereis` is nil, so a
+    # brutal_kill that skips this callback cannot serve empty JWKS as success.
+    _ = :persistent_term.erase(@pt_key)
     :ok
   end
 
   defp key_state! do
+    # Fail-closed if the process is down even when PT erase was skipped (brutal_kill).
+    unless Process.whereis(__MODULE__) do
+      raise "Auth.Token.Keys not ready"
+    end
+
     case :persistent_term.get(@pt_key, :missing) do
       :missing ->
         raise "Auth.Token.Keys not ready"

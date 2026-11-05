@@ -13,9 +13,11 @@ cd "$ROOT"
 
 AUTH_COMPOSE="auth-server/docker-compose.prod.yml"
 WORLD_COMPOSE="world-server/docker-compose.prod.yml"
+ASSETS_COMPOSE="assets-server/docker-compose.prod.yml"
 TMP_DIR="${TMPDIR:-/tmp}/alchemy-smoke-prod-$$"
 AUTH_ENV="${TMP_DIR}/auth.env.prod"
 WORLD_ENV="${TMP_DIR}/world.env.prod"
+ASSETS_ENV="${TMP_DIR}/assets.env.prod"
 JWT_PEM="${TMP_DIR}/jwt_private.pem"
 UP="${SMOKE_PROD_UP:-0}"
 HEALTH_WAIT_SECS="${HEALTH_WAIT_SECS:-180}"
@@ -55,6 +57,11 @@ AUTH_INTERNAL_URL=http://host.docker.internal:4002
 AUTH_INTERNAL_TOKEN=${AUTH_INTERNAL_TOKEN}
 EOF
 
+cat >"${ASSETS_ENV}" <<EOF
+SECRET_KEY_BASE=${SECRET_KEY_BASE}
+AUTH_JWKS_URL=http://host.docker.internal:4002/.well-known/jwks.json
+EOF
+
 echo "smoke-prod-compose: docker compose config (auth)…"
 docker compose -f "${AUTH_COMPOSE}" --env-file "${AUTH_ENV}" config >/dev/null
 echo "smoke-prod-compose: auth config ok"
@@ -63,9 +70,14 @@ echo "smoke-prod-compose: docker compose config (world)…"
 docker compose -f "${WORLD_COMPOSE}" --env-file "${WORLD_ENV}" config >/dev/null
 echo "smoke-prod-compose: world config ok"
 
+echo "smoke-prod-compose: docker compose config (assets)…"
+docker compose -f "${ASSETS_COMPOSE}" --env-file "${ASSETS_ENV}" config >/dev/null
+echo "smoke-prod-compose: assets config ok"
+
 # Fail closed if S2S keys were dropped from the compose files.
 auth_cfg="$(docker compose -f "${AUTH_COMPOSE}" --env-file "${AUTH_ENV}" config)"
 world_cfg="$(docker compose -f "${WORLD_COMPOSE}" --env-file "${WORLD_ENV}" config)"
+assets_cfg="$(docker compose -f "${ASSETS_COMPOSE}" --env-file "${ASSETS_ENV}" config)"
 echo "${auth_cfg}" | grep -q 'AUTH_INTERNAL_TOKEN' || {
   echo "smoke-prod-compose: FAILED — auth prod compose missing AUTH_INTERNAL_TOKEN" >&2
   exit 1
@@ -78,6 +90,34 @@ echo "${world_cfg}" | grep -q 'AUTH_INTERNAL_URL' || {
   echo "smoke-prod-compose: FAILED — world prod compose missing AUTH_INTERNAL_URL" >&2
   exit 1
 }
+
+# x0073: app port host publish defaults to loopback.
+# Scope to the mapping that publishes $port — do not scan whole compose
+# (auth also publishes Postgres on 127.0.0.1:5433; that must not mask 4002).
+assert_loopback_publish() {
+  local name="$1"
+  local cfg="$2"
+  local port="$3"
+  local block
+  block="$(printf '%s\n' "${cfg}" | grep -E -B6 -A3 "published: \"?${port}\"?")" || {
+    echo "smoke-prod-compose: FAILED — ${name} prod compose missing published ${port}" >&2
+    exit 1
+  }
+  echo "${block}" | grep -E "host_ip: 127\\.0\\.0\\.1" >/dev/null || {
+    echo "smoke-prod-compose: FAILED — ${name} published ${port} is not bound to 127.0.0.1" >&2
+    echo "${block}" >&2
+    exit 1
+  }
+  if echo "${block}" | grep -E "host_ip: ['\"]?0\\.0\\.0\\.0['\"]?" >/dev/null; then
+    echo "smoke-prod-compose: FAILED — ${name} published ${port} still has host_ip 0.0.0.0" >&2
+    echo "${block}" >&2
+    exit 1
+  fi
+}
+assert_loopback_publish "auth" "${auth_cfg}" "4002"
+assert_loopback_publish "world" "${world_cfg}" "4003"
+assert_loopback_publish "assets" "${assets_cfg}" "4004"
+echo "smoke-prod-compose: loopback publish ok (auth/world/assets)"
 
 if [[ "${UP}" != "1" ]]; then
   echo "smoke-prod-compose: config-only pass (set SMOKE_PROD_UP=1 for /health boot)"

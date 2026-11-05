@@ -11,6 +11,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | `Auth.Token.Keys` の signer / JWKS 読取は `:persistent_term`（GenServer 直列化なし） | 実行時キーローテーションのゼロダウンタイム（再起動で PT 更新） |
+| 鍵ロードは `init/1` 同期。`start_link` 完了＝PT 投入済み。未準備読取は raise（空 JWKS を 200 で返さない） | 再起動窓の 5xx 回避（erase〜再 put は fail-closed） |
 | prod compose のホスト publish 既定は loopback（`127.0.0.1:PORT`） | コンテナ内 `BIND_ALL` / Docker bridge の変更 |
 | launcher も `cargo deny check`（CI + `ci.sh`） | client と同一 advisory ignore の完全同期 |
 | 腐った `smoke-host-token.sh` を削除 | 全 smoke の CI 必須化 |
