@@ -114,6 +114,11 @@ if config_env() != :test do
   end
 end
 
+# x0075: same as world MANIFEST_SEAL_HASH_BIN — readable in test (CI) and runtime.
+if bin = System.get_env("BLAKE3_HASH_BIN") do
+  config :assets, blake3_hash_bin: bin
+end
+
 if config_env() == :prod do
   secret_key_base =
     System.get_env("SECRET_KEY_BASE") ||

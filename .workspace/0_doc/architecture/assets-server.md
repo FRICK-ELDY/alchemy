@@ -1,7 +1,7 @@
 # assets-server
 
 > **正本コード**: [`assets-server/`](../../../assets-server/)  
-> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳）+ **x0054**（inventory PUT 経路）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）+ **x006e**（Drive HTTP put_back）+ **x006f**（CasObject.access 列廃止）+ **x0074**（reserved reaper / orphan CAS GC）  
+> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳）+ **x0054**（inventory PUT 経路）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）+ **x006e**（Drive HTTP put_back）+ **x006f**（CasObject.access 列廃止）+ **x0074**（reserved reaper / orphan CAS GC）+ **x0075**（BLAKE3 常駐 Port）  
 
 > **目標たたき台**: [assets-server-draft.md](assets-server-draft.md)（5 層全体）  
 > **脅威（手口×対策）**: [assets-threat-model.md](assets-threat-model.md)
@@ -22,7 +22,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | メタ（CasObject / BlobRef / BlobGrant / QuotaLedger）を SQLite に置く | GLB/KTX2 本体を DB に置く |
-| 不変バイナリを CAS（BLAKE3 キー）に置く | Folder / Commit（Spatial VCS）・Group Vault |
+| 不変バイナリを CAS（BLAKE3 キー）に置く。ダイジェストは常駐 `blake3-hash --serve` Port（x0075；リクエスト毎 CLI なし） | Folder / Commit（Spatial VCS）・Group Vault；並行ハッシュスループット |
 | `Assets.Vault.personal/1` が Quota と一致する used/reserved/limit を返す（vault_id=`owner_sub` 暫定・x0058） | UUID vault_id 移行・`:read_only`・課金プラン連動 |
 | `CasObject`（物理・所有者なし・size/mime のみ）と `BlobRef`（owner×blake3）を分離（x003f / x006f） | StorageVault / `:purchased` / `:mail_temp` |
 | PUT finalize で uploader に `:owned` `BlobGrant`（x004f） | room スコープ grant・Manifest 連動付与以外の Grant 種別 |

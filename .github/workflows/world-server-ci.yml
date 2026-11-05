@@ -8,6 +8,7 @@ on:
       - "shared/alchemy_auth_client/**"
       - "shared/alchemy_client_ip/**"
       - "shared/alchemy_rate_limit/**"
+      - "protocol/**"
       - ".github/workflows/world-server-ci.yml"
   pull_request:
     paths:
@@ -15,6 +16,7 @@ on:
       - "shared/alchemy_auth_client/**"
       - "shared/alchemy_client_ip/**"
       - "shared/alchemy_rate_limit/**"
+      - "protocol/**"
       - ".github/workflows/world-server-ci.yml"
 
 concurrency:
@@ -32,9 +34,16 @@ jobs:
       MIX_ENV: test
       # x003b: pollution path must be ignored by runtime.exs in test.
       WORLD_DATABASE_PATH: /tmp/alchemy-world-test-must-ignore.db
+      MANIFEST_SEAL_HASH_BIN: ${{ github.workspace }}/protocol/target/release/manifest-seal-hash
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build manifest-seal-hash
+        working-directory: protocol
+        run: cargo build --release --bin manifest-seal-hash
 
       - uses: erlef/setup-beam@v1
         with:

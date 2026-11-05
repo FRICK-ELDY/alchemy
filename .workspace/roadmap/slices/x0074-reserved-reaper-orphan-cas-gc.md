@@ -29,7 +29,7 @@
 
 | 項目 | 予定 |
 |:---|:---|
-| BLAKE3 / seal-hash 常駐 Port | 別 Slice |
+| BLAKE3 / seal-hash 常駐 Port | **x0075** |
 | host `room_token.rs` / client `main.rs` 分割 | 別 Slice |
 | BlobRef 無し CasObject の refcount GC | 将来 |
 

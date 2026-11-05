@@ -19,6 +19,8 @@ defmodule Assets.Application do
       Assets.Auth.Jwks,
       Assets.World.Jwks,
       Assets.PlaceHashCache,
+      # x0075: permanent blake3-hash Port (replaces per-request b3sum)
+      Assets.Blake3.Worker,
       # x0074: TTL reserved reclaim + orphan CAS bytes GC
       Assets.Quota.ReservedReaper,
       Assets.CAS.OrphanGc,

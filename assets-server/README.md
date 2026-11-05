@@ -1,7 +1,7 @@
 # assets-server
 
 ローカル CAS（BLAKE3）または **S3 互換（Cloudflare R2）** + SQLite メタ + 固定 Quota（1GiB）。auth Bearer 必須。  
-s3 時の GET は **短命署名 URL へ 302**（x001d）。BLAKE3 は `b3sum` CLI 経由（Docker イメージに同梱。ホスト CI は `cargo install b3sum`）。
+s3 時の GET は **短命署名 URL へ 302**（x001d）。BLAKE3 は常駐 `blake3-hash --serve` Port（x0075；Docker イメージに同梱。CI は `protocol` からビルド）。
 
 ## 起動
 

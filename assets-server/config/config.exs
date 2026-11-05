@@ -37,6 +37,9 @@ config :assets,
   place_read_verify_ttl_ms: 5_000,
   place_read_verify_cache_max: 4_096,
   max_upload_bytes: 100_000_000,
+  # x0075: permanent blake3-hash Port (nil = PATH / BLAKE3_HASH_BIN / test_helper)
+  blake3_hash_bin: nil,
+  blake3_hash_call_timeout_ms: 30_000,
   # OSS default: header-only quarantine. Proprietary pgvector workers inject here.
   quarantine_worker: Assets.Quarantine.HeaderCheckWorker
 

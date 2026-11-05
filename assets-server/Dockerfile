@@ -2,16 +2,20 @@ ARG ELIXIR_IMAGE=elixir:1.19-otp-28-alpine
 ARG ALPINE_VERSION=3.23
 ARG RUST_IMAGE=rust:1-alpine
 
-# Build context: repository root (shared/alchemy_auth_client path dep).
-FROM ${RUST_IMAGE} AS b3sum
-RUN apk add --no-cache musl-dev \
- && cargo install b3sum --locked \
- && cp /usr/local/cargo/bin/b3sum /b3sum
+# x0075: permanent blake3-hash Port worker (replaces b3sum).
+FROM ${RUST_IMAGE} AS blake3-hash
+RUN apk add --no-cache musl-dev
+WORKDIR /src
+COPY protocol /src/protocol
+WORKDIR /src/protocol
+RUN cargo build --release --bin blake3-hash \
+ && cp target/release/blake3-hash /blake3-hash
 
+# Build context: repository root (shared/alchemy_auth_client path dep).
 FROM ${ELIXIR_IMAGE} AS dev
 
 RUN apk add --no-cache build-base git wget
-COPY --from=b3sum /b3sum /usr/local/bin/b3sum
+COPY --from=blake3-hash /blake3-hash /usr/local/bin/blake3-hash
 
 WORKDIR /app
 
@@ -37,7 +41,7 @@ CMD ["mix", "phx.server"]
 FROM ${ELIXIR_IMAGE} AS build
 
 RUN apk add --no-cache build-base git
-COPY --from=b3sum /b3sum /usr/local/bin/b3sum
+COPY --from=blake3-hash /blake3-hash /usr/local/bin/blake3-hash
 
 WORKDIR /app
 
@@ -64,7 +68,7 @@ RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates su-exec \
  && mkdir -p /data \
  && chown assets:assets /app /data
 
-COPY --from=b3sum /b3sum /usr/local/bin/b3sum
+COPY --from=blake3-hash /blake3-hash /usr/local/bin/blake3-hash
 
 WORKDIR /app
 

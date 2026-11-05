@@ -40,7 +40,12 @@ curl -sfL -H "authorization: Bearer ${ACCESS}" \
 cmp -s "$FIXTURE" "$OUT"
 echo "bytes match fixture"
 
-if command -v b3sum >/dev/null 2>&1; then
+# x0075: prefer in-tree blake3-hash; fall back to b3sum if present.
+if command -v blake3-hash >/dev/null 2>&1; then
+  GOT=$(blake3-hash "$OUT")
+  test "$GOT" = "$EXPECTED_BLAKE3"
+  echo "blake3-hash ok"
+elif command -v b3sum >/dev/null 2>&1; then
   GOT=$(b3sum --no-names "$OUT")
   test "$GOT" = "$EXPECTED_BLAKE3"
   echo "b3sum ok"

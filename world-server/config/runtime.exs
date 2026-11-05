@@ -68,6 +68,10 @@ if audience = System.get_env("AUTH_JWT_AUDIENCE") do
   config :world, auth_jwt_audience: audience
 end
 
+if bin = System.get_env("MANIFEST_SEAL_HASH_BIN") do
+  config :world, manifest_seal_hash_bin: bin
+end
+
 if System.get_env("BIND_ALL") in ~w(true 1) do
   config :world, WorldWeb.Endpoint,
     http: [ip: {0, 0, 0, 0}, port: port],

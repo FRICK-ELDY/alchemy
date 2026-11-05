@@ -6,11 +6,13 @@ on:
     paths:
       - "assets-server/**"
       - "shared/alchemy_auth_client/**"
+      - "protocol/**"
       - ".github/workflows/assets-server-ci.yml"
   pull_request:
     paths:
       - "assets-server/**"
       - "shared/alchemy_auth_client/**"
+      - "protocol/**"
       - ".github/workflows/assets-server-ci.yml"
 
 concurrency:
@@ -28,14 +30,16 @@ jobs:
       MIX_ENV: test
       # x001e: never pick up accidental ASSETS_CAS_BACKEND=s3 from runner env
       ASSETS_CAS_BACKEND: local
+      BLAKE3_HASH_BIN: ${{ github.workspace }}/protocol/target/release/blake3-hash
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install b3sum
-        run: cargo install b3sum --locked
+      - name: Build blake3-hash
+        working-directory: protocol
+        run: cargo build --release --bin blake3-hash
 
       - uses: erlef/setup-beam@v1
         with:
