@@ -1,5 +1,8 @@
 //! JWKS cache, fetch, background refresh, and soft/hard TTL kick logic for [`RoomTokenVerifier`].
 //!
+//! [`RoomTokenVerifier`] is defined in `verify` (claims + `verify` / `new`). This module owns the
+//! cache fields' HTTP/SWR path: `refresh_jwks`, background spawn, soft/hard kick helpers.
+//!
 //! Guarantees: x0021 verify never does HTTP (HTTP only in `refresh_jwks` / background thread);
 //! x0040 soft TTL (SWR) + hard stale TTL (verify fails closed until refresh); unknown-kid /
 //! hard-stale kicks are rate-limited by [`UNKNOWN_KID_COOLDOWN`].

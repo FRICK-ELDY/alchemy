@@ -1,5 +1,8 @@
 //! Room Token claims + RS256 verify against cached JWKS (no HTTP on the verify path).
 //!
+//! Type + claim checks live here; JWKS fetch / SWR / hard-stale / background kick are in `jwks`
+//! (same struct, `pub(super)` fields).
+//!
 //! Guarantees: RS256 + iss/aud/exp/room_id/role checks; `cnf.spk` shape (x003e); empty/unknown-kid
 //! and hard-stale cache fail closed. Cache refresh lives in `jwks`.
 //! Non-guarantees: JWKS fetching, credential HTTP.

@@ -16,9 +16,13 @@
 //! Fuzz: `host-server/fuzz` `room_token_verify` (x004c; feature `fuzzing`).
 //!
 //! Module layout (x0076, mechanical split of the former single `room_token.rs`):
-//! `verify` (claims + verifier), `jwks` (cache / refresh), `timing` (TTL math),
-//! `http` (shared agent), `credential_chain` (auth -> host token -> attestation),
-//! `seal_cache` (ManifestSeal), `room_scene` (scene fetch/append), `credential_worker`.
+//! `verify` (claims + verifier type), `jwks` (cache / refresh), `timing` (TTL math),
+//! `http` (shared agent), `credential_chain` (auth -> host token -> attestation; still the
+//! largest unit — further split is a follow-up), `seal_cache` (ManifestSeal),
+//! `room_scene` (scene fetch/append), `credential_worker`.
+//!
+//! [`RoomTokenVerifier`]: type + claim checks live in `verify`; JWKS cache fields are
+//! `pub(super)` so `jwks` owns fetch / SWR / hard-stale / background kick impls.
 
 mod credential_chain;
 mod credential_worker;
@@ -34,9 +38,6 @@ pub use credential_chain::{
     plan_credential_refresh, refresh_auth_session, CredentialRefreshPlan, HostAuthSession,
     HostCredentialChain, HostTokenBundle, WorldMtls,
 };
-// Kept at the original `room_token::*` visibility (`pub(crate)`); exercised by unit tests.
-#[allow(unused_imports)]
-pub(crate) use credential_chain::{resolve_auth_login_credentials, room_token_env_bypass_from};
 pub use credential_worker::{
     build_manifest_from_scene, ensure_sealed_manifest, force_seal_retry, spawn_credential_worker,
     write_snapshot_on_success, CredentialWorkerConfig, HostPublishSnapshot,
