@@ -1611,6 +1611,89 @@ fn handle_ui_action(
             }
             ui.rebuild();
         }
+        UiAction::InventoryDespawn => {
+            let prev_entity = ui
+                .state
+                .scene_selected
+                .and_then(|i| ui.state.scene_meshes.get(i).map(|(eid, _)| *eid));
+            ui.state.scene_meshes = shared.scene_meshes();
+            if let Some(eid) = prev_entity {
+                ui.state.scene_selected =
+                    ui.state.scene_meshes.iter().position(|(id, _)| *id == eid);
+            } else if ui
+                .state
+                .scene_selected
+                .is_some_and(|i| i >= ui.state.scene_meshes.len())
+            {
+                ui.state.scene_selected = None;
+            }
+            let selected = ui.state.scene_selected.and_then(|i| {
+                ui.state
+                    .scene_meshes
+                    .get(i)
+                    .map(|(eid, b3)| (*eid, b3.clone()))
+            });
+            let Some((entity_id, blake3)) = selected else {
+                ui.state.inventory_status = "select a scene mesh first (Refresh if empty)".into();
+                ui.rebuild();
+                return;
+            };
+            let room_token = {
+                let Ok(auth) = shared.auth.lock() else {
+                    ui.state.inventory_status = "auth lock failed".into();
+                    ui.rebuild();
+                    return;
+                };
+                auth.room_token.clone()
+            };
+            let Some(room_token) = room_token else {
+                ui.state.inventory_status = "join a room as host first".into();
+                ui.rebuild();
+                return;
+            };
+            if crate::inventory::room_token_role_unverified(&room_token).as_deref() != Some("host")
+            {
+                ui.state.inventory_status = "host role required for despawn".into();
+                ui.rebuild();
+                return;
+            }
+            let Some(session) = zenoh.as_ref() else {
+                ui.state.inventory_status = "zenoh not connected".into();
+                ui.rebuild();
+                return;
+            };
+            let Some(wire_cap) = shared.wire_cap() else {
+                ui.state.inventory_status = "no wire_cap".into();
+                ui.rebuild();
+                return;
+            };
+            let Some(room_key) = shared.room_key() else {
+                ui.state.inventory_status = "room_key missing".into();
+                ui.rebuild();
+                return;
+            };
+            match crate::inventory::publish_inventory_despawn(
+                session,
+                shared.room_id.as_ref(),
+                wire_cap.as_ref(),
+                room_key.as_ref(),
+                &room_token,
+                entity_id,
+            ) {
+                Ok(()) => {
+                    ui.state.inventory_status = format!(
+                        "despawn requested #{entity_id} ({})",
+                        &blake3[..8.min(blake3.len())]
+                    );
+                    ui.state.scene_selected = None;
+                }
+                Err(err) => {
+                    ui.state.inventory_status = format!("despawn put failed: {err:#}");
+                    log::warn!("inventory despawn: {err:#}");
+                }
+            }
+            ui.rebuild();
+        }
         UiAction::None => {}
     }
 }

@@ -356,6 +356,27 @@ impl PhysicsWorld {
         self.meshes.iter().map(|(id, _)| *id)
     }
 
+    /// Remove one mesh by entity id (x007b despawn).
+    ///
+    /// Returns `false` when the id is not a live mesh (no partial mutation).
+    pub fn despawn_mesh_entity(&mut self, entity_id: u32) -> bool {
+        let Some(pos) = self.meshes.iter().position(|(id, _)| *id == entity_id) else {
+            return false;
+        };
+        let (_, handle) = self.meshes.remove(pos);
+        let _ = self.rigid_body_set.remove(
+            handle,
+            &mut self.island_manager,
+            &mut self.collider_set,
+            &mut self.impulse_joint_set,
+            &mut self.multibody_joint_set,
+            /*remove_attached_colliders=*/ true,
+        );
+        self.colors.remove(&entity_id);
+        self.scales.remove(&entity_id);
+        true
+    }
+
     /// Spawn one additional mesh from a sealed SceneEntry (x006d take-out).
     ///
     /// Fails (returns `false`, no partial insert) when `entity_id` is already used
@@ -1021,6 +1042,10 @@ mod tests {
         // Duplicate entity_id must not partially insert.
         assert!(!world.spawn_mesh_entry(&entry));
         assert_eq!(world.mesh_entity_ids().count(), before + 1);
+        assert!(world.despawn_mesh_entity(100));
+        assert_eq!(world.mesh_entity_ids().count(), before);
+        assert!(world.mesh_pose_for(100).is_none());
+        assert!(!world.despawn_mesh_entity(100));
     }
 
     #[test]

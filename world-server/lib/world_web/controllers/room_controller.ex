@@ -595,6 +595,83 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
+  x007b: remove one mesh SceneEntry by entity_id (host Room Token).
+
+  Requires the entry to carry a 64-hex blake3. Returned scene is the new
+  canonical seal input.
+  """
+  def delete_scene_entry(conn, %{"room_id" => room_id, "entity_id" => entity_id_param}) do
+    with {:ok, entity_id} <- parse_entity_id(entity_id_param),
+         {:ok, bearer} <- fetch_bearer(conn),
+         {:ok, claims} <- Token.verify(bearer),
+         :ok <- require_host_token(claims, room_id),
+         {:ok, scene} <- Rooms.delete_scene_entry(room_id, entity_id) do
+      json(conn, Map.put(scene, "room_id", room_id))
+    else
+      {:error, :invalid_entity_id} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_entity_id"})
+
+      {:error, :missing_bearer} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "missing_room_token"})
+
+      {:error, :not_host_token} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "host_role_required"})
+
+      {:error, :room_mismatch} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "room_id_mismatch"})
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "room_not_found"})
+
+      {:error, :entry_not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "entry_not_found"})
+
+      {:error, :not_mesh_entry} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "not_mesh_entry"})
+
+      {:error, :invalid_room_id} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_room_id"})
+
+      {:error, :storage_error} ->
+        storage_unavailable(conn)
+
+      {:error, reason} ->
+        Logger.warning("invalid Room Token (scene delete path): #{inspect(reason)}")
+
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "invalid_room_token"})
+    end
+  end
+
+  defp parse_entity_id(id) when is_integer(id) and id >= 0, do: {:ok, id}
+
+  defp parse_entity_id(id) when is_binary(id) do
+    case Integer.parse(id) do
+      {n, ""} when n >= 0 -> {:ok, n}
+      _ -> {:error, :invalid_entity_id}
+    end
+  end
+
+  defp parse_entity_id(_), do: {:error, :invalid_entity_id}
+
+  @doc """
   x0026 / x0039: issue ManifestSeal JWT for **canonical** DB scene body.
 
   Authorization must be a **host** Room Token. Body requires `host_attestation`

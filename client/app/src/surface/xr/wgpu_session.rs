@@ -778,8 +778,9 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                         UiAction::InventoryOpen
                         | UiAction::InventoryRefresh
                         | UiAction::InventoryTakeOut
-                        | UiAction::InventoryPutBack => {
-                            // Desktop owns assets HTTP + Zenoh spawn / put-back (x006d / x006e).
+                        | UiAction::InventoryPutBack
+                        | UiAction::InventoryDespawn => {
+                            // Desktop owns assets HTTP + Zenoh spawn / put-back / despawn.
                             log::info!("inventory actions are Desktop-only this Slice");
                         }
                         UiAction::HotswitchAutoChanged => {

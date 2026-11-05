@@ -720,7 +720,7 @@ fn rebuild_inventory(
     tree.push_label(
         Rect::new(cx + 24.0, cy0 + 36.0, cw - 48.0, 16.0),
         if state.inventory_status.is_empty() {
-            "Drive→Take out blob (host). Scene→Put back (stays; prefab Take out 未)."
+            "Drive→Take out. Scene→Put back (copy) / Despawn (host)."
         } else {
             &state.inventory_status
         },
@@ -728,35 +728,45 @@ fn rebuild_inventory(
         1.0,
     );
 
-    let refresh = Rect::new(cx + 24.0, cy0 + 58.0, 100.0, 36.0);
+    let refresh = Rect::new(cx + 24.0, cy0 + 58.0, 88.0, 36.0);
     tree.push_rect(refresh, state.interact(WidgetId::InventoryRefresh, BTN));
     tree.push_label(
-        Rect::new(cx + 36.0, cy0 + 68.0, 80.0, 18.0),
+        Rect::new(cx + 32.0, cy0 + 68.0, 72.0, 18.0),
         "Refresh",
         TEXT,
         1.5,
     );
     tree.register_hit(WidgetId::InventoryRefresh, refresh);
 
-    let take = Rect::new(cx + 136.0, cy0 + 58.0, 120.0, 36.0);
+    let take = Rect::new(cx + 120.0, cy0 + 58.0, 100.0, 36.0);
     tree.push_rect(take, state.interact(WidgetId::InventoryTakeOut, ACCENT));
     tree.push_label(
-        Rect::new(cx + 148.0, cy0 + 68.0, 100.0, 18.0),
+        Rect::new(cx + 128.0, cy0 + 68.0, 84.0, 18.0),
         "Take out",
         TEXT,
         1.5,
     );
     tree.register_hit(WidgetId::InventoryTakeOut, take);
 
-    let put = Rect::new(cx + 268.0, cy0 + 58.0, 120.0, 36.0);
+    let put = Rect::new(cx + 228.0, cy0 + 58.0, 100.0, 36.0);
     tree.push_rect(put, state.interact(WidgetId::InventoryPutBack, ACCENT));
     tree.push_label(
-        Rect::new(cx + 280.0, cy0 + 68.0, 100.0, 18.0),
+        Rect::new(cx + 236.0, cy0 + 68.0, 84.0, 18.0),
         "Put back",
         TEXT,
         1.5,
     );
     tree.register_hit(WidgetId::InventoryPutBack, put);
+
+    let despawn = Rect::new(cx + 336.0, cy0 + 58.0, 100.0, 36.0);
+    tree.push_rect(despawn, state.interact(WidgetId::InventoryDespawn, ACCENT));
+    tree.push_label(
+        Rect::new(cx + 344.0, cy0 + 68.0, 84.0, 18.0),
+        "Despawn",
+        TEXT,
+        1.5,
+    );
+    tree.register_hit(WidgetId::InventoryDespawn, despawn);
 
     let mut y = cy0 + 102.0;
     let row_h = 26.0;

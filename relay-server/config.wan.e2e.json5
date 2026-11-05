@@ -70,7 +70,7 @@
         ],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
-          "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/spawn","alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
           "alchemy/dev/room/*/*/manifest",
           "alchemy/dev/room/*/*/frame",
@@ -86,7 +86,7 @@
         messages: ["put", "delete", "liveliness_token", "query", "reply"],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
-          "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/spawn","alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
           "alchemy/dev/room/*/*/snapshot",
         ],
@@ -100,7 +100,7 @@
         messages: ["declare_subscriber", "declare_liveliness_subscriber"],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
-          "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/spawn","alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
           "alchemy/dev/room/*/*/manifest",
           "alchemy/dev/room/*/*/frame",
@@ -109,7 +109,7 @@
         ],
       },
       // Guest → router: client input / alive / inventory spawn only (never sim put ingress).
-      // x006d: inventory/spawn is app-verified (Room Token host role); ACL only routes.
+      // x006d/x007b: inventory/spawn|despawn app-verified (host role); ACL only routes.
       {
         id: "guest-put-input",
         permission: "allow",
@@ -117,7 +117,7 @@
         messages: ["put", "delete", "liveliness_token"],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
-          "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/spawn","alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
         ],
       },
@@ -166,7 +166,7 @@
         messages: ["declare_subscriber", "declare_liveliness_subscriber"],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
-          "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/spawn","alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
         ],
       },

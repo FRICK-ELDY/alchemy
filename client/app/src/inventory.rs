@@ -1,13 +1,13 @@
-//! Inventory take-out / put-back client helpers (x006d / x006e).
+//! Inventory take-out / put-back / despawn client helpers (x006d / x006e / x007b).
 //!
-//! Guarantees: Drive list / take_out / put_back over assets HTTP; spawn put on
-//! Zenoh `inventory/spawn` sealed with [`AeadKind::InventorySpawn`] (host Room
-//! Token never leaves the room AEAD boundary); no Drive node_id on the wire to
-//! host. Put-back is Bearer→assets only (no Zenoh); room entity is left in place.
-//! Non-guarantees: scene despawn; Prefab multi-child UI; XR Inventory polish.
+//! Guarantees: Drive list / take_out / put_back over assets HTTP; spawn/despawn put on
+//! Zenoh `inventory/spawn|despawn` sealed with Room AEAD (host Room Token never leaves
+//! the room AEAD boundary); no Drive node_id on the wire to host. Put-back is
+//! Bearer→assets only (no Zenoh); Despawn removes the room entity via host.
+//! Non-guarantees: Prefab multi-child UI; XR Inventory polish; put-back+despawn TX.
 
-use alchemy_protocol::inventory_spawn_key;
 use alchemy_protocol::wire_aead::{self, AeadKind};
+use alchemy_protocol::{inventory_despawn_key, inventory_spawn_key};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::json;
@@ -203,6 +203,35 @@ pub fn publish_inventory_spawn(
         .wait()
         .map_err(|e| anyhow!("inventory spawn put: {e}"))?;
     log::info!("inventory spawn published on {key} (AEAD)");
+    Ok(())
+}
+
+/// Put AEAD-sealed despawn request on Zenoh (x007b / x0069).
+pub fn publish_inventory_despawn(
+    session: &zenoh::Session,
+    room_id: &str,
+    wire_cap: &str,
+    room_key: &[u8; wire_aead::ROOM_KEY_LEN],
+    room_token: &str,
+    entity_id: u32,
+) -> Result<()> {
+    let key = inventory_despawn_key(room_id, wire_cap);
+    let payload = json!({
+        "room_token": room_token,
+        "entity_id": entity_id,
+    });
+    let plain = serde_json::to_vec(&payload).context("encode despawn JSON")?;
+    let envelope = wire_aead::seal(room_key, room_id, AeadKind::InventoryDespawn, &plain)
+        .map_err(|e| anyhow!("AEAD seal inventory despawn: {e}"))?;
+    let publisher = session
+        .declare_publisher(key.clone())
+        .wait()
+        .map_err(|e| anyhow!("declare_publisher inventory/despawn: {e}"))?;
+    publisher
+        .put(envelope)
+        .wait()
+        .map_err(|e| anyhow!("inventory despawn put: {e}"))?;
+    log::info!("inventory despawn published on {key} entity_id={entity_id} (AEAD)");
     Ok(())
 }
 

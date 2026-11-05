@@ -2,7 +2,7 @@
 
 正本の進捗目次は [README.md](README.md)。本ファイルは **未完了帯の優先度ビュー**。
 
-**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**、**x0070 trust WAN E2E**、**x0071 world RL / Room cap**、**x0072 launcher discovery**。**x0073** 軽量衛生 **done**。**x0074** reserved reaper / orphan CAS GC **done**。**x0075** BLAKE3 / seal-hash 常駐 Port **done**。**x0076**–**x0078**（保証単位分割 / bind 送信元 / mTLS temp）**done**。**x0079** DemoScene 共有テストベクタ **done**。**x007a** metrics+jti **done**。空き ID = `x007b`。
+**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**、**x0070 trust WAN E2E**、**x0071 world RL / Room cap**、**x0072 launcher discovery**。**x0073** 軽量衛生 **done**。**x0074** reserved reaper / orphan CAS GC **done**。**x0075** BLAKE3 / seal-hash 常駐 Port **done**。**x0076**–**x0078**（保証単位分割 / bind 送信元 / mTLS temp）**done**。**x0079** DemoScene 共有テストベクタ **done**。**x007a** metrics+jti **done**。**x007b** scene despawn **done**。空き ID = `x007c`。
 
 ---
 
@@ -25,7 +25,7 @@
 | **P0-閉** | [x0078](slices/x0078-mtls-temp-acl-sweep.md) | mTLS 鍵 temp の権限・掃除（P2-9） | **done** |
 | **P0-閉** | [x0079](slices/x0079-demoscene-shared-vector.md) | DemoScene 共有テストベクタ（P2-11） | **done** |
 | **P0-閉** | [x007a](slices/x007a-metrics-jti-correlation.md) | auth/world/relay metrics + `jti` 相関（P2-12） | **done** |
-| **P0-次** | — | scene despawn（採番は着手時 `x007b`） | planned |
+| **P0-閉** | [x007b](slices/x007b-scene-despawn.md) | scene despawn（world DELETE / host / Inventory） | **done** |
 | **P0-閉** | [x0072](slices/x0072-launcher-discovery.md) | launcher discovery（P1-5） | **done** |
 | **P0-閉** | [x0071](slices/x0071-world-rate-limit-room-cap.md) | world RL + Room per-owner cap（P1-4） | **done** |
 | **P0-隣接** | verifier | Spot-Check | planned / 保留 |
@@ -100,7 +100,7 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 
 ## 推奨着手順（要約・本作業後）
 
-1. scene despawn（`x007b`）
-2. verifier / Formula / market / 検疫（条件: seal / gen-rev 済み）
+1. Prefab 多子 / XR Inventory（薄皮残り）または verifier Spot-Check（保留）
+2. Formula / market / 検疫（条件: seal / gen-rev 済み）
 
 ← [Roadmap 目次](README.md)

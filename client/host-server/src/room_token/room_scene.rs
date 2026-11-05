@@ -1,4 +1,4 @@
-//! World-authored room scene: JSON DTOs, fetch, and append (x0027 / x006d).
+//! World-authored room scene: JSON DTOs, fetch, append, and delete (x0027 / x006d / x007b).
 //!
 //! Guarantees: host Room Token Bearer on every request; scene entries TRS-normalized on parse.
 //! Non-guarantees: scene persistence, Manifest sealing.
@@ -210,5 +210,36 @@ pub fn append_room_scene_entry(
             Err(anyhow!("scene append failed status={code} body={body}"))
         }
         Err(err) => Err(anyhow!("scene append request failed: {err:#}")),
+    }
+}
+
+/// Delete one mesh entry from world scene by entity_id (x007b). Returns updated scene.
+pub fn delete_room_scene_entry(
+    world_url: &str,
+    room_id: &str,
+    host_room_token: &str,
+    entity_id: u32,
+) -> Result<RoomScene> {
+    let base = world_url.trim_end_matches('/');
+    let url = format!("{base}/api/v1/rooms/{room_id}/scene/entries/{entity_id}");
+    let authz = format!("Bearer {host_room_token}");
+    match credential_agent()
+        .delete(&url)
+        .set("authorization", &authz)
+        .call()
+    {
+        Ok(resp) => {
+            let parsed: SceneResponseJson = resp.into_json().context("parse scene delete")?;
+            let scene = scene_from_response(parsed);
+            if scene.entries.iter().any(|e| e.entity_id == entity_id) {
+                return Err(anyhow!("deleted entity_id still present in scene response"));
+            }
+            Ok(scene)
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(anyhow!("scene delete failed status={code} body={body}"))
+        }
+        Err(err) => Err(anyhow!("scene delete request failed: {err:#}")),
     }
 }

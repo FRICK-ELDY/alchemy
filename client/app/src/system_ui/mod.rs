@@ -306,6 +306,7 @@ impl SystemUi {
             WidgetId::InventoryRefresh => UiAction::InventoryRefresh,
             WidgetId::InventoryTakeOut => UiAction::InventoryTakeOut,
             WidgetId::InventoryPutBack => UiAction::InventoryPutBack,
+            WidgetId::InventoryDespawn => UiAction::InventoryDespawn,
             WidgetId::InventoryRow0
             | WidgetId::InventoryRow1
             | WidgetId::InventoryRow2
@@ -814,6 +815,8 @@ pub enum UiAction {
     InventoryTakeOut,
     /// Inventory: put-back selected scene mesh as Prefab (x006e).
     InventoryPutBack,
+    /// Inventory: despawn selected scene mesh via host control plane (x007b).
+    InventoryDespawn,
 }
 
 fn chrono_lite_now() -> String {
