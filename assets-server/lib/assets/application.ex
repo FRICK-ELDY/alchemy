@@ -19,6 +19,9 @@ defmodule Assets.Application do
       Assets.Auth.Jwks,
       Assets.World.Jwks,
       Assets.PlaceHashCache,
+      # x0074: TTL reserved reclaim + orphan CAS bytes GC
+      Assets.Quota.ReservedReaper,
+      Assets.CAS.OrphanGc,
       # x0049: dedicated loopback Bandit — never on Endpoint (Tunnel peer spoof)
       Assets.Metrics.Server,
       AssetsWeb.Endpoint

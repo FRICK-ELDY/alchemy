@@ -2,7 +2,7 @@
 
 正本の進捗目次は [README.md](README.md)。本ファイルは **未完了帯の優先度ビュー**。
 
-**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**、**x0070 trust WAN E2E**、**x0071 world RL / Room cap**、**x0072 launcher discovery**。**x0073** 軽量衛生 **done**。空き ID = `x0074`。
+**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**、**x0070 trust WAN E2E**、**x0071 world RL / Room cap**、**x0072 launcher discovery**。**x0073** 軽量衛生 **done**。**x0074** reserved reaper / orphan CAS GC **done**。空き ID = `x0075`。
 
 ---
 
@@ -18,7 +18,8 @@
 | **P0-put-back** | [x006e](slices/x006e-inventory-put-back-ui.md) | Inventory put-back UI | **done** |
 | **P0-access** | [x006f](slices/x006f-cas-access-grant-peel.md) | CAS access → Grant/ref 移設（P1-1） | **done** |
 | **P0-閉** | [x0073](slices/x0073-p3-hygiene-easy.md) | P3 軽量衛生（Keys PT / prod publish / launcher deny / smoke） | **done** |
-| **P0-次** | x0074 | reserved reaper / orphan CAS GC | planned |
+| **P0-閉** | [x0074](slices/x0074-reserved-reaper-orphan-cas-gc.md) | reserved reaper / orphan CAS GC | **done** |
+| **P0-次** | — | P3 残衛生 or scene despawn（採番は着手時 `x0075`） | planned |
 | **P0-閉** | [x0072](slices/x0072-launcher-discovery.md) | launcher discovery（P1-5） | **done** |
 | **P0-閉** | [x0071](slices/x0071-world-rate-limit-room-cap.md) | world RL + Room per-owner cap（P1-4） | **done** |
 | **P0-隣接** | verifier | Spot-Check | planned / 保留 |
@@ -55,7 +56,7 @@ Wave 1 完了後の本線。順序は [inventory-ladder.md](inventory-ladder.md)
 
 improvement-plan P2 帯。本線を止めないが放置すると DX/運用が腐る。
 
-- reserved reaper / orphan CAS GC（→ **x0074**）
+- reserved reaper / orphan CAS GC（**done: x0074**）
 - BLAKE3・seal-hash の常駐 Port（CLI 毎回起動廃止）
 - auth Keys `:persistent_term`（**done: x0073**）、host `room_token.rs` / client `main.rs` 分割
 - bind バケット送信元分割、`tos_agreed` UI 同意（**done**: チェックボックス必須）
@@ -93,8 +94,7 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 
 ## 推奨着手順（要約・本作業後）
 
-1. **x0074** reserved reaper / orphan CAS GC
-2. scene despawn（put-back の逆・任意）
-3. verifier / Formula / market / 検疫（条件: seal / gen-rev 済み）
+1. P3 残衛生（BLAKE3 常駐 Port / 分割 / bind 送信元 / mTLS temp / DemoScene ベクタ / metrics+jti）または scene despawn
+2. verifier / Formula / market / 検疫（条件: seal / gen-rev 済み）
 
 ← [Roadmap 目次](README.md)

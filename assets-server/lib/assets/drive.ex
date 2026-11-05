@@ -14,7 +14,8 @@ defmodule Assets.Drive do
   Non-guarantees:
   - Group Vault, sharing, Mail/Comms, Shop, VcsRepo ops (→ Assets.Vcs).
   - Compensating delete when upload succeeds but DriveNode upsert fails (CAS bytes +
-    quota/Grant may remain; same orphan policy as Assets.Blobs — no GC yet).
+    quota/Grant may remain; CAS orphan bytes without CasObject are handled by
+    Assets.CAS.OrphanGc (x0074), not by Drive delete).
   """
 
   import Ecto.Query

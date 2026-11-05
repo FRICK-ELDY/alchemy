@@ -6,12 +6,13 @@ defmodule Assets do
   Drive take-out helpers（x005f）+ Drive put-back/save_prefab（x0060）+
   Vcs promote/commit/ref/cert（x0062–x0065）+ ItemRef blake3|repo@rev（x0063）+
   PlaceRead（x006b）+ GET option B（x006c）+ Drive put_back HTTP（x006e）+
-  CasObject access column removed（x006f）.
+  CasObject access column removed（x006f）+ reserved reaper / orphan CAS GC（x0074）.
 
   ## Guarantees
 
   - auth-gated PUT/GET, CasObject + per-owner BlobRef + owned BlobGrant
-  - reserved→put→used; failure releases reservation only (no CAS.delete)
+  - reserved→put→used; failure releases reservation only (no CAS.delete on compensate)
+  - TTL `quota_reservations` reaper + grace orphan CAS GC (x0074; GenServer, not Oban)
   - GET always BlobGrant or covering PlaceRead (x006c); CasObject is bytes meta
     only (no `access` column — x006f). Bearer alone is never a read capability
   - PUT always issues `:owned` Grant; same blake3 may be claimed via `/blobs` and
@@ -43,6 +44,6 @@ defmodule Assets do
   - Group Vault, sharing, Mail/Comms, Shopfront
   - VcsRepo fork/transfer, CA chain, cert revocation, License Token
   - CRDT, Formula VM, non-FF merge, 3D Diff
-  - mime/size first-writer change; orphan CAS GC (P3)
+  - mime/size first-writer change; CasObject-with-zero-refs GC; S3 bucket listing scan
   """
 end

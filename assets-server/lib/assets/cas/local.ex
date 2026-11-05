@@ -70,5 +70,30 @@ defmodule Assets.CAS.Local do
     Path.join(cas_root(), blake3_hex)
   end
 
+  @doc """
+  List blake3 hex filenames under the local CAS root (x0074 orphan scan).
+
+  Skips temp rename leftovers (`*.tmp-*`).
+  """
+  @spec list_blake3_hexes() :: [String.t()]
+  def list_blake3_hexes do
+    root = cas_root()
+
+    case File.ls(root) do
+      {:ok, names} ->
+        Enum.filter(names, &blake3_hex_name?/1)
+
+      {:error, :enoent} ->
+        []
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  defp blake3_hex_name?(name) do
+    byte_size(name) == 64 and String.match?(name, ~r/\A[0-9a-f]{64}\z/)
+  end
+
   defp cas_root, do: Application.fetch_env!(:assets, :cas_path)
 end

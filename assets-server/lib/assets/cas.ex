@@ -2,7 +2,7 @@ defmodule Assets.CAS do
   @moduledoc """
   Content-addressed storage facade. Backend is `:local` (disk) or `:s3` (R2 / S3-compatible).
 
-  `delete/1` is for future GC / test repair of orphan bytes only.
+  `delete/1` is for `Assets.CAS.OrphanGc` (x0074) and test repair of orphan bytes only.
   Upload compensate must never call it — concurrent putters share the same key.
   """
 
@@ -20,7 +20,7 @@ defmodule Assets.CAS do
   @doc """
   Remove CAS bytes. Not used by upload compensate — shared keys must stay.
 
-  Intended for orphan GC (future) and tests that deliberately break/repair bodies.
+  Intended for orphan GC (x0074) and tests that deliberately break/repair bodies.
   """
   @spec delete(String.t()) :: :ok | {:error, term()}
   def delete(blake3_hex), do: backend().delete(blake3_hex)
