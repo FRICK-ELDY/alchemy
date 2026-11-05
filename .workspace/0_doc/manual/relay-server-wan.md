@@ -35,7 +35,7 @@ zenohd は **JWT を見ない**。平文 TCP は待受しない。`quic/` 待受
 | relay-server（zenohd） | **VPS**（mTLS + role ACL） |
 | relay-agent | 任意。world に CA が無いときの互換（例 `:7450`） |
 
-client の秘密鍵は配布物に同梱しない。接続のたびに手元で作り、一時 PEM に書く（Unix では `0600`）。
+client の秘密鍵は配布物に同梱しない。接続のたびに手元で作り、一時 PEM に書く（Unix `0600` / Windows 現行ユーザー限定 DACL；置換・期限切れ掃除は [x0078](../../roadmap/slices/x0078-mtls-temp-acl-sweep.md)）。
 
 ---
 

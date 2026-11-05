@@ -54,7 +54,7 @@
 | P2-6 | tos_agreed UI 同意 | -1 | 固定 true 廃止 |
 | P2-7 | prod compose BIND_ADDR 既定 loopback | -1 | postgres と同様に絞る |
 | P2-8 | cargo deny を launcher / relay にも | -1 | 独立 lock を監査 |
-| P2-9 | mTLS 鍵 temp の権限・掃除（Windows） | -1 | ACL + 期限切れ削除 |
+| P2-9 | mTLS 鍵 temp の権限・掃除（Windows） | -1 | ACL + 期限切れ削除 — **done x0078** |
 | P2-10 | 腐った smoke 削除 or e2e-probe 吸収 | -1 | 現行ログと乖離する grep を消す |
 | P2-11 | DemoScene 共有テストベクタ | -1 | Elixir/Rust 同一期待 hash |
 | P2-12 | auth/world/relay metrics + `jti` 相関 | -1 | loopback 拡張 |

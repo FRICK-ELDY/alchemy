@@ -1,19 +1,31 @@
 //! Relay Agent allocate client (x004e) + world-issued PEM install (x0066).
 //!
 //! Guarantees: POST Allocation Token → write cert/key PEM files under a work dir;
-//! world `mtls` PEMs + in-memory key install the same way (short-lived 0600 files);
+//! world `mtls` PEMs + in-memory key install the same way (short-lived owner-only files);
+//! Unix `0600` / Windows user-only DACL (x0078); PEM bytes are written only after restrict;
+//! replace + stale sweep of managed `{client,world-mtls}-*.{cert,key}.pem` only;
 //! **both** paths set `ZENOH_TLS_CONNECT_CERT` / `KEY` (Agent 併存に必須).
-//! Non-guarantees: agent discovery; soft TTL enforcement; zero disk for Zenoh paths.
+//! Non-guarantees: agent discovery; soft TTL enforcement; zero disk for Zenoh paths;
+//! DPAPI/TPM; create-with-ACL atomicity (empty placeholder may exist briefly before restrict);
+//! exclusive locking of a shared work dir across processes.
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 const ALLOCATE_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 /// Fallback soft TTL when `mtls.expires_at` is missing/unparseable (x0068).
 pub const WORLD_MTLS_SOFT_TTL_SECS: u64 = 300;
+/// Orphan managed PEM GC threshold: soft TTL + clock/skew grace (x0078).
+const MTLS_TEMP_STALE_SECS: u64 = WORLD_MTLS_SOFT_TTL_SECS + 120;
+/// Filename prefix for Relay Agent allocate PEMs (`{prefix}-{stamp}.key.pem`).
+const MTLS_PEM_PREFIX_CLIENT: &str = "client";
+/// Filename prefix for world-issued PEMs.
+const MTLS_PEM_PREFIX_WORLD: &str = "world-mtls";
+/// Sweep / replace only touch names under these prefixes (keep in sync with writers).
+const MANAGED_MTLS_PEM_PREFIXES: &[&str] = &[MTLS_PEM_PREFIX_CLIENT, MTLS_PEM_PREFIX_WORLD];
 
 /// Parse world `mtls.expires_at` (ISO-8601 / RFC3339 UTC) into remaining seconds.
 pub fn soft_ttl_secs_from_expires_at(expires_at: &str) -> Option<u64> {
@@ -131,8 +143,8 @@ fn install_identity_env(id: &AllocatedIdentity) {
 
 /// Install world-issued cert + caller-held private key as short-lived PEM files and env.
 ///
-/// Zenoh 1.x connect_certificate expects paths; files are 0600 under `RELAY_MTLS_WORK_DIR`
-/// (or temp/`alchemy-mtls`). Not persisted as shipping assets.
+/// Zenoh 1.x connect_certificate expects paths; files are owner-only under
+/// `RELAY_MTLS_WORK_DIR` (or temp/`alchemy-mtls`). Not persisted as shipping assets.
 pub fn install_world_mtls_pems(
     client_cert_pem: &str,
     private_key_pem: &str,
@@ -146,7 +158,7 @@ pub fn install_world_mtls_pems(
         private_key_pem,
         wire_cap,
         role,
-        "world-mtls",
+        MTLS_PEM_PREFIX_WORLD,
         &role_cn(role),
         ttl,
     )?;
@@ -221,7 +233,7 @@ pub fn allocate(allocate_url: &str, allocation_token: &str) -> Result<AllocatedI
         &resp.key_pem,
         &resp.wire_cap,
         &resp.role,
-        "client",
+        MTLS_PEM_PREFIX_CLIENT,
         &resp.cn,
         resp.expires_in,
     )?;
@@ -240,14 +252,19 @@ fn write_identity_pems(
 ) -> Result<AllocatedIdentity> {
     let work = mtls_work_dir();
     fs::create_dir_all(&work).context("mtls work dir")?;
-    let stamp = std::time::SystemTime::now()
+    let stamp = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let cert_path = work.join(format!("{prefix}-{stamp}.cert.pem"));
     let key_path = work.join(format!("{prefix}-{stamp}.key.pem"));
     write_secret(&cert_path, cert_pem)?;
-    write_secret(&key_path, key_pem)?;
+    if let Err(err) = write_secret(&key_path, key_pem) {
+        let _ = fs::remove_file(&cert_path);
+        return Err(err);
+    }
+    // Best-effort: crash/orphan managed PEMs from prior runs (x0078). Keep the files we just wrote.
+    sweep_stale_mtls_temps(&work, &[&cert_path, &key_path]);
 
     Ok(AllocatedIdentity {
         cert_path,
@@ -259,16 +276,134 @@ fn write_identity_pems(
     })
 }
 
+/// Create empty → restrict → write PEM so secret bytes never sit on a default/loose ACL.
 fn write_secret(path: &Path, pem: &str) -> Result<()> {
-    fs::write(path, pem).with_context(|| format!("write {}", path.display()))?;
+    fs::File::create(path).with_context(|| format!("create {}", path.display()))?;
+    if let Err(err) = restrict_secret_permissions(path) {
+        let _ = fs::remove_file(path);
+        return Err(err).with_context(|| format!("restrict {}", path.display()));
+    }
+    if let Err(err) = fs::write(path, pem) {
+        let _ = fs::remove_file(path);
+        return Err(err).with_context(|| format!("write {}", path.display()));
+    }
+    Ok(())
+}
+
+/// Owner-only access: Unix `0600`; Windows current-user DACL via `icacls` (x0078).
+fn restrict_secret_permissions(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(path)?.permissions();
+        let mut perms = fs::metadata(path)
+            .with_context(|| format!("stat {}", path.display()))?
+            .permissions();
         perms.set_mode(0o600);
-        fs::set_permissions(path, perms)?;
+        fs::set_permissions(path, perms)
+            .with_context(|| format!("chmod 0600 {}", path.display()))?;
+    }
+    #[cfg(windows)]
+    {
+        restrict_secret_permissions_windows(path)?;
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = path;
+        return Err(anyhow!(
+            "mTLS PEM permission hardening is unsupported on this OS (fail-closed)"
+        ));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn restrict_secret_permissions_windows(path: &Path) -> Result<()> {
+    use std::process::Command;
+
+    let user = windows_acl_principal()?;
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| anyhow!("mTLS PEM path is not valid UTF-8 for icacls"))?;
+    let grant = format!("{user}:(R,W)");
+    let output = Command::new("icacls")
+        .args([path_str, "/inheritance:r", "/grant:r", &grant])
+        .output()
+        .context("spawn icacls")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(anyhow!(
+            "icacls failed status={:?}: {}{}",
+            output.status.code(),
+            stdout.trim(),
+            stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_acl_principal() -> Result<String> {
+    let name = std::env::var("USERNAME").unwrap_or_default();
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(anyhow!(
+            "USERNAME unset — cannot tighten mTLS PEM ACL on Windows"
+        ));
+    }
+    let domain = std::env::var("USERDOMAIN").unwrap_or_default();
+    let domain = domain.trim();
+    if domain.is_empty() {
+        Ok(name.to_string())
+    } else {
+        Ok(format!("{domain}\\{name}"))
+    }
+}
+
+/// True for names we write: `{prefix}-*.{cert|key}.pem` under [`MANAGED_MTLS_PEM_PREFIXES`].
+fn is_managed_mtls_pem_name(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    let managed_prefix = MANAGED_MTLS_PEM_PREFIXES.iter().any(|p| {
+        lower
+            .strip_prefix(p)
+            .is_some_and(|rest| rest.starts_with('-'))
+    });
+    managed_prefix && (lower.ends_with(".cert.pem") || lower.ends_with(".key.pem"))
+}
+
+/// Remove managed identity PEMs under `work` older than [`MTLS_TEMP_STALE_SECS`], keeping `keep`.
+/// Non-managed names (e.g. CA PEMs colocated by mistake) are never deleted.
+fn sweep_stale_mtls_temps(work: &Path, keep: &[&Path]) {
+    let Ok(entries) = fs::read_dir(work) else {
+        return;
+    };
+    let now = SystemTime::now();
+    let stale = Duration::from_secs(MTLS_TEMP_STALE_SECS);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !is_managed_mtls_pem_name(&path) {
+            continue;
+        }
+        if keep.contains(&path.as_path()) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let aged_out = now
+            .duration_since(modified)
+            .map(|age| age >= stale)
+            .unwrap_or(false);
+        if aged_out {
+            let _ = fs::remove_file(&path);
+        }
+    }
 }
 
 /// Resolve wire_cap: prefer token field, else `WIRE_CAP` env, else error.
@@ -450,5 +585,240 @@ mod tests {
         assert_eq!(parse_rfc3339_unix("1970-01-01T00:05:00Z"), Some(300));
         let future = soft_ttl_secs_from_expires_at("2099-01-01T00:00:00Z");
         assert!(future.is_some_and(|s| s > 60));
+    }
+
+    #[test]
+    fn reinstall_removes_previous_managed_pems() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_cert = std::env::var("ZENOH_TLS_CONNECT_CERT").ok();
+        let prev_key = std::env::var("ZENOH_TLS_CONNECT_KEY").ok();
+        let prev_work = std::env::var("RELAY_MTLS_WORK_DIR").ok();
+        let stamp = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let work = std::env::temp_dir().join(format!("alchemy-mtls-test-reinstall-{stamp}"));
+        std::env::set_var("RELAY_MTLS_WORK_DIR", work.display().to_string());
+
+        let first = install_world_mtls_pems(
+            "-----BEGIN CERTIFICATE-----\nFIRST\n-----END CERTIFICATE-----\n",
+            "-----BEGIN PRIVATE KEY-----\nFIRST\n-----END PRIVATE KEY-----\n",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "guest",
+            Some(60),
+        )
+        .expect("first install");
+        assert!(first.cert_path.is_file());
+        assert!(first.key_path.is_file());
+
+        let second = install_world_mtls_pems(
+            "-----BEGIN CERTIFICATE-----\nSECOND\n-----END CERTIFICATE-----\n",
+            "-----BEGIN PRIVATE KEY-----\nSECOND\n-----END PRIVATE KEY-----\n",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "guest",
+            Some(60),
+        )
+        .expect("second install");
+        assert!(second.cert_path.is_file());
+        assert!(second.key_path.is_file());
+        assert!(
+            !first.cert_path.exists(),
+            "previous managed cert must be removed"
+        );
+        assert!(
+            !first.key_path.exists(),
+            "previous managed key must be removed"
+        );
+
+        let _ = fs::remove_dir_all(&work);
+        match prev_cert {
+            Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_CERT", v),
+            None => std::env::remove_var("ZENOH_TLS_CONNECT_CERT"),
+        }
+        match prev_key {
+            Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_KEY", v),
+            None => std::env::remove_var("ZENOH_TLS_CONNECT_KEY"),
+        }
+        match prev_work {
+            Some(v) => std::env::set_var("RELAY_MTLS_WORK_DIR", v),
+            None => std::env::remove_var("RELAY_MTLS_WORK_DIR"),
+        }
+    }
+
+    #[test]
+    fn sweep_removes_stale_orphan_pems() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_cert = std::env::var("ZENOH_TLS_CONNECT_CERT").ok();
+        let prev_key = std::env::var("ZENOH_TLS_CONNECT_KEY").ok();
+        let prev_work = std::env::var("RELAY_MTLS_WORK_DIR").ok();
+        let stamp = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let work = std::env::temp_dir().join(format!("alchemy-mtls-test-sweep-{stamp}"));
+        fs::create_dir_all(&work).unwrap();
+        std::env::set_var("RELAY_MTLS_WORK_DIR", work.display().to_string());
+
+        let aged = SystemTime::now()
+            .checked_sub(Duration::from_secs(MTLS_TEMP_STALE_SECS + 30))
+            .expect("clock");
+        let orphan = work.join("client-orphan-stale.key.pem");
+        fs::write(&orphan, "orphan-key").unwrap();
+        let file = fs::File::options().write(true).open(&orphan).unwrap();
+        file.set_modified(aged).unwrap();
+        drop(file);
+
+        let fresh = work.join("world-mtls-orphan-fresh.key.pem");
+        fs::write(&fresh, "fresh-key").unwrap();
+
+        // Non-managed name must never be swept even when aged.
+        let foreign = work.join("ca-cert.pem");
+        fs::write(&foreign, "ca").unwrap();
+        let file = fs::File::options().write(true).open(&foreign).unwrap();
+        file.set_modified(aged).unwrap();
+        drop(file);
+
+        let id = install_world_mtls_pems(
+            "-----BEGIN CERTIFICATE-----\nSWEEP\n-----END CERTIFICATE-----\n",
+            "-----BEGIN PRIVATE KEY-----\nSWEEP\n-----END PRIVATE KEY-----\n",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "host",
+            Some(60),
+        )
+        .expect("install");
+
+        assert!(!orphan.exists(), "stale managed orphan must be swept");
+        assert!(
+            fresh.is_file(),
+            "fresh managed orphan under stale threshold must remain"
+        );
+        assert!(foreign.is_file(), "non-managed PEM must not be swept");
+        assert!(id.cert_path.is_file());
+        assert!(id.key_path.is_file());
+
+        let _ = fs::remove_dir_all(&work);
+        match prev_cert {
+            Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_CERT", v),
+            None => std::env::remove_var("ZENOH_TLS_CONNECT_CERT"),
+        }
+        match prev_key {
+            Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_KEY", v),
+            None => std::env::remove_var("ZENOH_TLS_CONNECT_KEY"),
+        }
+        match prev_work {
+            Some(v) => std::env::set_var("RELAY_MTLS_WORK_DIR", v),
+            None => std::env::remove_var("RELAY_MTLS_WORK_DIR"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_secret_sets_unix_0600() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use std::os::unix::fs::PermissionsExt;
+        let prev_cert = std::env::var("ZENOH_TLS_CONNECT_CERT").ok();
+        let prev_key = std::env::var("ZENOH_TLS_CONNECT_KEY").ok();
+        let prev_work = std::env::var("RELAY_MTLS_WORK_DIR").ok();
+        let stamp = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let work = std::env::temp_dir().join(format!("alchemy-mtls-test-mode-{stamp}"));
+        std::env::set_var("RELAY_MTLS_WORK_DIR", work.display().to_string());
+
+        let id = install_world_mtls_pems(
+            "-----BEGIN CERTIFICATE-----\nMODE\n-----END CERTIFICATE-----\n",
+            "-----BEGIN PRIVATE KEY-----\nMODE\n-----END PRIVATE KEY-----\n",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "guest",
+            Some(60),
+        )
+        .expect("install");
+        let mode = fs::metadata(&id.key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let _ = fs::remove_dir_all(&work);
+        match prev_cert {
+            Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_CERT", v),
+            None => std::env::remove_var("ZENOH_TLS_CONNECT_CERT"),
+        }
+        match prev_key {
+            Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_KEY", v),
+            None => std::env::remove_var("ZENOH_TLS_CONNECT_KEY"),
+        }
+        match prev_work {
+            Some(v) => std::env::set_var("RELAY_MTLS_WORK_DIR", v),
+            None => std::env::remove_var("RELAY_MTLS_WORK_DIR"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn write_secret_applies_windows_user_dacl() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_cert = std::env::var("ZENOH_TLS_CONNECT_CERT").ok();
+        let prev_key = std::env::var("ZENOH_TLS_CONNECT_KEY").ok();
+        let prev_work = std::env::var("RELAY_MTLS_WORK_DIR").ok();
+        let stamp = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let work = std::env::temp_dir().join(format!("alchemy-mtls-test-acl-{stamp}"));
+        std::env::set_var("RELAY_MTLS_WORK_DIR", work.display().to_string());
+
+        let id = install_world_mtls_pems(
+            "-----BEGIN CERTIFICATE-----\nACL\n-----END CERTIFICATE-----\n",
+            "-----BEGIN PRIVATE KEY-----\nACL\n-----END PRIVATE KEY-----\n",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "guest",
+            Some(60),
+        )
+        .expect("install with icacls");
+        let principal = windows_acl_principal().expect("principal");
+        let out = std::process::Command::new("icacls")
+            .arg(id.key_path.display().to_string())
+            .output()
+            .expect("icacls read");
+        assert!(out.status.success());
+        let listing = String::from_utf8_lossy(&out.stdout);
+        let listing_lower = listing.to_ascii_lowercase();
+        // Assert DACL content, not icacls line wrapping (long paths may put ACE on the next line).
+        assert!(
+            !listing.contains("(I)"),
+            "expected non-inherited DACL, got:\n{listing}"
+        );
+        assert!(
+            listing_lower.contains(&principal.to_ascii_lowercase()),
+            "expected current-user ACE for {principal}, got:\n{listing}"
+        );
+        assert!(
+            listing.contains("(R,W)") || listing.contains("(W,R)"),
+            "expected (R,W) for current user, got:\n{listing}"
+        );
+        for forbidden in [
+            "everyone",
+            "builtin\\users",
+            "builtin\\administrators",
+            "nt authority\\system",
+        ] {
+            assert!(
+                !listing_lower.contains(forbidden),
+                "{forbidden} must not remain on DACL:\n{listing}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&work);
+        match prev_cert {
+            Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_CERT", v),
+            None => std::env::remove_var("ZENOH_TLS_CONNECT_CERT"),
+        }
+        match prev_key {
+            Some(v) => std::env::set_var("ZENOH_TLS_CONNECT_KEY", v),
+            None => std::env::remove_var("ZENOH_TLS_CONNECT_KEY"),
+        }
+        match prev_work {
+            Some(v) => std::env::set_var("RELAY_MTLS_WORK_DIR", v),
+            None => std::env::remove_var("RELAY_MTLS_WORK_DIR"),
+        }
     }
 }
