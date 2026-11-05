@@ -19,7 +19,7 @@
 //! `verify` (claims + verifier type), `jwks` (cache / refresh), `timing` (TTL math),
 //! `http` (shared agent), `credential_chain` (auth -> host token -> attestation; still the
 //! largest unit — further split is a follow-up), `seal_cache` (ManifestSeal),
-//! `room_scene` (scene fetch/append), `credential_worker`.
+//! `room_scene` (scene fetch/append/delete), `credential_worker`.
 //!
 //! [`RoomTokenVerifier`]: type + claim checks live in `verify`; JWKS cache fields are
 //! `pub(super)` so `jwks` owns fetch / SWR / hard-stale / background kick impls.
@@ -42,7 +42,10 @@ pub use credential_worker::{
     build_manifest_from_scene, ensure_sealed_manifest, force_seal_retry, spawn_credential_worker,
     write_snapshot_on_success, CredentialWorkerConfig, HostPublishSnapshot,
 };
-pub use room_scene::{append_room_scene_entry, fetch_room_scene, RoomScene};
+pub use room_scene::{
+    append_room_scene_entry, delete_room_scene_entry, fetch_room_scene,
+    install_shared_scene_if_newer, RoomScene,
+};
 pub use seal_cache::{fetch_manifest_seal, ManifestSealCache};
 pub use timing::{
     earliest_hard_expire, hard_expire_deadline, publish_allowed_at, refresh_deadline,

@@ -79,6 +79,7 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::InventoryRefresh
         | WidgetId::InventoryTakeOut
         | WidgetId::InventoryPutBack
+        | WidgetId::InventoryDespawn
         | WidgetId::InventoryRow0
         | WidgetId::InventoryRow1
         | WidgetId::InventoryRow2

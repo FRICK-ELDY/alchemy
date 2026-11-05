@@ -85,6 +85,7 @@
         key_exprs: [
           "alchemy/dev/room/*/*/input",
           "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
           "alchemy/dev/room/*/*/manifest",
           "alchemy/dev/room/*/*/frame",
@@ -101,6 +102,7 @@
         key_exprs: [
           "alchemy/dev/room/*/*/input",
           "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
           "alchemy/dev/room/*/*/snapshot",
         ],
@@ -115,6 +117,7 @@
         key_exprs: [
           "alchemy/dev/room/*/*/input",
           "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
           "alchemy/dev/room/*/*/manifest",
           "alchemy/dev/room/*/*/frame",
@@ -123,7 +126,7 @@
         ],
       },
       // Guest → router: client input / alive / inventory spawn only (never sim put ingress).
-      // x006d: inventory/spawn is app-verified (Room Token host role); ACL only routes.
+      // x006d/x007b: inventory/spawn|despawn app-verified (host role); ACL only routes.
       {
         id: "guest-put-input",
         permission: "allow",
@@ -132,6 +135,7 @@
         key_exprs: [
           "alchemy/dev/room/*/*/input",
           "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
         ],
       },
@@ -181,6 +185,7 @@
         key_exprs: [
           "alchemy/dev/room/*/*/input",
           "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
         ],
       },

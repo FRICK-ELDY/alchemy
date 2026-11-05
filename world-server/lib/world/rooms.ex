@@ -4,11 +4,14 @@ defmodule World.Rooms do
 
   Guarantees: create / owner / scene / visibility backed by Ash + SQLite (survives restart).
   x006d: host may append a single mesh SceneEntry via `append_scene_entry/2` (revision bump).
+  x007b: host may remove a mesh SceneEntry via `delete_scene_entry/2` (64-hex blake3 required;
+  revision bump).
   x0071: create rejects when owner already holds `max_rooms_per_owner` rooms (best-effort;
   concurrent races may overshoot slightly — no DB trigger).
   Non-guarantees: full UGC editor; multi-node replication; Postgres (swap path documented);
   Room Token revocation on visibility / friendship change (TTL-only; see RoomAccess);
-  strict serialization of per-owner room counts under concurrent create.
+  strict serialization of per-owner room counts under concurrent create;
+  user_root / cuboid (empty blake3) despawn.
 
   x0021: `owner_sub` set only via `create/3` (`{:ok, room_id, visibility, wire_cap}` · x004e).
   Token issuance never creates a room.
@@ -186,6 +189,34 @@ defmodule World.Rooms do
 
   def append_scene_entry(_, _), do: {:error, :invalid_room_id}
 
+  @doc """
+  Remove one mesh SceneEntry by `entity_id` for inventory despawn (x007b).
+
+  Requires the entry to carry a 64-hex `blake3` (same selection as put-back).
+  Rejects missing entity, empty/invalid blake3, and non-list scenes.
+  Bumps `revision`. Returns the updated scene map.
+  """
+  @spec delete_scene_entry(room_id(), non_neg_integer()) ::
+          {:ok, map()}
+          | {:error,
+             :invalid_room_id
+             | :not_found
+             | :entry_not_found
+             | :not_mesh_entry
+             | :ambiguous_entity_id
+             | storage_error()}
+  def delete_scene_entry(room_id, entity_id)
+      when is_binary(room_id) and is_integer(entity_id) and entity_id >= 0 do
+    with :ok <- validate_room_id(room_id),
+         {:ok, %Room{} = room} <- fetch_room(room_id),
+         {:ok, next_scene} <- build_deleted_scene(room.scene, entity_id),
+         {:ok, _} <- Room.set_scene(room, %{scene: next_scene}) do
+      {:ok, next_scene}
+    end
+  end
+
+  def delete_scene_entry(_, _), do: {:error, :invalid_room_id}
+
   defp fetch_room(room_id) do
     case Room.get_by_room_id(room_id) do
       {:ok, %Room{} = room} -> {:ok, room}
@@ -261,6 +292,52 @@ defmodule World.Rooms do
        "entries" => entries ++ [entry]
      }}
   end
+
+  defp build_deleted_scene(scene, entity_id) when is_map(scene) do
+    entries = Map.get(scene, "entries") || Map.get(scene, :entries) || []
+    delete_mesh_entry(scene, entries, entity_id)
+  end
+
+  defp build_deleted_scene(_, _), do: {:error, :entry_not_found}
+
+  defp delete_mesh_entry(_scene, entries, _entity_id) when not is_list(entries) do
+    {:error, :entry_not_found}
+  end
+
+  defp delete_mesh_entry(scene, entries, entity_id) do
+    # Exactly one matching entity_id; corrupt duplicates fail closed (x007b review).
+    case Enum.split_with(entries, fn e -> entry_entity_id(e) == entity_id end) do
+      {[], _} ->
+        {:error, :entry_not_found}
+
+      {[target], rest} ->
+        if mesh_blake3?(target) do
+          revision = (Map.get(scene, "revision") || Map.get(scene, :revision) || 1) + 1
+
+          {:ok,
+           %{
+             "revision" => revision,
+             "locomotion" => Map.get(scene, "locomotion") || Map.get(scene, :locomotion),
+             "entries" => rest
+           }}
+        else
+          {:error, :not_mesh_entry}
+        end
+
+      {_dupes, _rest} ->
+        {:error, :ambiguous_entity_id}
+    end
+  end
+
+  # Same charset as `normalize_mesh_entry/1` append path (lowercase hex only).
+  defp mesh_blake3?(entry) when is_map(entry) do
+    blake3 = entry_string(entry, "blake3") || entry_string(entry, :blake3)
+
+    is_binary(blake3) and byte_size(blake3) == 64 and
+      Regex.match?(~r/^[0-9a-f]{64}$/, blake3)
+  end
+
+  defp mesh_blake3?(_), do: false
 
   defp next_entity_id(entries) do
     max_id =

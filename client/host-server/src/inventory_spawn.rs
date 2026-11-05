@@ -18,7 +18,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use zenoh::Wait;
 
-use crate::room_token::{append_room_scene_entry, RoomScene};
+use crate::room_token::{append_room_scene_entry, install_shared_scene_if_newer, RoomScene};
 
 /// Ready for physics: world already appended; apply Rapier + shared scene + reseal.
 #[derive(Debug, Clone)]
@@ -239,6 +239,8 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApplyOutcome {
     pub entity_id: u32,
+    /// False when `ready.scene.revision` was not strictly newer than shared (stale race).
+    pub scene_applied: bool,
     /// False when Manifest/PlaceRead path succeeded but Rapier refused the collider.
     pub rapier_ok: bool,
 }
@@ -247,6 +249,7 @@ pub struct ApplyOutcome {
 ///
 /// Installs `scene` + `force_reseal` **before** Rapier so Manifest/PlaceRead stay
 /// consistent if physics insert fails (poison after Rapier would leave the reverse half).
+/// Shared scene is revision-monotonic (x007b): stale spawn does not overwrite or Rapier-insert.
 pub fn apply_ready_spawn(
     ready: ReadySpawn,
     shared_scene: &Arc<RwLock<RoomScene>>,
@@ -254,16 +257,20 @@ pub fn apply_ready_spawn(
     spawn_mesh: impl FnOnce(&SceneEntry) -> bool,
 ) -> Result<ApplyOutcome> {
     let entity_id = ready.entry.entity_id;
-    {
-        let mut guard = shared_scene
-            .write()
-            .map_err(|_| anyhow!("shared scene RwLock poisoned"))?;
-        *guard = ready.scene;
+    let entry = ready.entry.clone();
+    let scene_applied = install_shared_scene_if_newer(shared_scene, ready.scene)?;
+    if !scene_applied {
+        return Ok(ApplyOutcome {
+            entity_id,
+            scene_applied: false,
+            rapier_ok: false,
+        });
     }
     force_reseal.store(true, Ordering::SeqCst);
-    let rapier_ok = spawn_mesh(&ready.entry);
+    let rapier_ok = spawn_mesh(&entry);
     Ok(ApplyOutcome {
         entity_id,
+        scene_applied: true,
         rapier_ok,
     })
 }
@@ -271,6 +278,37 @@ pub fn apply_ready_spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_scene(revision: u64) -> RoomScene {
+        RoomScene {
+            revision,
+            entries: vec![],
+            locomotion: None,
+        }
+    }
+
+    fn sample_entry(entity_id: u32) -> SceneEntry {
+        SceneEntry {
+            entity_id,
+            blake3: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            x: 0.0,
+            y: 1.5,
+            z: 2.0,
+            half_extent: 0.0,
+            flags: 0,
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            qw: 1.0,
+            sx: 1.0,
+            sy: 1.0,
+            sz: 1.0,
+        }
+    }
 
     #[test]
     fn parse_payload_requires_blake3_token_and_finite() {
@@ -287,5 +325,26 @@ mod tests {
         assert!(parse_payload(nan).is_err());
         let bad_scale = br#"{"room_token":"tok","blake3":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sx":0.0}"#;
         assert!(parse_payload(bad_scale).is_err());
+    }
+
+    #[test]
+    fn apply_ready_spawn_skips_stale_revision() {
+        let shared = Arc::new(RwLock::new(empty_scene(5)));
+        let force = AtomicBool::new(false);
+        let ready = ReadySpawn {
+            entry: sample_entry(100),
+            scene: empty_scene(4),
+        };
+        let mut rapier_called = false;
+        let out = apply_ready_spawn(ready, &shared, &force, |_e| {
+            rapier_called = true;
+            true
+        })
+        .unwrap();
+        assert!(!out.scene_applied);
+        assert!(!out.rapier_ok);
+        assert!(!rapier_called);
+        assert!(!force.load(Ordering::SeqCst));
+        assert_eq!(shared.read().unwrap().revision, 5);
     }
 }

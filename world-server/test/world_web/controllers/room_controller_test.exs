@@ -982,4 +982,81 @@ defmodule WorldWeb.RoomControllerTest do
              })
              |> json_response(422)
   end
+
+  # x007b: DELETE …/scene/entries/:entity_id HTTP contract
+  test "delete_scene_entry removes mesh for host and maps guest/invalid/not_mesh", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "22222222-2222-2222-2222-222222222222"
+    guest = "33333333-3333-3333-3333-333333333333"
+    room = "scene-del-http"
+    blake3 = String.duplicate("cd", 32)
+
+    conn
+    |> TestAuthHelpers.put_auth(signer, owner)
+    |> post("/api/v1/rooms", %{room_id: room})
+    |> json_response(201)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post("/api/v1/rooms/#{room}/tokens", token_params(%{role: "host"}))
+      |> json_response(200)
+
+    %{"token" => guest_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> post("/api/v1/rooms/#{room}/tokens", token_params(%{role: "guest"}))
+      |> json_response(200)
+
+    scene =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{host_token}")
+      |> post("/api/v1/rooms/#{room}/scene/entries", %{blake3: blake3, x: 1.0, y: 1.0, z: 1.0})
+      |> json_response(200)
+
+    entity_id = List.last(scene["entries"])["entity_id"]
+    assert is_integer(entity_id)
+
+    box_id =
+      scene["entries"]
+      |> Enum.find(fn e ->
+        (e["blake3"] == "" or e["blake3"] == nil) and (e["half_extent"] || 0) > 0
+      end)
+      |> Map.fetch!("entity_id")
+
+    assert %{"error" => "host_role_required"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{guest_token}")
+             |> delete("/api/v1/rooms/#{room}/scene/entries/#{entity_id}")
+             |> json_response(403)
+
+    assert %{"error" => "invalid_entity_id"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> delete("/api/v1/rooms/#{room}/scene/entries/not-an-id")
+             |> json_response(422)
+
+    assert %{"error" => "not_mesh_entry"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> delete("/api/v1/rooms/#{room}/scene/entries/#{box_id}")
+             |> json_response(422)
+
+    assert %{"error" => "entry_not_found"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> delete("/api/v1/rooms/#{room}/scene/entries/999999")
+             |> json_response(404)
+
+    deleted =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{host_token}")
+      |> delete("/api/v1/rooms/#{room}/scene/entries/#{entity_id}")
+      |> json_response(200)
+
+    assert deleted["room_id"] == room
+    refute Enum.any?(deleted["entries"], fn e -> e["entity_id"] == entity_id end)
+  end
 end

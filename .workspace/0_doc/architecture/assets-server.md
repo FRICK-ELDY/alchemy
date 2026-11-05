@@ -127,7 +127,7 @@ bash .scripts/smoke-assets-glb.sh   # Coin fixture → CAS
 
 ## 後続
 
-- **インベントリラダー（B+2→C+3）**: [inventory-ladder.md](../roadmap/inventory-ladder.md)。Wave 0–4 **done**（x0054–x0065）。**x006d** take-out + **x006e** put-back UI（単一 mesh→Prefab・部屋は残す）。Prefab 多子 / scene despawn / XR は後続。
+- **インベントリラダー（B+2→C+3）**: [inventory-ladder.md](../roadmap/inventory-ladder.md)。Wave 0–4 **done**（x0054–x0065）。**x006d** take-out + **x006e** put-back UI（単一 mesh→Prefab・部屋は残す）+ **x007b** scene despawn（部屋から削除）。Prefab 多子 / XR は後続。
 - **PlaceRead（x006b）+ 案 B（x006c）+ access 列廃止（x006f）**: **done**。PlaceRead TTL UI / take-out `extra_blake3` は後続
 - [assets-server-draft.md](assets-server-draft.md) の Vault / purchased / 5 層
 - [assets-threat-model.md](assets-threat-model.md) 目標列（予約期限ジョブ・Immutable Tag・配信ドメイン分離・Safe HTTP・jti 等）

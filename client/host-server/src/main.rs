@@ -36,6 +36,7 @@
 mod finite;
 mod host_control;
 mod host_ipc;
+mod inventory_despawn;
 mod inventory_spawn;
 mod network_worker;
 mod pose_delta;
@@ -911,6 +912,22 @@ fn main() -> Result<()> {
         },
     )
     .context("inventory spawn listener")?;
+    let despawn_verifier = Arc::clone(&verifier);
+    let despawn_inbox = inventory_despawn::despawn_listener(
+        session.clone(),
+        &room_id,
+        &wire_cap,
+        Arc::clone(&room_key),
+        world_url.clone(),
+        move |token| {
+            let claims = despawn_verifier.verify(token)?;
+            if claims.role != "host" {
+                anyhow::bail!("inventory despawn requires role=host (got {})", claims.role);
+            }
+            Ok(())
+        },
+    )
+    .context("inventory despawn listener")?;
 
     let manifest_pub = session
         .declare_publisher(manifest_key_expr)
@@ -1085,17 +1102,47 @@ fn main() -> Result<()> {
                 &force_reseal,
                 |entry| physics.spawn_mesh_entry(entry),
             ) {
-                Ok(out) if out.rapier_ok => log::info!(
+                Ok(out) if out.scene_applied && out.rapier_ok => log::info!(
                     "inventory spawn applied entity_id={} blake3={} (rapier+scene+reseal)",
                     out.entity_id,
                     &blake3[..8.min(blake3.len())]
                 ),
-                Ok(out) => log::warn!(
+                Ok(out) if out.scene_applied => log::warn!(
                     "inventory spawn scene+reseal only entity_id={} blake3={} (rapier refused; physics may need host restart)",
                     out.entity_id,
                     &blake3[..8.min(blake3.len())]
                 ),
+                Ok(out) => log::warn!(
+                    "inventory spawn stale revision skipped entity_id={} blake3={}",
+                    out.entity_id,
+                    &blake3[..8.min(blake3.len())]
+                ),
                 Err(err) => log::warn!("inventory spawn apply failed: {err:#}"),
+            }
+        }
+
+        // x007b: apply at most one ready despawn per tick (HTTP already done on worker).
+        if let Some(ready) = despawn_inbox.try_recv() {
+            let entity_id = ready.entity_id;
+            match inventory_despawn::apply_ready_despawn(
+                ready,
+                &shared_scene,
+                &force_reseal,
+                |id| physics.despawn_mesh_entity(id),
+            ) {
+                Ok(out) if out.scene_applied && out.rapier_ok => log::info!(
+                    "inventory despawn applied entity_id={} (rapier+scene+reseal)",
+                    out.entity_id
+                ),
+                Ok(out) if out.scene_applied => log::warn!(
+                    "inventory despawn scene+reseal only entity_id={} (rapier miss; physics may need host restart)",
+                    out.entity_id
+                ),
+                Ok(out) => log::warn!(
+                    "inventory despawn stale revision skipped entity_id={}",
+                    out.entity_id
+                ),
+                Err(err) => log::warn!("inventory despawn apply failed entity_id={entity_id}: {err:#}"),
             }
         }
 

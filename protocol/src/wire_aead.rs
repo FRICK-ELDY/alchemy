@@ -39,6 +39,8 @@ pub enum AeadKind {
     Input,
     /// Low-frequency inventory take-out spawn (x006d); carries host Room Token.
     InventorySpawn,
+    /// Low-frequency inventory scene despawn (x007b); carries host Room Token.
+    InventoryDespawn,
 }
 
 impl AeadKind {
@@ -50,6 +52,7 @@ impl AeadKind {
             Self::Snapshot => "snapshot",
             Self::Input => "input",
             Self::InventorySpawn => "inventory_spawn",
+            Self::InventoryDespawn => "inventory_despawn",
         }
     }
 
@@ -59,7 +62,7 @@ impl AeadKind {
             Self::Manifest => WireClass::Manifest,
             Self::Frame | Self::Snapshot => WireClass::Frame,
             Self::Presence => WireClass::Presence,
-            Self::Input | Self::InventorySpawn => WireClass::Input,
+            Self::Input | Self::InventorySpawn | Self::InventoryDespawn => WireClass::Input,
         }
     }
 }
@@ -205,6 +208,11 @@ mod tests {
         let env = seal(&key(), "local", AeadKind::InventorySpawn, pt).unwrap();
         let out = open(&key(), "local", AeadKind::InventorySpawn, &env).unwrap();
         assert_eq!(out, pt);
+        let env2 = seal(&key(), "local", AeadKind::InventoryDespawn, pt).unwrap();
+        let out2 = open(&key(), "local", AeadKind::InventoryDespawn, &env2).unwrap();
+        assert_eq!(out2, pt);
+        // Cross-kind must fail.
+        assert!(open(&key(), "local", AeadKind::InventoryDespawn, &env).is_err());
         // Cross-kind swap with Input must fail (distinct AAD).
         assert_eq!(
             open(&key(), "local", AeadKind::Input, &env),

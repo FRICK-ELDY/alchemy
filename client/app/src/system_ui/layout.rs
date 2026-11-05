@@ -23,6 +23,8 @@ pub enum WidgetId {
     InventoryRefresh,
     InventoryTakeOut,
     InventoryPutBack,
+    /// Scene mesh despawn (x007b).
+    InventoryDespawn,
     InventoryRow0,
     InventoryRow1,
     InventoryRow2,

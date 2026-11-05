@@ -3,7 +3,7 @@ defmodule AssetsWeb.DriveController do
   Personal Drive HTTP surface (x006d / x006e).
 
   Guarantees: owner-only list + take_out + put_back wrapping `Assets.Drive`.
-  Non-guarantees: Prefab multi-child expand UI, folder UX, scene despawn.
+  Non-guarantees: Prefab multi-child expand UI, folder UX (scene despawn is world/host x007b).
   """
 
   use AssetsWeb, :controller

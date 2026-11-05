@@ -30,6 +30,8 @@ defmodule WorldWeb.Router do
     get "/rooms/:room_id/scene", RoomController, :show_scene
     # x006d: host take-out appends mesh entry (canonical scene for re-seal).
     post "/rooms/:room_id/scene/entries", RoomController, :create_scene_entry
+    # x007b: host despawn removes mesh entry (canonical scene for re-seal).
+    delete "/rooms/:room_id/scene/entries/:entity_id", RoomController, :delete_scene_entry
     # x006b: PlaceRead — any valid Room Token for the room + verified world_seal.
     post "/rooms/:room_id/place_read", RoomController, :create_place_read
     get "/rooms/:room_id/place_hashes", RoomController, :show_place_hashes

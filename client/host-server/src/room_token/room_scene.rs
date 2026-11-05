@@ -1,11 +1,13 @@
-//! World-authored room scene: JSON DTOs, fetch, and append (x0027 / x006d).
+//! World-authored room scene: JSON DTOs, fetch, append, and delete (x0027 / x006d / x007b).
 //!
-//! Guarantees: host Room Token Bearer on every request; scene entries TRS-normalized on parse.
+//! Guarantees: host Room Token Bearer on every request; scene entries TRS-normalized on parse;
+//! shared-scene install is **revision-monotonic** (strictly newer only; x007b spawn/despawn race).
 //! Non-guarantees: scene persistence, Manifest sealing.
 
 use super::http::{credential_agent, is_blake3_hex};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
+use std::sync::{Arc, RwLock};
 
 /// World-authored scene definition for a room (x0027).
 /// Built from JSON DTOs — prost types are not serde-deserializable.
@@ -124,6 +126,25 @@ fn scene_from_response(parsed: SceneResponseJson) -> RoomScene {
     }
 }
 
+/// Replace `shared` only when `incoming.revision` is **strictly greater**.
+///
+/// Spawn / despawn workers complete HTTP out of order; physics must not let an older
+/// revision overwrite a newer shared scene (x007b). Equal revision is a no-op.
+pub fn install_shared_scene_if_newer(
+    shared: &Arc<RwLock<RoomScene>>,
+    incoming: RoomScene,
+) -> Result<bool> {
+    let mut guard = shared
+        .write()
+        .map_err(|_| anyhow!("shared scene RwLock poisoned"))?;
+    if incoming.revision > guard.revision {
+        *guard = incoming;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 /// Fetch world DemoScene for this room (host Room Token).
 pub fn fetch_room_scene(
     world_url: &str,
@@ -210,5 +231,36 @@ pub fn append_room_scene_entry(
             Err(anyhow!("scene append failed status={code} body={body}"))
         }
         Err(err) => Err(anyhow!("scene append request failed: {err:#}")),
+    }
+}
+
+/// Delete one mesh entry from world scene by entity_id (x007b). Returns updated scene.
+pub fn delete_room_scene_entry(
+    world_url: &str,
+    room_id: &str,
+    host_room_token: &str,
+    entity_id: u32,
+) -> Result<RoomScene> {
+    let base = world_url.trim_end_matches('/');
+    let url = format!("{base}/api/v1/rooms/{room_id}/scene/entries/{entity_id}");
+    let authz = format!("Bearer {host_room_token}");
+    match credential_agent()
+        .delete(&url)
+        .set("authorization", &authz)
+        .call()
+    {
+        Ok(resp) => {
+            let parsed: SceneResponseJson = resp.into_json().context("parse scene delete")?;
+            let scene = scene_from_response(parsed);
+            if scene.entries.iter().any(|e| e.entity_id == entity_id) {
+                return Err(anyhow!("deleted entity_id still present in scene response"));
+            }
+            Ok(scene)
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(anyhow!("scene delete failed status={code} body={body}"))
+        }
+        Err(err) => Err(anyhow!("scene delete request failed: {err:#}")),
     }
 }
