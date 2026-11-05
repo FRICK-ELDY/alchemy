@@ -657,114 +657,13 @@ pub fn user_root_color(slot: usize) -> (f32, f32, f32, f32) {
     (r, g, b, 1.0)
 }
 
-/// Unit-test fixture mirroring `World.DemoScene` layout.
-/// Production SSoT is Elixir `DemoScene`; keep this in sync manually
-/// (x0027 / x002c / x0030 — center box yaw45 + sx=1.5 must match `demo_scene.ex`).
+/// Unit-test fixture mirroring `World.DemoScene` layout (x0079 shared vector).
+///
+/// Production SSoT is Elixir `DemoScene`; Rust mirror lives in
+/// `alchemy_shared_sim::demo::demo_scene_entries`.
 #[cfg(test)]
 pub fn demo_entries_for_test() -> Vec<SceneEntry> {
-    use alchemy_protocol::{ENTITY_QUAT_IDENTITY, ENTITY_SCALE_ONE, SCENE_FLAG_GRABBABLE};
-    use alchemy_shared_sim::demo::{DEMO_BOX_ENTITY_BASE, DEMO_COIN_BLAKE3, DEMO_MESH_ENTITY_ID};
-    use alchemy_shared_sim::DEFAULT_BOX_HALF_EXTENT;
-    // Keep in sync with World.DemoScene @yaw45_* / center-box sx (x002c).
-    const YAW45_QY: f64 = 0.3826834323650898;
-    const YAW45_QW: f64 = 0.9238795325112867;
-    let coin = SceneEntry {
-        entity_id: DEMO_MESH_ENTITY_ID,
-        blake3: DEMO_COIN_BLAKE3.into(),
-        x: 0.0,
-        y: 5.0,
-        z: 0.0,
-        half_extent: 0.0,
-        flags: 0,
-        r: 0.2,
-        g: 0.9,
-        b: 0.4,
-        a: 1.0,
-        qx: ENTITY_QUAT_IDENTITY[0],
-        qy: ENTITY_QUAT_IDENTITY[1],
-        qz: ENTITY_QUAT_IDENTITY[2],
-        qw: ENTITY_QUAT_IDENTITY[3],
-        sx: ENTITY_SCALE_ONE[0],
-        sy: ENTITY_SCALE_ONE[1],
-        sz: ENTITY_SCALE_ONE[2],
-    };
-    let roots = [
-        (0.0, 1.6, 6.0),
-        (1.5, 1.6, 6.0),
-        (-1.5, 1.6, 6.0),
-        (3.0, 1.6, 6.0),
-    ]
-    .into_iter()
-    .enumerate()
-    .map(|(i, (x, y, z))| SceneEntry {
-        entity_id: USER_ROOT_ENTITY_FIRST + i as u32,
-        blake3: String::new(),
-        x,
-        y,
-        z,
-        half_extent: 0.0,
-        flags: 0,
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 0.0,
-        qx: ENTITY_QUAT_IDENTITY[0],
-        qy: ENTITY_QUAT_IDENTITY[1],
-        qz: ENTITY_QUAT_IDENTITY[2],
-        qw: ENTITY_QUAT_IDENTITY[3],
-        sx: ENTITY_SCALE_ONE[0],
-        sy: ENTITY_SCALE_ONE[1],
-        sz: ENTITY_SCALE_ONE[2],
-    });
-    let palette = [
-        (0.90, 0.35, 0.30),
-        (0.90, 0.60, 0.20),
-        (0.85, 0.80, 0.25),
-        (0.35, 0.75, 0.35),
-        (0.25, 0.70, 0.75),
-        (0.30, 0.45, 0.90),
-        (0.55, 0.35, 0.85),
-        (0.85, 0.35, 0.70),
-        (0.70, 0.70, 0.75),
-    ];
-    let boxes = palette.into_iter().enumerate().map(|(i, (r, g, b))| {
-        let row = (i / 3) as f64;
-        let col = (i % 3) as f64;
-        let (qx, qy, qz, qw, sx, sy, sz) = if i == 4 {
-            (0.0, YAW45_QY, 0.0, YAW45_QW, 1.5, 1.0, 1.0)
-        } else {
-            (
-                ENTITY_QUAT_IDENTITY[0],
-                ENTITY_QUAT_IDENTITY[1],
-                ENTITY_QUAT_IDENTITY[2],
-                ENTITY_QUAT_IDENTITY[3],
-                ENTITY_SCALE_ONE[0],
-                ENTITY_SCALE_ONE[1],
-                ENTITY_SCALE_ONE[2],
-            )
-        };
-        SceneEntry {
-            entity_id: DEMO_BOX_ENTITY_BASE + i as u32,
-            blake3: String::new(),
-            x: (col - 1.0) * 0.8,
-            y: 0.25,
-            z: 3.5 + (row - 1.0) * 0.8,
-            half_extent: DEFAULT_BOX_HALF_EXTENT,
-            flags: SCENE_FLAG_GRABBABLE,
-            r,
-            g,
-            b,
-            a: 1.0,
-            qx,
-            qy,
-            qz,
-            qw,
-            sx,
-            sy,
-            sz,
-        }
-    });
-    std::iter::once(coin).chain(roots).chain(boxes).collect()
+    alchemy_shared_sim::demo::demo_scene_entries()
 }
 
 #[cfg(test)]
