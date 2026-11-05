@@ -11,7 +11,7 @@ defmodule World.Token do
   @session_pub_bytes 32
 
   @spec generate(String.t(), String.t(), String.t(), binary()) ::
-          {:ok, String.t(), non_neg_integer()} | {:error, term()}
+          {:ok, String.t(), String.t(), non_neg_integer()} | {:error, term()}
   def generate(room_id, role, sub, session_pub)
       when is_binary(room_id) and is_binary(role) and is_binary(sub) and
              is_binary(session_pub) and byte_size(session_pub) == @session_pub_bytes do
@@ -29,7 +29,7 @@ defmodule World.Token do
       }
 
       case Joken.generate_and_sign(token_config(), extra, Keys.signer()) do
-        {:ok, token, _claims} -> {:ok, token, ttl}
+        {:ok, token, _claims} -> {:ok, token, jti, ttl}
         {:error, reason} -> {:error, reason}
       end
     else

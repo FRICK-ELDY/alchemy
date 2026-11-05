@@ -118,6 +118,29 @@ pub(crate) fn spawn_manifest_subscriber(
                                 } => {
                                     *host_slot = watermarks.host_pub;
                                     *gen_slot = watermarks.manifest_gen_rev;
+                                    // x007a: always log Accept; room_jti=missing if token not ready yet.
+                                    let room_jti = shared
+                                        .auth
+                                        .lock()
+                                        .ok()
+                                        .and_then(|g| g.room_token.clone())
+                                        .and_then(|tok| {
+                                            crate::jwt_sub::sub_jti_unverified(&tok)
+                                                .ok()
+                                                .map(|(_, j)| j)
+                                        });
+                                    let jti_label =
+                                        room_jti.as_deref().unwrap_or("missing");
+                                    match *gen_slot {
+                                        Some(gr) => log::info!(
+                                            "manifest accept: room_jti={jti_label} gen={} rev={}",
+                                            gr.host_generation,
+                                            gr.revision
+                                        ),
+                                        None => log::info!(
+                                            "manifest accept: room_jti={jti_label}"
+                                        ),
+                                    }
                                     (generation_changed, manifest, watermarks.last_world_seal)
                                 }
                             }

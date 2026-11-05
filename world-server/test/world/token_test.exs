@@ -9,9 +9,11 @@ defmodule World.TokenTest do
 
   test "generate and verify room token roundtrip embeds cnf.spk" do
     session_pub = sample_session_pub()
-    assert {:ok, token, ttl} = Token.generate("local", "host", "anon", session_pub)
+    assert {:ok, token, jti, ttl} = Token.generate("local", "host", "anon", session_pub)
     assert ttl > 0
+    assert is_binary(jti) and jti != ""
     assert {:ok, claims} = Token.verify(token)
+    assert claims["jti"] == jti
     assert claims["room_id"] == "local"
     assert claims["role"] == "host"
     assert claims["sub"] == "anon"
@@ -39,7 +41,7 @@ defmodule World.TokenTest do
 
   test "generated token verifies with cnf; decode rejects wrong length" do
     session_pub = sample_session_pub()
-    assert {:ok, token, _ttl} = Token.generate("local", "guest", "anon", session_pub)
+    assert {:ok, token, _jti, _ttl} = Token.generate("local", "guest", "anon", session_pub)
     assert {:ok, claims} = Token.verify(token)
     assert claims["cnf"]["spk"] == Base.url_encode64(session_pub, padding: false)
 

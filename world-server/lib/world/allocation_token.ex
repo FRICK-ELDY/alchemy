@@ -1,35 +1,42 @@
 defmodule World.AllocationToken do
   @moduledoc """
-  Issues short-lived Relay Allocation Tokens (x004e).
+  Issues short-lived Relay Allocation Tokens (x004e / x007a).
 
   Same RS256 keys / JWKS as Room Tokens; `aud=alchemy-relay`.
   Verified by Relay Agent only (zenohd does not see JWT).
+
+  x007a: `room_jti` mirrors the Room Token `jti` for cross-service log correlation;
+  Allocation's own `jti` remains the short-lived dedupe key.
   """
 
   alias World.Token.Keys
 
   @roles ~w(host guest)
 
-  @spec generate(String.t(), String.t(), String.t(), String.t(), String.t()) ::
-          {:ok, String.t(), non_neg_integer()} | {:error, term()}
-  def generate(room_id, role, sub, wire_cap, relay_id)
+  @spec generate(String.t(), String.t(), String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, String.t(), String.t(), non_neg_integer()} | {:error, term()}
+  def generate(room_id, role, sub, wire_cap, relay_id, room_jti)
       when is_binary(room_id) and is_binary(role) and is_binary(sub) and is_binary(wire_cap) and
-             is_binary(relay_id) do
-    with :ok <- validate_generate_args(role, wire_cap, relay_id) do
-      sign_allocation(room_id, role, sub, wire_cap, relay_id)
+             is_binary(relay_id) and is_binary(room_jti) do
+    with :ok <- validate_generate_args(role, wire_cap, relay_id, room_jti) do
+      sign_allocation(room_id, role, sub, wire_cap, relay_id, room_jti)
     end
   end
 
-  def generate(_, _, _, _, _), do: {:error, :invalid_args}
+  def generate(_, _, _, _, _, _), do: {:error, :invalid_allocation_args}
 
-  defp validate_generate_args(role, wire_cap, relay_id)
-       when role in @roles and wire_cap != "" and relay_id != "",
-       do: :ok
+  defp validate_generate_args(role, wire_cap, relay_id, room_jti)
+       when role in @roles and wire_cap != "" and relay_id != "" and room_jti != "" do
+    if String.contains?(room_jti, "/"),
+      do: {:error, :invalid_allocation_args},
+      else: :ok
+  end
 
-  defp validate_generate_args(_, _, _), do: {:error, :invalid_args}
+  defp validate_generate_args(_, _, _, _), do: {:error, :invalid_allocation_args}
 
-  defp sign_allocation(room_id, role, sub, wire_cap, relay_id) do
+  defp sign_allocation(room_id, role, sub, wire_cap, relay_id, room_jti) do
     ttl = Application.fetch_env!(:world, :room_token_ttl_seconds)
+    alloc_jti = uuid_v4()
 
     extra = %{
       "sub" => sub,
@@ -37,11 +44,12 @@ defmodule World.AllocationToken do
       "role" => role,
       "wire_cap" => wire_cap,
       "relay_id" => relay_id,
-      "jti" => uuid_v4()
+      "jti" => alloc_jti,
+      "room_jti" => room_jti
     }
 
     case Joken.generate_and_sign(token_config(), extra, Keys.signer()) do
-      {:ok, token, _claims} -> {:ok, token, ttl}
+      {:ok, token, _claims} -> {:ok, token, alloc_jti, ttl}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -72,7 +80,14 @@ defmodule World.AllocationToken do
     |> Joken.Config.add_claim("wire_cap", fn -> nil end, &valid_wire_cap?/1)
     |> Joken.Config.add_claim("relay_id", fn -> nil end, &is_binary/1)
     |> Joken.Config.add_claim("jti", fn -> nil end, &is_binary/1)
+    |> Joken.Config.add_claim("room_jti", fn -> nil end, &valid_room_jti?/1)
   end
+
+  defp valid_room_jti?(jti) when is_binary(jti) and jti != "" do
+    not String.contains?(jti, "/")
+  end
+
+  defp valid_room_jti?(_), do: false
 
   defp valid_wire_cap?(cap) when is_binary(cap) and cap != "" do
     byte_size(cap) <= 64 and Regex.match?(~r/^[A-Za-z0-9_-]+$/, cap)

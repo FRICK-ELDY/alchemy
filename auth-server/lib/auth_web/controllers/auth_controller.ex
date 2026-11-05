@@ -63,14 +63,18 @@ defmodule AuthWeb.AuthController do
       when is_binary(identifier) and is_binary(password) do
     case Accounts.login(identifier, password, params["remember_me"] == true) do
       {:ok, session} ->
+        Auth.Metrics.inc(:login_total)
         json(conn, session)
 
       {:error, :invalid_credentials} ->
+        Auth.Metrics.inc(:login_errors_total)
+
         conn
         |> put_status(:unauthorized)
         |> json(%{errors: %{detail: Accounts.invalid_credentials_message()}})
 
       {:error, other} ->
+        Auth.Metrics.inc(:login_errors_total)
         Logger.error("login failed unexpectedly: #{inspect(other)}")
 
         conn
@@ -80,6 +84,7 @@ defmodule AuthWeb.AuthController do
   end
 
   def login(conn, _params) do
+    # Malformed body — not counted as login_errors_total (auth failure metric).
     conn
     |> put_status(:unauthorized)
     |> json(%{errors: %{detail: Accounts.invalid_credentials_message()}})

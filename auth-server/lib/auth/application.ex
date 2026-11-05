@@ -9,6 +9,8 @@ defmodule Auth.Application do
   def start(_type, _args) do
     maybe_configure_mailer()
 
+    Auth.Metrics.ensure_table()
+
     children = [
       AuthWeb.Telemetry,
       Auth.RateLimit,
@@ -17,8 +19,8 @@ defmodule Auth.Application do
       Auth.Token.Keys,
       {DNSCluster, query: Application.get_env(:auth, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Auth.PubSub},
-      # Start a worker by calling: Auth.Worker.start_link(arg)
-      # {Auth.Worker, arg},
+      # x007a: dedicated loopback Bandit — never on Endpoint
+      Auth.Metrics.Server,
       # Start to serve requests, typically the last entry
       AuthWeb.Endpoint
     ]
