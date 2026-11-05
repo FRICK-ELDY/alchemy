@@ -46,7 +46,7 @@
 
 | ID | 項目 | 根拠 | 作業イメージ |
 |:---|:---|:---|:---|
-| P2-1 | reserved reaper / orphan CAS 方針 | -1 | `reserved_at` + 定期回収 |
+| P2-1 | reserved reaper / orphan CAS 方針 | -1 | `reserved_at` + 定期回収 → **done x0074** |
 | P2-2 | BLAKE3 / seal-hash 常駐 Port | -1 | CLI 毎回起動を廃止（NIF 回避） |
 | P2-3 | auth Keys の `:persistent_term` | -1 | GenServer 直列化解消 |
 | P2-4 | host `room_token.rs` / client `main.rs` 分割 | -1 | 保証単位でファイル分割 |

@@ -1,11 +1,13 @@
 defmodule Assets.Blobs do
   @moduledoc """
-  Blob upload/download with quota reservation (x003f) and BlobGrant ledger (x004f).
+  Blob upload/download with quota reservation (x003f / x0074) and BlobGrant ledger (x004f).
 
-  Flow: reserve (short TX) → CAS.put outside TX → finalize meta + owned grant + used.
-  Failure after reserve releases reserved_bytes only. CAS bytes are never deleted
-  on compensate — concurrent same-blake3 PUT (cross-owner PoP) must not race on
-  delete. Orphan CAS objects without CasObject rows are out of scope (no GC yet).
+  Flow: reserve (short TX + `quota_reservations` row) → CAS.put outside TX →
+  finalize meta + owned grant + used. Failure after reserve releases the
+  reservation row and `reserved_bytes` only. CAS bytes are never deleted on
+  compensate — concurrent same-blake3 PUT (cross-owner PoP) must not race on
+  delete. Orphan bytes without CasObject rows are reaped by `Assets.CAS.OrphanGc`
+  after grace (x0074), not by compensate.
 
   GET (x006c / x006f): always gated by BlobGrant for auth_sub **or** a covering
   PlaceRead JWT (x006b). CasObject holds bytes meta only (no `access` column).
@@ -13,16 +15,20 @@ defmodule Assets.Blobs do
   uses the same upload (x0054 / x006f).
   """
 
+  require Logger
+
   import Ecto.Query
 
   alias Assets.Blobs.BlobGrant
   alias Assets.Blobs.BlobRef
   alias Assets.Blobs.CasObject
   alias Assets.CAS
+  alias Assets.CAS.OrphanCandidate
   alias Assets.CAS.S3, as: CasS3
   alias Assets.Metrics
   alias Assets.PlaceRead
   alias Assets.Quota.QuotaLedger
+  alias Assets.Quota.QuotaReservation
   alias Assets.Repo
 
   @grant_owned "owned"
@@ -121,7 +127,7 @@ defmodule Assets.Blobs do
   defp reserve_tx!(owner_sub, blake3, size) do
     case get_blob_ref(owner_sub, blake3) do
       %BlobRef{} -> existing_object_or_rollback!(blake3)
-      nil -> reserve_new_ref!(owner_sub, size)
+      nil -> reserve_new_ref!(owner_sub, blake3, size)
     end
   end
 
@@ -132,10 +138,20 @@ defmodule Assets.Blobs do
     end
   end
 
-  defp reserve_new_ref!(owner_sub, size) do
+  defp reserve_new_ref!(owner_sub, blake3, size) do
     ensure_quota_ledger!(owner_sub)
-    reserve_quota!(owner_sub, size)
-    :reserved
+
+    case get_reservation(owner_sub, blake3) do
+      %QuotaReservation{} ->
+        # Retry after mid-flight crash: keep the same reserved_bytes, refresh TTL.
+        touch_reservation!(owner_sub, blake3)
+        :reserved
+
+      nil ->
+        reserve_quota!(owner_sub, size)
+        insert_reservation!(owner_sub, blake3, size)
+        :reserved
+    end
   end
 
   # Same-owner concurrent PUT: peer may already own the ref. Mid-flight (ref not
@@ -167,7 +183,7 @@ defmodule Assets.Blobs do
         finalize_or_compensate(owner_sub, blake3, size, mime)
 
       {:error, reason} ->
-        _ = release_reserved(owner_sub, size)
+        _ = release_reservation(owner_sub, blake3, size)
         {:error, {:cas_error, reason}}
     end
   end
@@ -180,12 +196,12 @@ defmodule Assets.Blobs do
             {:ok, object, status}
 
           {:error, reason} ->
-            compensate(owner_sub, size)
+            compensate(owner_sub, blake3, size)
             {:error, reason}
         end
 
       {:error, reason} ->
-        compensate(owner_sub, size)
+        compensate(owner_sub, blake3, size)
         {:error, reason}
     end
   end
@@ -207,10 +223,12 @@ defmodule Assets.Blobs do
 
       case insert_blob_ref(owner_sub, blake3) do
         {:ok, :created} ->
+          clear_reservation!(owner_sub, blake3)
           commit_reserved!(owner_sub, size)
           {:created, object}
 
         {:ok, :existing} ->
+          clear_reservation!(owner_sub, blake3)
           release_quota_in_tx!(owner_sub, size)
           {:existing, object}
       end
@@ -222,21 +240,93 @@ defmodule Assets.Blobs do
     end
   end
 
-  # Quota only. Never CAS.delete — concurrent putters of the same blake3 share bytes.
-  defp compensate(owner_sub, size) do
-    release_reserved(owner_sub, size)
+  # Quota + reservation row only. Never CAS.delete — concurrent putters share bytes.
+  defp compensate(owner_sub, blake3, size) do
+    release_reservation(owner_sub, blake3, size)
+  end
+
+  @doc false
+  @spec release_reservation(String.t(), String.t(), non_neg_integer()) :: :ok
+  def release_reservation(owner_sub, blake3, size)
+      when is_binary(owner_sub) and is_binary(blake3) and size >= 0 do
+    # Same TX as ReservedReaper.reap_one: only the deleter of the row may dec reserved.
+    case Repo.transaction(fn -> release_reservation_tx!(owner_sub, blake3, size) end) do
+      {:ok, _} ->
+        note_orphan_candidate(blake3)
+
+      {:error, reason} ->
+        log_release_reservation_failed(owner_sub, blake3, reason)
+    end
+
     :ok
   end
 
-  defp upsert_cas_object!(blake3, size, mime) do
-    case Repo.get(CasObject, blake3) do
-      # First writer wins for mime/size.
-      %CasObject{} = object ->
-        object
+  defp release_reservation_tx!(owner_sub, blake3, size) do
+    {n, _} = clear_reservation_rows(owner_sub, blake3)
 
-      nil ->
-        insert_cas_object!(blake3, size, mime)
+    if n == 1 do
+      release_reserved_owned!(owner_sub, size)
+      :released
+    else
+      :skipped
     end
+  end
+
+  defp log_release_reservation_failed(owner_sub, blake3, reason) do
+    Logger.warning(
+      inspect(%{
+        event: "assets.blobs.release_reservation_failed",
+        owner_sub: owner_sub,
+        blake3: blake3,
+        reason: inspect(reason)
+      })
+    )
+  end
+
+  @doc false
+  @spec note_orphan_candidate(String.t()) :: :ok
+  def note_orphan_candidate(blake3) when is_binary(blake3) do
+    if is_nil(Repo.get(CasObject, blake3)) and cas_bytes_present?(blake3) do
+      now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+      Repo.insert(
+        OrphanCandidate.changeset(%OrphanCandidate{}, %{blake3: blake3, noticed_at: now}),
+        on_conflict: :nothing,
+        conflict_target: :blake3
+      )
+    end
+
+    :ok
+  end
+
+  defp cas_bytes_present?(blake3) do
+    case CAS.exists?(blake3) do
+      true -> true
+      false -> false
+      {:error, _} -> false
+    end
+  end
+
+  defp upsert_cas_object!(blake3, size, mime) do
+    object =
+      case Repo.get(CasObject, blake3) do
+        # First writer wins for mime/size.
+        %CasObject{} = object ->
+          object
+
+        nil ->
+          insert_cas_object!(blake3, size, mime)
+      end
+
+    clear_orphan_candidate(blake3)
+    object
+  end
+
+  defp clear_orphan_candidate(blake3) do
+    from(c in OrphanCandidate, where: c.blake3 == ^blake3)
+    |> Repo.delete_all()
+
+    :ok
   end
 
   defp insert_cas_object!(blake3, size, mime) do
@@ -488,13 +578,69 @@ defmodule Assets.Blobs do
     end
   end
 
-  defp release_reserved(owner_sub, size) when size >= 0 do
-    from(q in QuotaLedger,
-      where: q.owner_sub == ^owner_sub and q.reserved_bytes >= ^size
-    )
-    |> Repo.update_all(inc: [reserved_bytes: -size])
+  # Inside TX after reservation-row delete counted n==1 (or reaper equivalent).
+  defp release_reserved_owned!(owner_sub, size) when size >= 0 do
+    {n, _} =
+      from(q in QuotaLedger,
+        where: q.owner_sub == ^owner_sub and q.reserved_bytes >= ^size
+      )
+      |> Repo.update_all(inc: [reserved_bytes: -size])
 
+    if n == 1 do
+      :ok
+    else
+      # Ledger already lower (rare race) — reservation row is gone; do not fail TX.
+      :ok
+    end
+  end
+
+  defp get_reservation(owner_sub, blake3) do
+    Repo.get_by(QuotaReservation, owner_sub: owner_sub, blake3: blake3)
+  end
+
+  defp insert_reservation!(owner_sub, blake3, bytes) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    changeset =
+      QuotaReservation.changeset(%QuotaReservation{}, %{
+        owner_sub: owner_sub,
+        blake3: blake3,
+        bytes: bytes,
+        reserved_at: now
+      })
+
+    case Repo.insert(changeset) do
+      {:ok, _} -> :ok
+      {:error, changeset} -> Repo.rollback({:reservation_insert_failed, changeset})
+    end
+  end
+
+  defp touch_reservation!(owner_sub, blake3) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    {n, _} =
+      from(r in QuotaReservation,
+        where: r.owner_sub == ^owner_sub and r.blake3 == ^blake3
+      )
+      |> Repo.update_all(set: [reserved_at: now])
+
+    if n == 1 do
+      :ok
+    else
+      Repo.rollback({:reservation_touch_failed, owner_sub, blake3})
+    end
+  end
+
+  defp clear_reservation!(owner_sub, blake3) do
+    clear_reservation_rows(owner_sub, blake3)
     :ok
+  end
+
+  defp clear_reservation_rows(owner_sub, blake3) do
+    from(r in QuotaReservation,
+      where: r.owner_sub == ^owner_sub and r.blake3 == ^blake3
+    )
+    |> Repo.delete_all()
   end
 
   defp mime_or_default(""), do: "application/octet-stream"

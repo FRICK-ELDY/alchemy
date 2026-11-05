@@ -1,7 +1,7 @@
 # assets-server
 
 > **正本コード**: [`assets-server/`](../../../assets-server/)  
-> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳）+ **x0054**（inventory PUT 経路）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）+ **x006e**（Drive HTTP put_back）+ **x006f**（CasObject.access 列廃止）  
+> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳）+ **x0054**（inventory PUT 経路）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）+ **x006e**（Drive HTTP put_back）+ **x006f**（CasObject.access 列廃止）+ **x0074**（reserved reaper / orphan CAS GC）  
 
 > **目標たたき台**: [assets-server-draft.md](assets-server-draft.md)（5 層全体）  
 > **脅威（手口×対策）**: [assets-threat-model.md](assets-threat-model.md)
@@ -27,8 +27,10 @@
 | `CasObject`（物理・所有者なし・size/mime のみ）と `BlobRef`（owner×blake3）を分離（x003f / x006f） | StorageVault / `:purchased` / `:mail_temp` |
 | PUT finalize で uploader に `:owned` `BlobGrant`（x004f） | room スコープ grant・Manifest 連動付与以外の Grant 種別 |
 | `POST /api/v1/inventory/blobs` は inventory 用パス契約（x0054）。中身は通常 PUT と同じ（常に owned Grant・x006f） | DriveNode / Prefab / Vault 表・client UI |
-| 同一 blake3 を `/blobs` と `/inventory/blobs` から別 owner が PUT しても共存（x006f） | mime/size 先勝ちの変更；orphan CAS GC |
-| PUT: `reserved_bytes` 予約 → TX 外 CAS put → used 振替。失敗時は**予約解放のみ**（CAS は消さない＝並行同一 hash 安全） | Oban・予約期限切れジョブ・署名 URL 直 PUT・orphan CAS の定期 GC |
+| 同一 blake3 を `/blobs` と `/inventory/blobs` から別 owner が PUT しても共存（x006f） | mime/size 先勝ちの変更；CasObject あり・refcount=0 の GC |
+| PUT: `quota_reservations` + `reserved_bytes` 予約 → TX 外 CAS put → used 振替。失敗時は**予約解放のみ**（compensate は CAS 非削除＝並行同一 hash 安全）（x003f / x0074） | Oban・署名 URL 直 PUT；S3 バケット全 listing |
+| TTL 超過予約の reaper 解放 + CasObject 無し orphan bytes の grace GC（GenServer・x0074）。削除は quarantine→再検証→discard/restore。中断後は q-only を再試行し、CasObject ありなら restore 成功時のみ候補 drop | 実行中 PUT をゼロ失敗にする超短 TTL；S3 listing 全走査；exists? 一時障害の完全排除 |
+| 予約行削除と `reserved_bytes` 減算は同一 TX（n==1 のときだけ減算）。空 PUT（0 bytes）可 | マイグレ前の blake3 不明 reserved（0 クランプ済み） |
 | `ASSETS_CAS_BACKEND=local\|s3` で置き場切替（x001c）。**test では runtime が CAS env を無視**（x001e） | 公開バケット・CDN カスタムドメイン |
 | s3 時 GET は短命署名 URL へ 302（x001d） | Upload の署名 URL 直 PUT |
 | Quota 超過のアップロード拒否（既定 1GiB；`used + reserved`） | 課金連動 Quota / pgvector / Origin Cert / Ash 本格 |
@@ -60,7 +62,7 @@ PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。`x-alchemy-b
 
 | 層 | 置くもの | 置かないもの |
 |:---|:---|:---|
-| DB (Ecto SQLite) | CasObject(size/mime)、BlobRef(owner×blake3)、BlobGrant(grantee×blake3)、used/reserved | GLB/KTX2 本体；`access` 列 |
+| DB (Ecto SQLite) | CasObject(size/mime)、BlobRef、BlobGrant、QuotaLedger、QuotaReservation、CasOrphanCandidate | GLB/KTX2 本体；`access` 列 |
 | CAS local | 不変バイナリ（BLAKE3 hex ファイル名） | ユーザー階層・権限 |
 | CAS s3（R2） | 同上（キー = prefix + BLAKE3） | JWT / Quota |
 | HTTP API | 門番・PUT 代理・GET（local=代理 / s3=302） | ストレージ固有の永続 URL 契約 |
@@ -87,6 +89,8 @@ PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。`x-alchemy-b
 | BlobRef | UNIQUE(`owner_sub`, `blake3`) → CasObject（**Quota 単位**） |
 | BlobGrant | UNIQUE(`grantee_sub`, `blake3`) + `grant_type`（**権利台帳。GET の SSoT の一方・x006c**） |
 | QuotaLedger | `owner_sub` + `used_bytes` + `reserved_bytes` + `limit_bytes` |
+| QuotaReservation | `owner_sub`×`blake3` + `bytes` + `reserved_at`（TTL reaper・x0074） |
+| CasOrphanCandidate | `blake3` + `noticed_at`（grace 後 GC・x0074） |
 | Vault（薄皮） | `Assets.Vault.personal/1` — QuotaLedger 上の Personal ビュー（表なし・x0058）。`vault_id = owner_sub`（暫定） |
 | DriveNode | `node_id` UUID PK + `owner_sub` + `parent_id` nullable + `kind`（folder/blob/prefab/vcs_repo）+ `name` + `blake3` nullable + `vcs_repo_id` nullable（x005c/x005d） |
 | Prefab.Payload | JSON スキーマ（schema_version=1 + children[{local_id, blake3, trs?}]）+ 非有限 TRS 拒否（x005e） |

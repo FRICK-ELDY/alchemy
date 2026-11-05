@@ -15,6 +15,13 @@ config :assets,
     presign_ttl_seconds: 300
   },
   quota_limit_bytes: 1_073_741_824,
+  # x0074: reserved reaper + orphan CAS GC (GenServer; no Oban)
+  quota_reservation_ttl_seconds: 900,
+  quota_reserved_reaper_interval_ms: 300_000,
+  orphan_cas_grace_seconds: 1_800,
+  orphan_cas_gc_interval_ms: 3_600_000,
+  orphan_cas_gc_enabled: true,
+  orphan_cas_gc_max_per_run: 100,
   auth_jwks_url: "http://127.0.0.1:4002/.well-known/jwks.json",
   auth_jwks_fetch_on_start: true,
   auth_jwt_issuer: "alchemy-auth",

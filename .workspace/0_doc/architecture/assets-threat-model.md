@@ -192,7 +192,7 @@ flowchart TB
 | 項目 | 現行 assets |
 |:---|:---|
 | GET | Bearer +（BlobGrant **または** PlaceRead）必須（x006c）。Bearer 単独の読取 capability は無し。存在オラクル・PlaceRead カバー済み scene の部屋外秘密性は非保証（①⑥） |
-| PUT / Quota | サーバ代理 + `reserved_bytes` 同期予約／振替。補償は予約解放のみ・CAS 非削除（x003f）；直 PUT・期限切れジョブ・orphan GC は未 |
+| PUT / Quota | サーバ代理 + `quota_reservations` / `reserved_bytes` 予約／振替。補償は予約解放のみ・CAS 非削除（x003f）。TTL reaper + orphan grace GC は x0074（Oban なし）。直 PUT は未 |
 | Dedup | CasObject は共有。cross-owner は実バイト再送で自 BlobRef + 自 Quota + `:owned` Grant（owner 付け替えなし・x004f）。①の Origin Cert / 指紋は目標列 |
 | Drive / Vcs / Shop / 連合 / billing | Drive/Vcs 薄皮あり（x005c–x0065）。Shop / 連合 / billing は未（③④⑤⑦の目標列） |
 
