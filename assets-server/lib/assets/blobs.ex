@@ -15,6 +15,8 @@ defmodule Assets.Blobs do
   uses the same upload (x0054 / x006f).
   """
 
+  require Logger
+
   import Ecto.Query
 
   alias Assets.Blobs.BlobGrant
@@ -247,16 +249,44 @@ defmodule Assets.Blobs do
   @spec release_reservation(String.t(), String.t(), non_neg_integer()) :: :ok
   def release_reservation(owner_sub, blake3, size)
       when is_binary(owner_sub) and is_binary(blake3) and size >= 0 do
-    clear_reservation_rows(owner_sub, blake3)
-    release_reserved(owner_sub, size)
-    note_orphan_candidate(blake3)
+    # Same TX as ReservedReaper.reap_one: only the deleter of the row may dec reserved.
+    case Repo.transaction(fn -> release_reservation_tx!(owner_sub, blake3, size) end) do
+      {:ok, _} ->
+        note_orphan_candidate(blake3)
+
+      {:error, reason} ->
+        log_release_reservation_failed(owner_sub, blake3, reason)
+    end
+
     :ok
+  end
+
+  defp release_reservation_tx!(owner_sub, blake3, size) do
+    {n, _} = clear_reservation_rows(owner_sub, blake3)
+
+    if n == 1 do
+      release_reserved_owned!(owner_sub, size)
+      :released
+    else
+      :skipped
+    end
+  end
+
+  defp log_release_reservation_failed(owner_sub, blake3, reason) do
+    Logger.warning(
+      inspect(%{
+        event: "assets.blobs.release_reservation_failed",
+        owner_sub: owner_sub,
+        blake3: blake3,
+        reason: inspect(reason)
+      })
+    )
   end
 
   @doc false
   @spec note_orphan_candidate(String.t()) :: :ok
   def note_orphan_candidate(blake3) when is_binary(blake3) do
-    if is_nil(Repo.get(CasObject, blake3)) and CAS.exists?(blake3) do
+    if is_nil(Repo.get(CasObject, blake3)) and cas_bytes_present?(blake3) do
       now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
       Repo.insert(
@@ -267,6 +297,14 @@ defmodule Assets.Blobs do
     end
 
     :ok
+  end
+
+  defp cas_bytes_present?(blake3) do
+    case CAS.exists?(blake3) do
+      true -> true
+      false -> false
+      {:error, _} -> false
+    end
   end
 
   defp upsert_cas_object!(blake3, size, mime) do
@@ -540,13 +578,20 @@ defmodule Assets.Blobs do
     end
   end
 
-  defp release_reserved(owner_sub, size) when size >= 0 do
-    from(q in QuotaLedger,
-      where: q.owner_sub == ^owner_sub and q.reserved_bytes >= ^size
-    )
-    |> Repo.update_all(inc: [reserved_bytes: -size])
+  # Inside TX after reservation-row delete counted n==1 (or reaper equivalent).
+  defp release_reserved_owned!(owner_sub, size) when size >= 0 do
+    {n, _} =
+      from(q in QuotaLedger,
+        where: q.owner_sub == ^owner_sub and q.reserved_bytes >= ^size
+      )
+      |> Repo.update_all(inc: [reserved_bytes: -size])
 
-    :ok
+    if n == 1 do
+      :ok
+    else
+      # Ledger already lower (rare race) — reservation row is gone; do not fail TX.
+      :ok
+    end
   end
 
   defp get_reservation(owner_sub, blake3) do

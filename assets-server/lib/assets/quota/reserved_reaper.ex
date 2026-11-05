@@ -121,18 +121,14 @@ defmodule Assets.Quota.ReservedReaper do
   end
 
   defp release_reserved_bytes!(owner_sub, size) when size >= 0 do
-    {n, _} =
+    {_n, _} =
       from(q in QuotaLedger,
         where: q.owner_sub == ^owner_sub and q.reserved_bytes >= ^size
       )
       |> Repo.update_all(inc: [reserved_bytes: -size])
 
-    if n == 1 do
-      :ok
-    else
-      # Ledger already lower (partial compensate race) — still drop the row.
-      :ok
-    end
+    # n may be 0 if ledger already lower (partial race) — row delete still stands.
+    :ok
   end
 
   defp maybe_note_orphan(blake3) do

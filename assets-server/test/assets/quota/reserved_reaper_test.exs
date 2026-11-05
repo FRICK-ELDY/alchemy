@@ -4,6 +4,7 @@ defmodule Assets.Quota.ReservedReaperTest do
   alias Assets.Blobs
   alias Assets.Blobs.CasObject
   alias Assets.CAS
+  alias Assets.CAS.OrphanCandidate
   alias Assets.Quota.QuotaLedger
   alias Assets.Quota.QuotaReservation
   alias Assets.Quota.ReservedReaper
@@ -74,7 +75,29 @@ defmodule Assets.Quota.ReservedReaperTest do
 
     assert %{reaped: 1} = ReservedReaper.run_now()
     assert Repo.get(CasObject, blake3) == nil
-    assert CAS.exists?(blake3)
+    assert CAS.exists?(blake3) == true
+    assert %OrphanCandidate{blake3: ^blake3} = Repo.get(OrphanCandidate, blake3)
+  end
+
+  test "release_reservation is idempotent (second call does not double-dec)" do
+    data = "release-once"
+    blake3 = blake3_of(data)
+    size = byte_size(data)
+    ensure_ledger!(@sub, reserved: size)
+    plant_reservation!(@sub, blake3, size, seconds_ago: 0)
+
+    assert :ok = Blobs.release_reservation(@sub, blake3, size)
+    assert Blobs.quota(@sub).reserved_bytes == 0
+    assert Repo.get_by(QuotaReservation, owner_sub: @sub, blake3: blake3) == nil
+
+    assert :ok = Blobs.release_reservation(@sub, blake3, size)
+    assert Blobs.quota(@sub).reserved_bytes == 0
+  end
+
+  test "empty blob PUT reserves zero bytes and clears reservation" do
+    assert {:ok, %CasObject{}, :created} = Blobs.upload(@sub, "", "application/octet-stream")
+    assert Blobs.quota(@sub).reserved_bytes == 0
+    assert Repo.aggregate(QuotaReservation, :count) == 0
   end
 
   defp ensure_ledger!(owner_sub, reserved: reserved) do

@@ -23,7 +23,8 @@ defmodule Assets.Quota.QuotaReservation do
     reservation
     |> cast(attrs, [:owner_sub, :blake3, :bytes, :reserved_at])
     |> validate_required([:owner_sub, :blake3, :bytes, :reserved_at])
-    |> validate_number(:bytes, greater_than: 0)
+    # size=0 empty PUT remains allowed (same as pre-x0074 reserve_quota!(0)).
+    |> validate_number(:bytes, greater_than_or_equal_to: 0)
     |> unique_constraint([:owner_sub, :blake3])
   end
 end

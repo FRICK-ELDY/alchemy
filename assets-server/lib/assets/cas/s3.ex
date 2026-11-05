@@ -7,10 +7,10 @@ defmodule Assets.CAS.S3 do
 
   @impl true
   def exists?(blake3_hex) when is_binary(blake3_hex) do
-    case head(blake3_hex) do
+    case head_key(object_key(blake3_hex)) do
       :ok -> true
       {:error, :not_found} -> false
-      {:error, _reason} -> false
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -18,12 +18,12 @@ defmodule Assets.CAS.S3 do
   def put_if_absent(blake3_hex, data) when is_binary(data) do
     # head → put is TOCTOU; both racers may observe :created. Callers must not
     # CAS.delete on :created alone (x003f compensate releases quota only).
-    case head(blake3_hex) do
+    case head_key(object_key(blake3_hex)) do
       :ok ->
         :existing
 
       {:error, :not_found} ->
-        case put(blake3_hex, data) do
+        case put_key(object_key(blake3_hex), data) do
           :ok -> :created
           {:error, reason} -> {:error, reason}
         end
@@ -55,13 +55,59 @@ defmodule Assets.CAS.S3 do
 
   @impl true
   def delete(blake3_hex) when is_binary(blake3_hex) do
-    cfg = s3_config!()
+    delete_key(object_key(blake3_hex))
+  end
 
-    case ExAws.S3.delete_object(cfg.bucket, object_key(blake3_hex))
-         |> ExAws.request(aws_config(cfg)) do
-      {:ok, _} -> :ok
+  @impl true
+  def quarantine(blake3_hex) when is_binary(blake3_hex) do
+    live = object_key(blake3_hex)
+    q = quarantine_key(blake3_hex)
+
+    case head_key(live) do
+      {:error, :not_found} -> quarantine_when_live_missing(q)
+      :ok -> move_key(live, q)
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  @impl true
+  def restore_quarantine(blake3_hex) when is_binary(blake3_hex) do
+    live = object_key(blake3_hex)
+    q = quarantine_key(blake3_hex)
+
+    case head_key(q) do
+      {:error, :not_found} -> :ok
+      :ok -> restore_from_quarantine(live, q)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp quarantine_when_live_missing(q) do
+    case head_key(q) do
+      :ok -> :ok
+      {:error, :not_found} -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp restore_from_quarantine(live, q) do
+    case head_key(live) do
+      :ok -> delete_key(q)
+      {:error, :not_found} -> move_key(q, live)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp move_key(src, dst) do
+    case copy_key(src, dst) do
+      :ok -> delete_key(src)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @impl true
+  def discard_quarantine(blake3_hex) when is_binary(blake3_hex) do
+    delete_key(quarantine_key(blake3_hex))
   end
 
   @doc """
@@ -82,11 +128,12 @@ defmodule Assets.CAS.S3 do
     prefix <> blake3_hex
   end
 
-  defp head(blake3_hex) do
+  defp quarantine_key(blake3_hex), do: object_key(blake3_hex) <> ".gc-quarantine"
+
+  defp head_key(key) do
     cfg = s3_config!()
 
-    case ExAws.S3.head_object(cfg.bucket, object_key(blake3_hex))
-         |> ExAws.request(aws_config(cfg)) do
+    case ExAws.S3.head_object(cfg.bucket, key) |> ExAws.request(aws_config(cfg)) do
       {:ok, _} ->
         :ok
 
@@ -101,11 +148,29 @@ defmodule Assets.CAS.S3 do
     end
   end
 
-  defp put(blake3_hex, data) do
+  defp put_key(key, data) do
     cfg = s3_config!()
 
-    case ExAws.S3.put_object(cfg.bucket, object_key(blake3_hex), data)
+    case ExAws.S3.put_object(cfg.bucket, key, data) |> ExAws.request(aws_config(cfg)) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp copy_key(src_key, dst_key) do
+    cfg = s3_config!()
+
+    case ExAws.S3.put_object_copy(cfg.bucket, dst_key, cfg.bucket, src_key)
          |> ExAws.request(aws_config(cfg)) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_key(key) do
+    cfg = s3_config!()
+
+    case ExAws.S3.delete_object(cfg.bucket, key) |> ExAws.request(aws_config(cfg)) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, reason}
     end

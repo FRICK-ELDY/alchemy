@@ -29,7 +29,8 @@
 | `POST /api/v1/inventory/blobs` は inventory 用パス契約（x0054）。中身は通常 PUT と同じ（常に owned Grant・x006f） | DriveNode / Prefab / Vault 表・client UI |
 | 同一 blake3 を `/blobs` と `/inventory/blobs` から別 owner が PUT しても共存（x006f） | mime/size 先勝ちの変更；CasObject あり・refcount=0 の GC |
 | PUT: `quota_reservations` + `reserved_bytes` 予約 → TX 外 CAS put → used 振替。失敗時は**予約解放のみ**（compensate は CAS 非削除＝並行同一 hash 安全）（x003f / x0074） | Oban・署名 URL 直 PUT；S3 バケット全 listing |
-| TTL 超過予約の reaper 解放 + CasObject 無し orphan bytes の grace GC（GenServer・x0074） | 実行中 PUT をゼロ失敗にする超短 TTL；マイグレ前の blake3 不明 reserved（0 クランプ） |
+| TTL 超過予約の reaper 解放 + CasObject 無し orphan bytes の grace GC（GenServer・x0074）。削除は quarantine→再検証→discard/restore。中断後は q-only を再試行し、CasObject ありなら restore 成功時のみ候補 drop | 実行中 PUT をゼロ失敗にする超短 TTL；S3 listing 全走査；exists? 一時障害の完全排除 |
+| 予約行削除と `reserved_bytes` 減算は同一 TX（n==1 のときだけ減算）。空 PUT（0 bytes）可 | マイグレ前の blake3 不明 reserved（0 クランプ済み） |
 | `ASSETS_CAS_BACKEND=local\|s3` で置き場切替（x001c）。**test では runtime が CAS env を無視**（x001e） | 公開バケット・CDN カスタムドメイン |
 | s3 時 GET は短命署名 URL へ 302（x001d） | Upload の署名 URL 直 PUT |
 | Quota 超過のアップロード拒否（既定 1GiB；`used + reserved`） | 課金連動 Quota / pgvector / Origin Cert / Ash 本格 |

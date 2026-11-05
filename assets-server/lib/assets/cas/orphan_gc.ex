@@ -4,6 +4,9 @@ defmodule Assets.CAS.OrphanGc do
 
   Candidates come from compensate / reserved reaper / local directory scan.
   Never runs on the upload compensate path — that path must not `CAS.delete`.
+
+  Deletion uses quarantine → re-check CasObject/reservation → discard/restore
+  so a concurrent PUT finalize cannot lose live bytes to TOCTOU.
   """
 
   use GenServer
@@ -19,6 +22,8 @@ defmodule Assets.CAS.OrphanGc do
   alias Assets.Quota.QuotaReservation
   alias Assets.Repo
 
+  @call_timeout_ms 60_000
+
   @type gc_result :: %{deleted: non_neg_integer(), noted: non_neg_integer()}
 
   def start_link(opts) do
@@ -27,7 +32,7 @@ defmodule Assets.CAS.OrphanGc do
 
   @spec run() :: gc_result()
   def run do
-    GenServer.call(__MODULE__, :run)
+    GenServer.call(__MODULE__, :run, @call_timeout_ms)
   end
 
   @doc false
@@ -111,39 +116,98 @@ defmodule Assets.CAS.OrphanGc do
   defp try_delete(blake3) do
     cond do
       not is_nil(Repo.get(CasObject, blake3)) ->
-        drop_candidate(blake3)
-        :skipped
+        restore_sidecar_then_maybe_drop(blake3)
 
       reservation_open?(blake3) ->
         :skipped
 
-      not CAS.exists?(blake3) ->
-        drop_candidate(blake3)
-        :skipped
-
       true ->
-        case CAS.delete(blake3) do
-          :ok ->
-            drop_candidate(blake3)
-            :deleted
-
-          {:error, reason} ->
-            Logger.warning(
-              inspect(%{
-                event: "assets.cas_orphan_gc.delete_failed",
-                blake3: blake3,
-                reason: inspect(reason)
-              })
-            )
-
+        case cas_present?(blake3) do
+          :unknown ->
             :skipped
+
+          # false: live may be gone while quarantine sidecar remains — still
+          # enter delete_orphan (local/S3 quarantine treats q-only as :ok).
+          _present_or_absent ->
+            finish_delete_orphan(blake3)
         end
     end
   end
 
+  # CasObject exists: restore/clear interrupted quarantine. Only drop the
+  # candidate when restore succeeds — otherwise retry next run (S3 blip etc.).
+  defp restore_sidecar_then_maybe_drop(blake3) do
+    case CAS.restore_quarantine(blake3) do
+      :ok ->
+        drop_candidate(blake3)
+        :skipped
+
+      {:error, reason} ->
+        Logger.warning(
+          inspect(%{
+            event: "assets.cas_orphan_gc.restore_failed",
+            blake3: blake3,
+            reason: inspect(reason)
+          })
+        )
+
+        :skipped
+    end
+  end
+
+  defp finish_delete_orphan(blake3) do
+    case CAS.delete_orphan(blake3, fn -> still_orphan?(blake3) end) do
+      :deleted ->
+        drop_candidate(blake3)
+        :deleted
+
+      :missing ->
+        drop_candidate(blake3)
+        :skipped
+
+      :aborted ->
+        :skipped
+
+      {:error, reason} ->
+        Logger.warning(
+          inspect(%{
+            event: "assets.cas_orphan_gc.delete_failed",
+            blake3: blake3,
+            reason: inspect(reason)
+          })
+        )
+
+        :skipped
+    end
+  end
+
+  defp still_orphan?(blake3) do
+    is_nil(Repo.get(CasObject, blake3)) and not reservation_open?(blake3)
+  end
+
   defp orphan_bytes?(blake3) do
-    is_nil(Repo.get(CasObject, blake3)) and not reservation_open?(blake3) and
-      CAS.exists?(blake3)
+    still_orphan?(blake3) and cas_present?(blake3) == true
+  end
+
+  defp cas_present?(blake3) do
+    case CAS.exists?(blake3) do
+      true ->
+        true
+
+      false ->
+        false
+
+      {:error, reason} ->
+        Logger.warning(
+          inspect(%{
+            event: "assets.cas_orphan_gc.exists_uncertain",
+            blake3: blake3,
+            reason: inspect(reason)
+          })
+        )
+
+        :unknown
+    end
   end
 
   defp reservation_open?(blake3) do

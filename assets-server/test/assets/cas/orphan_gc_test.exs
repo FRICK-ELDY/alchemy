@@ -4,6 +4,7 @@ defmodule Assets.CAS.OrphanGcTest do
   alias Assets.Blobs
   alias Assets.Blobs.CasObject
   alias Assets.CAS
+  alias Assets.CAS.Local
   alias Assets.CAS.OrphanCandidate
   alias Assets.CAS.OrphanGc
   alias Assets.Quota.QuotaLedger
@@ -122,6 +123,104 @@ defmodule Assets.CAS.OrphanGcTest do
 
     assert %{noted: 1, deleted: 1} = OrphanGc.run_now()
     assert CAS.exists?(blake3) == false
+  end
+
+  test "delete_orphan restores when re-check says referenced" do
+    data = "toc-tou-restore"
+    blake3 = Blobs.blake3_hex(data)
+    assert :created = CAS.put_if_absent(blake3, data)
+
+    assert :aborted = CAS.delete_orphan(blake3, fn -> false end)
+    assert CAS.exists?(blake3) == true
+    refute File.exists?(Local.quarantine_path(blake3))
+  end
+
+  test "delete_orphan discards quarantine when still orphan" do
+    data = "toc-tou-discard"
+    blake3 = Blobs.blake3_hex(data)
+    assert :created = CAS.put_if_absent(blake3, data)
+
+    assert :deleted = CAS.delete_orphan(blake3, fn -> true end)
+    assert CAS.exists?(blake3) == false
+    refute File.exists?(Local.quarantine_path(blake3))
+  end
+
+  test "resumes interrupted quarantine (live gone, sidecar left) and discards" do
+    data = "interrupted-gc-discard"
+    blake3 = Blobs.blake3_hex(data)
+    assert :created = CAS.put_if_absent(blake3, data)
+
+    assert :ok = Local.quarantine(blake3)
+    refute File.exists?(Local.path_for(blake3))
+    assert File.exists?(Local.quarantine_path(blake3))
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, _} =
+             Repo.insert(
+               OrphanCandidate.changeset(%OrphanCandidate{}, %{
+                 blake3: blake3,
+                 noticed_at: now
+               })
+             )
+
+    assert %{deleted: 1} = OrphanGc.run_now()
+    assert CAS.exists?(blake3) == false
+    refute File.exists?(Local.quarantine_path(blake3))
+    assert Repo.get(OrphanCandidate, blake3) == nil
+  end
+
+  test "resumes interrupted quarantine when CasObject appeared — restores live" do
+    data = "interrupted-gc-restore"
+
+    assert {:ok, %CasObject{blake3: blake3}, :created} =
+             Blobs.upload(@sub_a, data, "application/octet-stream")
+
+    # Simulate crash after quarantine while CasObject already exists.
+    assert :ok = Local.quarantine(blake3)
+    refute File.exists?(Local.path_for(blake3))
+    assert File.exists?(Local.quarantine_path(blake3))
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    Repo.insert(
+      OrphanCandidate.changeset(%OrphanCandidate{}, %{blake3: blake3, noticed_at: now}),
+      on_conflict: :nothing,
+      conflict_target: :blake3
+    )
+
+    assert %{deleted: 0} = OrphanGc.run_now()
+    assert CAS.exists?(blake3) == true
+    refute File.exists?(Local.quarantine_path(blake3))
+    assert Repo.get(OrphanCandidate, blake3) == nil
+  end
+
+  test "keeps candidate when CasObject restore_quarantine fails" do
+    data = "restore-fail-keeps-candidate"
+
+    assert {:ok, %CasObject{blake3: blake3}, :created} =
+             Blobs.upload(@sub_a, data, "application/octet-stream")
+
+    assert :ok = Local.quarantine(blake3)
+    # Make restore fail: quarantine path present but not a renameable file.
+    q = Local.quarantine_path(blake3)
+    File.rm!(q)
+    File.mkdir_p!(q)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, _} =
+             Repo.insert(
+               OrphanCandidate.changeset(%OrphanCandidate{}, %{
+                 blake3: blake3,
+                 noticed_at: now
+               })
+             )
+
+    assert %{deleted: 0} = OrphanGc.run_now()
+    assert Repo.get(OrphanCandidate, blake3)
+    # Cleanup directory sidecar so later tests are not confused.
+    File.rm_rf!(q)
   end
 
   defp ensure_ledger!(owner_sub, reserved: reserved) do

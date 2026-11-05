@@ -12,16 +12,18 @@
 |:---|:---|
 | `quota_reservations` 行単位の予約（owner×blake3×bytes×`reserved_at`） | Oban / 署名 URL 直 PUT |
 | TTL 超過予約の解放と `reserved_bytes` 減算（GenServer `send_after`） | 実行中 PUT をゼロ失敗にする超短 TTL（運用で余裕を取る） |
+| orphan 削除は quarantine → CasObject/予約の再検証 → discard/restore（生存 CasObject の bytes 破壊 TOCTOU を閉じる） | S3 一時障害中の exists? 誤認をゼロにする（不明時は GC/候補記録をスキップ） |
 | CasObject 無し・in-flight 予約無し・grace 後の CAS bytes 削除 | CasObject あり・refcount=0 の削除（将来） |
 | upload compensate は引き続き予約解放のみ（CAS 非削除） | S3 バケット全 listing スキャン（候補は DB `cas_orphan_candidates`） |
-| 並行同一 blake3 の共有 bytes を compensate / 早すぎる GC で消さない | マイグレ前に残った blake3 不明の `reserved_bytes`（起動時に 0 クランプ） |
+| 予約行削除と `reserved_bytes` 減算は同一 TX・行削除 n==1 のときだけ減算 | マイグレ前に残った blake3 不明の `reserved_bytes`（起動時に 0 クランプ） |
+| 空バイナリ PUT（size=0）は許可（予約 bytes=0） | — |
 
 ## 設計
 
 1. **`quota_reservations`**: 予約 TX で insert。finalize / compensate / reaper で delete + `reserved_bytes` 減算
 2. **`Assets.Quota.ReservedReaper`**: `Auth.TokenCleanup` 同型。TTL 切れ行を回収し、CasObject 無しなら orphan 候補へ
 3. **`cas_orphan_candidates`**: compensate / reaper / local スキャンで `noticed_at` 記録
-4. **`Assets.CAS.OrphanGc`**: grace 経過かつ CasObject・予約なし → `CAS.delete`（upload 経路とは別）
+4. **`Assets.CAS.OrphanGc`**: grace 経過かつ CasObject・予約なし → `CAS.delete_orphan`（quarantine→再検証→discard/restore。upload 経路とは別）
 
 ## 本 Slice に含めない
 

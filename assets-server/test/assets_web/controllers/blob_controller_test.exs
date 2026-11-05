@@ -201,8 +201,8 @@ defmodule AssetsWeb.BlobControllerTest do
 
     assert %{used_bytes: 0, reserved_bytes: 0} = Blobs.quota(sub)
     assert Repo.get(CasObject, blake3) == nil
-    # Orphan bytes may remain; GC is out of scope for x003f.
-    assert CAS.exists?(blake3)
+    # Compensate must leave bytes; OrphanGc (x0074) deletes after grace.
+    assert CAS.exists?(blake3) == true
   end
 
   test "finalize failure after peer object keeps shared CAS and peer quota", %{
