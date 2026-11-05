@@ -22,6 +22,8 @@
 - 行プロトコル: `LOOKUP <token>` → `OK gen=<u64> ipc=127.0.0.1:<port>` / `ERR`
 - client は shutdown 直前に LOOKUP → 得た addr で既存 `SHUTDOWN <token>`
 - host ready / restart のたびに discovery state を `publish`（gen++）
+- host restart **開始時**に `invalidate`（LOOKUP→`ERR`）し、死んだポートへの偽 OK を避ける
+- discovery env があるとき client は LOOKUP 失敗で `ALCHEMY_HOST_IPC_ADDR` にフォールバックしない
 
 ## 完了条件
 

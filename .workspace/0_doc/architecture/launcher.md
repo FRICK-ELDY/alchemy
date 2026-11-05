@@ -23,7 +23,7 @@
 |:---|:---|:---|
 | Exit Client only | 維持 | 監視継続 |
 | Exit Client+Host（discovery LOOKUP → IPC SHUTDOWN） | exit 0（意図的） | **終了**（再起動しない） |
-| host crash（非 0） | — | backoff 再起動（discovery gen++ / ipc 更新；client は LOOKUP で新 addr） |
+| host crash（非 0） | — | discovery **invalidate**（LOOKUP→ERR）→ backoff 再起動 → publish（gen++ / 新 ipc）；client は LOOKUP 成功後にのみ SHUTDOWN |
 | Ctrl+C | IPC で停止 | 終了 |
 
 ## 環境変数

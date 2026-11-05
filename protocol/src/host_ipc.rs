@@ -76,7 +76,45 @@ pub struct LookupOk {
     pub ipc_addr: String,
 }
 
+/// LOOKUP failure after (or before) talking to discovery.
+#[derive(Debug)]
+pub enum LookupError {
+    /// Server replied `ERR\n` (not ready / bad token) — connect succeeded.
+    ErrReply,
+    /// TCP / read / write failure (includes accept-not-ready races).
+    Io(std::io::Error),
+    /// Connected but reply was neither OK nor ERR.
+    InvalidReply(String),
+}
+
+impl std::fmt::Display for LookupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ErrReply => write!(f, "discovery returned ERR"),
+            Self::Io(err) => write!(f, "{err}"),
+            Self::InvalidReply(line) => write!(f, "discovery reply not OK: {line:?}"),
+        }
+    }
+}
+
+impl std::error::Error for LookupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(err) => Some(err),
+            Self::ErrReply | Self::InvalidReply(_) => None,
+        }
+    }
+}
+
+impl LookupError {
+    /// True when the server answered the protocol `ERR` line (not a connect failure).
+    pub fn is_err_reply(&self) -> bool {
+        matches!(self, Self::ErrReply)
+    }
+}
+
 /// Parse `OK gen=<u64> ipc=<addr>` (with or without trailing newline).
+/// `ipc` must be loopback ([`is_loopback_addr`]); non-loopback → `None`.
 pub fn parse_lookup_ok(line: &str) -> Option<LookupOk> {
     let line = line.trim();
     let rest = line.strip_prefix("OK")?;
@@ -93,9 +131,13 @@ pub fn parse_lookup_ok(line: &str) -> Option<LookupOk> {
             }
         }
     }
+    let ipc_addr = ipc_addr?;
+    if !is_loopback_addr(&ipc_addr) {
+        return None;
+    }
     Some(LookupOk {
         gen: gen?,
-        ipc_addr: ipc_addr?,
+        ipc_addr,
     })
 }
 
@@ -110,24 +152,21 @@ pub fn request_shutdown(addr: &str, token: &str) -> Result<(), std::io::Error> {
 }
 
 /// Connect to launcher discovery, send LOOKUP, parse OK. Caller should enforce loopback.
-pub fn request_lookup(discovery_addr: &str, token: &str) -> Result<LookupOk, std::io::Error> {
-    let mut stream = TcpStream::connect(discovery_addr)?;
+pub fn request_lookup(discovery_addr: &str, token: &str) -> Result<LookupOk, LookupError> {
+    let mut stream = TcpStream::connect(discovery_addr).map_err(LookupError::Io)?;
     stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
-    stream.write_all(lookup_line(token).as_bytes())?;
+    stream
+        .write_all(lookup_line(token).as_bytes())
+        .map_err(LookupError::Io)?;
     stream.flush().ok();
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader.read_line(&mut line)?;
+    reader.read_line(&mut line).map_err(LookupError::Io)?;
     if line.trim() == "ERR" {
-        return Err(std::io::Error::other("discovery returned ERR"));
+        return Err(LookupError::ErrReply);
     }
-    parse_lookup_ok(&line).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("discovery reply not OK: {line:?}"),
-        )
-    })
+    parse_lookup_ok(&line).ok_or_else(|| LookupError::InvalidReply(line))
 }
 
 /// Build ready-file body: `ready\n` plus optional `ipc=…\n`.
@@ -186,6 +225,14 @@ mod tests {
         assert!(parse_lookup_ok("ERR\n").is_none());
         assert!(parse_lookup_ok("OK ipc=127.0.0.1:1\n").is_none());
         assert!(parse_lookup_ok("OK gen=1\n").is_none());
+        assert!(parse_lookup_ok("OK gen=1 ipc=192.168.0.1:9\n").is_none());
+    }
+
+    #[test]
+    fn lookup_error_err_reply_flag() {
+        assert!(LookupError::ErrReply.is_err_reply());
+        assert!(!LookupError::InvalidReply("x".into()).is_err_reply());
+        assert!(!LookupError::Io(std::io::Error::other("connect")).is_err_reply());
     }
 
     #[test]

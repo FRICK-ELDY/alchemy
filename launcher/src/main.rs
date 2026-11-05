@@ -137,6 +137,9 @@ fn run() -> Result<()> {
                     log::warn!(
                         "host crashed ({status}); restart {host_restarts}/{MAX_HOST_RESTARTS} after {backoff:?}"
                     );
+                    // Drop stale IPC immediately so LOOKUP returns ERR until re-publish
+                    // (client must not SHUTDOWN the dead port during the restart window).
+                    discovery.invalidate();
                     // Honor Ctrl+C during backoff — do not respawn into a shutdown.
                     if sleep_interruptible(backoff, &shutting_down) {
                         log::info!("shutdown during restart backoff; skipping respawn");
