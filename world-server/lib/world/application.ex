@@ -14,6 +14,8 @@ defmodule World.Application do
         World.Token.Keys,
         World.Auth.Jwks,
         World.PlaceHashes,
+        # x0075: permanent manifest-seal-hash Port (replaces per-request CLI)
+        World.ManifestSealHash.Worker,
         WorldWeb.Endpoint
       ] ++ zenoh_children()
 

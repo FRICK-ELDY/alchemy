@@ -167,11 +167,12 @@ depends_on: [x0006]
 | x0072 | — | done | launcher discovery（host restart 後 IPC 再通知） | [x0072-launcher-discovery.md](slices/x0072-launcher-discovery.md) |
 | x0073 | — | done | P3 衛生（軽い一括: Keys PT / prod publish / launcher deny / smoke） | [x0073-p3-hygiene-easy.md](slices/x0073-p3-hygiene-easy.md) |
 | x0074 | — | done | reserved reaper + orphan CAS GC（P2-1） | [x0074-reserved-reaper-orphan-cas-gc.md](slices/x0074-reserved-reaper-orphan-cas-gc.md) |
+| x0075 | — | done | BLAKE3 / seal-hash 常駐 Port（P2-2） | [x0075-blake3-seal-hash-port.md](slices/x0075-blake3-seal-hash-port.md) |
 
-**現在の次:** P3 残衛生（BLAKE3 常駐 Port / 分割 / bind 送信元 / mTLS temp / DemoScene ベクタ / metrics+jti）または scene despawn。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
+**現在の次:** P3 残衛生（分割 / bind 送信元 / mTLS temp / DemoScene ベクタ / metrics+jti）または scene despawn。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x0075`**。
+次の空き番号は **`x0076`**。
 
 ## 関連
 

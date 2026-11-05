@@ -19,6 +19,9 @@ config :world,
   room_token_generate_key_on_startup: true,
   # Must match alchemy-protocol `PROTOCOL_PIN` (ManifestSeal hash input · x0039 / x004e).
   protocol_pin: "alchemy-protocol/0.18.0-x0069",
+  # x0075: permanent manifest-seal-hash Port (path set in test_helper / env / PATH)
+  manifest_seal_hash_bin: nil,
+  manifest_seal_hash_call_timeout_ms: 30_000,
   # Slice B.5: Room APIs require auth-server Bearer JWT by default.
   allow_anon_tokens: false,
   auth_jwks_url: "http://127.0.0.1:4002/.well-known/jwks.json",

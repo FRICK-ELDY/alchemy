@@ -1,7 +1,8 @@
 //! x0039: canonical ManifestSeal body hash for world-server.
+//! x0075: `--serve` Erlang `{:packet, 4}` loop (Port worker; one-shot path kept).
 //!
-//! Reads one JSON object from a file path (argv[1]) or stdin (`-` / no arg),
-//! builds `SceneManifest` with empty `world_seal`, prints lowercase BLAKE3 hex.
+//! One-shot: JSON from file path (argv[1]) or stdin (`-` / no arg) → lowercase BLAKE3 hex.
+//! `--serve`: length-prefixed JSON requests → hex or soft-error replies.
 //!
 //! Guarantees: same encode path as peers (`manifest_seal_blake3_hex`).
 //! Non-guarantees: HTTP / JWT verification (caller supplies attested fields).
@@ -9,13 +10,18 @@
 use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
+use std::process::ExitCode;
 
+use alchemy_protocol::port_framing::{serve_loop, ServeReply};
 use alchemy_protocol::wire_crypto::manifest_seal_blake3_hex;
 use alchemy_protocol::{
     normalize_scene_entry_trs, LocomotionConfig, LocomotionMode, SceneEntry, SceneManifest,
     PROTOCOL_PIN,
 };
 use serde::Deserialize;
+
+/// Soft ceiling for seal JSON (scene payloads are small vs blob uploads).
+const SERVE_MAX_LEN: u32 = 4 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct Input {
@@ -104,45 +110,17 @@ fn decode_host_pub_hex(hex_str: &str) -> Result<Vec<u8>, String> {
     hex::decode(&down).map_err(|e| format!("host_pub_hex decode: {e}"))
 }
 
-fn read_input() -> Result<String, String> {
-    let arg = std::env::args().nth(1);
-    match arg.as_deref() {
-        None | Some("-") => {
-            let mut raw = String::new();
-            io::stdin()
-                .read_to_string(&mut raw)
-                .map_err(|e| format!("read stdin: {e}"))?;
-            Ok(raw)
-        }
-        Some(path) => fs::read_to_string(Path::new(path)).map_err(|e| format!("read {path}: {e}")),
-    }
+fn hash_json_bytes(raw: &[u8]) -> Result<String, String> {
+    let text = std::str::from_utf8(raw).map_err(|e| format!("utf8: {e}"))?;
+    hash_json_str(text)
 }
 
-fn main() {
-    let raw = match read_input() {
-        Ok(s) => s,
-        Err(err) => {
-            eprintln!("manifest-seal-hash: {err}");
-            std::process::exit(2);
-        }
-    };
-    let input: Input = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(err) => {
-            eprintln!("manifest-seal-hash: invalid JSON: {err}");
-            std::process::exit(2);
-        }
-    };
-    let host_pub = match decode_host_pub_hex(&input.host_pub_hex) {
-        Ok(b) => b,
-        Err(err) => {
-            eprintln!("manifest-seal-hash: {err}");
-            std::process::exit(2);
-        }
-    };
+fn hash_json_str(raw: &str) -> Result<String, String> {
+    let input: Input =
+        serde_json::from_str(raw).map_err(|err| format!("invalid JSON: {err}"))?;
+    let host_pub = decode_host_pub_hex(&input.host_pub_hex)?;
     if input.host_generation == 0 {
-        eprintln!("manifest-seal-hash: host_generation must be > 0");
-        std::process::exit(2);
+        return Err("host_generation must be > 0".into());
     }
     let pin = input
         .protocol_pin
@@ -191,5 +169,65 @@ fn main() {
         world_seal: String::new(),
         host_generation: input.host_generation,
     };
-    println!("{}", manifest_seal_blake3_hex(&manifest));
+    Ok(manifest_seal_blake3_hex(&manifest))
+}
+
+fn read_oneshot_raw() -> Result<String, String> {
+    let args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--serve").collect();
+    match args.first().map(|s| s.as_str()) {
+        None | Some("-") => {
+            let mut raw = String::new();
+            io::stdin()
+                .read_to_string(&mut raw)
+                .map_err(|e| format!("read stdin: {e}"))?;
+            Ok(raw)
+        }
+        Some(path) => fs::read_to_string(Path::new(path)).map_err(|e| format!("read {path}: {e}")),
+    }
+}
+
+fn run_serve() -> Result<(), String> {
+    let max_len = std::env::var("MANIFEST_SEAL_HASH_MAX_LEN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(SERVE_MAX_LEN);
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut reader = stdin.lock();
+    let mut writer = stdout.lock();
+    serve_loop(&mut reader, &mut writer, max_len, |payload| {
+        match hash_json_bytes(payload).and_then(|h| ServeReply::ok_hex(&h)) {
+            Ok(r) => r,
+            Err(e) => ServeReply::soft_error(e),
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+fn main() -> ExitCode {
+    if std::env::args().any(|a| a == "--serve") {
+        if let Err(err) = run_serve() {
+            eprintln!("manifest-seal-hash: {err}");
+            return ExitCode::from(2);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let raw = match read_oneshot_raw() {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("manifest-seal-hash: {err}");
+            return ExitCode::from(2);
+        }
+    };
+    match hash_json_str(&raw) {
+        Ok(hex) => {
+            println!("{hex}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("manifest-seal-hash: {err}");
+            ExitCode::from(2)
+        }
+    }
 }

@@ -19,7 +19,7 @@
 | Room API は auth-server Bearer JWT 必須（`sub` を Room Token に転写） | 匿名 Token（既定 OFF。`WORLD_ALLOW_ANON_TOKENS=true` のみ） |
 | auth JWKS（`AUTH_JWKS_URL`）によるユーザー JWT 検証 | auth の revocation 再確認 |
 | HostAttestation JWT（`typ=host_attestation` + **`host_generation`**）を host Room Token のみ発行（x0025 / **x003a**）。同一 `host_pub` は generation 維持、鍵変更で bump。発行失敗は 5xx（token 検証失敗は 401） | UGC scene 編集；完全な handoff UX |
-| ManifestSeal JWT（`typ=manifest_seal` / `aud=alchemy-manifest-seal` + **`host_generation`**）を host Room Token のみ発行（x0026 / **x0039** / **x003a**）。**DB scene + HostAttestation から canonical blake3 を再計算**し、host 提出 hash と不一致なら 422（署名 oracle 廃止）。`manifest-seal-hash` CLI 必須 | UGC scene 編集；host ローカル改変 body への seal |
+| ManifestSeal JWT（`typ=manifest_seal` / `aud=alchemy-manifest-seal` + **`host_generation`**）を host Room Token のみ発行（x0026 / **x0039** / **x003a**）。**DB scene + HostAttestation から canonical blake3 を再計算**し、host 提出 hash と不一致なら 422（署名 oracle 廃止）。`manifest-seal-hash --serve` 常駐 Port 必須（x0075） | UGC scene 編集；host ローカル改変 body への seal |
 | DemoScene（entries + loco + **初期 quat/scale**）を Room 作成時に紐付け。`GET …/scene` は **host** Room Token のみ（x0027 / x002c）。**x006d**: `POST …/scene/entries` で mesh 1 件追記（revision bump・canonical seal 入力） | guest への scene 配布・フル UGC エディタ・collider scale |
 | PlaceRead JWT（`typ=place_read` / `aud=alchemy-assets-place-read`）を Room Token + 検証済み `world_seal` で発行（x006b）。scene blake3 は **ManifestSeal 時**固定。PlaceRead `exp` = **seal 絶対 unix `exp`**＋`touch_until`。期限切れ seal → `seal_expired`。再起動後 re-seal。`extra_blake3` 無効 | JWT 内全 hash 列挙；durable 永続／canonical 再 hydrate；PlaceRead が seal より長生き；退出即時 revoke；client 自動取得 |
 

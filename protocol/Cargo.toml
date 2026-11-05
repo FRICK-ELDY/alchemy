@@ -21,6 +21,10 @@ base64 = "0.22"
 name = "manifest-seal-hash"
 path = "src/bin/manifest_seal_hash.rs"
 
+[[bin]]
+name = "blake3-hash"
+path = "src/bin/blake3_hash.rs"
+
 [build-dependencies]
 prost-build = "0.14"
 protoc-bin-vendored = "3"
