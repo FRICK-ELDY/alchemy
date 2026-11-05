@@ -36,6 +36,11 @@ defmodule WorldWeb.RoomController do
             |> put_status(:conflict)
             |> json(%{error: "room_already_exists"})
 
+          {:error, :owner_room_cap_exceeded} ->
+            conn
+            |> put_status(:forbidden)
+            |> json(%{error: "room_cap_exceeded"})
+
           {:error, :missing_owner} ->
             conn
             |> put_status(:unprocessable_entity)

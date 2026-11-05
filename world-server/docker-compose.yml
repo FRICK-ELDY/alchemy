@@ -28,6 +28,7 @@ services:
       - .:/app
       - ../shared/alchemy_auth_client:/shared/alchemy_auth_client
       - ../shared/alchemy_client_ip:/shared/alchemy_client_ip
+      - ../shared/alchemy_rate_limit:/shared/alchemy_rate_limit
       - world_deps:/app/deps
       - world_build:/app/_build
       - world_data:/app/priv/data

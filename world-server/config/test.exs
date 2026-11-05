@@ -26,7 +26,25 @@ config :world,
   auth_internal_token: "dev-internal-token",
   trusted_proxies: [],
   # No NIF session / zenohd in ExUnit — in-memory adapter only.
-  zenoh_adapter: World.Network.Zenoh.LocalStubAdapter
+  zenoh_adapter: World.Network.Zenoh.LocalStubAdapter,
+  # High enough that multi-room tests do not hit the structural cap.
+  max_rooms_per_owner: 10_000
+
+config :world, World.RateLimit,
+  limits: %{
+    room_create: %{
+      ip: %{limit: 10_000, period_ms: 60_000},
+      user: %{limit: 10_000, period_ms: 60_000}
+    },
+    room_token: %{
+      ip: %{limit: 10_000, period_ms: 60_000},
+      user: %{limit: 10_000, period_ms: 60_000}
+    },
+    room_visibility: %{
+      ip: %{limit: 10_000, period_ms: 60_000},
+      user: %{limit: 10_000, period_ms: 60_000}
+    }
+  }
 
 config :logger, level: :warning
 config :phoenix, :plug_init_mode, :runtime

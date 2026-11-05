@@ -37,6 +37,7 @@ defmodule World.MixProject do
       {:jason, "~> 1.2"},
       {:alchemy_auth_client, path: "../shared/alchemy_auth_client"},
       {:alchemy_client_ip, path: "../shared/alchemy_client_ip"},
+      {:alchemy_rate_limit, path: "../shared/alchemy_rate_limit"},
       {:joken, "~> 2.6"},
       {:jose, "~> 1.11.13"},
       {:req, "~> 0.5"},

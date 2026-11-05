@@ -53,6 +53,7 @@ services:
     volumes:
       - ./auth-server:/app
       - ./shared/alchemy_client_ip:/shared/alchemy_client_ip
+      - ./shared/alchemy_rate_limit:/shared/alchemy_rate_limit
       - e2e_auth_deps:/app/deps
       - e2e_auth_build:/app/_build
     depends_on:
@@ -101,6 +102,7 @@ services:
       - ./world-server:/app
       - ./shared/alchemy_auth_client:/shared/alchemy_auth_client
       - ./shared/alchemy_client_ip:/shared/alchemy_client_ip
+      - ./shared/alchemy_rate_limit:/shared/alchemy_rate_limit
       - e2e_world_deps:/app/deps
       - e2e_world_build:/app/_build
     depends_on:

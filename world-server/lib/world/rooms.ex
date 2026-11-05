@@ -4,21 +4,22 @@ defmodule World.Rooms do
 
   Guarantees: create / owner / scene / visibility backed by Ash + SQLite (survives restart).
   x006d: host may append a single mesh SceneEntry via `append_scene_entry/2` (revision bump).
+  x0071: create rejects when owner already holds `max_rooms_per_owner` rooms (best-effort;
+  concurrent races may overshoot slightly — no DB trigger).
   Non-guarantees: full UGC editor; multi-node replication; Postgres (swap path documented);
-  Room Token revocation on visibility / friendship change (TTL-only; see RoomAccess).
+  Room Token revocation on visibility / friendship change (TTL-only; see RoomAccess);
+  strict serialization of per-owner room counts under concurrent create.
 
   x0021: `owner_sub` set only via `create/3` (`{:ok, room_id, visibility, wire_cap}` · x004e).
   Token issuance never creates a room.
   x0027: DemoScene assigned at create and returned by `scene/1`.
 
-
-
   Authorization: use `ensure_owner/2` (and `require_existing/1` for existence-only).
   Do not infer auth from boolean helpers — those APIs are intentionally absent so
   storage failures cannot collapse to `false` / `nil`.
 
-  Errors: `:invalid_room_id` / `:already_exists` / `:not_found` are client-facing.
-  `:storage_error` is infrastructure (SQLite busy, disk, Repo) → HTTP 5xx.
+  Errors: `:invalid_room_id` / `:already_exists` / `:not_found` / `:owner_room_cap_exceeded`
+  are client-facing. `:storage_error` is infrastructure (SQLite busy, disk, Repo) → HTTP 5xx.
   """
 
   require Logger
@@ -37,6 +38,7 @@ defmodule World.Rooms do
              | :already_exists
              | :missing_owner
              | :invalid_visibility
+             | :owner_room_cap_exceeded
              | storage_error()}
   def create(room_id, owner_sub, visibility \\ "public")
 
@@ -51,12 +53,14 @@ defmodule World.Rooms do
       when is_binary(room_id) and is_binary(owner_sub) and is_binary(visibility) do
     with :ok <- validate_room_id(room_id),
          {:ok, vis} <- World.Visibility.parse(visibility),
+         :ok <- ensure_under_owner_cap(owner_sub),
          {:ok, %Room{room_id: id, visibility: stored, wire_cap: wire_cap}} <-
            insert_room(room_id, owner_sub, vis) do
       {:ok, id, stored, wire_cap}
     else
       {:error, :invalid_room_id} = err -> err
       {:error, :invalid_visibility} = err -> err
+      {:error, :owner_room_cap_exceeded} = err -> err
       {:error, :already_exists} = err -> err
       {:error, :storage_error} = err -> err
       {:error, error} -> map_create_error(error)
@@ -494,6 +498,38 @@ defmodule World.Rooms do
 
   defp owner_matches(%Room{owner_sub: owner}, sub) when owner == sub, do: :ok
   defp owner_matches(%Room{}, _), do: {:error, :forbidden_host}
+
+  defp ensure_under_owner_cap(owner_sub) do
+    cap = Application.get_env(:world, :max_rooms_per_owner, 32)
+
+    case count_by_owner(owner_sub) do
+      {:ok, count} when is_integer(count) and count >= cap ->
+        {:error, :owner_room_cap_exceeded}
+
+      {:ok, _count} ->
+        :ok
+
+      {:error, :storage_error} = err ->
+        err
+    end
+  end
+
+  defp count_by_owner(owner_sub) do
+    case World.Repo.query("SELECT COUNT(*) FROM rooms WHERE owner_sub = ?", [owner_sub]) do
+      {:ok, %{rows: [[count]]}} when is_integer(count) ->
+        {:ok, count}
+
+      {:ok, %{rows: [[count]]}} when is_binary(count) ->
+        {:ok, String.to_integer(count)}
+
+      {:error, error} ->
+        storage_error(error, :count_by_owner)
+    end
+  rescue
+    # Repo stopped / not registered (tests simulate outage before insert).
+    e in [RuntimeError, ArgumentError] ->
+      storage_error(e, :count_by_owner)
+  end
 
   defp insert_room(room_id, owner_sub, visibility) do
     Room.create(%{
