@@ -53,11 +53,12 @@ impl ServeReply {
     }
 
     pub fn soft_error(reason: impl Into<String>) -> Self {
-        let mut msg = reason.into();
-        // Keep packet small for Port callers.
-        if msg.len() > 200 {
-            msg.truncate(200);
-        }
+        let msg = reason.into();
+        // Keep packet small for Port callers (char boundary safe).
+        let msg = match msg.char_indices().nth(200) {
+            Some((idx, _)) => msg[..idx].to_string(),
+            None => msg,
+        };
         Self::SoftError(msg)
     }
 
@@ -160,6 +161,17 @@ mod tests {
         assert_eq!(ok.as_bytes().len(), 64);
         let err = ServeReply::soft_error("bad");
         assert_eq!(err.as_bytes(), b"!bad");
+    }
+
+    #[test]
+    fn soft_error_truncates_on_char_boundary() {
+        // 201 chars of multi-byte 'あ' (3 bytes each) must not panic on truncate.
+        let long: String = std::iter::repeat('あ').take(201).collect();
+        let reply = ServeReply::soft_error(long);
+        let bytes = reply.as_bytes();
+        assert_eq!(bytes[0], SOFT_ERR_PREFIX);
+        assert!(std::str::from_utf8(&bytes[1..]).is_ok());
+        assert_eq!(std::str::from_utf8(&bytes[1..]).unwrap().chars().count(), 200);
     }
 
     #[test]

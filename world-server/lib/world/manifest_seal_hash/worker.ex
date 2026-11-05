@@ -2,13 +2,24 @@ defmodule World.ManifestSealHash.Worker do
   @moduledoc """
   Permanent Port to `manifest-seal-hash --serve` (x0075).
 
+  Nearly the same shape as `Assets.Blake3.Worker` (framing / receive / reopen).
+  Kept per-app on purpose — no new `shared/` package in x0075.
+
   Guarantees: one OS process reused; same encode path as one-shot CLI; `{:packet, 4}`.
   Non-guarantees: parallel hash throughput; zero-fail during Port restart.
+
+  Error surface: returns `{:ok, hex} | {:error, _}` for HTTP mapping in
+  `RoomController`. Assets `hash_hex/1` raises instead — intentional facade
+  asymmetry (upload vs seal issue path).
   """
 
   use GenServer
 
+  require Logger
+
   @type hash_result :: {:ok, String.t()} | {:error, term()}
+
+  @receive_slack_ms 2_000
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -16,7 +27,7 @@ defmodule World.ManifestSealHash.Worker do
 
   @spec blake3_hex(binary()) :: hash_result()
   def blake3_hex(json) when is_binary(json) do
-    timeout = Application.get_env(:world, :manifest_seal_hash_call_timeout_ms, 30_000)
+    timeout = call_timeout_ms()
     GenServer.call(__MODULE__, {:hash, json}, timeout)
   catch
     :exit, {:noproc, _} ->
@@ -30,19 +41,27 @@ defmodule World.ManifestSealHash.Worker do
   def init(_opts) do
     Process.flag(:trap_exit, true)
 
-    case open_port() do
-      {:ok, state} -> {:ok, state}
-      {:error, reason} -> {:stop, reason}
+    case ancestor_parent() do
+      parent when is_pid(parent) ->
+        case open_port() do
+          {:ok, state} -> {:ok, Map.put(state, :parent, parent)}
+          {:error, reason} -> {:stop, reason}
+        end
+
+      _ ->
+        Logger.error(
+          "World.ManifestSealHash.Worker: no supervisor parent in $ancestors; refusing start"
+        )
+
+        {:stop, :no_parent}
     end
   end
 
   @impl true
   def handle_call({:hash, json}, _from, state) do
-    timeout = Application.get_env(:world, :manifest_seal_hash_call_timeout_ms, 30_000)
-
     case Port.command(state.port, json) do
       true ->
-        receive_reply(state, timeout)
+        receive_reply(state, receive_timeout_ms())
 
       false ->
         {:reply, {:error, {:cli_failed, :command, "port command failed"}}, reopen!(state)}
@@ -54,24 +73,28 @@ defmodule World.ManifestSealHash.Worker do
     {:noreply, reopen!(state)}
   end
 
-  def handle_info({:EXIT, port, _reason}, %{port: port} = state) do
+  def handle_info({:EXIT, port, _reason}, %{port: port} = state) when is_port(port) do
     {:noreply, reopen!(state)}
   end
+
+  def handle_info({:EXIT, parent, reason}, %{parent: parent} = state) when is_pid(parent) do
+    close_port(state.port)
+    {:stop, reason, %{state | port: nil}}
+  end
+
+  # Stale EXIT from a previous Port after exit_status→reopen: ignore.
+  # Stop only on parent match (idle) or ^parent (receive).
+  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
 
   def handle_info(_msg, state), do: {:noreply, state}
 
   @impl true
   def terminate(_reason, state) do
-    if Map.get(state, :port) && is_port(state.port) && Port.info(state.port) != nil do
-      Port.close(state.port)
-    end
-
+    close_port(Map.get(state, :port))
     :ok
   end
 
-  defp receive_reply(state, timeout) do
-    port = state.port
-
+  defp receive_reply(%{port: port, parent: parent} = state, timeout) do
     receive do
       {^port, {:data, resp}} ->
         {:reply, decode_reply(resp), state}
@@ -81,6 +104,11 @@ defmodule World.ManifestSealHash.Worker do
 
       {:EXIT, ^port, reason} ->
         {:reply, {:error, {:cli_failed, :exit, inspect(reason)}}, reopen!(state)}
+
+      {:EXIT, ^parent, reason} when is_pid(parent) ->
+        close_port(port)
+
+        {:stop, reason, {:error, {:cli_failed, :shutdown, inspect(reason)}}, %{state | port: nil}}
     after
       timeout ->
         {:reply, {:error, {:cli_failed, :timeout, "port reply timeout"}}, reopen!(state)}
@@ -123,20 +151,36 @@ defmodule World.ManifestSealHash.Worker do
 
   defp resolve_executable(_), do: nil
 
-  defp reopen!(state) do
-    if is_port(state.port) do
+  defp reopen!(%{port: port, parent: parent}) do
+    close_port(port)
+
+    case open_port() do
+      {:ok, new_state} -> Map.put(new_state, :parent, parent)
+      {:error, reason} -> raise "manifest-seal-hash Port reopen failed: #{inspect(reason)}"
+    end
+  end
+
+  defp ancestor_parent do
+    case Process.get(:"$ancestors") do
+      [parent | _] when is_pid(parent) -> parent
+      [name | _] when is_atom(name) -> Process.whereis(name)
+      _ -> nil
+    end
+  end
+
+  defp close_port(port) when is_port(port) do
+    if Port.info(port) != nil do
       try do
-        Port.close(state.port)
+        Port.close(port)
       rescue
         _ -> :ok
       end
     end
 
-    case open_port() do
-      {:ok, new_state} -> new_state
-      {:error, reason} -> raise "manifest-seal-hash Port reopen failed: #{inspect(reason)}"
-    end
+    :ok
   end
+
+  defp close_port(_), do: :ok
 
   defp decode_reply(resp) when byte_size(resp) == 64 do
     hex = String.downcase(resp)
@@ -152,6 +196,15 @@ defmodule World.ManifestSealHash.Worker do
     do: {:error, {:cli_failed, 1, reason}}
 
   defp decode_reply(other), do: {:error, {:unexpected_hash_output, other}}
+
+  defp call_timeout_ms do
+    Application.get_env(:world, :manifest_seal_hash_call_timeout_ms, 30_000)
+  end
+
+  defp receive_timeout_ms do
+    call = call_timeout_ms()
+    max(call - @receive_slack_ms, 1)
+  end
 
   defp binary_path do
     configured =

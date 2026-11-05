@@ -18,7 +18,9 @@ blake3_bin =
     candidates =
       [
         cargo_target && Path.join([cargo_target, "debug", exe]),
-        Path.join([protocol_dir, "target", "debug", exe])
+        cargo_target && Path.join([cargo_target, "release", exe]),
+        Path.join([protocol_dir, "target", "debug", exe]),
+        Path.join([protocol_dir, "target", "release", exe])
       ]
       |> Enum.reject(&is_nil/1)
 

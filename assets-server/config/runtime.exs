@@ -107,15 +107,16 @@ if config_env() != :test do
     config :assets, place_hashes_ttl_ms: String.to_integer(ttl)
   end
 
-  if bin = System.get_env("BLAKE3_HASH_BIN") do
-    config :assets, blake3_hash_bin: bin
-  end
-
   if System.get_env("BIND_ALL") in ~w(true 1) do
     config :assets, AssetsWeb.Endpoint,
       http: [ip: {0, 0, 0, 0}, port: port],
       server: true
   end
+end
+
+# x0075: same as world MANIFEST_SEAL_HASH_BIN — readable in test (CI) and runtime.
+if bin = System.get_env("BLAKE3_HASH_BIN") do
+  config :assets, blake3_hash_bin: bin
 end
 
 if config_env() == :prod do

@@ -87,13 +87,15 @@ struct EntryJson {
     sz: f64,
 }
 
-fn loco_mode(mode: &str) -> LocomotionMode {
+fn loco_mode(mode: &str, quiet: bool) -> LocomotionMode {
     match mode.trim().to_ascii_lowercase().as_str() {
         "fly" => LocomotionMode::Fly,
         "walk" => LocomotionMode::Walk,
         "noclip" | "" => LocomotionMode::Noclip,
         other => {
-            eprintln!("manifest-seal-hash: unknown locomotion mode {other:?}; using noclip");
+            if !quiet {
+                eprintln!("manifest-seal-hash: unknown locomotion mode {other:?}; using noclip");
+            }
             LocomotionMode::Noclip
         }
     }
@@ -110,12 +112,12 @@ fn decode_host_pub_hex(hex_str: &str) -> Result<Vec<u8>, String> {
     hex::decode(&down).map_err(|e| format!("host_pub_hex decode: {e}"))
 }
 
-fn hash_json_bytes(raw: &[u8]) -> Result<String, String> {
+fn hash_json_bytes(raw: &[u8], quiet: bool) -> Result<String, String> {
     let text = std::str::from_utf8(raw).map_err(|e| format!("utf8: {e}"))?;
-    hash_json_str(text)
+    hash_json_str(text, quiet)
 }
 
-fn hash_json_str(raw: &str) -> Result<String, String> {
+fn hash_json_str(raw: &str, quiet: bool) -> Result<String, String> {
     let input: Input =
         serde_json::from_str(raw).map_err(|err| format!("invalid JSON: {err}"))?;
     let host_pub = decode_host_pub_hex(&input.host_pub_hex)?;
@@ -126,7 +128,7 @@ fn hash_json_str(raw: &str) -> Result<String, String> {
         .protocol_pin
         .unwrap_or_else(|| PROTOCOL_PIN.to_string());
     let loco = input.locomotion.map(|l| LocomotionConfig {
-        mode: loco_mode(&l.mode).into(),
+        mode: loco_mode(&l.mode, quiet).into(),
         move_speed: l.move_speed,
     });
     let entries: Vec<SceneEntry> = input
@@ -196,7 +198,7 @@ fn run_serve() -> Result<(), String> {
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
     serve_loop(&mut reader, &mut writer, max_len, |payload| {
-        match hash_json_bytes(payload).and_then(|h| ServeReply::ok_hex(&h)) {
+        match hash_json_bytes(payload, true).and_then(|h| ServeReply::ok_hex(&h)) {
             Ok(r) => r,
             Err(e) => ServeReply::soft_error(e),
         }
@@ -220,7 +222,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match hash_json_str(&raw) {
+    match hash_json_str(&raw, false) {
         Ok(hex) => {
             println!("{hex}");
             ExitCode::SUCCESS

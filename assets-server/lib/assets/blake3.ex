@@ -4,6 +4,8 @@ defmodule Assets.Blake3 do
 
   Guarantees: hex digest of input bytes.
   Non-guarantees: streaming hash API; parallel throughput.
+
+  Failures **raise** (upload path contract). World seal uses `{:error, _}` instead.
   """
 
   alias Assets.Blake3.Worker

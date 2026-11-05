@@ -14,6 +14,8 @@
 | framing + hex 検証。失敗は fail-closed（空 hash を返さない） | Port 再起動窓のゼロ失敗 |
 | seal は従来と同じ `manifest_seal_blake3_hex` 経路 | NIF / ストリーミング API |
 | Windows 含む（FIFO 非依存・packet 4） | `b3sum` 互換 CLI の永続サポート |
+| assets Port に `BLAKE3_HASH_MAX_LEN` = `:max_upload_bytes` を渡す | 実行時の max 動的変更（再起動で反映） |
+| Assets `hash_hex` は raise、World は `{:error,_}`（従来ファサード） | 両 Worker のエラー型統一 |
 
 ## 設計
 

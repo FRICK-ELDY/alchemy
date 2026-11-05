@@ -15,4 +15,29 @@ defmodule Assets.Blake3Test do
     assert Assets.Blake3.hash_hex("") == @empty
     assert Assets.Blake3.hash_hex("abc") == @abc
   end
+
+  test "hash_hex reopens Port after forced close (fail-closed then recover)" do
+    %{port: old} = :sys.get_state(Assets.Blake3.Worker)
+    assert is_port(old)
+    Port.close(old)
+
+    new_port = await_replaced_port(Assets.Blake3.Worker, old)
+    assert is_port(new_port)
+    assert new_port != old
+
+    assert Assets.Blake3.hash_hex("abc") == @abc
+    assert Assets.Blake3.hash_hex("") == @empty
+  end
+
+  defp await_replaced_port(name, old, attempts \\ 50) do
+    Enum.find_value(1..attempts, fn _ ->
+      Process.sleep(20)
+
+      case :sys.get_state(name) do
+        %{port: port} when is_port(port) and port != old -> port
+        _ -> nil
+      end
+    end) ||
+      flunk("Port was not replaced after close (old=#{inspect(old)})")
+  end
 end
