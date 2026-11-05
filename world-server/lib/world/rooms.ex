@@ -203,6 +203,7 @@ defmodule World.Rooms do
              | :not_found
              | :entry_not_found
              | :not_mesh_entry
+             | :ambiguous_entity_id
              | storage_error()}
   def delete_scene_entry(room_id, entity_id)
       when is_binary(room_id) and is_integer(entity_id) and entity_id >= 0 do
@@ -304,11 +305,12 @@ defmodule World.Rooms do
   end
 
   defp delete_mesh_entry(scene, entries, entity_id) do
+    # Exactly one matching entity_id; corrupt duplicates fail closed (x007b review).
     case Enum.split_with(entries, fn e -> entry_entity_id(e) == entity_id end) do
       {[], _} ->
         {:error, :entry_not_found}
 
-      {[target | _], rest} ->
+      {[target], rest} ->
         if mesh_blake3?(target) do
           revision = (Map.get(scene, "revision") || Map.get(scene, :revision) || 1) + 1
 
@@ -321,14 +323,18 @@ defmodule World.Rooms do
         else
           {:error, :not_mesh_entry}
         end
+
+      {_dupes, _rest} ->
+        {:error, :ambiguous_entity_id}
     end
   end
 
+  # Same charset as `normalize_mesh_entry/1` append path (lowercase hex only).
   defp mesh_blake3?(entry) when is_map(entry) do
     blake3 = entry_string(entry, "blake3") || entry_string(entry, :blake3)
 
     is_binary(blake3) and byte_size(blake3) == 64 and
-      Regex.match?(~r/^[0-9a-fA-F]{64}$/, blake3)
+      Regex.match?(~r/^[0-9a-f]{64}$/, blake3)
   end
 
   defp mesh_blake3?(_), do: false

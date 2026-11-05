@@ -13,7 +13,7 @@
 |:---|:---|
 | world: host Room Token で `DELETE …/scene/entries/:entity_id`（mesh blake3 必須・revision bump） | user_root / cuboid（blake3 無し）削除；guest DELETE |
 | Zenoh `…/inventory/despawn` は Room AEAD（`AeadKind::InventoryDespawn`）。host role 検証後に world HTTP | Intent 経路；guest despawn |
-| world 削除成功後は **shared scene + 再 seal を必ず適用**。Rapier 除去はその後最良努力（失敗時も scene は権威） | 分散 TX；Rapier 失敗時の自動再同期 |
+| world 削除成功後は **shared scene + 再 seal を必ず適用**。Rapier 除去はその後最良努力（失敗時も scene は権威）。host 内は `revision` 単調（新しい shared のみ採用；stale spawn/despawn は skip） | 分散 TX（world↔host↔guest）；Rapier 失敗時の自動再同期；HTTP 完了順の保証 |
 | Desktop Inventory: scene mesh 選択 → **Despawn**（host）。put-back とは独立 | XR Inventory；Prefab 多子；put-back と一体 TX |
 | WAN ACL は spawn と同型で `inventory/despawn` を通す（app が role 検証） | ACL だけで host を保証 |
 
@@ -29,6 +29,7 @@ physics tick ─► shared scene / force_reseal → Rapier remove（HTTP なし�
 - 平文 Room Token を Zenoh に載せない（x0069）
 - world HTTP は despawn worker（物理 60Hz 外）
 - put-back（コピー保存）とは独立；Despawn は部屋から消すだけ（Drive は触らない）
+- host 内 `shared_scene` は revision 単調（x006d/x007b 並走の stale 上書き防止）。分散 TX 非保証とは別軸のローカル整合
 
 ## Phase
 

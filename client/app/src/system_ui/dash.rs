@@ -720,7 +720,7 @@ fn rebuild_inventory(
     tree.push_label(
         Rect::new(cx + 24.0, cy0 + 36.0, cw - 48.0, 16.0),
         if state.inventory_status.is_empty() {
-            "Drive→Take out. Scene→Put back (copy) / Despawn (host)."
+            "Drive→Take out. Scene→Put back (copy) / Despawn removes from room (host)."
         } else {
             &state.inventory_status
         },
@@ -758,12 +758,16 @@ fn rebuild_inventory(
     );
     tree.register_hit(WidgetId::InventoryPutBack, put);
 
+    // Destructive: remove from room (not Drive). Distinct from Take out / Put back.
     let despawn = Rect::new(cx + 336.0, cy0 + 58.0, 100.0, 36.0);
-    tree.push_rect(despawn, state.interact(WidgetId::InventoryDespawn, ACCENT));
+    tree.push_rect(
+        despawn,
+        state.interact(WidgetId::InventoryDespawn, BTN_DANGER),
+    );
     tree.push_label(
         Rect::new(cx + 344.0, cy0 + 68.0, 84.0, 18.0),
         "Despawn",
-        TEXT,
+        DANGER,
         1.5,
     );
     tree.register_hit(WidgetId::InventoryDespawn, despawn);

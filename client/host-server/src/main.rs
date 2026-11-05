@@ -1102,13 +1102,18 @@ fn main() -> Result<()> {
                 &force_reseal,
                 |entry| physics.spawn_mesh_entry(entry),
             ) {
-                Ok(out) if out.rapier_ok => log::info!(
+                Ok(out) if out.scene_applied && out.rapier_ok => log::info!(
                     "inventory spawn applied entity_id={} blake3={} (rapier+scene+reseal)",
                     out.entity_id,
                     &blake3[..8.min(blake3.len())]
                 ),
-                Ok(out) => log::warn!(
+                Ok(out) if out.scene_applied => log::warn!(
                     "inventory spawn scene+reseal only entity_id={} blake3={} (rapier refused; physics may need host restart)",
+                    out.entity_id,
+                    &blake3[..8.min(blake3.len())]
+                ),
+                Ok(out) => log::warn!(
+                    "inventory spawn stale revision skipped entity_id={} blake3={}",
                     out.entity_id,
                     &blake3[..8.min(blake3.len())]
                 ),
@@ -1125,12 +1130,16 @@ fn main() -> Result<()> {
                 &force_reseal,
                 |id| physics.despawn_mesh_entity(id),
             ) {
-                Ok(out) if out.rapier_ok => log::info!(
+                Ok(out) if out.scene_applied && out.rapier_ok => log::info!(
                     "inventory despawn applied entity_id={} (rapier+scene+reseal)",
                     out.entity_id
                 ),
-                Ok(out) => log::warn!(
+                Ok(out) if out.scene_applied => log::warn!(
                     "inventory despawn scene+reseal only entity_id={} (rapier miss; physics may need host restart)",
+                    out.entity_id
+                ),
+                Ok(out) => log::warn!(
+                    "inventory despawn stale revision skipped entity_id={}",
                     out.entity_id
                 ),
                 Err(err) => log::warn!("inventory despawn apply failed entity_id={entity_id}: {err:#}"),

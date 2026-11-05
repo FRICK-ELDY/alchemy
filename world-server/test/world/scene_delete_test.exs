@@ -3,6 +3,7 @@ defmodule World.SceneDeleteTest do
   use World.DataCase, async: false
 
   alias World.Rooms
+  alias World.Rooms.Room
 
   @owner "11111111-1111-1111-1111-111111111111"
   @blake3 String.duplicate("d", 64)
@@ -45,6 +46,56 @@ defmodule World.SceneDeleteTest do
       |> Map.fetch!("entity_id")
 
     assert {:error, :not_mesh_entry} = Rooms.delete_scene_entry(room_id, box_id)
+  end
+
+  test "delete_scene_entry rejects uppercase blake3 as not_mesh_entry" do
+    assert {:ok, room_id, _, _} = Rooms.create("delete-upper", @owner)
+    assert {:ok, %Room{} = room} = Room.get_by_room_id(room_id)
+
+    upper = String.duplicate("A", 64)
+
+    corrupt = %{
+      "revision" => 2,
+      "locomotion" => room.scene["locomotion"],
+      "entries" => [
+        %{
+          "entity_id" => 9001,
+          "blake3" => upper,
+          "x" => 0.0,
+          "y" => 0.0,
+          "z" => 0.0,
+          "half_extent" => 0.0,
+          "flags" => 0
+        }
+      ]
+    }
+
+    assert {:ok, _} = Room.set_scene(room, %{scene: corrupt})
+    assert {:error, :not_mesh_entry} = Rooms.delete_scene_entry(room_id, 9001)
+  end
+
+  test "delete_scene_entry rejects duplicate entity_id as ambiguous" do
+    assert {:ok, room_id, _, _} = Rooms.create("delete-ambig", @owner)
+    assert {:ok, %Room{} = room} = Room.get_by_room_id(room_id)
+
+    mesh = %{
+      "entity_id" => 42,
+      "blake3" => @blake3,
+      "x" => 0.0,
+      "y" => 0.0,
+      "z" => 0.0,
+      "half_extent" => 0.0,
+      "flags" => 0
+    }
+
+    corrupt = %{
+      "revision" => 2,
+      "locomotion" => room.scene["locomotion"],
+      "entries" => [mesh, Map.put(mesh, "blake3", String.duplicate("e", 64))]
+    }
+
+    assert {:ok, _} = Room.set_scene(room, %{scene: corrupt})
+    assert {:error, :ambiguous_entity_id} = Rooms.delete_scene_entry(room_id, 42)
   end
 
   test "delete_scene_entry can remove demo coin mesh" do

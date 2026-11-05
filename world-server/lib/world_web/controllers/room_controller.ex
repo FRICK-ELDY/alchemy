@@ -643,6 +643,11 @@ defmodule WorldWeb.RoomController do
         |> put_status(:unprocessable_entity)
         |> json(%{error: "not_mesh_entry"})
 
+      {:error, :ambiguous_entity_id} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "ambiguous_entity_id"})
+
       {:error, :invalid_room_id} ->
         conn
         |> put_status(:unprocessable_entity)

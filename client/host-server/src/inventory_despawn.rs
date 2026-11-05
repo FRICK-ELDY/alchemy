@@ -16,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use zenoh::Wait;
 
-use crate::room_token::{delete_room_scene_entry, RoomScene};
+use crate::room_token::{delete_room_scene_entry, install_shared_scene_if_newer, RoomScene};
 
 /// Ready for physics: world already deleted; apply shared scene + reseal + Rapier remove.
 #[derive(Debug, Clone)]
@@ -175,6 +175,8 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApplyOutcome {
     pub entity_id: u32,
+    /// False when `ready.scene.revision` was not strictly newer than shared (stale race).
+    pub scene_applied: bool,
     /// False when Manifest/PlaceRead path succeeded but Rapier had no such mesh.
     pub rapier_ok: bool,
 }
@@ -183,6 +185,7 @@ pub struct ApplyOutcome {
 ///
 /// Installs `scene` + `force_reseal` **before** Rapier remove so Manifest/PlaceRead stay
 /// authoritative if physics already lacks the entity (spawn-failure leftover).
+/// Shared scene is revision-monotonic (x007b): stale despawn does not overwrite or Rapier-remove.
 pub fn apply_ready_despawn(
     ready: ReadyDespawn,
     shared_scene: &Arc<RwLock<RoomScene>>,
@@ -190,16 +193,19 @@ pub fn apply_ready_despawn(
     remove_mesh: impl FnOnce(u32) -> bool,
 ) -> Result<ApplyOutcome> {
     let entity_id = ready.entity_id;
-    {
-        let mut guard = shared_scene
-            .write()
-            .map_err(|_| anyhow!("shared scene RwLock poisoned"))?;
-        *guard = ready.scene;
+    let scene_applied = install_shared_scene_if_newer(shared_scene, ready.scene)?;
+    if !scene_applied {
+        return Ok(ApplyOutcome {
+            entity_id,
+            scene_applied: false,
+            rapier_ok: false,
+        });
     }
     force_reseal.store(true, Ordering::SeqCst);
     let rapier_ok = remove_mesh(entity_id);
     Ok(ApplyOutcome {
         entity_id,
+        scene_applied: true,
         rapier_ok,
     })
 }
@@ -208,6 +214,14 @@ pub fn apply_ready_despawn(
 mod tests {
     use super::*;
 
+    fn empty_scene(revision: u64) -> RoomScene {
+        RoomScene {
+            revision,
+            entries: vec![],
+            locomotion: None,
+        }
+    }
+
     #[test]
     fn parse_payload_requires_token_and_entity() {
         let ok = br#"{"room_token":"tok","entity_id":100}"#;
@@ -215,5 +229,47 @@ mod tests {
         assert_eq!(p.entity_id, 100);
         assert!(parse_payload(br#"{"entity_id":1}"#).is_err());
         assert!(parse_payload(br#"{"room_token":"","entity_id":1}"#).is_err());
+    }
+
+    #[test]
+    fn apply_ready_despawn_scene_before_rapier_and_ok_on_miss() {
+        let shared = Arc::new(RwLock::new(empty_scene(1)));
+        let force = AtomicBool::new(false);
+        let ready = ReadyDespawn {
+            entity_id: 100,
+            scene: empty_scene(2),
+        };
+        let mut rapier_called = false;
+        let out = apply_ready_despawn(ready, &shared, &force, |_id| {
+            rapier_called = true;
+            false
+        })
+        .unwrap();
+        assert!(out.scene_applied);
+        assert!(!out.rapier_ok);
+        assert!(rapier_called);
+        assert!(force.load(Ordering::SeqCst));
+        assert_eq!(shared.read().unwrap().revision, 2);
+    }
+
+    #[test]
+    fn apply_ready_despawn_skips_stale_revision() {
+        let shared = Arc::new(RwLock::new(empty_scene(5)));
+        let force = AtomicBool::new(false);
+        let ready = ReadyDespawn {
+            entity_id: 100,
+            scene: empty_scene(4),
+        };
+        let mut rapier_called = false;
+        let out = apply_ready_despawn(ready, &shared, &force, |_id| {
+            rapier_called = true;
+            true
+        })
+        .unwrap();
+        assert!(!out.scene_applied);
+        assert!(!out.rapier_ok);
+        assert!(!rapier_called);
+        assert!(!force.load(Ordering::SeqCst));
+        assert_eq!(shared.read().unwrap().revision, 5);
     }
 }

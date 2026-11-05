@@ -84,7 +84,8 @@
         ],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
-          "alchemy/dev/room/*/*/inventory/spawn","alchemy/dev/room/*/*/inventory/despawn",
+          "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
           "alchemy/dev/room/*/*/manifest",
           "alchemy/dev/room/*/*/frame",
@@ -100,7 +101,8 @@
         messages: ["put", "delete", "liveliness_token", "query", "reply"],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
-          "alchemy/dev/room/*/*/inventory/spawn","alchemy/dev/room/*/*/inventory/despawn",
+          "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
           "alchemy/dev/room/*/*/snapshot",
         ],
@@ -114,7 +116,8 @@
         messages: ["declare_subscriber", "declare_liveliness_subscriber"],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
-          "alchemy/dev/room/*/*/inventory/spawn","alchemy/dev/room/*/*/inventory/despawn",
+          "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
           "alchemy/dev/room/*/*/manifest",
           "alchemy/dev/room/*/*/frame",
@@ -131,7 +134,8 @@
         messages: ["put", "delete", "liveliness_token"],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
-          "alchemy/dev/room/*/*/inventory/spawn","alchemy/dev/room/*/*/inventory/despawn",
+          "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
         ],
       },
@@ -180,7 +184,8 @@
         messages: ["declare_subscriber", "declare_liveliness_subscriber"],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
-          "alchemy/dev/room/*/*/inventory/spawn","alchemy/dev/room/*/*/inventory/despawn",
+          "alchemy/dev/room/*/*/inventory/spawn",
+          "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
         ],
       },

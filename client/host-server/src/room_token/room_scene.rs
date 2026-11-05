@@ -1,11 +1,13 @@
 //! World-authored room scene: JSON DTOs, fetch, append, and delete (x0027 / x006d / x007b).
 //!
-//! Guarantees: host Room Token Bearer on every request; scene entries TRS-normalized on parse.
+//! Guarantees: host Room Token Bearer on every request; scene entries TRS-normalized on parse;
+//! shared-scene install is **revision-monotonic** (strictly newer only; x007b spawn/despawn race).
 //! Non-guarantees: scene persistence, Manifest sealing.
 
 use super::http::{credential_agent, is_blake3_hex};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
+use std::sync::{Arc, RwLock};
 
 /// World-authored scene definition for a room (x0027).
 /// Built from JSON DTOs — prost types are not serde-deserializable.
@@ -121,6 +123,25 @@ fn scene_from_response(parsed: SceneResponseJson) -> RoomScene {
         revision: parsed.revision,
         entries,
         locomotion,
+    }
+}
+
+/// Replace `shared` only when `incoming.revision` is **strictly greater**.
+///
+/// Spawn / despawn workers complete HTTP out of order; physics must not let an older
+/// revision overwrite a newer shared scene (x007b). Equal revision is a no-op.
+pub fn install_shared_scene_if_newer(
+    shared: &Arc<RwLock<RoomScene>>,
+    incoming: RoomScene,
+) -> Result<bool> {
+    let mut guard = shared
+        .write()
+        .map_err(|_| anyhow!("shared scene RwLock poisoned"))?;
+    if incoming.revision > guard.revision {
+        *guard = incoming;
+        Ok(true)
+    } else {
+        Ok(false)
     }
 }
 
