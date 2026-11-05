@@ -547,7 +547,10 @@ pub fn leave_room(shared: &SharedState, zenoh: &mut Option<zenoh::Session>) {
                     Ok(publisher) => {
                         match seal_zenoh_payload(shared, AeadKind::Input, &event.encode_to_vec()) {
                             Ok(env) => {
-                                if let Err(err) = publisher.put(env).wait() {
+                                // x0077: Leave+token also consumes bind source bucket.
+                                if let Err(err) =
+                                    publisher.put(env).timestamp(session.new_timestamp()).wait()
+                                {
                                     log::warn!("Leave InputEvent publish failed: {err}");
                                 } else {
                                     log::info!("Leave InputEvent published on {key}");

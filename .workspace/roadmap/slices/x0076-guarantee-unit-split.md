@@ -45,7 +45,7 @@
 
 | 項目 | 予定 |
 |:---|:---|
-| bind 送信元分割 | 別 Slice（P2-5） |
+| bind 送信元分割 | **x0077**（P2-5） |
 | mTLS temp・DemoScene ベクタ・metrics+jti | 別 Slice |
 | 挙動変更・検証スキップ | 禁止 |
 

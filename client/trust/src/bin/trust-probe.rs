@@ -311,8 +311,10 @@ fn run_hermetic() -> Result<()> {
         &event.encode_to_vec(),
     )
     .map_err(|e| anyhow!("seal input: {e}"))?;
+    // x0077: stamp so host bind rate keys off this session's ZenohId.
     session
         .put(&input_k, env)
+        .timestamp(session.new_timestamp())
         .wait()
         .map_err(|e| anyhow!("put input: {e}"))?;
 

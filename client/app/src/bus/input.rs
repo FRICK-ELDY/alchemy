@@ -3,6 +3,7 @@
 //! Guarantees:
 //! - Publishes at `INPUT_HZ` using the Ed25519 Intent session; Room Token only on bind (x003e)
 //! - Payload sealed with AEAD (`AeadKind::Input`); seal failure → skip tick
+//! - Each put carries `session.new_timestamp()` (x0077 host bind source key)
 //! - Bind put failure keeps `bind_pending` so the next Intent still carries the Room Token
 //! - Liveliness rebind after Room Token refresh only after a bind Intent put succeeds
 //!
@@ -91,7 +92,12 @@ pub(crate) fn spawn_input_publisher(
                         continue;
                     }
                 };
-                if let Err(err) = publisher.put(env).wait() {
+                // x0077: stamp with session ZenohId so host bind rate is per-source.
+                if let Err(err) = publisher
+                    .put(env)
+                    .timestamp(session.new_timestamp())
+                    .wait()
+                {
                     log::warn!("input publish failed: {err}");
                     // Keep bind_pending so the next Intent still carries room_token.
                     continue;

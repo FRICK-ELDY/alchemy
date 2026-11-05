@@ -14,10 +14,11 @@
 //! - Empty deltas: **no publish and no `net_tick` advance**; snapshot tick = last published (x0024)
 //! - Per-`sub` Intent/Grab → Manifest user_root slots (≤ `USER_ROOT_SLOTS_MAX`; x004d);
 //!   Presence Leave / liveliness jti grace (x0022)
-//! - x0040: Intent rate after Ed25519 (steady: after seq eval, before `last_seq` commit,
-//!   Leave-exempt; bind: atomic global 20/10s + per-pub 5/2s before JWT, Leave **not**
-//!   exempt; failed bind drops unbound per-pub; rebind GC skips the new pub).
-//!   JWKS hard stale on Room Token verify
+//! - x0040 / x0077: Intent rate after Ed25519 (steady: after seq eval, before `last_seq`
+//!   commit, Leave-exempt; bind: atomic per-ZenohId source 20/10s + per-pub 5/2s before
+//!   JWT, Leave **not** exempt; `by_bind_source` ≤ `MAX_BIND_SOURCES` with idle GC on
+//!   last **successful** consume; failed bind drops unbound per-pub; rebind GC skips
+//!   the new pub). JWKS hard stale on Room Token verify
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
 //! - Slice E / x001e: Zenoh `host_control` off by default; `ALCHEMY_HOST_CONTROL=1` to enable
 //! - x0032: localhost IPC shutdown when `ALCHEMY_HOST_IPC_*` set (alchemy-launcher)
@@ -29,6 +30,8 @@
 //! - rkyv / bytemuck wire (encode is protobuf inside network worker today)
 //! - Intent temporary ban / Zenoh peer ACL
 //! - Unlimited Ed25519 cost on unbound steady floods (no sub bucket until bind)
+//! - Host-wide bind JWT soft-global; new-source join while bind-source map is full and
+//!   every row stays hot via successful consumes within `BIND_SOURCE_IDLE`
 
 mod finite;
 mod host_control;
@@ -543,10 +546,14 @@ fn spawn_input_gate(
                             break 'sample;
                         }
                         let auth = if is_bind {
-                            // rates-only: atomic global+per-pub (Leave NOT exempt).
+                            // rates-only: atomic per-source+per-pub (Leave NOT exempt).
+                            let bind_source = sample
+                                .timestamp()
+                                .map(|ts| ts.get_id().to_le_bytes())
+                                .unwrap_or(intent_rate::BIND_SOURCE_UNKNOWN);
                             {
                                 let mut rates = lock_or_fatal(&rate_limiter, "intent_rate");
-                                if !rates.allow_bind(&event.session_pub, now) {
+                                if !rates.allow_bind(&bind_source, &event.session_pub, now) {
                                     dropped_rate += 1;
                                     break 'sample;
                                 }
