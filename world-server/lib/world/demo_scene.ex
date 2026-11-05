@@ -9,9 +9,8 @@ defmodule World.DemoScene do
   Non-guarantees: UGC editing; shared-sim; EntityKind taxonomy; collider scale;
   runtime resize of slots after host boot.
 
-  Host unit tests mirror this layout in `demo_entries_for_test` (Rust) —
-  keep both in sync manually until a shared fixture exists
-  (x0027 / x002c debt: center box yaw45 + sx=1.5 must match the Rust fixture).
+  Rust mirror: `alchemy_shared_sim::demo::demo_scene_entries`. Drift is caught by
+  the shared ManifestSeal blake3 vector (`World.DemoSceneVector` / x0079).
   """
 
   @coin_blake3 "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555feb66d4f82ee1e72a"

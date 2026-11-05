@@ -171,11 +171,12 @@ depends_on: [x0006]
 | x0076 | — | done | host room_token / client main 保証単位分割（P2-4） | [x0076-guarantee-unit-split.md](slices/x0076-guarantee-unit-split.md) |
 | x0077 | — | done | bind 送信元分割（P2-5） | [x0077-bind-source-split.md](slices/x0077-bind-source-split.md) |
 | x0078 | — | done | mTLS 鍵 temp の権限・掃除（P2-9） | [x0078-mtls-temp-acl-sweep.md](slices/x0078-mtls-temp-acl-sweep.md) |
+| x0079 | — | done | DemoScene 共有テストベクタ（P2-11） | [x0079-demoscene-shared-vector.md](slices/x0079-demoscene-shared-vector.md) |
 
-**現在の次:** P3 残衛生（DemoScene ベクタ / metrics+jti）または scene despawn。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
+**現在の次:** P3 残衛生（metrics+jti）または scene despawn。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x0079`**。
+次の空き番号は **`x007a`**。
 
 ## 関連
 

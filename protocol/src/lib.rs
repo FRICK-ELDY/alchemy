@@ -7,6 +7,7 @@
 //! - [`wire_crypto`] sign/verify helpers for Intent / Frame (x0023).
 //! - [`wire_aead`] Room-key XChaCha20Poly1305 for Zenoh payloads (x0069).
 //! - [`port_framing`] Erlang `{:packet, 4}` helpers for `blake3-hash` / `manifest-seal-hash --serve` (x0075).
+//! - [`demo_scene_vector`] shared DemoScene ManifestSeal blake3 test vector (x0079).
 //! - [`sim_capability`] role → Intent/HTTP capability bits (x002a; not a wire schema).
 //! - [`item_ref`] CAS spawn pointer draft (`blake3` only; x0055; **does not bump** pin —
 //!   not on Manifest / Frame / Intent yet).
@@ -36,6 +37,7 @@
 pub use prost::Message;
 
 pub mod decode_limits;
+pub mod demo_scene_vector;
 pub mod generation_gate;
 pub mod host_ipc;
 pub mod item_ref;

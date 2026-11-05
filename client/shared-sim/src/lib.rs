@@ -5,7 +5,8 @@
 //! demo id constants; [`scene_entry_color_rgba`]; runtime held slots via
 //! [`slot_graph::SlotGraph`] (x0056).
 //! Non-guarantees: Rapier / Formula / prediction; Elixir `DemoScene` codegen
-//! (manual sync via [`demo`] constants); arbitrary-depth Slot graphs (→ x0059).
+//! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
+//! Slot graphs (→ x0059).
 
 use std::collections::{HashMap, HashSet};
 
