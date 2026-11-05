@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0072`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0073`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -164,11 +164,12 @@ depends_on: [x0006]
 | x006f | — | done | CAS access → Grant/ref 移設（列廃止・先着固定解消） | [x006f-cas-access-grant-peel.md](slices/x006f-cas-access-grant-peel.md) |
 | x0070 | — | done | headless client trust + WAN 否定系 E2E（偽 seal / wildcard） | [x0070-headless-trust-wan-e2e.md](slices/x0070-headless-trust-wan-e2e.md) |
 | x0071 | — | done | world rate limit shared 化 + Room per-owner 上限 | [x0071-world-rate-limit-room-cap.md](slices/x0071-world-rate-limit-room-cap.md) |
+| x0072 | — | done | launcher discovery（host restart 後 IPC 再通知） | [x0072-launcher-discovery.md](slices/x0072-launcher-discovery.md) |
 
-**現在の次:** P1-5（launcher discovery）/ P3 衛生。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
+**現在の次:** P3 衛生（reserved reaper 等）。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x0072`**。
+次の空き番号は **`x0073`**。
 
 ## 関連
 
