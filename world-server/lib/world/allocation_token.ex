@@ -23,14 +23,16 @@ defmodule World.AllocationToken do
     end
   end
 
-  def generate(_, _, _, _, _, _), do: {:error, :invalid_args}
+  def generate(_, _, _, _, _, _), do: {:error, :invalid_allocation_args}
 
   defp validate_generate_args(role, wire_cap, relay_id, room_jti)
        when role in @roles and wire_cap != "" and relay_id != "" and room_jti != "" do
-    if String.contains?(room_jti, "/"), do: {:error, :invalid_args}, else: :ok
+    if String.contains?(room_jti, "/"),
+      do: {:error, :invalid_allocation_args},
+      else: :ok
   end
 
-  defp validate_generate_args(_, _, _, _), do: {:error, :invalid_args}
+  defp validate_generate_args(_, _, _, _), do: {:error, :invalid_allocation_args}
 
   defp sign_allocation(room_id, role, sub, wire_cap, relay_id, room_jti) do
     ttl = Application.fetch_env!(:world, :room_token_ttl_seconds)

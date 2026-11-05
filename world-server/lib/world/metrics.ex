@@ -126,7 +126,7 @@ defmodule World.Metrics do
       "# HELP alchemy_world_token_issue_total Room+Allocation token issue successes\n",
       "# TYPE alchemy_world_token_issue_total counter\n",
       "alchemy_world_token_issue_total #{get(:token_issue_total)}\n",
-      "# HELP alchemy_world_token_issue_errors_total Room+Allocation token issue failures\n",
+      "# HELP alchemy_world_token_issue_errors_total Server-side Room+Allocation issue failures (excludes client authz/validation rejects)\n",
       "# TYPE alchemy_world_token_issue_errors_total counter\n",
       "alchemy_world_token_issue_errors_total #{get(:token_issue_errors_total)}\n"
     ]

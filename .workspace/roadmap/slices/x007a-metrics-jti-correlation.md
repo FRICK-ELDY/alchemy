@@ -28,11 +28,11 @@
 
 | 地点 | ログ |
 |:---|:---|
-| auth login 成功 | Logger metadata `jti=`（access） |
-| world token 発行成功 | metadata `jti=`（Room）+ `room_jti` / `alloc_jti` / `sub` / `room_id` |
-| relay allocate 成功 | `room_jti=`（+ alloc `jti=`） |
-| host bind 成功 | `sub=` + `jti=` |
-| client Manifest Accept | `jti=` + `(gen, rev)` |
+| auth login 成功 | metadata / メッセージ `access_jti=`（入室キーではない） |
+| world token 発行成功 | metadata `jti=`（Room）+ メッセージ `room_jti=` / `alloc_jti=` / `sub` / `room_id` |
+| relay allocate 成功 | `room_jti=` + `alloc_jti=` |
+| host bind 成功 | `sub=` + `room_jti=` |
+| client Manifest Accept | `room_jti=`（未取得時は `missing`）+ `(gen, rev)` |
 
 ## 起動・手動検証
 

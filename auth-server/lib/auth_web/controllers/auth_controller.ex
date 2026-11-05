@@ -84,8 +84,7 @@ defmodule AuthWeb.AuthController do
   end
 
   def login(conn, _params) do
-    Auth.Metrics.inc(:login_errors_total)
-
+    # Malformed body — not counted as login_errors_total (auth failure metric).
     conn
     |> put_status(:unauthorized)
     |> json(%{errors: %{detail: Accounts.invalid_credentials_message()}})

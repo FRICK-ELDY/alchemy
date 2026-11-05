@@ -25,10 +25,10 @@ defmodule World.AllocationTokenTest do
   end
 
   test "rejects empty or slash room_jti" do
-    assert {:error, :invalid_args} =
+    assert {:error, :invalid_allocation_args} =
              AllocationToken.generate("local", "guest", "anon", "wire-a", "alchemy-official", "")
 
-    assert {:error, :invalid_args} =
+    assert {:error, :invalid_allocation_args} =
              AllocationToken.generate(
                "local",
                "guest",

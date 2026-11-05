@@ -239,10 +239,41 @@ defmodule WorldWeb.RoomController do
       json(conn, body)
     else
       reason ->
-        World.Metrics.inc(:token_issue_errors_total)
+        if count_token_issue_error?(reason) do
+          World.Metrics.inc(:token_issue_errors_total)
+        end
+
         issue_token_error(conn, reason)
     end
   end
+
+  # Server-side issue failures only — client authz / validation rejects stay out of the counter.
+  defp count_token_issue_error?({:error, reason})
+       when reason in [
+              :openssl_failed,
+              :sign_failed,
+              :chmod_failed,
+              :invalid_room_key,
+              :storage_error,
+              :auth_unavailable
+            ],
+       do: true
+
+  defp count_token_issue_error?({:error, reason})
+       when reason in [
+              :not_found,
+              :forbidden_host,
+              :forbidden_visibility,
+              :lan_required,
+              :invalid_role,
+              :invalid_room_id,
+              :invalid_args,
+              :invalid_allocation_args
+            ],
+       do: false
+
+  defp count_token_issue_error?({:error, _}), do: true
+  defp count_token_issue_error?(_), do: true
 
   defp issue_token_error(conn, {:error, :openssl_failed}) do
     conn
@@ -260,6 +291,12 @@ defmodule WorldWeb.RoomController do
     conn
     |> put_status(:internal_server_error)
     |> json(%{error: "mtls_sign_failed"})
+  end
+
+  defp issue_token_error(conn, {:error, :invalid_allocation_args}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "invalid_allocation_args"})
   end
 
   defp issue_token_error(conn, {:error, :invalid_args}) do

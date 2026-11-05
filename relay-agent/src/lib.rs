@@ -657,8 +657,9 @@ pub fn handle_client(mut stream: TcpStream, state: &AgentState) -> Result<()> {
         Some(i) => &buf[i..],
         None => return allocate_deny(&mut stream, 400, "{\"error\":\"bad_request\"}"),
     };
+    // Size rejects stay on write_http (same as pre-path 413) — not allocate_errors_total.
     if body.len() > MAX_BODY_BYTES {
-        return allocate_deny(&mut stream, 413, "{\"error\":\"too_large\"}");
+        return write_http(&mut stream, 413, "{\"error\":\"too_large\"}");
     }
     let req_json: AllocateRequest = match serde_json::from_slice(body) {
         Ok(v) => v,
@@ -718,7 +719,7 @@ pub fn handle_client(mut stream: TcpStream, state: &AgentState) -> Result<()> {
         Ok(()) => {
             relay_metrics().inc_allocate_ok();
             log::info!(
-                "allocate ok room_jti={room_jti} jti={alloc_jti} room_id={} role={}",
+                "allocate ok room_jti={room_jti} alloc_jti={alloc_jti} room_id={} role={}",
                 resp.room_id,
                 resp.role
             );
@@ -948,24 +949,8 @@ mod tests {
         state.try_reserve_jti("j1").unwrap();
     }
 
-    #[test]
-    fn room_jti_empty_rejected_after_decode() {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-        use serde::Serialize;
-
-        #[derive(Serialize)]
-        struct Claims<'a> {
-            sub: &'a str,
-            room_id: &'a str,
-            role: &'a str,
-            wire_cap: &'a str,
-            relay_id: &'a str,
-            jti: &'a str,
-            room_jti: &'a str,
-            exp: i64,
-            iss: &'a str,
-            aud: &'a str,
-        }
+    fn room_jti_verify_fixture() -> (AgentState, jsonwebtoken::EncodingKey, PathBuf) {
+        use jsonwebtoken::{DecodingKey, EncodingKey};
 
         let openssl = openssl_bin();
         let work = std::env::temp_dir().join(format!(
@@ -1003,9 +988,98 @@ mod tests {
         let mut keys = HashMap::new();
         keys.insert("test-kid".into(), decoding);
         state.install_jwks_for_test(keys, Instant::now());
-
         let encoding =
             EncodingKey::from_rsa_pem(&fs::read(&priv_pem).unwrap()).expect("EncodingKey");
+        (state, encoding, work)
+    }
+
+    fn encode_alloc_claims(encoding: &jsonwebtoken::EncodingKey, room_jti: &str) -> String {
+        use jsonwebtoken::{encode, Algorithm, Header};
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct Claims<'a> {
+            sub: &'a str,
+            room_id: &'a str,
+            role: &'a str,
+            wire_cap: &'a str,
+            relay_id: &'a str,
+            jti: &'a str,
+            room_jti: &'a str,
+            exp: i64,
+            iss: &'a str,
+            aud: &'a str,
+        }
+
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("test-kid".into());
+        let exp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 600;
+        encode(
+            &header,
+            &Claims {
+                sub: "u1",
+                room_id: "r1",
+                role: "guest",
+                wire_cap: "wire-a",
+                relay_id: "alchemy-official",
+                jti: "alloc-1",
+                room_jti,
+                exp,
+                iss: ISSUER,
+                aud: AUDIENCE,
+            },
+            encoding,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn room_jti_empty_rejected_after_decode() {
+        let (state, encoding, work) = room_jti_verify_fixture();
+        let token = encode_alloc_claims(&encoding, "");
+        let err = state.verify_allocation(&token).unwrap_err();
+        assert!(
+            err.to_string().contains("room_jti"),
+            "expected room_jti error, got {err:#}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn room_jti_slash_rejected_after_decode() {
+        let (state, encoding, work) = room_jti_verify_fixture();
+        let token = encode_alloc_claims(&encoding, "bad/jti");
+        let err = state.verify_allocation(&token).unwrap_err();
+        assert!(
+            err.to_string().contains("room_jti"),
+            "expected room_jti error, got {err:#}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn room_jti_claim_missing_rejected() {
+        use jsonwebtoken::{encode, Algorithm, Header};
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct ClaimsNoRoomJti<'a> {
+            sub: &'a str,
+            room_id: &'a str,
+            role: &'a str,
+            wire_cap: &'a str,
+            relay_id: &'a str,
+            jti: &'a str,
+            exp: i64,
+            iss: &'a str,
+            aud: &'a str,
+        }
+
+        let (state, encoding, work) = room_jti_verify_fixture();
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some("test-kid".into());
         let exp = SystemTime::now()
@@ -1015,14 +1089,13 @@ mod tests {
             + 600;
         let token = encode(
             &header,
-            &Claims {
+            &ClaimsNoRoomJti {
                 sub: "u1",
                 room_id: "r1",
                 role: "guest",
                 wire_cap: "wire-a",
                 relay_id: "alchemy-official",
                 jti: "alloc-1",
-                room_jti: "",
                 exp,
                 iss: ISSUER,
                 aud: AUDIENCE,
@@ -1030,11 +1103,13 @@ mod tests {
             &encoding,
         )
         .unwrap();
-
         let err = state.verify_allocation(&token).unwrap_err();
+        let msg = err.to_string();
         assert!(
-            err.to_string().contains("room_jti"),
-            "expected room_jti error, got {err:#}"
+            msg.contains("allocation verify")
+                || msg.contains("room_jti")
+                || msg.contains("missing"),
+            "expected missing room_jti decode failure, got {err:#}"
         );
         let _ = fs::remove_dir_all(&work);
     }

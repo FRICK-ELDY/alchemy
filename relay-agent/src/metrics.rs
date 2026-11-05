@@ -37,7 +37,9 @@ impl RelayMetrics {
             "alchemy_relay_allocate_total {}\n",
             self.allocate_total.load(Ordering::Relaxed)
         ));
-        out.push_str("# HELP alchemy_relay_allocate_errors_total Allocate failures\n");
+        out.push_str(
+            "# HELP alchemy_relay_allocate_errors_total Allocate semantic failures (excludes transport size 413)\n",
+        );
         out.push_str("# TYPE alchemy_relay_allocate_errors_total counter\n");
         out.push_str(&format!(
             "alchemy_relay_allocate_errors_total {}\n",

@@ -93,7 +93,7 @@ config :auth, Auth.Mailer, adapter: Swoosh.Adapters.Local
 # Configure Elixir's Logger
 config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",
-  metadata: [:request_id, :jti]
+  metadata: [:request_id, :access_jti]
 
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason

@@ -569,8 +569,8 @@ fn spawn_input_gate(
                                         // `removed` excludes the pub just bound.
                                         table.commit_bind(&event, pending)
                                     };
-                                    // x007a: Room Token jti correlation across join path.
-                                    log::info!("bind ok: sub={sub} jti={jti}");
+                                    // x007a: Room Token jti correlation (same key as world/relay).
+                                    log::info!("bind ok: sub={sub} room_jti={jti}");
                                     // sessions then rates (GC other pubs only).
                                     let mut rates = lock_or_fatal(&rate_limiter, "intent_rate");
                                     rates.forget_session_pubs(&removed);
