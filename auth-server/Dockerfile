@@ -2,7 +2,7 @@
 ARG ELIXIR_IMAGE=elixir:1.19-otp-28-alpine
 ARG ALPINE_VERSION=3.23
 
-# Build context: repository root (shared/alchemy_client_ip path dep · x004b).
+# Build context: repository root (shared path deps · x004b / x0071).
 FROM ${ELIXIR_IMAGE} AS dev
 
 # wget: hermetic compose healthcheck (x001f); not relying on busybox alone.
@@ -13,6 +13,7 @@ WORKDIR /app
 RUN mix local.hex --force && mix local.rebar --force
 
 COPY shared/alchemy_client_ip /shared/alchemy_client_ip
+COPY shared/alchemy_rate_limit /shared/alchemy_rate_limit
 COPY auth-server/mix.exs auth-server/mix.lock ./
 RUN mix deps.get || true
 
@@ -41,6 +42,7 @@ RUN mix local.hex --force && mix local.rebar --force
 ENV MIX_ENV=prod
 
 COPY shared/alchemy_client_ip /shared/alchemy_client_ip
+COPY shared/alchemy_rate_limit /shared/alchemy_rate_limit
 COPY auth-server/mix.exs auth-server/mix.lock ./
 RUN mix deps.get --only prod
 

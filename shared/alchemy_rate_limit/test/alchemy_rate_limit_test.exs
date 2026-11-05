@@ -61,6 +61,16 @@ defmodule AlchemyRateLimitTest do
     assert :ok = AlchemyRateLimit.hit(@server, :login_ip, "127.0.0.1", config)
   end
 
+  test "rejects non-positive limit or period_ms" do
+    assert_raise FunctionClauseError, fn ->
+      AlchemyRateLimit.hit(@server, :login_ip, "127.0.0.1", %{limit: 0, period_ms: 60_000})
+    end
+
+    assert_raise FunctionClauseError, fn ->
+      AlchemyRateLimit.hit(@server, :login_ip, "127.0.0.1", %{limit: 1, period_ms: 0})
+    end
+  end
+
   test "reset clears counters" do
     config = %{limit: 1, period_ms: 60_000}
 

@@ -500,17 +500,29 @@ defmodule World.Rooms do
   defp owner_matches(%Room{}, _), do: {:error, :forbidden_host}
 
   defp ensure_under_owner_cap(owner_sub) do
-    cap = Application.get_env(:world, :max_rooms_per_owner, 32)
+    case max_rooms_per_owner() do
+      {:ok, cap} ->
+        case count_by_owner(owner_sub) do
+          {:ok, count} when is_integer(count) and count >= cap ->
+            {:error, :owner_room_cap_exceeded}
 
-    case count_by_owner(owner_sub) do
-      {:ok, count} when is_integer(count) and count >= cap ->
-        {:error, :owner_room_cap_exceeded}
+          {:ok, _count} ->
+            :ok
 
-      {:ok, _count} ->
-        :ok
+          {:error, :storage_error} = err ->
+            err
+        end
 
-      {:error, :storage_error} = err ->
-        err
+      {:error, :invalid_cap} ->
+        Logger.error("World.Rooms.create invalid :max_rooms_per_owner (must be pos_integer)")
+        {:error, :storage_error}
+    end
+  end
+
+  defp max_rooms_per_owner do
+    case Application.get_env(:world, :max_rooms_per_owner, 32) do
+      cap when is_integer(cap) and cap > 0 -> {:ok, cap}
+      _ -> {:error, :invalid_cap}
     end
   end
 

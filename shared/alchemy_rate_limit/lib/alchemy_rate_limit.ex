@@ -44,7 +44,7 @@ defmodule AlchemyRateLimit do
   @spec hit(server(), atom(), String.t(), limit_config()) :: :ok | {:error, :rate_limited}
   def hit(server, bucket, key, %{limit: limit, period_ms: period_ms})
       when is_atom(server) and is_atom(bucket) and is_binary(key) and is_integer(limit) and
-             is_integer(period_ms) do
+             limit > 0 and is_integer(period_ms) and period_ms > 0 do
     cfg = instance_config!(server)
 
     if enabled?(cfg) do

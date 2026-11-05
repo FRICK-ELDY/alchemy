@@ -94,4 +94,32 @@ defmodule WorldWeb.Plugs.RateLimitTest do
 
     assert %{"errors" => %{"detail" => "Too Many Requests"}} = json_response(conn, 429)
   end
+
+  test "returns 429 when room_visibility user limit is exceeded", %{conn: conn, signer: signer} do
+    sub = "77777777-7777-7777-7777-777777777777"
+
+    assert %{"room_id" => "rl-vis-room"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, sub)
+             |> post("/api/v1/rooms", %{room_id: "rl-vis-room"})
+             |> json_response(201)
+
+    RateLimit.reset()
+
+    for _ <- 1..2 do
+      c =
+        build_conn()
+        |> TestAuthHelpers.put_auth(signer, sub)
+        |> put("/api/v1/rooms/rl-vis-room/visibility", %{visibility: "public"})
+
+      assert json_response(c, 200)
+    end
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> put("/api/v1/rooms/rl-vis-room/visibility", %{visibility: "friends"})
+
+    assert %{"errors" => %{"detail" => "Too Many Requests"}} = json_response(conn, 429)
+  end
 end
