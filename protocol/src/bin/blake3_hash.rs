@@ -45,12 +45,15 @@ fn run_serve() -> Result<(), String> {
     let stdout = io::stdout();
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
-    serve_loop(&mut reader, &mut writer, max_len, |payload| {
-        match ServeReply::ok_hex(&hash_hex(payload)) {
+    serve_loop(
+        &mut reader,
+        &mut writer,
+        max_len,
+        |payload| match ServeReply::ok_hex(&hash_hex(payload)) {
             Ok(r) => r,
             Err(e) => ServeReply::soft_error(e),
-        }
-    })
+        },
+    )
     .map_err(|e| e.to_string())
 }
 

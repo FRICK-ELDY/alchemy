@@ -118,8 +118,7 @@ fn hash_json_bytes(raw: &[u8], quiet: bool) -> Result<String, String> {
 }
 
 fn hash_json_str(raw: &str, quiet: bool) -> Result<String, String> {
-    let input: Input =
-        serde_json::from_str(raw).map_err(|err| format!("invalid JSON: {err}"))?;
+    let input: Input = serde_json::from_str(raw).map_err(|err| format!("invalid JSON: {err}"))?;
     let host_pub = decode_host_pub_hex(&input.host_pub_hex)?;
     if input.host_generation == 0 {
         return Err("host_generation must be > 0".into());
@@ -175,7 +174,10 @@ fn hash_json_str(raw: &str, quiet: bool) -> Result<String, String> {
 }
 
 fn read_oneshot_raw() -> Result<String, String> {
-    let args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--serve").collect();
+    let args: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| a != "--serve")
+        .collect();
     match args.first().map(|s| s.as_str()) {
         None | Some("-") => {
             let mut raw = String::new();
@@ -197,12 +199,15 @@ fn run_serve() -> Result<(), String> {
     let stdout = io::stdout();
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
-    serve_loop(&mut reader, &mut writer, max_len, |payload| {
-        match hash_json_bytes(payload, true).and_then(|h| ServeReply::ok_hex(&h)) {
+    serve_loop(
+        &mut reader,
+        &mut writer,
+        max_len,
+        |payload| match hash_json_bytes(payload, true).and_then(|h| ServeReply::ok_hex(&h)) {
             Ok(r) => r,
             Err(e) => ServeReply::soft_error(e),
-        }
-    })
+        },
+    )
     .map_err(|e| e.to_string())
 }
 

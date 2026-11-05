@@ -16,7 +16,10 @@ pub const SOFT_ERR_PREFIX: u8 = b'!';
 pub enum FramingError {
     Io(io::Error),
     /// Declared length exceeds the configured ceiling (hard: stop reading this peer).
-    Oversize { len: u32, max: u32 },
+    Oversize {
+        len: u32,
+        max: u32,
+    },
 }
 
 impl From<io::Error> for FramingError {
@@ -156,8 +159,9 @@ mod tests {
 
     #[test]
     fn serve_reply_hex_and_soft_error() {
-        let ok = ServeReply::ok_hex("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-            .unwrap();
+        let ok =
+            ServeReply::ok_hex("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+                .unwrap();
         assert_eq!(ok.as_bytes().len(), 64);
         let err = ServeReply::soft_error("bad");
         assert_eq!(err.as_bytes(), b"!bad");
@@ -171,7 +175,10 @@ mod tests {
         let bytes = reply.as_bytes();
         assert_eq!(bytes[0], SOFT_ERR_PREFIX);
         assert!(std::str::from_utf8(&bytes[1..]).is_ok());
-        assert_eq!(std::str::from_utf8(&bytes[1..]).unwrap().chars().count(), 200);
+        assert_eq!(
+            std::str::from_utf8(&bytes[1..]).unwrap().chars().count(),
+            200
+        );
     }
 
     #[test]
