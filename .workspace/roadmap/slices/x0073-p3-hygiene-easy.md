@@ -23,7 +23,7 @@
 |:---|:---|
 | reserved reaper / orphan CAS GC | **x0074** |
 | BLAKE3 / seal-hash 常駐 Port | **x0075** |
-| host `room_token.rs` / client `main.rs` 分割 | 別 Slice |
+| host `room_token.rs` / client `main.rs` 分割 | **x0076** |
 | bind 送信元分割・mTLS temp 掃除・DemoScene ベクタ・jti metrics | 別 Slice / 並行可 |
 
 ## 完了条件
