@@ -33,8 +33,10 @@ services:
       context: ..
       dockerfile: auth-server/Dockerfile
       target: release
+    # x0073: host publish defaults to loopback (Tunnel / local origin).
+    # LAN direct access: PUBLISH_ADDR=0.0.0.0 docker compose ...
     ports:
-      - "4002:4002"
+      - "${PUBLISH_ADDR:-127.0.0.1}:4002:4002"
     environment:
       PHX_SERVER: "true"
       BIND_ALL: "true"

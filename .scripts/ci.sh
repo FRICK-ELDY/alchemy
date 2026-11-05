@@ -40,11 +40,16 @@ run_rust() {
 }
 
 run_launcher() {
-  # x0047 / P3-2: alchemy-launcher is outside the client workspace (parity with
-  # .github/workflows/rust-ci.yml launcher-check).
+  # x0047 / x0073: alchemy-launcher outside client workspace (parity with
+  # .github/workflows/rust-ci.yml launcher-check, including cargo deny).
   pushd launcher >/dev/null
   step "launcher cargo fmt --check" cargo fmt --all -- --check
   step "launcher cargo clippy" cargo clippy -- -D warnings
+  if command -v cargo-deny >/dev/null 2>&1; then
+    step "launcher cargo deny check" cargo deny check
+  else
+    echo "[SKIP] launcher cargo deny check (local only; CI gates via EmbarkStudios/cargo-deny-action)"
+  fi
   step "launcher cargo build" cargo build
   step "launcher cargo test" cargo test
   popd >/dev/null

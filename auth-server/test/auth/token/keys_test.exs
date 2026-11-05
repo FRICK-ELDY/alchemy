@@ -84,6 +84,8 @@ defmodule Auth.Token.KeysTest do
   end
 
   defp restart_keys! do
+    # terminate_child (not GenServer.stop): permanent child must not auto-restart
+    # before Application env for the next boot is applied.
     _ = Supervisor.terminate_child(Auth.Supervisor, Keys)
 
     case Supervisor.restart_child(Auth.Supervisor, Keys) do
@@ -92,28 +94,8 @@ defmodule Auth.Token.KeysTest do
       {:error, reason} -> flunk("failed to restart Auth.Token.Keys: #{inspect(reason)}")
     end
 
-    wait_for_keys!()
-  end
-
-  defp wait_for_keys! do
-    Enum.reduce_while(1..100, :error, fn _, _ ->
-      case Keys.jwks() do
-        %{"keys" => [_ | _]} ->
-          {:halt, :ok}
-
-        _ ->
-          Process.sleep(20)
-          {:cont, :error}
-      end
-    end)
-    |> case do
-      :ok -> :ok
-      :error -> flunk("Auth.Token.Keys did not become ready")
-    end
-  catch
-    :exit, {:noproc, _} ->
-      Process.sleep(50)
-      wait_for_keys!()
+    # Synchronize past handle_continue → :persistent_term.put (x0073).
+    Keys.await_ready()
   end
 
   defp active_kid, do: first_jwks_kid()

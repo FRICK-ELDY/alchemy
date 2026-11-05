@@ -6,7 +6,7 @@
 日常開発はネイティブ Windows の `cargo` で問題ない（かつて Smart App Control が ON だと os error 4551 で阻害されたが、現環境では OFF）。WSL2 は任意の代替。  
 **テスター配布 ZIP**（ネイティブ Windows x64）は [Releases（Pre-release）](https://github.com/FRICK-ELDY/alchemy/releases) · 手順 [windows-tester-zip.md](.workspace/0_doc/manual/windows-tester-zip.md)。版名は `v0.0.0-dev.YYYYMMDDHHMM`（JST）。
 
-## 現状（〜x006a）
+## 現状（〜x0073）
 
 手通し正本は **Desktop（x0020）**: 日常スタック（`:4002/:4003/:4004` + zenohd `:7447`）。手順は下記、env 例は [`client/env.desktop.example`](client/env.desktop.example)、機械検証は `make smoke-desktop-handthrough`。
 
@@ -14,8 +14,9 @@
 **暗号・門番（〜x0045）:** 検証失敗は discard、Intent rate + JWKS hard stale、Grab hold 距離クランプ。  
 **運用・品質（x0046–x004d）:** adversarial E2E、launcher CI、asset placeholder + HTTP timeout、**localhost `/metrics`**、ClientIp 共有、**cargo-fuzz**、**Presence 容量 = Manifest entries**。  
 **LAN / HTTPS / WAN:** zenohd + `ZENOH_CONNECT`；Tunnel（[`edge/cloudflared/`](edge/cloudflared/)）；WAN は **TLS + 短命 mTLS**（x0022 / [x0066](.workspace/roadmap/slices/x0066-ephemeral-mtls-world-issue.md) · [手順書](.workspace/0_doc/manual/relay-server-wan.md)）。world が CSR を署名し、zenohd は role CN ACL（[x0067](.workspace/roadmap/slices/x0067-zenohd-acl-put-family-host-guest.md)）。Relay Agent は互換フォールバック。  
-**Assets:** CAS local / **R2**（GET は署名 URL 302）。**Hermetic E2E（x001f）:** `docker-compose.e2e.yml`。  
-P4-1 描画統合は **[x0050](.workspace/roadmap/slices/x0050-xr-swapchain-wgpu.md)**–**[x0052](.workspace/roadmap/slices/x0052-xr-vk-loop-gpu-remove.md)** **done**。relay 契約は **[x0068](.workspace/roadmap/slices/x0068-relay-mtls-ttl-bound-ci.md)** **done**。部屋隔離（Room 鍵 AEAD）は **[x0069](.workspace/roadmap/slices/x0069-room-key-aead.md)** **done**。world Zenohex Adapter は **[x006a](.workspace/roadmap/slices/x006a-world-zenohex-adapter.md)** **done**。inventory ladder Wave 0–4（**[x0054](.workspace/roadmap/slices/x0054-inventory-grant-required-put.md)**–**[x0065](.workspace/roadmap/slices/x0065-origin-cert-thin.md)**）**done**。host take-out 制御面 **[x006d](.workspace/roadmap/slices/x006d-host-take-out-control.md)** **done**。体感 **[x0053](.workspace/roadmap/slices/x0053-xr-desktop-hotswitch.md)**（F8 / presence）**done**。空き ID = **`x006e`**。[roadmap](.workspace/roadmap/README.md) · [優先度バックログ](.workspace/roadmap/backlog-priority-2026-11-04.md)。
+**Assets:** CAS local / **R2**（GET は署名 URL 302）。PlaceRead / BlobGrant 案 B / CAS access peel は **[x006b](.workspace/roadmap/slices/x006b-place-read-capability.md)**–**[x006f](.workspace/roadmap/slices/x006f-cas-access-grant-peel.md)** **done**。**Hermetic E2E（x001f）:** `docker-compose.e2e.yml`。trust WAN 否定系 **[x0070](.workspace/roadmap/slices/x0070-headless-trust-wan-e2e.md)**、world RL + Room cap **[x0071](.workspace/roadmap/slices/x0071-world-rate-limit-room-cap.md)**、launcher discovery **[x0072](.workspace/roadmap/slices/x0072-launcher-discovery.md)** **done**。  
+P4-1 描画統合は **[x0050](.workspace/roadmap/slices/x0050-xr-swapchain-wgpu.md)**–**[x0052](.workspace/roadmap/slices/x0052-xr-vk-loop-gpu-remove.md)** **done**。relay 契約は **[x0068](.workspace/roadmap/slices/x0068-relay-mtls-ttl-bound-ci.md)** **done**。部屋隔離（Room 鍵 AEAD）は **[x0069](.workspace/roadmap/slices/x0069-room-key-aead.md)** **done**。world Zenohex Adapter は **[x006a](.workspace/roadmap/slices/x006a-world-zenohex-adapter.md)** **done**。inventory ladder Wave 0–4（**[x0054](.workspace/roadmap/slices/x0054-inventory-grant-required-put.md)**–**[x0065](.workspace/roadmap/slices/x0065-origin-cert-thin.md)**）+ take-out/put-back UI **done**。体感 **[x0053](.workspace/roadmap/slices/x0053-xr-desktop-hotswitch.md)**（F8 / presence）**done**。  
+P3 軽量衛生 **[x0073](.workspace/roadmap/slices/x0073-p3-hygiene-easy.md)** **done**。**次:** reserved reaper / orphan CAS GC（**x0074**）。[roadmap](.workspace/roadmap/README.md) · [優先度バックログ](.workspace/roadmap/backlog-priority-2026-11-04.md)。
 
 | コンポーネント | パス |
 |:---|:---|

@@ -5,50 +5,75 @@ defmodule Auth.Token.Keys do
   The active key (`jwt_private_key_path`) signs new tokens. Additional keys
   (`jwt_verification_key_paths`) are published in JWKS for verification during
   key rotation grace periods.
+
+  Hot-path reads (`signer/0`, `jwks/0`, `signer_for_kid/1`) use `:persistent_term`
+  so login/refresh do not serialize through this GenServer (x0073). The process
+  still owns load / restart lifecycle and refreshes the term on boot.
   """
 
   use GenServer
+
+  @pt_key {__MODULE__, :key_state}
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
+  @doc """
+  Block until keys are loaded into `:persistent_term` (after `handle_continue`).
+  Used by tests that restart this process under new Application env.
+  """
+  @spec await_ready(timeout()) :: :ok
+  def await_ready(timeout \\ 5_000), do: GenServer.call(__MODULE__, :await_ready, timeout)
+
   @spec signer() :: Joken.Signer.t()
-  def signer, do: GenServer.call(__MODULE__, :signer)
+  def signer, do: key_state!().active_signer
 
   @spec jwks() :: map()
-  def jwks, do: GenServer.call(__MODULE__, :jwks)
+  def jwks do
+    case :persistent_term.get(@pt_key, :missing) do
+      :missing -> %{"keys" => []}
+      %{jwks: jwks} -> jwks
+    end
+  end
 
   @spec signer_for_kid(String.t()) :: {:ok, Joken.Signer.t()} | {:error, :unknown_kid}
-  def signer_for_kid(kid) when is_binary(kid),
-    do: GenServer.call(__MODULE__, {:signer_for_kid, kid})
+  def signer_for_kid(kid) when is_binary(kid) do
+    case Map.fetch(key_state!().signers_by_kid, kid) do
+      {:ok, signer} -> {:ok, signer}
+      :error -> {:error, :unknown_kid}
+    end
+  end
 
   @impl true
   def init(_opts) do
-    {:ok, nil, {:continue, :load_keys}}
+    {:ok, :loading, {:continue, :load_keys}}
   end
 
   @impl true
-  def handle_continue(:load_keys, _state) do
-    {:noreply, load_key_state!()}
+  def handle_continue(:load_keys, :loading) do
+    state = load_key_state!()
+    :persistent_term.put(@pt_key, state)
+    {:noreply, :ready}
   end
 
   @impl true
-  def handle_call(:signer, _from, %{active_signer: signer} = state),
-    do: {:reply, signer, state}
+  def handle_call(:await_ready, _from, :ready), do: {:reply, :ok, :ready}
 
   @impl true
-  def handle_call(:jwks, _from, %{jwks: jwks} = state), do: {:reply, jwks, state}
+  def terminate(_reason, _state) do
+    :persistent_term.erase(@pt_key)
+    :ok
+  end
 
-  @impl true
-  def handle_call({:signer_for_kid, kid}, _from, %{signers_by_kid: signers} = state) do
-    reply =
-      case Map.fetch(signers, kid) do
-        {:ok, signer} -> {:ok, signer}
-        :error -> {:error, :unknown_kid}
-      end
+  defp key_state! do
+    case :persistent_term.get(@pt_key, :missing) do
+      :missing ->
+        raise "Auth.Token.Keys not ready"
 
-    {:reply, reply, state}
+      state ->
+        state
+    end
   end
 
   defp load_key_state! do
