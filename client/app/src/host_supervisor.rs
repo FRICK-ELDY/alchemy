@@ -439,9 +439,10 @@ fn spawn_host(ipc_token: &str, ready_path: &Path) -> Result<Child> {
 
     #[cfg(target_os = "linux")]
     {
-        // SAFETY: runs in the forked child before exec; PR_SET_PDEATHSIG survives execve
-        // of the *immediate* image (cargo when using `cargo run`, not the eventual host).
         use std::os::unix::process::CommandExt;
+        // SAFETY: `pre_exec` runs in the forked child before exec. `PR_SET_PDEATHSIG`
+        // survives execve of the *immediate* image only (cargo when using `cargo run`,
+        // not the eventual host-server binary).
         unsafe {
             cmd.pre_exec(|| {
                 let rc = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
