@@ -20,7 +20,6 @@ mod access_level;
 mod assets_fetch;
 mod auth;
 mod bus;
-mod host_control;
 mod host_supervisor;
 mod intent_session;
 mod inventory;
@@ -161,7 +160,7 @@ fn main() -> Result<()> {
         intent: Mutex::new(Default::default()),
         presentation: crate::surface::PresentationGate::default(),
         dash: Mutex::new(crate::system_ui::SharedDashStore::default()),
-        host_supervisor: Mutex::new(crate::host_supervisor::HostSupervisor::default()),
+        host_supervisor: Arc::new(crate::host_supervisor::HostSupervisor::default()),
     });
 
     // Auto-join + Zenoh open only for silent/CI. Remember-me restore authenticates only

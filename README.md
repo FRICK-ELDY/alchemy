@@ -114,7 +114,7 @@ bash .scripts/smoke-assets-glb.sh      # Coin GLB → CAS
 make smoke-assets-r2                   # x001c/x001d: CAS=s3 + 302 presign（R2 env 要）
 bash .scripts/smoke-manifest-delta.sh  # Manifest + デルタ（zenohd 必須）
 bash .scripts/smoke-rapier-host.sh     # Rapier 60Hz / net 30Hz（zenohd 必須）
-bash .scripts/smoke-system-ui.sh       # system_ui unit + host_control コンパイル
+bash .scripts/smoke-system-ui.sh       # system_ui unit + host-server check
 bash .scripts/smoke-openxr.sh          # OpenXR モジュール unit + Desktop フォールバック compile
 bash .scripts/smoke-desktop-noclip.sh  # Manifest Noclip + user_root（zenohd + auth/world 必須）
 make smoke-desktop-handthrough         # x0020: auth/world/zenoh + host Token/Manifest/physics + client build
@@ -180,7 +180,7 @@ systemctl is-active alchemy-zenohd
 
 再起動後は既存の host / client の Zenoh セッションが切れる。**host を起動し直して置きっぱなし**にしてから client を繋ぐ。接続例: `ZENOH_CONNECT=tls/relay.example.tld:7447`（詳細・初回セットアップは [relay-server-wan.md](.workspace/0_doc/manual/relay-server-wan.md)）。
 
-環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID`（既定 `local`） / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（サイレント login） / `ZENOH_CONNECT` / `ZENOH_TLS_ROOT_CA`（WAN 私有 CA） / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_PID` / `ALCHEMY_FORCE_DESKTOP` / `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。Desktop 正本例: [`client/env.desktop.example`](client/env.desktop.example)。
+環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID`（既定 `local`） / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（サイレント login） / `ZENOH_CONNECT` / `ZENOH_TLS_ROOT_CA`（WAN 私有 CA） / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_BIN`（隣接 exe 以外の host-server パス） / `ALCHEMY_FORCE_DESKTOP` / `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。Desktop 正本例: [`client/env.desktop.example`](client/env.desktop.example)。
 
 詳細は [`.workspace/roadmap/`](.workspace/roadmap/README.md) · Slice [x0020](.workspace/roadmap/slices/x0020-desktop-handthrough.md)。
 

@@ -61,3 +61,7 @@ Non-guarantees
 --------------
   Offline / assets-down Coin fixture fallback uses a compile-time path and is
   not a supported tester path for authenticated sessions.
+
+Report bugs
+-----------
+  Include build-info.json fields (version + gitSha + rustcHost) and OS / GPU notes.

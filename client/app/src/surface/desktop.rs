@@ -31,7 +31,6 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Cursor, CursorGrabMode, CustomCursor, Window, WindowId};
 
 use crate::auth;
-use crate::host_control;
 use crate::host_supervisor;
 use crate::mesh::CpuMesh;
 use crate::operator_prefs::{self, endpoints_for, OperatorKind};
@@ -208,28 +207,22 @@ where
     }
 }
 
-/// Handover stub then stop supervisor-owned host; fall back to env/Zenoh IPC for external hosts.
-fn graceful_stop_local_host(shared: &SharedState, zenoh: Option<&zenoh::Session>) {
-    host_supervisor::request_handover_stub();
-    let supervised = shared
-        .host_supervisor
-        .lock()
-        .map(|mut s| {
-            let running = s.is_running();
-            if running {
-                s.shutdown_graceful();
-            }
-            running
-        })
-        .unwrap_or(false);
-    if supervised {
-        return;
+/// Failed Start / guest path: cancel in-flight spawn; allow a later ensure retry.
+/// External / CI hosts are never touched.
+fn stop_supervised_host(shared: &SharedState) {
+    if shared.host_supervisor.owns_local_host() {
+        host_supervisor::request_handover_stub();
     }
-    // Manual / CI host (not child of this client): best-effort IPC / PID / opt-in Zenoh.
-    if let Some(session) = zenoh {
-        let cap = shared.wire_cap();
-        host_control::request_host_shutdown(session, shared.room_id.as_ref(), cap.as_deref());
+    // Even when Idle: sets cancel_spawn so an in-flight ensure_running aborts.
+    shared.host_supervisor.shutdown_graceful();
+}
+
+/// Client Exit: sticky exit latch + stop (Start HTTP 中の Exit でも後続 ensure を拒否).
+fn exit_stop_supervised_host(shared: &SharedState) {
+    if shared.host_supervisor.owns_local_host() {
+        host_supervisor::request_handover_stub();
     }
+    shared.host_supervisor.latch_exit_and_shutdown();
 }
 
 impl App {
@@ -358,7 +351,7 @@ impl App {
             log::info!("hotswitch: Desktop performed leave_room for XR AuthLogout");
         }
         if self.shared.presentation.take_host_shutdown_requested() {
-            graceful_stop_local_host(&self.shared, self.zenoh.as_ref());
+            exit_stop_supervised_host(&self.shared);
             log::info!("hotswitch: Desktop graceful host stop for XR Exit");
             self.shared.presentation.request_exit();
         }
@@ -1103,20 +1096,23 @@ fn apply_start_session_result(
                     log::info!("start session ok; visibility applied={wanted}");
                 }
                 Err(err) => {
+                    stop_supervised_host(shared);
                     ui.state.home_status = format!("Joined but room bus failed: {err:#}");
                     log::warn!("room bus after start failed: {err:#}");
                 }
             }
         }
         (Ok(world_api::VisibilityEnsure::LeftExisting), Ok(())) => {
+            // Guest path — must not keep a local host we might have started by mistake.
+            stop_supervised_host(shared);
             match bind_room_after_join(shared, zenoh) {
                 Ok(()) => {
                     ui.state.home_create_open = false;
                     ui.state.home_status = format!(
-                        "Joined — visibility not updated (not owner); existing ACL kept (wanted {wanted})"
+                        "Joined as guest (not owner) — use Join for existing rooms; local host not started (wanted {wanted})"
                     );
                     ui.state.open = false;
-                    log::info!("start session joined; visibility left existing (wanted {wanted})");
+                    log::info!("start session joined existing as guest (wanted {wanted})");
                 }
                 Err(err) => {
                     ui.state.home_status = format!("Joined but room bus failed: {err:#}");
@@ -1124,21 +1120,8 @@ fn apply_start_session_result(
                 }
             }
         }
-        (Err(vis_err), Ok(())) => match bind_room_after_join(shared, zenoh) {
-            Ok(()) => {
-                ui.state.home_create_open = false;
-                ui.state.home_status =
-                    format!("Joined — visibility step failed ({vis_err}); existing ACL");
-                ui.state.open = false;
-                log::warn!("joined after visibility error: {vis_err}");
-            }
-            Err(err) => {
-                ui.state.home_status =
-                    format!("Joined but room bus failed: {err:#} (visibility: {vis_err})");
-                log::warn!("room bus after start failed: {err:#}");
-            }
-        },
         (vis, Err(err)) => {
+            stop_supervised_host(shared);
             ui.state.home_status = match vis {
                 Ok(world_api::VisibilityEnsure::Applied) => {
                     format!("Access level applied ({wanted}) but join failed: {err}")
@@ -1151,6 +1134,13 @@ fn apply_start_session_result(
                 }
             };
             log::warn!("start session join failed: {err}");
+        }
+        // StartSession worker always pairs visibility Err with join Err; keep arm for exhaustiveness.
+        (Err(vis_err), Ok(())) => {
+            stop_supervised_host(shared);
+            ui.state.home_status =
+                format!("Joined — visibility step failed ({vis_err}); existing ACL");
+            log::warn!("unexpected visibility Err + join Ok: {vis_err}");
         }
     }
     ui.mark_dash_logic_dirty();
@@ -1213,9 +1203,9 @@ fn handle_ui_action(
             log::info!("hotswitch auto stored → {}", ui.state.hotswitch_auto);
         }
         UiAction::ExitClientOnly | UiAction::ExitClientAndHost => {
-            // Exit Client only abolished: always handover stub + stop local host if any.
-            log::info!("system_ui: exit (handover stub + stop local host if running)");
-            graceful_stop_local_host(shared, zenoh.as_ref());
+            // Exit Client only abolished: stop supervisor-owned host only.
+            log::info!("system_ui: exit (handover stub + stop supervised host if any)");
+            exit_stop_supervised_host(shared);
             shared.presentation.request_exit();
             event_loop.exit();
         }
@@ -1372,18 +1362,6 @@ fn handle_ui_action(
             let (tx, rx) = mpsc::channel();
             *auth_job = Some(rx);
             spawn_auth_http(move || {
-                // Host path only: spawn local host-server as child (Join does not).
-                let host = match shared_job.host_supervisor.lock() {
-                    Ok(mut sup) => sup.ensure_running().map_err(|e| format!("{e:#}")),
-                    Err(err) => Err(format!("host_supervisor lock: {err}")),
-                };
-                if let Err(err) = host {
-                    let _ = tx.send(AuthJobOutcome::StartSession {
-                        visibility: Err(format!("local host-server start failed: {err}")),
-                        join: Err("skipped join (host spawn failed)".into()),
-                    });
-                    return;
-                }
                 let world_url = shared_job.get_world_url();
                 let visibility = world_api::ensure_room_visibility(
                     &world_url,
@@ -1392,18 +1370,22 @@ fn handle_ui_action(
                     level,
                 )
                 .map_err(|e| format!("{e:#}"));
+                // Spawn local host only when we own/create the room. Existing rooms → guest Join.
                 let join = match &visibility {
-                    Ok(_) => {
+                    Ok(world_api::VisibilityEnsure::Applied) => {
+                        match shared_job.host_supervisor.ensure_running() {
+                            Ok(()) => join_room_with_access(&shared_job, &access)
+                                .map_err(|e| format!("{e:#}")),
+                            Err(err) => Err(format!("local host-server start failed: {err:#}")),
+                        }
+                    }
+                    Ok(world_api::VisibilityEnsure::LeftExisting) => {
                         join_room_with_access(&shared_job, &access).map_err(|e| format!("{e:#}"))
                     }
                     Err(_) => Err("skipped join (visibility step failed)".into()),
                 };
                 if join.is_err() {
-                    // Do not leave an orphan host after a failed Start.
-                    if let Ok(mut sup) = shared_job.host_supervisor.lock() {
-                        host_supervisor::request_handover_stub();
-                        sup.shutdown_graceful();
-                    }
+                    stop_supervised_host(&shared_job);
                 }
                 let _ = tx.send(AuthJobOutcome::StartSession { visibility, join });
             });

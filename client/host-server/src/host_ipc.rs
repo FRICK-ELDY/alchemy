@@ -26,6 +26,7 @@ pub fn shutdown_requested() -> bool {
 }
 
 /// Bound `127.0.0.1:port` after [`spawn_listener`], if IPC is enabled.
+#[allow(dead_code)] // retained for diagnostics / future local probes
 pub fn bound_addr() -> Option<String> {
     bound_slot().lock().ok().and_then(|g| g.clone())
 }
@@ -34,11 +35,14 @@ pub fn bound_addr() -> Option<String> {
 pub fn spawn_listener() -> Result<()> {
     let Ok(token) = std::env::var(ENV_TOKEN) else {
         log::info!("{ENV_TOKEN} unset — host IPC shutdown disabled");
+        // CI ready-file waiters still need a signal when IPC is off.
+        write_ready_file_if_configured(None);
         return Ok(());
     };
     let token = token.trim().to_string();
     if token.is_empty() {
         log::info!("{ENV_TOKEN} empty — host IPC shutdown disabled");
+        write_ready_file_if_configured(None);
         return Ok(());
     }
 
@@ -53,6 +57,9 @@ pub fn spawn_listener() -> Result<()> {
         *slot = Some(bound.clone());
     }
     log::info!("host IPC listening on {bound}");
+
+    // Ready as soon as IPC is bound — parent Start path must not wait for first frame put.
+    write_ready_file_if_configured(Some(&bound));
 
     std::thread::Builder::new()
         .name("host-ipc".into())
@@ -72,6 +79,20 @@ pub fn spawn_listener() -> Result<()> {
         })
         .context("spawn host-ipc thread")?;
     Ok(())
+}
+
+fn write_ready_file_if_configured(ipc: Option<&str>) {
+    let Ok(path) = std::env::var("ALCHEMY_HOST_READY_FILE") else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    let body = alchemy_protocol::host_ipc::ready_file_body(ipc);
+    match std::fs::write(&path, body.as_bytes()) {
+        Ok(()) => log::info!("host ready file written (after IPC bind): {path}"),
+        Err(err) => log::warn!("ALCHEMY_HOST_READY_FILE write failed ({path}): {err}"),
+    }
 }
 
 fn handle_client(stream: TcpStream, expected_token: &str) -> bool {

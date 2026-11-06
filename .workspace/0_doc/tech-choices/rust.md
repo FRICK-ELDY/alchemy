@@ -1,6 +1,6 @@
 # Rust クレート選定
 
-出典: [`client/Cargo.toml`](../../../client/Cargo.toml)（ワークスペース）、[`protocol/Cargo.toml`](../../../protocol/Cargo.toml)、[`launcher/Cargo.toml`](../../../launcher/Cargo.toml)。固定版の例は `client/Cargo.lock`（2026-10-28 時点）。
+出典: [`client/Cargo.toml`](../../../client/Cargo.toml)（ワークスペース）、[`protocol/Cargo.toml`](../../../protocol/Cargo.toml)。固定版の例は `client/Cargo.lock`（2026-10-28 時点）。
 
 ## ワークスペース構成
 
@@ -8,11 +8,10 @@
 |:---|:---|:---|
 | `alchemy-protocol` | `protocol/` | Protobuf ワイヤ SSoT + 暗号ヘルパ |
 | `alchemy-shared-sim` | `client/shared-sim/` | 共有 EntityKind / ManifestIndex（Rapier なし） |
-| `host-server` | `client/host-server/` | ローカル空間権威ホスト |
-| `client` | `client/app/` | Desktop / OpenXR エンドポイント |
+| `host-server` | `client/host-server/` | ローカル空間権威ホスト（client `HostSupervisor` がオンデマンド spawn） |
+| `client` | `client/app/` | Desktop / OpenXR エンドポイント（親プロセス） |
 | `zenoh-connect` | `client/zenoh-connect/` | Zenoh 接続と TLS ルート CA の共有 |
 | `e2e-probe` | `client/e2e-probe/` | Hermetic Compose E2E（GUI なし） |
-| `alchemy-launcher` | `launcher/` | host+client 起動、localhost IPC で停止 |
 
 ## コア / ワイヤ
 
@@ -63,9 +62,7 @@
 |:---|:---|:---|:---|
 | `anyhow` | `1` | 多くの bin | プロセス境界での文脈付きエラー |
 | `log` + `env_logger` | `0.4` / `0.11` | bin | 簡潔な stderr ログ |
-| `ctrlc` | `3` | launcher | Ctrl-C の優雅な処理 |
-| `getrandom` | `0.2` | launcher | IPC トークン用乱数 |
-| `libc` | `0.2` | client | OS 低レベル呼び出し |
+| `libc` | `0.2` | client | OS 低レベル呼び出し（Linux PDEATHSIG 等） |
 | `winreg` | `0.52` | client（Windows） | Steam / OpenXR ローダ探索 |
 
 ### 開発専用（host-server テスト）

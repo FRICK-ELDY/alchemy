@@ -1822,7 +1822,10 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
                 state.interact(WidgetId::ExitClientAndHost, BTN_DANGER),
             );
             debug_assert!(DashRoot::is_pinned(facet_of(WidgetId::ExitClientAndHost)));
-            tree.push_icon(Rect::new(cx + 16.0, btn_y + 16.0, 32.0, 32.0), "exit_to_app");
+            tree.push_icon(
+                Rect::new(cx + 16.0, btn_y + 16.0, 32.0, 32.0),
+                "exit_to_app",
+            );
             tree.push_label(
                 Rect::new(cx + 56.0, btn_y + 22.0, btn_w - 70.0, 24.0),
                 "Exit",
@@ -1833,7 +1836,7 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
 
             tree.push_label(
                 Rect::new(cx, btn_y + btn_h + 32.0, cw, 40.0),
-                "If you are hosting: handover stub then stop local host-server. Join-only: client exit.",
+                "Stops this client's supervised host only (if Start session spawned one). External/CI hosts are untouched. Leave/Logout keep host.",
                 MUTED,
                 1.0,
             );
