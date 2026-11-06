@@ -1,15 +1,14 @@
 # Entry points (macOS / Linux / WSL / Git Bash).
 # pack-windows / publish-windows: native Windows Git Bash or windows-latest only.
-.PHONY: ci ci-rust ci-launcher ci-relay ci-protocol ci-auth ci-world ci-assets ci-e2e ci-prod-compose \
+.PHONY: ci ci-rust ci-relay ci-protocol ci-auth ci-world ci-assets ci-e2e ci-prod-compose \
 	ci-fuzz \
 	smoke-assets smoke-assets-r2 smoke-compose-e2e smoke-desktop-handthrough \
 	smoke-prod-compose pack-windows publish-windows help
 
 help:
 	@echo "Targets:"
-	@echo "  make ci            # rust + launcher + relay + protocol + auth + world + assets + prod-compose config"
+	@echo "  make ci            # rust + relay + protocol + auth + world + assets + prod-compose config"
 	@echo "  make ci-rust"
-	@echo "  make ci-launcher       # x0047/x0073 alchemy-launcher fmt/clippy/deny/build/test"
 	@echo "  make ci-relay          # x0068 alchemy-relay-agent fmt/clippy/deny/build/test"
 	@echo "  make ci-protocol"
 	@echo "  make ci-fuzz           # x004c cargo-fuzz smoke (Linux/macOS + nightly)"
@@ -33,9 +32,6 @@ ci:
 
 ci-rust:
 	./.scripts/ci.sh rust
-
-ci-launcher:
-	./.scripts/ci.sh launcher
 
 ci-relay:
 	./.scripts/ci.sh relay

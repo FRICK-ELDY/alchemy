@@ -850,7 +850,7 @@ mod tests {
             .tree
             .hits
             .iter()
-            .find(|(w, _)| *w == WidgetId::ExitClientOnly)
+            .find(|(w, _)| *w == WidgetId::ExitClientAndHost)
             .copied()
             .expect("exit hit");
         ui.on_pointer(rect.x + 1.0, rect.y + 1.0, false);

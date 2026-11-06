@@ -1,8 +1,8 @@
-//! Localhost TCP shutdown for alchemy-launcher (x0032).
+//! Localhost TCP shutdown for client `HostSupervisor` (x0032 IPC).
 //!
 //! Guarantees: when `ALCHEMY_HOST_IPC_TOKEN` is set, bind `127.0.0.1:0` (no TOCTOU),
 //! accept matching `SHUTDOWN <token>\n`, set [`shutdown_requested`] for main to leave
-//! cleanly (exit 0 — intentional; launcher must not treat as crash-restart).
+//! cleanly (exit 0 — intentional stop).
 //! Non-guarantees: remote hosts, TLS, multi-command IPC, Zenoh host_control (separate).
 
 use alchemy_protocol::host_ipc::{authenticates_shutdown, ENV_TOKEN};
@@ -26,6 +26,7 @@ pub fn shutdown_requested() -> bool {
 }
 
 /// Bound `127.0.0.1:port` after [`spawn_listener`], if IPC is enabled.
+#[allow(dead_code)] // retained for diagnostics / future local probes
 pub fn bound_addr() -> Option<String> {
     bound_slot().lock().ok().and_then(|g| g.clone())
 }
@@ -33,26 +34,32 @@ pub fn bound_addr() -> Option<String> {
 /// Bind loopback ephemeral port when token env is set. Holds the listener until process end.
 pub fn spawn_listener() -> Result<()> {
     let Ok(token) = std::env::var(ENV_TOKEN) else {
-        log::info!("{ENV_TOKEN} unset — launcher IPC shutdown disabled");
+        log::info!("{ENV_TOKEN} unset — host IPC shutdown disabled");
+        // CI ready-file waiters still need a signal when IPC is off.
+        write_ready_file_if_configured(None);
         return Ok(());
     };
     let token = token.trim().to_string();
     if token.is_empty() {
-        log::info!("{ENV_TOKEN} empty — launcher IPC shutdown disabled");
+        log::info!("{ENV_TOKEN} empty — host IPC shutdown disabled");
+        write_ready_file_if_configured(None);
         return Ok(());
     }
 
-    // Bind and *keep* the socket — launcher never pre-reserves the port (x0032 TOCTOU fix).
-    let listener = TcpListener::bind("127.0.0.1:0").context("bind launcher IPC 127.0.0.1:0")?;
+    // Bind and *keep* the socket — parent never pre-reserves the port (x0032 TOCTOU fix).
+    let listener = TcpListener::bind("127.0.0.1:0").context("bind host IPC 127.0.0.1:0")?;
     let bound = listener
         .local_addr()
-        .context("launcher IPC local_addr")?
+        .context("host IPC local_addr")?
         .to_string();
     {
         let mut slot = bound_slot().lock().expect("BOUND_ADDR mutex");
         *slot = Some(bound.clone());
     }
-    log::info!("launcher IPC listening on {bound}");
+    log::info!("host IPC listening on {bound}");
+
+    // Ready as soon as IPC is bound — parent Start path must not wait for first frame put.
+    write_ready_file_if_configured(Some(&bound));
 
     std::thread::Builder::new()
         .name("host-ipc".into())
@@ -61,19 +68,31 @@ pub fn spawn_listener() -> Result<()> {
                 match conn {
                     Ok(stream) => {
                         if handle_client(stream, &token) {
-                            log::info!(
-                                "launcher IPC: authenticated shutdown — signaling main loop"
-                            );
+                            log::info!("host IPC: authenticated shutdown — signaling main loop");
                             SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
                             break;
                         }
                     }
-                    Err(err) => log::warn!("launcher IPC accept: {err}"),
+                    Err(err) => log::warn!("host IPC accept: {err}"),
                 }
             }
         })
         .context("spawn host-ipc thread")?;
     Ok(())
+}
+
+fn write_ready_file_if_configured(ipc: Option<&str>) {
+    let Ok(path) = std::env::var("ALCHEMY_HOST_READY_FILE") else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    let body = alchemy_protocol::host_ipc::ready_file_body(ipc);
+    match std::fs::write(&path, body.as_bytes()) {
+        Ok(()) => log::info!("host ready file written (after IPC bind): {path}"),
+        Err(err) => log::warn!("ALCHEMY_HOST_READY_FILE write failed ({path}): {err}"),
+    }
 }
 
 fn handle_client(stream: TcpStream, expected_token: &str) -> bool {
@@ -86,7 +105,7 @@ fn handle_client(stream: TcpStream, expected_token: &str) -> bool {
     if authenticates_shutdown(&line, expected_token) {
         true
     } else {
-        log::warn!("launcher IPC: ignored unauthenticated or malformed line");
+        log::warn!("host IPC: ignored unauthenticated or malformed line");
         false
     }
 }

@@ -83,19 +83,17 @@ zenohd -c relay-server/config.json5
 
 # --- 次はどちらか一方（同一 ROOM_ID で dual host にしない）---
 
-# 3a) 手動手通し: host + Desktop client（別ターミナル）
+# 3a) Desktop client のみ起動（Join は軽量。Start session で host-server を子プロセス起動）
 cd client
-cargo run -p host-server
 # UI login: omit AUTH_USER → Home tab opens
 ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 # silent (debug は AUTH_USER のみ可 / release は password または token 必須):
 AUTH_USER=alice AUTH_PASSWORD=Password1 ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 # または: ALCHEMY_AUTH_TOKEN=<access_jwt> ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
+# 手動で host だけ先に立てる（CI / デバッグ）:
+#   cargo run -p host-server
 
-# 3a') launcher（x0032）: host+client を一括。client 終了後も host 維持。Ctrl+C で IPC stop
-cd launcher && cargo run -p alchemy-launcher
-
-# 3a'') Windows テスター ZIP（正本はタグ push → CI Pre-release）
+# 3a') Windows テスター ZIP（正本はタグ push → CI Pre-release）— Start.cmd は client 直起動
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\.scripts\publish-windows-release.ps1 -CreateTag -PushTag
 #   ローカル煙: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\.scripts\pack-windows-zip.ps1
 #   手順: .workspace/0_doc/manual/windows-tester-zip.md
@@ -116,7 +114,7 @@ bash .scripts/smoke-assets-glb.sh      # Coin GLB → CAS
 make smoke-assets-r2                   # x001c/x001d: CAS=s3 + 302 presign（R2 env 要）
 bash .scripts/smoke-manifest-delta.sh  # Manifest + デルタ（zenohd 必須）
 bash .scripts/smoke-rapier-host.sh     # Rapier 60Hz / net 30Hz（zenohd 必須）
-bash .scripts/smoke-system-ui.sh       # system_ui unit + host_control コンパイル
+bash .scripts/smoke-system-ui.sh       # system_ui unit + host-server check
 bash .scripts/smoke-openxr.sh          # OpenXR モジュール unit + Desktop フォールバック compile
 bash .scripts/smoke-desktop-noclip.sh  # Manifest Noclip + user_root（zenohd + auth/world 必須）
 make smoke-desktop-handthrough         # x0020: auth/world/zenoh + host Token/Manifest/physics + client build
@@ -182,7 +180,7 @@ systemctl is-active alchemy-zenohd
 
 再起動後は既存の host / client の Zenoh セッションが切れる。**host を起動し直して置きっぱなし**にしてから client を繋ぐ。接続例: `ZENOH_CONNECT=tls/relay.example.tld:7447`（詳細・初回セットアップは [relay-server-wan.md](.workspace/0_doc/manual/relay-server-wan.md)）。
 
-環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID`（既定 `local`） / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（サイレント login） / `ZENOH_CONNECT` / `ZENOH_TLS_ROOT_CA`（WAN 私有 CA） / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_PID` / `ALCHEMY_FORCE_DESKTOP` / `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。Desktop 正本例: [`client/env.desktop.example`](client/env.desktop.example)。
+環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID`（既定 `local`） / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（サイレント login） / `ZENOH_CONNECT` / `ZENOH_TLS_ROOT_CA`（WAN 私有 CA） / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_BIN`（隣接 exe 以外の host-server パス） / `ALCHEMY_FORCE_DESKTOP` / `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。Desktop 正本例: [`client/env.desktop.example`](client/env.desktop.example)。
 
 詳細は [`.workspace/roadmap/`](.workspace/roadmap/README.md) · Slice [x0020](.workspace/roadmap/slices/x0020-desktop-handthrough.md)。
 
@@ -198,7 +196,6 @@ make ci-protocol
 make ci-auth
 make ci-world
 make ci-assets
-make ci-launcher   # x0047/x0073 alchemy-launcher fmt/clippy/deny/build/test
 make ci-e2e   # x001f（compose スタック起動後）
 make smoke-desktop-handthrough  # x0020（日常スタック起動後）
 ```
@@ -216,8 +213,6 @@ AUTH_CI_HOST=1 ./.scripts/ci.sh auth
 | `auth` | Docker で format / compile / credo / ecto / `mix test` |
 | `world` | Docker で format / compile / credo / `mix test` |
 | `assets` | Docker で format / compile / credo / ecto / `mix test` |
-| `launcher` | `launcher/` で fmt / clippy / deny / build / test（x0047 / x0073） |
-
 ## ライセンス
 
 Alchemy は責務境界に沿った **4階層マルチライセンス**です。詳細は [`LICENSE`](LICENSE) と [`TRADEMARKS.md`](TRADEMARKS.md) を参照してください。
@@ -225,7 +220,7 @@ Alchemy は責務境界に沿った **4階層マルチライセンス**です。
 | 階層 | 対象（現行パス） | SPDX | 公開形態 |
 |:---|:---|:---|:---|
 | ① ワイヤ契約・中継規格 | [`protocol/`](protocol/)、[`relay-server/`](relay-server/)、[`relay-agent/`](relay-agent/) | `Apache-2.0` | 完全 OSS |
-| ② 必須コア・クライアント | [`auth-server/`](auth-server/)、[`assets-server/`](assets-server/)、[`world-server/`](world-server/)、[`client/`](client/)（`host-server` / `shared-sim` 含む）、[`launcher/`](launcher/)、[`shared/alchemy_auth_client/`](shared/alchemy_auth_client/)、[`shared/alchemy_client_ip/`](shared/alchemy_client_ip/)、[`shared/alchemy_rate_limit/`](shared/alchemy_rate_limit/) | `MPL-2.0` | 完全 OSS |
+| ② 必須コア・クライアント | [`auth-server/`](auth-server/)、[`assets-server/`](assets-server/)、[`world-server/`](world-server/)、[`client/`](client/)（`host-server` / `shared-sim` / `HostSupervisor` 含む）、[`shared/alchemy_auth_client/`](shared/alchemy_auth_client/)、[`shared/alchemy_client_ip/`](shared/alchemy_client_ip/)、[`shared/alchemy_rate_limit/`](shared/alchemy_rate_limit/) | `MPL-2.0` | 完全 OSS |
 | ③ 検疫・監査アルゴリズム | pgvector 検疫ワーカー、Spot-Check 詳細ヒューリスティック（別リポジトリ） | Proprietary | 非公開（OSS 側は Behaviour のみ） |
 | ④ 決済・商用マーケット | `market-server` / `BillingProvider`（未導入） | `BSL-1.1` | Source-Available（商用競合制限） |
 

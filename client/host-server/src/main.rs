@@ -21,7 +21,7 @@
 //!   the new pub). JWKS hard stale on Room Token verify
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
 //! - Slice E / x001e: Zenoh `host_control` off by default; `ALCHEMY_HOST_CONTROL=1` to enable
-//! - x0032: localhost IPC shutdown when `ALCHEMY_HOST_IPC_*` set (alchemy-launcher)
+//! - x0032: localhost IPC shutdown when `ALCHEMY_HOST_IPC_*` set (client HostSupervisor)
 //!
 //! Non-guarantees:
 //! - Steal / rotation follow / Formula / polished Walk / verifier
@@ -895,7 +895,7 @@ fn main() -> Result<()> {
     )?;
     spawn_liveliness_watcher(session.clone(), &room_id, &wire_cap, Arc::clone(&presence))?;
     host_control::spawn_listener(session.clone(), &room_id, &wire_cap)?;
-    host_ipc::spawn_listener().context("launcher IPC listener")?;
+    host_ipc::spawn_listener().context("host IPC listener")?;
     let spawn_verifier = Arc::clone(&verifier);
     let spawn_inbox = inventory_spawn::spawn_listener(
         session.clone(),

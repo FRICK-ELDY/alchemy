@@ -185,7 +185,7 @@ pub struct WorldView {
 pub struct SharedState {
     /// Local camera / aim follows this host entity (`LOCAL_USER_ROOT_UNSET` until Presence).
     pub local_user_root: AtomicU32,
-    /// `ROOM_ID` used for Zenoh keys (x0017); shared with host_control shutdown publish.
+    /// `ROOM_ID` used for Zenoh keys (x0017).
     pub room_id: Arc<str>,
     /// Zenoh key channel secret from Room Token (x004e); `None` until join.
     pub wire_cap: Mutex<Option<Arc<str>>>,
@@ -249,6 +249,8 @@ pub struct SharedState {
     pub presentation: crate::surface::PresentationGate,
     /// Dash logical state shared Desktop ↔ XR (x0053). Layout/hover stay per-surface.
     pub dash: Mutex<crate::system_ui::SharedDashStore>,
+    /// On-demand local host-server child (Start session only; Join stays idle).
+    pub host_supervisor: Arc<crate::host_supervisor::HostSupervisor>,
 }
 
 impl SharedState {

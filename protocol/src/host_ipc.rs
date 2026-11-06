@@ -1,11 +1,11 @@
-//! Localhost TCP host shutdown + launcher discovery helpers (x0032 / x0072).
+//! Localhost TCP host shutdown + ready-file helpers (x0032; discovery LOOKUP retired).
 //!
 //! Not a Zenoh wire schema — shared line format / client request / ready-file
-//! parsing so host, client, and launcher stay in sync.
+//! parsing so host and client (`HostSupervisor`) stay in sync.
 //!
 //! Host IPC: one line `SHUTDOWN <token>\n` on TCP to the host listener.
-//! Discovery (x0072): `LOOKUP <token>\n` → `OK gen=<u64> ipc=127.0.0.1:<port>\n`
 //! Ready file (optional second line): `ipc=127.0.0.1:<port>`.
+//! Legacy discovery LOOKUP helpers remain for protocol tests / transitional callers.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;

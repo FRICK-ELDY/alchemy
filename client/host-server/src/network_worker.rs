@@ -325,24 +325,6 @@ pub fn catchup_after_publish_gate(
     upserts
 }
 
-fn signal_host_ready_once(host_ready: &AtomicBool) {
-    if host_ready.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let Ok(path) = std::env::var("ALCHEMY_HOST_READY_FILE") else {
-        return;
-    };
-    if path.is_empty() {
-        return;
-    }
-    let ipc = crate::host_ipc::bound_addr();
-    let body = alchemy_protocol::host_ipc::ready_file_body(ipc.as_deref());
-    match std::fs::write(&path, body.as_bytes()) {
-        Ok(()) => log::info!("host ready file written (after first frame put): {path}"),
-        Err(err) => log::warn!("ALCHEMY_HOST_READY_FILE write failed ({path}): {err}"),
-    }
-}
-
 fn put_or_die(label: &str, pub_: &zenoh::pubsub::Publisher<'_>, bytes: Vec<u8>) {
     if let Err(e) = pub_.put(bytes).wait() {
         log::error!("{label} publish failed: {e}");
@@ -466,7 +448,6 @@ impl WorkerState {
         room_id: &str,
         room_key: &[u8],
         stats: &PublishStats,
-        host_ready: &AtomicBool,
         upserts: Vec<Entity>,
         removes: Vec<u32>,
         host_time_ms: u64,
@@ -489,7 +470,6 @@ impl WorkerState {
         self.last_published_tick = Some(self.net_tick);
         self.net_tick = self.net_tick.wrapping_add(1);
         stats.net_tick.store(self.net_tick, Ordering::Relaxed);
-        signal_host_ready_once(host_ready);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -501,7 +481,6 @@ impl WorkerState {
         room_key: &[u8],
         cache: &Mutex<RenderFrame>,
         stats: &PublishStats,
-        host_ready: &AtomicBool,
         sample: FrameSample,
     ) {
         let FrameSample {
@@ -542,7 +521,6 @@ impl WorkerState {
                 room_id,
                 room_key,
                 stats,
-                host_ready,
                 vec![],
                 remove_ids,
                 host_time_ms,
@@ -609,7 +587,6 @@ impl WorkerState {
             room_id,
             room_key,
             stats,
-            host_ready,
             upserts,
             remove_ids,
             host_time_ms,
@@ -626,11 +603,9 @@ impl WorkerState {
 pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorkerHandles> {
     let hub = Arc::new(OutboundHub::new());
     let stats = Arc::new(PublishStats::default());
-    let host_ready = Arc::new(AtomicBool::new(false));
 
     let hub_w = Arc::clone(&hub);
     let stats_w = Arc::clone(&stats);
-    let ready_w = Arc::clone(&host_ready);
 
     thread::Builder::new()
         .name("zenoh-publish".into())
@@ -673,7 +648,6 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
                         room_key.as_ref(),
                         &snapshot_cache,
                         &stats_w,
-                        &ready_w,
                         sample,
                     );
                 }

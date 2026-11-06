@@ -46,7 +46,7 @@ flowchart TB
 | `…/manifest` | 改ざん配置・偽 host_pub・旧 seal replay・同一 gen 鍵すり替え・巨大 payload・**他 room 平文読取** | **WAN:** mTLS + role CN キー族 ACL（guest は sim **put ingress** deny・**put egress** allow；x0067）+ **Room 鍵 AEAD**（x0069；`wire_cap` はルーティングのみ）；`world_seal` + HostAttestation + **`(generation, revision)` 単調ゲート** + **同一 gen 内 `host_pub` 固定**（x0026 / x003a）；失敗は **discard**（x0038）；**decode 上限**（x003b） | UGC 編集 ACL；完全な handoff UX；二重 host の generation フリップフロップ；LAN tcp（ACL オフ）；トピック名秘匿 |
 | `…/alive` | 偽 Delete で退室 | host: liveliness を検証済み jti に紐付け（x0022） | WAN liveliness ACL |
 | `…/snapshot` | 偽全置換・巨大 payload・他 room 平文盗聴 | **Room 鍵 AEAD**（x0069）+ client: Frame と同じ host_sig / finite + **decode 上限**（x003b）で適用 | queryable 認証の別チャネル；`wire_cap` 秘匿 |
-| `…/host_control` | 遠隔プロセス停止 | **既定オフ**（x001e）。launcher 経路は localhost IPC（x0032） | WAN 上の無認証 Zenoh control |
+| `…/host_control` | 遠隔プロセス停止 | **既定オフ**（x001e）。ローカル停止は client `HostSupervisor` の localhost IPC | WAN 上の無認証 Zenoh control |
 
 キー式の一覧は [relay-server.md](relay-server.md) の MVP 表および protocol の `*_key` ヘルパ。
 
@@ -65,8 +65,8 @@ flowchart TB
 | 経路 | 脅威 | 防御 |
 |:---|:---|:---|
 | Zenoh `host_control` | WAN peer が shutdown を送る | 既定購読しない（`ALCHEMY_HOST_CONTROL` opt-in・x001e） |
-| launcher → host | ローカルのみ graceful stop | TCP `127.0.0.1` + ワンタイムトークン（x0032） |
-| client Exit → host | 誤って全員の部屋を落とす | client 終了 ≠ host 終了（launcher が分離監視） |
+| client `HostSupervisor` → host | ローカルのみ graceful stop | TCP `127.0.0.1` + ワンタイムトークン（旧 x0032 IPC） |
+| client Exit → host | ホスト中に部屋を落とす | **終了前 Handover stub**（失敗→部屋終了）。異常終了は Job Object / PDEATHSIG 道連れ + world 死活で別ホスト昇格。Exit Client only（host 維持）は**廃止** |
 | `GET /metrics`（host/client/assets） | 公網・Tunnel 経由の運用スクレイプ | **専用 loopback bind**（`ALCHEMY_METRICS_ADDR` / `ASSETS_METRICS_ADDR`・x0049）。公開 API ポートに載せない（Tunnel→127.0.0.1 で peer が loopback に見える経路を避ける） |
 
 ## 参照スライス
@@ -79,7 +79,7 @@ flowchart TB
 | x0022 | liveliness jti / WAN TLS |
 | x0023–x0026 | session / Frame 検証 / snapshot / attestation / seal |
 | x0030 | shared-sim（分類の単一正本；信頼境界の変更なし） |
-| x0032 | launcher localhost IPC（実装済み） |
+| x0032 | localhost IPC（旧 launcher；現行は client HostSupervisor） |
 | x0038 | Manifest / Presence 検証失敗は discard（leave しない） |
 | x0039 | canonical ManifestSeal（署名 oracle 廃止） |
 | x003a | `(host_generation, revision)` 単調ゲート（replay 拒否） |

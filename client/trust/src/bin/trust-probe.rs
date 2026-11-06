@@ -379,7 +379,7 @@ fn run_hermetic() -> Result<()> {
                 open_manifest_aead(&room_id, &wrong_key, envelope.as_ref()).is_ok();
             let opens_with_room =
                 open_manifest_aead(&room_id, &room.room_key, envelope.as_ref()).is_ok();
-            if !(opens_with_wrong && !opens_with_room) {
+            if !opens_with_wrong || opens_with_room {
                 // Host republish or unrelated noise — keep waiting for our put.
                 continue;
             }

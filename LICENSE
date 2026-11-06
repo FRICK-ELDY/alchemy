@@ -17,8 +17,8 @@ directory or submodule for the exact terms and copyright that apply:
 
 2. Core Infrastructure & Client Engine (`MPL-2.0`)
    - Components: `auth-server/`, `assets-server/`, `world-server/`,
-     `client/` (including `client/host-server/` and `client/shared-sim/`),
-     `launcher/`, `shared/alchemy_auth_client/`, `shared/alchemy_client_ip/`
+     `client/` (including `client/host-server/`, `client/shared-sim/`, and HostSupervisor),
+     `shared/alchemy_auth_client/`, `shared/alchemy_client_ip/`
    - Licensed under the Mozilla Public License, Version 2.0 (MPL-2.0).
 
 3. Quarantine & Anti-Cheat Heuristics (`Proprietary`)

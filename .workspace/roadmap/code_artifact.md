@@ -27,7 +27,7 @@
 | 階層区分 | 対象コンポーネント / ディレクトリ | 適用ライセンス (SPDX) | 公開形態 | Cursor 作業対象 |
 | :--- | :--- | :--- | :--- | :--- |
 | **① ワイヤ契約・中継規格層** | `protocol`<br>`relay-server`（旧名 `zenoh-router`）<br>`relay-agent` | `Apache-2.0` | 完全OSS | **今回適用** |
-| **② 必須コア・クライアント層** | `auth-server`<br>`assets-server`<br>`world-server`<br>`host-server`<br>`client`<br>`launcher`<br>`shared-sim` (共有クレート) | `MPL-2.0` | 完全OSS | **今回適用** |
+| **② 必須コア・クライアント層** | `auth-server`<br>`assets-server`<br>`world-server`<br>`host-server`<br>`client`（HostSupervisor 含む）<br>`shared-sim` (共有クレート) | `MPL-2.0` | 完全OSS | **今回適用** |
 | **③ 検疫・監査アルゴリズム層** | ・3D特徴量（pgvector）算出ワーカー<br>・`world-server` (`apps/verifier`) の詳細監査ルール実装 | `LicenseRef-Alchemy-Proprietary` (Proprietary) | 非公開<br>(別リポジトリ / 外部注入) | **境界インターフェースの維持・確認** |
 | **④ 決済・商用マーケット層** | `market-server`<br>`BillingProvider` | `BSL-1.1` | Source-Available<br>(商用競合制限) | **スケルトン / 将来作成時の規約登録** |
 
@@ -59,7 +59,7 @@
 
 1. **対象ディレクトリ**:
    - Elixir系: `auth-server/`, `assets-server/`, `world-server/`
-   - Rust系: `host-server/`, `client/`, `launcher/`, `shared-sim/`（ワークスペース内の各クレート含む）
+   - Rust系: `host-server/`, `client/`, `shared-sim/`（ワークスペース内の各クレート含む）
 2. **`LICENSE` の配置**:
    - 各コンポーネントのルートディレクトリ直下に、`MPL-2.0`（Mozilla Public License Version 2.0）の公式全文を記載した `LICENSE` ファイルを配置してください。
 3. **Rust マニフェスト（`Cargo.toml`）の更新**:
@@ -109,7 +109,7 @@ submodule for the exact terms that apply to that component:
 
 2. Core Infrastructure & Client Engine (`MPL-2.0`)
    - Components: `auth-server/`, `assets-server/`, `world-server/`,
-     `host-server/`, `client/`, `launcher/`, `shared-sim/`
+     `host-server/`, `client/`, `shared-sim/`
    - Licensed under the Mozilla Public License, Version 2.0 (MPL-2.0).
 
 3. Quarantine & Anti-Cheat Heuristics (`Proprietary`)
@@ -146,7 +146,7 @@ The following names and visual assets are reserved by FRICK-ELDY:
 - Unmodified builds created directly from the official source for personal or internal testing may retain the marks.
 
 ## Prohibited Use without Prior Written Permission
-- Distributing modified forks of `client`, `launcher`, or server components under the name "AlchemyEngine" or "VRAlchemy" in a manner that may confuse users into believing it is an official release.
+- Distributing modified forks of `client` or server components under the name "AlchemyEngine" or "VRAlchemy" in a manner that may confuse users into believing it is an official release.
 - Using official logos or verification badges to misrepresent an unofficial `market-server` or `world-server` as an officially operated hub.
 ```
 
@@ -175,6 +175,6 @@ Change License: Mozilla Public License 2.0 (MPL-2.0)
 
 - [ ] ルートの `LICENSE`、`TRADEMARKS.md`、`README.md` が4階層ライセンス方針に合わせて更新されていること。
 - [ ] `protocol`、`relay-server`（旧名 `zenoh-router`）、`relay-agent` に `Apache-2.0` の `LICENSE` とマニフェスト設定が適用されていること。
-- [ ] `auth-server`、`assets-server`、`world-server`、`host-server`、`client`、`launcher` に `MPL-2.0` の `LICENSE` とマニフェスト設定が適用されていること。
+- [ ] `auth-server`、`assets-server`、`world-server`、`host-server`、`client` に `MPL-2.0` の `LICENSE` とマニフェスト設定が適用されていること。
 - [ ] `.cursor/rules/` に4階層ライセンスと責務境界（Proprietaryロジックの混入防止）のルールが明記されていること。
 - [ ] `cargo check` や `mix compile` を実行し、マニフェスト更新による文法エラーやビルド破損が発生していないことを確認すること。

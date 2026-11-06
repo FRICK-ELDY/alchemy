@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Slice E: compile-gate for system_ui + host_control wiring (no GUI assertion).
+# Compile-gate for system_ui + host-server (no GUI assertion).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/client"
@@ -15,4 +15,4 @@ cd "$ROOT/protocol"
 cargo test key_helpers -- --nocapture
 
 echo "OK: system_ui / Dash Facet (x000f) compile/smoke gate passed."
-echo "Manual: Esc opens dash; Exit client + host needs ALCHEMY_HOST_PID (Unix) or ALCHEMY_HOST_CONTROL=1."
+echo "Manual: Esc opens dash; Exit stops supervised host via HostSupervisor IPC."

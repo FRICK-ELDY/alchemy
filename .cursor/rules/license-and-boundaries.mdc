@@ -12,7 +12,7 @@ alwaysApply: true
 | 階層 | パス | SPDX | エージェントの扱い |
 |:---|:---|:---|:---|
 | ① ワイヤ・中継 | `protocol/`、`relay-server/`（旧名 `zenoh-router`）、`relay-agent/` | `Apache-2.0` | マニフェスト `license` / `LICENSE` を Apache-2.0 のまま維持 |
-| ② 必須コア | `auth-server/`、`assets-server/`、`world-server/`、`client/`（`host-server`・`shared-sim` 含む）、`launcher/`、`shared/alchemy_*` | `MPL-2.0` | 同上（MPL-2.0） |
+| ② 必須コア | `auth-server/`、`assets-server/`、`world-server/`、`client/`（`host-server`・`shared-sim`・`HostSupervisor` 含む）、`shared/alchemy_*` | `MPL-2.0` | 同上（MPL-2.0） |
 | ③ 検疫・監査ヒューリスティック | 別リポジトリの pgvector 検疫・Spot-Check 詳細 | Proprietary | **この OSS ツリーに実装しない** |
 | ④ マーケット・課金 | `market-server/`、`BillingProvider` | `BSL-1.1` | 新規時は BSL-1.1 `LICENSE`（テンプレは仕様書 §4.3） |
 
