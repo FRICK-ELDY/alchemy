@@ -5,14 +5,12 @@ on:
     branches: ["**"]
     paths:
       - "client/**"
-      - "launcher/**"
       - "relay-agent/**"
       - "protocol/**"
       - ".github/workflows/rust-ci.yml"
   pull_request:
     paths:
       - "client/**"
-      - "launcher/**"
       - "relay-agent/**"
       - "protocol/**"
       - ".github/workflows/rust-ci.yml"
@@ -100,32 +98,7 @@ jobs:
           libx11-dev libxcursor-dev libxi-dev libxrandr-dev
       - run: cargo test --workspace
 
-  # x0047 / P3-2: launcher is outside the client workspace; keep this job in sync with
-  # `make ci-launcher` / `.scripts/ci.sh launcher`.
   # host cargo-fuzz: `.github/workflows/host-fuzz-ci.yml` (narrow paths).
-  launcher-check:
-    name: "Launcher — fmt clippy deny build test"
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: launcher
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: launcher -> target
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          manifest-path: launcher/Cargo.toml
-          command: check
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy -- -D warnings
-      - run: cargo build
-      - run: cargo test
-
   # x0068 / P1-1: relay-agent outside client workspace; sync with `make ci-relay`.
   relay-agent-check:
     name: "Relay Agent — fmt clippy deny build test"

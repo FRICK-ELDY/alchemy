@@ -10,7 +10,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | `v0.0.0-dev.YYYYMMDDHHMM`（JST）形式の版名 | SemVer 互換約束（`v0.1.0` まで） |
-| CI が上げた ZIP に launcher / host-server / client の release exe | auth / world / assets / zenohd の同梱 |
+| CI が上げた ZIP に host-server / client の release exe（client 直起動） | auth / world / assets / zenohd の同梱；alchemy-launcher（廃止） |
 | GitHub Pre-release（`--latest=false`）は **CI のみ**が作成 | ローカル `gh release`（レース防止のため廃止） |
 | `build-info.json` に version / gitSha / builtAt / **rustcHost** | SmartScreen・インストーラ・自動更新 |
 | `ensure-demo-coin.ps1` + fixture を ZIP に同梱（Start が assets へ seed） | fixture を client 実行時フォールバックにすること（release は assets 必須 / **[x003c](../../roadmap/slices/x003c-assets-required-mesh.md)**） |

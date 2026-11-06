@@ -7,8 +7,7 @@ Canonical builds: GitHub Actions (windows-release.yml) on the version tag.
 
 What is in this folder
 ----------------------
-  Start.cmd              — start host-server + client via alchemy-launcher
-  alchemy-launcher.exe
+  Start.cmd              — starts client.exe (host-server spawned on demand by client)
   host-server.exe
   client.exe
   build-info.json        — version, gitSha, builtAt (JST), rustcHost
@@ -17,6 +16,7 @@ What is in this folder
 What is NOT included
 --------------------
   auth-server / world-server / assets-server / zenohd
+  alchemy-launcher (abolished — client is the parent process)
   installer, auto-update, code signing (SmartScreen may warn)
 
 Assets mesh (required)
@@ -49,17 +49,15 @@ Run
 ---
   Double-click Start.cmd  (or run from cmd.exe)
   On failure the window pauses so you can read the message.
+  Join a room: host-server stays stopped (lightweight).
+  Start session / host: client spawns host-server.exe as a child (Job Object).
 
 Exit
 ----
-  In-app: Exit Client only keeps host; Exit Client+Host stops both.
-  Console Ctrl+C: launcher shuts down host via localhost IPC.
+  In-app Exit: handover stub then stop local host if this client started it; then client exits.
+  Crash / force-kill of client: Windows Job Object kills the child host (no zombie).
 
 Non-guarantees
 --------------
   Offline / assets-down Coin fixture fallback uses a compile-time path and is
-  expected to fail in this ZIP. Point ASSETS_URL at a working assets-server.
-
-Report bugs
------------
-  Include build-info.json fields (version + gitSha + rustcHost) and OS / GPU notes.
+  not a supported tester path for authenticated sessions.

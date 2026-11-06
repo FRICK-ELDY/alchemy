@@ -11,7 +11,7 @@
 | **1. 外部決済・公開エッジ ＆ Open Zenoh Relay** | MoR/Stripe・Cloudflare（WAF/CDN/R2）・公式/サードパーティ relay-server・連合ノード |
 | **2. 運営側コアインフラ** | 拠点 Proxmox 上の auth / assets / world(+verifier) / billing / market・DB・貸し出し host プール・NAS |
 | **3. 共通契約層** | Protobuf ワイヤ契約・shared-sim / host-server・Dual Representation |
-| **4. ホストユーザー端末** | launcher・ローカル host-server・client（OSC 受信・Dual Editor・LOD ビルド） |
+| **4. ホストユーザー端末** | client（親）・オンデマンド子プロセス host-server・OSC 受信・Dual Editor・LOD ビルド |
 | **5. 参加プレイヤー ＆ マルチプラットフォーム** | Trusted メンバーの 1対1 P2P・外部ゲストのリレー経由・展開ロードマップ |
 
 通信フロー番号（①〜⑭）は図下部のエッジラベルに対応する。
@@ -167,36 +167,34 @@ flowchart TB
             OSCDevices["・フルボディトラッカー (SlimeVR / mocopi / HaritoraX)<br/>・フェイシャル / アイトラッカー (VRCFaceTracking 等)<br/>※標準の OSC over UDP パケットを送信"]:::local
         end
 
-        LauncherProc["alchemy-launcher (常駐トレイプロセス / プロセスマネージャー)<br/>・client(画面) と ローカルhost-server(裏プロセス) を別プロセスとして分離起動・死活監視<br/>・ブラウザやDiscordの alchemy:// ディープリンクから直接起動＆座標ワープ<br/>・ユーザーが VR/Desktop画面(client) を閉じても、裏プロセスの host-server は稼働し続けセッション維持<br/>・PCの電源を切る際は、メニューから『部屋に残っているゲストB/C』または『運営の貸し出しヘッドレス』へ無停止でホスト権限を委譲"]:::launcher
-
-        %% --- 別プロセス①：ローカル host-server ---
-        subgraph LocalHostProcess["別プロセス①：ローカル host-server (100% Pure Rust バックグラウンド・ヘッドレス)"]
-            LocalHostEngine["ローカル空間計算ホスト (Untrusted 計算係 — world-server/verifier の監査対象)<br/>・入室ゲート: 全入力パケットの Room Token 署名検証<br/>・物理クラッシュ防御: 全入力座標・速度・回転の is_finite() 強制サニタイズ (NaN/Inf による物理発散爆弾を100%遮断)<br/>・内部 60Hz Tick: Rapier3d 物理・衝突判定・Formula VM を16.6msごとに高精度計算<br/>・配信 30Hz(20/30/60Hz可変) Tick: 動いたオブジェクトのみを binary64(f64) の RenderFrame にデルタ圧縮して Publish<br/> (※音声・フルトラ・アセット本体は host-server に一切通さないため、15人集まっても上り通信量は約100kbpsで頭打ち)"]:::host
-        end
-
-        %% --- 別プロセス②：クライアント本体 (VRAlchemy) ---
-        subgraph ClientProcess["別プロセス②：client — VRAlchemy (100% Pure Rust 体感・描画・作成・ビルドプロセス ※リレー機能は一切持たない純粋エンドポイント)"]
+        %% --- 親プロセス：client（Steam「プレイ」はここだけ） ---
+        subgraph ClientProcess["親プロセス：client — VRAlchemy (100% Pure Rust ※リレー無しエンドポイント)"]
             direction TB
 
-            ClientBootAndOSC["① 起動・VR自動判定・ローカルファイル ＆ 標準OSC受信エッジ (app / window / xr / input)<br/>・OpenXRランタイム応答あり ➔ VRモード ／ なし ➔ Desktopモード (最初はPrivateでホームを0秒ローカル起動)<br/>・ローカルファイル (.glb / .png / .ogg) のドラッグ＆ドロップ 0秒プレビュー ＆ 3Dインゲーム・ファイルブラウザ<br/>・標準 OSC over UDP 受信口 (Pure Rust: rosc クレート / localhost:9000):<br/> トラッカーからの長いOSC文字列アドレスを受信 ➔ is_finite() 検証 ➔ コンパクトな数値配列 Protobuf に圧縮して Zenoh へ送信"]:::local
+            ClientBootAndOSC["① 起動・VR自動判定・OSC 受信 (app / window / xr / input)<br/>・Steam/直起動は client のみ（全員 Client Only）。host-server はまだ起動しない<br/>・OpenXR あり ➔ VR / なし ➔ Desktop<br/>・OSC over UDP (rosc) ➔ is_finite() ➔ Protobuf ➔ Zenoh"]:::local
 
-            ClientMenuUI["② 空間メニューパネル (system_ui — メニューボタン or ESCキーで表示 / alchemy-node-info.json で自動適応)<br/>・Worldタブ: 7段階公開範囲(LAN→Private→Friends→Friends+→Followers→Followers+→Public)、配信レート(20/30/60Hz)設定、<br/>
- 『ホスト引き受け(死活監視移行) ON/OFF』トグル、運営貸し出しホスト選択、公認 Zenoh リレー屋選択<br/>・Inventoryタブ: 個人Vault ＆ グループ共有Vault(50GB) のフォルダ階層整理、空間への取り出し、空間内改造Prefabの逆保存<br/>・Git履歴タブ (Spatial VCS): Commit / Branch切替 / 3D空間ビジュアルDiff / 1クリックRollback<br/>・Shop ＆ プラン管理タブ: 利用規約同意(tos_version)、180日期限コインチャージ、$0〜$20プラン変更、購入アセットの0秒着用"]:::vcs
+            HostSupervisor["①b HostSupervisor（薄い保証単位）<br/>・Join: host 未起動 / ソロ・ホスト開始: 子プロセスとして host-server をオンデマンド spawn<br/>・ready の ipc= で loopback IPC / Job Object(Win)・PDEATHSIG(Linux) でクラッシュ道連れ<br/>・終了: Handover stub → IPC SHUTDOWN（失敗時は部屋終了）。Exit Client only は廃止"]:::launcher
 
+            ClientMenuUI["② 空間メニューパネル (system_ui)<br/>・World / Inventory / Git / Shop。ホスト引き受けトグル・貸し出しホスト / 公認リレー選択"]:::vcs
 
-            ClientDualEditor["③ Dual Editor (ノード ＆ テキスト両対応シェーダー / 空間ギミック作成環境)<br/>・公式標準マテリアルもブラックボックス化せずノードグラフまたはコードとして開いて改造(Fork)可能<br/>・ノード派は3D空間内でノード結線、コード派はインゲーム/外部エディタで WGSL 関数 / Formula スクリプトを記述<br/>・シェーダー無害化: DAG循環(無限ループ)排除・GPU命令コスト上限検査 ➔ wgpu内蔵『Naga』(Pure Rust)でミリ秒検証＆即時反映"]:::shader
+            ClientDualEditor["③ Dual Editor（ノード ＆ テキスト）"]:::shader
 
-            ClientAssetAndCache["④ クライアント側アセットLODビルダー ＆ UX最優先セキュアキャッシュ (assets)<br/>・RCE完全根絶デコーダ (#![forbid(unsafe_code)]): 音声 Symphonia / 3D gltf / 画像 image(KTX2) — C/C++パーサー完全排除<br/>・【サーバーCPU代0円化】インポート/Commit時に自PCのパワーで<br/> 『PC用高画質版』と『Quest/Web用軽量LOD(ポリゴン削減 + KTX2圧縮)バンドル』をローカルビルドしてから R2 / NAS へ送信<br/>・【UX最優先P2Pキャッシュ】同じ部屋の他人の有料アバターも鍵待ちなしで即時取得＆LOD0プロキシ先行で入室直後に姿を表示<br/>・【毒データ排除 ＆ ぶっこ抜き防止】デコーダ投入前に必ず BLAKE3 ハッシュを照合して不一致データは即破棄。ローカル保存時は ChaCha20 難読化"]:::guard
+            ClientAssetAndCache["④ アセット LOD ビルダー ＆ セキュアキャッシュ"]:::guard
 
-            ClientAVEngine["⑤ 実行・体感・空間オーディオエンジン (shared-sim / render / audio)<br/>・shared-sim により 30Hz(可変) 権威フレームの間を ~60-120fps で滑らかに予測・補間<br/>・wgpu (binary64 空間座標) レンダリング<br/>・Zenoh Audio DSP (SuperCollider着想): Opus超低遅延空間オーディオ合成 ＆ 距離カリング(遠い相手の音声・表情レート自動間引き)"]:::rust
+            ClientAVEngine["⑤ shared-sim / render / audio"]:::rust
 
+            ClientBootAndOSC --> HostSupervisor
             ClientBootAndOSC & ClientMenuUI & ClientDualEditor & ClientAssetAndCache --> ClientAVEngine
         end
 
+        %% --- 子プロセス：ローカル host-server（ホスト時のみ） ---
+        subgraph LocalHostProcess["子プロセス：ローカル host-server (ホスト開始時のみ・Pure Rust ヘッドレス)"]
+            LocalHostEngine["ローカル空間計算ホスト (Untrusted — verifier 監査対象)<br/>・Room Token / is_finite() / 60Hz 物理 / 30Hz 可変デルタ RenderFrame<br/>・音声・フルトラ・アセット本体は通さない"]:::host
+        end
+
         OSCDevices ===>|"標準 OSC (UDP)"| ClientBootAndOSC
-        LauncherProc ===>|"バックグラウンド維持"| LocalHostProcess
-        LauncherProc ===>|"起動・終了制御"| ClientProcess
-        LocalHostEngine <===>|"ローカルIPC / メモリ直結 (遅延 0ms)"| ClientAVEngine
+        HostSupervisor ===>|"オンデマンド spawn / IPC shutdown / Job Object"| LocalHostProcess
+        LocalHostEngine <===>|"ローカル IPC (loopback)"| ClientAVEngine
     end
 
     %% ====================================================================================
@@ -209,7 +207,7 @@ flowchart TB
         subgraph RoomParticipants["ワールド参加者 (例：登録メンバー10人 ＋ 外部ゲスト5人 ＝ 15人集会でもリレー負荷は数Mbps)"]
             direction LR
 
-            TrustedMembers["自サーバー登録メンバー / 相互フレンド (Trusted Peers — 9人)<br/>・client + 待機中のローカル host-server<br/>・【1対1 ダイレクトP2P (QUIC Hole Punching)】:<br/> 信頼関係がある仲間同士は、音声(Opus)・フルトラ表情・P2Pキャッシュを<br/> リレーを通さず1対1で直接送受信 (※他人の通信の中継＝サブリレー化は絶対しない)<br/>・【スマートホスト昇格待機】:<br/> client_info で『ホスト引き受けON』かつ高スペックなメンバーBは、<br/> ホストAが終了/突然死した瞬間に直前の受信フレームから0秒で新ホストへ自動昇格"]:::member
+            TrustedMembers["自サーバー登録メンバー / 相互フレンド (Trusted Peers — 9人)<br/>・既定は client のみ。ホストを引き受けるときだけ子プロセス host-server を起動<br/>・【1対1 ダイレクトP2P (QUIC Hole Punching)】:<br/> 信頼関係がある仲間同士は、音声(Opus)・フルトラ表情・P2Pキャッシュを<br/> リレーを通さず1対1で直接送受信 (※他人の通信の中継＝サブリレー化は絶対しない)<br/>・【スマートホスト昇格待機】:<br/> client_info で『ホスト引き受けON』かつ高スペックなメンバーBは、<br/> ホストAが終了/突然死した瞬間に直前の受信フレームから0秒で新ホストへ自動昇格"]:::member
 
             ExternalGuests["外部ゲストアカウント (Untrusted / 非フレンド — 5人)<br/>・client (または Webブラウザ / Quest単体)<br/>・【IP秘匿リレー経由】:<br/> 見知らぬゲストに対してはお互いの拠点IPアドレスを隠すため、<br/> ダイレクトP2Pは使わず必ず『relay-server (ConoHa VPS / 公認リレー屋)』を経由<br/>・入室した瞬間に有料アバター含む全員の姿を R2 / リレーキャッシュから表示"]:::guest
         end
@@ -283,7 +281,7 @@ flowchart TB
 - [auth-server](auth-server.md) · [assets-server](assets-server.md) · [world-server](world-server.md)
 - [protocol](protocol.md) · [relay-server](relay-server.md)
 - [trust-boundary](trust-boundary.md)（脅威モデル / 防御責任・x0031）
-- [launcher](launcher.md)（x0032 最小 PM）· [client](client.md)
+- [launcher](launcher.md)（**廃止**・HostSupervisor へ移譲）· [client](client.md)
 
 ### 転送と OSC
 

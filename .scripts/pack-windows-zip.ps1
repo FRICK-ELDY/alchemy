@@ -1,10 +1,10 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Build and pack Windows x64 tester ZIP (launcher + host-server + client).
+  Build and pack Windows x64 tester ZIP (host-server + client; no launcher).
 
 .DESCRIPTION
-  Guarantees: release .exe under dist/ with Start.cmd, ensure-demo-coin.ps1,
+  Guarantees: release .exe under dist/ with Start.cmd (client-direct), ensure-demo-coin.ps1,
   fixtures/Coin_PolygonalMind.glb (assets seed source), build-info.json.
   Non-guarantees: auth/world/assets/zenohd running; signing; auto-update.
   No Python. Uses cargo + Compress-Archive.
@@ -58,7 +58,6 @@ $stagingParent = Join-Path $repoRoot ('.run/packages/' + [guid]::NewGuid().ToStr
 $packageRoot = Join-Path $stagingParent $packageName
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 
-$launcherDir = Join-Path $repoRoot 'launcher'
 $clientDir = Join-Path $repoRoot 'client'
 
 $rustcHost = ((& rustc -vV) | Where-Object { $_ -like 'host: *' } | Select-Object -First 1)
@@ -66,23 +65,16 @@ if (-not $rustcHost) { throw 'Could not read rustc host from rustc -vV' }
 $rustcHost = $rustcHost.Substring('host: '.Length).Trim()
 
 if (-not $SkipBuild) {
-    Write-Log 'Building alchemy-launcher (release)...'
-    & cargo build --release --manifest-path (Join-Path $launcherDir 'Cargo.toml')
-    if ($LASTEXITCODE -ne 0) { throw 'launcher release build failed' }
-
     Write-Log 'Building host-server + client (release)...'
     & cargo build --release -p host-server -p client --manifest-path (Join-Path $clientDir 'Cargo.toml')
     if ($LASTEXITCODE -ne 0) { throw 'client workspace release build failed' }
 }
 
-$launcherTarget = Get-CargoTargetDir $launcherDir
 $clientTarget = Get-CargoTargetDir $clientDir
-Write-Log "launcher target_directory=$launcherTarget"
 Write-Log "client target_directory=$clientTarget"
 Write-Log "rustc host=$rustcHost"
 
 $bins = @(
-    @{ Src = Join-Path $launcherTarget 'release/alchemy-launcher.exe'; Dst = 'alchemy-launcher.exe' },
     @{ Src = Join-Path $clientTarget 'release/host-server.exe'; Dst = 'host-server.exe' },
     @{ Src = Join-Path $clientTarget 'release/client.exe'; Dst = 'client.exe' }
 )
@@ -128,7 +120,6 @@ $buildInfo = [ordered]@{
     builtAt         = $builtAt
     rustcHost       = $rustcHost
     files           = @(
-        'alchemy-launcher.exe'
         'host-server.exe'
         'client.exe'
         'Start.cmd'

@@ -249,6 +249,8 @@ pub struct SharedState {
     pub presentation: crate::surface::PresentationGate,
     /// Dash logical state shared Desktop ↔ XR (x0053). Layout/hover stay per-surface.
     pub dash: Mutex<crate::system_ui::SharedDashStore>,
+    /// On-demand local host-server child (Start session only; Join stays idle).
+    pub host_supervisor: Mutex<crate::host_supervisor::HostSupervisor>,
 }
 
 impl SharedState {

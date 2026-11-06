@@ -32,6 +32,7 @@ use winit::window::{Cursor, CursorGrabMode, CustomCursor, Window, WindowId};
 
 use crate::auth;
 use crate::host_control;
+use crate::host_supervisor;
 use crate::mesh::CpuMesh;
 use crate::operator_prefs::{self, endpoints_for, OperatorKind};
 use crate::scene::{
@@ -207,6 +208,30 @@ where
     }
 }
 
+/// Handover stub then stop supervisor-owned host; fall back to env/Zenoh IPC for external hosts.
+fn graceful_stop_local_host(shared: &SharedState, zenoh: Option<&zenoh::Session>) {
+    host_supervisor::request_handover_stub();
+    let supervised = shared
+        .host_supervisor
+        .lock()
+        .map(|mut s| {
+            let running = s.is_running();
+            if running {
+                s.shutdown_graceful();
+            }
+            running
+        })
+        .unwrap_or(false);
+    if supervised {
+        return;
+    }
+    // Manual / CI host (not child of this client): best-effort IPC / PID / opt-in Zenoh.
+    if let Some(session) = zenoh {
+        let cap = shared.wire_cap();
+        host_control::request_host_shutdown(session, shared.room_id.as_ref(), cap.as_deref());
+    }
+}
+
 impl App {
     fn owns_input(&self) -> bool {
         self.role.owns_input(&self.shared.presentation)
@@ -333,19 +358,8 @@ impl App {
             log::info!("hotswitch: Desktop performed leave_room for XR AuthLogout");
         }
         if self.shared.presentation.take_host_shutdown_requested() {
-            if let Some(session) = self.zenoh.as_ref() {
-                let cap = self.shared.wire_cap();
-                host_control::request_host_shutdown(
-                    session,
-                    self.shared.room_id.as_ref(),
-                    cap.as_deref(),
-                );
-                log::info!("hotswitch: Desktop published host shutdown for XR Exit");
-            } else {
-                log::warn!(
-                    "hotswitch: host shutdown requested but Zenoh is None — client exits without host notify"
-                );
-            }
+            graceful_stop_local_host(&self.shared, self.zenoh.as_ref());
+            log::info!("hotswitch: Desktop graceful host stop for XR Exit");
             self.shared.presentation.request_exit();
         }
     }
@@ -1198,21 +1212,10 @@ fn handle_ui_action(
             ui.rebuild();
             log::info!("hotswitch auto stored → {}", ui.state.hotswitch_auto);
         }
-        UiAction::ExitClientOnly => {
-            log::info!("system_ui: exit client only");
-            shared.presentation.request_exit();
-            event_loop.exit();
-        }
-        UiAction::ExitClientAndHost => {
-            log::info!("system_ui: exit client + host stub");
-            if let Some(session) = zenoh.as_ref() {
-                let cap = shared.wire_cap();
-                host_control::request_host_shutdown(
-                    session,
-                    shared.room_id.as_ref(),
-                    cap.as_deref(),
-                );
-            }
+        UiAction::ExitClientOnly | UiAction::ExitClientAndHost => {
+            // Exit Client only abolished: always handover stub + stop local host if any.
+            log::info!("system_ui: exit (handover stub + stop local host if running)");
+            graceful_stop_local_host(shared, zenoh.as_ref());
             shared.presentation.request_exit();
             event_loop.exit();
         }
@@ -1363,12 +1366,24 @@ fn handle_ui_action(
                 return;
             };
             let shared_job = Arc::clone(shared);
-            ui.state.home_status = format!("Starting session ({})…", level.as_str());
+            ui.state.home_status = format!("Starting host + session ({})…", level.as_str());
             ui.mark_dash_form_dirty();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
             *auth_job = Some(rx);
             spawn_auth_http(move || {
+                // Host path only: spawn local host-server as child (Join does not).
+                let host = match shared_job.host_supervisor.lock() {
+                    Ok(mut sup) => sup.ensure_running().map_err(|e| format!("{e:#}")),
+                    Err(err) => Err(format!("host_supervisor lock: {err}")),
+                };
+                if let Err(err) = host {
+                    let _ = tx.send(AuthJobOutcome::StartSession {
+                        visibility: Err(format!("local host-server start failed: {err}")),
+                        join: Err("skipped join (host spawn failed)".into()),
+                    });
+                    return;
+                }
                 let world_url = shared_job.get_world_url();
                 let visibility = world_api::ensure_room_visibility(
                     &world_url,
@@ -1383,6 +1398,13 @@ fn handle_ui_action(
                     }
                     Err(_) => Err("skipped join (visibility step failed)".into()),
                 };
+                if join.is_err() {
+                    // Do not leave an orphan host after a failed Start.
+                    if let Ok(mut sup) = shared_job.host_supervisor.lock() {
+                        host_supervisor::request_handover_stub();
+                        sup.shutdown_graceful();
+                    }
+                }
                 let _ = tx.send(AuthJobOutcome::StartSession { visibility, join });
             });
         }

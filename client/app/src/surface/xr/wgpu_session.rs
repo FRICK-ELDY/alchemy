@@ -738,12 +738,9 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                     UI_CANVAS_H as f32,
                 ) {
                     match ui.on_click(px, py) {
-                        UiAction::ExitClientOnly => {
-                            log::info!("XR UI: exit client only");
-                            exit_requested = true;
-                        }
-                        UiAction::ExitClientAndHost => {
-                            log::info!("XR UI: exit client + host (via Desktop Zenoh owner)");
+                        UiAction::ExitClientOnly | UiAction::ExitClientAndHost => {
+                            // Exit Client only abolished — Desktop performs handover + host stop.
+                            log::info!("XR UI: exit (handover + stop local host via Desktop)");
                             shared.presentation.request_host_shutdown();
                             exit_requested = true;
                         }

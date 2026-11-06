@@ -1803,7 +1803,7 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
         DashTab::Inventory => {
             rebuild_inventory(tree, state, cx, cy0, cw, ch);
         }
-        // Pinned Exit Facet body
+        // Pinned Exit Facet body — single Exit (Exit Client only abolished).
         DashTab::Exit => {
             tree.push_label(
                 Rect::new(cx, cy0, cw, 28.0),
@@ -1814,47 +1814,26 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
 
             let btn_h = 64.0;
             let btn_y = cy0 + 56.0;
-            let btn_gap = 24.0;
-            let btn_w = (cw - btn_gap) * 0.5;
+            let btn_w = cw.min(420.0);
 
-            let left = Rect::new(cx, btn_y, btn_w, btn_h);
-            tree.push_rect(left, state.interact(WidgetId::ExitClientOnly, BTN));
-            tree.push_icon(Rect::new(cx + 16.0, btn_y + 16.0, 32.0, 32.0), "logout");
-            tree.push_label(
-                Rect::new(cx + 56.0, btn_y + 22.0, btn_w - 70.0, 24.0),
-                "Exit client only",
-                TEXT,
-                2.0,
-            );
-            debug_assert!(DashRoot::is_pinned(facet_of(WidgetId::ExitClientOnly)));
-            tree.register_hit(WidgetId::ExitClientOnly, left);
-
-            let right = Rect::new(cx + btn_w + btn_gap, btn_y, btn_w, btn_h);
+            let exit_btn = Rect::new(cx, btn_y, btn_w, btn_h);
             tree.push_rect(
-                right,
+                exit_btn,
                 state.interact(WidgetId::ExitClientAndHost, BTN_DANGER),
             );
-            debug_assert!(facet_of(WidgetId::ExitClientAndHost).pinned());
-            tree.push_icon(
-                Rect::new(cx + btn_w + btn_gap + 16.0, btn_y + 16.0, 32.0, 32.0),
-                "exit_to_app",
-            );
+            debug_assert!(DashRoot::is_pinned(facet_of(WidgetId::ExitClientAndHost)));
+            tree.push_icon(Rect::new(cx + 16.0, btn_y + 16.0, 32.0, 32.0), "exit_to_app");
             tree.push_label(
-                Rect::new(
-                    cx + btn_w + btn_gap + 56.0,
-                    btn_y + 22.0,
-                    btn_w - 70.0,
-                    24.0,
-                ),
-                "Exit client + host",
+                Rect::new(cx + 56.0, btn_y + 22.0, btn_w - 70.0, 24.0),
+                "Exit",
                 TEXT,
                 2.0,
             );
-            tree.register_hit(WidgetId::ExitClientAndHost, right);
+            tree.register_hit(WidgetId::ExitClientAndHost, exit_btn);
 
             tree.push_label(
-                Rect::new(cx, btn_y + btn_h + 32.0, cw, 20.0),
-                "Host exit: ALCHEMY_HOST_PID (Unix) or ALCHEMY_HOST_CONTROL=1",
+                Rect::new(cx, btn_y + btn_h + 32.0, cw, 40.0),
+                "If you are hosting: handover stub then stop local host-server. Join-only: client exit.",
                 MUTED,
                 1.0,
             );
@@ -1954,10 +1933,6 @@ mod tests {
             ..Default::default()
         };
         rebuild(&mut tree, &state);
-        assert!(tree
-            .hits
-            .iter()
-            .any(|(id, _)| *id == WidgetId::ExitClientOnly));
         assert!(tree
             .hits
             .iter()
@@ -2161,7 +2136,7 @@ mod tests {
             ..Default::default()
         };
         rebuild(&mut tree, &state);
-        let id = WidgetId::ExitClientOnly;
+        let id = WidgetId::ExitClientAndHost;
         let hit_r = tree
             .hits
             .iter()
@@ -2216,7 +2191,7 @@ mod tests {
             hotswitch_available: false,
             home_session_actions_enabled: false,
             hover: Some(WidgetId::TabExit),
-            pressed: Some(WidgetId::ExitClientOnly),
+            pressed: Some(WidgetId::ExitClientAndHost),
             time_label: "xr-clock".into(),
             fps_label: "90 FPS".into(),
             canvas_w: 960.0,

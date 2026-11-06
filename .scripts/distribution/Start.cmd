@@ -1,15 +1,11 @@
 @echo off
 setlocal
-rem Alchemy Windows tester entry (x0032 launcher + prebuilt bins).
-rem Guarantees: sets ALCHEMY_*_BIN to this folder and starts alchemy-launcher.
+rem Alchemy Windows tester entry — client-only boot; host-server on demand.
+rem Guarantees: sets ALCHEMY_HOST_BIN for HostSupervisor child spawn; starts client.exe.
 rem Non-guarantees: auth/world/assets/zenohd; auto-update; code signing.
 
 cd /d "%~dp0"
 
-if not exist "alchemy-launcher.exe" (
-  echo Missing alchemy-launcher.exe in %CD%
-  goto :fail
-)
 if not exist "host-server.exe" (
   echo Missing host-server.exe in %CD%
   goto :fail
@@ -20,7 +16,6 @@ if not exist "client.exe" (
 )
 
 set "ALCHEMY_HOST_BIN=%CD%\host-server.exe"
-set "ALCHEMY_CLIENT_BIN=%CD%\client.exe"
 set "ALCHEMY_CLIENT_DIR=%CD%"
 set "ALCHEMY_FORCE_DESKTOP=1"
 
@@ -49,10 +44,10 @@ if exist "ensure-demo-coin.ps1" (
   echo WARNING: ensure-demo-coin.ps1 missing - assets must already hold the demo Coin blake3
 )
 
-alchemy-launcher.exe
+client.exe
 set "EXITCODE=%ERRORLEVEL%"
 if not "%EXITCODE%"=="0" (
-  echo alchemy-launcher exited with code %EXITCODE%
+  echo client exited with code %EXITCODE%
   goto :fail_code
 )
 endlocal & exit /b 0

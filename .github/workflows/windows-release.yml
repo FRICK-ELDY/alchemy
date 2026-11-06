@@ -90,7 +90,7 @@ jobs:
             ""
             "- Commit: ``$($env:SHA)``"
             "- Pre-release only — no SemVer stability promise"
-            "- Contents: alchemy-launcher + host-server + client (see README-testers.txt inside the ZIP)"
+            "- Contents: host-server + client (Start.cmd launches client; host on demand — see README-testers.txt)"
             "- Not included: auth / world / assets / zenohd"
             ""
             "Unpack, copy env.testers.example.cmd to env.local.cmd, set URLs, run Start.cmd."

@@ -39,22 +39,6 @@ run_rust() {
   popd >/dev/null
 }
 
-run_launcher() {
-  # x0047 / x0073: alchemy-launcher outside client workspace (parity with
-  # .github/workflows/rust-ci.yml launcher-check, including cargo deny).
-  pushd launcher >/dev/null
-  step "launcher cargo fmt --check" cargo fmt --all -- --check
-  step "launcher cargo clippy" cargo clippy -- -D warnings
-  if command -v cargo-deny >/dev/null 2>&1; then
-    step "launcher cargo deny check" cargo deny check
-  else
-    echo "[SKIP] launcher cargo deny check (local only; CI gates via EmbarkStudios/cargo-deny-action)"
-  fi
-  step "launcher cargo build" cargo build
-  step "launcher cargo test" cargo test
-  popd >/dev/null
-}
-
 run_relay_agent() {
   # x0068 / P1-1: alchemy-relay-agent is outside the client workspace (parity with
   # .github/workflows/rust-ci.yml relay-agent-check).
@@ -176,7 +160,6 @@ echo "root: ${ROOT}"
 
 case "$TARGET" in
   rust) run_rust ;;
-  launcher) run_launcher ;;
   relay|relay-agent) run_relay_agent ;;
   protocol) run_protocol ;;
   auth) run_auth ;;
@@ -185,7 +168,6 @@ case "$TARGET" in
   prod-compose) run_prod_compose_config ;;
   all)
     run_rust
-    run_launcher
     run_relay_agent
     run_protocol
     run_auth
@@ -194,7 +176,7 @@ case "$TARGET" in
     run_prod_compose_config
     ;;
   *)
-    echo "usage: $0 [all|rust|launcher|relay|protocol|auth|world|assets|prod-compose]" >&2
+    echo "usage: $0 [all|rust|relay|protocol|auth|world|assets|prod-compose]" >&2
     exit 2
     ;;
 esac

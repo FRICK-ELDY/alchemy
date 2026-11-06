@@ -17,8 +17,8 @@ OTP の障害隔離と、Phoenix / Ash による「永続権威＋監査」の�
 
 | | |
 |:---|:---|
-| **場所** | `client/app`・`client/host-server`・`client/shared-sim`・`protocol/`・`launcher/`・probe 類 |
-| **宣言** | Edition 2021 · ワークスペースは `client/`（加えて独立の `protocol/`・`launcher/`） |
+| **場所** | `client/app`・`client/host-server`・`client/shared-sim`・`protocol/`・probe 類 |
+| **宣言** | Edition 2021 · ワークスペースは `client/`（加えて独立の `protocol/`） |
 | **理由** | 空間の **実行**: Rapier tick、SoA、wgpu / OpenXR 描画、ワイヤ encode/decode、Ed25519。データ指向・ゼロコピー方針と、Desktop → VR →（将来）Wasm への単一コードベースに合う。 |
 | **分割** | **host-server** = 空間権威プロセス、**client** = エンドポイントのみ（リレーではない）、**protocol** = 独立したワイヤ SSoT クレート。 |
 
