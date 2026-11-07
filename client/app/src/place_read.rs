@@ -1,18 +1,15 @@
 //! PlaceRead JWT client (x006c / x006b).
 //!
-//! **Helper contract when called:** `POST …/place_read` with Room Token + `world_seal`;
-//! returns short-lived PlaceRead for assets GET (`x-alchemy-place-read`).
-//! Not wired from Join yet (remount non-goal). Non-guarantees: proactive TTL refresh UI;
-//! `extra_blake3` take-out path.
-
-#![cfg_attr(not(test), allow(dead_code))]
+//! **Wired when remounting:** `POST …/place_read` via [`crate::assets_fetch::try_place_read_for_mesh`]
+//! (x007d). Returns short-lived PlaceRead for assets GET (`x-alchemy-place-read`).
+//! Non-guarantees: proactive TTL refresh UI; `extra_blake3` take-out path.
 
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-/// Match `assets_http_agent` connect budget in `main.rs` (5s). Keep policy here explicit so
+/// Match `assets_http_agent` connect budget (5s). Keep policy here explicit so
 /// a future PlaceRead TTL re-issue path does not fork timeouts by accident.
 const PLACE_READ_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// JSON issue only — shorter than assets blob `timeout_read` (30s). No R2 redirect hop.
@@ -35,7 +32,6 @@ fn agent() -> ureq::Agent {
 }
 
 /// Issue PlaceRead for the joined room using the verified Manifest `world_seal`.
-/// Resume via [`crate::assets_fetch::try_place_read_for_mesh`] when remount lands.
 pub fn fetch_place_read(
     world_url: &str,
     room_id: &str,

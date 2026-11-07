@@ -23,10 +23,11 @@ Assets mesh / MainHub
 ---------------------
   env.local.cmd MUST set AUTH_USER/AUTH_PASSWORD or ALCHEMY_AUTH_TOKEN (Start fails otherwise).
   Start.cmd runs ensure-demo-coin.ps1 to POST fixtures/Coin_PolygonalMind.glb into ASSETS_URL
-  (host/CAS seed). Silent login lands on MainHub with the local Coin fixture (no auto room join).
-  Choose Join a host or Host a room. Display mesh stays the Coin fixture after Join/Host —
-  Manifest blake3 → assets GET remount (x003c) is not wired yet (boxes/frames still Live).
-  Packaged fixtures/ is the seed upload source and the client placeholder mesh.
+  (host/CAS seed). Silent login lands on MainHub: UI shell only (no Coin / floor; x007d).
+  Choose Join a host or Host a room. After the host publishes SceneManifest, client remounts
+  via Manifest blake3 → GET /api/v1/blobs/... (x003c/x007d). Expect log
+  "downloaded blob via assets GET". Leave returns to the empty shell.
+  Packaged fixtures/ is the CAS seed source (not the MainHub boot mesh).
 
 Runtime prerequisites (Windows)
 -------------------------------
