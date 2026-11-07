@@ -1,6 +1,6 @@
 # x007d — Live Manifest mesh remount
 
-> **ID:** `x007d` · **slug:** `live-manifest-mesh-remount` · **status:** `active` · **area:** `[client, docs]` · **depends_on:** `[x003c, x0048, x006c, x007c]`  
+> **ID:** `x007d` · **slug:** `live-manifest-mesh-remount` · **status:** `done` · **area:** `[client, docs]` · **depends_on:** `[x003c, x0048, x006c, x007c]`  
 > **優先度:** UX 本線（MainHub 空シェル + Join/Host 後の x003c assets GET）
 
 目標: 未入室は **system_ui + クリア色のみ**（Coin / 床なし）。Join/Host 後に受理した SceneManifest の mesh blake3 → assets GET（PlaceRead 可）→ **GPU remount** で空間 mesh を表示。Leave で空シェルへ戻す。
