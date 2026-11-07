@@ -614,8 +614,9 @@ impl SharedState {
             self.bump_remount_generation();
             log::info!("room_key_epoch advanced {prev} → {epoch} (KeyStale; live AEAD unchanged)");
         }
-        let _ = room_key; // Rejoin fetches a fresh Token; do not hot-swap here.
+        // Discard new key material — Rejoin fetches a fresh Token; do not hot-swap.
         // Keep probing so soft TTL / Token stay fresh while waiting for Rejoin.
+        let _ = room_key;
         self.schedule_room_key_epoch_probe(ROOM_KEY_EPOCH_PROBE);
         true
     }
