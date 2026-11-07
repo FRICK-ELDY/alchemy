@@ -373,14 +373,21 @@ impl SharedState {
         *self.room_id.lock().unwrap_or_else(|p| p.into_inner()) = room_id;
     }
 
-    /// Apply operator endpoints. Always updates SharedState + syncs `ZENOH_CONNECT` env
-    /// so subsequent `open_zenoh_for` / zenoh-connect helpers see the same target.
+    /// Apply operator endpoints. Always updates SharedState + syncs process env
+    /// (`AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ZENOH_CONNECT`).
+    /// Host child inherits **AUTH/WORLD/ZENOH** at spawn (`ASSETS_URL` is for this
+    /// client / tooling; host-server does not read it).
+    /// Already-Running host-server keeps its old env — after Official/Custom switch,
+    /// stop and Host again so the child picks up new URLs (same as ZENOH retarget).
     /// UI ApplyOperatorEndpoints wins over a prior boot-time env for this process.
     pub fn apply_endpoints(&self, ep: &crate::operator_prefs::Endpoints) {
         *self.auth_url.lock().unwrap_or_else(|p| p.into_inner()) = ep.auth_url.clone();
         *self.world_url.lock().unwrap_or_else(|p| p.into_inner()) = ep.world_url.clone();
         *self.assets_url.lock().unwrap_or_else(|p| p.into_inner()) = ep.assets_url.clone();
         *self.zenoh_connect.lock().unwrap_or_else(|p| p.into_inner()) = ep.zenoh_connect.clone();
+        std::env::set_var("AUTH_URL", &ep.auth_url);
+        std::env::set_var("WORLD_URL", &ep.world_url);
+        std::env::set_var("ASSETS_URL", &ep.assets_url);
         std::env::set_var("ZENOH_CONNECT", &ep.zenoh_connect);
         self.world_jwks.retarget_world(&ep.world_url);
         if let Err(err) = self.world_jwks.refresh() {

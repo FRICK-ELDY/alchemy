@@ -18,6 +18,13 @@
 //! - Crash 道連れ when spawning via `cargo run -p host-server` (PDEATHSIG/Job attach to
 //!   cargo, not the eventual host binary — use `ALCHEMY_HOST_BIN` or adjacent exe)
 //! - Leave/Logout do **not** stop the supervised host (only Exit / failed Start / Drop)
+//! - UI access JWT handoff (`ALCHEMY_AUTH_TOKEN` on child): **only when** parent env lacks
+//!   `AUTH_USER` (password optional — debug host may seed it) and lacks `ALCHEMY_AUTH_TOKEN`.
+//!   Host treats injected token as `expires_in=0` (no auth refresh); Room Token reissue
+//!   fails after access JWT TTL (≈12–15 min). **Prefer env `AUTH_USER`(+password) for
+//!   durable Host.**
+//! - `refresh_token` is **not** passed (host has no matching env; would collide with
+//!   long-lived `ALCHEMY_AUTH_TOKEN` semantics).
 
 use alchemy_protocol::host_ipc::{self, ENV_TOKEN};
 use anyhow::{bail, Context, Result};
@@ -115,17 +122,27 @@ impl HostSupervisor {
     /// always matches the catalog selection.
     pub fn ensure_running(&self) -> Result<()> {
         let room = std::env::var("ROOM_ID").unwrap_or_else(|_| "local".into());
-        self.ensure_running_for_room(&room)
+        self.ensure_running_for_room(&room, None)
     }
 
     /// Spawn host-server for `room_id` if not already running for that room.
     ///
+    /// `auth_access_token`: UI-login access JWT. Injected as child `ALCHEMY_AUTH_TOKEN`
+    /// **only** when parent env has neither `AUTH_USER` nor `ALCHEMY_AUTH_TOKEN`
+    /// (see [`prefers_durable_auth`]). Not written into the parent process env.
+    ///
     /// When a host is already Running/Starting for a **different** room, shut it
-    /// down and respawn with `ROOM_ID=room_id` (x007c). Same-room Running → Ok.
+    /// down and respawn with `ROOM_ID=room_id` (x007c). Same-room Running → Ok
+    /// (**does not** refresh credentials on the existing child — stop host / Host
+    /// another room / Exit first if the child was started without usable auth).
     ///
     /// Reservation is taken under the state mutex. Ready-wait runs unlocked so
     /// [`Self::shutdown_graceful`] can cancel via [`Self::cancel_spawn`].
-    pub fn ensure_running_for_room(&self, room_id: &str) -> Result<()> {
+    pub fn ensure_running_for_room(
+        &self,
+        room_id: &str,
+        auth_access_token: Option<&str>,
+    ) -> Result<()> {
         if room_id.is_empty() {
             bail!("empty room_id for local host-server");
         }
@@ -138,6 +155,7 @@ impl HostSupervisor {
             let mut g = self.state.lock().expect("host_supervisor state");
             g.refresh_exited();
             match &g.phase {
+                // Same room already up: keep child as-is (ignore a newer UI token).
                 Phase::Running { .. } if g.active_room_id.as_deref() == Some(room_id) => {
                     return Ok(());
                 }
@@ -213,7 +231,7 @@ impl HostSupervisor {
             Err(err) => return finish_fail(err),
         };
 
-        let mut child = match spawn_host(&token, &ready_path, room_id) {
+        let mut child = match spawn_host(&token, &ready_path, room_id, auth_access_token) {
             Ok(c) => c,
             Err(err) => {
                 let _ = fs::remove_file(&ready_path);
@@ -480,7 +498,12 @@ fn make_token() -> String {
     hex[..32].to_string()
 }
 
-fn spawn_host(ipc_token: &str, ready_path: &Path, room_id: &str) -> Result<Child> {
+fn spawn_host(
+    ipc_token: &str,
+    ready_path: &Path,
+    room_id: &str,
+    auth_access_token: Option<&str>,
+) -> Result<Child> {
     let mut cmd = host_command();
     cmd.env(ENV_TOKEN, ipc_token)
         .env("ALCHEMY_HOST_READY_FILE", ready_path)
@@ -488,6 +511,20 @@ fn spawn_host(ipc_token: &str, ready_path: &Path, room_id: &str) -> Result<Child
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    // Durable AUTH_* / existing ALCHEMY_AUTH_TOKEN win; UI access JWT is last resort only.
+    let ui_tok = auth_access_token.map(str::trim).filter(|s| !s.is_empty());
+    if parent_env_prefers_durable_auth() {
+        if ui_tok.is_some() {
+            log::info!(
+                "host spawn: skipping UI access JWT inject (parent AUTH_USER and/or ALCHEMY_AUTH_TOKEN set)"
+            );
+        }
+    } else if let Some(tok) = ui_tok {
+        cmd.env("ALCHEMY_AUTH_TOKEN", tok);
+        log::info!(
+            "host spawn: injecting UI access JWT as ALCHEMY_AUTH_TOKEN (short-lived; prefer AUTH_* for durable Host)"
+        );
+    }
     cmd.env_remove(alchemy_protocol::host_ipc::ENV_ADDR);
     cmd.env_remove("ALCHEMY_HOST_CONTROL");
     cmd.env_remove(alchemy_protocol::host_ipc::ENV_DISCOVERY_ADDR);
@@ -510,6 +547,32 @@ fn spawn_host(ipc_token: &str, ready_path: &Path, room_id: &str) -> Result<Child
     }
 
     cmd.spawn().context("spawn host process")
+}
+
+/// True when parent env already has a host login path — do **not** overlay a
+/// short-lived UI access JWT as `ALCHEMY_AUTH_TOKEN` (host would prefer that and
+/// skip `AUTH_USER` / debug seed password).
+///
+/// `AUTH_USER` alone counts (debug host fills seed password). `AUTH_PASSWORD` alone
+/// does not — release host still needs a user, and UI token may be the only way in.
+pub(crate) fn parent_env_prefers_durable_auth() -> bool {
+    prefers_durable_auth(
+        std::env::var("AUTH_USER").ok().as_deref(),
+        std::env::var("AUTH_PASSWORD").ok().as_deref(),
+        std::env::var("ALCHEMY_AUTH_TOKEN").ok().as_deref(),
+    )
+}
+
+/// Pure durable-auth gate (testable without mutating process env).
+pub(crate) fn prefers_durable_auth(
+    auth_user: Option<&str>,
+    auth_password: Option<&str>,
+    alchemy_auth_token: Option<&str>,
+) -> bool {
+    let _ = auth_password; // documented: password alone is not enough to skip UI token
+    let user = auth_user.map(str::trim).filter(|s| !s.is_empty());
+    let tok = alchemy_auth_token.map(str::trim).filter(|s| !s.is_empty());
+    user.is_some() || tok.is_some()
 }
 
 fn host_command() -> Command {
@@ -781,6 +844,16 @@ mod tests {
         let t = make_token();
         assert_eq!(t.len(), 32);
         assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn prefers_durable_auth_pure() {
+        assert!(!prefers_durable_auth(None, None, None));
+        assert!(!prefers_durable_auth(None, Some("Password1"), None));
+        assert!(prefers_durable_auth(Some("alice"), None, None));
+        assert!(prefers_durable_auth(Some("alice"), Some("Password1"), None));
+        assert!(prefers_durable_auth(None, None, Some("tok")));
+        assert!(!prefers_durable_auth(Some("  "), None, None));
     }
 
     #[test]

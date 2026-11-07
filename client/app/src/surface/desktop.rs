@@ -1407,7 +1407,7 @@ fn start_worlds_host(
             Ok(world_api::VisibilityEnsure::Applied) => {
                 match shared_job
                     .host_supervisor
-                    .ensure_running_for_room(room_id.as_ref())
+                    .ensure_running_for_room(room_id.as_ref(), Some(access.as_str()))
                 {
                     Ok(()) => {
                         join_room_with_access(&shared_job, &access).map_err(|e| format!("{e:#}"))
@@ -1641,7 +1641,7 @@ fn handle_ui_action(
                     Ok(world_api::VisibilityEnsure::Applied) => {
                         match shared_job
                             .host_supervisor
-                            .ensure_running_for_room(room_id.as_ref())
+                            .ensure_running_for_room(room_id.as_ref(), Some(access.as_str()))
                         {
                             Ok(()) => join_room_with_access(&shared_job, &access)
                                 .map_err(|e| format!("{e:#}")),
