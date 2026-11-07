@@ -194,7 +194,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
 
     let mut ui = SystemUi::new();
     ui.state.home_session_actions_enabled = false;
-    ui.state.home_room_id = shared.room_id.to_string();
+    ui.state.home_room_id = shared.get_room_id().to_string();
     // Match Desktop: hotswitch row only after READY (`xr_session_started`).
     ui.state.hotswitch_available = false;
     ui.state.hotswitch_auto = shared
@@ -766,9 +766,15 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                             ui.mark_dash_logic_dirty();
                             ui.rebuild();
                         }
-                        UiAction::StartSession | UiAction::JoinRoom => {
+                        UiAction::StartSession
+                        | UiAction::JoinRoom
+                        | UiAction::WorldsRefresh
+                        | UiAction::WorldsJoinGuest
+                        | UiAction::WorldsHostRoom
+                        | UiAction::WorldsLeave => {
                             ui.state.home_status =
-                                "Start/Join session HTTP is Desktop-only this Slice (use silent login or Desktop)".into();
+                                "Worlds / Start/Join HTTP is Desktop-only this Slice (use silent login or Desktop)".into();
+                            ui.state.worlds_status = ui.state.home_status.clone();
                             ui.mark_dash_form_dirty();
                             ui.rebuild();
                         }

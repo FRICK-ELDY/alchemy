@@ -25,6 +25,102 @@ defmodule WorldWeb.RoomControllerTest do
     assert %{"error" => "missing_auth_token"} = json_response(conn, 401)
   end
 
+  test "rejects room catalog without auth", %{conn: conn} do
+    conn = get(conn, "/api/v1/rooms")
+    assert %{"error" => "missing_auth_token"} = json_response(conn, 401)
+  end
+
+  test "lists visible rooms without secrets (x007c)", %{conn: conn, signer: signer} do
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    guest = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+    assert %{"room_id" => "cat-public"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "cat-public", visibility: "public"})
+             |> json_response(201)
+
+    assert %{"room_id" => "cat-private"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "cat-private", visibility: "private"})
+             |> json_response(201)
+
+    body =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> get("/api/v1/rooms")
+      |> json_response(200)
+
+    ids = Enum.map(body["rooms"], & &1["room_id"])
+    assert "cat-public" in ids
+    refute "cat-private" in ids
+
+    public = Enum.find(body["rooms"], &(&1["room_id"] == "cat-public"))
+    assert public["visibility"] == "public"
+    assert public["owner_sub"] == owner
+    assert public["role_hint"] == "joinable"
+    refute Map.has_key?(public, "room_key")
+    refute Map.has_key?(public, "wire_cap")
+    refute Map.has_key?(public, "token")
+
+    owner_body =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> get("/api/v1/rooms")
+      |> json_response(200)
+
+    owner_ids = Enum.map(owner_body["rooms"], & &1["room_id"])
+    assert "cat-public" in owner_ids
+    assert "cat-private" in owner_ids
+
+    private = Enum.find(owner_body["rooms"], &(&1["room_id"] == "cat-private"))
+    assert private["role_hint"] == "owner"
+
+    mine_body =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> get("/api/v1/rooms?mine=1")
+      |> json_response(200)
+
+    assert mine_body["rooms"] == []
+  end
+
+  test "catalog keeps owned private room outside global public top-N (x007c)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    other = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+
+    assert %{"room_id" => "old-owned-priv"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "old-owned-priv", visibility: "private"})
+             |> json_response(201)
+
+    # Touch many newer public rooms so a naive ORDER BY LIMIT would drop old private.
+    for i <- 1..5 do
+      assert %{"room_id" => _} =
+               build_conn()
+               |> TestAuthHelpers.put_auth(signer, other)
+               |> post("/api/v1/rooms", %{
+                 room_id: "newer-pub-#{i}",
+                 visibility: "public"
+               })
+               |> json_response(201)
+    end
+
+    body =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> get("/api/v1/rooms")
+      |> json_response(200)
+
+    ids = Enum.map(body["rooms"], & &1["room_id"])
+    assert "old-owned-priv" in ids
+  end
+
   test "rejects room create when owner cap is exceeded (x0071)", %{conn: conn, signer: signer} do
     previous = Application.get_env(:world, :max_rooms_per_owner)
     Application.put_env(:world, :max_rooms_per_owner, 1)

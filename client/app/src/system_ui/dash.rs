@@ -40,6 +40,8 @@ pub enum DashTab {
     Settings,
     /// Inventory take-out (x006d).
     Inventory,
+    /// Worlds catalog / Join·Host (x007c).
+    Worlds,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +119,19 @@ pub struct DashState {
     pub scene_meshes: Vec<(u32, String)>,
     pub scene_selected: Option<usize>,
     pub inventory_status: String,
+    /// Worlds catalog rows (x007c): room_id, visibility, role_hint, owner_sub.
+    pub worlds_rooms: Vec<(String, String, String, String)>,
+    pub worlds_selected: Option<usize>,
+    pub worlds_mine_only: bool,
+    pub worlds_status: String,
+    /// In-room shell: waiting for host frames after Join (x007c).
+    pub worlds_waiting_host: bool,
+    /// Waiting overlay may show Host Rescue only when viewer owns the room (x007c).
+    pub worlds_can_host_rescue: bool,
+    /// Live → WaitingHost after frames stall (distinct copy from first join wait).
+    pub worlds_host_disconnect: bool,
+    /// Last observed `last_frame_tick` used to detect stall / Live transition.
+    pub worlds_seen_frame_tick: Option<u64>,
 }
 
 impl Default for DashState {
@@ -167,6 +182,14 @@ impl Default for DashState {
             scene_meshes: Vec::new(),
             scene_selected: None,
             inventory_status: String::new(),
+            worlds_rooms: Vec::new(),
+            worlds_selected: None,
+            worlds_mine_only: false,
+            worlds_status: String::new(),
+            worlds_waiting_host: false,
+            worlds_can_host_rescue: false,
+            worlds_host_disconnect: false,
+            worlds_seen_frame_tick: None,
         }
     }
 }
@@ -691,12 +714,255 @@ const INVENTORY_ROW_IDS: [WidgetId; 8] = [
     WidgetId::InventoryRow7,
 ];
 
+const WORLDS_ROW_IDS: [WidgetId; 8] = [
+    WidgetId::WorldsRow0,
+    WidgetId::WorldsRow1,
+    WidgetId::WorldsRow2,
+    WidgetId::WorldsRow3,
+    WidgetId::WorldsRow4,
+    WidgetId::WorldsRow5,
+    WidgetId::WorldsRow6,
+    WidgetId::WorldsRow7,
+];
+
 const SCENE_MESH_ROW_IDS: [WidgetId; 4] = [
     WidgetId::SceneMeshRow0,
     WidgetId::SceneMeshRow1,
     WidgetId::SceneMeshRow2,
     WidgetId::SceneMeshRow3,
 ];
+
+/// Worlds catalog Master-Detail (x007c).
+fn rebuild_worlds(
+    tree: &mut LayoutTree,
+    state: &DashState,
+    cx: f32,
+    cy0: f32,
+    cw: f32,
+    ch: f32,
+) {
+    tree.push_label(
+        Rect::new(cx, cy0, cw, 22.0),
+        "Worlds",
+        TEXT,
+        2.0,
+    );
+    tree.push_label(
+        Rect::new(cx, cy0 + 24.0, cw, 16.0),
+        "Catalog = visible only. Join = guest ticket. Host = run local host-server.",
+        MUTED,
+        1.0,
+    );
+
+    let mut y = cy0 + 48.0;
+    let btn_h = 32.0;
+    let gap = 8.0;
+    let refresh = Rect::new(cx, y, 100.0, btn_h);
+    tree.push_rect(refresh, state.interact(WidgetId::WorldsRefresh, BTN));
+    tree.push_label(
+        Rect::new(refresh.x + 8.0, refresh.y + 8.0, 84.0, 16.0),
+        "Refresh",
+        TEXT,
+        1.2,
+    );
+    tree.register_hit(WidgetId::WorldsRefresh, refresh);
+
+    let all_r = Rect::new(cx + 108.0, y, 72.0, btn_h);
+    let all_c = if !state.worlds_mine_only { ACCENT } else { BTN };
+    tree.push_rect(all_r, state.interact(WidgetId::WorldsFilterAll, all_c));
+    tree.push_label(
+        Rect::new(all_r.x + 8.0, all_r.y + 8.0, 56.0, 16.0),
+        "All",
+        TEXT,
+        1.2,
+    );
+    tree.register_hit(WidgetId::WorldsFilterAll, all_r);
+
+    let mine_r = Rect::new(cx + 188.0, y, 100.0, btn_h);
+    let mine_c = if state.worlds_mine_only { ACCENT } else { BTN };
+    tree.push_rect(mine_r, state.interact(WidgetId::WorldsFilterMine, mine_c));
+    tree.push_label(
+        Rect::new(mine_r.x + 8.0, mine_r.y + 8.0, 84.0, 16.0),
+        "My rooms",
+        TEXT,
+        1.2,
+    );
+    tree.register_hit(WidgetId::WorldsFilterMine, mine_r);
+
+    let create = Rect::new(cx + 300.0, y, 120.0, btn_h);
+    tree.push_rect(create, state.interact(WidgetId::WorldsCreate, ACCENT));
+    tree.push_label(
+        Rect::new(create.x + 8.0, create.y + 8.0, 104.0, 16.0),
+        "Create world",
+        TEXT,
+        1.2,
+    );
+    tree.register_hit(WidgetId::WorldsCreate, create);
+
+    y += btn_h + gap + 4.0;
+    if state.worlds_waiting_host {
+        let wait_msg = if state.worlds_host_disconnect {
+            "Host connection lost — wait for return or Leave."
+        } else {
+            "Waiting for host — ticket OK; space starts when a host publishes."
+        };
+        tree.push_label(
+            Rect::new(cx, y, cw, 18.0),
+            wait_msg,
+            Color::rgba(0.95, 0.75, 0.35, 1.0),
+            1.1,
+        );
+        y += 22.0;
+        let leave = Rect::new(cx, y, 160.0, btn_h);
+        tree.push_rect(leave, state.interact(WidgetId::WorldsLeave, BTN_DANGER));
+        tree.push_label(
+            Rect::new(leave.x + 8.0, leave.y + 8.0, 144.0, 16.0),
+            "Leave to catalog",
+            TEXT,
+            1.2,
+        );
+        tree.register_hit(WidgetId::WorldsLeave, leave);
+        if state.worlds_can_host_rescue {
+            let rescue = Rect::new(cx + 168.0, y, 200.0, btn_h);
+            tree.push_rect(rescue, state.interact(WidgetId::WorldsHostRescue, ACCENT));
+            tree.push_label(
+                Rect::new(rescue.x + 8.0, rescue.y + 8.0, 184.0, 16.0),
+                "Host this room now",
+                TEXT,
+                1.2,
+            );
+            tree.register_hit(WidgetId::WorldsHostRescue, rescue);
+        }
+        y += btn_h + gap;
+    }
+
+    let list_w = (cw * 0.48).max(160.0);
+    let detail_x = cx + list_w + 12.0;
+    let detail_w = (cw - list_w - 12.0).max(160.0);
+    let list_h = (ch - (y - cy0) - 36.0).max(80.0);
+
+    tree.push_rect(
+        Rect::new(cx, y, list_w, list_h),
+        Color::rgba(0.10, 0.11, 0.14, 1.0),
+    );
+
+    if state.worlds_rooms.is_empty() {
+        tree.push_label(
+            Rect::new(cx + 12.0, y + 24.0, list_w - 24.0, 40.0),
+            "No visible rooms. Create a world or Refresh.",
+            MUTED,
+            1.1,
+        );
+    } else {
+        let row_h = 36.0;
+        for (i, (room_id, visibility, role_hint, _owner)) in
+            state.worlds_rooms.iter().take(8).enumerate()
+        {
+            let id = WORLDS_ROW_IDS[i];
+            let ry = y + 8.0 + i as f32 * (row_h + 4.0);
+            if ry + row_h > y + list_h {
+                break;
+            }
+            let r = Rect::new(cx + 8.0, ry, list_w - 16.0, row_h);
+            let selected = state.worlds_selected == Some(i);
+            let base = if selected { ACCENT } else { BTN };
+            tree.push_rect(r, state.interact(id, base));
+            let role = if role_hint == "owner" { " [owner]" } else { "" };
+            let label = format!("{room_id} · {visibility}{role}");
+            tree.push_label(
+                Rect::new(r.x + 8.0, r.y + 10.0, r.w - 16.0, 16.0),
+                &label,
+                TEXT,
+                1.1,
+            );
+            tree.register_hit(id, r);
+        }
+    }
+
+    tree.push_rect(
+        Rect::new(detail_x, y, detail_w, list_h),
+        Color::rgba(0.12, 0.13, 0.16, 1.0),
+    );
+    if let Some(i) = state.worlds_selected {
+        if let Some((room_id, visibility, role_hint, owner)) = state.worlds_rooms.get(i) {
+            tree.push_label(
+                Rect::new(detail_x + 12.0, y + 12.0, detail_w - 24.0, 20.0),
+                room_id,
+                TEXT,
+                1.8,
+            );
+            tree.push_label(
+                Rect::new(detail_x + 12.0, y + 36.0, detail_w - 24.0, 16.0),
+                &format!("{visibility} · {role_hint}"),
+                MUTED,
+                1.1,
+            );
+            tree.push_label(
+                Rect::new(detail_x + 12.0, y + 54.0, detail_w - 24.0, 28.0),
+                &format!("owner {owner}"),
+                MUTED,
+                1.0,
+            );
+
+            let is_owner = role_hint == "owner";
+            let mut by = y + 96.0;
+            if is_owner {
+                let host = Rect::new(detail_x + 12.0, by, detail_w - 24.0, 40.0);
+                tree.push_rect(host, state.interact(WidgetId::WorldsHostRoom, ACCENT));
+                tree.push_label(
+                    Rect::new(host.x + 10.0, host.y + 12.0, host.w - 20.0, 16.0),
+                    "Host this room",
+                    TEXT,
+                    1.3,
+                );
+                tree.register_hit(WidgetId::WorldsHostRoom, host);
+                by += 48.0;
+                let join = Rect::new(detail_x + 12.0, by, detail_w - 24.0, 36.0);
+                tree.push_rect(join, state.interact(WidgetId::WorldsJoinGuest, BTN));
+                tree.push_label(
+                    Rect::new(join.x + 10.0, join.y + 10.0, join.w - 20.0, 16.0),
+                    "Join as guest",
+                    TEXT,
+                    1.2,
+                );
+                tree.register_hit(WidgetId::WorldsJoinGuest, join);
+            } else {
+                let join = Rect::new(detail_x + 12.0, by, detail_w - 24.0, 40.0);
+                tree.push_rect(join, state.interact(WidgetId::WorldsJoinGuest, ACCENT));
+                tree.push_label(
+                    Rect::new(join.x + 10.0, join.y + 12.0, join.w - 20.0, 16.0),
+                    "Join as guest",
+                    TEXT,
+                    1.3,
+                );
+                tree.register_hit(WidgetId::WorldsJoinGuest, join);
+            }
+            tree.push_label(
+                Rect::new(detail_x + 12.0, y + list_h - 48.0, detail_w - 24.0, 36.0),
+                "Join does not start a host. Without a host you will wait.",
+                MUTED,
+                1.0,
+            );
+        }
+    } else {
+        tree.push_label(
+            Rect::new(detail_x + 12.0, y + 24.0, detail_w - 24.0, 40.0),
+            "Select a room on the left.",
+            MUTED,
+            1.1,
+        );
+    }
+
+    let status_y = y + list_h + 8.0;
+    if !state.worlds_status.is_empty() {
+        tree.push_label(
+            Rect::new(cx, status_y, cw, 20.0),
+            &state.worlds_status,
+            MUTED,
+            1.0,
+        );
+    }
+}
 
 fn rebuild_inventory(
     tree: &mut LayoutTree,
@@ -1689,12 +1955,12 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
     );
     let by = if show_bottom_tabs { h - BOTTOM_H } else { h };
     if show_bottom_tabs {
-        // --- Bottom bar: Home · Inventory · Settings · Exit ---
+        // --- Bottom bar: Home · Worlds · Inventory · Settings · Exit ---
         tree.push_rect(Rect::new(0.0, by, w, BOTTOM_H), BAR);
 
-        let tab_w = 78.0;
-        let gap = 10.0;
-        let tabs_total = tab_w * 4.0 + gap * 3.0;
+        let tab_w = 68.0;
+        let gap = 8.0;
+        let tabs_total = tab_w * 5.0 + gap * 4.0;
         let tab0_x = (w - tabs_total) * 0.5;
 
         let draw_tab = |tree: &mut LayoutTree,
@@ -1742,6 +2008,16 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
             tree,
             state,
             tab0_x + tab_w + gap,
+            DashTab::Worlds,
+            WidgetId::TabWorlds,
+            "public",
+            FacetId::Worlds.label(),
+            Color::rgba(0.18, 0.32, 0.34, 0.95),
+        );
+        draw_tab(
+            tree,
+            state,
+            tab0_x + (tab_w + gap) * 2.0,
             DashTab::Inventory,
             WidgetId::TabInventory,
             "inventory_2",
@@ -1751,7 +2027,7 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
         draw_tab(
             tree,
             state,
-            tab0_x + (tab_w + gap) * 2.0,
+            tab0_x + (tab_w + gap) * 3.0,
             DashTab::Settings,
             WidgetId::TabSettings,
             "settings",
@@ -1761,7 +2037,7 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
         draw_tab(
             tree,
             state,
-            tab0_x + (tab_w + gap) * 3.0,
+            tab0_x + (tab_w + gap) * 4.0,
             DashTab::Exit,
             WidgetId::TabExit,
             "power",
@@ -1799,6 +2075,9 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
     match state.tab {
         DashTab::Home => {
             rebuild_home(tree, state, cx, cy0, cw, ch, false);
+        }
+        DashTab::Worlds => {
+            rebuild_worlds(tree, state, cx, cy0, cw, ch);
         }
         DashTab::Inventory => {
             rebuild_inventory(tree, state, cx, cy0, cw, ch);

@@ -1,15 +1,55 @@
-//! world-server Room HTTP helpers (x0037).
+//! world-server Room HTTP helpers (x0037 + x007c catalog).
 //!
-//! Guarantees: create-with-visibility; owner visibility update; reports soft-skip distinctly.
-//! Non-guarantees: room_id rename / Zenoh resubscribe; display-name persistence.
+//! Guarantees: create-with-visibility; owner visibility update; reports soft-skip distinctly;
+//! catalog list returns visible rooms only (no room_key / Token / wire_cap).
+//! Non-guarantees: room_id rename / Zenoh resubscribe; display-name persistence;
+//! authoritative host_status in catalog.
 //!
 //! Ownership note (x0021 / x0037): host normally `POST /rooms` first (same account as client).
 //! Client may also `POST` when host has not created yet — then host must use the **same**
 //! auth identity or host Token will 403. Prefer launcher order: host up → client Start.
 
 use anyhow::{bail, Context, Result};
+use serde::Deserialize;
 
 pub use crate::access_level::AccessLevel;
+
+/// One visible room from `GET /api/v1/rooms` (x007c).
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct RoomSummary {
+    pub room_id: String,
+    pub visibility: String,
+    pub owner_sub: String,
+    pub role_hint: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoomsListResponse {
+    rooms: Vec<RoomSummary>,
+}
+
+/// List rooms visible to the bearer (x007c). `mine_only` → `?mine=1`.
+pub fn list_rooms(world_url: &str, access_token: &str, mine_only: bool) -> Result<Vec<RoomSummary>> {
+    let base = world_url.trim_end_matches('/');
+    let authz = format!("Bearer {access_token}");
+    let url = if mine_only {
+        format!("{base}/api/v1/rooms?mine=1")
+    } else {
+        format!("{base}/api/v1/rooms")
+    };
+
+    match ureq::get(&url).set("authorization", &authz).call() {
+        Ok(resp) => {
+            let body: RoomsListResponse = resp.into_json().context("parse rooms list")?;
+            Ok(body.rooms)
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            bail!("list rooms failed status={code} body={body}")
+        }
+        Err(err) => Err(err).context("list rooms request failed"),
+    }
+}
 
 /// Result of ensure-create / owner PUT (before join).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

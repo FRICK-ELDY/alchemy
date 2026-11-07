@@ -87,7 +87,7 @@ pub(crate) fn spawn_manifest_subscriber(
                             };
                             let outcome = process_manifest_plaintext(
                                 payload.as_ref(),
-                                shared.room_id.as_ref(),
+                                shared.get_room_id().as_ref(),
                                 &mut watermarks,
                                 seal.as_ref(),
                                 attest.as_ref(),
@@ -253,7 +253,7 @@ pub(crate) fn spawn_manifest_subscriber(
                     if let Some(cap) = shared.wire_cap() {
                         snapshot_ok = fetch_snapshot(
                             &session,
-                            shared.room_id.as_ref(),
+                            shared.get_room_id().as_ref(),
                             &cap,
                             &shared,
                         );

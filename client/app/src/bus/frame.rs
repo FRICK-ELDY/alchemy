@@ -282,7 +282,7 @@ pub(crate) fn spawn_frame_subscriber(
                                     if let Some(cap) = shared.wire_cap() {
                                         let _ = fetch_snapshot(
                                             &session,
-                                            shared.room_id.as_ref(),
+                                            shared.get_room_id().as_ref(),
                                             &cap,
                                             &shared,
                                         );

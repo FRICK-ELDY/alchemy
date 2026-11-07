@@ -8,10 +8,12 @@ defmodule World.Rooms do
   revision bump).
   x0071: create rejects when owner already holds `max_rooms_per_owner` rooms (best-effort;
   concurrent races may overshoot slightly — no DB trigger).
+  x007c: `list_visible_summaries/3` returns catalog rows (no room_key / wire_cap / scene).
   Non-guarantees: full UGC editor; multi-node replication; Postgres (swap path documented);
   Room Token revocation on visibility / friendship change (TTL-only; see RoomAccess);
   strict serialization of per-owner room counts under concurrent create;
-  user_root / cuboid (empty blake3) despawn.
+  user_root / cuboid (empty blake3) despawn;
+  authoritative host_status in catalog (x007c omits it).
 
   x0021: `owner_sub` set only via `create/3` (`{:ok, room_id, visibility, wire_cap}` · x004e).
   Token issuance never creates a room.
@@ -429,6 +431,163 @@ defmodule World.Rooms do
   end
 
   def set_visibility(_, _, _), do: {:error, :invalid_room_id}
+
+  @doc """
+  Catalog summaries visible to `viewer_sub` under RoomAccess (x007c).
+
+  Does **not** include `room_key`, Token, `wire_cap`, or scene.
+  `role_hint` is `owner` | `joinable` only (invisible rooms are omitted).
+  """
+  @type catalog_summary :: %{
+          room_id: room_id(),
+          visibility: String.t(),
+          owner_sub: owner_sub(),
+          role_hint: String.t()
+        }
+
+  # Per-bucket caps: owned + public + social(+lan) candidates, then ACL filter.
+  # Avoids "global ORDER BY LIMIT then filter" dropping older visible private/friends rooms.
+  @catalog_owned_limit 200
+  @catalog_public_limit 200
+  @catalog_social_limit 200
+  @catalog_result_limit 200
+
+  @spec list_visible_summaries(Plug.Conn.t(), owner_sub(), keyword()) ::
+          {:ok, [catalog_summary()]} | {:error, storage_error()}
+  def list_visible_summaries(conn, viewer_sub, opts \\ [])
+
+  def list_visible_summaries(conn, viewer_sub, opts)
+      when is_binary(viewer_sub) and viewer_sub != "" and is_list(opts) do
+    mine_only? = Keyword.get(opts, :mine_only, false) == true
+    include_lan? = not mine_only? and WorldWeb.ClientIp.lan_eligible?(conn)
+
+    case list_catalog_rows(viewer_sub, mine_only?, include_lan?) do
+      {:ok, rows} ->
+        summaries =
+          rows
+          |> Enum.filter(fn row -> catalog_visible?(conn, viewer_sub, row) end)
+          |> Enum.map(fn row -> catalog_summary(viewer_sub, row) end)
+          |> Enum.take(@catalog_result_limit)
+
+        {:ok, summaries}
+
+      {:error, :storage_error} = err ->
+        err
+    end
+  end
+
+  def list_visible_summaries(_, _, _), do: {:error, :storage_error}
+
+  defp list_catalog_rows(viewer_sub, true, _include_lan?) do
+    case World.Repo.query(
+           """
+           SELECT room_id, owner_sub, visibility
+           FROM rooms
+           WHERE owner_sub = ?
+           ORDER BY updated_at DESC
+           LIMIT ?
+           """,
+           [viewer_sub, @catalog_owned_limit]
+         ) do
+      {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, &catalog_row/1)}
+      {:error, error} -> storage_error(error, :list_catalog_rows)
+    end
+  rescue
+    e in [RuntimeError, ArgumentError] ->
+      storage_error(e, :list_catalog_rows)
+  end
+
+  defp list_catalog_rows(viewer_sub, false, include_lan?) do
+    social_vis =
+      if include_lan? do
+        ["friends", "friends_plus", "followers", "followers_plus", "lan"]
+      else
+        ["friends", "friends_plus", "followers", "followers_plus"]
+      end
+
+    # Union owned ∪ public ∪ social/lan candidates (dedupe by room_id), newest first.
+    # Visibility ACL (incl. social S2S) still applied in catalog_visible?/3.
+    placeholders = Enum.map_join(social_vis, ",", fn _ -> "?" end)
+
+    sql = """
+    SELECT room_id, owner_sub, visibility FROM (
+      SELECT room_id, owner_sub, visibility, updated_at, 0 AS pri FROM (
+        SELECT room_id, owner_sub, visibility, updated_at
+        FROM rooms
+        WHERE owner_sub = ?
+        ORDER BY updated_at DESC
+        LIMIT ?
+      )
+      UNION
+      SELECT room_id, owner_sub, visibility, updated_at, 1 AS pri FROM (
+        SELECT room_id, owner_sub, visibility, updated_at
+        FROM rooms
+        WHERE visibility = 'public' AND owner_sub != ?
+        ORDER BY updated_at DESC
+        LIMIT ?
+      )
+      UNION
+      SELECT room_id, owner_sub, visibility, updated_at, 2 AS pri FROM (
+        SELECT room_id, owner_sub, visibility, updated_at
+        FROM rooms
+        WHERE visibility IN (#{placeholders}) AND owner_sub != ?
+        ORDER BY updated_at DESC
+        LIMIT ?
+      )
+    )
+    ORDER BY pri ASC, updated_at DESC
+    """
+
+    params =
+      List.flatten([
+        viewer_sub,
+        @catalog_owned_limit,
+        viewer_sub,
+        @catalog_public_limit,
+        social_vis,
+        viewer_sub,
+        @catalog_social_limit
+      ])
+
+    case World.Repo.query(sql, params) do
+      {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, &catalog_row/1)}
+      {:error, error} -> storage_error(error, :list_catalog_rows)
+    end
+  rescue
+    e in [RuntimeError, ArgumentError] ->
+      storage_error(e, :list_catalog_rows)
+  end
+
+  defp catalog_row([room_id, owner_sub, visibility])
+       when is_binary(room_id) and is_binary(owner_sub) and is_binary(visibility) do
+    %{room_id: room_id, owner_sub: owner_sub, visibility: visibility}
+  end
+
+  defp catalog_visible?(conn, viewer_sub, %{
+         owner_sub: owner_sub,
+         visibility: visibility
+       }) do
+    case World.RoomAccess.authorize(conn, owner_sub, viewer_sub, visibility) do
+      :ok -> true
+      # Fail closed for catalog: social outage / forbidden / lan → omit row.
+      _ -> false
+    end
+  end
+
+  defp catalog_summary(viewer_sub, %{
+         room_id: room_id,
+         owner_sub: owner_sub,
+         visibility: visibility
+       }) do
+    role_hint = if owner_sub == viewer_sub, do: "owner", else: "joinable"
+
+    %{
+      room_id: room_id,
+      visibility: visibility,
+      owner_sub: owner_sub,
+      role_hint: role_hint
+    }
+  end
 
   # Concurrent host_keys (owner dual-start overlap) must not mint the same generation
   # for two different pubs — optimistic CAS + retry (x003a).

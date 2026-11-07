@@ -40,7 +40,7 @@ pub(crate) fn declare_room_alive(
     let wire_cap = shared
         .wire_cap()
         .ok_or_else(|| anyhow::anyhow!("liveliness requires wire_cap (join first; x004e)"))?;
-    let key = liveliness_key(shared.room_id.as_ref(), &wire_cap, &sub, &jti);
+    let key = liveliness_key(shared.get_room_id().as_ref(), &wire_cap, &sub, &jti);
     let token = session
         .liveliness()
         .declare_token(key.clone())

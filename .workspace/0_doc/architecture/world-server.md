@@ -11,10 +11,11 @@
 
 | 保証する | 保証しない |
 |:---|:---|
-| Room の作成（Ash + SQLite。`owner_sub` + DemoScene + `visibility`・x0028/x0034） | World 一覧 UI / Group |
+| Room の作成（Ash + SQLite。`owner_sub` + DemoScene + `visibility`・x0028/x0034） | Group ACL |
+| `GET /api/v1/rooms` カタログ（見える Room のみ・秘密なし・x007c） | 権威ある host 死活；`room_key` / `wire_cap` の一覧同梱 |
 | 短命 Room Token（RS256）の発行（**`cnf.spk` = session_pub・x003e**） | Friendship 正本（auth）。Token 前に S2S 照会；`jkt` 互換 |
 | 7段階公開範囲 ACL（Token 発行時・x0034–x0036） | unfollow / visibility 変更時の既発行 Token 即時失効（TTL まで有効） |
-| client Home「新規ワールド作成」仮 UI でアクセスレベル選択→ create/PUT + 入室（x0037） | UI デザイン最終化；`room_id` 動的切替；テンプレ複数；入室中の途中変更 UI |
+| client Home「新規ワールド作成」仮 UI でアクセスレベル選択→ create/PUT + 入室（x0037）；Worlds カタログ Join/Host での `room_id` retarget（`ROOM_ID` env・seal/attest・HostSupervisor 再起動 · x007c） | UI デザイン最終化；入室中の途中変更 UI（Leave なしの in-place 昇格）；テンプレ複数；カタログ全件の無制限走査 |
 | `GET /.well-known/jwks.json`（Room Token 用） | verifier / ホスト死活監視 / S2S 連合 |
 | Room API は auth-server Bearer JWT 必須（`sub` を Room Token に転写） | 匿名 Token（既定 OFF。`WORLD_ALLOW_ANON_TOKENS=true` のみ） |
 | auth JWKS（`AUTH_JWKS_URL`）によるユーザー JWT 検証 | auth の revocation 再確認 |
@@ -56,6 +57,7 @@
 |:---|:---|:---|:---|
 | GET | `/health` | 不要 | 生存確認 |
 | GET | `/.well-known/jwks.json` | 不要 | Room Token 検証用公開鍵 |
+| GET | `/api/v1/rooms` | Bearer（auth JWT） | 見える Room カタログ（`?mine=1` で自分の部屋のみ・x007c） |
 | POST | `/api/v1/rooms` | Bearer（auth JWT） | Room 作成（任意 `visibility`） |
 | PUT | `/api/v1/rooms/:room_id/visibility` | Bearer（auth JWT） | owner のみ更新 |
 | POST | `/api/v1/rooms/:room_id/tokens` | Bearer（auth JWT） | Token 発行（visibility ACL 後） |

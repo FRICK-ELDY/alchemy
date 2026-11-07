@@ -185,8 +185,8 @@ pub struct WorldView {
 pub struct SharedState {
     /// Local camera / aim follows this host entity (`LOCAL_USER_ROOT_UNSET` until Presence).
     pub local_user_root: AtomicU32,
-    /// `ROOM_ID` used for Zenoh keys (x0017).
-    pub room_id: Arc<str>,
+    /// Active `room_id` for Zenoh keys (x0017). Mutex so Worlds catalog can retarget (x007c).
+    pub room_id: Mutex<Arc<str>>,
     /// Zenoh key channel secret from Room Token (x004e); `None` until join.
     pub wire_cap: Mutex<Option<Arc<str>>>,
     /// Room AEAD key from Room Token (x0069); `None` until join.
@@ -280,6 +280,30 @@ impl SharedState {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
+    }
+
+    /// Snapshot of the active room id (x0017 / x007c).
+    pub fn get_room_id(&self) -> Arc<str> {
+        self.room_id
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// Retarget room id + seal/attestation verifiers + process `ROOM_ID` env (x007c).
+    ///
+    /// HostSupervisor children inherit env, so `ROOM_ID` must match before spawn.
+    /// Caller must Leave first if already joined (bus keys bind the previous id), and
+    /// must restart a supervised host when the id changes (`ensure_running_for_room`).
+    pub fn set_room_id(&self, room_id: Arc<str>) {
+        if let Err(err) = self.manifest_seal.set_expected_room_id(room_id.as_ref()) {
+            log::error!("manifest_seal retarget failed: {err:#}");
+        }
+        if let Err(err) = self.host_attest.set_expected_room_id(room_id.as_ref()) {
+            log::error!("host_attest retarget failed: {err:#}");
+        }
+        std::env::set_var("ROOM_ID", room_id.as_ref());
+        *self.room_id.lock().unwrap_or_else(|p| p.into_inner()) = room_id;
     }
 
     /// Apply operator endpoints. Always updates SharedState + syncs `ZENOH_CONNECT` env
@@ -510,9 +534,10 @@ impl SharedState {
             (None, None)
         };
         let world_url = self.get_world_url();
+        let room_id = self.get_room_id();
         match crate::world_token::fetch_guest_token(
             &world_url,
-            &self.room_id,
+            room_id.as_ref(),
             &access,
             &session_pub_b64,
             csr_pem.as_deref(),

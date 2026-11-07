@@ -172,7 +172,7 @@ pub(crate) fn try_place_read_for_mesh(shared: &SharedState) -> Option<String> {
     let world_url = shared.get_world_url();
     match place_read::fetch_place_read(
         &world_url,
-        shared.room_id.as_ref(),
+        shared.get_room_id().as_ref(),
         &room_token,
         &world_seal,
     ) {

@@ -58,6 +58,8 @@ pub struct HostSupervisor {
 #[derive(Default)]
 struct SupervisorState {
     phase: Phase,
+    /// Room the running / in-flight host was spawned for (x007c retarget).
+    active_room_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -107,22 +109,65 @@ impl HostSupervisor {
         self.exit_latched.load(Ordering::SeqCst)
     }
 
-    /// Spawn host-server if not already running; wait until ready file publishes IPC addr.
+    /// Spawn host-server for the current process `ROOM_ID` (or `"local"`).
+    ///
+    /// Prefer [`Self::ensure_running_for_room`] after Worlds retarget so the child
+    /// always matches the catalog selection.
+    pub fn ensure_running(&self) -> Result<()> {
+        let room = std::env::var("ROOM_ID").unwrap_or_else(|_| "local".into());
+        self.ensure_running_for_room(&room)
+    }
+
+    /// Spawn host-server for `room_id` if not already running for that room.
+    ///
+    /// When a host is already Running/Starting for a **different** room, shut it
+    /// down and respawn with `ROOM_ID=room_id` (x007c). Same-room Running → Ok.
     ///
     /// Reservation is taken under the state mutex. Ready-wait runs unlocked so
     /// [`Self::shutdown_graceful`] can cancel via [`Self::cancel_spawn`].
-    pub fn ensure_running(&self) -> Result<()> {
+    pub fn ensure_running_for_room(&self, room_id: &str) -> Result<()> {
+        if room_id.is_empty() {
+            bail!("empty room_id for local host-server");
+        }
         if self.exit_latched.load(Ordering::SeqCst) {
             bail!("client exit latched — not starting host");
         }
+
+        let mut retarget = false;
+        {
+            let mut g = self.state.lock().expect("host_supervisor state");
+            g.refresh_exited();
+            match &g.phase {
+                Phase::Running { .. } if g.active_room_id.as_deref() == Some(room_id) => {
+                    return Ok(());
+                }
+                Phase::Running { .. } => retarget = true,
+                Phase::Starting { .. } | Phase::Reserved
+                    if g.active_room_id.as_deref() == Some(room_id) =>
+                {
+                    bail!("local host-server start already in progress")
+                }
+                Phase::Starting { .. } | Phase::Reserved => retarget = true,
+                Phase::Idle => {}
+            }
+        }
+        if retarget {
+            log::info!("host supervisor: retarget room_id={room_id} — restarting local host");
+            self.shutdown_graceful();
+        }
+
+        // Child inherits env; also pass explicitly in spawn_host.
+        std::env::set_var("ROOM_ID", room_id);
 
         // Claim under lock so a second ensure_running cannot orphan a first child.
         {
             let mut g = self.state.lock().expect("host_supervisor state");
             g.refresh_exited();
             match &g.phase {
-                Phase::Running { .. } => return Ok(()),
-                Phase::Starting { .. } | Phase::Reserved => {
+                Phase::Running { .. } if g.active_room_id.as_deref() == Some(room_id) => {
+                    return Ok(());
+                }
+                Phase::Running { .. } | Phase::Starting { .. } | Phase::Reserved => {
                     bail!("local host-server start already in progress")
                 }
                 Phase::Idle => {
@@ -130,9 +175,10 @@ impl HostSupervisor {
                     if self.exit_latched.load(Ordering::SeqCst) {
                         bail!("client exit latched — not starting host");
                     }
-                    // Clear in-flight cancel from a prior *failed* Start shutdown only.
+                    // Clear in-flight cancel from a prior *failed* Start / retarget shutdown.
                     // exit_latched is never cleared here.
                     self.cancel_spawn.store(false, Ordering::SeqCst);
+                    g.active_room_id = Some(room_id.to_string());
                     g.phase = Phase::Reserved;
                 }
             }
@@ -142,6 +188,7 @@ impl HostSupervisor {
             let mut g = self.state.lock().expect("host_supervisor state");
             if matches!(g.phase, Phase::Reserved) {
                 g.phase = Phase::Idle;
+                g.active_room_id = None;
             }
             bail!("local host-server start cancelled");
         }
@@ -155,6 +202,7 @@ impl HostSupervisor {
             let mut g = self.state.lock().expect("host_supervisor state");
             if matches!(g.phase, Phase::Reserved) {
                 g.phase = Phase::Idle;
+                g.active_room_id = None;
             }
             Err(err)
         };
@@ -165,7 +213,7 @@ impl HostSupervisor {
             Err(err) => return finish_fail(err),
         };
 
-        let mut child = match spawn_host(&token, &ready_path) {
+        let mut child = match spawn_host(&token, &ready_path, room_id) {
             Ok(c) => c,
             Err(err) => {
                 let _ = fs::remove_file(&ready_path);
@@ -193,6 +241,7 @@ impl HostSupervisor {
                 let _ = fs::remove_file(&ready_path);
                 if matches!(g.phase, Phase::Reserved) {
                     g.phase = Phase::Idle;
+                    g.active_room_id = None;
                 }
                 bail!("local host-server start cancelled");
             }
@@ -229,6 +278,7 @@ impl HostSupervisor {
             job,
         } = std::mem::replace(&mut g.phase, Phase::Idle)
         else {
+            g.active_room_id = None;
             return wait_result.and(Err(anyhow::anyhow!(
                 "local host-server start cancelled after ready"
             )));
@@ -237,6 +287,7 @@ impl HostSupervisor {
         let ipc_addr = match wait_result {
             Ok(addr) => addr,
             Err(err) => {
+                g.active_room_id = None;
                 kill_child(child);
                 let _ = fs::remove_file(&ready_path);
                 #[cfg(windows)]
@@ -246,6 +297,7 @@ impl HostSupervisor {
         };
 
         if !host_ipc::is_loopback_addr(&ipc_addr) {
+            g.active_room_id = None;
             kill_child(child);
             let _ = fs::remove_file(&ready_path);
             #[cfg(windows)]
@@ -261,7 +313,7 @@ impl HostSupervisor {
             #[cfg(windows)]
             job,
         };
-        log::info!("host-server ready; ipc={ipc_addr}");
+        log::info!("host-server ready; ipc={ipc_addr} room_id={room_id}");
         Ok(())
     }
 
@@ -278,6 +330,7 @@ impl HostSupervisor {
         self.cancel_spawn.store(true, Ordering::SeqCst);
         let taken = {
             let mut g = self.state.lock().expect("host_supervisor state");
+            g.active_room_id = None;
             std::mem::replace(&mut g.phase, Phase::Idle)
         };
         match taken {
@@ -353,6 +406,7 @@ impl SupervisorState {
     }
 
     fn force_kill_clear(&mut self) {
+        self.active_room_id = None;
         match std::mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Idle | Phase::Reserved => {}
             Phase::Starting {
@@ -426,10 +480,11 @@ fn make_token() -> String {
     hex[..32].to_string()
 }
 
-fn spawn_host(ipc_token: &str, ready_path: &Path) -> Result<Child> {
+fn spawn_host(ipc_token: &str, ready_path: &Path, room_id: &str) -> Result<Child> {
     let mut cmd = host_command();
     cmd.env(ENV_TOKEN, ipc_token)
         .env("ALCHEMY_HOST_READY_FILE", ready_path)
+        .env("ROOM_ID", room_id)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());

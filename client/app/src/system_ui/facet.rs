@@ -35,6 +35,8 @@ pub enum FacetId {
     Settings,
     /// Inventory take-out (x006d).
     Inventory,
+    /// Worlds catalog (x007c).
+    Worlds,
     /// Exit tab body + exit actions. **Pinned** — cannot be removed.
     Exit,
 }
@@ -50,6 +52,7 @@ impl FacetId {
             Self::Home => "Home",
             Self::Settings => "Settings",
             Self::Inventory => "Inventory",
+            Self::Worlds => "Worlds",
             Self::Exit => "Exit",
         }
     }
@@ -59,6 +62,7 @@ impl FacetId {
 pub const OFFICIAL_DEFAULT_FACETS: &[FacetId] = &[
     FacetId::Chrome,
     FacetId::Home,
+    FacetId::Worlds,
     FacetId::Inventory,
     FacetId::Settings,
     FacetId::Exit,
@@ -92,6 +96,23 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::SceneMeshRow1
         | WidgetId::SceneMeshRow2
         | WidgetId::SceneMeshRow3 => FacetId::Inventory,
+        WidgetId::TabWorlds
+        | WidgetId::WorldsRefresh
+        | WidgetId::WorldsFilterAll
+        | WidgetId::WorldsFilterMine
+        | WidgetId::WorldsCreate
+        | WidgetId::WorldsJoinGuest
+        | WidgetId::WorldsHostRoom
+        | WidgetId::WorldsLeave
+        | WidgetId::WorldsHostRescue
+        | WidgetId::WorldsRow0
+        | WidgetId::WorldsRow1
+        | WidgetId::WorldsRow2
+        | WidgetId::WorldsRow3
+        | WidgetId::WorldsRow4
+        | WidgetId::WorldsRow5
+        | WidgetId::WorldsRow6
+        | WidgetId::WorldsRow7 => FacetId::Worlds,
         WidgetId::TabHome
         | WidgetId::HomeFieldIdentifier
         | WidgetId::HomeFieldPassword
