@@ -51,7 +51,7 @@ pub mod wire_crypto;
 /// Bump when `proto/` has an incompatible wire change.
 ///
 /// x0069: Zenoh payloads are Room-key AEAD envelopes (incompatible with x004e plain protobuf peers).
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.18.0-x0069";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.19.0-x007e";
 
 /// Identity orientation on the wire (`Entity.qx..qw`, xyzw).
 pub const ENTITY_QUAT_IDENTITY: [f64; 4] = [0.0, 0.0, 0.0, 1.0];

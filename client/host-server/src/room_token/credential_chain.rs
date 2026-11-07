@@ -45,6 +45,15 @@ struct TokenResponse {
     /// Room AEAD key, URL-safe base64 of 32 bytes (x0069). Empty → fail closed except debug bypass.
     #[serde(default)]
     room_key: String,
+    /// Room key epoch (x007e). Missing → 0.
+    #[serde(default)]
+    room_key_epoch: u64,
+    /// Host-only: previous Room key while world `RoomKeyGrace` is live (x007e).
+    #[serde(default)]
+    room_key_prev: Option<String>,
+    /// Host-only: previous epoch paired with `room_key_prev`.
+    #[serde(default)]
+    room_key_prev_epoch: Option<u64>,
     /// Relay Allocation Token (x004e); empty when Relay unused or world older than x004e.
     #[serde(default)]
     allocation_token: String,
@@ -68,6 +77,10 @@ pub struct HostTokenBundle {
     pub wire_cap: String,
     /// Raw 32-byte Room AEAD key (x0069).
     pub room_key: [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
+    /// Room key epoch (x007e).
+    pub room_key_epoch: u64,
+    /// Optional prev from world grace (host Token only).
+    pub room_key_prev: Option<([u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN], u64)>,
     pub allocation_token: String,
     pub mtls: Option<WorldMtls>,
 }
@@ -288,6 +301,8 @@ pub fn fetch_host_token(
             expires_in: BYPASS_ROOM_TOKEN_TTL_HINT,
             wire_cap,
             room_key: room_key_from_env_or_local(),
+            room_key_epoch: 0,
+            room_key_prev: None,
             allocation_token: String::new(),
             mtls: None,
         });
@@ -353,6 +368,14 @@ pub fn fetch_host_token(
             let wire_cap = zenoh_connect::require_wire_cap(Some(parsed.wire_cap.as_str()))
                 .context("host token wire_cap")?;
             let room_key = parse_room_key_b64(&parsed.room_key).context("host token room_key")?;
+            let room_key_prev = match (parsed.room_key_prev.as_deref(), parsed.room_key_prev_epoch)
+            {
+                (Some(b64), Some(epoch)) if !b64.is_empty() => Some((
+                    parse_room_key_b64(b64).context("host token room_key_prev")?,
+                    epoch,
+                )),
+                _ => None,
+            };
             let mtls = parsed.mtls.map(|m| WorldMtls {
                 client_cert_pem: m.client_cert_pem,
                 expires_at: m.expires_at,
@@ -362,6 +385,8 @@ pub fn fetch_host_token(
                 expires_in: ttl,
                 wire_cap,
                 room_key,
+                room_key_epoch: parsed.room_key_epoch,
+                room_key_prev,
                 allocation_token: parsed.allocation_token,
                 mtls,
             })
@@ -434,8 +459,12 @@ pub struct HostCredentialChain {
     pub attest_hard_expire_at: Instant,
     /// Zenoh key channel secret (x004e); stable for room lifetime.
     pub wire_cap: String,
-    /// Room AEAD key (x0069); stable for room lifetime.
+    /// Room AEAD key (x0069); rotates with `room_key_epoch` (x007e).
     pub room_key: [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
+    /// Room key epoch (x007e).
+    pub room_key_epoch: u64,
+    /// Optional prev from world `RoomKeyGrace` (host Token only · x007e).
+    pub room_key_prev: Option<([u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN], u64)>,
     /// Latest Allocation Token for Relay mTLS refresh (x004e).
     pub allocation_token: String,
 }
@@ -506,6 +535,8 @@ impl HostCredentialChain {
             attest_hard_expire_at: hard_expire_or_hint(attest_ttl, BYPASS_ROOM_TOKEN_TTL_HINT),
             wire_cap: bundle.wire_cap,
             room_key: bundle.room_key,
+            room_key_epoch: bundle.room_key_epoch,
+            room_key_prev: bundle.room_key_prev,
             allocation_token: bundle.allocation_token,
         })
     }
@@ -601,15 +632,16 @@ impl HostCredentialChain {
             ));
         }
         self.host_token = bundle.token;
-        // wire_cap / room_key are room-lifetime stable; Zenoh keys + AEAD fixed at boot.
+        // wire_cap is room-lifetime stable (Zenoh keys fixed at boot).
+        // room_key / epoch may rotate (x007e); caller syncs SharedRoomAead via apply_room_aead.
         if self.wire_cap.is_empty() {
             self.wire_cap = bundle.wire_cap.clone();
         } else if !bundle.wire_cap.is_empty() && bundle.wire_cap != self.wire_cap {
             log::warn!("host Token refresh wire_cap changed (ignored; keys stay on boot cap)");
         }
-        if bundle.room_key != self.room_key {
-            log::warn!("host Token refresh room_key changed (ignored; AEAD stays on boot key)");
-        }
+        self.room_key = bundle.room_key;
+        self.room_key_epoch = bundle.room_key_epoch;
+        self.room_key_prev = bundle.room_key_prev;
         self.allocation_token = bundle.allocation_token.clone();
         let ttl = bundle.expires_in;
         self.host_refresh_at = refresh_deadline(ttl)

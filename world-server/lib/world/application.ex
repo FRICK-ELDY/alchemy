@@ -3,9 +3,12 @@ defmodule World.Application do
 
   use Application
 
+  alias World.Rooms.RoomKeyGrace
+
   @impl true
   def start(_type, _args) do
     World.Metrics.ensure_table()
+    RoomKeyGrace.ensure_table()
 
     children =
       [
@@ -16,6 +19,8 @@ defmodule World.Application do
         World.Token.Keys,
         World.Auth.Jwks,
         World.PlaceHashes,
+        # x007e: periodic room_key rotate (ROOM_KEY_ROTATE_HOURS; 0 = off)
+        World.Rooms.RoomKeyRotator,
         # x0075: permanent manifest-seal-hash Port (replaces per-request CLI)
         World.ManifestSealHash.Worker,
         # x007a: dedicated loopback Bandit — never on Endpoint

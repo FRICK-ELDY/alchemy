@@ -14,7 +14,8 @@
 | Room の作成（Ash + SQLite。`owner_sub` + DemoScene + `visibility`・x0028/x0034） | Group ACL |
 | `GET /api/v1/rooms` カタログ（見える Room のみ・秘密なし・x007c） | 権威ある host 死活；`room_key` / `wire_cap` の一覧同梱 |
 | 短命 Room Token（RS256）の発行（**`cnf.spk` = session_pub・x003e**） | Friendship 正本（auth）。Token 前に S2S 照会；`jkt` 互換 |
-| 7段階公開範囲 ACL（Token 発行時・x0034–x0036） | unfollow / visibility 変更時の既発行 Token 即時失効（TTL まで有効） |
+| 7段階公開範囲 ACL（Token 発行時・x0034–x0036） | unfollow 単独の既発行 Token 即時失効（TTL まで有効） |
+| Room 鍵寿命（x007e）: `room_key_epoch` + Token JSON；visibility **縮小** / owner `rotate_room_key` / 定期（`ROOM_KEY_ROTATE_HOURS` 既定 24）で回転；直前世代は `RoomKeyGrace`（≈ Token TTL・メモリのみ）→ **host Token** に `room_key_prev*` として同梱（guest には載せない） | 3 世代以上の受理；world 再起動後の旧鍵；Allocation/Relay への `room_key` 配布；push 通知（host は ≈15s Token 再取得で採用） |
 | client Home「新規ワールド作成」仮 UI でアクセスレベル選択→ create/PUT + 入室（x0037）；Worlds カタログ Join/Host での `room_id` retarget（`ROOM_ID` env・seal/attest・HostSupervisor 再起動 · x007c） | UI デザイン最終化；入室中の途中変更 UI（Leave なしの in-place 昇格）；テンプレ複数；カタログ全件の無制限走査 |
 | `GET /.well-known/jwks.json`（Room Token 用） | verifier / ホスト死活監視 / S2S 連合 |
 | Room API は auth-server Bearer JWT 必須（`sub` を Room Token に転写） | 匿名 Token（既定 OFF。`WORLD_ALLOW_ANON_TOKENS=true` のみ） |

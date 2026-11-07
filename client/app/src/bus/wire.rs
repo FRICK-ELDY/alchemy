@@ -5,8 +5,8 @@
 //!   fail-closed **before** protobuf / signature checks (x003b)
 //! - `seal_zenoh_payload`: AEAD seal with `room_key` + `room_id` binding; missing `room_key` → `Err`
 //!
-//! Non-guarantees: protobuf decode, signature verification, decode-limit checks, key rotation
-//! (callers own those); `client_time_ms` is a best-effort wall clock (`0` on pre-epoch).
+//! Non-guarantees: protobuf decode, signature verification, decode-limit checks;
+//! KeyStale / dual-key grace (callers); `client_time_ms` is a best-effort wall clock.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -39,6 +39,7 @@ pub(crate) fn open_zenoh_payload(
     wire_aead::open(
         room_key.as_ref(),
         shared.get_room_id().as_ref(),
+        shared.room_key_epoch(),
         kind,
         envelope.as_ref(),
     )
@@ -56,6 +57,7 @@ pub(crate) fn seal_zenoh_payload(
     wire_aead::seal(
         room_key.as_ref(),
         shared.get_room_id().as_ref(),
+        shared.room_key_epoch(),
         kind,
         plaintext,
     )

@@ -173,6 +173,7 @@ pub fn publish_inventory_spawn(
     room_id: &str,
     wire_cap: &str,
     room_key: &[u8; wire_aead::ROOM_KEY_LEN],
+    room_key_epoch: u64,
     room_token: &str,
     blake3: &str,
     x: f64,
@@ -192,8 +193,14 @@ pub fn publish_inventory_spawn(
         "sz": 1.0,
     });
     let plain = serde_json::to_vec(&payload).context("encode spawn JSON")?;
-    let envelope = wire_aead::seal(room_key, room_id, AeadKind::InventorySpawn, &plain)
-        .map_err(|e| anyhow!("AEAD seal inventory spawn: {e}"))?;
+    let envelope = wire_aead::seal(
+        room_key,
+        room_id,
+        room_key_epoch,
+        AeadKind::InventorySpawn,
+        &plain,
+    )
+    .map_err(|e| anyhow!("AEAD seal inventory spawn: {e}"))?;
     let publisher = session
         .declare_publisher(key.clone())
         .wait()
@@ -212,6 +219,7 @@ pub fn publish_inventory_despawn(
     room_id: &str,
     wire_cap: &str,
     room_key: &[u8; wire_aead::ROOM_KEY_LEN],
+    room_key_epoch: u64,
     room_token: &str,
     entity_id: u32,
 ) -> Result<()> {
@@ -221,8 +229,14 @@ pub fn publish_inventory_despawn(
         "entity_id": entity_id,
     });
     let plain = serde_json::to_vec(&payload).context("encode despawn JSON")?;
-    let envelope = wire_aead::seal(room_key, room_id, AeadKind::InventoryDespawn, &plain)
-        .map_err(|e| anyhow!("AEAD seal inventory despawn: {e}"))?;
+    let envelope = wire_aead::seal(
+        room_key,
+        room_id,
+        room_key_epoch,
+        AeadKind::InventoryDespawn,
+        &plain,
+    )
+    .map_err(|e| anyhow!("AEAD seal inventory despawn: {e}"))?;
     let publisher = session
         .declare_publisher(key.clone())
         .wait()

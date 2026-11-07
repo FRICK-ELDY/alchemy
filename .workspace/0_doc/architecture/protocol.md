@@ -2,7 +2,7 @@
 
 > **正本**: [`protocol/`](../../../protocol/)  
 > **配送契約**: [`protocol/peer-delivery.md`](../../../protocol/peer-delivery.md)（x0024）  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.18.0-x0069`（x003b decode limits / x0055 ItemRef 草案は pin 据え置き）
+> **PROTOCOL_PIN**: `alchemy-protocol/0.19.0-x007e`（AAD v2 + `room_key_epoch` · x007e；x003b decode limits / x0055 ItemRef 草案は pin 非対象）
 
 ## 置き場の方針
 
@@ -30,6 +30,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | `DEFAULT_MOVE_SPEED`（host / Settings 表示の共有既定） | client 永続設定・仮想キーボード編集 |
 | `PresenceState`（`sub`→user_root entity）+ `InputEvent.leave` + liveliness キーヘルパ（x0019 / x0022） | `USER_ROOT_SLOTS_MAX` 超の動的スケール / WAN liveliness ACL |
 | `item_ref::ItemRef`（x0055）— CAS `blake3` スポーン参照草案（serde JSON · `schema_version=1` · `kind` tag · **常に小文字 hex**）。正規経路は `blake3` / `decode_json` / `Deserialize`。**PROTOCOL_PIN 非 bump**（ワイヤ未載荷） | `repo@rev`（→ x0063）；Manifest / Frame / Intent 載荷；spawn / Grant 実行；struct literal の無検証組み立て |
+| Room AEAD AAD v2（x007e）: `alchemy/aead/v2\|{room_id}\|{epoch}\|{kind}` + `open_current_or_prev` | 3 世代以上の dual-open；参加者間の鍵 forward 秘匿 |
 
 ## メッセージ
 

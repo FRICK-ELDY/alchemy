@@ -20,7 +20,7 @@
 
 ## 現行キー対応表
 
-キー式: `alchemy/dev/room/{room_id}/{wire_cap}/…`（x0017 / x004e）。Zenoh payload は **Room 鍵 AEAD**（x0069: `nonce||ct`；AAD に `room_id`+kind）。開封失敗は即 discard。
+キー式: `alchemy/dev/room/{room_id}/{wire_cap}/…`（x0017 / x004e）。Zenoh payload は **Room 鍵 AEAD**（x0069 / **x007e**: `nonce||ct`；AAD `alchemy/aead/v2|{room_id}|{epoch}|{kind}`）。開封失敗は即 discard。鍵には寿命があり（visibility 縮小・定期・owner rotate）、旧 epoch の平文は新鍵では読めない。host は Token TTL 相当で **現行+直前 1 世代**のみ dual-open；client は epoch 前進を **KeyStale**（再 Join）として扱う。
 
 | キー / 経路 | クラス | 保証する | 保証しない |
 |:---|:---|:---|:---|

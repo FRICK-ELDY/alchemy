@@ -13,7 +13,7 @@
 //! Leave / liveliness token ownership lives here; put/undeclare is `room::leave_room` (re-exported as `crate::leave_room`).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -207,6 +207,13 @@ pub struct SharedState {
     pub wire_cap: Mutex<Option<Arc<str>>>,
     /// Room AEAD key from Room Token (x0069); `None` until join.
     pub room_key: Mutex<Option<Arc<[u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]>>>,
+    /// Room key epoch from Token (x007e); paired with `room_key` for AEAD AAD.
+    pub room_key_epoch: AtomicU64,
+    /// Token refresh saw a higher `room_key_epoch` — UI must Rejoin / Leave (x007e KeyStale).
+    pub key_stale: AtomicBool,
+    /// Stashed `(key, epoch)` from refresh while KeyStale; live AEAD stays on the old pair
+    /// until [`Self::commit_room_aead`] (Join / Rejoin).
+    pub pending_room_aead: Mutex<Option<([u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN], u64)>>,
     /// Once true, manifest/frame/presence/input subscribers are running (x004e).
     /// Cleared on Leave and before re-attach after Zenoh reopen.
     pub room_bus_started: std::sync::atomic::AtomicBool,
@@ -560,6 +567,65 @@ impl SharedState {
         self.room_key.lock().ok().and_then(|g| g.clone())
     }
 
+    /// Current Room key epoch after join (x007e).
+    pub fn room_key_epoch(&self) -> u64 {
+        self.room_key_epoch.load(Ordering::SeqCst)
+    }
+
+    pub fn set_room_key_epoch(&self, epoch: u64) {
+        self.room_key_epoch.store(epoch, Ordering::SeqCst);
+    }
+
+    pub fn key_stale(&self) -> bool {
+        self.key_stale.load(Ordering::SeqCst)
+    }
+
+    pub fn set_key_stale(&self, stale: bool) {
+        self.key_stale.store(stale, Ordering::SeqCst);
+    }
+
+    /// Token **refresh** path: if epoch advanced, enter KeyStale and stash the new pair
+    /// without swapping live AEAD (host may still seal the old epoch until it syncs).
+    pub fn note_room_aead_from_refresh(
+        &self,
+        room_key: [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
+        epoch: u64,
+    ) -> bool {
+        let prev = self.room_key_epoch();
+        let advanced = epoch > prev && prev > 0;
+        if !advanced {
+            // Same epoch (or first material): keep live in sync with Token bytes.
+            self.commit_room_aead(room_key, epoch);
+            return false;
+        }
+        if let Ok(mut pending) = self.pending_room_aead.lock() {
+            *pending = Some((room_key, epoch));
+        }
+        self.set_key_stale(true);
+        self.bump_remount_generation();
+        log::info!("room_key_epoch advanced {prev} → {epoch} (KeyStale; live AEAD unchanged)");
+        true
+    }
+
+    /// Join / Rejoin: install live `(key, epoch)` and clear KeyStale / pending.
+    pub fn commit_room_aead(
+        &self,
+        room_key: [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
+        epoch: u64,
+    ) {
+        let Ok(mut key_guard) = self.room_key.lock() else {
+            log::warn!("commit_room_aead: room_key Mutex poisoned; refusing epoch-only update");
+            return;
+        };
+        *key_guard = Some(Arc::new(room_key));
+        self.set_room_key_epoch(epoch);
+        drop(key_guard);
+        if let Ok(mut pending) = self.pending_room_aead.lock() {
+            *pending = None;
+        }
+        self.set_key_stale(false);
+    }
+
     pub fn leave_room_local(&self) {
         self.set_local_user_root(LOCAL_USER_ROOT_UNSET);
         if let Ok(mut intent) = self.intent.lock() {
@@ -574,6 +640,11 @@ impl SharedState {
         if let Ok(mut key) = self.room_key.lock() {
             *key = None;
         }
+        if let Ok(mut pending) = self.pending_room_aead.lock() {
+            *pending = None;
+        }
+        self.set_room_key_epoch(0);
+        self.set_key_stale(false);
         // Callers must `session.close()` (see `leave_room` / `close_zenoh`); Drop alone is not
         // enough if any strong clone remains. This flag only gates re-attach on the next open/bind.
         self.room_bus_started
@@ -916,11 +987,14 @@ impl SharedState {
             return false;
         };
         new_sess.mark_bind_pending();
+        let room_key = guest.room_key;
+        let room_key_epoch = guest.room_key_epoch;
         auth.apply_room_refresh(guest.token, local_sub, guest.expires_in);
         *sess = Some(new_sess);
         drop(pending);
         drop(sess);
         drop(auth);
+        self.note_room_aead_from_refresh(room_key, room_key_epoch);
         self.clear_pending_token_backoff();
         true
     }
@@ -939,7 +1013,7 @@ impl SharedState {
         let Ok(mut sess) = self.intent_session.lock() else {
             return false;
         };
-        let Ok(_pending) = self.pending_intent_session.lock() else {
+        let Ok(pending) = self.pending_intent_session.lock() else {
             return false;
         };
         if !auth.is_joined() {
@@ -951,8 +1025,14 @@ impl SharedState {
         if s.session_pub_b64() != expected_pub_b64 {
             return false;
         }
+        let room_key = guest.room_key;
+        let room_key_epoch = guest.room_key_epoch;
         auth.apply_room_refresh(guest.token, local_sub, guest.expires_in);
         s.mark_bind_pending();
+        drop(pending);
+        drop(sess);
+        drop(auth);
+        self.note_room_aead_from_refresh(room_key, room_key_epoch);
         true
     }
 

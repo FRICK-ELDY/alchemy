@@ -85,7 +85,7 @@ pub fn despawn_listener<F>(
     session: zenoh::Session,
     room_id: &str,
     wire_cap: &str,
-    room_key: Arc<[u8; wire_aead::ROOM_KEY_LEN]>,
+    room_aead: host_server::room_aead::SharedRoomAead,
     world_url: String,
     verify_host: F,
 ) -> Result<DespawnInbox>
@@ -112,7 +112,7 @@ where
                 let bytes = sample.payload().to_bytes();
                 match process_sample(
                     bytes.as_ref(),
-                    &room_key,
+                    &room_aead,
                     &room_id,
                     &world_url,
                     &verify_host,
@@ -134,7 +134,7 @@ where
 
 fn process_sample<F>(
     envelope: &[u8],
-    room_key: &[u8; wire_aead::ROOM_KEY_LEN],
+    room_aead: &host_server::room_aead::SharedRoomAead,
     room_id: &str,
     world_url: &str,
     verify_host: &F,
@@ -145,8 +145,8 @@ where
 {
     wire_aead::check_aead_envelope_bytes(AeadKind::InventoryDespawn, envelope.len())
         .map_err(|e| anyhow!("aead envelope: {e}"))?;
-    let plain = wire_aead::open(
-        room_key.as_ref(),
+    let plain = host_server::room_aead::open_shared(
+        room_aead,
         room_id,
         AeadKind::InventoryDespawn,
         envelope,

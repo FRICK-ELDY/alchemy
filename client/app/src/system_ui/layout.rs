@@ -101,6 +101,8 @@ pub enum WidgetId {
     WorldsJoinGuest,
     WorldsHostRoom,
     WorldsLeave,
+    /// KeyStale: Leave → Join with current room (x007e).
+    WorldsRejoin,
     WorldsHostRescue,
     WorldsRow0,
     WorldsRow1,

@@ -10,5 +10,6 @@
 
 pub mod intent_rate;
 pub mod metrics;
+pub mod room_aead;
 pub mod room_token;
 pub mod session;

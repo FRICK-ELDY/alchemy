@@ -12,7 +12,7 @@
 |:---|:---|
 | 正規 Room Token 保持者のみが manifest / frame / presence / snapshot / input の平文を読める | zenohd 上のトピック名（`wire_cap`）秘匿；wildcard subscribe 阻止 |
 | AAD（`room_id` + kind）により別部屋・別チャネルへの暗号文差し替えを拒否 | 入室者同士の Room 鍵 forward 秘匿（参加者は共有） |
-| 復号失敗は protobuf / 署名検証の前に discard | put 洪水 DoS；Room 鍵ローテ / 退室即時失効 |
+| 復号失敗は protobuf / 署名検証の前に discard | put 洪水 DoS；退室即時失効（**Room 鍵ローテは [x007e](x007e-room-key-epoch.md)**） |
 | 送信ごと 192bit 乱数 Nonce（XChaCha20Poly1305）で送信者間 Nonce 衝突を構造回避 | L7 Zenoh プロキシ；QUIC；Allocation / Relay への `room_key` 配布 |
 
 ## 設計（要点）

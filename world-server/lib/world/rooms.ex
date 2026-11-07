@@ -9,10 +9,12 @@ defmodule World.Rooms do
   x0071: create rejects when owner already holds `max_rooms_per_owner` rooms (best-effort;
   concurrent races may overshoot slightly — no DB trigger).
   x007c: `list_visible_summaries/3` returns catalog rows (no room_key / wire_cap / scene).
+  x007e: visibility **narrow** and owner `rotate_room_key/2` bump `room_key_epoch` + new
+  `room_key`; previous key retained in `RoomKeyGrace` for ≈ Token TTL (memory-only).
   Non-guarantees: full UGC editor; multi-node replication; Postgres (swap path documented);
-  Room Token revocation on visibility / friendship change (TTL-only; see RoomAccess);
-  strict serialization of per-owner room counts under concurrent create;
-  user_root / cuboid (empty blake3) despawn;
+  friendship-change alone does not rotate (use narrow visibility / owner rotate);
+  grace durability across world restart; strict serialization of per-owner room counts
+  under concurrent create; user_root / cuboid (empty blake3) despawn;
   authoritative host_status in catalog (x007c omits it).
 
   x0021: `owner_sub` set only via `create/3` (`{:ok, room_id, visibility, wire_cap}` · x004e).
@@ -31,6 +33,8 @@ defmodule World.Rooms do
 
   alias World.DemoScene
   alias World.Rooms.Room
+  alias World.Rooms.RoomKeyGrace
+  alias World.Visibility
 
   @type room_id :: String.t()
   @type owner_sub :: String.t()
@@ -409,7 +413,13 @@ defmodule World.Rooms do
 
   def visibility(_), do: {:error, :invalid_room_id}
 
-  @doc "Owner updates visibility (x0034)."
+  @doc """
+  Owner updates visibility (x0034).
+
+  x007e: when the new level is **narrower** (more closed) than the previous, rotates
+  `room_key` / `room_key_epoch` in the same update and parks the previous key in
+  `RoomKeyGrace`.
+  """
   @spec set_visibility(room_id(), owner_sub(), String.t()) ::
           {:ok, String.t()}
           | {:error,
@@ -420,17 +430,39 @@ defmodule World.Rooms do
              | storage_error()}
   def set_visibility(room_id, sub, visibility)
       when is_binary(room_id) and is_binary(sub) and is_binary(visibility) do
-    with {:ok, vis} <- World.Visibility.parse(visibility),
+    with {:ok, vis} <- Visibility.parse(visibility),
          {:ok, %Room{} = room} <- get(room_id),
          :ok <- owner_matches(room, sub) do
-      case Room.set_visibility(room, %{visibility: vis}) do
-        {:ok, %{visibility: stored}} -> {:ok, stored}
-        {:error, error} -> storage_error(error, :set_visibility)
+      attrs = visibility_update_attrs(room, vis)
+
+      case Room.set_visibility(room, attrs) do
+        {:ok, %Room{} = updated} ->
+          maybe_store_grace_after_visibility(room, updated, attrs)
+          {:ok, updated.visibility}
+
+        {:error, error} ->
+          storage_error(error, :set_visibility)
       end
     end
   end
 
   def set_visibility(_, _, _), do: {:error, :invalid_room_id}
+
+  @doc """
+  Owner-driven Room key revoke (x007e). Same effect as visibility narrow without
+  changing visibility — kick / manual revoke entry until a dedicated kick API exists.
+  """
+  @spec rotate_room_key(room_id(), owner_sub()) ::
+          {:ok, non_neg_integer()}
+          | {:error, :invalid_room_id | :not_found | :forbidden_host | storage_error()}
+  def rotate_room_key(room_id, sub) when is_binary(room_id) and is_binary(sub) do
+    with {:ok, %Room{} = room} <- get(room_id),
+         :ok <- owner_matches(room, sub) do
+      do_rotate_room_key(room)
+    end
+  end
+
+  def rotate_room_key(_, _), do: {:error, :invalid_room_id}
 
   @doc """
   Catalog summaries visible to `viewer_sub` under RoomAccess (x007c).
@@ -787,14 +819,95 @@ defmodule World.Rooms do
   end
 
   defp insert_room(room_id, owner_sub, visibility) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
     Room.create(%{
       room_id: room_id,
       owner_sub: owner_sub,
       scene: DemoScene.build(),
       visibility: visibility,
       wire_cap: generate_wire_cap(),
-      room_key: generate_room_key_hex()
+      room_key: generate_room_key_hex(),
+      room_key_epoch: 0,
+      room_key_rotated_at: now
     })
+  end
+
+  defp visibility_update_attrs(%Room{} = room, vis) do
+    if Visibility.narrower?(vis, room.visibility) do
+      Map.merge(%{visibility: vis}, rotate_key_attrs(room))
+    else
+      %{visibility: vis}
+    end
+  end
+
+  defp maybe_store_grace_after_visibility(%Room{} = before, %Room{} = after_room, attrs) do
+    if Map.has_key?(attrs, :room_key) and after_room.room_key_epoch > before.room_key_epoch do
+      RoomKeyGrace.put(before.room_id, before.room_key, before.room_key_epoch)
+    end
+
+    :ok
+  end
+
+  defp do_rotate_room_key(%Room{} = room) do
+    attrs = rotate_key_attrs(room)
+
+    case Room.rotate_room_key(room, attrs) do
+      {:ok, %Room{room_key_epoch: epoch}} ->
+        RoomKeyGrace.put(room.room_id, room.room_key, room.room_key_epoch)
+        {:ok, epoch}
+
+      {:error, error} ->
+        storage_error(error, :rotate_room_key)
+    end
+  end
+
+  defp rotate_key_attrs(%Room{room_key_epoch: epoch}) when is_integer(epoch) and epoch >= 0 do
+    %{
+      room_key: generate_room_key_hex(),
+      room_key_epoch: epoch + 1,
+      room_key_rotated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+    }
+  end
+
+  @doc """
+  Rotate every room whose `room_key_rotated_at` is older than `hours` (x007e periodic).
+
+  Returns `{rotated_count, errors}`. Hours `<= 0` skips (disabled).
+  """
+  @spec rotate_due_room_keys(pos_integer() | non_neg_integer()) ::
+          {non_neg_integer(), non_neg_integer()}
+  def rotate_due_room_keys(hours) when is_integer(hours) and hours <= 0, do: {0, 0}
+
+  def rotate_due_room_keys(hours) when is_integer(hours) and hours > 0 do
+    cutoff = DateTime.add(DateTime.utc_now(), -hours * 3600, :second)
+
+    case Ash.read(Room, domain: World.Domain) do
+      {:ok, rooms} ->
+        Enum.reduce(rooms, {0, 0}, &accumulate_due_rotate(&1, &2, cutoff))
+
+      {:error, error} ->
+        _ = storage_error(error, :rotate_due_room_keys)
+        {0, 1}
+    end
+  end
+
+  defp accumulate_due_rotate(room, {ok_n, err_n}, cutoff) do
+    if room_key_due?(room, cutoff) do
+      case do_rotate_room_key(room) do
+        {:ok, _} -> {ok_n + 1, err_n}
+        {:error, _} -> {ok_n, err_n + 1}
+      end
+    else
+      {ok_n, err_n}
+    end
+  end
+
+  defp room_key_due?(%Room{} = room, cutoff) do
+    case room.room_key_rotated_at || room.inserted_at do
+      %DateTime{} = at -> DateTime.compare(at, cutoff) != :gt
+      _ -> true
+    end
   end
 
   # 16 random bytes → 32 hex chars; matches protocol `[A-Za-z0-9_-]+` / ≤64B.

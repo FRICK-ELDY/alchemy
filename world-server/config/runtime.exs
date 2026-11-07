@@ -12,6 +12,21 @@ if key_path = System.get_env("ROOM_TOKEN_PRIVATE_KEY_PATH") do
   config :world, room_token_private_key_path: key_path
 end
 
+# x007e: periodic room_key rotate (hours). 0 disables.
+case System.get_env("ROOM_KEY_ROTATE_HOURS") do
+  nil ->
+    :ok
+
+  raw ->
+    case Integer.parse(String.trim(raw)) do
+      {hours, ""} when hours >= 0 ->
+        config :world, room_key_rotate_hours: hours
+
+      _ ->
+        :ok
+    end
+end
+
 if System.get_env("ROOM_TOKEN_GENERATE_KEY") in ~w(true 1) do
   config :world, room_token_generate_key_on_startup: true
 end

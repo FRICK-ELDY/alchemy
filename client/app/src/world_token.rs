@@ -1,7 +1,8 @@
 //! Guest Room Token HTTP client (x0021 / x003e / x004e / x0066 / x0069).
 //!
 //! Guarantees: `POST …/tokens` includes `session_pub`; returns `wire_cap` + `room_key` +
-//! `allocation_token`; optional `csr_pem` → `mtls` when world CA is configured.
+//! `room_key_epoch` (x007e) + `allocation_token`; optional `csr_pem` → `mtls` when world CA
+//! is configured.
 //! Non-guarantees: debug `ALCHEMY_ROOM_TOKEN` bypass cnf alignment.
 
 use std::time::Duration;
@@ -35,6 +36,9 @@ struct TokenResponse {
     /// Room AEAD key, URL-safe base64 of 32 bytes (x0069).
     #[serde(default)]
     room_key: String,
+    /// Room key epoch (x007e). Missing / absent → 0 (pre-x007e world).
+    #[serde(default)]
+    room_key_epoch: u64,
     /// Empty when Relay is unused / old world; allocate is skipped.
     #[serde(default)]
     allocation_token: String,
@@ -56,6 +60,7 @@ pub struct GuestToken {
     pub expires_in: u64,
     pub wire_cap: String,
     pub room_key: [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
+    pub room_key_epoch: u64,
     pub allocation_token: String,
     pub mtls: Option<WorldMtls>,
 }
@@ -107,6 +112,7 @@ pub fn fetch_guest_token(
                     expires_in: 0,
                     wire_cap,
                     room_key: room_key_from_env_or_local(),
+                    room_key_epoch: 0,
                     allocation_token: String::new(),
                     mtls: None,
                 });
@@ -150,6 +156,7 @@ pub fn fetch_guest_token(
         expires_in: resp.expires_in,
         wire_cap,
         room_key,
+        room_key_epoch: resp.room_key_epoch,
         allocation_token: resp.allocation_token,
         mtls,
     })

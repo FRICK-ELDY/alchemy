@@ -780,7 +780,8 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                         | UiAction::WorldsJoinGuest
                         | UiAction::WorldsHostRoom
                         | UiAction::WorldsHostRescue
-                        | UiAction::WorldsLeave => {
+                        | UiAction::WorldsLeave
+                        | UiAction::WorldsRejoin => {
                             ui.state.home_status =
                                 "Worlds / Start/Join HTTP is Desktop-only this Slice (use silent login or Desktop)".into();
                             ui.state.worlds_status = ui.state.home_status.clone();

@@ -223,9 +223,8 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     if let Ok(mut cap) = shared.wire_cap.lock() {
         *cap = Some(Arc::<str>::from(guest.wire_cap.as_str()));
     }
-    if let Ok(mut key) = shared.room_key.lock() {
-        *key = Some(Arc::new(guest.room_key));
-    }
+    // Fresh Join / Rejoin: commit live AEAD (clears KeyStale + pending).
+    shared.commit_room_aead(guest.room_key, guest.room_key_epoch);
     // mTLS: world-issued preferred; else Relay allocate (x0066 / x004e).
     if let Some(id) = zenoh_connect::apply_world_mtls_or_allocate(
         guest.mtls.as_ref().map(|m| m.client_cert_pem.as_str()),

@@ -174,8 +174,14 @@ fn put_input(
     room_key: &[u8],
     event: &InputEvent,
 ) -> Result<()> {
-    let env = wire_aead::seal(room_key, room_id, AeadKind::Input, &event.encode_to_vec())
-        .map_err(|e| anyhow!("AEAD seal input: {e}"))?;
+    let env = wire_aead::seal(
+        room_key,
+        room_id,
+        0,
+        AeadKind::Input,
+        &event.encode_to_vec(),
+    )
+    .map_err(|e| anyhow!("AEAD seal input: {e}"))?;
     // x0077: stamp so host bind rate keys off this session's ZenohId.
     session
         .put(key, env)
@@ -195,7 +201,7 @@ fn open_zenoh_sample(
     wire_aead::check_aead_envelope_bytes(kind, bytes.len())
         .map_err(|e| anyhow!("{kind:?} envelope: {e}"))?;
     let envelope = bytes.to_bytes();
-    wire_aead::open(room_key, room_id, kind, envelope.as_ref())
+    wire_aead::open(room_key, room_id, 0, kind, envelope.as_ref())
         .map_err(|e| anyhow!("AEAD open {kind:?}: {e}"))
 }
 
@@ -234,7 +240,7 @@ fn put_manifest_aead_bytes(
     room_key: &[u8],
     plaintext: &[u8],
 ) -> Result<()> {
-    let env = wire_aead::seal(room_key, room_id, AeadKind::Manifest, plaintext)
+    let env = wire_aead::seal(room_key, room_id, 0, AeadKind::Manifest, plaintext)
         .map_err(|e| anyhow!("AEAD seal manifest: {e}"))?;
     put_raw(session, key, env)
 }

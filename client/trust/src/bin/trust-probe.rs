@@ -224,7 +224,7 @@ fn put_aead_manifest(
     manifest: &SceneManifest,
 ) -> Result<()> {
     let plain = manifest.encode_to_vec();
-    let env = wire_aead::seal(room_key, room_id, AeadKind::Manifest, &plain)
+    let env = wire_aead::seal(room_key, room_id, 0, AeadKind::Manifest, &plain)
         .map_err(|e| anyhow!("seal fake manifest: {e}"))?;
     session
         .put(key, env)
@@ -307,6 +307,7 @@ fn run_hermetic() -> Result<()> {
     let env = wire_aead::seal(
         &room.room_key,
         &room_id,
+        0,
         AeadKind::Input,
         &event.encode_to_vec(),
     )
@@ -473,6 +474,7 @@ fn run_hermetic() -> Result<()> {
             if let Ok(pt) = wire_aead::open(
                 &room.room_key,
                 &room_id,
+                0,
                 AeadKind::Frame,
                 bytes.to_bytes().as_ref(),
             ) {
@@ -621,6 +623,7 @@ fn run_wan() -> Result<()> {
             match wire_aead::open(
                 &bundle_a.room_key,
                 &room_a,
+                0,
                 AeadKind::Manifest,
                 bytes.to_bytes().as_ref(),
             ) {

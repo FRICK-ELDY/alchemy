@@ -43,7 +43,7 @@ mod pose_delta;
 mod sim;
 mod wire_tick;
 
-use host_server::{intent_rate, metrics, room_token, session};
+use host_server::{intent_rate, metrics, room_aead, room_token, session};
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -472,7 +472,7 @@ fn spawn_input_gate(
     session: zenoh::Session,
     input_key_expr: String,
     room_id: String,
-    room_key: Arc<[u8; wire_aead::ROOM_KEY_LEN]>,
+    room_aead: room_aead::SharedRoomAead,
     verifier: Arc<RoomTokenVerifier>,
     presence: Arc<Mutex<PresenceIntents>>,
     sessions: Arc<Mutex<SessionTable>>,
@@ -510,11 +510,8 @@ fn spawn_input_gate(
                     break 'sample;
                 }
                 let envelope = bytes.to_bytes();
-                let payload = match wire_aead::open(
-                    room_key.as_ref(),
-                    &room_id,
-                    AeadKind::Input,
-                    envelope.as_ref(),
+                let payload = match room_aead::open_shared(
+                    &room_aead, &room_id, AeadKind::Input, envelope.as_ref(),
                 ) {
                     Ok(pt) => pt,
                     Err(err) => {
@@ -697,7 +694,7 @@ fn spawn_snapshot_queryable(
     publish_snapshot: Arc<RwLock<HostPublishSnapshot>>,
     host_key: SigningKey,
     room_id: String,
-    room_key: Arc<[u8; wire_aead::ROOM_KEY_LEN]>,
+    room_aead: room_aead::SharedRoomAead,
 ) -> Result<()> {
     let queryable = session
         .declare_queryable(snapshot_key_expr.clone())
@@ -730,8 +727,8 @@ fn spawn_snapshot_queryable(
                 }
                 sign_frame(&host_key, &mut frame);
                 let key = snapshot_key_expr.clone();
-                let env = match wire_aead::seal(
-                    room_key.as_ref(),
+                let env = match room_aead::seal_shared(
+                    &room_aead,
                     &room_id,
                     AeadKind::Snapshot,
                     &frame.encode_to_vec(),
@@ -824,7 +821,21 @@ fn main() -> Result<()> {
     );
 
     let wire_cap = creds.wire_cap.clone();
-    let room_key = Arc::new(creds.room_key);
+    let room_aead = room_aead::shared_room_aead(creds.room_key, creds.room_key_epoch);
+    if let Some((prev_key, prev_epoch)) = creds.room_key_prev {
+        let grace = creds
+            .host_hard_expire_at
+            .checked_duration_since(Instant::now())
+            .unwrap_or(room_aead::DEFAULT_PREV_GRACE);
+        if let Ok(mut keys) = room_aead.write() {
+            let _ = keys.apply_token_key(
+                creds.room_key,
+                creds.room_key_epoch,
+                grace,
+                Some((prev_key, prev_epoch)),
+            );
+        }
+    }
     let manifest_key_expr = manifest_key(&room_id, &wire_cap);
     let frame_key_expr = frame_key(&room_id, &wire_cap);
     let input_key_expr = input_key(&room_id, &wire_cap);
@@ -887,7 +898,7 @@ fn main() -> Result<()> {
         session.clone(),
         input_key_expr,
         room_id.clone(),
-        Arc::clone(&room_key),
+        Arc::clone(&room_aead),
         Arc::clone(&verifier),
         Arc::clone(&presence),
         Arc::clone(&sessions),
@@ -901,7 +912,7 @@ fn main() -> Result<()> {
         session.clone(),
         &room_id,
         &wire_cap,
-        Arc::clone(&room_key),
+        Arc::clone(&room_aead),
         world_url.clone(),
         move |token| {
             let claims = spawn_verifier.verify(token)?;
@@ -917,7 +928,7 @@ fn main() -> Result<()> {
         session.clone(),
         &room_id,
         &wire_cap,
-        Arc::clone(&room_key),
+        Arc::clone(&room_aead),
         world_url.clone(),
         move |token| {
             let claims = despawn_verifier.verify(token)?;
@@ -950,8 +961,8 @@ fn main() -> Result<()> {
         host_generation: creds.host_generation,
     };
     sign_presence(&host_signing_key, &mut empty_presence);
-    let empty_presence_env = wire_aead::seal(
-        room_key.as_ref(),
+    let empty_presence_env = room_aead::seal_shared(
+        &room_aead,
         &room_id,
         AeadKind::Presence,
         &empty_presence.encode_to_vec(),
@@ -1004,7 +1015,7 @@ fn main() -> Result<()> {
         Arc::clone(&publish_snapshot),
         host_signing_key.clone(),
         room_id.clone(),
-        Arc::clone(&room_key),
+        Arc::clone(&room_aead),
     )?;
     spawn_credential_worker(
         Arc::clone(&publish_snapshot),
@@ -1018,6 +1029,7 @@ fn main() -> Result<()> {
             host_pub: host_pub.clone(),
             scene: Arc::clone(&shared_scene),
             force_reseal: Arc::clone(&force_reseal),
+            room_aead: Arc::clone(&room_aead),
         },
     );
     log::info!("credential worker spawned (HTTP refresh off physics thread)");
@@ -1025,13 +1037,9 @@ fn main() -> Result<()> {
     let mut manifest_bytes = manifest.encode_to_vec();
     let mut manifest_revision = manifest.revision;
     let mut manifest_epoch = 0u64;
-    let initial_manifest_env = wire_aead::seal(
-        room_key.as_ref(),
-        &room_id,
-        AeadKind::Manifest,
-        &manifest_bytes,
-    )
-    .context("AEAD seal initial manifest")?;
+    let initial_manifest_env =
+        room_aead::seal_shared(&room_aead, &room_id, AeadKind::Manifest, &manifest_bytes)
+            .context("AEAD seal initial manifest")?;
     manifest_pub
         .put(initial_manifest_env)
         .wait()
@@ -1053,7 +1061,7 @@ fn main() -> Result<()> {
         snapshot_cache: Arc::clone(&snapshot_cache),
         host_key: host_signing_key.clone(),
         room_id: room_id.clone(),
-        room_key: Arc::clone(&room_key),
+        room_aead: Arc::clone(&room_aead),
     })?;
     let outbound = net.hub;
     let publish_stats = net.stats;

@@ -224,6 +224,7 @@ fn clear_worlds_session_shell(ui: &mut SystemUi) {
     ui.state.worlds_seen_frame_tick = None;
     ui.state.worlds_last_frame_at = None;
     ui.state.worlds_in_room = false;
+    ui.state.worlds_key_stale = false;
 }
 
 /// Failed Start / guest path: cancel in-flight spawn; allow a later ensure retry.
@@ -1074,6 +1075,18 @@ impl ApplicationHandler for App {
                         .and_then(|w| w.last_frame_tick);
                     let now = std::time::Instant::now();
                     let mut dirty = false;
+                    let stale = self.shared.key_stale();
+                    if self.ui.state.worlds_key_stale != stale {
+                        self.ui.state.worlds_key_stale = stale;
+                        if stale {
+                            self.ui.state.worlds_status =
+                                "Room updated — reconnect required".into();
+                            self.ui.state.tab = DashTab::Worlds;
+                            self.ui.state.shell = OnboardingShell::Dash;
+                            self.ui.state.open = true;
+                        }
+                        dirty = true;
+                    }
                     if let Some(t) = tick {
                         if self.ui.state.worlds_seen_frame_tick != Some(t) {
                             self.ui.state.worlds_seen_frame_tick = Some(t);
@@ -1816,6 +1829,41 @@ fn handle_ui_action(
             ui.mark_dash_chrome_dirty();
             ui.rebuild();
         }
+        UiAction::WorldsRejoin => {
+            let room_id = shared.get_room_id().to_string();
+            let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+            leave_room(shared, zenoh);
+            clear_worlds_session_shell(ui);
+            let Some(access) = access else {
+                ui.state.worlds_status = "Rejoin failed: not signed in".into();
+                ui.state.tab = DashTab::Worlds;
+                ui.state.shell = OnboardingShell::Dash;
+                ui.rebuild();
+                return;
+            };
+            if room_id.is_empty() {
+                ui.state.worlds_status = "Rejoin failed: no room".into();
+                ui.rebuild();
+                return;
+            }
+            shared.set_room_id(std::sync::Arc::<str>::from(room_id));
+            let join = join_room_with_access(shared, &access).map_err(|e| format!("{e:#}"));
+            apply_join_result(
+                ui,
+                shared,
+                zenoh,
+                join,
+                JoinUiOpts {
+                    ok_status: "Rejoined — waiting for host frames",
+                    ok_log: "KeyStale rejoin ok",
+                    enter_waiting_shell: true,
+                    can_host_rescue_on_ok: false,
+                },
+            );
+            ui.state.worlds_key_stale = false;
+            ui.mark_dash_chrome_dirty();
+            ui.rebuild();
+        }
         UiAction::InventoryRefresh => {
             let assets = shared.get_assets_url();
             let token = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
@@ -1905,6 +1953,7 @@ fn handle_ui_action(
                         shared.get_room_id().as_ref(),
                         wire_cap.as_ref(),
                         room_key.as_ref(),
+                        shared.room_key_epoch(),
                         &room_token,
                         &blake3,
                         0.0,
@@ -2081,6 +2130,7 @@ fn handle_ui_action(
                 shared.get_room_id().as_ref(),
                 wire_cap.as_ref(),
                 room_key.as_ref(),
+                shared.room_key_epoch(),
                 &room_token,
                 entity_id,
             ) {

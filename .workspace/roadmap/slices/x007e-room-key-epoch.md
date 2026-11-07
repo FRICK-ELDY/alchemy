@@ -1,6 +1,6 @@
 # x007e — Room key epoch / revoke-driven rotation
 
-> **ID:** `x007e` · **slug:** `room-key-epoch` · **status:** `active` · **area:** `[protocol, world, host, client, docs]` · **depends_on:** `[x0069, x0034, x007c]`  
+> **ID:** `x007e` · **slug:** `room-key-epoch` · **status:** `done` · **area:** `[protocol, world, host, client, docs]` · **depends_on:** `[x0069, x0034, x007c]`  
 > **優先度:** 評価 P0-2（Room 鍵寿命 = 公開範囲の実効寿命）。x007c KeyStale 本採用の前提
 
 目標: `room_key` に **epoch** を与え、visibility 縮小・kick（owner 操作）・定期ローテで鍵を回転する。AAD と Room Token に epoch を束縛し、旧 epoch の平文は新鍵では読めないことを保証する。猶予窓は **現行 + 直前 1 世代**（≈ Room Token TTL）。
@@ -29,6 +29,8 @@
 - `rooms.room_key_epoch`（integer, default 0）+ 既存 `room_key`（現行のみ永続）
 - 直前世代は **メモリ短命**（rotate 時に `prev_key` + `prev_epoch` + `prev_expires_at`；TTL ≈ max Room Token TTL）。永続しない（再起動後は現行のみ → 旧 Token 保持者は再発行が必要）
 - Token 応答: 既存 `room_key`（b64）に加え `room_key_epoch`（number）
+- **host** Token のみ: grace 中は `room_key_prev` + `room_key_prev_epoch`（`RoomKeyGrace.get`）を同梱。guest には載せない
+- host は soft TTL に加え **≈15s 周期**で host Token を再取得し world rotate を採用（完了条件 2 の Rejoin 窓を Token TTL 全長にしない）
 
 ### ローテ契機
 
@@ -53,9 +55,9 @@
 
 ### client
 
-- Join Token の epoch を保持；refresh で epoch が進めば KeyStale
+- Join Token の epoch を保持；refresh で epoch が進めば KeyStale（**live AEAD は旧鍵のまま**；新鍵は Rejoin で commit）
 - KeyStale UI（x007c）: 「部屋の更新あり・再接続が必要」→ Rejoin（新 Token）/ Leave
-- remount / bus は Leave→Join と同じ世代ゲートで捨てる（x007d `remount_generation`）
+- remount / bus は Leave→Join と同じ世代ゲートで捨てる（x007d `remount_generation`；KeyStale 入りでも bump）
 
 ---
 
@@ -64,10 +66,10 @@
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
 | 0 | Slice + 目次 / backlog・x007c 依存追記 | **done** |
-| 1 | world: 列 + rotate API/内部 + Token に epoch；縮小 visibility で回転；単体 | planned |
-| 2 | protocol: AAD v2 + pin bump；単体否定系（旧 epoch 鍵で新暗号文不可） | planned |
-| 3 | host dual-key open + 現行 seal；client Token epoch + KeyStale UI | planned |
-| 4 | 定期ローテ・保証表・peer-delivery・否定系 E2E / CI | planned |
+| 1 | world: 列 + rotate API/内部 + Token に epoch；縮小 visibility で回転；単体 | **done**（kick API は `rotate_room_key/2` 入口；定期は Phase 4） |
+| 2 | protocol: AAD v2 + pin bump；単体否定系（旧 epoch 鍵で新暗号文不可） | **done**（pin `0.19.0-x007e` · world pin / demo vector 同期） |
+| 3 | host dual-key open + 現行 seal；client Token epoch + KeyStale UI | **done**（`SharedRoomAead` current→prev · KeyStale Rejoin/Leave） |
+| 4 | 定期ローテ・保証表・peer-delivery・否定系 E2E / CI | **done**（`RoomKeyRotator` + docs；否定系は protocol/host 単体。専用 E2E CI は任意フォロー） |
 
 ---
 
