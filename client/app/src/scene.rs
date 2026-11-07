@@ -49,6 +49,37 @@ pub const REMOTE_ROOT_HALF_EXTENT: f32 = 0.25;
 /// Guest Room Token probe cadence for `room_key_epoch` (x007e; matches host ≈15s sync).
 pub const ROOM_KEY_EPOCH_PROBE: Duration = Duration::from_secs(15);
 
+/// Decision for Token refresh vs live `(room_key, epoch)` (x007e).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefreshAeadAction {
+    /// Same epoch, not KeyStale — sync live bytes.
+    Commit,
+    /// Token epoch advanced — keep live AEAD; UI must Rejoin.
+    KeyStale,
+    /// Token epoch below live — refuse (monotonic fail-closed).
+    IgnoreBackward,
+    /// Already KeyStale and Token epoch equals live — do not clear via commit.
+    /// (Lower epochs take [`IgnoreBackward`] first.)
+    IgnoreWhileStale,
+}
+
+/// Pure refresh policy: any `token_epoch > live_epoch` is KeyStale (including `0 → 1`).
+pub(crate) fn refresh_aead_action(
+    live_epoch: u64,
+    token_epoch: u64,
+    key_stale: bool,
+) -> RefreshAeadAction {
+    if token_epoch > live_epoch {
+        RefreshAeadAction::KeyStale
+    } else if token_epoch < live_epoch {
+        RefreshAeadAction::IgnoreBackward
+    } else if key_stale {
+        RefreshAeadAction::IgnoreWhileStale
+    } else {
+        RefreshAeadAction::Commit
+    }
+}
+
 pub fn is_user_root_entity(id: u32) -> bool {
     scene_entry_is_user_root(id)
 }
@@ -592,33 +623,48 @@ impl SharedState {
     /// Token **refresh** path: if epoch advanced, enter KeyStale without swapping live AEAD.
     /// New key material from this response is discarded — Rejoin re-fetches and
     /// [`Self::commit_room_aead`] installs it.
+    ///
+    /// Includes `0 → 1` (fresh rooms start at epoch 0). Join/Rejoin use
+    /// [`Self::commit_room_aead`] for first install — this path never hot-swaps on advance.
     pub fn note_room_aead_from_refresh(
         &self,
         room_key: [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
         epoch: u64,
     ) -> bool {
         let prev = self.room_key_epoch();
-        let advanced = epoch > prev && prev > 0;
-        if !advanced {
-            // Same epoch as live (or first material): keep live bytes in sync.
-            // `commit` clears KeyStale — OK only because world never decreases
-            // `room_key_epoch`. After KeyStale (Token already showed a higher epoch),
-            // later Tokens must still carry that higher value, so this branch is not
-            // taken again until Rejoin installs the new live epoch.
-            self.commit_room_aead(room_key, epoch);
-            return false;
+        match refresh_aead_action(prev, epoch, self.key_stale()) {
+            RefreshAeadAction::Commit => {
+                self.commit_room_aead(room_key, epoch);
+                false
+            }
+            RefreshAeadAction::KeyStale => {
+                if !self.key_stale() {
+                    self.set_key_stale(true);
+                    // Drop in-flight remounts; pose bus keeps using old AEAD until Rejoin (x007e).
+                    self.bump_remount_generation();
+                    log::info!(
+                        "room_key_epoch advanced {prev} → {epoch} (KeyStale; live AEAD unchanged)"
+                    );
+                }
+                // Discard new key material — Rejoin fetches a fresh Token; do not hot-swap.
+                let _ = room_key;
+                self.schedule_room_key_epoch_probe(ROOM_KEY_EPOCH_PROBE);
+                true
+            }
+            RefreshAeadAction::IgnoreBackward => {
+                log::warn!(
+                    "room_key_epoch Token went backwards ({prev} → {epoch}); keeping live AEAD"
+                );
+                let _ = room_key;
+                false
+            }
+            RefreshAeadAction::IgnoreWhileStale => {
+                // Same epoch while already KeyStale — keep overlay; do not commit/clear.
+                let _ = room_key;
+                self.schedule_room_key_epoch_probe(ROOM_KEY_EPOCH_PROBE);
+                true
+            }
         }
-        if !self.key_stale() {
-            self.set_key_stale(true);
-            // Drop in-flight remounts; pose bus keeps using old AEAD until Rejoin (x007e).
-            self.bump_remount_generation();
-            log::info!("room_key_epoch advanced {prev} → {epoch} (KeyStale; live AEAD unchanged)");
-        }
-        // Discard new key material — Rejoin fetches a fresh Token; do not hot-swap.
-        // Keep probing so soft TTL / Token stay fresh while waiting for Rejoin.
-        let _ = room_key;
-        self.schedule_room_key_epoch_probe(ROOM_KEY_EPOCH_PROBE);
-        true
     }
 
     /// Join / Rejoin: install live `(key, epoch)` and clear KeyStale.
@@ -636,6 +682,19 @@ impl SharedState {
         drop(key_guard);
         self.set_key_stale(false);
         self.schedule_room_key_epoch_probe(ROOM_KEY_EPOCH_PROBE);
+    }
+
+    /// Snapshot live `(room_key, epoch)` under one `room_key` lock (x007e wire boundary).
+    pub fn live_room_aead(
+        &self,
+    ) -> Option<(Arc<[u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]>, u64)> {
+        let Ok(guard) = self.room_key.lock() else {
+            return None;
+        };
+        let key = guard.as_ref()?.clone();
+        // Writers of the pair hold this mutex when updating epoch (`commit_room_aead`).
+        let epoch = self.room_key_epoch.load(Ordering::SeqCst);
+        Some((key, epoch))
     }
 
     /// Schedule the next guest epoch probe (Token re-fetch while joined).
@@ -686,6 +745,8 @@ impl SharedState {
         }
         if let Ok(mut key) = self.room_key.lock() {
             *key = None;
+            // Pair with key clear under the same lock (`live_room_aead` / commit).
+            self.set_room_key_epoch(0);
         }
         if let Ok(mut probe) = self.room_key_epoch_probe_at.lock() {
             *probe = None;
@@ -693,7 +754,6 @@ impl SharedState {
         if let Ok(mut nudge) = self.aead_key_refresh_nudge_at.lock() {
             *nudge = None;
         }
-        self.set_room_key_epoch(0);
         self.set_key_stale(false);
         // Callers must `session.close()` (see `leave_room` / `close_zenoh`); Drop alone is not
         // enough if any strong clone remains. This flag only gates re-attach on the next open/bind.
@@ -1742,4 +1802,38 @@ pub async fn create_wgpu_for_window(
     };
     surface.configure(&device, &config);
     Ok((instance, surface, adapter, device, queue, config, format))
+}
+
+#[cfg(test)]
+mod refresh_aead_tests {
+    use super::{refresh_aead_action, RefreshAeadAction};
+
+    #[test]
+    fn epoch_zero_to_one_is_key_stale() {
+        assert_eq!(
+            refresh_aead_action(0, 1, false),
+            RefreshAeadAction::KeyStale
+        );
+    }
+
+    #[test]
+    fn same_epoch_commits_when_not_stale() {
+        assert_eq!(refresh_aead_action(3, 3, false), RefreshAeadAction::Commit);
+    }
+
+    #[test]
+    fn same_epoch_does_not_clear_stale() {
+        assert_eq!(
+            refresh_aead_action(3, 3, true),
+            RefreshAeadAction::IgnoreWhileStale
+        );
+    }
+
+    #[test]
+    fn backward_epoch_is_ignored() {
+        assert_eq!(
+            refresh_aead_action(5, 4, false),
+            RefreshAeadAction::IgnoreBackward
+        );
+    }
 }

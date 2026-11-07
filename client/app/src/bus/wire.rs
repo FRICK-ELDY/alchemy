@@ -34,14 +34,14 @@ pub(crate) fn open_zenoh_payload(
     if let Err(err) = wire_aead::check_aead_envelope_bytes(kind, bytes.len()) {
         return Err(err.to_string());
     }
-    let room_key = shared
-        .room_key()
+    let (room_key, epoch) = shared
+        .live_room_aead()
         .ok_or_else(|| "room_key missing".to_string())?;
     let envelope = bytes.to_bytes();
     wire_aead::open(
         room_key.as_ref(),
         shared.get_room_id().as_ref(),
-        shared.room_key_epoch(),
+        epoch,
         kind,
         envelope.as_ref(),
     )
@@ -59,13 +59,13 @@ pub(crate) fn seal_zenoh_payload(
     kind: AeadKind,
     plaintext: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let room_key = shared
-        .room_key()
+    let (room_key, epoch) = shared
+        .live_room_aead()
         .ok_or_else(|| "room_key missing".to_string())?;
     wire_aead::seal(
         room_key.as_ref(),
         shared.get_room_id().as_ref(),
-        shared.room_key_epoch(),
+        epoch,
         kind,
         plaintext,
     )

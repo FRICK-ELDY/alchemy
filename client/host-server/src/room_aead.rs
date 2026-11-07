@@ -51,7 +51,8 @@ impl RoomAeadKeys {
     /// Snapshot for dual-open without mutating (expired prev is skipped, not cleared).
     fn open_material(&self, now: Instant) -> (RoomKeyBytes, u64, Option<PrevKeyEpoch>) {
         let prev = match (self.prev_key, self.prev_epoch, self.prev_expires_at) {
-            (Some(key), Some(epoch), Some(exp)) if now < exp => Some((key, epoch)),
+            // Inclusive end matches world `RoomKeyGrace.get` (`now <= exp`).
+            (Some(key), Some(epoch), Some(exp)) if now <= exp => Some((key, epoch)),
             _ => None,
         };
         (self.current_key, self.current_epoch, prev)
@@ -226,6 +227,28 @@ mod tests {
         assert!(keys.apply_token_key([2u8; ROOM_KEY_LEN], 1, Duration::from_millis(1), None));
         std::thread::sleep(Duration::from_millis(5));
         assert!(keys.open("r", AeadKind::Input, &env).is_err());
+    }
+
+    #[test]
+    fn prev_accepted_at_exact_expiry_instant() {
+        // Inclusive end (`now <= exp`) matches world RoomKeyGrace.
+        let mut keys = RoomAeadKeys::new([1u8; ROOM_KEY_LEN], 0);
+        let env = wire_aead::seal(&[1u8; ROOM_KEY_LEN], "r", 0, AeadKind::Input, b"hi").unwrap();
+        assert!(keys.apply_token_key([2u8; ROOM_KEY_LEN], 1, Duration::from_secs(60), None));
+        let exp = keys.prev_expires_at.expect("prev grace set");
+        let (cur_key, cur_epoch, prev) = keys.open_material(exp);
+        assert_eq!(cur_epoch, 1);
+        assert!(prev.is_some());
+        let pt = wire_aead::open_current_or_prev(
+            &cur_key,
+            cur_epoch,
+            prev.as_ref().map(|(k, e)| (k.as_slice(), *e)),
+            "r",
+            AeadKind::Input,
+            &env,
+        )
+        .unwrap();
+        assert_eq!(pt, b"hi");
     }
 
     #[test]

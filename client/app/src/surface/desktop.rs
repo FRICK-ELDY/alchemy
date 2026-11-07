@@ -1941,7 +1941,7 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             };
-            let Some(room_key) = shared.room_key() else {
+            let Some((room_key, room_key_epoch)) = shared.live_room_aead() else {
                 ui.state.inventory_status = "room_key missing".into();
                 ui.rebuild();
                 return;
@@ -1953,7 +1953,7 @@ fn handle_ui_action(
                         shared.get_room_id().as_ref(),
                         wire_cap.as_ref(),
                         room_key.as_ref(),
-                        shared.room_key_epoch(),
+                        room_key_epoch,
                         &room_token,
                         &blake3,
                         0.0,
@@ -2120,7 +2120,7 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             };
-            let Some(room_key) = shared.room_key() else {
+            let Some((room_key, room_key_epoch)) = shared.live_room_aead() else {
                 ui.state.inventory_status = "room_key missing".into();
                 ui.rebuild();
                 return;
@@ -2130,7 +2130,7 @@ fn handle_ui_action(
                 shared.get_room_id().as_ref(),
                 wire_cap.as_ref(),
                 room_key.as_ref(),
-                shared.room_key_epoch(),
+                room_key_epoch,
                 &room_token,
                 entity_id,
             ) {

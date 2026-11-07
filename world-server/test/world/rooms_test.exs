@@ -83,6 +83,26 @@ defmodule World.RoomsTest do
     assert epoch >= 1
   end
 
+  test "rotate_due stamps null room_key_rotated_at without rotating (x007e deploy baseline)" do
+    assert {:ok, "rk-stamp", _, _} = Rooms.create("rk-stamp", @owner)
+    assert {:ok, %Room{room_key_epoch: 0} = room} = Room.get_by_room_id("rk-stamp")
+
+    # Simulate pre-migration / null column without using inserted_at as due.
+    assert {:ok, _} =
+             Room.rotate_room_key(room, %{
+               room_key: room.room_key,
+               room_key_epoch: room.room_key_epoch,
+               room_key_rotated_at: nil
+             })
+
+    {ok_n, err_n} = Rooms.rotate_due_room_keys(24)
+    assert err_n == 0
+    assert ok_n == 0
+
+    assert {:ok, %Room{room_key_epoch: 0, room_key_rotated_at: %DateTime{}}} =
+             Room.get_by_room_id("rk-stamp")
+  end
+
   test "create rejects duplicate room_id" do
     assert {:ok, _, _, _} = Rooms.create("dup-room", @owner)
     assert {:error, :already_exists} = Rooms.create("dup-room", @owner)
