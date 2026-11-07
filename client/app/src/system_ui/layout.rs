@@ -58,7 +58,9 @@ pub enum WidgetId {
     HomeModeRegister,
     HomeSubmit,
     HomeLogout,
-    /// Logged-in hub (x0037).
+    /// Logged-in hub (x0037 / x007c Phase 4): open Worlds catalog.
+    HomeOpenWorlds,
+    /// Logged-in hub / Worlds: open create-world panel.
     HomeNewWorld,
     HomeJoinRoom,
     /// Create-world panel (placeholder UI).
@@ -73,6 +75,10 @@ pub enum WidgetId {
     HomeAccessFollowersPlus,
     HomeAccessPublic,
     HomeStartSession,
+    /// Settings advanced room controls (x007c Phase 4).
+    SettingsRoomId,
+    SettingsJoinRoom,
+    SettingsStartSession,
     /// Onboarding Step1 (operator select).
     OperatorOfficial,
     OperatorFederation,

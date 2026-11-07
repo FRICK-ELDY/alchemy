@@ -78,6 +78,9 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         WidgetId::TabSettings
         | WidgetId::TurnModeToggle
         | WidgetId::HotswitchAutoToggle
+        | WidgetId::SettingsRoomId
+        | WidgetId::SettingsJoinRoom
+        | WidgetId::SettingsStartSession
         | WidgetId::SettingsPlaceholder => FacetId::Settings,
         WidgetId::TabInventory
         | WidgetId::InventoryRefresh
@@ -125,6 +128,7 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::HomeModeRegister
         | WidgetId::HomeSubmit
         | WidgetId::HomeLogout
+        | WidgetId::HomeOpenWorlds
         | WidgetId::HomeNewWorld
         | WidgetId::HomeJoinRoom
         | WidgetId::HomeCreateBack
