@@ -330,7 +330,8 @@ impl SystemUi {
                 UiAction::None
             }
             WidgetId::WorldsJoinGuest => UiAction::WorldsJoinGuest,
-            WidgetId::WorldsHostRoom | WidgetId::WorldsHostRescue => UiAction::WorldsHostRoom,
+            WidgetId::WorldsHostRoom => UiAction::WorldsHostRoom,
+            WidgetId::WorldsHostRescue => UiAction::WorldsHostRescue,
             WidgetId::WorldsLeave => UiAction::WorldsLeave,
             WidgetId::WorldsRow0
             | WidgetId::WorldsRow1
@@ -352,10 +353,9 @@ impl SystemUi {
                     _ => 0,
                 };
                 if idx < self.state.worlds_rooms.len() {
+                    // Preview only — do not retarget home_room_id / rescue / SharedState.
+                    // Host Rescue uses the actually joined room (`shared.get_room_id`).
                     self.state.worlds_selected = Some(idx);
-                    if let Some((room_id, _, _, _)) = self.state.worlds_rooms.get(idx) {
-                        self.state.home_room_id = room_id.clone();
-                    }
                     self.rebuild();
                 }
                 UiAction::None
@@ -878,8 +878,10 @@ pub enum UiAction {
     WorldsRefresh,
     /// Worlds: Join as guest for selected room (x007c).
     WorldsJoinGuest,
-    /// Worlds: Host this room / owner rescue (x007c).
+    /// Worlds: Host selected catalog room (owner detail CTA · x007c).
     WorldsHostRoom,
+    /// Worlds: Host Rescue while Waiting — always the joined room, ignore catalog selection.
+    WorldsHostRescue,
     /// Worlds: Leave room bus back to catalog (x007c).
     WorldsLeave,
 }

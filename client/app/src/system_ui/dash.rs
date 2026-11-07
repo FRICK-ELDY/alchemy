@@ -132,6 +132,10 @@ pub struct DashState {
     pub worlds_host_disconnect: bool,
     /// Last observed `last_frame_tick` used to detect stall / Live transition.
     pub worlds_seen_frame_tick: Option<u64>,
+    /// Wall time of last *new* host frame tick (Live stall detection · x007c).
+    pub worlds_last_frame_at: Option<std::time::Instant>,
+    /// True after successful Join/Host until Leave/Logout (gates stall UX).
+    pub worlds_in_room: bool,
 }
 
 impl Default for DashState {
@@ -190,6 +194,8 @@ impl Default for DashState {
             worlds_can_host_rescue: false,
             worlds_host_disconnect: false,
             worlds_seen_frame_tick: None,
+            worlds_last_frame_at: None,
+            worlds_in_room: false,
         }
     }
 }
@@ -733,20 +739,8 @@ const SCENE_MESH_ROW_IDS: [WidgetId; 4] = [
 ];
 
 /// Worlds catalog Master-Detail (x007c).
-fn rebuild_worlds(
-    tree: &mut LayoutTree,
-    state: &DashState,
-    cx: f32,
-    cy0: f32,
-    cw: f32,
-    ch: f32,
-) {
-    tree.push_label(
-        Rect::new(cx, cy0, cw, 22.0),
-        "Worlds",
-        TEXT,
-        2.0,
-    );
+fn rebuild_worlds(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
+    tree.push_label(Rect::new(cx, cy0, cw, 22.0), "Worlds", TEXT, 2.0);
     tree.push_label(
         Rect::new(cx, cy0 + 24.0, cw, 16.0),
         "Catalog = visible only. Join = guest ticket. Host = run local host-server.",
@@ -893,13 +887,13 @@ fn rebuild_worlds(
             );
             tree.push_label(
                 Rect::new(detail_x + 12.0, y + 36.0, detail_w - 24.0, 16.0),
-                &format!("{visibility} · {role_hint}"),
+                format!("{visibility} · {role_hint}"),
                 MUTED,
                 1.1,
             );
             tree.push_label(
                 Rect::new(detail_x + 12.0, y + 54.0, detail_w - 24.0, 28.0),
-                &format!("owner {owner}"),
+                format!("owner {owner}"),
                 MUTED,
                 1.0,
             );

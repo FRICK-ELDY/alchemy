@@ -175,8 +175,6 @@ struct App {
     auth_job: Option<Receiver<AuthJobOutcome>>,
     /// Last observed Desktop input ownership (READY / vr_active edges).
     last_owns_input: bool,
-    /// Wall time of last *new* host frame tick (Live ↔ WaitingHost stall, x007c).
-    worlds_last_frame_at: Option<std::time::Instant>,
 }
 
 /// Outcome of Auth / world HTTP work off the UI thread (x002e / P3-9 / x0037).
@@ -194,13 +192,13 @@ enum AuthJobOutcome {
     StartSession {
         visibility: Result<world_api::VisibilityEnsure, String>,
         join: Result<(), String>,
-        /// True when this job spawned/kept a supervised local host (Worlds Host / owner Start).
-        spawned_local_host: bool,
     },
     JoinRoom {
         result: Result<(), String>,
         /// Worlds catalog Join → Waiting shell; Home Join keeps prior UX.
         enter_waiting_shell: bool,
+        /// Set `worlds_can_host_rescue` only after successful join (owner guest path).
+        can_host_rescue_on_ok: bool,
     },
     WorldsList {
         result: Result<Vec<world_api::RoomSummary>, String>,
@@ -214,6 +212,16 @@ where
     if let Err(err) = thread::Builder::new().name("auth-http".into()).spawn(f) {
         log::error!("spawn auth-http failed: {err}");
     }
+}
+
+/// Clear Worlds in-room / Waiting / stall state (Leave, Logout, failed join/host).
+fn clear_worlds_session_shell(ui: &mut SystemUi) {
+    ui.state.worlds_waiting_host = false;
+    ui.state.worlds_host_disconnect = false;
+    ui.state.worlds_can_host_rescue = false;
+    ui.state.worlds_seen_frame_tick = None;
+    ui.state.worlds_last_frame_at = None;
+    ui.state.worlds_in_room = false;
 }
 
 /// Failed Start / guest path: cancel in-flight spawn; allow a later ensure retry.
@@ -491,32 +499,31 @@ impl App {
                 self.ui.rebuild();
                 log::warn!("register failed: {err}");
             }
-            AuthJobOutcome::StartSession {
-                visibility,
-                join,
-                spawned_local_host,
-            } => {
+            AuthJobOutcome::StartSession { visibility, join } => {
                 apply_start_session_result(
                     &mut self.ui,
                     &self.shared,
                     &mut self.zenoh,
                     visibility,
                     join,
-                    spawned_local_host,
                 );
             }
             AuthJobOutcome::JoinRoom {
                 result,
                 enter_waiting_shell,
+                can_host_rescue_on_ok,
             } => {
                 apply_join_result(
                     &mut self.ui,
                     &self.shared,
                     &mut self.zenoh,
                     result,
-                    "Joined — waiting for host if space is still empty",
-                    "join room ok",
-                    enter_waiting_shell,
+                    JoinUiOpts {
+                        ok_status: "Joined — waiting for host if space is still empty",
+                        ok_log: "join room ok",
+                        enter_waiting_shell,
+                        can_host_rescue_on_ok,
+                    },
                 );
             }
             AuthJobOutcome::WorldsList { result } => match result {
@@ -1062,7 +1069,7 @@ impl ApplicationHandler for App {
                     if let Some(t) = tick {
                         if self.ui.state.worlds_seen_frame_tick != Some(t) {
                             self.ui.state.worlds_seen_frame_tick = Some(t);
-                            self.worlds_last_frame_at = Some(now);
+                            self.ui.state.worlds_last_frame_at = Some(now);
                             if self.ui.state.worlds_waiting_host {
                                 self.ui.state.worlds_waiting_host = false;
                                 self.ui.state.worlds_host_disconnect = false;
@@ -1071,11 +1078,14 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    // Live → WaitingHost when frames stall (slice UX principle 3).
-                    const FRAME_STALL: std::time::Duration = std::time::Duration::from_secs(3);
-                    if !self.ui.state.worlds_waiting_host
+                    // Live → WaitingHost: new tick value stalled while still in-room.
+                    const FRAME_STALL: std::time::Duration = std::time::Duration::from_secs(10);
+                    if self.ui.state.worlds_in_room
+                        && !self.ui.state.worlds_waiting_host
                         && self.ui.state.worlds_seen_frame_tick.is_some()
                         && self
+                            .ui
+                            .state
                             .worlds_last_frame_at
                             .is_some_and(|at| now.duration_since(at) > FRAME_STALL)
                     {
@@ -1157,7 +1167,6 @@ fn apply_start_session_result(
     zenoh: &mut Option<zenoh::Session>,
     visibility: Result<world_api::VisibilityEnsure, String>,
     join: Result<(), String>,
-    spawned_local_host: bool,
 ) {
     let wanted = ui.state.home_access_level.as_str();
     let name = ui
@@ -1171,12 +1180,8 @@ fn apply_start_session_result(
         (Ok(world_api::VisibilityEnsure::Applied), Ok(())) => {
             finish_host_session_ok(ui, shared, zenoh, &name, wanted);
         }
-        (Ok(world_api::VisibilityEnsure::LeftExisting), Ok(())) if spawned_local_host => {
-            // Worlds Host on existing owned room (visibility unchanged).
-            finish_host_session_ok(ui, shared, zenoh, &name, wanted);
-        }
         (Ok(world_api::VisibilityEnsure::LeftExisting), Ok(())) => {
-            // Home Start on existing room (not owner) — never keep a mistaken local host.
+            // Not owner (PUT 403/404) — never keep a local host, even if a job spawned by mistake.
             stop_supervised_host(shared);
             match bind_room_after_join(shared, zenoh) {
                 Ok(()) => {
@@ -1185,22 +1190,23 @@ fn apply_start_session_result(
                         "Joined as guest (not owner) — use Join for existing rooms; local host not started (wanted {wanted})"
                     );
                     ui.state.worlds_status = ui.state.home_status.clone();
-                    ui.state.worlds_waiting_host = true;
-                    ui.state.worlds_host_disconnect = false;
-                    ui.state.worlds_can_host_rescue = false;
+                    // Home closes dash — no Waiting shell; still mark in-room for stall.
+                    clear_worlds_session_shell(ui);
+                    ui.state.worlds_in_room = true;
                     ui.state.open = false;
                     log::info!("start session joined existing as guest (wanted {wanted})");
                 }
                 Err(err) => {
+                    clear_worlds_session_shell(ui);
                     ui.state.home_status = format!("Joined but room bus failed: {err:#}");
                     ui.state.worlds_status = ui.state.home_status.clone();
-                    ui.state.worlds_waiting_host = false;
                     log::warn!("room bus after start failed: {err:#}");
                 }
             }
         }
         (vis, Err(err)) => {
             stop_supervised_host(shared);
+            clear_worlds_session_shell(ui);
             ui.state.home_status = match vis {
                 Ok(world_api::VisibilityEnsure::Applied) => {
                     format!("Access level applied ({wanted}) but join failed: {err}")
@@ -1212,11 +1218,13 @@ fn apply_start_session_result(
                     format!("Start failed: visibility={vis_err}; join={err}")
                 }
             };
+            ui.state.worlds_status = ui.state.home_status.clone();
             log::warn!("start session join failed: {err}");
         }
         // StartSession worker always pairs visibility Err with join Err; keep arm for exhaustiveness.
         (Err(vis_err), Ok(())) => {
             stop_supervised_host(shared);
+            clear_worlds_session_shell(ui);
             ui.state.home_status =
                 format!("Joined — visibility step failed ({vis_err}); existing ACL");
             ui.state.worlds_status = ui.state.home_status.clone();
@@ -1247,17 +1255,27 @@ fn finish_host_session_ok(
             ui.state.worlds_host_disconnect = false;
             ui.state.worlds_can_host_rescue = true;
             ui.state.worlds_seen_frame_tick = None;
+            ui.state.worlds_last_frame_at = None;
+            ui.state.worlds_in_room = true;
             ui.state.open = false;
             log::info!("start/host session ok; local host up; wanted={wanted}");
         }
         Err(err) => {
             stop_supervised_host(shared);
+            clear_worlds_session_shell(ui);
             ui.state.home_status = format!("Joined but room bus failed: {err:#}");
             ui.state.worlds_status = ui.state.home_status.clone();
-            ui.state.worlds_waiting_host = false;
             log::warn!("room bus after start failed: {err:#}");
         }
     }
+}
+
+struct JoinUiOpts<'a> {
+    ok_status: &'a str,
+    ok_log: &'a str,
+    /// Worlds catalog Join: Waiting shell. Home Join keeps prior Home UX.
+    enter_waiting_shell: bool,
+    can_host_rescue_on_ok: bool,
 }
 
 fn apply_join_result(
@@ -1265,20 +1283,21 @@ fn apply_join_result(
     shared: &Arc<SharedState>,
     zenoh: &mut Option<zenoh::Session>,
     join: Result<(), String>,
-    ok_status: &str,
-    ok_log: &str,
-    // Worlds catalog Join: Waiting shell. Home Join keeps prior Home UX.
-    enter_waiting_shell: bool,
+    opts: JoinUiOpts<'_>,
 ) {
     match join {
         Ok(()) => match bind_room_after_join(shared, zenoh) {
             Ok(()) => {
                 ui.state.home_create_open = false;
-                ui.state.home_status = ok_status.into();
-                ui.state.worlds_status = ok_status.into();
+                ui.state.home_status = opts.ok_status.into();
+                ui.state.worlds_status = opts.ok_status.into();
                 ui.state.worlds_host_disconnect = false;
                 ui.state.worlds_seen_frame_tick = None;
-                if enter_waiting_shell {
+                ui.state.worlds_last_frame_at = None;
+                ui.state.worlds_can_host_rescue = opts.can_host_rescue_on_ok;
+                ui.state.worlds_in_room = true;
+                ui.state.home_room_id = shared.get_room_id().to_string();
+                if opts.enter_waiting_shell {
                     ui.state.worlds_waiting_host = true;
                     ui.state.tab = DashTab::Worlds;
                     ui.state.shell = OnboardingShell::Dash;
@@ -1287,24 +1306,90 @@ fn apply_join_result(
                     ui.state.worlds_waiting_host = false;
                     ui.state.open = false;
                 }
-                log::info!("{ok_log}");
+                log::info!("{}", opts.ok_log);
             }
             Err(err) => {
+                clear_worlds_session_shell(ui);
                 ui.state.home_status = format!("Joined but room bus failed: {err:#}");
                 ui.state.worlds_status = format!("Joined but room bus failed: {err:#}");
-                ui.state.worlds_waiting_host = false;
                 log::warn!("room bus after join failed: {err:#}");
             }
         },
         Err(err) => {
+            clear_worlds_session_shell(ui);
             ui.state.home_status = format!("Join failed: {err}");
             ui.state.worlds_status = format!("Join failed: {err}");
-            ui.state.worlds_waiting_host = false;
             log::warn!("join failed (session kept): {err}");
         }
     }
     ui.mark_dash_logic_dirty();
     ui.rebuild();
+}
+
+/// Worlds Host / Host Rescue shared path (leave → Applied-only spawn → rejoin).
+fn start_worlds_host(
+    ui: &mut SystemUi,
+    shared: &Arc<SharedState>,
+    zenoh: &mut Option<zenoh::Session>,
+    auth_job: &mut Option<Receiver<AuthJobOutcome>>,
+    room_id: String,
+) {
+    if auth_job.is_some() {
+        ui.state.worlds_status = "Auth busy…".into();
+        ui.rebuild();
+        return;
+    }
+    if room_id.is_empty() {
+        ui.state.worlds_status = "Select a room to host".into();
+        ui.rebuild();
+        return;
+    }
+    let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+    let Some(access) = access else {
+        ui.state.worlds_status = "Sign in before hosting".into();
+        ui.rebuild();
+        return;
+    };
+    let level = ui.state.home_access_level;
+    // MVP vs slice: leave → spawn → rejoin (not stay-joined rescue).
+    leave_room(shared, zenoh);
+    shared.set_room_id(Arc::<str>::from(room_id.as_str()));
+    ui.state.home_room_id = room_id;
+    clear_worlds_session_shell(ui);
+    let shared_job = Arc::clone(shared);
+    ui.state.worlds_status = format!("Starting host ({})…", level.as_str());
+    ui.rebuild();
+    let (tx, rx) = mpsc::channel();
+    *auth_job = Some(rx);
+    spawn_auth_http(move || {
+        let world_url = shared_job.get_world_url();
+        let room_id = shared_job.get_room_id();
+        let visibility =
+            world_api::ensure_room_visibility(&world_url, room_id.as_ref(), &access, level)
+                .map_err(|e| format!("{e:#}"));
+        // Server-side owner proof: spawn only on Applied (PUT/create ok).
+        let join = match &visibility {
+            Ok(world_api::VisibilityEnsure::Applied) => {
+                match shared_job
+                    .host_supervisor
+                    .ensure_running_for_room(room_id.as_ref())
+                {
+                    Ok(()) => {
+                        join_room_with_access(&shared_job, &access).map_err(|e| format!("{e:#}"))
+                    }
+                    Err(err) => Err(format!("local host-server start failed: {err:#}")),
+                }
+            }
+            Ok(world_api::VisibilityEnsure::LeftExisting) => {
+                Err("cannot host: not room owner (visibility unchanged)".into())
+            }
+            Err(_) => Err("skipped join (visibility step failed)".into()),
+        };
+        if join.is_err() {
+            stop_supervised_host(&shared_job);
+        }
+        let _ = tx.send(AuthJobOutcome::StartSession { visibility, join });
+    });
 }
 
 fn handle_ui_action(
@@ -1449,6 +1534,7 @@ fn handle_ui_action(
             // Zenoh Leave + drop session (kills room bus threads) on UI thread.
             // HTTP logout is best-effort on a worker (does not gate UI).
             leave_room(shared, zenoh);
+            clear_worlds_session_shell(ui);
             if let Ok(mut gate) = shared.auth.lock() {
                 gate.clear_session();
             }
@@ -1502,18 +1588,14 @@ fn handle_ui_action(
                 .map_err(|e| format!("{e:#}"));
                 // Spawn local host only when we own/create the room. Existing rooms → guest Join.
                 let room_id = shared_job.get_room_id();
-                let mut spawned_local_host = false;
                 let join = match &visibility {
                     Ok(world_api::VisibilityEnsure::Applied) => {
                         match shared_job
                             .host_supervisor
                             .ensure_running_for_room(room_id.as_ref())
                         {
-                            Ok(()) => {
-                                spawned_local_host = true;
-                                join_room_with_access(&shared_job, &access)
-                                    .map_err(|e| format!("{e:#}"))
-                            }
+                            Ok(()) => join_room_with_access(&shared_job, &access)
+                                .map_err(|e| format!("{e:#}")),
                             Err(err) => Err(format!("local host-server start failed: {err:#}")),
                         }
                     }
@@ -1525,11 +1607,7 @@ fn handle_ui_action(
                 if join.is_err() {
                     stop_supervised_host(&shared_job);
                 }
-                let _ = tx.send(AuthJobOutcome::StartSession {
-                    visibility,
-                    join,
-                    spawned_local_host,
-                });
+                let _ = tx.send(AuthJobOutcome::StartSession { visibility, join });
             });
         }
         UiAction::JoinRoom => {
@@ -1558,6 +1636,7 @@ fn handle_ui_action(
                 let _ = tx.send(AuthJobOutcome::JoinRoom {
                     result,
                     enter_waiting_shell: false,
+                    can_host_rescue_on_ok: false,
                 });
             });
         }
@@ -1581,8 +1660,8 @@ fn handle_ui_action(
             *auth_job = Some(rx);
             spawn_auth_http(move || {
                 let world_url = shared_job.get_world_url();
-                let result = world_api::list_rooms(&world_url, &access, mine)
-                    .map_err(|e| format!("{e:#}"));
+                let result =
+                    world_api::list_rooms(&world_url, &access, mine).map_err(|e| format!("{e:#}"));
                 let _ = tx.send(AuthJobOutcome::WorldsList { result });
             });
         }
@@ -1608,13 +1687,12 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             };
+            let can_host_rescue_on_ok = role_hint == "owner";
             leave_room(shared, zenoh);
             shared.set_room_id(Arc::<str>::from(room_id.as_str()));
             ui.state.home_room_id = room_id;
-            ui.state.worlds_waiting_host = false;
-            ui.state.worlds_host_disconnect = false;
-            ui.state.worlds_can_host_rescue = role_hint == "owner";
-            ui.state.worlds_seen_frame_tick = None;
+            // Only set can_host_rescue after successful join (see AuthJobOutcome::JoinRoom).
+            clear_worlds_session_shell(ui);
             let shared_job = Arc::clone(shared);
             ui.state.worlds_status = "Joining as guest…".into();
             ui.rebuild();
@@ -1626,16 +1704,16 @@ fn handle_ui_action(
                 let _ = tx.send(AuthJobOutcome::JoinRoom {
                     result,
                     enter_waiting_shell: true,
+                    can_host_rescue_on_ok,
                 });
             });
         }
         UiAction::WorldsHostRoom => {
-            if auth_job.is_some() {
-                ui.state.worlds_status = "Auth busy…".into();
-                ui.rebuild();
-                return;
-            }
-            let room_id = match ui.state.worlds_selected.and_then(|i| ui.state.worlds_rooms.get(i)) {
+            let room_id = match ui
+                .state
+                .worlds_selected
+                .and_then(|i| ui.state.worlds_rooms.get(i))
+            {
                 Some((id, _, role, _)) if role == "owner" => id.clone(),
                 Some(_) => {
                     ui.state.worlds_status = "Only the owner can host this room".into();
@@ -1643,91 +1721,31 @@ fn handle_ui_action(
                     return;
                 }
                 None => {
-                    // Rescue while waiting: current room, owner-only.
-                    if !ui.state.worlds_can_host_rescue {
-                        ui.state.worlds_status = "Only the owner can host this room".into();
-                        ui.rebuild();
-                        return;
-                    }
-                    let current = ui.state.home_room_id.clone();
-                    if current.is_empty() {
-                        ui.state.worlds_status = "Select a room to host".into();
-                        ui.rebuild();
-                        return;
-                    }
-                    current
+                    ui.state.worlds_status = "Select a room to host".into();
+                    ui.rebuild();
+                    return;
                 }
             };
-            if room_id.is_empty() {
-                ui.state.worlds_status = "Select a room to host".into();
+            start_worlds_host(ui, shared, zenoh, auth_job, room_id);
+        }
+        UiAction::WorldsHostRescue => {
+            // Ignore catalog selection — always the actually joined room.
+            if !ui.state.worlds_can_host_rescue {
+                ui.state.worlds_status = "Only the owner can host this room".into();
                 ui.rebuild();
                 return;
             }
-            let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
-            let Some(access) = access else {
-                ui.state.worlds_status = "Sign in before hosting".into();
+            let room_id = shared.get_room_id().to_string();
+            if room_id.is_empty() {
+                ui.state.worlds_status = "Not in a room to host".into();
                 ui.rebuild();
                 return;
-            };
-            let level = ui.state.home_access_level;
-            // MVP simplification vs slice: leave → spawn → rejoin (not stay-joined rescue).
-            leave_room(shared, zenoh);
-            shared.set_room_id(Arc::<str>::from(room_id.as_str()));
-            ui.state.home_room_id = room_id;
-            ui.state.worlds_waiting_host = false;
-            ui.state.worlds_host_disconnect = false;
-            ui.state.worlds_can_host_rescue = true;
-            ui.state.worlds_seen_frame_tick = None;
-            let shared_job = Arc::clone(shared);
-            ui.state.worlds_status = format!("Starting host ({})…", level.as_str());
-            ui.rebuild();
-            let (tx, rx) = mpsc::channel();
-            *auth_job = Some(rx);
-            spawn_auth_http(move || {
-                let world_url = shared_job.get_world_url();
-                let room_id = shared_job.get_room_id();
-                let visibility = world_api::ensure_room_visibility(
-                    &world_url,
-                    room_id.as_ref(),
-                    &access,
-                    level,
-                )
-                .map_err(|e| format!("{e:#}"));
-                // Owner Host only reaches here — spawn for Applied and LeftExisting alike.
-                let mut spawned_local_host = false;
-                let join = match &visibility {
-                    Ok(world_api::VisibilityEnsure::Applied)
-                    | Ok(world_api::VisibilityEnsure::LeftExisting) => {
-                        match shared_job
-                            .host_supervisor
-                            .ensure_running_for_room(room_id.as_ref())
-                        {
-                            Ok(()) => {
-                                spawned_local_host = true;
-                                join_room_with_access(&shared_job, &access)
-                                    .map_err(|e| format!("{e:#}"))
-                            }
-                            Err(err) => Err(format!("local host-server start failed: {err:#}")),
-                        }
-                    }
-                    Err(_) => Err("skipped join (visibility step failed)".into()),
-                };
-                if join.is_err() {
-                    stop_supervised_host(&shared_job);
-                }
-                let _ = tx.send(AuthJobOutcome::StartSession {
-                    visibility,
-                    join,
-                    spawned_local_host,
-                });
-            });
+            }
+            start_worlds_host(ui, shared, zenoh, auth_job, room_id);
         }
         UiAction::WorldsLeave => {
             leave_room(shared, zenoh);
-            ui.state.worlds_waiting_host = false;
-            ui.state.worlds_host_disconnect = false;
-            ui.state.worlds_can_host_rescue = false;
-            ui.state.worlds_seen_frame_tick = None;
+            clear_worlds_session_shell(ui);
             ui.state.worlds_status = "Left room".into();
             ui.state.tab = DashTab::Worlds;
             ui.state.shell = OnboardingShell::Dash;
@@ -2102,7 +2120,6 @@ pub fn run(
         last_grab_miss_log: None,
         auth_job: None,
         last_owns_input,
-        worlds_last_frame_at: None,
     };
     event_loop.run_app(&mut app)?;
     Ok(())

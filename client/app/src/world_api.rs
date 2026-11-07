@@ -29,7 +29,11 @@ struct RoomsListResponse {
 }
 
 /// List rooms visible to the bearer (x007c). `mine_only` → `?mine=1`.
-pub fn list_rooms(world_url: &str, access_token: &str, mine_only: bool) -> Result<Vec<RoomSummary>> {
+pub fn list_rooms(
+    world_url: &str,
+    access_token: &str,
+    mine_only: bool,
+) -> Result<Vec<RoomSummary>> {
     let base = world_url.trim_end_matches('/');
     let authz = format!("Bearer {access_token}");
     let url = if mine_only {
