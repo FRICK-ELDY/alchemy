@@ -24,7 +24,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | Zenoh: Manifest / Presence / frame Subscribe、snapshot get、input Publish（`ROOM_ID`・x0017 / x0023） | リレー機能（他人の通信の中継は禁止）・テナント名前空間 |
-| 表示 mesh は boot / MainHub / Join 後とも **Coin fixture**（Join remount 未配線）。`load_auth_mesh`（Manifest blake3 → assets GET・Bearer/CAS・x001d/x0048）は helper として残置。GET は認証済み読み取り capability（owner 照合なし・[assets-server.md](assets-server.md)） | Join 後の remount（x003c 本線）；LOD / KTX2 / マテリアル本格 / スキン；live mesh swap；細切れ転送の壁時計 30s 上限 |
+| MainHub / Leave は **空シェル**（床・世界 mesh なし；x007d）。Join/Host 後の受理 Manifest mesh blake3 → assets GET（Bearer/PlaceRead・x001d/x0048）→ `try_apply_world_remount`（`remount_generation` + `wire_cap` + `remounted_blake3` / status と queue を同ロック）→ `SceneGpu::replace_world_mesh`。GET 失敗は placeholder + sticky status（同一 blake3 のセッション内再試行なし・Leave / re-Join で回復） | Manifest 全 mesh のマルチ GLB；LOD / KTX2 / マテリアル本格 / スキン；細切れ転送の壁時計 30s 上限；mid-GET HTTP abort |
 | Frame: `host_sig` 検証・finite・tick 規則。Manifest は **`world_seal`** + **HostAttestation** + **`(generation, revision)` 単調ゲート**後にのみ `host_pub` 採用；検証失敗は **discard**（入室維持・x0038 / x003a）。world JWKS は soft SWR + **hard stale 300s** + unknown-kid 冷却（受信パス HTTP なし・x0044） | 予測補間 / jitter buffer・欠落デルタ再送 |
 | Presence: pin + `host_sig` + Manifest generation 一致 / revision 単調（x0025 / x003a）。失敗は適用しない（discard） | Presence の world 署名；Presence 単独での generation 上昇 |
 | Zenoh sample: class 別 **decode byte/count 上限**超過は drop（x003b） | router 側 max payload |

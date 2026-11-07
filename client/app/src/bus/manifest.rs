@@ -7,11 +7,13 @@
 //!   Leave (x0038)
 //! - PROTOCOL_PIN mismatch rejects apply (x0023 / x0038 discard)
 //! - Entries drive mesh blake3 / Grab flags / box half-extents (x0027); mesh blake3 is sent to the
-//!   boot channel **before** snapshot GET (x003c)
+//!   remount channel **before** snapshot GET (x003c / x007d); new hex re-sends, same hex skips;
+//!   `last_blake3_hex` advances only after a successful remount `try_send`
 //! - Accepted `world_seal` is stored for PlaceRead (x006c)
 //!
-//! Non-guarantees: assets download (see `assets_fetch`), live mesh swap after boot, reliable
-//! delivery of Manifest puts.
+//! Non-guarantees: assets download / GPU upload (see `assets_fetch` / `SceneGpu::replace_world_mesh`);
+//! reliable delivery of Manifest puts; remount channel Full eventually recovers on a later put
+//! with a different hex (same hex retries after Full because `last_blake3_hex` was not updated).
 
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -51,7 +53,8 @@ pub(crate) fn spawn_manifest_subscriber(
         .name("zenoh-manifest".into())
         .spawn(move || {
             log::info!("subscribed to {key}");
-            let mut sent_blake3 = false;
+            // Last blake3 hex pushed to remount worker; re-send only when hex changes (x007d).
+            let mut last_blake3_hex: Option<String> = None;
             // `true` only after a successful snapshot apply for the current `host_pub`.
             let mut snapshot_ok = false;
             // x0038: drop counters (host input-gate style); never leave on verify fail.
@@ -159,6 +162,7 @@ pub(crate) fn spawn_manifest_subscriber(
                     );
                     shared.reset_for_host_generation();
                     snapshot_ok = false;
+                    last_blake3_hex = None;
                 }
                 // Accepted Manifest only — PlaceRead needs this seal (x006c).
                 // After generation reset (clears seal), re-apply the accepted seal.
@@ -236,18 +240,29 @@ pub(crate) fn spawn_manifest_subscriber(
                     }
                 }
                 shared.apply_manifest_defs(index.grabbable, index.half_extents, mesh_id);
-                if !sent_blake3 {
-                    let msg = match mesh_blake3 {
-                        Some(hex) => Ok(hex),
-                        None => Err("SceneManifest has no mesh entity blake3".to_string()),
+                let msg = match &mesh_blake3 {
+                    Some(hex) => Ok(hex.clone()),
+                    None => Err("SceneManifest has no mesh entity blake3".to_string()),
+                };
+                let should_send = match (&msg, &last_blake3_hex) {
+                    (Ok(hex), Some(prev)) if prev == hex => false,
+                    (Ok(_), _) => true,
+                    (Err(_), None) => true, // First Manifest without mesh — notify remount once.
+                    (Err(_), Some(_)) => false,
+                };
+                if should_send {
+                    // Update last_blake3_hex only after try_send succeeds so Full/Disconnected
+                    // does not permanently suppress remount for this hex (x007d).
+                    let mark = match &msg {
+                        Ok(hex) => Some(hex.clone()),
+                        Err(_) => Some(String::new()),
                     };
-                    let _ = blake3_tx.send(msg);
-                    sent_blake3 = true;
-                } else if mesh_blake3.is_some() {
-                    // Boot download already consumed the channel; live mesh swap is out of scope.
-                    log::info!(
-                        "Manifest mesh blake3 updated after boot download; remount not applied"
-                    );
+                    match blake3_tx.try_send(msg) {
+                        Ok(()) => last_blake3_hex = mark,
+                        Err(err) => {
+                            log::warn!("Manifest mesh blake3 remount channel full/closed: {err}")
+                        }
+                    }
                 }
                 if !snapshot_ok {
                     if let Some(cap) = shared.wire_cap() {

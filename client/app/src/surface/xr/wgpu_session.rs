@@ -177,13 +177,16 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
     let depth_right = create_depth_view(bridge.device(), width, height);
     let depths = [&depth_left, &depth_right];
 
-    let scene = SceneGpu::from_device(
+    let mut scene = SceneGpu::from_device(
         bridge.device().clone(),
         bridge.queue().clone(),
         wgpu_format,
         &mesh,
         Arc::clone(&shared),
     )?;
+    // Start at 0 so a delayed XR session remounts any pending mesh Desktop already queued
+    // (boot empty shell or Join remount), matching Desktop's mesh_epoch: 0 init (x007d).
+    let mut mesh_epoch = 0u64;
     let overlays = XrOverlays::new(
         bridge.device(),
         bridge.queue(),
@@ -627,6 +630,11 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             if let Some(model) = render_models.models_mut().get_mut(gi) {
                 let _ = model.compose_node_worlds();
             }
+        }
+
+        // Manifest remount / Leave empty shell (Desktop + XR both poll epoch; x007d).
+        if let Some(next) = shared.pending_mesh_if_newer(&mut mesh_epoch) {
+            scene.replace_world_mesh(&next);
         }
 
         // Per-eye submit so SceneGpu / overlay UBOs are not overwritten mid-encoder.

@@ -5,8 +5,8 @@
 //! `load_flattened_textured_from_glb` adds TEXCOORD_0 + optional baseColor RGBA + factor;
 //! `load_textured_rigged_from_glb` keeps a node hierarchy for runtime-replaced locals;
 //! [`placeholder_error_mesh`] is visually distinct from the Coin fixture (auth asset failure).
-//! Non-guarantees: PBR maps, skins, morphs, external URI textures, Coin textured draw;
-//! live mesh swap after boot.
+//! [`empty_shell_mesh`] is the MainHub / post-Leave display (no world draw; x007d).
+//! Non-guarantees: PBR maps, skins, morphs, external URI textures, Coin textured draw.
 
 use std::collections::HashMap;
 
@@ -82,6 +82,15 @@ pub fn verify_blake3(bytes: &[u8], expected_hex: &str) -> Result<()> {
         bail!("BLAKE3 mismatch: expected {expected_hex}, got {got}");
     }
     Ok(())
+}
+
+/// MainHub / Leave shell: no world geometry (SceneGpu skips coin+floor when indices empty; x007d).
+pub fn empty_shell_mesh() -> CpuMesh {
+    CpuMesh {
+        positions: Vec::new(),
+        indices: Vec::new(),
+        radius: 1.0,
+    }
 }
 
 /// Unit cube (half-extent 0.5) used when authenticated assets GET / blake3 fails (x0048).
@@ -566,5 +575,12 @@ mod tests {
         // Distinct from Coin fixture vertex count (smoke: not a silent Coin swap).
         let coin = load_mesh_from_glb(FIXTURE).unwrap();
         assert_ne!(mesh.positions.len(), coin.positions.len());
+    }
+
+    #[test]
+    fn empty_shell_mesh_has_no_geometry() {
+        let mesh = empty_shell_mesh();
+        assert!(mesh.positions.is_empty());
+        assert!(mesh.indices.is_empty());
     }
 }

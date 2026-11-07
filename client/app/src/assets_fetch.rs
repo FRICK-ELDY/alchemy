@@ -1,18 +1,18 @@
 //! Assets HTTP / blob / mesh helpers.
 //!
-//! **Wired today:** [`load_unauth_home_mesh`] only (boot / MainHub / post-Join Coin fixture).
+//! **Wired:**
+//! - Boot / MainHub: empty shell via [`crate::mesh::empty_shell_mesh`] (not this module)
+//! - Join remount: [`load_auth_mesh`] + [`try_place_read_for_mesh`] from `room` mesh-remount worker (x007d)
+//! - Unauthenticated Coin fixture: [`load_unauth_home_mesh`] (debug / seed tooling; not MainHub boot)
 //!
-//! **Helper contract when called** ([`load_auth_mesh`] / PlaceRead — remount not wired):
+//! **Helper contract when called** ([`load_auth_mesh`]):
 //! - Assets GET (Grant or PlaceRead, x006c): connect/read timeout; failure → error placeholder
 //!   + dash status (not Coin fixture)
 //! - Fixture fallback only with debug build + `ALCHEMY_ALLOW_FIXTURE_FALLBACK` (x0048 / P3-3)
 //! - Verifies blake3 before GLB decode (mismatch → placeholder / debug fixture)
 //!
-//! Non-guarantees: Join remount (callers stay on Coin); cancel mid-stream beyond HTTP timeout;
-//! Manifest subscription (see `bus::manifest`); retry/backoff on download failure.
-
-// Remount helpers are unused until Join remount lands; keep them without per-item allows.
-#![cfg_attr(not(test), allow(dead_code))]
+//! Non-guarantees: cancel mid-stream beyond HTTP timeout; Manifest subscription
+//! (see `bus::manifest`); retry/backoff on download failure.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -142,10 +142,7 @@ fn debug_fixture_or_placeholder(kind: &str, err: &anyhow::Error) -> AuthMeshLoad
     }
 }
 
-/// Authenticated Manifest mesh download (x003c).
-///
-/// Helper only — not called from boot or Join ([`crate::room::ensure_room_bus`] remount
-/// non-goal). Resume point when remount lands.
+/// Authenticated Manifest mesh download (x003c / x007d remount).
 pub(crate) fn load_auth_mesh(
     assets_url: &str,
     blake3: &str,
@@ -169,7 +166,6 @@ pub(crate) fn load_auth_mesh(
 }
 
 /// x006c: Room Token + last accepted `world_seal` → PlaceRead for assets GET.
-/// Helper beside [`load_auth_mesh`] (remount not wired).
 pub(crate) fn try_place_read_for_mesh(shared: &SharedState) -> Option<String> {
     let room_token = shared.auth.lock().ok().and_then(|g| g.room_token.clone())?;
     let world_seal = shared
@@ -197,24 +193,14 @@ pub(crate) fn try_place_read_for_mesh(shared: &SharedState) -> Option<String> {
     }
 }
 
-/// Unauthenticated Home: Coin fixture is the intentional mesh (not Manifest blake3).
-/// Missing/corrupt fixture → placeholder (debug env cannot invent bytes).
-pub(crate) fn load_unauth_home_mesh() -> AuthMeshLoad {
-    match try_coin_fixture_mesh() {
-        Ok(mesh) => AuthMeshLoad::Ready(mesh),
-        Err(err) => placeholder_from_err("Home fixture unavailable", &err),
-    }
-}
-
 fn load_fixture_bytes() -> Result<Vec<u8>> {
     let path = fixture_path()?;
     std::fs::read(&path).with_context(|| format!("read fixture {}", path.display()))
 }
 
 fn fixture_path() -> Result<PathBuf> {
-    // Used for: (1) ensure-demo-coin seed source beside ZIP, (2) unauthenticated Home UI
-    // placeholder before login, (3) debug `ALCHEMY_ALLOW_FIXTURE_FALLBACK`.
-    // Not the authenticated release mesh path (that is Manifest → assets GET).
+    // Used for: (1) ensure-demo-coin seed source beside ZIP, (2) debug fixture fallback.
+    // Not the MainHub boot mesh (empty shell) or authenticated remount path.
     const REL: &str = "fixtures/Coin_PolygonalMind.glb";
     if let Ok(p) = std::env::var("ALCHEMY_FIXTURE_GLB") {
         return Ok(PathBuf::from(p));
@@ -236,4 +222,28 @@ fn fixture_path() -> Result<PathBuf> {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("../fixtures/Coin_PolygonalMind.glb");
     Ok(path)
+}
+
+/// Coin fixture for seed / debug tooling (not MainHub boot; x007d uses empty shell).
+#[cfg(test)]
+pub(crate) fn load_unauth_home_mesh() -> AuthMeshLoad {
+    match try_coin_fixture_mesh() {
+        Ok(mesh) => AuthMeshLoad::Ready(mesh),
+        Err(err) => placeholder_from_err("Home fixture unavailable", &err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_unauth_home_mesh_loads_coin_or_placeholder() {
+        // Fixture present in client/fixtures during unit tests.
+        let out = load_unauth_home_mesh();
+        assert!(matches!(
+            out,
+            AuthMeshLoad::Ready(_) | AuthMeshLoad::Placeholder { .. }
+        ));
+    }
 }

@@ -5,14 +5,15 @@
 //!
 //! Guarantees: draw with caller-supplied view/proj; grabbable boxes from Manifest (x0027);
 //! remote roots 3..6 (x0015); Frame TRS on draw (x0029);
-//! [`SharedState::asset_status`] sticky Home overlay for auth asset failure (x0048).
-//! Non-guarantees: XR swapchain ownership, system_ui layout, avatar GLB;
-//! live mesh swap after boot.
+//! [`SharedState::asset_status`] sticky Home overlay for auth asset failure (x0048);
+//! empty shell (`index_count==0`) skips floor+world mesh (MainHub; x007d);
+//! [`SceneGpu::replace_world_mesh`] + [`SharedState::pending_world_mesh`] for Manifest remount.
+//! Non-guarantees: XR swapchain ownership, system_ui layout, avatar GLB.
 //! Grab hits use OBB in `world_hit` (x002b; draw TRS aligned).
 //! Leave / liveliness token ownership lives here; put/undeclare is `room::leave_room` (re-exported as `crate::leave_room`).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -182,6 +183,21 @@ pub struct WorldView {
     pub entities: std::collections::HashMap<u32, EntityPose>,
 }
 
+/// Side effect for [`SharedState::try_apply_world_remount`] (x007d).
+#[derive(Debug, Clone)]
+pub enum RemountedBlake3Update {
+    Unchanged,
+    Set(Option<String>),
+}
+
+/// Side effect for [`SharedState::try_apply_world_remount`] (x007d).
+#[derive(Debug, Clone)]
+pub enum AssetStatusUpdate {
+    Unchanged,
+    Clear,
+    Set(String),
+}
+
 pub struct SharedState {
     /// Local camera / aim follows this host entity (`LOCAL_USER_ROOT_UNSET` until Presence).
     pub local_user_root: AtomicU32,
@@ -241,8 +257,16 @@ pub struct SharedState {
     /// Scene mesh blake3 map for Inventory put-back (x006e); updated on Manifest.
     pub scene_meshes: Mutex<Vec<(u32, String)>>,
     /// Authenticated asset-load failure message for dash Home status (x0048).
-    /// `None` when mesh came from assets GET or unauthenticated Coin Home fixture.
+    /// `None` when mesh came from assets GET or empty shell / no failure.
     pub asset_status: Mutex<Option<String>>,
+    /// Latest world mesh for GPU remount (x007d). Written by remount worker; surfaces poll by epoch.
+    pub pending_world_mesh: Mutex<Option<CpuMesh>>,
+    /// Bumped on each [`Self::queue_world_mesh`] so Desktop + XR companion both remount.
+    pub pending_mesh_epoch: AtomicU64,
+    /// Last blake3 hex successfully remounted so Manifest can skip same-hash resends.
+    pub remounted_blake3: Mutex<Option<String>>,
+    /// Bumped on Leave and host-generation reset so in-flight remount GET results are discarded (x007d).
+    pub remount_generation: AtomicU64,
     pub look: Mutex<CameraLook>,
     pub intent: Mutex<MoveIntent>,
     /// XR ↔ Desktop present ownership (x0053). Desktop-only keeps `vr_active=false`.
@@ -349,12 +373,126 @@ impl SharedState {
         true
     }
 
-    pub fn store_asset_status(&self, status: String) {
+    /// Queue a world mesh for surface remount (x007d). Desktop and XR each poll via epoch.
+    pub fn queue_world_mesh(&self, mesh: CpuMesh) {
         let mut guard = self
-            .asset_status
+            .pending_world_mesh
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *guard = Some(status);
+        *guard = Some(mesh);
+        self.pending_mesh_epoch.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Remount-worker apply: under `pending_world_mesh`, require matching
+    /// [`Self::remount_generation`] + joined `wire_cap`, then queue mesh **and** apply
+    /// `remounted_blake3` / `asset_status` before releasing the lock (x007d).
+    ///
+    /// Leave / host-generation invalidate under the same pending lock so a successful mesh
+    /// queue cannot be followed by a stale `remounted_blake3 = Some(hex)` write-back
+    /// (which would skip the same hex on re-Join while MainHub stayed empty).
+    ///
+    /// Lock order: `pending_world_mesh` → `wire_cap` (brief) → `remounted_blake3` /
+    /// `asset_status` (brief).
+    pub fn try_apply_world_remount(
+        &self,
+        mesh: CpuMesh,
+        job_generation: u64,
+        remounted: RemountedBlake3Update,
+        asset_status: AssetStatusUpdate,
+    ) -> bool {
+        let mut pending = self
+            .pending_world_mesh
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.remount_generation.load(Ordering::SeqCst) != job_generation {
+            return false;
+        }
+        if self.wire_cap().is_none() {
+            return false;
+        }
+        *pending = Some(mesh);
+        self.pending_mesh_epoch.fetch_add(1, Ordering::SeqCst);
+        Self::apply_remounted_update(&self.remounted_blake3, remounted);
+        Self::apply_asset_status_update(&self.asset_status, asset_status);
+        true
+    }
+
+    /// Leave: bump generation, clear remounted/status, queue empty shell — all under
+    /// `pending_world_mesh` so remount cannot write back `remounted_blake3` after clear.
+    fn finish_leave_empty_shell(&self) {
+        let mut pending = self
+            .pending_world_mesh
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.bump_remount_generation();
+        Self::apply_remounted_update(&self.remounted_blake3, RemountedBlake3Update::Set(None));
+        Self::apply_asset_status_update(&self.asset_status, AssetStatusUpdate::Clear);
+        *pending = Some(crate::mesh::empty_shell_mesh());
+        self.pending_mesh_epoch.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Host-generation: bump + clear `remounted_blake3` under `pending_world_mesh`.
+    /// GPU mesh intentionally unchanged until the next remount GET.
+    fn invalidate_remount_for_host_generation(&self) {
+        let _pending = self
+            .pending_world_mesh
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.bump_remount_generation();
+        Self::apply_remounted_update(&self.remounted_blake3, RemountedBlake3Update::Set(None));
+    }
+
+    fn apply_remounted_update(slot: &Mutex<Option<String>>, update: RemountedBlake3Update) {
+        match update {
+            RemountedBlake3Update::Unchanged => {}
+            RemountedBlake3Update::Set(hex) => {
+                let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                *guard = hex;
+            }
+        }
+    }
+
+    fn apply_asset_status_update(slot: &Mutex<Option<String>>, update: AssetStatusUpdate) {
+        match update {
+            AssetStatusUpdate::Unchanged => {}
+            AssetStatusUpdate::Clear => {
+                let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                *guard = None;
+            }
+            AssetStatusUpdate::Set(status) => {
+                let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                *guard = Some(status);
+            }
+        }
+    }
+
+    /// If `applied_epoch` is behind the pending epoch, return a clone to remount and advance.
+    /// Epoch and mesh are read under the same lock as [`Self::queue_world_mesh`] so a concurrent
+    /// queue cannot pair an older epoch with a newer mesh.
+    pub fn pending_mesh_if_newer(&self, applied_epoch: &mut u64) -> Option<CpuMesh> {
+        let guard = self.pending_world_mesh.lock().ok()?;
+        let epoch = self.pending_mesh_epoch.load(Ordering::SeqCst);
+        if epoch == *applied_epoch {
+            return None;
+        }
+        let mesh = guard.clone()?;
+        *applied_epoch = epoch;
+        Some(mesh)
+    }
+
+    pub fn remounted_blake3(&self) -> Option<String> {
+        self.remounted_blake3.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Early-out hint before expensive GET. Authoritative apply is
+    /// [`Self::try_apply_world_remount`] (mesh + remounted/status under pending lock).
+    pub fn remount_apply_allowed(&self, job_generation: u64) -> bool {
+        self.remount_generation.load(Ordering::SeqCst) == job_generation
+            && self.wire_cap().is_some()
+    }
+
+    fn bump_remount_generation(&self) {
+        self.remount_generation.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn local_user_root(&self) -> u32 {
@@ -478,6 +616,8 @@ impl SharedState {
         }
         self.mesh_entity_id.store(0, Ordering::Relaxed);
         self.set_scene_meshes(Vec::new());
+        // GPU unload is surface-owned; bump + clear remounted/status + empty shell under one lock (x007d).
+        self.finish_leave_empty_shell();
         if let Ok(mut token) = self.liveliness.lock() {
             *token = None;
         }
@@ -491,6 +631,10 @@ impl SharedState {
     /// failure cannot keep a prior generation's seal for PlaceRead (x006c).
     /// x003e: mint new Intent key into `pending_intent_session` only; live publisher keeps
     /// old key + old Token until Room Token for the new pub arrives, then **atomic** swap.
+    ///
+    /// GPU world mesh is intentionally left until the next remount GET completes (no empty-shell
+    /// flash mid-session). In-flight remount jobs (mesh **and** `remounted_blake3` write-back)
+    /// are discarded via [`Self::invalidate_remount_for_host_generation`].
     pub fn reset_for_host_generation(&self) {
         if let Ok(mut world) = self.world.lock() {
             *world = WorldView::default();
@@ -500,6 +644,7 @@ impl SharedState {
         }
         self.mesh_entity_id.store(0, Ordering::Relaxed);
         self.set_scene_meshes(Vec::new());
+        self.invalidate_remount_for_host_generation();
         if let Ok(mut seal) = self.last_world_seal.lock() {
             *seal = None;
         }
@@ -833,6 +978,42 @@ impl SharedState {
     }
 }
 
+/// Build world mesh GPU buffers. Empty shell uses a 1-vert dummy + `index_count=0` (x007d).
+fn world_mesh_buffers(device: &wgpu::Device, mesh: &CpuMesh) -> (wgpu::Buffer, wgpu::Buffer, u32) {
+    if mesh.indices.is_empty() {
+        let dummy = [MeshVertex {
+            position: [0.0, 0.0, 0.0],
+        }];
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("mesh-vertices-empty"),
+            contents: bytemuck::cast_slice(&dummy),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("mesh-indices-empty"),
+            contents: bytemuck::cast_slice(&[0u32]),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        return (vertex_buffer, index_buffer, 0);
+    }
+    let vertices: Vec<MeshVertex> = mesh
+        .positions
+        .iter()
+        .map(|p| MeshVertex { position: *p })
+        .collect();
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("mesh-vertices"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("mesh-indices"),
+        contents: bytemuck::cast_slice(&mesh.indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    (vertex_buffer, index_buffer, mesh.indices.len() as u32)
+}
+
 pub struct SceneGpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -932,23 +1113,7 @@ impl SceneGpu {
             cache: None,
         });
 
-        let vertices: Vec<MeshVertex> = mesh
-            .positions
-            .iter()
-            .map(|p| MeshVertex { position: *p })
-            .collect();
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("mesh-vertices"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("mesh-indices"),
-            contents: bytemuck::cast_slice(&mesh.indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let (vertex_buffer, index_buffer, index_count) = world_mesh_buffers(&device, mesh);
 
         let e = FLOOR_EXTENT;
         let floor_verts = [
@@ -1046,7 +1211,7 @@ impl SceneGpu {
             surface_format,
             vertex_buffer,
             index_buffer,
-            index_count: mesh.indices.len() as u32,
+            index_count,
             floor_vertex_buffer,
             floor_index_buffer,
             floor_index_count: floor_indices.len() as u32,
@@ -1063,6 +1228,19 @@ impl SceneGpu {
             shared,
             last_pose_log: Instant::now(),
         })
+    }
+
+    /// Replace world mesh buffers (Manifest remount / Leave → empty shell; x007d).
+    pub fn replace_world_mesh(&mut self, mesh: &CpuMesh) {
+        let (vertex_buffer, index_buffer, index_count) = world_mesh_buffers(&self.device, mesh);
+        self.vertex_buffer = vertex_buffer;
+        self.index_buffer = index_buffer;
+        self.index_count = index_count;
+        self.mesh_radius = mesh.radius.max(1e-3);
+        log::info!(
+            "SceneGpu world mesh remounted: indices={index_count} radius={:.3}",
+            self.mesh_radius
+        );
     }
 
     pub fn coin_pose(&self) -> EntityPose {
@@ -1152,7 +1330,6 @@ impl SceneGpu {
         // Desktop aim / held Grab highlight (entity id), if any.
         highlight_entity: Option<u32>,
     ) {
-        let pose = self.coin_pose();
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene-pass"),
@@ -1177,49 +1354,53 @@ impl SceneGpu {
             });
             pass.set_pipeline(&self.pipeline);
 
-            let floor_uniforms = Uniforms {
-                mvp: (proj * view).to_cols_array_2d(),
-                color: [0.22, 0.24, 0.28, 1.0],
-            };
-            self.queue.write_buffer(
-                &self.floor_uniform_buffer,
-                0,
-                bytemuck::bytes_of(&floor_uniforms),
-            );
-            pass.set_bind_group(0, &self.floor_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.floor_vertex_buffer.slice(..));
-            pass.set_index_buffer(self.floor_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.floor_index_count, 0, 0..1);
+            // MainHub / Leave empty shell: clear color only (no floor / world mesh; x007d).
+            if self.index_count > 0 {
+                let pose = self.coin_pose();
+                let floor_uniforms = Uniforms {
+                    mvp: (proj * view).to_cols_array_2d(),
+                    color: [0.22, 0.24, 0.28, 1.0],
+                };
+                self.queue.write_buffer(
+                    &self.floor_uniform_buffer,
+                    0,
+                    bytemuck::bytes_of(&floor_uniforms),
+                );
+                pass.set_bind_group(0, &self.floor_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.floor_vertex_buffer.slice(..));
+                pass.set_index_buffer(self.floor_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.floor_index_count, 0, 0..1);
 
-            let visual_scale = (alchemy_shared_sim::PHYS_BALL_RADIUS * 0.95
-                / self.mesh_radius.max(1e-3))
-            .clamp(0.02, 4.0);
-            // Mesh asset tilt (0.25 rad X) stays client-local; Frame TRS is sim authority (x0029).
-            let model = Mat4::from_scale_rotation_translation(
-                pose.scale() * visual_scale,
-                pose.rotation() * glam::Quat::from_rotation_x(0.25),
-                pose.position(),
-            );
-            let height_t = (pose.y / 5.0).clamp(0.0, 1.0);
-            let coin_color = [
-                0.95 * height_t + 0.15,
-                0.75 * (1.0 - height_t) + 0.25,
-                0.2,
-                1.0,
-            ];
-            let coin_uniforms = Uniforms {
-                mvp: (proj * view * model).to_cols_array_2d(),
-                color: coin_color,
-            };
-            self.queue.write_buffer(
-                &self.coin_uniform_buffer,
-                0,
-                bytemuck::bytes_of(&coin_uniforms),
-            );
-            pass.set_bind_group(0, &self.coin_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.index_count, 0, 0..1);
+                let visual_scale = (alchemy_shared_sim::PHYS_BALL_RADIUS * 0.95
+                    / self.mesh_radius.max(1e-3))
+                .clamp(0.02, 4.0);
+                // Mesh asset tilt (0.25 rad X) stays client-local; Frame TRS is sim authority (x0029).
+                let model = Mat4::from_scale_rotation_translation(
+                    pose.scale() * visual_scale,
+                    pose.rotation() * glam::Quat::from_rotation_x(0.25),
+                    pose.position(),
+                );
+                let height_t = (pose.y / 5.0).clamp(0.0, 1.0);
+                let coin_color = [
+                    0.95 * height_t + 0.15,
+                    0.75 * (1.0 - height_t) + 0.25,
+                    0.2,
+                    1.0,
+                ];
+                let coin_uniforms = Uniforms {
+                    mvp: (proj * view * model).to_cols_array_2d(),
+                    color: coin_color,
+                };
+                self.queue.write_buffer(
+                    &self.coin_uniform_buffer,
+                    0,
+                    bytemuck::bytes_of(&coin_uniforms),
+                );
+                pass.set_bind_group(0, &self.coin_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.index_count, 0, 0..1);
+            }
 
             // Cuboid boxes (`half_extent > 0`) + remote user_roots: unit cube mesh.
             // Grab highlight uses `SCENE_FLAG_GRABBABLE`; draw is independent of flags (x0027).

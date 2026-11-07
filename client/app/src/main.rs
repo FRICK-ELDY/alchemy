@@ -3,18 +3,19 @@
 //! Guarantees (boot scope):
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017); `ROOM_ID` validated at boot
 //! - Silent / CI: `AUTH_USER` or `ALCHEMY_AUTH_TOKEN` authenticates only (no auto room join);
-//!   MainHub then Join a host / Host a room. Boot mesh is always the Coin fixture
+//!   MainHub then Join a host / Host a room
+//! - Boot mesh is empty shell (no Coin / floor draw; x007d). Manifest blake3 → assets GET →
+//!   GPU remount after Join/Host (`room` + `SceneGpu::replace_world_mesh`)
 //! - Surface boot: OpenXR when runtime present, else Desktop; ESC / Menu dash + Exit;
 //!   XR boot keeps a Desktop companion; F8 / HMD presence hotswitch (x0053)
 //!
 //! Per-unit guarantees live in the owning module:
-//! - `room` — join / leave / liveliness / token refresh / bus start
+//! - `room` — join / leave / liveliness / token refresh / bus start / mesh remount worker
 //! - `bus::{wire, manifest, frame, presence, input, liveliness}` — Zenoh payload gates and threads
-//! - `assets_fetch` — Coin Home mesh; authenticated GET helper retained (remount not wired)
+//! - `mesh::empty_shell_mesh` — MainHub boot / Leave; `assets_fetch` — authenticated GET on remount
 //!
-//! Non-guarantees: Join/Host 後の Manifest blake3 → assets GET remount（x003c 経路は helper のみ・
-//! `ensure_room_bus(..., None)` が blake3 を drain）; Steal; XR login keyboard; email verify UI;
-//! Quest standalone; WSL HMD; Quest/WebXR hotswitch; Virtual Desktop presence parity
+//! Non-guarantees: Steal; XR login keyboard; email verify UI; Quest standalone; WSL HMD;
+//! Quest/WebXR hotswitch; Virtual Desktop presence parity
 
 mod access_level;
 mod assets_fetch;
@@ -37,14 +38,14 @@ mod world_api;
 mod world_hit;
 mod world_token;
 
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use alchemy_client_trust::{HostAttestationVerifier, ManifestSealVerifier, WorldJwks};
 use alchemy_protocol::{validate_room_id, PROTOCOL_PIN};
 use anyhow::{Context, Result};
-use assets_fetch::{load_unauth_home_mesh, AuthMeshLoad};
 use auth::AuthGate;
+use mesh::empty_shell_mesh;
 use scene::{SharedState, LOCAL_USER_ROOT_UNSET};
 
 // Room public API for `surface/desktop.rs` (and any future surface).
@@ -144,6 +145,10 @@ fn main() -> Result<()> {
         mesh_entity_id: AtomicU32::new(0),
         scene_meshes: Mutex::new(Vec::new()),
         asset_status: Mutex::new(None),
+        pending_world_mesh: Mutex::new(None),
+        pending_mesh_epoch: AtomicU64::new(0),
+        remounted_blake3: Mutex::new(None),
+        remount_generation: AtomicU64::new(0),
         look: Mutex::new(Default::default()),
         intent: Mutex::new(Default::default()),
         presentation: crate::surface::PresentationGate::default(),
@@ -152,7 +157,7 @@ fn main() -> Result<()> {
     });
 
     // Boot never joins a room. Silent / remember-me authenticate only; Worlds Join/Host
-    // opens Zenoh via bind_room_after_join. Display mesh stays Coin until remount lands.
+    // opens Zenoh and remounts Manifest mesh (x007d).
     log::info!(
         "client x004e starting; protocol_pin={PROTOCOL_PIN} room={room_id} auth_mode={auth_mode} wire_cap=pending"
     );
@@ -161,24 +166,10 @@ fn main() -> Result<()> {
 
     log::info!("zenoh open deferred until Home→Join (operator endpoints may still change)");
     log::info!("room Zenoh bus deferred until Home→Join (x004e); local GUI join starts bus");
-    log::info!("boot mesh = Coin fixture (Join remount / x003c assets GET not wired)");
+    log::info!("boot mesh = empty shell (MainHub; Manifest remount after Join/Host)");
 
-    let mesh = {
-        log::info!("loading Coin fixture for Home / MainHub (and post-Join until remount)");
-        match load_unauth_home_mesh() {
-            AuthMeshLoad::Ready(mesh) => mesh,
-            AuthMeshLoad::Placeholder { mesh, status } => {
-                shared.store_asset_status(status);
-                mesh
-            }
-        }
-    };
-    log::info!(
-        "mesh ready: {} verts, {} indices, radius={:.3}",
-        mesh.positions.len(),
-        mesh.indices.len(),
-        mesh.radius
-    );
+    let mesh = empty_shell_mesh();
+    log::info!("mesh ready: empty shell");
 
     let kind = surface::choose();
     // Zenoh session is opened later on Worlds Join/Host (None at boot).

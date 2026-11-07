@@ -85,10 +85,10 @@ zenohd -c relay-server/config.json5
 
 # 3a) Desktop client のみ起動（部屋は MainHub で Join a host / Host a room）
 cd client
-# UI login: omit AUTH_USER → Step1/Step2 → MainHub
+# UI login: omit AUTH_USER → Step1/Step2 → MainHub（空シェル・Coin/床なし）
 ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 # silent login only (debug は AUTH_USER のみ可 / release は password または token 必須).
-# 部屋へは入らない → MainHub で Join a host（guest）または Host a room（Create / Host this room で子プロセス host-server）
+# MainHub → Join a host / Host a room。ホスト Manifest 後に assets GET で mesh remount（x007d）
 AUTH_USER=alice AUTH_PASSWORD=Password1 ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 # または: ALCHEMY_AUTH_TOKEN=<access_jwt> ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 # 手動で host だけ先に立てる（CI / デバッグ。同一 ROOM_ID で dual host にしない）:

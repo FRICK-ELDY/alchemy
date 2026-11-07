@@ -175,6 +175,8 @@ struct App {
     auth_job: Option<Receiver<AuthJobOutcome>>,
     /// Last observed Desktop input ownership (READY / vr_active edges).
     last_owns_input: bool,
+    /// Last applied [`SharedState::pending_mesh_epoch`] (x007d remount).
+    mesh_epoch: u64,
 }
 
 /// Outcome of Auth / world HTTP work off the UI thread (x002e / P3-9 / x0037).
@@ -1150,6 +1152,7 @@ impl ApplicationHandler for App {
         self.on_input_ownership_edge();
         self.poll_auth_job();
         self.poll_mtls_reopen();
+        self.apply_pending_world_mesh();
         // x0048: re-apply sticky asset failure after Login/Start/Join settle (skips "…").
         if self
             .shared
@@ -1163,6 +1166,19 @@ impl ApplicationHandler for App {
         }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
+        }
+    }
+}
+
+impl App {
+    /// Manifest remount / Leave empty shell (x007d).
+    fn apply_pending_world_mesh(&mut self) {
+        let Some(mesh) = self.shared.pending_mesh_if_newer(&mut self.mesh_epoch) else {
+            return;
+        };
+        self.mesh = mesh;
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.scene.replace_world_mesh(&self.mesh);
         }
     }
 }
@@ -2170,6 +2186,7 @@ pub fn run(
         last_grab_miss_log: None,
         auth_job: None,
         last_owns_input,
+        mesh_epoch: 0,
     };
     event_loop.run_app(&mut app)?;
     Ok(())

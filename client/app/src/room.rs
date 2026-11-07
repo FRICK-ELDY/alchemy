@@ -9,9 +9,16 @@
 //!   `session_pub` (x003e)
 //! - `ensure_room_bus` idempotent via `room_bus_started`; spawn failure clears the flag
 //! - Reopen after join only when `mtls_reopen_pending` or session was dropped (x0068)
+//! - Join starts a mesh-remount worker: Manifest blake3 → assets GET →
+//!   `try_apply_world_remount` (x007d)
+//! - In-flight remount after Leave / host-generation reset is discarded via
+//!   `try_apply_world_remount` (generation + `wire_cap` + remounted/status under pending lock);
+//!   Leave empty shell is not overwritten; stale `remounted_blake3` write-back cannot skip re-Join
 //!
-//! Non-guarantees: wire decode/verify (see `bus::*`), assets / mesh (see `assets_fetch`), Steal,
-//! email verify UI, Quest standalone.
+//! Non-guarantees: wire decode/verify (see `bus::*`), GPU buffer upload (surfaces poll
+//! `pending_world_mesh`), mid-GET cancel of the HTTP request itself, GET failure retry for the
+//! same blake3 within a session (sticky until Leave / re-Join), Steal, email verify UI,
+//! Quest standalone.
 
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
@@ -23,6 +30,7 @@ use alchemy_protocol::{frame_key, input_key, manifest_key, presence_key, Message
 use anyhow::{Context, Result};
 use zenoh::Wait;
 
+use crate::assets_fetch::{load_auth_mesh, try_place_read_for_mesh, AuthMeshLoad};
 use crate::auth;
 use crate::bus::frame::spawn_frame_subscriber;
 use crate::bus::input::spawn_input_publisher;
@@ -32,7 +40,8 @@ use crate::bus::presence::spawn_presence_subscriber;
 use crate::bus::wire::{client_time_ms, seal_zenoh_payload};
 use crate::intent_session;
 use crate::jwt_sub;
-use crate::scene::SharedState;
+use crate::mesh::placeholder_error_mesh;
+use crate::scene::{AssetStatusUpdate, RemountedBlake3Update, SharedState};
 use crate::world_token;
 
 const TOKEN_REFRESH_POLL: Duration = Duration::from_secs(5);
@@ -40,6 +49,131 @@ const TOKEN_REFRESH_POLL: Duration = Duration::from_secs(5);
 /// Keep process env in sync for zenoh-connect helpers that still read `ZENOH_CONNECT`.
 fn sync_zenoh_connect_env(endpoint: &str) {
     std::env::set_var("ZENOH_CONNECT", endpoint);
+}
+
+/// Spawn remount worker + room bus with `Some(blake3_tx)` (x007d).
+/// Worker is started only when the bus actually starts (`Ok(true)`).
+fn start_room_bus_with_remount(
+    shared: &Arc<SharedState>,
+    session: &zenoh::Session,
+) -> Result<bool> {
+    let (blake3_tx, blake3_rx) = mpsc::sync_channel::<Result<String, String>>(4);
+    let started = ensure_room_bus(shared, session, Some(blake3_tx))?;
+    if started {
+        let shared_worker = Arc::clone(shared);
+        // If spawn fails after bus start, Manifest still holds `blake3_tx` with no consumer
+        // until Leave `close_zenoh` / `room_bus_started` clear + bind retry recreates the bus.
+        // Err propagates so bind does not pretend remount is live.
+        thread::Builder::new()
+            .name("mesh-remount".into())
+            .spawn(move || mesh_remount_loop(shared_worker, blake3_rx))
+            .context("spawn mesh-remount")?;
+    }
+    Ok(started)
+}
+
+/// Manifest blake3 → PlaceRead + assets GET → [`SharedState::try_apply_world_remount`].
+///
+/// Snapshot [`SharedState::remount_generation`] when a job starts; apply mesh + remounted/status
+/// only through the generation-gated helper (atomic vs Leave / host-generation).
+/// Placeholder / missing access-token paths do **not** set `remounted_blake3`, and Manifest
+/// skips re-sending the same hex — GET failure for that blake3 stays sticky until Leave / re-Join
+/// (x007d non-guarantee).
+fn mesh_remount_loop(shared: Arc<SharedState>, blake3_rx: mpsc::Receiver<Result<String, String>>) {
+    while let Ok(msg) = blake3_rx.recv() {
+        let job_gen = shared.remount_generation.load(Ordering::SeqCst);
+        match msg {
+            Ok(hex) => {
+                if shared.remounted_blake3().as_deref() == Some(hex.as_str()) {
+                    log::debug!(
+                        "mesh remount skip: already remounted blake3={}",
+                        &hex[..8.min(hex.len())]
+                    );
+                    continue;
+                }
+                let access = shared
+                    .auth
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.access_token.clone())
+                    .unwrap_or_default();
+                if access.is_empty() {
+                    log::warn!("mesh remount: no access token; placeholder (sticky until Leave)");
+                    if !shared.try_apply_world_remount(
+                        placeholder_error_mesh(),
+                        job_gen,
+                        RemountedBlake3Update::Unchanged,
+                        AssetStatusUpdate::Set("Mesh remount needs access token".into()),
+                    ) {
+                        log::debug!("mesh remount discard: left during no-token placeholder");
+                    }
+                    continue;
+                }
+                // Cheap early-out before HTTP; authoritative gate is try_apply after GET.
+                if !shared.remount_apply_allowed(job_gen) {
+                    log::debug!(
+                        "mesh remount skip GET: generation/wire_cap stale blake3={}",
+                        &hex[..8.min(hex.len())]
+                    );
+                    continue;
+                }
+                let place = try_place_read_for_mesh(&shared);
+                let outcome =
+                    load_auth_mesh(&shared.get_assets_url(), &hex, &access, place.as_deref());
+                match outcome {
+                    AuthMeshLoad::Ready(mesh) => {
+                        let verts = mesh.positions.len();
+                        if shared.try_apply_world_remount(
+                            mesh,
+                            job_gen,
+                            RemountedBlake3Update::Set(Some(hex.clone())),
+                            AssetStatusUpdate::Clear,
+                        ) {
+                            log::info!(
+                                "mesh remount ready: blake3={} verts={}",
+                                &hex[..8.min(hex.len())],
+                                verts
+                            );
+                        } else {
+                            log::info!(
+                                "mesh remount discard: generation/wire_cap changed during GET blake3={}",
+                                &hex[..8.min(hex.len())]
+                            );
+                        }
+                    }
+                    AuthMeshLoad::Placeholder { mesh, status } => {
+                        // Do not set remounted_blake3 — Manifest will not re-send this hex;
+                        // recovery is Leave / re-Join (documented non-guarantee).
+                        if !shared.try_apply_world_remount(
+                            mesh,
+                            job_gen,
+                            RemountedBlake3Update::Unchanged,
+                            AssetStatusUpdate::Set(status),
+                        ) {
+                            log::info!(
+                                "mesh remount discard: stale after placeholder GET blake3={}",
+                                &hex[..8.min(hex.len())]
+                            );
+                        }
+                    }
+                }
+            }
+            Err(reason) => {
+                let warn = reason.clone();
+                if shared.try_apply_world_remount(
+                    placeholder_error_mesh(),
+                    job_gen,
+                    RemountedBlake3Update::Set(None),
+                    AssetStatusUpdate::Set(reason),
+                ) {
+                    log::warn!("mesh remount: {warn}");
+                } else {
+                    log::debug!("mesh remount discard: left during no-mesh Manifest");
+                }
+            }
+        }
+    }
+    log::info!("mesh-remount worker exit (channel closed)");
 }
 
 /// Explicit close so bus threads stop even when another strong `Session` clone still exists.
@@ -142,10 +276,8 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
 ///
 /// Idempotent via `room_bus_started`. On spawn failure the flag is cleared so retry works.
 ///
-/// `blake3_tx`: callers pass **`None` today** (blake3 drained on a background thread; display
-/// mesh stays Coin). **`Some(tx)` is the future remount resume point** — first Manifest mesh
-/// blake3 can again drive assets GET when Join remount lands. Late remount / boot Manifest
-/// wait remain non-goals until then.
+/// `blake3_tx`: remount worker sender (`Some` from bind). `None` still drains on a background
+/// thread (tests / callers that do not remount).
 pub(crate) fn ensure_room_bus(
     shared: &Arc<SharedState>,
     session: &zenoh::Session,
@@ -244,7 +376,7 @@ fn bind_room_after_join_inner(
         let session = zenoh
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("bind_room_after_join: no zenoh session"))?;
-        ensure_room_bus(shared, session, None)
+        start_room_bus_with_remount(shared, session)
     };
     if let Err(err) = bus {
         // Partial spawn_* may leave threads on this session; close() ends Weak recv/put.
@@ -256,7 +388,7 @@ fn bind_room_after_join_inner(
             let session = zenoh
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("bind_room_after_join: no zenoh after reopen"))?;
-            ensure_room_bus(shared, session, None)
+            start_room_bus_with_remount(shared, session)
         };
         if let Err(retry_err) = retry {
             close_zenoh(zenoh);
