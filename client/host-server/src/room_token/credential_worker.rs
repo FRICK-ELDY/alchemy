@@ -1,7 +1,9 @@
 //! Credential worker thread + physics-facing publish snapshot (x003d).
 //!
 //! Guarantees: credential / seal HTTP runs on a dedicated thread; failure keeps the last good
-//! snapshot and retries with backoff; publish stops after hard expiry (process stays up).
+//! snapshot and retries with backoff; publish stops after hard expiry (process stays up);
+//! host Room Token key sync ≈15s advances only after a successful refresh (failure re-arms
+//! with backoff, capped by the sync interval).
 //! Non-guarantees: Zenoh put path (x0042), auth UI.
 
 use super::credential_chain::{
@@ -200,9 +202,10 @@ pub fn spawn_credential_worker(
                     creds.host_refresh_at,
                     creds.attest_refresh_at,
                 );
+                // Advance `next_room_key_sync` only after a successful refresh (below);
+                // on failure, backoff + short re-arm keep the ≈15s guarantee closer.
                 let key_sync_due = now >= next_room_key_sync;
                 if key_sync_due {
-                    next_room_key_sync = now + ROOM_KEY_SYNC_INTERVAL;
                     plan = Some(match plan {
                         Some(mut p) => {
                             p.refresh_host = true;
@@ -243,14 +246,18 @@ pub fn spawn_credential_worker(
                                 .host_hard_expire_at
                                 .checked_duration_since(Instant::now())
                                 .unwrap_or(crate::room_aead::DEFAULT_PREV_GRACE);
-                            if let Ok(mut keys) = cfg.room_aead.write() {
-                                room_aead_advanced = keys.apply_token_key(
-                                    creds.room_key,
-                                    creds.room_key_epoch,
-                                    grace,
-                                    creds.room_key_prev,
-                                );
-                            }
+                            // Poison must fail the refresh so `next_room_key_sync` does not
+                            // advance as if the new epoch were applied.
+                            let mut keys = cfg
+                                .room_aead
+                                .write()
+                                .map_err(|_| anyhow!("room_aead RwLock poisoned"))?;
+                            room_aead_advanced = keys.apply_token_key(
+                                creds.room_key,
+                                creds.room_key_epoch,
+                                grace,
+                                creds.room_key_prev,
+                            );
                         }
                     }
                     if attest_rotated || seal_due || seal_cache.seal.is_empty() {
@@ -323,12 +330,19 @@ pub fn spawn_credential_worker(
                 match refresh_result {
                     Ok(_) => {
                         backoff = CREDENTIAL_BACKOFF_START;
+                        if key_sync_due {
+                            next_room_key_sync = Instant::now() + ROOM_KEY_SYNC_INTERVAL;
+                        }
                         thread::sleep(CREDENTIAL_WORKER_IDLE);
                     }
                     Err(err) => {
                         log::warn!(
                             "credential refresh failed (retry with backoff; keeping last good snapshot): {err:#}"
                         );
+                        if key_sync_due {
+                            // Fail-closed soft retry: do not wait a full 15s after a sync miss.
+                            next_room_key_sync = Instant::now() + backoff.min(ROOM_KEY_SYNC_INTERVAL);
+                        }
                         thread::sleep(backoff);
                         backoff = backoff.saturating_mul(2).min(CREDENTIAL_BACKOFF_MAX);
                     }

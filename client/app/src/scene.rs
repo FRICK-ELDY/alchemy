@@ -46,6 +46,8 @@ pub const BOX_DRAW_SLOTS: usize = 16;
 pub use alchemy_shared_sim::DEFAULT_BOX_HALF_EXTENT as BOX_HALF_EXTENT;
 /// Placeholder size for remote player (meters half-extent).
 pub const REMOTE_ROOT_HALF_EXTENT: f32 = 0.25;
+/// Guest Room Token probe cadence for `room_key_epoch` (x007e; matches host ≈15s sync).
+pub const ROOM_KEY_EPOCH_PROBE: Duration = Duration::from_secs(15);
 
 pub fn is_user_root_entity(id: u32) -> bool {
     scene_entry_is_user_root(id)
@@ -210,10 +212,13 @@ pub struct SharedState {
     /// Room key epoch from Token (x007e); paired with `room_key` for AEAD AAD.
     pub room_key_epoch: AtomicU64,
     /// Token refresh saw a higher `room_key_epoch` — UI must Rejoin / Leave (x007e KeyStale).
+    /// Live AEAD stays on the pre-stale pair until [`Self::commit_room_aead`] (Join / Rejoin
+    /// always re-fetches Token; no pending key stash).
     pub key_stale: AtomicBool,
-    /// Stashed `(key, epoch)` from refresh while KeyStale; live AEAD stays on the old pair
-    /// until [`Self::commit_room_aead`] (Join / Rejoin).
-    pub pending_room_aead: Mutex<Option<([u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN], u64)>>,
+    /// Next guest Room Token probe for epoch detection (x007e; ≈ host 15s sync).
+    pub room_key_epoch_probe_at: Mutex<Option<Instant>>,
+    /// Rate-limit AEAD-fail → Token refresh nudges.
+    pub aead_key_refresh_nudge_at: Mutex<Option<Instant>>,
     /// Once true, manifest/frame/presence/input subscribers are running (x004e).
     /// Cleared on Leave and before re-attach after Zenoh reopen.
     pub room_bus_started: std::sync::atomic::AtomicBool,
@@ -584,8 +589,9 @@ impl SharedState {
         self.key_stale.store(stale, Ordering::SeqCst);
     }
 
-    /// Token **refresh** path: if epoch advanced, enter KeyStale and stash the new pair
-    /// without swapping live AEAD (host may still seal the old epoch until it syncs).
+    /// Token **refresh** path: if epoch advanced, enter KeyStale without swapping live AEAD.
+    /// New key material from this response is discarded — Rejoin re-fetches and
+    /// [`Self::commit_room_aead`] installs it.
     pub fn note_room_aead_from_refresh(
         &self,
         room_key: [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
@@ -594,20 +600,27 @@ impl SharedState {
         let prev = self.room_key_epoch();
         let advanced = epoch > prev && prev > 0;
         if !advanced {
-            // Same epoch (or first material): keep live in sync with Token bytes.
+            // Same epoch as live (or first material): keep live bytes in sync.
+            // `commit` clears KeyStale — OK only because world never decreases
+            // `room_key_epoch`. After KeyStale (Token already showed a higher epoch),
+            // later Tokens must still carry that higher value, so this branch is not
+            // taken again until Rejoin installs the new live epoch.
             self.commit_room_aead(room_key, epoch);
             return false;
         }
-        if let Ok(mut pending) = self.pending_room_aead.lock() {
-            *pending = Some((room_key, epoch));
+        if !self.key_stale() {
+            self.set_key_stale(true);
+            // Drop in-flight remounts; pose bus keeps using old AEAD until Rejoin (x007e).
+            self.bump_remount_generation();
+            log::info!("room_key_epoch advanced {prev} → {epoch} (KeyStale; live AEAD unchanged)");
         }
-        self.set_key_stale(true);
-        self.bump_remount_generation();
-        log::info!("room_key_epoch advanced {prev} → {epoch} (KeyStale; live AEAD unchanged)");
+        let _ = room_key; // Rejoin fetches a fresh Token; do not hot-swap here.
+        // Keep probing so soft TTL / Token stay fresh while waiting for Rejoin.
+        self.schedule_room_key_epoch_probe(ROOM_KEY_EPOCH_PROBE);
         true
     }
 
-    /// Join / Rejoin: install live `(key, epoch)` and clear KeyStale / pending.
+    /// Join / Rejoin: install live `(key, epoch)` and clear KeyStale.
     pub fn commit_room_aead(
         &self,
         room_key: [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
@@ -620,10 +633,43 @@ impl SharedState {
         *key_guard = Some(Arc::new(room_key));
         self.set_room_key_epoch(epoch);
         drop(key_guard);
-        if let Ok(mut pending) = self.pending_room_aead.lock() {
-            *pending = None;
-        }
         self.set_key_stale(false);
+        self.schedule_room_key_epoch_probe(ROOM_KEY_EPOCH_PROBE);
+    }
+
+    /// Schedule the next guest epoch probe (Token re-fetch while joined).
+    pub fn schedule_room_key_epoch_probe(&self, after: Duration) {
+        if let Ok(mut slot) = self.room_key_epoch_probe_at.lock() {
+            *slot = Some(Instant::now() + after);
+        }
+    }
+
+    pub fn room_key_epoch_probe_due(&self, now: Instant) -> bool {
+        self.room_key_epoch_probe_at
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .is_some_and(|t| now >= t)
+    }
+
+    /// AEAD open failed while joined — nudge Token refresh so KeyStale can fire before FRAME_STALL.
+    ///
+    /// Not epoch-tagged: corrupt / kind-mismatch envelopes also refresh at most every 2s.
+    /// Acceptable world load under rare wire errors; steady abuse still hits KeyStale or Leave.
+    pub fn nudge_room_token_refresh_after_aead_fail(&self) {
+        if self.key_stale() || !self.auth.lock().ok().is_some_and(|g| g.is_joined()) {
+            return;
+        }
+        let Ok(mut slot) = self.aead_key_refresh_nudge_at.lock() else {
+            return;
+        };
+        let now = Instant::now();
+        if slot.is_some_and(|t| now.duration_since(t) < Duration::from_secs(2)) {
+            return;
+        }
+        *slot = Some(now);
+        drop(slot);
+        self.force_room_token_refresh_soon();
     }
 
     pub fn leave_room_local(&self) {
@@ -640,8 +686,11 @@ impl SharedState {
         if let Ok(mut key) = self.room_key.lock() {
             *key = None;
         }
-        if let Ok(mut pending) = self.pending_room_aead.lock() {
-            *pending = None;
+        if let Ok(mut probe) = self.room_key_epoch_probe_at.lock() {
+            *probe = None;
+        }
+        if let Ok(mut nudge) = self.aead_key_refresh_nudge_at.lock() {
+            *nudge = None;
         }
         self.set_room_key_epoch(0);
         self.set_key_stale(false);
@@ -845,6 +894,12 @@ impl SharedState {
             *retry = None;
         }
         let access = auth.access_token.clone();
+        // Defer epoch probe: pending suppresses fetch; a past-due probe_at must not pin
+        // token_refresh_wait after pending clears. Drop lock order before probe mutex.
+        drop(pending);
+        drop(sess);
+        drop(auth);
+        self.schedule_room_key_epoch_probe(ROOM_KEY_EPOCH_PROBE);
         log::info!("pending Intent session for host generation (live key unchanged until Token)");
         Some((session_pub_b64, access))
     }

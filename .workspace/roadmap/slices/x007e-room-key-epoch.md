@@ -56,6 +56,7 @@
 ### client
 
 - Join Token の epoch を保持；refresh で epoch が進めば KeyStale（**live AEAD は旧鍵のまま**；新鍵は Rejoin で commit）
+- guest は soft TTL に加え **≈15s Token probe** と **AEAD open 失敗時の refresh nudge** で host の epoch 採用に追従（FRAME_STALL より先に KeyStale）
 - KeyStale UI（x007c）: 「部屋の更新あり・再接続が必要」→ Rejoin（新 Token）/ Leave
 - remount / bus は Leave→Join と同じ世代ゲートで捨てる（x007d `remount_generation`；KeyStale 入りでも bump）
 
