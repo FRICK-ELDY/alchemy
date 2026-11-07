@@ -178,7 +178,7 @@ stateDiagram-v2
 
 ## やらない（本 Slice）
 
-- Room key epoch / AAD 回転の実装本体（improvement **P0-2**・別採番）
+- Room key epoch / AAD 回転の実装本体 → **[x007e](x007e-room-key-epoch.md)**（improvement **P0-2**）
 - WAN ACL のキー式縮小・mTLS room 束縛
 - Group ACL / 招待コード / ディープリンク本実装
 - Prefab 多子・XR Inventory
@@ -197,7 +197,7 @@ stateDiagram-v2
 | 3 | Join 後 `Waiting for host` / `Live` シェル（ホスト不在の明示 ＋ Leave ＋ owner 直接 Host 起動導線） | **done**（Frame 到達で Live；3s stall で Live→WaitingHost；Host Rescue は leave→rejoin MVP；KeyStale は殻のみ） |
 | 3b | レビュー重大修正: `ROOM_ID` env 同期・HostSupervisor room retarget 再起動・Host CTA owner のみ・カタログ owned∪public∪social 候補 | **done** |
 | 4 | Home の固定 Join/Start を Worlds へ移設（Settings に上級者・デバッグ用として残し可） | **done**（Home＝Open Worlds / Create；Settings Advanced＝固定 ROOM_ID Join/Start） |
-| 5 | architecture（client / world-server）鮮度更新・`KeyStale` 殻実装（epoch Slice 待ち） | **partial**（world-server.md retarget 保証追記；KeyStale UI 本採用は epoch 待ち） |
+| 5 | architecture（client / world-server）鮮度更新・`KeyStale` 殻実装（epoch Slice 待ち） | **partial**（world-server.md retarget 保証追記；KeyStale UI 本採用は [x007e](x007e-room-key-epoch.md)） |
 
 ---
 
