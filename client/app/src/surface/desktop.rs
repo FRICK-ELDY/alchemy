@@ -1020,15 +1020,19 @@ impl ApplicationHandler for App {
                         }
                         log::info!("system_ui open={}", self.ui.state.open);
                     }
-                    if pressed && self.ui.state.open && self.ui.state.tab == DashTab::Home {
+                    let dash_text = self.ui.state.open
+                        && matches!(self.ui.state.tab, DashTab::Home | DashTab::Settings);
+                    if pressed && dash_text {
                         match code {
                             KeyCode::Backspace => {
                                 self.ui.on_home_backspace();
                             }
-                            KeyCode::Tab => {
+                            KeyCode::Tab if self.ui.state.tab == DashTab::Home => {
                                 self.ui.on_home_tab_key();
                             }
-                            KeyCode::Enter | KeyCode::NumpadEnter if !event.repeat => {
+                            KeyCode::Enter | KeyCode::NumpadEnter
+                                if !event.repeat && self.ui.state.tab == DashTab::Home =>
+                            {
                                 let action = self.ui.on_home_enter();
                                 handle_ui_action(
                                     action,
@@ -1045,7 +1049,9 @@ impl ApplicationHandler for App {
                 }
                 if pressed {
                     if let Some(text) = event.text.as_ref() {
-                        if self.ui.state.open && self.ui.state.tab == DashTab::Home {
+                        let dash_text = self.ui.state.open
+                            && matches!(self.ui.state.tab, DashTab::Home | DashTab::Settings);
+                        if dash_text {
                             // Skip control-ish single chars already handled as keys.
                             if text != "\u{8}" && text != "\t" && text != "\r" && text != "\n" {
                                 self.ui.on_text_input(text);
@@ -1273,7 +1279,7 @@ fn finish_host_session_ok(
 struct JoinUiOpts<'a> {
     ok_status: &'a str,
     ok_log: &'a str,
-    /// Worlds catalog Join: Waiting shell. Home Join keeps prior Home UX.
+    /// Worlds / Settings Advanced Join: open Waiting shell after ticket OK.
     enter_waiting_shell: bool,
     can_host_rescue_on_ok: bool,
 }
@@ -1563,7 +1569,15 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             }
-            let level = ui.state.home_access_level;
+            let room = ui.state.home_room_id.trim().to_string();
+            if room.is_empty() {
+                ui.state.home_status =
+                    "Set room_id before Start (Settings Advanced or create panel)".into();
+                ui.mark_dash_form_dirty();
+                ui.rebuild();
+                return;
+            }
+            // Auth gate before Leave (same order as Worlds Join/Host).
             let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
             let Some(access) = access else {
                 ui.state.home_status = "Sign in before starting a session".into();
@@ -1571,6 +1585,12 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             };
+            // Contract: Leave before set_room_id.
+            leave_room(shared, zenoh);
+            clear_worlds_session_shell(ui);
+            shared.set_room_id(Arc::<str>::from(room.as_str()));
+            ui.state.home_room_id = room;
+            let level = ui.state.home_access_level;
             let shared_job = Arc::clone(shared);
             ui.state.home_status = format!("Starting host + session ({})…", level.as_str());
             ui.mark_dash_form_dirty();
@@ -1617,6 +1637,14 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             }
+            let room = ui.state.home_room_id.trim().to_string();
+            if room.is_empty() {
+                ui.state.home_status = "Set room_id before Join (Settings Advanced)".into();
+                ui.mark_dash_form_dirty();
+                ui.rebuild();
+                return;
+            }
+            // Auth gate before Leave (same order as Worlds Join/Host).
             let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
             let Some(access) = access else {
                 ui.state.home_status = "Sign in before joining".into();
@@ -1624,8 +1652,27 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             };
+            // Owner Rescue CTA only if catalog already marked this room as ours.
+            let catalog_role = ui
+                .state
+                .worlds_rooms
+                .iter()
+                .find(|(id, _, _, _)| id == &room)
+                .map(|(_, _, role, _)| role.as_str());
+            let can_host_rescue_on_ok = catalog_role == Some("owner");
+            // Tip only when ownership is unknown (room missing from loaded catalog).
+            let ownership_unknown = catalog_role.is_none();
+            // Contract: Leave before set_room_id.
+            leave_room(shared, zenoh);
+            clear_worlds_session_shell(ui);
+            shared.set_room_id(Arc::<str>::from(room.as_str()));
+            ui.state.home_room_id = room;
             let shared_job = Arc::clone(shared);
-            ui.state.home_status = "Joining room…".into();
+            ui.state.home_status = if ownership_unknown {
+                "Joining room… (Refresh Worlds if you need Host Rescue as owner)".into()
+            } else {
+                "Joining room…".into()
+            };
             ui.mark_dash_form_dirty();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
@@ -1633,10 +1680,11 @@ fn handle_ui_action(
             spawn_auth_http(move || {
                 let result =
                     join_room_with_access(&shared_job, &access).map_err(|e| format!("{e:#}"));
+                // Align with Worlds Join: Waiting/Live shell after ticket OK.
                 let _ = tx.send(AuthJobOutcome::JoinRoom {
                     result,
-                    enter_waiting_shell: false,
-                    can_host_rescue_on_ok: false,
+                    enter_waiting_shell: true,
+                    can_host_rescue_on_ok,
                 });
             });
         }

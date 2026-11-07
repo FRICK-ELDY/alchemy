@@ -282,6 +282,7 @@ impl SystemUi {
         }
         match hit {
             WidgetId::TabExit | WidgetId::CloseSession => {
+                self.clear_settings_room_focus();
                 self.state.shell = OnboardingShell::Dash;
                 self.state.tab = DashTab::Exit;
                 self.mark_dash_chrome_dirty();
@@ -296,6 +297,7 @@ impl SystemUi {
                 UiAction::None
             }
             WidgetId::TabWorlds => {
+                self.clear_settings_room_focus();
                 self.state.shell = OnboardingShell::Dash;
                 self.state.tab = DashTab::Worlds;
                 self.mark_dash_chrome_dirty();
@@ -303,6 +305,7 @@ impl SystemUi {
                 UiAction::WorldsRefresh
             }
             WidgetId::TabInventory => {
+                self.clear_settings_room_focus();
                 self.state.shell = OnboardingShell::Dash;
                 self.state.tab = DashTab::Inventory;
                 self.mark_dash_chrome_dirty();
@@ -321,11 +324,29 @@ impl SystemUi {
                 self.rebuild();
                 UiAction::WorldsRefresh
             }
-            WidgetId::WorldsCreate => {
+            WidgetId::WorldsCreate | WidgetId::HomeNewWorld => {
                 self.state.home_create_open = true;
                 self.state.tab = DashTab::Home;
                 self.state.shell = OnboardingShell::Dash;
+                self.state.home_focus = Some(crate::system_ui::HomeField::SessionName);
+                self.state.home_status = if self.state.home_session_actions_enabled {
+                    "Pick access level, then Start session".into()
+                } else {
+                    "Create panel (browse only) — Start HTTP is Desktop-only".into()
+                };
                 self.mark_dash_chrome_dirty();
+                self.mark_dash_form_dirty();
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::HomeOpenWorlds => {
+                self.clear_settings_room_focus();
+                self.state.home_create_open = false;
+                self.state.tab = DashTab::Worlds;
+                self.state.shell = OnboardingShell::Dash;
+                self.state.home_status = "Worlds catalog — Join as guest or Host this room".into();
+                self.mark_dash_chrome_dirty();
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
@@ -409,6 +430,7 @@ impl SystemUi {
                 UiAction::None
             }
             WidgetId::TabHome => {
+                self.clear_settings_room_focus();
                 if self.state.home_logged_in_as.is_some() && !self.state.home_create_open {
                     // Return to PLAY TOGETHER / SOLO hub when signed in.
                     self.state.shell = OnboardingShell::MainHub;
@@ -490,18 +512,23 @@ impl SystemUi {
                 UiAction::None
             }
             WidgetId::MainPlayTogether => {
+                self.clear_settings_room_focus();
+                self.state.shell = OnboardingShell::Dash;
+                self.state.tab = DashTab::Worlds;
+                self.state.home_create_open = false;
                 self.state.home_status =
-                    "PLAY TOGETHER session list is a stub (not available yet)".into();
-                self.mark_dash_form_dirty();
+                    "PLAY TOGETHER — Worlds catalog (session list stub still pending)".into();
+                self.mark_dash_logic_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::MainSoloHost => {
+                self.clear_settings_room_focus();
                 self.state.shell = OnboardingShell::Dash;
-                self.state.tab = DashTab::Home;
+                self.state.tab = DashTab::Worlds;
                 self.state.home_create_open = false;
                 self.state.home_status =
-                    "SOLO — create or join (host must use the same AUTH/WORLD URLs)".into();
+                    "SOLO — use Worlds to Create / Host / Join (same AUTH/WORLD URLs)".into();
                 self.mark_dash_logic_dirty();
                 self.rebuild();
                 UiAction::None
@@ -598,22 +625,13 @@ impl SystemUi {
                 self.mark_dash_logic_dirty();
                 UiAction::AuthLogout
             }
-            WidgetId::HomeNewWorld => {
-                self.state.home_create_open = true;
-                self.state.home_focus = Some(HomeField::SessionName);
-                self.state.home_status = if self.state.home_session_actions_enabled {
-                    "Pick access level, then Start session (placeholder UI)".into()
-                } else {
-                    "Create panel (browse only) — Start/Join HTTP is Desktop-only".into()
-                };
-                self.mark_dash_form_dirty();
-                self.rebuild();
-                UiAction::None
-            }
             WidgetId::HomeCreateBack => {
                 self.state.home_create_open = false;
                 self.state.home_focus = None;
-                self.state.home_status = "Signed in — create or join a world".into();
+                self.state.tab = DashTab::Worlds;
+                self.state.home_status =
+                    "Worlds — create cancelled; pick a room or Create world".into();
+                self.mark_dash_chrome_dirty();
                 self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
@@ -625,7 +643,7 @@ impl SystemUi {
                 UiAction::None
             }
             WidgetId::HomeTemplateGrid => UiAction::None,
-            WidgetId::HomeStartSession => {
+            WidgetId::HomeStartSession | WidgetId::SettingsStartSession => {
                 if self.state.home_session_actions_enabled {
                     UiAction::StartSession
                 } else {
@@ -635,7 +653,7 @@ impl SystemUi {
                     UiAction::None
                 }
             }
-            WidgetId::HomeJoinRoom => {
+            WidgetId::HomeJoinRoom | WidgetId::SettingsJoinRoom => {
                 if self.state.home_session_actions_enabled {
                     UiAction::JoinRoom
                 } else {
@@ -644,6 +662,16 @@ impl SystemUi {
                     self.rebuild();
                     UiAction::None
                 }
+            }
+            WidgetId::SettingsRoomId => {
+                if self.state.home_logged_in_as.is_some() {
+                    self.state.home_focus = Some(HomeField::RoomId);
+                } else {
+                    self.clear_settings_room_focus();
+                }
+                self.mark_dash_form_dirty();
+                self.rebuild();
+                UiAction::None
             }
             // Access-level widgets handled above via `access_level_from_widget`.
             WidgetId::HomeAccessPrivate
@@ -665,6 +693,20 @@ impl SystemUi {
         }
     }
 
+    fn clear_settings_room_focus(&mut self) {
+        if self.state.home_focus == Some(HomeField::RoomId) {
+            self.state.home_focus = None;
+            self.mark_dash_form_dirty();
+        }
+    }
+
+    /// Settings Advanced room_id field is editable only while that tab is active.
+    fn allows_settings_room_edit(&self) -> bool {
+        self.state.shell == OnboardingShell::Dash
+            && self.state.tab == DashTab::Settings
+            && self.state.home_focus == Some(HomeField::RoomId)
+    }
+
     /// Desktop text into focused Home / onboarding field (ignored when dash closed).
     pub fn on_text_input(&mut self, text: &str) {
         if !self.state.open {
@@ -676,15 +718,19 @@ impl SystemUi {
             self.rebuild();
             return;
         }
+        let settings_room = self.allows_settings_room_edit();
         if !matches!(
             self.state.shell,
             OnboardingShell::Step2Auth | OnboardingShell::Dash
-        ) || (self.state.shell == OnboardingShell::Dash && self.state.tab != DashTab::Home)
+        ) || (self.state.shell == OnboardingShell::Dash
+            && self.state.tab != DashTab::Home
+            && !settings_room)
         {
             return;
         }
-        // Logged-in hub: no editable fields. Create panel: session name only.
-        if self.state.home_logged_in_as.is_some() && !self.state.home_create_open {
+        // Logged-in hub: no editable fields. Create: session name. Settings: room_id.
+        if self.state.home_logged_in_as.is_some() && !self.state.home_create_open && !settings_room
+        {
             return;
         }
         if self.state.home_logged_in_as.is_some()
@@ -708,11 +754,18 @@ impl SystemUi {
             self.rebuild();
             return;
         }
+        let settings_room = self.allows_settings_room_edit();
         if !matches!(
             self.state.shell,
             OnboardingShell::Step2Auth | OnboardingShell::Dash
-        ) || (self.state.shell == OnboardingShell::Dash && self.state.tab != DashTab::Home)
+        ) || (self.state.shell == OnboardingShell::Dash
+            && self.state.tab != DashTab::Home
+            && !settings_room)
         {
+            return;
+        }
+        // RoomId must not be edited from Home (invisible) even if focus leaked.
+        if self.state.home_focus == Some(HomeField::RoomId) && !settings_room {
             return;
         }
         self.state.home_backspace();
@@ -858,9 +911,9 @@ pub enum UiAction {
     AuthRegister,
     /// Home tab: logout + leave room locally (x0018).
     AuthLogout,
-    /// Create panel: ensure visibility + guest join (x0037).
+    /// Create panel / Settings Advanced: ensure visibility + local host when Applied (x0037 / x007c).
     StartSession,
-    /// Hub: guest join current `ROOM_ID` without create (x0037).
+    /// Settings Advanced: guest join fixed `home_room_id` (Waiting shell · x007c Phase 4).
     JoinRoom,
     /// Settings: VR hotswitch auto toggled (surface writes PresentationGate).
     HotswitchAutoChanged,

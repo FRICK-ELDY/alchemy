@@ -59,6 +59,8 @@ pub enum HomeField {
     Birthday,
     /// Create-world session display name (x0037).
     SessionName,
+    /// Settings advanced: fixed `ROOM_ID` for debug Join/Start (x007c Phase 4).
+    RoomId,
 }
 
 #[derive(Clone, Debug)]
@@ -550,6 +552,9 @@ impl DashState {
             }
             return;
         }
+        if !self.home_field_edit_allowed() {
+            return;
+        }
         let Some(field) = self.home_focus else {
             return;
         };
@@ -560,9 +565,11 @@ impl DashState {
             HomeField::Email => &mut self.home_email,
             HomeField::Birthday => &mut self.home_birthday,
             HomeField::SessionName => &mut self.home_session_name,
+            HomeField::RoomId => &mut self.home_room_id,
         };
         let max = match field {
             HomeField::SessionName => SESSION_NAME_MAX,
+            HomeField::RoomId => HOME_ACCOUNT_FIELD_MAX,
             _ => HOME_ACCOUNT_FIELD_MAX,
         };
         for ch in text.chars() {
@@ -578,15 +585,7 @@ impl DashState {
             self.custom_host.pop();
             return;
         }
-        // Logged-in hub: no account fields visible — ignore.
-        if self.home_logged_in_as.is_some() && !self.home_create_open {
-            return;
-        }
-        // Create panel: only session name is editable.
-        if self.home_logged_in_as.is_some()
-            && self.home_create_open
-            && self.home_focus != Some(HomeField::SessionName)
-        {
+        if !self.home_field_edit_allowed() {
             return;
         }
         let Some(field) = self.home_focus else {
@@ -599,8 +598,30 @@ impl DashState {
             HomeField::Email => &mut self.home_email,
             HomeField::Birthday => &mut self.home_birthday,
             HomeField::SessionName => &mut self.home_session_name,
+            HomeField::RoomId => &mut self.home_room_id,
         };
         target.pop();
+    }
+
+    /// Defense in depth for hub / create / RoomId (SystemUi still gates Settings tab).
+    fn home_field_edit_allowed(&self) -> bool {
+        let Some(field) = self.home_focus else {
+            return false;
+        };
+        if self.home_logged_in_as.is_none() {
+            return !matches!(field, HomeField::SessionName | HomeField::RoomId);
+        }
+        match field {
+            HomeField::SessionName => self.home_create_open,
+            // RoomId: DashState cannot see tab; SystemUi must already restrict to Settings.
+            HomeField::RoomId => !self.home_create_open,
+            // Logged-in hub has no account fields.
+            HomeField::Identifier
+            | HomeField::Password
+            | HomeField::Username
+            | HomeField::Email
+            | HomeField::Birthday => false,
+        }
     }
 
     pub fn cycle_home_focus(&mut self) {
@@ -655,6 +676,7 @@ fn field_value(state: &DashState, field: HomeField) -> String {
         HomeField::Email => state.home_email.clone(),
         HomeField::Birthday => state.home_birthday.clone(),
         HomeField::SessionName => state.home_session_name.clone(),
+        HomeField::RoomId => state.home_room_id.clone(),
     }
 }
 
@@ -1145,49 +1167,39 @@ fn rebuild_home(
         );
         y += 36.0;
 
-        let new_w = Rect::new(x, y, 240.0, 48.0);
-        tree.push_rect(new_w, state.interact(WidgetId::HomeNewWorld, ACCENT));
+        // x007c Phase 4: Worlds is the primary Join/Host path (not Home Join/Start).
+        let worlds = Rect::new(x, y, 240.0, 48.0);
+        tree.push_rect(worlds, state.interact(WidgetId::HomeOpenWorlds, ACCENT));
         tree.push_label(
             Rect::new(x + 16.0, y + 14.0, 208.0, 22.0),
-            "Create new world",
+            "Open Worlds",
             TEXT,
             1.5,
         );
-        tree.register_hit(WidgetId::HomeNewWorld, new_w);
+        tree.register_hit(WidgetId::HomeOpenWorlds, worlds);
 
-        let join = Rect::new(x + 256.0, y, 180.0, 48.0);
-        if state.home_session_actions_enabled {
-            tree.push_rect(join, state.interact(WidgetId::HomeJoinRoom, BTN));
-            tree.push_label(
-                Rect::new(x + 272.0, y + 14.0, 148.0, 22.0),
-                "Join room",
-                TEXT,
-                1.5,
-            );
-            tree.register_hit(WidgetId::HomeJoinRoom, join);
-        } else {
-            tree.push_rect(join, BTN);
-            tree.push_label(
-                Rect::new(x + 272.0, y + 14.0, 148.0, 22.0),
-                "Join (Desktop)",
-                MUTED,
-                1.5,
-            );
-        }
+        let create = Rect::new(x + 256.0, y, 200.0, 48.0);
+        tree.push_rect(create, state.interact(WidgetId::HomeNewWorld, BTN));
+        tree.push_label(
+            Rect::new(x + 272.0, y + 14.0, 168.0, 22.0),
+            "Create world",
+            TEXT,
+            1.5,
+        );
+        tree.register_hit(WidgetId::HomeNewWorld, create);
         y += 64.0;
-        if !state.home_session_actions_enabled {
-            tree.push_label(
-                Rect::new(x, y, fw, 16.0),
-                "Start/Join HTTP is Desktop-only (XR can browse panel only)",
-                MUTED,
-                1.0,
-            );
-            y += 24.0;
-        }
+
+        tree.push_label(
+            Rect::new(x, y, fw, 32.0),
+            "Catalog Join/Host live on the Worlds tab. Fixed ROOM_ID Join/Start → Settings (advanced).",
+            MUTED,
+            1.0,
+        );
+        y += 40.0;
 
         tree.push_label(
             Rect::new(x, y, fw, 18.0),
-            format!("room_id={} (ROOM_ID / Zenoh)", state.home_room_id),
+            format!("current room_id={} (after Join/Host)", state.home_room_id),
             MUTED,
             1.0,
         );
@@ -1410,7 +1422,7 @@ fn rebuild_home_create(
 
     tree.push_label(
         Rect::new(cx + 120.0, cy0 + 16.0, cw - 140.0, 24.0),
-        "Create new world (placeholder UI)",
+        "Create world — pick access, then Start",
         TEXT,
         2.0,
     );
@@ -1524,7 +1536,10 @@ fn rebuild_home_create(
     );
     tree.push_label(
         Rect::new(right_x + 12.0, ry, right_w - 24.0, 14.0),
-        format!("room_id={} (fixed)", state.home_room_id),
+        format!(
+            "room_id={} (Start uses this; edit in Settings Advanced)",
+            state.home_room_id
+        ),
         MUTED,
         1.0,
     );
@@ -2116,80 +2131,173 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
         }
         // Official Settings Facet body
         DashTab::Settings => {
-            let panel = Rect::new(cx, cy0, cw, ch.min(380.0));
-            tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
-            tree.push_label(
-                Rect::new(cx + 24.0, cy0 + 24.0, cw - 48.0, 24.0),
-                "Locomotion",
-                TEXT,
-                2.0,
-            );
-            tree.push_label(
-                Rect::new(cx + 24.0, cy0 + 60.0, cw - 48.0, 24.0),
-                &state.max_speed_label,
-                TEXT,
-                1.5,
-            );
-            tree.push_label(
-                Rect::new(cx + 24.0, cy0 + 92.0, cw - 48.0, 18.0),
-                "speed edit later (virtual keyboard)",
-                MUTED,
-                1.0,
-            );
-
-            let toggle = Rect::new(cx + 24.0, cy0 + 130.0, (cw - 48.0).min(420.0), 44.0);
-            tree.push_rect(toggle, state.interact(WidgetId::TurnModeToggle, ACCENT));
-            tree.push_label(
-                Rect::new(toggle.x + 16.0, toggle.y + 10.0, toggle.w - 32.0, 24.0),
-                &state.turn_mode_label,
-                TEXT,
-                1.5,
-            );
-            tree.register_hit(WidgetId::TurnModeToggle, toggle);
-
-            tree.push_label(
-                Rect::new(cx + 24.0, cy0 + 190.0, cw - 48.0, 22.0),
-                &state.snap_degrees_label,
-                TEXT,
-                1.5,
-            );
-            tree.push_label(
-                Rect::new(cx + 24.0, cy0 + 220.0, cw - 48.0, 22.0),
-                &state.smooth_turn_label,
-                TEXT,
-                1.5,
-            );
-            tree.push_label(
-                Rect::new(cx + 24.0, cy0 + 252.0, cw - 48.0, 18.0),
-                "snap angle / smooth rate: edit later",
-                MUTED,
-                1.0,
-            );
-            tree.push_label(
-                Rect::new(cx + 24.0, cy0 + 280.0, cw - 48.0, 18.0),
-                "VR: both sticks Y=move (aim), X=turn",
-                MUTED,
-                1.0,
-            );
-
-            let hs = Rect::new(cx + 24.0, cy0 + 310.0, (cw - 48.0).min(520.0), 44.0);
-            let hs_color = if state.hotswitch_available {
-                state.interact(WidgetId::HotswitchAutoToggle, ACCENT)
-            } else {
-                Color::rgba(0.25, 0.26, 0.28, 1.0)
-            };
-            tree.push_rect(hs, hs_color);
-            tree.push_label(
-                Rect::new(hs.x + 16.0, hs.y + 10.0, hs.w - 32.0, 24.0),
-                &state.hotswitch_label,
-                TEXT,
-                1.5,
-            );
-            if state.hotswitch_available {
-                tree.register_hit(WidgetId::HotswitchAutoToggle, hs);
-            }
+            rebuild_settings(tree, state, cx, cy0, cw, ch);
         }
     }
+}
+
+fn rebuild_settings(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
+    let panel = Rect::new(cx, cy0, cw, ch.min(520.0));
+    tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
+    tree.push_label(
+        Rect::new(cx + 24.0, cy0 + 16.0, cw - 48.0, 24.0),
+        "Locomotion",
+        TEXT,
+        2.0,
+    );
+    tree.push_label(
+        Rect::new(cx + 24.0, cy0 + 48.0, cw - 48.0, 22.0),
+        &state.max_speed_label,
+        TEXT,
+        1.5,
+    );
+
+    let toggle = Rect::new(cx + 24.0, cy0 + 80.0, (cw - 48.0).min(420.0), 40.0);
+    tree.push_rect(toggle, state.interact(WidgetId::TurnModeToggle, ACCENT));
+    tree.push_label(
+        Rect::new(toggle.x + 16.0, toggle.y + 10.0, toggle.w - 32.0, 22.0),
+        &state.turn_mode_label,
+        TEXT,
+        1.4,
+    );
+    tree.register_hit(WidgetId::TurnModeToggle, toggle);
+
+    tree.push_label(
+        Rect::new(cx + 24.0, cy0 + 132.0, cw - 48.0, 18.0),
+        &state.snap_degrees_label,
+        TEXT,
+        1.2,
+    );
+    tree.push_label(
+        Rect::new(cx + 24.0, cy0 + 154.0, cw - 48.0, 18.0),
+        &state.smooth_turn_label,
+        TEXT,
+        1.2,
+    );
+
+    let hs = Rect::new(cx + 24.0, cy0 + 184.0, (cw - 48.0).min(520.0), 40.0);
+    let hs_color = if state.hotswitch_available {
+        state.interact(WidgetId::HotswitchAutoToggle, ACCENT)
+    } else {
+        Color::rgba(0.25, 0.26, 0.28, 1.0)
+    };
+    tree.push_rect(hs, hs_color);
+    tree.push_label(
+        Rect::new(hs.x + 16.0, hs.y + 10.0, hs.w - 32.0, 22.0),
+        &state.hotswitch_label,
+        TEXT,
+        1.4,
+    );
+    if state.hotswitch_available {
+        tree.register_hit(WidgetId::HotswitchAutoToggle, hs);
+    }
+
+    // Advanced: fixed ROOM_ID Join/Start (prefer Worlds for normal use · x007c Phase 4).
+    let adv_y = cy0 + 240.0;
+    tree.push_label(
+        Rect::new(cx + 24.0, adv_y, cw - 48.0, 22.0),
+        "Advanced room (debug)",
+        TEXT,
+        1.8,
+    );
+    tree.push_label(
+        Rect::new(cx + 24.0, adv_y + 26.0, cw - 48.0, 28.0),
+        "Prefer Worlds tab for catalog Join/Host. These use a fixed ROOM_ID (env retarget).",
+        MUTED,
+        1.0,
+    );
+
+    let room_field = Rect::new(cx + 24.0, adv_y + 60.0, (cw - 48.0).min(420.0), 36.0);
+    let room_editable = state.home_logged_in_as.is_some();
+    let room_focused = room_editable && state.home_focus == Some(HomeField::RoomId);
+    tree.push_rect(
+        room_field,
+        if room_focused {
+            ACCENT
+        } else if room_editable {
+            state.interact(WidgetId::SettingsRoomId, BTN)
+        } else {
+            BTN
+        },
+    );
+    let room_label = if !room_editable {
+        if state.home_room_id.is_empty() {
+            "room_id (sign in to edit)".into()
+        } else {
+            format!("room_id: {} (sign in to edit)", state.home_room_id)
+        }
+    } else if state.home_room_id.is_empty() {
+        "room_id (click + type)".into()
+    } else {
+        format!("room_id: {}", state.home_room_id)
+    };
+    tree.push_label(
+        Rect::new(
+            room_field.x + 12.0,
+            room_field.y + 8.0,
+            room_field.w - 24.0,
+            20.0,
+        ),
+        room_label,
+        if room_editable { TEXT } else { MUTED },
+        1.2,
+    );
+    if room_editable {
+        tree.register_hit(WidgetId::SettingsRoomId, room_field);
+    }
+
+    let btn_y = adv_y + 108.0;
+    let join = Rect::new(cx + 24.0, btn_y, 160.0, 40.0);
+    let start = Rect::new(cx + 200.0, btn_y, 180.0, 40.0);
+    if state.home_logged_in_as.is_some() && state.home_session_actions_enabled {
+        tree.push_rect(join, state.interact(WidgetId::SettingsJoinRoom, BTN));
+        tree.push_label(
+            Rect::new(join.x + 12.0, join.y + 10.0, join.w - 24.0, 20.0),
+            "Join room",
+            TEXT,
+            1.3,
+        );
+        tree.register_hit(WidgetId::SettingsJoinRoom, join);
+
+        tree.push_rect(
+            start,
+            state.interact(WidgetId::SettingsStartSession, ACCENT),
+        );
+        tree.push_label(
+            Rect::new(start.x + 12.0, start.y + 10.0, start.w - 24.0, 20.0),
+            "Start session",
+            TEXT,
+            1.3,
+        );
+        tree.register_hit(WidgetId::SettingsStartSession, start);
+    } else {
+        let (join_l, start_l) = if state.home_logged_in_as.is_none() {
+            ("Join (sign in)", "Start (sign in)")
+        } else {
+            // Signed in but XR / browse-only: HTTP Start/Join is Desktop-only.
+            ("Join (Desktop)", "Start (Desktop)")
+        };
+        tree.push_rect(join, BTN);
+        tree.push_label(
+            Rect::new(join.x + 12.0, join.y + 10.0, join.w - 24.0, 20.0),
+            join_l,
+            MUTED,
+            1.2,
+        );
+        tree.push_rect(start, BTN);
+        tree.push_label(
+            Rect::new(start.x + 12.0, start.y + 10.0, start.w - 24.0, 20.0),
+            start_l,
+            MUTED,
+            1.2,
+        );
+    }
+    tree.push_label(
+        Rect::new(cx + 24.0, btn_y + 48.0, cw - 48.0, 18.0),
+        &state.home_status,
+        MUTED,
+        1.0,
+    );
 }
 
 #[cfg(test)]
@@ -2234,7 +2342,7 @@ mod tests {
     }
 
     #[test]
-    fn logged_in_hub_has_new_world() {
+    fn logged_in_hub_points_to_worlds_not_join() {
         let mut tree = LayoutTree::default();
         let state = DashState {
             open: true,
@@ -2249,11 +2357,89 @@ mod tests {
         assert!(tree
             .hits
             .iter()
-            .any(|(id, _)| *id == WidgetId::HomeNewWorld));
+            .any(|(id, _)| *id == WidgetId::HomeOpenWorlds));
         assert!(tree
             .hits
             .iter()
+            .any(|(id, _)| *id == WidgetId::HomeNewWorld));
+        assert!(!tree
+            .hits
+            .iter()
             .any(|(id, _)| *id == WidgetId::HomeJoinRoom));
+    }
+
+    #[test]
+    fn settings_advanced_has_join_start_when_signed_in() {
+        let mut tree = LayoutTree::default();
+        let state = DashState {
+            open: true,
+            shell: OnboardingShell::Dash,
+            tab: DashTab::Settings,
+            canvas_w: 960.0,
+            canvas_h: 540.0,
+            home_logged_in_as: Some("alice".into()),
+            ..Default::default()
+        };
+        rebuild(&mut tree, &state);
+        assert!(tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::SettingsRoomId));
+        assert!(tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::SettingsJoinRoom));
+        assert!(tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::SettingsStartSession));
+    }
+
+    #[test]
+    fn settings_advanced_omits_join_start_hits_when_desktop_actions_disabled() {
+        let mut tree = LayoutTree::default();
+        let state = DashState {
+            open: true,
+            shell: OnboardingShell::Dash,
+            tab: DashTab::Settings,
+            canvas_w: 960.0,
+            canvas_h: 540.0,
+            home_logged_in_as: Some("alice".into()),
+            home_session_actions_enabled: false,
+            ..Default::default()
+        };
+        rebuild(&mut tree, &state);
+        assert!(tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::SettingsRoomId));
+        assert!(!tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::SettingsJoinRoom));
+        assert!(!tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::SettingsStartSession));
+    }
+
+    #[test]
+    fn settings_advanced_room_id_not_editable_when_signed_out() {
+        let mut tree = LayoutTree::default();
+        let state = DashState {
+            open: true,
+            shell: OnboardingShell::Dash,
+            tab: DashTab::Settings,
+            canvas_w: 960.0,
+            canvas_h: 540.0,
+            home_logged_in_as: None,
+            ..Default::default()
+        };
+        rebuild(&mut tree, &state);
+        assert!(!tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::SettingsRoomId));
     }
 
     #[test]

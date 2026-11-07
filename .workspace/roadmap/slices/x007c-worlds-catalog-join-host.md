@@ -196,7 +196,7 @@ stateDiagram-v2
 | 2 | client Worlds タブ（2ペイン構成・更新ボタン・Empty State）+ Room 詳細 CTA 分離（owner 優先表示） | **done**（Desktop；XR は Desktop-only メッセージ） |
 | 3 | Join 後 `Waiting for host` / `Live` シェル（ホスト不在の明示 ＋ Leave ＋ owner 直接 Host 起動導線） | **done**（Frame 到達で Live；3s stall で Live→WaitingHost；Host Rescue は leave→rejoin MVP；KeyStale は殻のみ） |
 | 3b | レビュー重大修正: `ROOM_ID` env 同期・HostSupervisor room retarget 再起動・Host CTA owner のみ・カタログ owned∪public∪social 候補 | **done** |
-| 4 | Home の固定 Join/Start を Worlds へ移設（Settings に上級者・デバッグ用として残し可） | planned（Home Join は Waiting 強制しない；Worlds が主導線） |
+| 4 | Home の固定 Join/Start を Worlds へ移設（Settings に上級者・デバッグ用として残し可） | **done**（Home＝Open Worlds / Create；Settings Advanced＝固定 ROOM_ID Join/Start） |
 | 5 | architecture（client / world-server）鮮度更新・`KeyStale` 殻実装（epoch Slice 待ち） | **partial**（world-server.md retarget 保証追記；KeyStale UI 本採用は epoch 待ち） |
 
 ---
