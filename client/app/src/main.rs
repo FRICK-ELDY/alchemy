@@ -128,7 +128,7 @@ fn main() -> Result<()> {
 
     let shared = Arc::new(SharedState {
         local_user_root: AtomicU32::new(LOCAL_USER_ROOT_UNSET),
-        room_id: Arc::<str>::from(room_id.clone()),
+        room_id: Mutex::new(Arc::<str>::from(room_id.clone())),
         wire_cap: Mutex::new(None),
         room_key: Mutex::new(None),
         room_bus_started: AtomicBool::new(false),

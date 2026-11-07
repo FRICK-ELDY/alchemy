@@ -14,6 +14,34 @@ defmodule WorldWeb.RoomController do
   alias World.Rooms
   alias World.Token
 
+  # x007c: catalog of rooms visible to the caller (no secrets).
+  def index(conn, params) do
+    case resolve_sub(conn, params) do
+      {:ok, viewer_sub} ->
+        mine_only? = mine_only_param?(params)
+
+        case Rooms.list_visible_summaries(conn, viewer_sub, mine_only: mine_only?) do
+          {:ok, rooms} ->
+            json(conn, %{rooms: rooms})
+
+          {:error, :storage_error} ->
+            storage_unavailable(conn)
+        end
+
+      {:error, :anon_disabled} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "anon_tokens_disabled"})
+    end
+  end
+
+  defp mine_only_param?(params) do
+    case Map.get(params, "mine") do
+      v when v in ["1", "true", "TRUE", "yes", "YES"] -> true
+      _ -> false
+    end
+  end
+
   def create(conn, params) do
     room_id = Map.get(params, "room_id")
     visibility = Map.get(params, "visibility", "public")

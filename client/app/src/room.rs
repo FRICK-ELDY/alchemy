@@ -78,7 +78,7 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     let world_url = shared.get_world_url();
     let guest = world_token::fetch_guest_token(
         &world_url,
-        &shared.room_id,
+        shared.get_room_id().as_ref(),
         access_token,
         &session_pub_b64,
         csr_pem.as_deref(),
@@ -130,7 +130,7 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     }
     log::info!(
         "joined room={} sub={local_sub} expires_in={} wire_cap_len={}",
-        shared.room_id,
+        shared.get_room_id(),
         guest.expires_in,
         guest.wire_cap.len()
     );
@@ -162,11 +162,11 @@ pub(crate) fn ensure_room_bus(
         if shared.room_key().is_none() {
             anyhow::bail!("ensure_room_bus: room_key missing");
         }
-        let room_id = shared.room_id.as_ref();
-        let manifest_key_expr = manifest_key(room_id, &wire_cap);
-        let frame_key_expr = frame_key(room_id, &wire_cap);
-        let input_key_expr = input_key(room_id, &wire_cap);
-        let presence_key_expr = presence_key(room_id, &wire_cap);
+        let room_id = shared.get_room_id();
+        let manifest_key_expr = manifest_key(room_id.as_ref(), &wire_cap);
+        let frame_key_expr = frame_key(room_id.as_ref(), &wire_cap);
+        let input_key_expr = input_key(room_id.as_ref(), &wire_cap);
+        let presence_key_expr = presence_key(room_id.as_ref(), &wire_cap);
         let blake3_tx = match blake3_tx {
             Some(tx) => tx,
             None => {
@@ -425,7 +425,7 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                     let world_url = shared.get_world_url();
                     match world_token::fetch_guest_token(
                         &world_url,
-                        &shared.room_id,
+                        shared.get_room_id().as_ref(),
                         &access,
                         &session_pub_b64,
                         csr_pem.as_deref(),
@@ -542,7 +542,7 @@ pub fn leave_room(shared: &SharedState, zenoh: &mut Option<zenoh::Session>) {
         };
         if let Some(event) = leave_event {
             if let Some(wire_cap) = shared.wire_cap() {
-                let key = input_key(shared.room_id.as_ref(), &wire_cap);
+                let key = input_key(shared.get_room_id().as_ref(), &wire_cap);
                 match session.declare_publisher(key.clone()).wait() {
                     Ok(publisher) => {
                         match seal_zenoh_payload(shared, AeadKind::Input, &event.encode_to_vec()) {

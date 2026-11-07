@@ -27,15 +27,25 @@ pub struct ManifestSealClaims {
 /// ManifestSeal verifier (shares JWKS with HostAttestation).
 pub struct ManifestSealVerifier {
     jwks: Arc<WorldJwks>,
-    expected_room_id: String,
+    expected_room_id: std::sync::Mutex<String>,
 }
 
 impl ManifestSealVerifier {
     pub fn new(jwks: Arc<WorldJwks>, room_id: &str) -> Self {
         Self {
             jwks,
-            expected_room_id: room_id.to_string(),
+            expected_room_id: std::sync::Mutex::new(room_id.to_string()),
         }
+    }
+
+    /// Retarget expected `room_id` after Worlds catalog selection (x007c).
+    pub fn set_expected_room_id(&self, room_id: &str) -> Result<()> {
+        let mut g = self
+            .expected_room_id
+            .lock()
+            .map_err(|_| anyhow!("manifest_seal expected_room_id lock poisoned"))?;
+        *g = room_id.to_string();
+        Ok(())
     }
 
     /// Verify seal JWT against expected room / revision / generation / body blake3 hex.
@@ -58,9 +68,17 @@ impl ManifestSealVerifier {
             .jwks
             .decode_claims(seal, &validation)
             .context("verify ManifestSeal")?;
+        let expected = self
+            .expected_room_id
+            .lock()
+            .map_err(|_| anyhow!("manifest_seal expected_room_id lock poisoned"))?
+            .clone();
+        if expected.is_empty() {
+            return Err(anyhow!("manifest_seal expected_room_id empty"));
+        }
         apply_seal_claims(
             &claims,
-            &self.expected_room_id,
+            &expected,
             revision,
             host_generation,
             body_blake3_hex,

@@ -28,15 +28,25 @@ pub struct HostAttestationClaims {
 /// HostAttestation verifier (shares JWKS with ManifestSeal).
 pub struct HostAttestationVerifier {
     jwks: Arc<WorldJwks>,
-    expected_room_id: String,
+    expected_room_id: std::sync::Mutex<String>,
 }
 
 impl HostAttestationVerifier {
     pub fn new(jwks: Arc<WorldJwks>, room_id: &str) -> Self {
         Self {
             jwks,
-            expected_room_id: room_id.to_string(),
+            expected_room_id: std::sync::Mutex::new(room_id.to_string()),
         }
+    }
+
+    /// Retarget expected `room_id` after Worlds catalog selection (x007c).
+    pub fn set_expected_room_id(&self, room_id: &str) -> Result<()> {
+        let mut g = self
+            .expected_room_id
+            .lock()
+            .map_err(|_| anyhow!("host_attest expected_room_id lock poisoned"))?;
+        *g = room_id.to_string();
+        Ok(())
     }
 
     /// Verify JWT and return `(host_pub, host_generation)` if `host_pub` matches Manifest.
@@ -58,9 +68,17 @@ impl HostAttestationVerifier {
             .jwks
             .decode_claims(attestation, &validation)
             .context("verify HostAttestation")?;
+        let expected = self
+            .expected_room_id
+            .lock()
+            .map_err(|_| anyhow!("host_attest expected_room_id lock poisoned"))?
+            .clone();
+        if expected.is_empty() {
+            return Err(anyhow!("host_attest expected_room_id empty"));
+        }
         apply_attestation_claims(
             &claims,
-            &self.expected_room_id,
+            &expected,
             manifest_host_pub,
             manifest_host_generation,
         )

@@ -16,6 +16,7 @@ defmodule WorldWeb.Router do
   scope "/api/v1", WorldWeb do
     pipe_through [:api, :user_auth, :rate_limited]
 
+    get "/rooms", RoomController, :index
     post "/rooms", RoomController, :create
     post "/rooms/:room_id/tokens", RoomController, :create_token
     put "/rooms/:room_id/visibility", RoomController, :update_visibility

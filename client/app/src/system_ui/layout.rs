@@ -20,6 +20,8 @@ pub enum WidgetId {
     TabSettings,
     /// Inventory take-out / put-back (x006d / x006e).
     TabInventory,
+    /// Worlds catalog (x007c).
+    TabWorlds,
     InventoryRefresh,
     InventoryTakeOut,
     InventoryPutBack,
@@ -83,6 +85,23 @@ pub enum WidgetId {
     /// Main hub after login.
     MainPlayTogether,
     MainSoloHost,
+    /// Worlds catalog (x007c).
+    WorldsRefresh,
+    WorldsFilterAll,
+    WorldsFilterMine,
+    WorldsCreate,
+    WorldsJoinGuest,
+    WorldsHostRoom,
+    WorldsLeave,
+    WorldsHostRescue,
+    WorldsRow0,
+    WorldsRow1,
+    WorldsRow2,
+    WorldsRow3,
+    WorldsRow4,
+    WorldsRow5,
+    WorldsRow6,
+    WorldsRow7,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -295,6 +295,13 @@ impl SystemUi {
                 self.rebuild();
                 UiAction::None
             }
+            WidgetId::TabWorlds => {
+                self.state.shell = OnboardingShell::Dash;
+                self.state.tab = DashTab::Worlds;
+                self.mark_dash_chrome_dirty();
+                self.rebuild();
+                UiAction::WorldsRefresh
+            }
             WidgetId::TabInventory => {
                 self.state.shell = OnboardingShell::Dash;
                 self.state.tab = DashTab::Inventory;
@@ -302,6 +309,56 @@ impl SystemUi {
                 self.rebuild();
                 // Desktop syncs Manifest scene mesh list without Drive HTTP (x006e).
                 UiAction::InventoryOpen
+            }
+            WidgetId::WorldsRefresh => UiAction::WorldsRefresh,
+            WidgetId::WorldsFilterAll => {
+                self.state.worlds_mine_only = false;
+                self.rebuild();
+                UiAction::WorldsRefresh
+            }
+            WidgetId::WorldsFilterMine => {
+                self.state.worlds_mine_only = true;
+                self.rebuild();
+                UiAction::WorldsRefresh
+            }
+            WidgetId::WorldsCreate => {
+                self.state.home_create_open = true;
+                self.state.tab = DashTab::Home;
+                self.state.shell = OnboardingShell::Dash;
+                self.mark_dash_chrome_dirty();
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::WorldsJoinGuest => UiAction::WorldsJoinGuest,
+            WidgetId::WorldsHostRoom => UiAction::WorldsHostRoom,
+            WidgetId::WorldsHostRescue => UiAction::WorldsHostRescue,
+            WidgetId::WorldsLeave => UiAction::WorldsLeave,
+            WidgetId::WorldsRow0
+            | WidgetId::WorldsRow1
+            | WidgetId::WorldsRow2
+            | WidgetId::WorldsRow3
+            | WidgetId::WorldsRow4
+            | WidgetId::WorldsRow5
+            | WidgetId::WorldsRow6
+            | WidgetId::WorldsRow7 => {
+                let idx = match hit {
+                    WidgetId::WorldsRow0 => 0,
+                    WidgetId::WorldsRow1 => 1,
+                    WidgetId::WorldsRow2 => 2,
+                    WidgetId::WorldsRow3 => 3,
+                    WidgetId::WorldsRow4 => 4,
+                    WidgetId::WorldsRow5 => 5,
+                    WidgetId::WorldsRow6 => 6,
+                    WidgetId::WorldsRow7 => 7,
+                    _ => 0,
+                };
+                if idx < self.state.worlds_rooms.len() {
+                    // Preview only — do not retarget home_room_id / rescue / SharedState.
+                    // Host Rescue uses the actually joined room (`shared.get_room_id`).
+                    self.state.worlds_selected = Some(idx);
+                    self.rebuild();
+                }
+                UiAction::None
             }
             WidgetId::InventoryRefresh => UiAction::InventoryRefresh,
             WidgetId::InventoryTakeOut => UiAction::InventoryTakeOut,
@@ -817,6 +874,16 @@ pub enum UiAction {
     InventoryPutBack,
     /// Inventory: despawn selected scene mesh via host control plane (x007b).
     InventoryDespawn,
+    /// Worlds: refresh catalog (x007c).
+    WorldsRefresh,
+    /// Worlds: Join as guest for selected room (x007c).
+    WorldsJoinGuest,
+    /// Worlds: Host selected catalog room (owner detail CTA · x007c).
+    WorldsHostRoom,
+    /// Worlds: Host Rescue while Waiting — always the joined room, ignore catalog selection.
+    WorldsHostRescue,
+    /// Worlds: Leave room bus back to catalog (x007c).
+    WorldsLeave,
 }
 
 fn chrono_lite_now() -> String {

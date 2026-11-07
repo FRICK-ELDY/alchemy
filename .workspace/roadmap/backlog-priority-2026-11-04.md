@@ -2,7 +2,7 @@
 
 正本の進捗目次は [README.md](README.md)。本ファイルは **未完了帯の優先度ビュー**。
 
-**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**、**x0070 trust WAN E2E**、**x0071 world RL / Room cap**、**x0072 launcher discovery**。**x0073** 軽量衛生 **done**。**x0074** reserved reaper / orphan CAS GC **done**。**x0075** BLAKE3 / seal-hash 常駐 Port **done**。**x0076**–**x0078**（保証単位分割 / bind 送信元 / mTLS temp）**done**。**x0079** DemoScene 共有テストベクタ **done**。**x007a** metrics+jti **done**。**x007b** scene despawn **done**。空き ID = `x007c`。
+**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**、**x0070 trust WAN E2E**、**x0071 world RL / Room cap**、**x0072 launcher discovery**。**x0073** 軽量衛生 **done**。**x0074** reserved reaper / orphan CAS GC **done**。**x0075** BLAKE3 / seal-hash 常駐 Port **done**。**x0076**–**x0078**（保証単位分割 / bind 送信元 / mTLS temp）**done**。**x0079** DemoScene 共有テストベクタ **done**。**x007a** metrics+jti **done**。**x007b** scene despawn **done**。空き ID = `x007d`。
 
 ---
 
@@ -10,6 +10,7 @@
 
 | 優先 | ID | 内容 | 状態 |
 |:---|:---|:---|:---|
+| **P0-UX** | [x007c](slices/x007c-worlds-catalog-join-host.md) | Worlds カタログ / Join・Host 分離（見える・入れる・読める・回す） | **active**（API + Desktop Worlds タブ；Home 移設は残） |
 | **P0-ladder** | x0054–x0065 | inventory Wave 0–4 | **done（host take-out UI は x006d）** |
 | **P0-体感** | [x0053](slices/x0053-xr-desktop-hotswitch.md) | XR ↔ Desktop ホットスイッチ | **done** |
 | **P0-発行** | [x006b](slices/x006b-place-read-capability.md) | PlaceRead（場所で付与・seal 連動） | **done** |
