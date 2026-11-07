@@ -1,8 +1,11 @@
 //! PlaceRead JWT client (x006c / x006b).
 //!
-//! Guarantees: `POST …/place_read` with Room Token + `world_seal`; returns short-lived
-//! PlaceRead for assets GET (`x-alchemy-place-read`).
-//! Non-guarantees: proactive TTL refresh UI; `extra_blake3` take-out path.
+//! **Helper contract when called:** `POST …/place_read` with Room Token + `world_seal`;
+//! returns short-lived PlaceRead for assets GET (`x-alchemy-place-read`).
+//! Not wired from Join yet (remount non-goal). Non-guarantees: proactive TTL refresh UI;
+//! `extra_blake3` take-out path.
+
+#![cfg_attr(not(test), allow(dead_code))]
 
 use std::time::Duration;
 
@@ -32,6 +35,7 @@ fn agent() -> ureq::Agent {
 }
 
 /// Issue PlaceRead for the joined room using the verified Manifest `world_seal`.
+/// Resume via [`crate::assets_fetch::try_place_read_for_mesh`] when remount lands.
 pub fn fetch_place_read(
     world_url: &str,
     room_id: &str,

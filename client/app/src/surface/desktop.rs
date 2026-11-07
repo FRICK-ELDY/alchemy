@@ -471,7 +471,7 @@ impl App {
                 self.ui.state.home_password.clear();
                 self.ui.state.home_create_open = false;
                 self.ui.state.shell = OnboardingShell::MainHub;
-                self.ui.state.home_status = "Signed in — choose PLAY TOGETHER or SOLO".into();
+                self.ui.state.home_status = "Signed in — Join a host or Host a room".into();
                 self.ui.mark_dash_logic_dirty();
                 self.ui.rebuild();
                 log::info!("auth login ok (no auto-join)");
@@ -482,7 +482,7 @@ impl App {
                 self.ui.state.home_password.clear();
                 self.ui.state.home_create_open = false;
                 self.ui.state.shell = OnboardingShell::MainHub;
-                self.ui.state.home_status = "Account created — choose PLAY TOGETHER or SOLO".into();
+                self.ui.state.home_status = "Account created — Join a host or Host a room".into();
                 self.ui.mark_dash_logic_dirty();
                 self.ui.rebuild();
                 log::info!("auth register ok (no auto-join)");
@@ -2115,17 +2115,19 @@ pub fn run(
         .ok()
         .map(|g| (g.is_joined(), g.is_authenticated(), g.username.clone()))
         .unwrap_or((false, false, None));
+    // Boot never auto-joins; `joined` is defensive only (should be false at surface start).
     if joined {
         ui.state.home_logged_in_as = username;
         ui.state.shell = OnboardingShell::Dash;
-        ui.state.home_status = "Signed in (silent / CI)".into();
+        ui.state.tab = DashTab::Worlds;
+        ui.state.home_status = "In room — use Worlds for Leave / Host".into();
     } else {
         ui.state.open = true;
         ui.state.tab = DashTab::Home;
         if authenticated {
             ui.state.home_logged_in_as = username;
             ui.state.shell = OnboardingShell::MainHub;
-            ui.state.home_status = "Signed in — choose PLAY TOGETHER or SOLO".into();
+            ui.state.home_status = "Signed in — Join a host or Host a room".into();
         } else if !prefs.operator_chosen {
             ui.state.shell = OnboardingShell::Step1Operator;
             ui.state.home_status = "Select a server operator".into();

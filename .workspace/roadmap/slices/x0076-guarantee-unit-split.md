@@ -39,7 +39,7 @@
 | `assets_fetch.rs` | Assets GET タイムアウト・placeholder / debug fixture |
 | `bus/{wire,manifest,frame,presence,input,liveliness}.rs` | AEAD 境界と各購読/配信（`bus` は `room` に依存しない） |
 | `room.rs` | Zenoh open/close、join/bind/leave、token refresh、bus 起動 |
-| `main.rs` | boot / SharedState / silent join / `surface::run` |
+| `main.rs` | boot / SharedState / silent login (auth only) / `surface::run` |
 
 ## 本 Slice に含めない
 

@@ -138,11 +138,14 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
 }
 
 /// Start Zenoh room subscribers once `wire_cap` **and** `room_key` are known
-/// (silent boot or Home→Join; x004e / x0069).
+/// (Worlds Join/Host via [`bind_room_after_join`]; x004e / x0069).
 ///
 /// Idempotent via `room_bus_started`. On spawn failure the flag is cleared so retry works.
-/// Pass `Some(blake3_tx)` for boot mesh wait; `None` drains blake3 on a background thread
-/// (late Home→Join mesh remount is non-goal).
+///
+/// `blake3_tx`: callers pass **`None` today** (blake3 drained on a background thread; display
+/// mesh stays Coin). **`Some(tx)` is the future remount resume point** — first Manifest mesh
+/// blake3 can again drive assets GET when Join remount lands. Late remount / boot Manifest
+/// wait remain non-goals until then.
 pub(crate) fn ensure_room_bus(
     shared: &Arc<SharedState>,
     session: &zenoh::Session,

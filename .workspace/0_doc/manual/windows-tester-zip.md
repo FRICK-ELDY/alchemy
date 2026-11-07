@@ -69,4 +69,4 @@ git push origin "refs/tags/$TAG"
 2. VC++ x64 再頒布が無い環境では起動に失敗しうる（README-testers.txt 参照）
 3. `env.testers.example.cmd` → `env.local.cmd` に URL / `ZENOH_CONNECT` を設定（着信ポート開放は不要）
 4. `Start.cmd` を実行（失敗時は pause）
-5. `env.local.cmd` に `AUTH_USER` / `AUTH_PASSWORD` **必須**（無いと Start が失敗）。mesh は Manifest → assets GET（[x003c](../../roadmap/slices/x003c-assets-required-mesh.md)）
+5. `env.local.cmd` に `AUTH_USER` / `AUTH_PASSWORD` **必須**（無いと Start が失敗）。silent は **login のみ** → MainHub（Coin fixture）。**Join a host** または **Host a room** で入室（[x007c](../../roadmap/slices/x007c-worlds-catalog-join-host.md)）。表示 mesh は入室後も Coin fixture（Manifest → assets GET remount は未配線・[x003c](../../roadmap/slices/x003c-assets-required-mesh.md) helper のみ）

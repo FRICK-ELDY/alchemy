@@ -83,14 +83,15 @@ zenohd -c relay-server/config.json5
 
 # --- 次はどちらか一方（同一 ROOM_ID で dual host にしない）---
 
-# 3a) Desktop client のみ起動（Join は軽量。Start session で host-server を子プロセス起動）
+# 3a) Desktop client のみ起動（部屋は MainHub で Join a host / Host a room）
 cd client
-# UI login: omit AUTH_USER → Home tab opens
+# UI login: omit AUTH_USER → Step1/Step2 → MainHub
 ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
-# silent (debug は AUTH_USER のみ可 / release は password または token 必須):
+# silent login only (debug は AUTH_USER のみ可 / release は password または token 必須).
+# 部屋へは入らない → MainHub で Join a host（guest）または Host a room（Create / Host this room で子プロセス host-server）
 AUTH_USER=alice AUTH_PASSWORD=Password1 ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 # または: ALCHEMY_AUTH_TOKEN=<access_jwt> ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
-# 手動で host だけ先に立てる（CI / デバッグ）:
+# 手動で host だけ先に立てる（CI / デバッグ。同一 ROOM_ID で dual host にしない）:
 #   cargo run -p host-server
 
 # 3a') Windows テスター ZIP（正本はタグ push → CI Pre-release）— Start.cmd は client 直起動
@@ -127,13 +128,14 @@ bash .scripts/smoke-zenoh-wan.sh        # x001b/x0022 WAN: ZENOH_CONNECT=tls/…
 make ci-e2e                             # x001f hermetic: compose 縦 login→token→input→frame
 #   前提: docker compose -f docker-compose.e2e.yml up -d --build
 #   または COMPOSE_UP=1 make ci-e2e
-# 3 client（同マシン・既定 ROOM_ID=local）:
+# 3 client（同マシン）: AUTH_USER は login のみ → 各窓で MainHub。
+#   1人が Host a room（Create / Host this room）、他は Join a host（Join as guest）。同一 ROOM_ID。
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=alice cargo run -p client
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=bob cargo run -p client
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=carol cargo run -p client
-# 別部屋: host/client とも ROOM_ID=alpha（beta とはキー隔離）。logout → 即時 reclaim（x0019）；切断のみは liveliness / TTL。
+# 別部屋: Host/Join とも ROOM_ID=alpha（beta とはキー隔離）。logout → 即時 reclaim（x0019）；切断のみは liveliness / TTL。
 # LAN ノートPC: AUTH/WORLD/ASSETS_URL + ZENOH_CONNECT=tcp/<PC_IP>:7447 / AUTH_USER=bob|carol
-#   （PC 側 Docker は BIND_ALL=true。Windows ファイアウォールで 7447 と 4002–4004 を許可）
+#   （login 後 MainHub で Join a host。PC 側 Docker は BIND_ALL=true。FW で 7447 と 4002–4004 を許可）
 # HTTPS（Tunnel・x001a）: 別ネットワークの client
 #   手順: edge/cloudflared/README.md
 #   cd edge/cloudflared && cloudflared tunnel --config config.yml run
@@ -180,7 +182,7 @@ systemctl is-active alchemy-zenohd
 
 再起動後は既存の host / client の Zenoh セッションが切れる。**host を起動し直して置きっぱなし**にしてから client を繋ぐ。接続例: `ZENOH_CONNECT=tls/relay.example.tld:7447`（詳細・初回セットアップは [relay-server-wan.md](.workspace/0_doc/manual/relay-server-wan.md)）。
 
-環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID`（既定 `local`） / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（サイレント login） / `ZENOH_CONNECT` / `ZENOH_TLS_ROOT_CA`（WAN 私有 CA） / `ALCHEMY_BLOB_BLAKE3` / `ALCHEMY_HOST_BIN`（隣接 exe 以外の host-server パス） / `ALCHEMY_FORCE_DESKTOP` / `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。Desktop 正本例: [`client/env.desktop.example`](client/env.desktop.example)。
+環境変数（任意）: `AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ROOM_ID`（既定 `local`） / `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（サイレント **login のみ**・部屋 Join は MainHub） / `ZENOH_CONNECT` / `ZENOH_TLS_ROOT_CA`（WAN 私有 CA） / `ALCHEMY_HOST_BIN`（隣接 exe 以外の host-server パス） / `ALCHEMY_FORCE_DESKTOP` / `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`。`ALCHEMY_BLOB_BLAKE3` は host 側拒否用途（client boot では未参照）。Desktop 正本例: [`client/env.desktop.example`](client/env.desktop.example)。
 
 詳細は [`.workspace/roadmap/`](.workspace/roadmap/README.md) · Slice [x0020](.workspace/roadmap/slices/x0020-desktop-handthrough.md)。
 
