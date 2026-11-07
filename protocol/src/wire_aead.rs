@@ -1,13 +1,15 @@
-//! Room-key AEAD for Zenoh payloads (x0069).
+//! Room-key AEAD for Zenoh payloads (x0069 / x007e epoch).
 //!
 //! # Guarantees
 //! - XChaCha20Poly1305 with 32-byte room key and per-message 192-bit random nonce.
 //! - Envelope: `nonce(24) || ciphertext||tag(16)`.
-//! - AAD binds `room_id` and wire kind so cross-room / cross-kind ciphertext swap fails.
+//! - AAD binds `room_id`, `room_key_epoch`, and wire kind so cross-room / cross-epoch /
+//!   cross-kind ciphertext swap fails (x007e).
 //! - Open failure → caller must discard before protobuf / signature checks.
 //!
 //! # Non-guarantees
-//! - Topic-name (`wire_cap`) secrecy; put DoS; room-key rotation / forward secrecy among joiners.
+//! - Topic-name (`wire_cap`) secrecy; put DoS; forward secrecy among concurrent joiners
+//!   (shared key model). Previous-epoch grace is host/application policy (`open_current_or_prev`).
 
 use base64::Engine;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -26,8 +28,8 @@ pub const AEAD_TAG_LEN: usize = 16;
 /// `nonce || ct||tag` overhead beyond plaintext.
 pub const AEAD_OVERHEAD: usize = AEAD_NONCE_LEN + AEAD_TAG_LEN;
 
-/// AAD scheme version prefix (ASCII).
-pub const AEAD_AAD_PREFIX: &str = "alchemy/aead/v1";
+/// AAD scheme version prefix (ASCII). x007e bumped v1 → v2 (epoch in AAD).
+pub const AEAD_AAD_PREFIX: &str = "alchemy/aead/v2";
 
 /// AEAD kind bound into AAD (includes snapshot, distinct from frame).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,9 +91,9 @@ impl std::fmt::Display for WireAeadError {
 
 impl std::error::Error for WireAeadError {}
 
-/// Build AAD: `alchemy/aead/v1|{room_id}|{kind}`.
-pub fn aead_aad(room_id: &str, kind: AeadKind) -> String {
-    format!("{AEAD_AAD_PREFIX}|{room_id}|{}", kind.as_str())
+/// Build AAD: `alchemy/aead/v2|{room_id}|{epoch}|{kind}`.
+pub fn aead_aad(room_id: &str, epoch: u64, kind: AeadKind) -> String {
+    format!("{AEAD_AAD_PREFIX}|{room_id}|{epoch}|{}", kind.as_str())
 }
 
 fn cipher(key: &[u8]) -> Result<XChaCha20Poly1305, WireAeadError> {
@@ -105,6 +107,7 @@ fn cipher(key: &[u8]) -> Result<XChaCha20Poly1305, WireAeadError> {
 pub fn seal(
     room_key: &[u8],
     room_id: &str,
+    epoch: u64,
     kind: AeadKind,
     plaintext: &[u8],
 ) -> Result<Vec<u8>, WireAeadError> {
@@ -112,7 +115,7 @@ pub fn seal(
     let mut nonce_bytes = [0u8; AEAD_NONCE_LEN];
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = XNonce::from_slice(&nonce_bytes);
-    let aad = aead_aad(room_id, kind);
+    let aad = aead_aad(room_id, epoch, kind);
     let ct = cipher
         .encrypt(
             nonce,
@@ -132,6 +135,7 @@ pub fn seal(
 pub fn open(
     room_key: &[u8],
     room_id: &str,
+    epoch: u64,
     kind: AeadKind,
     envelope: &[u8],
 ) -> Result<Vec<u8>, WireAeadError> {
@@ -141,7 +145,7 @@ pub fn open(
     let cipher = cipher(room_key)?;
     let (nonce_bytes, ct) = envelope.split_at(AEAD_NONCE_LEN);
     let nonce = XNonce::from_slice(nonce_bytes);
-    let aad = aead_aad(room_id, kind);
+    let aad = aead_aad(room_id, epoch, kind);
     cipher
         .decrypt(
             nonce,
@@ -151,6 +155,28 @@ pub fn open(
             },
         )
         .map_err(|_| WireAeadError::CryptographicFailure)
+}
+
+/// Try current key/epoch, then optional previous (x007e host grace).
+pub fn open_current_or_prev(
+    current_key: &[u8],
+    current_epoch: u64,
+    prev: Option<(&[u8], u64)>,
+    room_id: &str,
+    kind: AeadKind,
+    envelope: &[u8],
+) -> Result<Vec<u8>, WireAeadError> {
+    match open(current_key, room_id, current_epoch, kind, envelope) {
+        Ok(pt) => Ok(pt),
+        Err(WireAeadError::CryptographicFailure) => {
+            if let Some((prev_key, prev_epoch)) = prev {
+                open(prev_key, room_id, prev_epoch, kind, envelope)
+            } else {
+                Err(WireAeadError::CryptographicFailure)
+            }
+        }
+        Err(other) => Err(other),
+    }
 }
 
 /// Ciphertext (envelope) byte ceiling for `kind` = plaintext max + overhead.
@@ -196,78 +222,101 @@ mod tests {
     #[test]
     fn roundtrip_manifest() {
         let pt = b"hello-manifest";
-        let env = seal(&key(), "local", AeadKind::Manifest, pt).unwrap();
+        let env = seal(&key(), "local", 0, AeadKind::Manifest, pt).unwrap();
         assert!(env.len() >= AEAD_OVERHEAD + pt.len());
-        let out = open(&key(), "local", AeadKind::Manifest, &env).unwrap();
+        let out = open(&key(), "local", 0, AeadKind::Manifest, &env).unwrap();
         assert_eq!(out, pt);
     }
 
     #[test]
     fn roundtrip_inventory_spawn() {
         let pt = br#"{"room_token":"t","blake3":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
-        let env = seal(&key(), "local", AeadKind::InventorySpawn, pt).unwrap();
-        let out = open(&key(), "local", AeadKind::InventorySpawn, &env).unwrap();
+        let env = seal(&key(), "local", 1, AeadKind::InventorySpawn, pt).unwrap();
+        let out = open(&key(), "local", 1, AeadKind::InventorySpawn, &env).unwrap();
         assert_eq!(out, pt);
-        let env2 = seal(&key(), "local", AeadKind::InventoryDespawn, pt).unwrap();
-        let out2 = open(&key(), "local", AeadKind::InventoryDespawn, &env2).unwrap();
+        let env2 = seal(&key(), "local", 1, AeadKind::InventoryDespawn, pt).unwrap();
+        let out2 = open(&key(), "local", 1, AeadKind::InventoryDespawn, &env2).unwrap();
         assert_eq!(out2, pt);
-        // Cross-kind must fail.
-        assert!(open(&key(), "local", AeadKind::InventoryDespawn, &env).is_err());
-        // Cross-kind swap with Input must fail (distinct AAD).
+        assert!(open(&key(), "local", 1, AeadKind::InventoryDespawn, &env).is_err());
         assert_eq!(
-            open(&key(), "local", AeadKind::Input, &env),
+            open(&key(), "local", 1, AeadKind::Input, &env),
             Err(WireAeadError::CryptographicFailure)
         );
     }
 
     #[test]
     fn wrong_room_id_fails() {
-        let env = seal(&key(), "alpha", AeadKind::Frame, b"pose").unwrap();
+        let env = seal(&key(), "alpha", 0, AeadKind::Frame, b"pose").unwrap();
         assert_eq!(
-            open(&key(), "beta", AeadKind::Frame, &env),
+            open(&key(), "beta", 0, AeadKind::Frame, &env),
             Err(WireAeadError::CryptographicFailure)
         );
     }
 
     #[test]
     fn wrong_kind_fails() {
-        let env = seal(&key(), "local", AeadKind::Manifest, b"m").unwrap();
+        let env = seal(&key(), "local", 0, AeadKind::Manifest, b"m").unwrap();
         assert_eq!(
-            open(&key(), "local", AeadKind::Frame, &env),
+            open(&key(), "local", 0, AeadKind::Frame, &env),
             Err(WireAeadError::CryptographicFailure)
         );
     }
 
     #[test]
-    fn snapshot_not_frame_aad() {
-        let env = seal(&key(), "local", AeadKind::Snapshot, b"full").unwrap();
+    fn wrong_epoch_fails() {
+        let env = seal(&key(), "local", 3, AeadKind::Frame, b"pose").unwrap();
         assert_eq!(
-            open(&key(), "local", AeadKind::Frame, &env),
+            open(&key(), "local", 2, AeadKind::Frame, &env),
+            Err(WireAeadError::CryptographicFailure)
+        );
+    }
+
+    #[test]
+    fn open_current_or_prev_accepts_prev() {
+        let prev_key = [0x11u8; ROOM_KEY_LEN];
+        let env = seal(&prev_key, "local", 4, AeadKind::Input, b"old").unwrap();
+        let out = open_current_or_prev(
+            &key(),
+            5,
+            Some((&prev_key, 4)),
+            "local",
+            AeadKind::Input,
+            &env,
+        )
+        .unwrap();
+        assert_eq!(out, b"old");
+    }
+
+    #[test]
+    fn snapshot_not_frame_aad() {
+        let env = seal(&key(), "local", 0, AeadKind::Snapshot, b"full").unwrap();
+        assert_eq!(
+            open(&key(), "local", 0, AeadKind::Frame, &env),
             Err(WireAeadError::CryptographicFailure)
         );
         assert_eq!(
-            open(&key(), "local", AeadKind::Snapshot, &env).unwrap(),
+            open(&key(), "local", 0, AeadKind::Snapshot, &env).unwrap(),
             b"full"
         );
     }
 
     #[test]
     fn tampered_tag_fails() {
-        let mut env = seal(&key(), "local", AeadKind::Input, b"intent").unwrap();
+        let mut env = seal(&key(), "local", 0, AeadKind::Input, b"intent").unwrap();
         let last = env.len() - 1;
         env[last] ^= 0xff;
         assert_eq!(
-            open(&key(), "local", AeadKind::Input, &env),
+            open(&key(), "local", 0, AeadKind::Input, &env),
             Err(WireAeadError::CryptographicFailure)
         );
     }
 
     #[test]
     fn wrong_key_fails() {
-        let env = seal(&key(), "local", AeadKind::Presence, b"p").unwrap();
+        let env = seal(&key(), "local", 0, AeadKind::Presence, b"p").unwrap();
         let other = [0x11u8; ROOM_KEY_LEN];
         assert_eq!(
-            open(&other, "local", AeadKind::Presence, &env),
+            open(&other, "local", 0, AeadKind::Presence, &env),
             Err(WireAeadError::CryptographicFailure)
         );
     }
@@ -275,7 +324,7 @@ mod tests {
     #[test]
     fn short_envelope_fails() {
         assert_eq!(
-            open(&key(), "local", AeadKind::Frame, &[0u8; 10]),
+            open(&key(), "local", 0, AeadKind::Frame, &[0u8; 10]),
             Err(WireAeadError::CiphertextTooShort(10))
         );
     }

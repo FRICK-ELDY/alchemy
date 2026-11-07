@@ -138,6 +138,8 @@ pub struct DashState {
     pub worlds_last_frame_at: Option<std::time::Instant>,
     /// True after successful Join/Host until Leave/Logout (gates stall UX).
     pub worlds_in_room: bool,
+    /// Room key epoch advanced on Token refresh — Rejoin / Leave required (x007e).
+    pub worlds_key_stale: bool,
 }
 
 impl Default for DashState {
@@ -198,6 +200,7 @@ impl Default for DashState {
             worlds_seen_frame_tick: None,
             worlds_last_frame_at: None,
             worlds_in_room: false,
+            worlds_key_stale: false,
         }
     }
 }
@@ -816,7 +819,34 @@ fn rebuild_worlds(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, c
     tree.register_hit(WidgetId::WorldsCreate, create);
 
     y += btn_h + gap + 4.0;
-    if state.worlds_waiting_host {
+    if state.worlds_key_stale {
+        tree.push_label(
+            Rect::new(cx, y, cw, 18.0),
+            "Room updated — reconnect required (key rotated).",
+            Color::rgba(0.95, 0.55, 0.35, 1.0),
+            1.1,
+        );
+        y += 22.0;
+        let rejoin = Rect::new(cx, y, 160.0, btn_h);
+        tree.push_rect(rejoin, state.interact(WidgetId::WorldsRejoin, ACCENT));
+        tree.push_label(
+            Rect::new(rejoin.x + 8.0, rejoin.y + 8.0, 144.0, 16.0),
+            "Rejoin room",
+            TEXT,
+            1.2,
+        );
+        tree.register_hit(WidgetId::WorldsRejoin, rejoin);
+        let leave = Rect::new(cx + 168.0, y, 160.0, btn_h);
+        tree.push_rect(leave, state.interact(WidgetId::WorldsLeave, BTN_DANGER));
+        tree.push_label(
+            Rect::new(leave.x + 8.0, leave.y + 8.0, 144.0, 16.0),
+            "Leave to catalog",
+            TEXT,
+            1.2,
+        );
+        tree.register_hit(WidgetId::WorldsLeave, leave);
+        y += btn_h + gap;
+    } else if state.worlds_waiting_host {
         let wait_msg = if state.worlds_host_disconnect {
             "Host connection lost — wait for return or Leave."
         } else {

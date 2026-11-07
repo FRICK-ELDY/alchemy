@@ -2,8 +2,10 @@ defmodule World.Rooms.Room do
   @moduledoc """
   Persistent room ledger row (x0028).
 
-  Guarantees: `room_id` + `owner_sub` + DemoScene `scene` + `visibility` + `wire_cap` (x004e) + `room_key` (x0069) survive restart.
-  Non-guarantees: Presence / physics pose; UGC edit history.
+  Guarantees: `room_id` + `owner_sub` + DemoScene `scene` + `visibility` + `wire_cap` (x004e) +
+  `room_key` (x0069) + `room_key_epoch` (x007e) survive restart.
+  Non-guarantees: Presence / physics pose; UGC edit history; previous-epoch key durability
+  (grace is memory-only via `RoomKeyGrace`).
   """
 
   use Ash.Resource,
@@ -54,6 +56,19 @@ defmodule World.Rooms.Room do
       public? true
     end
 
+    # x007e: monotonic Room key generation; bumps on visibility narrow / owner rotate.
+    attribute :room_key_epoch, :integer do
+      allow_nil? false
+      public? true
+      default 0
+    end
+
+    # x007e: last successful key rotate (periodic / narrow / owner).
+    attribute :room_key_rotated_at, :utc_datetime do
+      allow_nil? true
+      public? true
+    end
+
     # x003a: host generation. 0 = none yet; bumps when attested host_pub changes.
     attribute :host_generation, :integer do
       allow_nil? false
@@ -78,11 +93,26 @@ defmodule World.Rooms.Room do
 
     create :create do
       primary? true
-      accept [:room_id, :owner_sub, :scene, :visibility, :wire_cap, :room_key]
+
+      accept [
+        :room_id,
+        :owner_sub,
+        :scene,
+        :visibility,
+        :wire_cap,
+        :room_key,
+        :room_key_epoch,
+        :room_key_rotated_at
+      ]
     end
 
     update :set_visibility do
-      accept [:visibility]
+      # May also rotate room_key + room_key_epoch when visibility narrows (x007e).
+      accept [:visibility, :room_key, :room_key_epoch, :room_key_rotated_at]
+    end
+
+    update :rotate_room_key do
+      accept [:room_key, :room_key_epoch, :room_key_rotated_at]
     end
 
     # x006d: host take-out appends a SceneEntry and bumps revision (canonical seal input).
@@ -105,5 +135,6 @@ defmodule World.Rooms.Room do
     define :get_by_room_id, action: :get_by_room_id, args: [:room_id]
     define :set_scene, action: :set_scene
     define :set_visibility, action: :set_visibility
+    define :rotate_room_key, action: :rotate_room_key
   end
 end

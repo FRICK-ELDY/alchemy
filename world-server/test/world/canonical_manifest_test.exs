@@ -51,6 +51,6 @@ defmodule World.CanonicalManifestTest do
     # Keep in lockstep with protocol/src/lib.rs `PROTOCOL_PIN` — drift → seal mismatch.
     # x003b decode limits do not bump the pin (wire-compatible).
     assert Application.fetch_env!(:world, :protocol_pin) ==
-             "alchemy-protocol/0.18.0-x0069"
+             "alchemy-protocol/0.19.0-x007e"
   end
 end

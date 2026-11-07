@@ -107,6 +107,7 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::WorldsJoinGuest
         | WidgetId::WorldsHostRoom
         | WidgetId::WorldsLeave
+        | WidgetId::WorldsRejoin
         | WidgetId::WorldsHostRescue
         | WidgetId::WorldsRow0
         | WidgetId::WorldsRow1

@@ -12,6 +12,7 @@ defmodule WorldWeb.RoomController do
   alias World.PlaceRead
   alias World.RoomAccess
   alias World.Rooms
+  alias World.Rooms.RoomKeyGrace
   alias World.Token
 
   # x007c: catalog of rooms visible to the caller (no secrets).
@@ -221,6 +222,7 @@ defmodule WorldWeb.RoomController do
   # x004e: also returns wire_cap + Allocation Token for Relay Agent mTLS.
   # x0066: optional csr_pem → mtls client cert (world-issued; CSR Subject ignored).
   # x0069: room_key (URL-safe base64 of 32B) for Zenoh payload AEAD — not in Allocation JWT.
+  # x007e: room_key_epoch accompanies room_key (Allocation JWT still has neither).
   defp issue_token(conn, room_id, role, sub, session_pub, csr_pem) do
     relay_id = Application.fetch_env!(:world, :default_relay_id)
 
@@ -235,7 +237,7 @@ defmodule WorldWeb.RoomController do
       Logger.metadata(jti: room_jti)
 
       Logger.info(
-        "room token issued room_jti=#{room_jti} alloc_jti=#{alloc_jti} sub=#{sub} room_id=#{room_id}"
+        "room token issued room_jti=#{room_jti} alloc_jti=#{alloc_jti} sub=#{sub} room_id=#{room_id} room_key_epoch=#{room.room_key_epoch}"
       )
 
       World.Metrics.inc(:token_issue_total)
@@ -249,9 +251,19 @@ defmodule WorldWeb.RoomController do
         visibility: room.visibility,
         wire_cap: room.wire_cap,
         room_key: room_key_b64,
+        room_key_epoch: room.room_key_epoch,
         allocation_token: allocation_token,
         token_type: "Bearer"
       }
+
+      # x007e: host Token may carry RoomKeyGrace prev for dual-open after restart / late sync.
+      # Guests never receive prev (no client multi-key buffer).
+      body =
+        if role == "host" do
+          maybe_put_room_key_prev(body, room_id)
+        else
+          body
+        end
 
       body =
         if mtls do
@@ -404,6 +416,27 @@ defmodule WorldWeb.RoomController do
   # x0066: csr_pem present → sign; absent → no mtls field (Relay Agent path may still apply).
   # CA 未設定 / 読めない: csr を無視して Token を返す（Agent 併存）。
   # CA 設定あり・署名失敗（openssl）: Token ごと 5xx（WAN で world 発行を選んだ経路の fail-closed）。
+  # x007e: attach in-grace prev key for host dual-open (guest Tokens omit).
+  defp maybe_put_room_key_prev(body, room_id) when is_map(body) and is_binary(room_id) do
+    case RoomKeyGrace.get(room_id) do
+      {:ok, %{prev_key: hex, prev_epoch: epoch}} ->
+        case Rooms.room_key_for_token(hex) do
+          {:ok, b64} ->
+            body
+            |> Map.put(:room_key_prev, b64)
+            |> Map.put(:room_key_prev_epoch, epoch)
+
+          {:error, _} ->
+            body
+        end
+
+      :miss ->
+        body
+    end
+  end
+
+  defp maybe_put_room_key_prev(body, _), do: body
+
   defp maybe_issue_mtls(nil, _role), do: {:ok, nil}
   defp maybe_issue_mtls("", _role), do: {:ok, nil}
 

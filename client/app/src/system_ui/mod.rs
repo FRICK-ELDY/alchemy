@@ -354,6 +354,7 @@ impl SystemUi {
             WidgetId::WorldsHostRoom => UiAction::WorldsHostRoom,
             WidgetId::WorldsHostRescue => UiAction::WorldsHostRescue,
             WidgetId::WorldsLeave => UiAction::WorldsLeave,
+            WidgetId::WorldsRejoin => UiAction::WorldsRejoin,
             WidgetId::WorldsRow0
             | WidgetId::WorldsRow1
             | WidgetId::WorldsRow2
@@ -936,6 +937,8 @@ pub enum UiAction {
     WorldsHostRescue,
     /// Worlds: Leave room bus back to catalog (x007c).
     WorldsLeave,
+    /// Worlds: KeyStale Rejoin (Leave → Join same room · x007e).
+    WorldsRejoin,
 }
 
 fn chrono_lite_now() -> String {

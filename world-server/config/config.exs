@@ -9,6 +9,9 @@ config :world,
   # x0071: structural Room quota per owner (rate limit is separate / temporal).
   max_rooms_per_owner: 32,
   room_token_ttl_seconds: 300,
+  # x007e: periodic room_key rotate interval (hours). 0 disables.
+  # Runtime override: ROOM_KEY_ROTATE_HOURS (see runtime.exs when present).
+  room_key_rotate_hours: 24,
   room_token_issuer: "alchemy-world",
   room_token_audience: "alchemy-room",
   # x004e: Relay Allocation Token (same keys / JWKS; different aud).
@@ -18,7 +21,7 @@ config :world,
   room_token_private_key_path: "priv/room_jwt_private.pem",
   room_token_generate_key_on_startup: true,
   # Must match alchemy-protocol `PROTOCOL_PIN` (ManifestSeal hash input · x0039 / x004e).
-  protocol_pin: "alchemy-protocol/0.18.0-x0069",
+  protocol_pin: "alchemy-protocol/0.19.0-x007e",
   # x0075: permanent manifest-seal-hash Port (path set in test_helper / env / PATH)
   manifest_seal_hash_bin: nil,
   manifest_seal_hash_call_timeout_ms: 30_000,

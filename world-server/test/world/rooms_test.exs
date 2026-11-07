@@ -19,11 +19,88 @@ defmodule World.RoomsTest do
 
   test "create stores room_key hex and token encoding is 32 bytes (x0069)" do
     assert {:ok, "rk-room", _, _} = Rooms.create("rk-room", @owner)
-    assert {:ok, %Room{room_key: hex}} = Room.get_by_room_id("rk-room")
+    assert {:ok, %Room{room_key: hex, room_key_epoch: 0}} = Room.get_by_room_id("rk-room")
     assert byte_size(hex) == 64
     assert {:ok, b64} = Rooms.room_key_for_token(hex)
     assert {:ok, raw} = Base.url_decode64(b64, padding: false)
     assert byte_size(raw) == 32
+  end
+
+  test "visibility narrow rotates room_key epoch and parks prev in grace (x007e)" do
+    alias World.Rooms.RoomKeyGrace
+
+    assert {:ok, "rk-narrow", _, _} = Rooms.create("rk-narrow", @owner, "public")
+    assert {:ok, %Room{room_key: key0, room_key_epoch: 0}} = Room.get_by_room_id("rk-narrow")
+
+    assert {:ok, "friends"} = Rooms.set_visibility("rk-narrow", @owner, "friends")
+
+    assert {:ok, %Room{room_key: key1, room_key_epoch: 1, visibility: "friends"}} =
+             Room.get_by_room_id("rk-narrow")
+
+    assert key1 != key0
+    assert {:ok, %{prev_key: ^key0, prev_epoch: 0}} = RoomKeyGrace.get("rk-narrow")
+
+    # Widen does not rotate.
+    assert {:ok, "public"} = Rooms.set_visibility("rk-narrow", @owner, "public")
+    assert {:ok, %Room{room_key: ^key1, room_key_epoch: 1}} = Room.get_by_room_id("rk-narrow")
+  end
+
+  test "owner rotate_room_key bumps epoch without visibility change (x007e)" do
+    alias World.Rooms.RoomKeyGrace
+
+    assert {:ok, "rk-rot", _, _} = Rooms.create("rk-rot", @owner)
+
+    assert {:ok, %Room{room_key: key0, room_key_epoch: 0, visibility: vis}} =
+             Room.get_by_room_id("rk-rot")
+
+    assert {:ok, 1} = Rooms.rotate_room_key("rk-rot", @owner)
+
+    assert {:ok, %Room{room_key: key1, room_key_epoch: 1, visibility: ^vis}} =
+             Room.get_by_room_id("rk-rot")
+
+    assert key1 != key0
+    assert {:ok, %{prev_key: ^key0, prev_epoch: 0}} = RoomKeyGrace.get("rk-rot")
+    assert {:error, :forbidden_host} = Rooms.rotate_room_key("rk-rot", "other-sub")
+  end
+
+  test "rotate_due_room_keys rotates stale rooms (x007e periodic)" do
+    assert {:ok, "rk-due", _, _} = Rooms.create("rk-due", @owner)
+    assert {:ok, %Room{room_key_epoch: 0} = room} = Room.get_by_room_id("rk-due")
+    stale = DateTime.add(DateTime.utc_now(), -48 * 3600, :second) |> DateTime.truncate(:second)
+
+    assert {:ok, _} =
+             Room.rotate_room_key(room, %{
+               room_key: room.room_key,
+               room_key_epoch: room.room_key_epoch,
+               room_key_rotated_at: stale
+             })
+
+    assert {0, 0} = Rooms.rotate_due_room_keys(0)
+    {ok_n, err_n} = Rooms.rotate_due_room_keys(24)
+    assert err_n == 0
+    assert ok_n >= 1
+    assert {:ok, %Room{room_key_epoch: epoch}} = Room.get_by_room_id("rk-due")
+    assert epoch >= 1
+  end
+
+  test "rotate_due stamps null room_key_rotated_at without rotating (x007e deploy baseline)" do
+    assert {:ok, "rk-stamp", _, _} = Rooms.create("rk-stamp", @owner)
+    assert {:ok, %Room{room_key_epoch: 0} = room} = Room.get_by_room_id("rk-stamp")
+
+    # Simulate pre-migration / null column without using inserted_at as due.
+    assert {:ok, _} =
+             Room.rotate_room_key(room, %{
+               room_key: room.room_key,
+               room_key_epoch: room.room_key_epoch,
+               room_key_rotated_at: nil
+             })
+
+    {ok_n, err_n} = Rooms.rotate_due_room_keys(24)
+    assert err_n == 0
+    assert ok_n == 0
+
+    assert {:ok, %Room{room_key_epoch: 0, room_key_rotated_at: %DateTime{}}} =
+             Room.get_by_room_id("rk-stamp")
   end
 
   test "create rejects duplicate room_id" do

@@ -298,14 +298,65 @@ defmodule WorldWeb.RoomControllerTest do
     assert {:ok, room_key_raw} = Base.url_decode64(body["room_key"], padding: false)
     assert byte_size(room_key_raw) == 32
     refute Map.has_key?(alloc_claims, "room_key")
+    # x007e: epoch accompanies room_key (also absent from Allocation JWT)
+    assert body["room_key_epoch"] == 0
+    refute Map.has_key?(alloc_claims, "room_key_epoch")
 
-    # Same room → same room_key on re-issue
+    # Same room → same room_key / epoch on re-issue (no rotate)
     body2 =
       conn
       |> post("/api/v1/rooms/owned/tokens", token_params(%{role: "guest"}))
       |> json_response(200)
 
     assert body2["room_key"] == body["room_key"]
+    assert body2["room_key_epoch"] == body["room_key_epoch"]
+    # No grace yet → host Token also omits prev
+    refute Map.has_key?(body2, "room_key_prev")
+  end
+
+  test "host Token carries RoomKeyGrace prev after rotate; guest does not (x007e)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+    assert %{"room_id" => "grace-tok"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "grace-tok", visibility: "public"})
+             |> json_response(201)
+
+    before =
+      conn
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post("/api/v1/rooms/grace-tok/tokens", token_params(%{role: "host"}))
+      |> json_response(200)
+
+    assert before["room_key_epoch"] == 0
+    refute Map.has_key?(before, "room_key_prev")
+
+    assert {:ok, 1} = World.Rooms.rotate_room_key("grace-tok", owner)
+
+    host_body =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post("/api/v1/rooms/grace-tok/tokens", token_params(%{role: "host"}))
+      |> json_response(200)
+
+    assert host_body["room_key_epoch"] == 1
+    assert host_body["room_key"] != before["room_key"]
+    assert host_body["room_key_prev"] == before["room_key"]
+    assert host_body["room_key_prev_epoch"] == 0
+
+    guest_body =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post("/api/v1/rooms/grace-tok/tokens", token_params(%{role: "guest"}))
+      |> json_response(200)
+
+    assert guest_body["room_key_epoch"] == 1
+    refute Map.has_key?(guest_body, "room_key_prev")
+    refute Map.has_key?(guest_body, "room_key_prev_epoch")
   end
 
   test "csr_pem yields mtls with forced guest CN when CA configured", %{

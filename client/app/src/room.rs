@@ -4,7 +4,8 @@
 //! - Explicit Leave + Zenoh liveliness on join/logout (x0019); Intent TTL is host fallback
 //! - `close_zenoh` uses `session.close()` (not Drop alone) so bus threads holding clones stop
 //! - Access + Room Token auto-refresh at ~80% TTL while joined (x0021 P1-1); pending Intent
-//!   session commit respects backoff
+//!   session commit respects backoff; guest ≈15s `room_key_epoch` probe + AEAD-fail nudge
+//!   (x007e; host seal cadence)
 //! - Intent Ed25519 session minted before guest Room Token fetch so `cnf.spk` matches bind
 //!   `session_pub` (x003e)
 //! - `ensure_room_bus` idempotent via `room_bus_started`; spawn failure clears the flag
@@ -223,9 +224,8 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     if let Ok(mut cap) = shared.wire_cap.lock() {
         *cap = Some(Arc::<str>::from(guest.wire_cap.as_str()));
     }
-    if let Ok(mut key) = shared.room_key.lock() {
-        *key = Some(Arc::new(guest.room_key));
-    }
+    // Fresh Join / Rejoin: commit live AEAD (clears KeyStale + pending).
+    shared.commit_room_aead(guest.room_key, guest.room_key_epoch);
     // mTLS: world-issued preferred; else Relay allocate (x0066 / x004e).
     if let Some(id) = zenoh_connect::apply_world_mtls_or_allocate(
         guest.mtls.as_ref().map(|m| m.client_cert_pem.as_str()),
@@ -402,10 +402,12 @@ fn bind_room_after_join_inner(
     Ok(())
 }
 
-/// Sleep until the next access/room deadline, capped at [`TOKEN_REFRESH_POLL`].
-/// Joined+pending wakes at `pending_retry` (backoff) or soon if unset.
+/// Sleep until the next access/room/epoch-probe deadline, capped at [`TOKEN_REFRESH_POLL`].
+/// Joined+pending wakes at `pending_retry` (backoff) or soon if unset — epoch probe is
+/// ignored while pending so a past-due `probe_at` cannot pin the loop at 50ms.
 fn token_refresh_wait(shared: &SharedState) -> Duration {
     let now = Instant::now();
+    // pending_rotate suppresses `epoch_probe_due`; keep wait on the same gate.
     if shared.has_pending_intent_session_joined() {
         return match shared.pending_retry_not_before() {
             Some(t) if t > now => t
@@ -427,6 +429,15 @@ fn token_refresh_wait(shared: &SharedState) -> Duration {
             return Duration::from_millis(50);
         }
         wait = wait.min(deadline.saturating_duration_since(now));
+    }
+    drop(gate);
+    if let Ok(slot) = shared.room_key_epoch_probe_at.lock() {
+        if let Some(t) = *slot {
+            if t <= now {
+                return Duration::from_millis(50);
+            }
+            wait = wait.min(t.saturating_duration_since(now));
+        }
     }
     wait.max(Duration::from_millis(50))
 }
@@ -495,6 +506,10 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                         .pending_retry_not_before()
                         .map(|t| now >= t)
                         .unwrap_or(true);
+                // Keep probe out of the past while pending so wait stays on pending_retry only.
+                if pending_rotate && shared.room_key_epoch_probe_due(now) {
+                    shared.schedule_room_key_epoch_probe(crate::scene::ROOM_KEY_EPOCH_PROBE);
+                }
                 let room_due = joined
                     && shared
                         .auth
@@ -502,9 +517,18 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                         .ok()
                         .map(|g| g.room_deadline.map(|d| now >= d).unwrap_or(false))
                         .unwrap_or(false);
+                // Epoch probe must not bypass pending Intent backoff (same as soft TTL).
+                let epoch_probe_due =
+                    joined && !pending_rotate && shared.room_key_epoch_probe_due(now);
                 // pending backoff must not be bypassed by TTL; during backoff only live refresh.
-                let need_room = pending_due || room_due;
+                let need_room = pending_due || room_due || epoch_probe_due;
                 if need_room {
+                    // Past-due probe left scheduled → token_refresh_wait sticks at 50ms.
+                    let rearm_epoch_probe_if_due = || {
+                        if epoch_probe_due {
+                            shared.schedule_room_key_epoch_probe(TOKEN_REFRESH_POLL);
+                        }
+                    };
                     let access = shared.auth.lock().ok().and_then(|g| {
                         if g.is_joined() {
                             g.access_token.clone()
@@ -518,6 +542,7 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                         } else if let Ok(mut gate) = shared.auth.lock() {
                             gate.room_deadline = Some(now + TOKEN_REFRESH_POLL);
                         }
+                        rearm_epoch_probe_if_due();
                         continue;
                     };
                     // Lock order for pub reads: auth → intent → pending (helpers).
@@ -531,6 +556,7 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                             if let Ok(mut gate) = shared.auth.lock() {
                                 gate.room_deadline = Some(now + TOKEN_REFRESH_POLL);
                             }
+                            rearm_epoch_probe_if_due();
                             continue;
                         }
                     } else if let Some(b64) = shared.live_session_pub_b64_if_joined() {
@@ -539,6 +565,7 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                         if let Ok(mut gate) = shared.auth.lock() {
                             gate.room_deadline = Some(now + TOKEN_REFRESH_POLL);
                         }
+                        rearm_epoch_probe_if_due();
                         continue;
                     };
                     // Guest refresh: re-issue Room Token; when WAN, new CSR → world mtls env.
@@ -600,6 +627,7 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                                     } else if let Ok(mut gate) = shared.auth.lock() {
                                         gate.room_deadline = Some(now + TOKEN_REFRESH_POLL);
                                     }
+                                    rearm_epoch_probe_if_due();
                                     continue;
                                 }
                             };
@@ -634,6 +662,7 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                                     shared.note_pending_token_failure();
                                 } else if !for_pending {
                                     shared.force_room_token_refresh_soon();
+                                    rearm_epoch_probe_if_due();
                                 }
                             }
                         }
@@ -641,8 +670,11 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                             log::warn!("Room Token refresh failed: {err:#}");
                             if for_pending {
                                 shared.note_pending_token_failure();
-                            } else if let Ok(mut gate) = shared.auth.lock() {
-                                gate.room_deadline = Some(now + TOKEN_REFRESH_POLL);
+                            } else {
+                                if let Ok(mut gate) = shared.auth.lock() {
+                                    gate.room_deadline = Some(now + TOKEN_REFRESH_POLL);
+                                }
+                                rearm_epoch_probe_if_due();
                             }
                         }
                     }

@@ -55,7 +55,7 @@ pub fn open_manifest_aead(
     if let Err(err) = wire_aead::check_aead_envelope_bytes(AeadKind::Manifest, envelope.len()) {
         return Err(err.to_string());
     }
-    wire_aead::open(room_key, room_id, AeadKind::Manifest, envelope).map_err(|e| e.to_string())
+    wire_aead::open(room_key, room_id, 0, AeadKind::Manifest, envelope).map_err(|e| e.to_string())
 }
 
 /// Full gate: AEAD → plaintext pipeline. Discard on open failure.

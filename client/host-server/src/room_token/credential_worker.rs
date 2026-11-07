@@ -1,10 +1,14 @@
 //! Credential worker thread + physics-facing publish snapshot (x003d).
 //!
 //! Guarantees: credential / seal HTTP runs on a dedicated thread; failure keeps the last good
-//! snapshot and retries with backoff; publish stops after hard expiry (process stays up).
+//! snapshot and retries with backoff; publish stops after hard expiry (process stays up);
+//! host Room Token key sync ≈15s advances only after a successful refresh (failure re-arms
+//! with backoff, capped by the sync interval).
 //! Non-guarantees: Zenoh put path (x0042), auth UI.
 
-use super::credential_chain::{plan_credential_refresh, HostCredentialChain};
+use super::credential_chain::{
+    plan_credential_refresh, CredentialRefreshPlan, HostCredentialChain,
+};
 use super::room_scene::RoomScene;
 use super::seal_cache::ManifestSealCache;
 use super::timing::{earliest_hard_expire, publish_allowed_at};
@@ -23,6 +27,9 @@ use std::time::{Duration, Instant};
 const CREDENTIAL_WORKER_IDLE: Duration = Duration::from_millis(200);
 const CREDENTIAL_BACKOFF_START: Duration = Duration::from_secs(1);
 const CREDENTIAL_BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// x007e: re-fetch host Token often enough that world rotate is adopted before
+/// guests Rejoin on the new epoch (soft TTL alone can leave a minutes-long window).
+const ROOM_KEY_SYNC_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Physics-facing credential / sealed-Manifest surface (x003d).
 #[derive(Debug, Clone)]
@@ -64,6 +71,8 @@ pub struct CredentialWorkerConfig {
     pub host_pub: Vec<u8>,
     pub scene: Arc<RwLock<RoomScene>>,
     pub force_reseal: Arc<std::sync::atomic::AtomicBool>,
+    /// Shared with AEAD seal/open paths; updated when host Token epoch advances (x007e).
+    pub room_aead: crate::room_aead::SharedRoomAead,
 }
 
 fn combined_hard_expire(
@@ -169,6 +178,7 @@ pub fn spawn_credential_worker(
         .spawn(move || {
             let mut backoff = CREDENTIAL_BACKOFF_START;
             let mut pending_seal = false;
+            let mut next_room_key_sync = Instant::now() + ROOM_KEY_SYNC_INTERVAL;
             loop {
                 let now = Instant::now();
                 {
@@ -186,12 +196,28 @@ pub fn spawn_credential_worker(
                     }
                 }
 
-                let plan = plan_credential_refresh(
+                let mut plan = plan_credential_refresh(
                     now,
                     creds.auth_refresh_at,
                     creds.host_refresh_at,
                     creds.attest_refresh_at,
                 );
+                // Advance `next_room_key_sync` only after a successful refresh (below);
+                // on failure, backoff + short re-arm keep the ≈15s guarantee closer.
+                let key_sync_due = now >= next_room_key_sync;
+                if key_sync_due {
+                    plan = Some(match plan {
+                        Some(mut p) => {
+                            p.refresh_host = true;
+                            p
+                        }
+                        None => CredentialRefreshPlan {
+                            refresh_auth: false,
+                            refresh_host: true,
+                            refresh_attest: false,
+                        },
+                    });
+                }
                 let external_reseal = cfg
                     .force_reseal
                     .swap(false, Ordering::SeqCst);
@@ -203,7 +229,9 @@ pub fn spawn_credential_worker(
 
                 let refresh_result = (|| -> Result<bool> {
                     let mut attest_rotated = false;
+                    let mut room_aead_advanced = false;
                     if let Some(plan) = plan {
+                        let refreshed_host = plan.refresh_host;
                         attest_rotated = creds.apply_credential_plan(
                             plan,
                             &cfg.auth_url,
@@ -212,6 +240,25 @@ pub fn spawn_credential_worker(
                             &cfg.host_pub,
                             verifier.as_ref(),
                         )?;
+                        if refreshed_host {
+                            // Grace ≈ Token TTL (hard expiry delta); fall back to 300s.
+                            let grace = creds
+                                .host_hard_expire_at
+                                .checked_duration_since(Instant::now())
+                                .unwrap_or(crate::room_aead::DEFAULT_PREV_GRACE);
+                            // Poison must fail the refresh so `next_room_key_sync` does not
+                            // advance as if the new epoch were applied.
+                            let mut keys = cfg
+                                .room_aead
+                                .write()
+                                .map_err(|_| anyhow!("room_aead RwLock poisoned"))?;
+                            room_aead_advanced = keys.apply_token_key(
+                                creds.room_key,
+                                creds.room_key_epoch,
+                                grace,
+                                creds.room_key_prev,
+                            );
+                        }
                     }
                     if attest_rotated || seal_due || seal_cache.seal.is_empty() {
                         let scene = cfg
@@ -260,6 +307,22 @@ pub fn spawn_credential_worker(
                         snap.hard_expire_at = hard;
                         snap.publish_allowed = true;
                         snap.host_generation = creds.host_generation;
+                        if room_aead_advanced {
+                            // Force physics to re-put Manifest under the new AEAD epoch
+                            // without waiting for MANIFEST_REPUBLISH (x007e).
+                            snap.manifest_epoch = snap.manifest_epoch.saturating_add(1);
+                            log::info!(
+                                "credential worker: room_key epoch advanced; bump manifest_epoch={} for AEAD re-put",
+                                snap.manifest_epoch
+                            );
+                        }
+                    }
+                    if room_aead_advanced
+                        && (attest_rotated || seal_due || seal_cache.seal.is_empty())
+                    {
+                        // Seal path already bumped epoch via write_snapshot_on_success;
+                        // still log for operators.
+                        log::info!("credential worker: room_key epoch advanced with seal rebuild");
                     }
                     Ok(attest_rotated)
                 })();
@@ -267,12 +330,19 @@ pub fn spawn_credential_worker(
                 match refresh_result {
                     Ok(_) => {
                         backoff = CREDENTIAL_BACKOFF_START;
+                        if key_sync_due {
+                            next_room_key_sync = Instant::now() + ROOM_KEY_SYNC_INTERVAL;
+                        }
                         thread::sleep(CREDENTIAL_WORKER_IDLE);
                     }
                     Err(err) => {
                         log::warn!(
                             "credential refresh failed (retry with backoff; keeping last good snapshot): {err:#}"
                         );
+                        if key_sync_due {
+                            // Fail-closed soft retry: do not wait a full 15s after a sync miss.
+                            next_room_key_sync = Instant::now() + backoff.min(ROOM_KEY_SYNC_INTERVAL);
+                        }
                         thread::sleep(backoff);
                         backoff = backoff.saturating_mul(2).min(CREDENTIAL_BACKOFF_MAX);
                     }

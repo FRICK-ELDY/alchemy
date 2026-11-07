@@ -13,7 +13,7 @@
 //! draining pending jobs / joining the worker on `stop()` (process exit may drop
 //! in-flight puts); Manifest logical (non-bytes) jobs — sealed bytes pass through.
 
-use alchemy_protocol::wire_aead::{self, AeadKind};
+use alchemy_protocol::wire_aead::AeadKind;
 use alchemy_protocol::wire_crypto::{sign_frame, sign_presence, SigningKey};
 use alchemy_protocol::{Entity, Message, PresenceState, RenderFrame};
 use anyhow::{Context, Result};
@@ -271,8 +271,8 @@ pub struct NetworkWorkerConfig {
     pub host_key: SigningKey,
     /// Room id for AEAD AAD (x0069).
     pub room_id: String,
-    /// Room AEAD key (x0069).
-    pub room_key: Arc<[u8; wire_aead::ROOM_KEY_LEN]>,
+    /// Shared Room AEAD keys (current + prev grace · x007e).
+    pub room_aead: host_server::room_aead::SharedRoomAead,
 }
 
 fn to_entity(id: u32, pose: Pose) -> Entity {
@@ -332,8 +332,13 @@ fn put_or_die(label: &str, pub_: &zenoh::pubsub::Publisher<'_>, bytes: Vec<u8>) 
     }
 }
 
-fn seal_or_die(kind: AeadKind, room_id: &str, room_key: &[u8], plaintext: Vec<u8>) -> Vec<u8> {
-    match wire_aead::seal(room_key, room_id, kind, &plaintext) {
+fn seal_or_die(
+    kind: AeadKind,
+    room_id: &str,
+    room_aead: &host_server::room_aead::SharedRoomAead,
+    plaintext: Vec<u8>,
+) -> Vec<u8> {
+    match host_server::room_aead::seal_shared(room_aead, room_id, kind, &plaintext) {
         Ok(env) => env,
         Err(e) => {
             log::error!("AEAD seal {kind:?} failed: {e}");
@@ -374,10 +379,10 @@ impl WorkerState {
         &mut self,
         pub_: &zenoh::pubsub::Publisher<'_>,
         room_id: &str,
-        room_key: &[u8],
+        room_aead: &host_server::room_aead::SharedRoomAead,
         job: ManifestJob,
     ) {
-        let env = seal_or_die(AeadKind::Manifest, room_id, room_key, job.bytes);
+        let env = seal_or_die(AeadKind::Manifest, room_id, room_aead, job.bytes);
         put_or_die("manifest", pub_, env);
         match job.reason {
             ManifestReason::Epoch => log::info!(
@@ -401,7 +406,7 @@ impl WorkerState {
         pub_: &zenoh::pubsub::Publisher<'_>,
         key: &SigningKey,
         room_id: &str,
-        room_key: &[u8],
+        room_aead: &host_server::room_aead::SharedRoomAead,
         mut job: PresenceJob,
     ) {
         let n = job.state.assignments.len();
@@ -410,7 +415,7 @@ impl WorkerState {
         let env = seal_or_die(
             AeadKind::Presence,
             room_id,
-            room_key,
+            room_aead,
             job.state.encode_to_vec(),
         );
         put_or_die("presence", pub_, env);
@@ -446,7 +451,7 @@ impl WorkerState {
         frame_pub: &zenoh::pubsub::Publisher<'_>,
         key: &SigningKey,
         room_id: &str,
-        room_key: &[u8],
+        room_aead: &host_server::room_aead::SharedRoomAead,
         stats: &PublishStats,
         upserts: Vec<Entity>,
         removes: Vec<u32>,
@@ -461,7 +466,7 @@ impl WorkerState {
             host_sig: vec![],
         };
         sign_frame(key, &mut frame);
-        let env = seal_or_die(AeadKind::Frame, room_id, room_key, frame.encode_to_vec());
+        let env = seal_or_die(AeadKind::Frame, room_id, room_aead, frame.encode_to_vec());
         put_or_die("frame", frame_pub, env);
         stats
             .upsert_entities
@@ -478,7 +483,7 @@ impl WorkerState {
         frame_pub: &zenoh::pubsub::Publisher<'_>,
         key: &SigningKey,
         room_id: &str,
-        room_key: &[u8],
+        room_aead: &host_server::room_aead::SharedRoomAead,
         cache: &Mutex<RenderFrame>,
         stats: &PublishStats,
         sample: FrameSample,
@@ -519,7 +524,7 @@ impl WorkerState {
                 frame_pub,
                 key,
                 room_id,
-                room_key,
+                room_aead,
                 stats,
                 vec![],
                 remove_ids,
@@ -585,7 +590,7 @@ impl WorkerState {
             frame_pub,
             key,
             room_id,
-            room_key,
+            room_aead,
             stats,
             upserts,
             remove_ids,
@@ -617,7 +622,7 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
                 snapshot_cache,
                 host_key,
                 room_id,
-                room_key,
+                room_aead,
             } = config;
             let mut state = WorkerState {
                 last_sent: HashMap::new(),
@@ -629,23 +634,17 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
             log::info!("network worker ready (Zenoh put off physics thread; AEAD on)");
             while let Some((frame, presence, manifest)) = hub_w.take_batch() {
                 if let Some(job) = manifest {
-                    state.handle_manifest(&manifest_pub, &room_id, room_key.as_ref(), job);
+                    state.handle_manifest(&manifest_pub, &room_id, &room_aead, job);
                 }
                 if let Some(job) = presence {
-                    state.handle_presence(
-                        &presence_pub,
-                        &host_key,
-                        &room_id,
-                        room_key.as_ref(),
-                        job,
-                    );
+                    state.handle_presence(&presence_pub, &host_key, &room_id, &room_aead, job);
                 }
                 if let Some(sample) = frame {
                     state.handle_frame(
                         &frame_pub,
                         &host_key,
                         &room_id,
-                        room_key.as_ref(),
+                        &room_aead,
                         &snapshot_cache,
                         &stats_w,
                         sample,
