@@ -255,8 +255,10 @@ pub fn save(prefs: &OnboardingPrefs) {
 
 /// Resolve boot endpoints: process env wins per-field, else saved operator, else localhost.
 ///
-/// Note: UI `ApplyOperatorEndpoints` later overrides SharedState + `ZENOH_CONNECT` for this
-/// process so Official/Custom selection is not stuck on a boot-time localhost env.
+/// Note: UI `ApplyOperatorEndpoints` later overrides SharedState and process env
+/// (`AUTH_URL` / `WORLD_URL` / `ASSETS_URL` / `ZENOH_CONNECT`) so Official/Custom
+/// selection is not stuck on a boot-time localhost env. A Running host-server must
+/// be restarted to pick up the new URLs.
 pub fn boot_endpoints(prefs: &OnboardingPrefs) -> Endpoints {
     let env_auth = std::env::var("AUTH_URL").ok();
     let env_world = std::env::var("WORLD_URL").ok();

@@ -49,10 +49,16 @@ Before Start.cmd
 
 Run
 ---
-  Double-click Start.cmd  (or run from cmd.exe)
-  On failure the window pauses so you can read the message.
+  Preferred for durable Host + CAS seed: Start.cmd with env.local.cmd
+  (AUTH_USER + AUTH_PASSWORD). Host then uses password login and can refresh.
+  Or run client.exe next to host-server.exe. After UI login, Host injects the
+  short-lived access JWT only when AUTH_USER and ALCHEMY_AUTH_TOKEN are unset —
+  expect Host fail-closed after access JWT TTL (≈12–15 min with default auth).
+  On Start.cmd failure the window pauses so you can read the message.
   MainHub → Join a host: host-server stays stopped (lightweight guest).
   MainHub → Host a room (Create / Host this room): client spawns host-server.exe (Job Object).
+  Official Step1 syncs AUTH/WORLD/ZENOH (and ASSETS for the client) into process env
+  for the next host spawn; switch operator while Hosting → Host again.
 
 Exit
 ----
@@ -63,6 +69,7 @@ Non-guarantees
 --------------
   Offline / assets-down Coin fixture fallback uses a compile-time path and is
   not a supported tester path for authenticated sessions.
+  UI-token Host without AUTH_* does not refresh auth; Room Token reissue dies with access JWT.
 
 Report bugs
 -----------
