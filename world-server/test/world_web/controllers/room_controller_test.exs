@@ -121,6 +121,53 @@ defmodule WorldWeb.RoomControllerTest do
     assert "old-owned-priv" in ids
   end
 
+  test "catalog includes friends room for friend viewer and omits for stranger (x007c)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    friend = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    stranger = "99999999-9999-9999-9999-999999999999"
+
+    previous = Application.get_env(:world, :auth_access_stub)
+
+    on_exit(fn ->
+      Application.put_env(:world, :auth_access_stub, previous)
+    end)
+
+    Application.put_env(:world, :auth_access_stub, fn
+      ^owner, ^friend, "friends" -> true
+      ^owner, ^stranger, "friends" -> false
+      _, _, _ -> false
+    end)
+
+    assert %{"room_id" => "friends-cat"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "friends-cat", visibility: "friends"})
+             |> json_response(201)
+
+    friend_ids =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, friend)
+      |> get("/api/v1/rooms")
+      |> json_response(200)
+      |> Map.fetch!("rooms")
+      |> Enum.map(& &1["room_id"])
+
+    assert "friends-cat" in friend_ids
+
+    stranger_ids =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, stranger)
+      |> get("/api/v1/rooms")
+      |> json_response(200)
+      |> Map.fetch!("rooms")
+      |> Enum.map(& &1["room_id"])
+
+    refute "friends-cat" in stranger_ids
+  end
+
   test "rejects room create when owner cap is exceeded (x0071)", %{conn: conn, signer: signer} do
     previous = Application.get_env(:world, :max_rooms_per_owner)
     Application.put_env(:world, :max_rooms_per_owner, 1)

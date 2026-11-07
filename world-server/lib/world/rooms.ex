@@ -437,6 +437,13 @@ defmodule World.Rooms do
 
   Does **not** include `room_key`, Token, `wire_cap`, or scene.
   `role_hint` is `owner` | `joinable` only (invisible rooms are omitted).
+
+  Guarantees: owned rooms (up to owned limit) and public candidates are not
+  dropped by a global top-N of all rooms before ACL.
+
+  Non-guarantees: social/lan candidates are still “newest N by visibility class”
+  then ACL-filtered — a friend’s rarely-updated room may fall outside the social
+  scan window (friendship-graph-aware scan is out of scope).
   """
   @type catalog_summary :: %{
           room_id: room_id(),

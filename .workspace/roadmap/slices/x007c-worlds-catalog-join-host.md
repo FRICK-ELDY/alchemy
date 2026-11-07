@@ -31,7 +31,7 @@ WAN 購読面・`wire_cap`・mTLS・`epoch` 等の内部用語は UI に出さ�
 | client: Worlds タブを **左：一覧 ／ 右：Room 詳細の 2 ペイン（Master-Detail）** で構成し、画面往復なしで部屋を比較・選択可能にする | Join が暗黙に host を spawn すること |
 | client: **Join as guest** と **Host this room** を明確に別 CTA としつつ、自分の部屋（owner）では「Host this room」を主ボタンにして押し間違いを防ぐ | 一覧行の Live 状態を権威保証すること（best-effort ヒントまたは非表示） |
 | Join 成功後の in-room 状態は **Waiting for host** と **Live** を明確に区別し、Waiting 画面内に「退室」および「（owner時）今すぐ自分がホストを起動」の導線を置く | デザイン最終化；XR 専用 Worlds；招待リンク本実装 |
-| Waiting 中の owner 救済 CTA（owner のみ表示）。**MVP 実装は Leave → spawn host → rejoin**（バス鍵・seal retarget を単純化）。仕様上の理想は guest Join 済みのまま HostSupervisor だけ起動して Live へ | 入室維持のままの host 昇格；guest→host 権限モデル；他マシンの remote host 委任 |
+| Waiting 中の owner 救済 CTA（owner のみ表示）。**MVP 実装は Leave → spawn host → rejoin**（バス鍵・seal retarget を単純化）。Rescue 対象は `shared.get_room_id()`（実入室）のみ；カタログ行プレビューの `home_room_id` は使わない。Host spawn は visibility `Applied`（owner PUT 成功）のみ | 入室維持のままの host 昇格；guest→host 権限モデル；他マシンの remote host 委任；social カタログの友達グラフ走査 |
 | Home の固定 `ROOM_ID` Join / Start は Worlds へ移行（上級者・デバッグ向けに Settings 残し可） | **本 Slice 単体での Room key epoch 実装**（別 Slice。未実装時 KeyStale は殻のみ） |
 | visibility 変更 UI がある場合、「既存参加者は再接続が必要」と明記 | |
 
