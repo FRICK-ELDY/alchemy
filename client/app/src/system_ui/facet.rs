@@ -150,8 +150,8 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::Step1Back
         | WidgetId::FederationStubBack
         | WidgetId::Step2Back
-        | WidgetId::MainPlayTogether
-        | WidgetId::MainSoloHost => FacetId::Home,
+        | WidgetId::MainJoinHost
+        | WidgetId::MainHostRoom => FacetId::Home,
         WidgetId::Mic
         | WidgetId::MicOff
         | WidgetId::Volume

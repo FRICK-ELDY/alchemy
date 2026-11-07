@@ -89,8 +89,10 @@ pub enum WidgetId {
     FederationStubBack,
     Step2Back,
     /// Main hub after login.
-    MainPlayTogether,
-    MainSoloHost,
+    /// MainHub: Join a host → Worlds catalog.
+    MainJoinHost,
+    /// MainHub: Host a room → Worlds Create / Host this room.
+    MainHostRoom,
     /// Worlds catalog (x007c).
     WorldsRefresh,
     WorldsFilterAll,

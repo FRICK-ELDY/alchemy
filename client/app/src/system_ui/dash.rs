@@ -21,7 +21,7 @@ pub enum OnboardingShell {
     Step1FederationStub,
     Step2Auth,
     MainHub,
-    /// Classic Home / Settings / Exit after SOLO or Settings.
+    /// Classic Home / Settings / Exit after Host a room / Settings.
     Dash,
 }
 
@@ -1794,66 +1794,63 @@ fn rebuild_main_hub(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32,
     let y = cy0 + 72.0;
 
     let play = Rect::new(cx, y, card_w, card_h);
-    tree.push_rect(
-        play,
-        state.interact(WidgetId::MainPlayTogether, CUSTOM_CARD),
-    );
+    tree.push_rect(play, state.interact(WidgetId::MainJoinHost, CUSTOM_CARD));
     tree.push_label(
         Rect::new(cx + 20.0, y + 28.0, card_w - 40.0, 28.0),
-        "PLAY TOGETHER",
+        "Join a host",
         TEXT,
         2.0,
     );
     tree.push_label(
         Rect::new(cx + 20.0, y + 68.0, card_w - 40.0, 20.0),
-        "Session List (stub)",
+        "Enter as guest",
         MUTED,
         1.2,
     );
     tree.push_label(
         Rect::new(cx + 20.0, y + 100.0, card_w - 40.0, 40.0),
-        "Join active public/friends rooms",
+        "Join a room someone else is hosting",
         MUTED,
         1.0,
     );
     tree.push_label(
         Rect::new(cx + 20.0, y + card_h - 48.0, card_w - 40.0, 28.0),
-        "Friends Online — placeholder",
+        "Worlds → Join as guest",
         MUTED,
         1.0,
     );
-    tree.register_hit(WidgetId::MainPlayTogether, play);
+    tree.register_hit(WidgetId::MainJoinHost, play);
 
     let solo = Rect::new(cx + card_w + gap, y, card_w, card_h);
     tree.push_rect(
         solo,
-        state.interact(WidgetId::MainSoloHost, Color::rgba(0.32, 0.18, 0.10, 1.0)),
+        state.interact(WidgetId::MainHostRoom, Color::rgba(0.32, 0.18, 0.10, 1.0)),
     );
     tree.push_label(
         Rect::new(solo.x + 20.0, y + 28.0, card_w - 40.0, 28.0),
-        "SOLO PLAY",
+        "Host a room",
         TEXT,
         2.0,
     );
     tree.push_label(
         Rect::new(solo.x + 20.0, y + 68.0, card_w - 40.0, 20.0),
-        "Private Local Host",
+        "Run space on this PC",
         MUTED,
         1.2,
     );
     tree.push_label(
         Rect::new(solo.x + 20.0, y + 100.0, card_w - 40.0, 40.0),
-        "Host on your own PC / Explore Solo",
+        "Create world or Host this room",
         MUTED,
         1.0,
     );
     tree.push_label(
         Rect::new(solo.x + 20.0, y + card_h - 48.0, card_w - 40.0, 28.0),
-        "[ Host local ]",
+        "Worlds → Create / Host",
         TEXT,
         1.3,
     );
-    tree.register_hit(WidgetId::MainSoloHost, solo);
+    tree.register_hit(WidgetId::MainHostRoom, solo);
 }
 
 pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {

@@ -1,14 +1,18 @@
-//! Assets HTTP / blob / mesh boot helpers (boot-time mesh resolution).
+//! Assets HTTP / blob / mesh helpers.
 //!
-//! Guarantees:
-//! - Assets GET (Grant or PlaceRead, x006c): connect/read timeout; failure → error placeholder mesh
+//! **Wired today:** [`load_unauth_home_mesh`] only (boot / MainHub / post-Join Coin fixture).
+//!
+//! **Helper contract when called** ([`load_auth_mesh`] / PlaceRead — remount not wired):
+//! - Assets GET (Grant or PlaceRead, x006c): connect/read timeout; failure → error placeholder
 //!   + dash status (not Coin fixture)
 //! - Fixture fallback only with debug build + `ALCHEMY_ALLOW_FIXTURE_FALLBACK` (x0048 / P3-3)
-//! - Authenticated path verifies blake3 before GLB decode (mismatch → placeholder / debug fixture)
-//! - Unauthenticated Home uses the Coin fixture intentionally (not Manifest blake3)
+//! - Verifies blake3 before GLB decode (mismatch → placeholder / debug fixture)
 //!
-//! Non-guarantees: live mesh swap, cancel mid-stream beyond HTTP timeout, Manifest subscription
-//! (see `bus::manifest`), retry/backoff on download failure.
+//! Non-guarantees: Join remount (callers stay on Coin); cancel mid-stream beyond HTTP timeout;
+//! Manifest subscription (see `bus::manifest`); retry/backoff on download failure.
+
+// Remount helpers are unused until Join remount lands; keep them without per-item allows.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -138,6 +142,10 @@ fn debug_fixture_or_placeholder(kind: &str, err: &anyhow::Error) -> AuthMeshLoad
     }
 }
 
+/// Authenticated Manifest mesh download (x003c).
+///
+/// Helper only — not called from boot or Join ([`crate::room::ensure_room_bus`] remount
+/// non-goal). Resume point when remount lands.
 pub(crate) fn load_auth_mesh(
     assets_url: &str,
     blake3: &str,
@@ -161,6 +169,7 @@ pub(crate) fn load_auth_mesh(
 }
 
 /// x006c: Room Token + last accepted `world_seal` → PlaceRead for assets GET.
+/// Helper beside [`load_auth_mesh`] (remount not wired).
 pub(crate) fn try_place_read_for_mesh(shared: &SharedState) -> Option<String> {
     let room_token = shared.auth.lock().ok().and_then(|g| g.room_token.clone())?;
     let world_seal = shared

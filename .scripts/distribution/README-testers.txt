@@ -19,13 +19,14 @@ What is NOT included
   alchemy-launcher (abolished — client is the parent process)
   installer, auto-update, code signing (SmartScreen may warn)
 
-Assets mesh (required)
-----------------------
+Assets mesh / MainHub
+---------------------
   env.local.cmd MUST set AUTH_USER/AUTH_PASSWORD or ALCHEMY_AUTH_TOKEN (Start fails otherwise).
-  Start.cmd runs ensure-demo-coin.ps1 to POST fixtures/Coin_PolygonalMind.glb into ASSETS_URL.
-  Client then loads mesh via SceneManifest blake3 → GET /api/v1/blobs/... (x003c).
-  Packaged fixtures/ is the seed upload source. Authenticated release does not fall back to it.
-  (Unauthenticated Home UI may still show the local GLB as a placeholder before login.)
+  Start.cmd runs ensure-demo-coin.ps1 to POST fixtures/Coin_PolygonalMind.glb into ASSETS_URL
+  (host/CAS seed). Silent login lands on MainHub with the local Coin fixture (no auto room join).
+  Choose Join a host or Host a room. Display mesh stays the Coin fixture after Join/Host —
+  Manifest blake3 → assets GET remount (x003c) is not wired yet (boxes/frames still Live).
+  Packaged fixtures/ is the seed upload source and the client placeholder mesh.
 
 Runtime prerequisites (Windows)
 -------------------------------
@@ -49,8 +50,8 @@ Run
 ---
   Double-click Start.cmd  (or run from cmd.exe)
   On failure the window pauses so you can read the message.
-  Join a room: host-server stays stopped (lightweight).
-  Start session / host: client spawns host-server.exe as a child (Job Object).
+  MainHub → Join a host: host-server stays stopped (lightweight guest).
+  MainHub → Host a room (Create / Host this room): client spawns host-server.exe (Job Object).
 
 Exit
 ----

@@ -10,7 +10,7 @@
 //! chrome CAS; `PresentationGate` is SoT for hotswitch auto/suppressed.
 //! Non-guarantees: OpenXR types inside this module, user Facet rearrange, Vault layout
 //! persist, WorldRoot, XR virtual keyboard, auth/world HTTP (surface modules), final UI art,
-//! Federation directory / PLAY TOGETHER session list.
+//! Federation directory / Join-a-host session list (future).
 
 mod dash;
 pub mod facet;
@@ -432,7 +432,7 @@ impl SystemUi {
             WidgetId::TabHome => {
                 self.clear_settings_room_focus();
                 if self.state.home_logged_in_as.is_some() && !self.state.home_create_open {
-                    // Return to PLAY TOGETHER / SOLO hub when signed in.
+                    // Return to Join a host / Host a room hub when signed in.
                     self.state.shell = OnboardingShell::MainHub;
                     self.state.tab = DashTab::Home;
                 } else {
@@ -511,24 +511,23 @@ impl SystemUi {
                 self.rebuild();
                 UiAction::None
             }
-            WidgetId::MainPlayTogether => {
+            WidgetId::MainJoinHost => {
                 self.clear_settings_room_focus();
                 self.state.shell = OnboardingShell::Dash;
                 self.state.tab = DashTab::Worlds;
                 self.state.home_create_open = false;
-                self.state.home_status =
-                    "PLAY TOGETHER — Worlds catalog (session list stub still pending)".into();
+                self.state.home_status = "Join a host — pick a room, then Join as guest".into();
                 self.mark_dash_logic_dirty();
                 self.rebuild();
                 UiAction::None
             }
-            WidgetId::MainSoloHost => {
+            WidgetId::MainHostRoom => {
                 self.clear_settings_room_focus();
                 self.state.shell = OnboardingShell::Dash;
                 self.state.tab = DashTab::Worlds;
                 self.state.home_create_open = false;
                 self.state.home_status =
-                    "SOLO — use Worlds to Create / Host / Join (same AUTH/WORLD URLs)".into();
+                    "Host a room — Create world or Host this room on this PC".into();
                 self.mark_dash_logic_dirty();
                 self.rebuild();
                 UiAction::None
@@ -1049,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn main_hub_has_play_and_solo() {
+    fn main_hub_has_join_and_host() {
         let mut ui = SystemUi::new();
         ui.state.open = true;
         ui.state.shell = OnboardingShell::MainHub;
@@ -1061,12 +1060,12 @@ mod tests {
             .tree
             .hits
             .iter()
-            .any(|(id, _)| *id == WidgetId::MainPlayTogether));
+            .any(|(id, _)| *id == WidgetId::MainJoinHost));
         assert!(ui
             .tree
             .hits
             .iter()
-            .any(|(id, _)| *id == WidgetId::MainSoloHost));
+            .any(|(id, _)| *id == WidgetId::MainHostRoom));
     }
 
     #[test]
