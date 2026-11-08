@@ -21,6 +21,8 @@
 //!   the running client, one `cargo build -p host-server` refreshes it (not `cargo run`).
 //!   [`spawn_warm_dev_host_bin`] starts that build at Desktop surface boot so Auth/Host
 //!   rarely blocks on a multi-minute sync build; `host_command` still rebuilds if still stale
+//!   (**no timeout / Enter progress** — Auth worker may block for minutes; accepted for
+//!   local target/dev only; ship with `ALCHEMY_HOST_BIN` or a fresh sibling)
 //! - Leave/Logout do **not** stop the supervised host (only Exit / failed Start / Drop)
 //! - UI access JWT handoff (`ALCHEMY_AUTH_TOKEN` on child): **only when** parent env lacks
 //!   `AUTH_USER` (password optional — debug host may seed it) and lacks `ALCHEMY_AUTH_TOKEN`.

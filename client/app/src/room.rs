@@ -15,7 +15,9 @@
 //!   not done (full close orphans Intent → Presence TTL / liveliness Delete). NotAfter hang
 //!   across a long live session is **not** guaranteed
 //! - Epoch probe (~15s) only rotates Room Token / liveliness when `room_key_epoch` advances
-//!   or soft-TTL is due; same-epoch probes must not churn `jti` (Presence reclaim)
+//!   or soft-TTL is due; same-epoch probes must not churn `jti` (Presence reclaim).
+//!   Probe still POSTs `/tokens` today (world has no epoch-only API) — issued jti is
+//!   discarded on unchanged epoch (load/log noise; not a Presence hazard)
 //! - Join starts a mesh-remount worker: Manifest blake3 → assets GET →
 //!   `try_apply_world_remount` (x007d)
 //! - In-flight remount after Leave / host-generation reset is discarded via

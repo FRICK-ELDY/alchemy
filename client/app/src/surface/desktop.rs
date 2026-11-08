@@ -13,6 +13,9 @@
 //! owned here only. Companion still redraws while `vr_active` (best-effort
 //! mirror — extra GPU cost, not a hotswitch guarantee).
 //!
+//! Session-enter overlay + deferred `bind_room_after_join` (Binding progress) are
+//! **Desktop-only**; XR companion does not mirror that wait UX (non-guarantee).
+//!
 //! Linux/WSL: prefer Confined + `CursorMoved` (recenter). `Locked` often succeeds but
 //! yields no `DeviceEvent::MouseMotion`, so look appears dead.
 
