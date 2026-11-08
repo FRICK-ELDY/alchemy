@@ -157,6 +157,10 @@ pub struct OnboardingPrefs {
     /// Unix seconds of last successful login/register/refresh restore.
     #[serde(default)]
     pub last_login_at: Option<u64>,
+    /// Local host mode (HostSupervisor / Organizing). Distinct from [`OperatorKind`].
+    /// Default off — Participation-only until enabled in Settings.
+    #[serde(default)]
+    pub server_operator: bool,
 }
 
 impl Default for OnboardingPrefs {
@@ -173,6 +177,7 @@ impl Default for OnboardingPrefs {
             refresh_token: None,
             username: None,
             last_login_at: None,
+            server_operator: false,
         }
     }
 }

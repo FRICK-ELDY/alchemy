@@ -3,7 +3,7 @@
 //! Facets: Chrome (top) · Home · Settings · Exit (Pinned). Button colors react to hover/press.
 //! Home holds account / create-world form strings only — no auth/world HTTP here.
 //! Create panel visuals are placeholders (swap later).
-//! Onboarding shell: Step1 operator → Step2 auth → Main hub (minimal chrome).
+//! Onboarding shell: Step1 operator → Step2 auth → MainHub (Participation | Organizing).
 //!
 //! x0053: logical fields live in [`SharedDashLogic`] (SharedState); LayoutTree / hover /
 //! canvas / `hotswitch_available` / derived `hotswitch_label` stay per-surface.
@@ -25,6 +25,14 @@ pub enum OnboardingShell {
     Dash,
 }
 
+/// MainHub intent tabs: join sessions vs create/host worlds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MainHubTab {
+    #[default]
+    Participation,
+    Organizing,
+}
+
 /// Session display-name cap (input + status; keep in sync with desktop join status).
 pub const SESSION_NAME_MAX: usize = 48;
 /// Login / register field cap (identifier, password, email, …).
@@ -40,7 +48,7 @@ pub enum DashTab {
     Settings,
     /// Inventory take-out (x006d).
     Inventory,
-    /// Worlds catalog / Join·Host (x007c).
+    /// Legacy / Join waiting shell carrier (no bottom tab; catalog is MainHub).
     Worlds,
 }
 
@@ -110,10 +118,15 @@ pub struct DashState {
     pub home_session_actions_enabled: bool,
     /// Onboarding / main-hub shell (Step1–3).
     pub shell: OnboardingShell,
+    /// MainHub: Participation (default) vs Organizing.
+    /// Not in [`SharedDashLogic`] — Desktop↔XR do not sync this sub-tab (same as `worlds_*`).
+    pub main_hub_tab: MainHubTab,
     pub operator: OperatorKind,
     pub custom_host: String,
     /// Focus for Step1 custom host field.
     pub custom_host_focus: bool,
+    /// Local host / Organizing gate (Settings). Distinct from Step1 [`OperatorKind`].
+    pub server_operator: bool,
     /// Inventory Drive rows (x006d); filled by surface after refresh.
     pub inventory_nodes: Vec<(String, String, String)>, // node_id, kind, name
     pub inventory_selected: Option<usize>,
@@ -123,9 +136,16 @@ pub struct DashState {
     pub inventory_status: String,
     /// Worlds catalog rows (x007c): room_id, visibility, role_hint, owner_sub.
     pub worlds_rooms: Vec<(String, String, String, String)>,
-    pub worlds_selected: Option<usize>,
+    /// Selected catalog room_id (stable across Refresh reorder).
+    pub worlds_selected: Option<String>,
     pub worlds_mine_only: bool,
+    /// Participation catalog: first visible room index (windowed list).
+    pub worlds_catalog_scroll: usize,
+    /// Trackpad/wheel pixel accumulator before stepping one catalog row.
+    pub worlds_catalog_scroll_accum: f32,
     pub worlds_status: String,
+    /// Desktop-authored in-session flag mirrored via SharedDashLogic (XR Inventory gate).
+    pub in_session_peer: bool,
     /// In-room shell: waiting for host frames after Join (x007c).
     pub worlds_waiting_host: bool,
     /// Waiting overlay may show Host Rescue only when viewer owns the room (x007c).
@@ -140,6 +160,8 @@ pub struct DashState {
     pub worlds_in_room: bool,
     /// Room key epoch advanced on Token refresh — Rejoin / Leave required (x007e).
     pub worlds_key_stale: bool,
+    /// Settings body scroll offset (px); content above bottom tabs is clipped.
+    pub settings_scroll: f32,
 }
 
 impl Default for DashState {
@@ -182,9 +204,11 @@ impl Default for DashState {
             home_room_id: "local".into(),
             home_session_actions_enabled: true,
             shell: OnboardingShell::Step1Operator,
+            main_hub_tab: MainHubTab::Participation,
             operator: OperatorKind::Official,
             custom_host: CUSTOM_DEFAULT_HOST.into(),
             custom_host_focus: false,
+            server_operator: false,
             inventory_nodes: Vec::new(),
             inventory_selected: None,
             scene_meshes: Vec::new(),
@@ -193,7 +217,10 @@ impl Default for DashState {
             worlds_rooms: Vec::new(),
             worlds_selected: None,
             worlds_mine_only: false,
+            worlds_catalog_scroll: 0,
+            worlds_catalog_scroll_accum: 0.0,
             worlds_status: String::new(),
+            in_session_peer: false,
             worlds_waiting_host: false,
             worlds_can_host_rescue: false,
             worlds_host_disconnect: false,
@@ -201,6 +228,7 @@ impl Default for DashState {
             worlds_last_frame_at: None,
             worlds_in_room: false,
             worlds_key_stale: false,
+            settings_scroll: 0.0,
         }
     }
 }
@@ -208,15 +236,19 @@ impl Default for DashState {
 /// Logical dash fields shared Desktop ↔ XR (x0053).
 ///
 /// Conflict policy:
-/// - **Chrome** (`open` / `tab` / `shell` / Settings): own `chrome_revision`.
-///   Pull while not chrome-dirty (form-dirty OK). Push is CAS on
-///   `chrome_revision` and writes chrome fields only.
+/// - **Chrome** (`open` / `tab` / `shell` / Settings / `in_session`): own
+///   `chrome_revision`. Pull while not chrome-dirty (form-dirty OK). Push is CAS
+///   on `chrome_revision` and writes chrome fields only.
+/// - **`in_session`**: Desktop authors from `worlds_*` only; XR echoes into
+///   `in_session_peer`. Desktop never latches peer `in_session` into
+///   `in_session_peer`. CAS miss with `store.in_session != local` restores
+///   Desktop shell/tab/open landing and retries push (Leave false / Join true).
 /// - **Form** (Home / onboarding strings): own `revision`. Pull blocked while
 ///   form-dirty; push writes form fields only (never clobbers peer chrome).
 ///
 /// Not shared (per-surface): `time_label` / `fps_label` / `canvas_*` / `hover` /
 /// `pressed` / `home_session_actions_enabled` / `hotswitch_available` /
-/// derived `hotswitch_label` / `home_password`.
+/// derived `hotswitch_label` / `home_password` / `worlds_*` / `in_session_peer`.
 /// Hotswitch auto/suppressed SoT is [`crate::surface::PresentationGate`], not here.
 #[derive(Clone, Debug)]
 pub struct SharedDashLogic {
@@ -246,11 +278,24 @@ pub struct SharedDashLogic {
     pub operator: OperatorKind,
     pub custom_host: String,
     pub custom_host_focus: bool,
+    pub server_operator: bool,
+    /// Desktop session shell active — XR uses this to block Inventory without local worlds_*.
+    pub in_session: bool,
 }
 
 impl Default for SharedDashLogic {
     fn default() -> Self {
         Self::from_state(&DashState::default())
+    }
+}
+
+/// Desktop authors `in_session` from `worlds_*` only. XR echoes `in_session_peer`
+/// so a CAS-miss adopt cannot re-latch Desktop after Leave.
+fn dash_in_session_for_store(s: &DashState) -> bool {
+    if s.home_session_actions_enabled {
+        s.session_shell_active()
+    } else {
+        s.in_session_peer
     }
 }
 
@@ -283,6 +328,8 @@ impl SharedDashLogic {
             operator: s.operator,
             custom_host: s.custom_host.clone(),
             custom_host_focus: s.custom_host_focus,
+            server_operator: s.server_operator,
+            in_session: dash_in_session_for_store(s),
         }
     }
 
@@ -296,6 +343,8 @@ impl SharedDashLogic {
             && self.turn_mode_label == s.turn_mode_label
             && self.snap_degrees_label == s.snap_degrees_label
             && self.smooth_turn_label == s.smooth_turn_label
+            && self.server_operator == s.server_operator
+            && self.in_session == dash_in_session_for_store(s)
     }
 
     pub fn form_eq(&self, s: &DashState) -> bool {
@@ -329,6 +378,8 @@ impl SharedDashLogic {
         self.turn_mode_label = s.turn_mode_label.clone();
         self.snap_degrees_label = s.snap_degrees_label.clone();
         self.smooth_turn_label = s.smooth_turn_label.clone();
+        self.server_operator = s.server_operator;
+        self.in_session = dash_in_session_for_store(s);
     }
 
     /// Write form fields only (push path — does not touch chrome / password).
@@ -359,8 +410,14 @@ impl SharedDashLogic {
         if s.open != self.open {
             s.open = self.open;
         }
+        // Companion must not open Inventory while Desktop session is live.
+        let peer_inventory = self.tab == DashTab::Inventory;
         if s.tab != self.tab {
-            s.tab = self.tab;
+            if s.inventory_blocked() && peer_inventory {
+                // keep local tab (Home/Settings/Exit)
+            } else {
+                s.tab = self.tab;
+            }
         }
         if s.shell != self.shell {
             s.shell = self.shell;
@@ -387,6 +444,21 @@ impl SharedDashLogic {
         }
         if s.smooth_turn_label != self.smooth_turn_label {
             s.smooth_turn_label = self.smooth_turn_label.clone();
+            changed = true;
+        }
+        if s.server_operator != self.server_operator {
+            s.server_operator = self.server_operator;
+            changed = true;
+        }
+        // Desktop owns worlds_* — never latch peer in_session into in_session_peer (CAS miss heal).
+        // XR only: mirror Desktop-authored in_session for Inventory gate.
+        if s.home_session_actions_enabled {
+            if s.in_session_peer {
+                s.in_session_peer = false;
+                changed = true;
+            }
+        } else if s.in_session_peer != self.in_session {
+            s.in_session_peer = self.in_session;
             changed = true;
         }
         if layout_changed || !s.open {
@@ -745,17 +817,6 @@ const INVENTORY_ROW_IDS: [WidgetId; 8] = [
     WidgetId::InventoryRow7,
 ];
 
-const WORLDS_ROW_IDS: [WidgetId; 8] = [
-    WidgetId::WorldsRow0,
-    WidgetId::WorldsRow1,
-    WidgetId::WorldsRow2,
-    WidgetId::WorldsRow3,
-    WidgetId::WorldsRow4,
-    WidgetId::WorldsRow5,
-    WidgetId::WorldsRow6,
-    WidgetId::WorldsRow7,
-];
-
 const SCENE_MESH_ROW_IDS: [WidgetId; 4] = [
     WidgetId::SceneMeshRow0,
     WidgetId::SceneMeshRow1,
@@ -763,62 +824,171 @@ const SCENE_MESH_ROW_IDS: [WidgetId; 4] = [
     WidgetId::SceneMeshRow3,
 ];
 
-/// Worlds catalog Master-Detail (x007c).
-fn rebuild_worlds(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
-    tree.push_label(Rect::new(cx, cy0, cw, 22.0), "Worlds", TEXT, 2.0);
+impl DashState {
+    /// True while Join/Host has an active room session (Waiting / Live / KeyStale).
+    pub fn session_shell_active(&self) -> bool {
+        self.worlds_in_room || self.worlds_waiting_host || self.worlds_key_stale
+    }
+
+    /// Inventory is blocked in-session.
+    /// Desktop: local `worlds_*` only. XR: Desktop-authored `in_session` via `in_session_peer`.
+    pub fn inventory_blocked(&self) -> bool {
+        if self.home_session_actions_enabled {
+            self.session_shell_active()
+        } else {
+            self.in_session_peer
+        }
+    }
+
+    /// Value written to SharedDashLogic.in_session for Desktop↔XR chrome sync.
+    pub fn in_session_for_store(&self) -> bool {
+        dash_in_session_for_store(self)
+    }
+
+    /// Settings center panel rect (same geometry as `rebuild` center).
+    pub fn settings_panel_rect(&self) -> Rect {
+        let show_bottom = matches!(self.shell, OnboardingShell::Dash | OnboardingShell::MainHub);
+        let by = if show_bottom {
+            self.canvas_h - BOTTOM_H
+        } else {
+            self.canvas_h
+        };
+        let cy0 = TOP_H + 24.0;
+        let ch = (by - 24.0 - cy0).max(80.0);
+        let cx = self.canvas_w * 0.12;
+        let cw = self.canvas_w * 0.76;
+        Rect::new(cx, cy0, cw, ch)
+    }
+
+    /// Max Settings scroll for current canvas / bottom-tab chrome.
+    pub fn settings_max_scroll(&self) -> f32 {
+        let panel_h = self.settings_panel_rect().h;
+        (settings_content_height(self) - panel_h).max(0.0)
+    }
+
+    /// Clamp `settings_scroll` after resize / content-height changes.
+    pub fn clamp_settings_scroll(&mut self) {
+        let max = self.settings_max_scroll();
+        self.settings_scroll = self.settings_scroll.clamp(0.0, max);
+    }
+
+    /// `delta_y` > 0 scrolls content up (reveal lower widgets). Clamped.
+    pub fn scroll_settings_by(&mut self, delta_y: f32) {
+        self.clamp_settings_scroll();
+        let max = self.settings_max_scroll();
+        self.settings_scroll = (self.settings_scroll + delta_y).clamp(0.0, max);
+    }
+
+    /// How many Participation rows fit in `list_h` (matches `rebuild_main_hub_participation`).
+    pub fn worlds_catalog_visible_rows(list_h: f32) -> usize {
+        const ROW_H: f32 = 36.0;
+        const GAP: f32 = 4.0;
+        (((list_h - 16.0) / (ROW_H + GAP)).floor() as usize).clamp(1, 8)
+    }
+
+    pub fn worlds_catalog_max_scroll(&self, list_h: f32) -> usize {
+        let visible = Self::worlds_catalog_visible_rows(list_h);
+        self.worlds_rooms.len().saturating_sub(visible)
+    }
+
+    /// Friends stub + Public header height above the catalog list (single source for layout/scroll).
+    pub const WORLDS_CATALOG_HEADER_H: f32 = 24.0 + 40.0 + 28.0; // title + friends + public header
+    /// Join bar reserve below the catalog list.
+    pub const WORLDS_CATALOG_JOIN_RESERVE: f32 = 52.0;
+
+    /// Participation catalog list height (same offsets as `rebuild_main_hub_participation`).
+    pub fn worlds_catalog_list_h(&self) -> f32 {
+        let panel_h = self.settings_panel_rect().h;
+        let body_h = (panel_h - 80.0).max(80.0);
+        (body_h - Self::WORLDS_CATALOG_HEADER_H - Self::WORLDS_CATALOG_JOIN_RESERVE).max(72.0)
+    }
+
+    pub fn worlds_catalog_list_rect(&self) -> Rect {
+        let panel = self.settings_panel_rect();
+        let body_y = panel.y + 80.0;
+        let list_y = body_y + Self::WORLDS_CATALOG_HEADER_H;
+        Rect::new(panel.x, list_y, panel.w, self.worlds_catalog_list_h())
+    }
+
+    pub fn clamp_worlds_catalog_scroll(&mut self) {
+        let max = self.worlds_catalog_max_scroll(self.worlds_catalog_list_h());
+        if self.worlds_catalog_scroll > max {
+            self.worlds_catalog_scroll = max;
+        }
+    }
+
+    /// Scroll catalog by room rows (`delta_rows` > 0 → later rooms).
+    pub fn scroll_worlds_catalog_by(&mut self, delta_rows: i32) {
+        let list_h = self.worlds_catalog_list_h();
+        let max = self.worlds_catalog_max_scroll(list_h) as i32;
+        let next = (self.worlds_catalog_scroll as i32 + delta_rows).clamp(0, max);
+        self.worlds_catalog_scroll = next as usize;
+    }
+
+    /// Accumulate wheel/trackpad pixels; step one row per ~40px.
+    pub fn scroll_worlds_catalog_pixels(&mut self, delta_y: f32) -> bool {
+        const STEP_PX: f32 = 40.0;
+        self.worlds_catalog_scroll_accum += delta_y;
+        let mut stepped = false;
+        while self.worlds_catalog_scroll_accum >= STEP_PX {
+            self.worlds_catalog_scroll_accum -= STEP_PX;
+            let before = self.worlds_catalog_scroll;
+            self.scroll_worlds_catalog_by(1);
+            stepped |= self.worlds_catalog_scroll != before;
+            if self.worlds_catalog_scroll == before {
+                self.worlds_catalog_scroll_accum = 0.0;
+                break;
+            }
+        }
+        while self.worlds_catalog_scroll_accum <= -STEP_PX {
+            self.worlds_catalog_scroll_accum += STEP_PX;
+            let before = self.worlds_catalog_scroll;
+            self.scroll_worlds_catalog_by(-1);
+            stepped |= self.worlds_catalog_scroll != before;
+            if self.worlds_catalog_scroll == before {
+                self.worlds_catalog_scroll_accum = 0.0;
+                break;
+            }
+        }
+        stepped
+    }
+}
+
+/// Local content height for Settings (from panel top). Derived from layout offsets —
+/// includes optional in-session status banner under Server Operator.
+fn settings_content_height(state: &DashState) -> f32 {
+    let so = 240.0;
+    let adv = if state.session_shell_active() && !state.home_status.is_empty() {
+        so + 152.0
+    } else {
+        so + 124.0
+    };
+    let btn = adv + 108.0;
+    // join/start row + status label + bottom pad
+    btn + 48.0 + 18.0 + 12.0
+}
+
+/// In-room session shell only (x007c). Catalog lives on MainHub — no Worlds tab body.
+fn rebuild_session_shell(
+    tree: &mut LayoutTree,
+    state: &DashState,
+    cx: f32,
+    cy0: f32,
+    cw: f32,
+    _ch: f32,
+) {
+    tree.push_label(Rect::new(cx, cy0, cw, 22.0), "Session", TEXT, 2.0);
     tree.push_label(
         Rect::new(cx, cy0 + 24.0, cw, 16.0),
-        "Catalog = visible only. Join = guest ticket. Host = run local host-server.",
+        format!("room {}", state.home_room_id),
         MUTED,
         1.0,
     );
 
-    let mut y = cy0 + 48.0;
-    let btn_h = 32.0;
-    let gap = 8.0;
-    let refresh = Rect::new(cx, y, 100.0, btn_h);
-    tree.push_rect(refresh, state.interact(WidgetId::WorldsRefresh, BTN));
-    tree.push_label(
-        Rect::new(refresh.x + 8.0, refresh.y + 8.0, 84.0, 16.0),
-        "Refresh",
-        TEXT,
-        1.2,
-    );
-    tree.register_hit(WidgetId::WorldsRefresh, refresh);
+    let mut y = cy0 + 52.0;
+    let btn_h = 36.0;
+    let gap = 10.0;
 
-    let all_r = Rect::new(cx + 108.0, y, 72.0, btn_h);
-    let all_c = if !state.worlds_mine_only { ACCENT } else { BTN };
-    tree.push_rect(all_r, state.interact(WidgetId::WorldsFilterAll, all_c));
-    tree.push_label(
-        Rect::new(all_r.x + 8.0, all_r.y + 8.0, 56.0, 16.0),
-        "All",
-        TEXT,
-        1.2,
-    );
-    tree.register_hit(WidgetId::WorldsFilterAll, all_r);
-
-    let mine_r = Rect::new(cx + 188.0, y, 100.0, btn_h);
-    let mine_c = if state.worlds_mine_only { ACCENT } else { BTN };
-    tree.push_rect(mine_r, state.interact(WidgetId::WorldsFilterMine, mine_c));
-    tree.push_label(
-        Rect::new(mine_r.x + 8.0, mine_r.y + 8.0, 84.0, 16.0),
-        "My rooms",
-        TEXT,
-        1.2,
-    );
-    tree.register_hit(WidgetId::WorldsFilterMine, mine_r);
-
-    let create = Rect::new(cx + 300.0, y, 120.0, btn_h);
-    tree.push_rect(create, state.interact(WidgetId::WorldsCreate, ACCENT));
-    tree.push_label(
-        Rect::new(create.x + 8.0, create.y + 8.0, 104.0, 16.0),
-        "Create world",
-        TEXT,
-        1.2,
-    );
-    tree.register_hit(WidgetId::WorldsCreate, create);
-
-    y += btn_h + gap + 4.0;
     if state.worlds_key_stale {
         tree.push_label(
             Rect::new(cx, y, cw, 18.0),
@@ -826,21 +996,21 @@ fn rebuild_worlds(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, c
             Color::rgba(0.95, 0.55, 0.35, 1.0),
             1.1,
         );
-        y += 22.0;
+        y += 26.0;
         let rejoin = Rect::new(cx, y, 160.0, btn_h);
         tree.push_rect(rejoin, state.interact(WidgetId::WorldsRejoin, ACCENT));
         tree.push_label(
-            Rect::new(rejoin.x + 8.0, rejoin.y + 8.0, 144.0, 16.0),
+            Rect::new(rejoin.x + 12.0, rejoin.y + 10.0, 136.0, 16.0),
             "Rejoin room",
             TEXT,
             1.2,
         );
         tree.register_hit(WidgetId::WorldsRejoin, rejoin);
-        let leave = Rect::new(cx + 168.0, y, 160.0, btn_h);
+        let leave = Rect::new(cx + 172.0, y, 160.0, btn_h);
         tree.push_rect(leave, state.interact(WidgetId::WorldsLeave, BTN_DANGER));
         tree.push_label(
-            Rect::new(leave.x + 8.0, leave.y + 8.0, 144.0, 16.0),
-            "Leave to catalog",
+            Rect::new(leave.x + 12.0, leave.y + 10.0, 136.0, 16.0),
+            "Leave session",
             TEXT,
             1.2,
         );
@@ -853,160 +1023,80 @@ fn rebuild_worlds(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, c
             "Waiting for host — ticket OK; space starts when a host publishes."
         };
         tree.push_label(
-            Rect::new(cx, y, cw, 18.0),
+            Rect::new(cx, y, cw, 36.0),
             wait_msg,
             Color::rgba(0.95, 0.75, 0.35, 1.0),
             1.1,
         );
-        y += 22.0;
+        y += 40.0;
         let leave = Rect::new(cx, y, 160.0, btn_h);
         tree.push_rect(leave, state.interact(WidgetId::WorldsLeave, BTN_DANGER));
         tree.push_label(
-            Rect::new(leave.x + 8.0, leave.y + 8.0, 144.0, 16.0),
-            "Leave to catalog",
+            Rect::new(leave.x + 12.0, leave.y + 10.0, 136.0, 16.0),
+            "Leave session",
             TEXT,
             1.2,
         );
         tree.register_hit(WidgetId::WorldsLeave, leave);
         if state.worlds_can_host_rescue {
-            let rescue = Rect::new(cx + 168.0, y, 200.0, btn_h);
-            tree.push_rect(rescue, state.interact(WidgetId::WorldsHostRescue, ACCENT));
-            tree.push_label(
-                Rect::new(rescue.x + 8.0, rescue.y + 8.0, 184.0, 16.0),
-                "Host this room now",
-                TEXT,
-                1.2,
-            );
-            tree.register_hit(WidgetId::WorldsHostRescue, rescue);
-        }
-        y += btn_h + gap;
-    }
-
-    let list_w = (cw * 0.48).max(160.0);
-    let detail_x = cx + list_w + 12.0;
-    let detail_w = (cw - list_w - 12.0).max(160.0);
-    let list_h = (ch - (y - cy0) - 36.0).max(80.0);
-
-    tree.push_rect(
-        Rect::new(cx, y, list_w, list_h),
-        Color::rgba(0.10, 0.11, 0.14, 1.0),
-    );
-
-    if state.worlds_rooms.is_empty() {
-        tree.push_label(
-            Rect::new(cx + 12.0, y + 24.0, list_w - 24.0, 40.0),
-            "No visible rooms. Create a world or Refresh.",
-            MUTED,
-            1.1,
-        );
-    } else {
-        let row_h = 36.0;
-        for (i, (room_id, visibility, role_hint, _owner)) in
-            state.worlds_rooms.iter().take(8).enumerate()
-        {
-            let id = WORLDS_ROW_IDS[i];
-            let ry = y + 8.0 + i as f32 * (row_h + 4.0);
-            if ry + row_h > y + list_h {
-                break;
-            }
-            let r = Rect::new(cx + 8.0, ry, list_w - 16.0, row_h);
-            let selected = state.worlds_selected == Some(i);
-            let base = if selected { ACCENT } else { BTN };
-            tree.push_rect(r, state.interact(id, base));
-            let role = if role_hint == "owner" { " [owner]" } else { "" };
-            let label = format!("{room_id} · {visibility}{role}");
-            tree.push_label(
-                Rect::new(r.x + 8.0, r.y + 10.0, r.w - 16.0, 16.0),
-                &label,
-                TEXT,
-                1.1,
-            );
-            tree.register_hit(id, r);
-        }
-    }
-
-    tree.push_rect(
-        Rect::new(detail_x, y, detail_w, list_h),
-        Color::rgba(0.12, 0.13, 0.16, 1.0),
-    );
-    if let Some(i) = state.worlds_selected {
-        if let Some((room_id, visibility, role_hint, owner)) = state.worlds_rooms.get(i) {
-            tree.push_label(
-                Rect::new(detail_x + 12.0, y + 12.0, detail_w - 24.0, 20.0),
-                room_id,
-                TEXT,
-                1.8,
-            );
-            tree.push_label(
-                Rect::new(detail_x + 12.0, y + 36.0, detail_w - 24.0, 16.0),
-                format!("{visibility} · {role_hint}"),
-                MUTED,
-                1.1,
-            );
-            tree.push_label(
-                Rect::new(detail_x + 12.0, y + 54.0, detail_w - 24.0, 28.0),
-                format!("owner {owner}"),
-                MUTED,
-                1.0,
-            );
-
-            let is_owner = role_hint == "owner";
-            let mut by = y + 96.0;
-            if is_owner {
-                let host = Rect::new(detail_x + 12.0, by, detail_w - 24.0, 40.0);
-                tree.push_rect(host, state.interact(WidgetId::WorldsHostRoom, ACCENT));
+            if state.server_operator {
+                let rescue = Rect::new(cx + 172.0, y, 200.0, btn_h);
+                tree.push_rect(rescue, state.interact(WidgetId::WorldsHostRescue, ACCENT));
                 tree.push_label(
-                    Rect::new(host.x + 10.0, host.y + 12.0, host.w - 20.0, 16.0),
-                    "Host this room",
-                    TEXT,
-                    1.3,
-                );
-                tree.register_hit(WidgetId::WorldsHostRoom, host);
-                by += 48.0;
-                let join = Rect::new(detail_x + 12.0, by, detail_w - 24.0, 36.0);
-                tree.push_rect(join, state.interact(WidgetId::WorldsJoinGuest, BTN));
-                tree.push_label(
-                    Rect::new(join.x + 10.0, join.y + 10.0, join.w - 20.0, 16.0),
-                    "Join as guest",
+                    Rect::new(rescue.x + 12.0, rescue.y + 10.0, 176.0, 16.0),
+                    "Host this room now",
                     TEXT,
                     1.2,
                 );
-                tree.register_hit(WidgetId::WorldsJoinGuest, join);
+                tree.register_hit(WidgetId::WorldsHostRescue, rescue);
             } else {
-                let join = Rect::new(detail_x + 12.0, by, detail_w - 24.0, 40.0);
-                tree.push_rect(join, state.interact(WidgetId::WorldsJoinGuest, ACCENT));
-                tree.push_label(
-                    Rect::new(join.x + 10.0, join.y + 12.0, join.w - 20.0, 16.0),
-                    "Join as guest",
-                    TEXT,
-                    1.3,
+                // Avoid Settings deadlock: enable here (or via Settings tab while in-room).
+                let enable = Rect::new(cx + 172.0, y, 260.0, btn_h);
+                tree.push_rect(
+                    enable,
+                    state.interact(WidgetId::ServerOperatorToggle, ACCENT),
                 );
-                tree.register_hit(WidgetId::WorldsJoinGuest, join);
+                tree.push_label(
+                    Rect::new(enable.x + 10.0, enable.y + 10.0, 240.0, 16.0),
+                    "Enable Server Operator",
+                    TEXT,
+                    1.2,
+                );
+                tree.register_hit(WidgetId::ServerOperatorToggle, enable);
             }
+        }
+        y += btn_h + gap;
+        if state.worlds_can_host_rescue && !state.server_operator {
             tree.push_label(
-                Rect::new(detail_x + 12.0, y + list_h - 48.0, detail_w - 24.0, 36.0),
-                "Join does not start a host. Without a host you will wait.",
+                Rect::new(cx, y, cw, 32.0),
+                "Hosts on this PC (CPU/GPU load). Not recommended on weak machines. Or open Settings.",
                 MUTED,
                 1.0,
             );
+            y += 36.0;
         }
-    } else {
+    } else if state.worlds_in_room {
         tree.push_label(
-            Rect::new(detail_x + 12.0, y + 24.0, detail_w - 24.0, 40.0),
-            "Select a room on the left.",
-            MUTED,
+            Rect::new(cx, y, cw, 18.0),
+            "Live — space is running.",
+            Color::rgba(0.55, 0.85, 0.55, 1.0),
             1.1,
         );
+        y += 26.0;
+        let leave = Rect::new(cx, y, 160.0, btn_h);
+        tree.push_rect(leave, state.interact(WidgetId::WorldsLeave, BTN_DANGER));
+        tree.push_label(
+            Rect::new(leave.x + 12.0, leave.y + 10.0, 136.0, 16.0),
+            "Leave session",
+            TEXT,
+            1.2,
+        );
+        tree.register_hit(WidgetId::WorldsLeave, leave);
+        y += btn_h + gap;
     }
 
-    let status_y = y + list_h + 8.0;
     if !state.worlds_status.is_empty() {
-        tree.push_label(
-            Rect::new(cx, status_y, cw, 20.0),
-            &state.worlds_status,
-            MUTED,
-            1.0,
-        );
+        tree.push_label(Rect::new(cx, y, cw, 20.0), &state.worlds_status, MUTED, 1.0);
     }
 }
 
@@ -1167,16 +1257,28 @@ fn rebuild_home(
     let panel = Rect::new(cx, cy0, cw, ch.min(420.0));
     tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
     let title = if step2 {
-        "STEP 2 / 3 — LOGIN & REGISTRATION"
+        "LOGIN & REGISTRATION"
     } else {
         "Home"
     };
+    let title_w = if step2 { cw - 48.0 - 100.0 } else { cw - 48.0 };
     tree.push_label(
-        Rect::new(cx + 24.0, cy0 + 16.0, cw - 48.0, 24.0),
+        Rect::new(cx + 24.0, cy0 + 16.0, title_w.max(120.0), 24.0),
         title,
         TEXT,
         2.5,
     );
+    if step2 {
+        let back = Rect::new(cx + cw - 24.0 - 88.0, cy0 + 12.0, 88.0, 32.0);
+        tree.push_rect(back, state.interact(WidgetId::Step2Back, BTN));
+        tree.push_label(
+            Rect::new(back.x + 22.0, back.y + 8.0, 48.0, 18.0),
+            "Back",
+            TEXT,
+            1.2,
+        );
+        tree.register_hit(WidgetId::Step2Back, back);
+    }
     tree.push_label(
         Rect::new(cx + 24.0, cy0 + 44.0, cw - 48.0, 18.0),
         &state.home_status,
@@ -1197,16 +1299,16 @@ fn rebuild_home(
         );
         y += 36.0;
 
-        // x007c Phase 4: Worlds is the primary Join/Host path (not Home Join/Start).
-        let worlds = Rect::new(x, y, 240.0, 48.0);
-        tree.push_rect(worlds, state.interact(WidgetId::HomeOpenWorlds, ACCENT));
+        // Join/Host catalog is MainHub; Home keeps create shortcut (Logout is chrome-only).
+        let hub = Rect::new(x, y, 240.0, 48.0);
+        tree.push_rect(hub, state.interact(WidgetId::HomeOpenWorlds, ACCENT));
         tree.push_label(
             Rect::new(x + 16.0, y + 14.0, 208.0, 22.0),
-            "Open Worlds",
+            "Open Main hub",
             TEXT,
             1.5,
         );
-        tree.register_hit(WidgetId::HomeOpenWorlds, worlds);
+        tree.register_hit(WidgetId::HomeOpenWorlds, hub);
 
         let create = Rect::new(x + 256.0, y, 200.0, 48.0);
         tree.push_rect(create, state.interact(WidgetId::HomeNewWorld, BTN));
@@ -1221,7 +1323,7 @@ fn rebuild_home(
 
         tree.push_label(
             Rect::new(x, y, fw, 32.0),
-            "Catalog Join/Host live on the Worlds tab. Fixed ROOM_ID Join/Start → Settings (advanced).",
+            "Join/Host from Main hub. Fixed ROOM_ID Join/Start → Settings (advanced).",
             MUTED,
             1.0,
         );
@@ -1233,18 +1335,7 @@ fn rebuild_home(
             MUTED,
             1.0,
         );
-        y += 36.0;
-
-        let logout = Rect::new(x, y, 200.0, 44.0);
-        tree.push_rect(logout, state.interact(WidgetId::HomeLogout, BTN_DANGER));
-        tree.push_icon(Rect::new(x + 12.0, y + 8.0, 28.0, 28.0), "logout");
-        tree.push_label(
-            Rect::new(x + 48.0, y + 12.0, 140.0, 22.0),
-            "Log out",
-            TEXT,
-            1.5,
-        );
-        tree.register_hit(WidgetId::HomeLogout, logout);
+        // Logout lives in chrome (`ChromeLogout`) — avoid a second HomeLogout CTA.
         return;
     }
 
@@ -1386,8 +1477,8 @@ fn rebuild_home(
     let submit = Rect::new(x, y, 200.0, 44.0);
     let submit_label = if step2 {
         match state.home_mode {
-            HomeMode::Login => "Proceed to Step 3",
-            HomeMode::Register => "Create & proceed",
+            HomeMode::Login => "Start",
+            HomeMode::Register => "Create & Start",
         }
     } else {
         match state.home_mode {
@@ -1404,17 +1495,7 @@ fn rebuild_home(
     );
     tree.register_hit(WidgetId::HomeSubmit, submit);
 
-    if step2 {
-        let back = Rect::new(x + 220.0, y, 160.0, 44.0);
-        tree.push_rect(back, state.interact(WidgetId::Step2Back, BTN));
-        tree.push_label(
-            Rect::new(x + 236.0, y + 12.0, 128.0, 22.0),
-            "Back to Step 1",
-            TEXT,
-            1.2,
-        );
-        tree.register_hit(WidgetId::Step2Back, back);
-    } else {
+    if !step2 {
         tree.push_label(
             Rect::new(x + 220.0, y + 14.0, fw - 220.0, 18.0),
             "Type while field focused (Tab cycles)",
@@ -1625,9 +1706,8 @@ fn rebuild_step1_operator(
     cw: f32,
     ch: f32,
 ) {
-    tree.push_label(Rect::new(cx, cy0, cw, 22.0), "STEP 1 / 3", MUTED, 1.2);
     tree.push_label(
-        Rect::new(cx, cy0 + 28.0, cw, 28.0),
+        Rect::new(cx, cy0, cw, 28.0),
         "SELECT SERVER OPERATOR",
         TEXT,
         2.5,
@@ -1635,8 +1715,8 @@ fn rebuild_step1_operator(
 
     let gap = 16.0;
     let card_w = ((cw - gap * 2.0) / 3.0).max(120.0);
-    let card_h = (ch - 120.0).clamp(180.0, 280.0);
-    let card_y = cy0 + 72.0;
+    let card_h = (ch - 100.0).clamp(180.0, 280.0);
+    let card_y = cy0 + 48.0;
     let cards = [
         (
             WidgetId::OperatorOfficial,
@@ -1709,33 +1789,6 @@ fn rebuild_step1_operator(
             tree.register_hit(WidgetId::OperatorCustomHost, field);
         }
     }
-
-    let next = Rect::new(cx + cw - 140.0, cy0 + ch - 52.0, 120.0, 40.0);
-    // Federation stub / XR (no Desktop session actions): look disabled and no hit.
-    let next_enabled =
-        state.operator != OperatorKind::Federation && state.home_session_actions_enabled;
-    let next_base = if next_enabled { ACCENT } else { BTN };
-    tree.push_rect(next, state.interact(WidgetId::Step1Next, next_base));
-    tree.push_label(
-        Rect::new(next.x + 28.0, next.y + 10.0, 80.0, 20.0),
-        "NEXT",
-        if next_enabled { TEXT } else { MUTED },
-        1.5,
-    );
-    if next_enabled {
-        tree.register_hit(WidgetId::Step1Next, next);
-    }
-
-    // BACK is a no-op on first launch (no prior shell); still drawn for parity.
-    let back = Rect::new(cx + cw - 280.0, cy0 + ch - 52.0, 120.0, 40.0);
-    tree.push_rect(back, state.interact(WidgetId::Step1Back, BTN));
-    tree.push_label(
-        Rect::new(back.x + 28.0, back.y + 10.0, 80.0, 20.0),
-        "BACK",
-        MUTED,
-        1.5,
-    );
-    tree.register_hit(WidgetId::Step1Back, back);
 }
 
 fn rebuild_federation_stub(
@@ -1802,85 +1855,292 @@ fn rebuild_federation_stub(
     tree.register_hit(WidgetId::FederationStubBack, back);
 }
 
+const MAIN_PUBLIC_ROW_IDS: [WidgetId; 8] = [
+    WidgetId::MainPublicRow0,
+    WidgetId::MainPublicRow1,
+    WidgetId::MainPublicRow2,
+    WidgetId::MainPublicRow3,
+    WidgetId::MainPublicRow4,
+    WidgetId::MainPublicRow5,
+    WidgetId::MainPublicRow6,
+    WidgetId::MainPublicRow7,
+];
+
 fn rebuild_main_hub(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
-    let who = state.home_logged_in_as.as_deref().unwrap_or("signed in");
-    tree.push_label(Rect::new(cx, cy0, cw * 0.5, 24.0), "Alchemy", TEXT, 2.5);
+    tree.push_label(Rect::new(cx, cy0, cw, 18.0), &state.home_status, MUTED, 1.0);
+
+    let tab_y = cy0 + 28.0;
+    let tab_h = 36.0;
+    let tab_w = (cw * 0.5 - 6.0).max(120.0);
+    let part = Rect::new(cx, tab_y, tab_w, tab_h);
+    let org = Rect::new(cx + tab_w + 12.0, tab_y, tab_w, tab_h);
+    let part_c = if state.main_hub_tab == MainHubTab::Participation {
+        ACCENT
+    } else {
+        BTN
+    };
+    let org_c = if !state.server_operator {
+        Color::rgba(0.22, 0.23, 0.26, 1.0)
+    } else if state.main_hub_tab == MainHubTab::Organizing {
+        ACCENT
+    } else {
+        BTN
+    };
+    tree.push_rect(part, state.interact(WidgetId::MainTabParticipation, part_c));
     tree.push_label(
-        Rect::new(cx + cw * 0.5, cy0, cw * 0.5, 20.0),
-        format!("{who} · server operator"),
+        Rect::new(part.x + 12.0, part.y + 10.0, part.w - 24.0, 16.0),
+        "Participation",
+        TEXT,
+        1.3,
+    );
+    tree.register_hit(WidgetId::MainTabParticipation, part);
+    tree.push_rect(
+        org,
+        if state.server_operator {
+            state.interact(WidgetId::MainTabOrganizing, org_c)
+        } else {
+            org_c
+        },
+    );
+    tree.push_label(
+        Rect::new(org.x + 12.0, org.y + 10.0, org.w - 24.0, 16.0),
+        if state.server_operator {
+            "Organizing"
+        } else {
+            "Organizing (Settings)"
+        },
+        if state.server_operator { TEXT } else { MUTED },
+        1.3,
+    );
+    // Always hittable so off-state can show the Settings tip.
+    tree.register_hit(WidgetId::MainTabOrganizing, org);
+
+    let body_y = tab_y + tab_h + 16.0;
+    let body_h = (ch - (body_y - cy0)).max(80.0);
+    // Gate body even if chrome sync / create-back left Organizing while flag is OFF.
+    let hub_tab = if state.server_operator {
+        state.main_hub_tab
+    } else {
+        MainHubTab::Participation
+    };
+    match hub_tab {
+        MainHubTab::Participation => {
+            rebuild_main_hub_participation(tree, state, cx, body_y, cw, body_h);
+        }
+        MainHubTab::Organizing => {
+            rebuild_main_hub_organizing(tree, state, cx, body_y, cw, body_h);
+        }
+    }
+}
+
+fn rebuild_main_hub_participation(
+    tree: &mut LayoutTree,
+    state: &DashState,
+    cx: f32,
+    y0: f32,
+    cw: f32,
+    _ch: f32,
+) {
+    let mut y = y0;
+    tree.push_label(
+        Rect::new(cx, y, cw, 18.0),
+        "Friends & Following — Active sessions",
+        TEXT,
+        1.4,
+    );
+    y += 24.0;
+    // Compact stub so Public sessions keeps more rows at 960×540.
+    tree.push_rect(
+        Rect::new(cx, y, cw, 32.0),
+        Color::rgba(0.10, 0.11, 0.14, 1.0),
+    );
+    tree.push_label(
+        Rect::new(cx + 12.0, y + 8.0, cw - 24.0, 16.0),
+        "Friends coming soon.",
+        MUTED,
+        1.0,
+    );
+    y += 40.0;
+
+    tree.push_label(
+        Rect::new(cx, y, cw * 0.55, 18.0),
+        "Public sessions",
+        TEXT,
+        1.4,
+    );
+    let refresh = Rect::new(cx + cw - 100.0, y - 4.0, 100.0, 28.0);
+    tree.push_rect(refresh, state.interact(WidgetId::MainHubRefresh, BTN));
+    tree.push_label(
+        Rect::new(refresh.x + 16.0, refresh.y + 6.0, 68.0, 16.0),
+        "Refresh",
+        TEXT,
+        1.1,
+    );
+    tree.register_hit(WidgetId::MainHubRefresh, refresh);
+    y += 28.0;
+
+    let list_h = state.worlds_catalog_list_h();
+    let list = Rect::new(cx, y, cw, list_h);
+    tree.push_rect(list, Color::rgba(0.10, 0.11, 0.14, 1.0));
+
+    // Catalog API already returns visible/joinable rooms only (x007c).
+    let page_label;
+    if state.worlds_rooms.is_empty() {
+        page_label = None;
+        let empty_hint = if state.server_operator {
+            "No public sessions yet. Refresh, or create one under Organizing."
+        } else {
+            "No public sessions yet. Refresh, or enable Server Operator in Settings to create."
+        };
+        tree.push_label(
+            Rect::new(cx + 12.0, y + 20.0, cw - 24.0, 40.0),
+            empty_hint,
+            MUTED,
+            1.1,
+        );
+    } else {
+        let row_h = 36.0;
+        let gap = 4.0;
+        let visible = DashState::worlds_catalog_visible_rows(list_h);
+        let max_scroll = state.worlds_rooms.len().saturating_sub(visible);
+        let start = state.worlds_catalog_scroll.min(max_scroll);
+        let end = (start + visible).min(state.worlds_rooms.len());
+        tree.clip = Some(list);
+        for (vis_i, &id) in MAIN_PUBLIC_ROW_IDS.iter().enumerate().take(visible) {
+            let room_i = start + vis_i;
+            let Some((room_id, visibility, _role, _owner)) = state.worlds_rooms.get(room_i) else {
+                break;
+            };
+            let ry = y + 8.0 + vis_i as f32 * (row_h + gap);
+            let r = Rect::new(cx + 8.0, ry, cw - 16.0, row_h);
+            let selected = state.worlds_selected.as_deref() == Some(room_id.as_str());
+            let base = if selected { ACCENT } else { BTN };
+            tree.push_rect(r, state.interact(id, base));
+            tree.push_label(
+                Rect::new(r.x + 8.0, r.y + 10.0, r.w - 16.0, 16.0),
+                format!("{room_id} · {visibility}"),
+                TEXT,
+                1.1,
+            );
+            tree.register_hit(id, r);
+        }
+        tree.clip = None;
+        page_label = if max_scroll > 0 {
+            Some(format!(
+                "{start}–{end}/{n}",
+                start = start + 1,
+                n = state.worlds_rooms.len()
+            ))
+        } else {
+            None
+        };
+    }
+
+    let join_y = y + list_h + 8.0;
+    let join = Rect::new(cx, join_y, cw.min(280.0), 36.0);
+    let join_enabled = state
+        .worlds_selected
+        .as_ref()
+        .is_some_and(|sel| state.worlds_rooms.iter().any(|(id, ..)| id == sel));
+    let join_c = if join_enabled { ACCENT } else { BTN };
+    tree.push_rect(join, state.interact(WidgetId::MainHubJoin, join_c));
+    tree.push_label(
+        Rect::new(join.x + 12.0, join.y + 10.0, join.w - 24.0, 16.0),
+        "Join",
+        TEXT,
+        1.3,
+    );
+    if join_enabled {
+        tree.register_hit(WidgetId::MainHubJoin, join);
+    }
+    if let Some(page) = page_label.as_ref() {
+        let page_w = 88.0;
+        tree.push_label(
+            Rect::new(cx + cw - page_w, join_y + 10.0, page_w, 16.0),
+            page,
+            MUTED,
+            0.9,
+        );
+    }
+    if !state.worlds_status.is_empty() {
+        let status_w = if page_label.is_some() {
+            (cw - join.w - 12.0 - 96.0).max(40.0)
+        } else {
+            (cw - join.w - 12.0).max(40.0)
+        };
+        tree.push_label(
+            Rect::new(cx + join.w + 12.0, join_y + 10.0, status_w, 16.0),
+            &state.worlds_status,
+            MUTED,
+            1.0,
+        );
+    }
+}
+
+fn rebuild_main_hub_organizing(
+    tree: &mut LayoutTree,
+    state: &DashState,
+    cx: f32,
+    y0: f32,
+    cw: f32,
+    _ch: f32,
+) {
+    let mut y = y0;
+    tree.push_label(Rect::new(cx, y, cw, 18.0), "Popular worlds", TEXT, 1.4);
+    y += 24.0;
+    tree.push_rect(
+        Rect::new(cx, y, cw, 56.0),
+        Color::rgba(0.10, 0.11, 0.14, 1.0),
+    );
+    tree.push_label(
+        Rect::new(cx + 12.0, y + 12.0, cw - 24.0, 16.0),
+        "Popular catalog is not connected yet.",
         MUTED,
         1.1,
     );
     tree.push_label(
-        Rect::new(cx, cy0 + 36.0, cw, 18.0),
-        &state.home_status,
+        Rect::new(cx + 12.0, y + 32.0, cw - 24.0, 16.0),
+        "Coming soon — templates to host from will appear here.",
         MUTED,
         1.0,
     );
+    y += 68.0;
 
-    let gap = 24.0;
-    let card_w = ((cw - gap) * 0.5).max(160.0);
-    let card_h = (ch - 100.0).clamp(160.0, 300.0);
-    let y = cy0 + 72.0;
-
-    let play = Rect::new(cx, y, card_w, card_h);
-    tree.push_rect(play, state.interact(WidgetId::MainJoinHost, CUSTOM_CARD));
-    tree.push_label(
-        Rect::new(cx + 20.0, y + 28.0, card_w - 40.0, 28.0),
-        "Join a host",
-        TEXT,
-        2.0,
-    );
-    tree.push_label(
-        Rect::new(cx + 20.0, y + 68.0, card_w - 40.0, 20.0),
-        "Enter as guest",
-        MUTED,
-        1.2,
-    );
-    tree.push_label(
-        Rect::new(cx + 20.0, y + 100.0, card_w - 40.0, 40.0),
-        "Join a room someone else is hosting",
-        MUTED,
-        1.0,
-    );
-    tree.push_label(
-        Rect::new(cx + 20.0, y + card_h - 48.0, card_w - 40.0, 28.0),
-        "Worlds → Join as guest",
-        MUTED,
-        1.0,
-    );
-    tree.register_hit(WidgetId::MainJoinHost, play);
-
-    let solo = Rect::new(cx + card_w + gap, y, card_w, card_h);
+    tree.push_label(Rect::new(cx, y, cw, 18.0), "My worlds", TEXT, 1.4);
+    y += 24.0;
     tree.push_rect(
-        solo,
-        state.interact(WidgetId::MainHostRoom, Color::rgba(0.32, 0.18, 0.10, 1.0)),
+        Rect::new(cx, y, cw, 56.0),
+        Color::rgba(0.10, 0.11, 0.14, 1.0),
     );
     tree.push_label(
-        Rect::new(solo.x + 20.0, y + 28.0, card_w - 40.0, 28.0),
-        "Host a room",
-        TEXT,
-        2.0,
-    );
-    tree.push_label(
-        Rect::new(solo.x + 20.0, y + 68.0, card_w - 40.0, 20.0),
-        "Run space on this PC",
+        Rect::new(cx + 12.0, y + 12.0, cw - 24.0, 16.0),
+        "Your worlds list is not connected yet.",
         MUTED,
-        1.2,
+        1.1,
     );
     tree.push_label(
-        Rect::new(solo.x + 20.0, y + 100.0, card_w - 40.0, 40.0),
-        "Create world or Host this room",
+        Rect::new(cx + 12.0, y + 32.0, cw - 24.0, 16.0),
+        "Coming soon — owned worlds will host from here.",
         MUTED,
         1.0,
     );
+    y += 68.0;
+
+    let create = Rect::new(cx, y, cw.min(320.0), 44.0);
+    tree.push_rect(create, state.interact(WidgetId::MainHubCreateWorld, ACCENT));
     tree.push_label(
-        Rect::new(solo.x + 20.0, y + card_h - 48.0, card_w - 40.0, 28.0),
-        "Worlds → Create / Host",
+        Rect::new(create.x + 14.0, create.y + 8.0, create.w - 28.0, 16.0),
+        "Create new world",
         TEXT,
-        1.3,
+        1.4,
     );
-    tree.register_hit(WidgetId::MainHostRoom, solo);
+    tree.push_label(
+        Rect::new(create.x + 14.0, create.y + 26.0, create.w - 28.0, 14.0),
+        "Grid space and templates",
+        MUTED,
+        1.0,
+    );
+    tree.register_hit(WidgetId::MainHubCreateWorld, create);
 }
 
 pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
@@ -1891,13 +2151,15 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
 
     let w = state.canvas_w.max(1.0);
     let h = state.canvas_h.max(1.0);
-    let onboarding = matches!(
-        state.shell,
-        OnboardingShell::Step1Operator
-            | OnboardingShell::Step1FederationStub
-            | OnboardingShell::Step2Auth
-            | OnboardingShell::MainHub
-    );
+    // Session shell must win over MainHub: do not treat hub as onboarding while in-room.
+    let onboarding = !state.session_shell_active()
+        && matches!(
+            state.shell,
+            OnboardingShell::Step1Operator
+                | OnboardingShell::Step1FederationStub
+                | OnboardingShell::Step2Auth
+                | OnboardingShell::MainHub
+        );
 
     // Dimmed full-canvas backdrop (still part of one Canvas / DashRoot).
     tree.push_rect(Rect::new(0.0, 0.0, w, h), BG);
@@ -1909,6 +2171,37 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
     let icon = 28.0_f32;
     let mut x = 12.0_f32;
     let iy = (TOP_H - icon) * 0.5;
+
+    // Account affordance left of mic / volume (always visible while dash is open).
+    if let Some(name) = state.home_logged_in_as.as_ref() {
+        let name_w = (name.chars().count() as f32 * 9.0 + 8.0).clamp(48.0, 140.0);
+        tree.push_label(Rect::new(x, 14.0, name_w, 18.0), name, TEXT, 1.2);
+        x += name_w + 6.0;
+        let logout_w = 88.0;
+        let logout = Rect::new(x, 8.0, logout_w, TOP_H - 16.0);
+        tree.push_rect(logout, state.interact(WidgetId::ChromeLogout, BTN_DANGER));
+        tree.push_label(
+            Rect::new(logout.x + 10.0, 14.0, logout_w - 20.0, 18.0),
+            "Logout",
+            TEXT,
+            1.1,
+        );
+        tree.register_hit(WidgetId::ChromeLogout, logout);
+        x += logout_w + 12.0;
+    } else {
+        let login_w = 128.0;
+        let login = Rect::new(x, 8.0, login_w, TOP_H - 16.0);
+        tree.push_rect(login, state.interact(WidgetId::ChromeLoginRegister, ACCENT));
+        tree.push_label(
+            Rect::new(login.x + 8.0, 14.0, login_w - 16.0, 18.0),
+            "Login / Register",
+            TEXT,
+            1.0,
+        );
+        tree.register_hit(WidgetId::ChromeLoginRegister, login);
+        x += login_w + 12.0;
+    }
+
     for (name, id) in [
         ("mic", WidgetId::Mic),
         ("mic_off", WidgetId::MicOff),
@@ -1990,13 +2283,104 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
         OnboardingShell::Dash | OnboardingShell::MainHub
     );
     let by = if show_bottom_tabs { h - BOTTOM_H } else { h };
+
+    // --- Center (drawn before bottom so tabs mask overflow) ---
+    let cy0 = TOP_H + 24.0;
+    let cy1 = by - 24.0;
+    let ch = (cy1 - cy0).max(80.0);
+    let cx = w * 0.12;
+    let cw = w * 0.76;
+
+    if onboarding {
+        match state.shell {
+            OnboardingShell::Step1Operator => {
+                rebuild_step1_operator(tree, state, cx, cy0, cw, ch);
+            }
+            OnboardingShell::Step1FederationStub => {
+                rebuild_federation_stub(tree, state, cx, cy0, cw, ch);
+            }
+            OnboardingShell::Step2Auth => {
+                rebuild_home(tree, state, cx, cy0, cw, ch, true);
+            }
+            OnboardingShell::MainHub => {
+                rebuild_main_hub(tree, state, cx, cy0, cw, ch);
+            }
+            OnboardingShell::Dash => {}
+        }
+    } else if state.session_shell_active()
+        && matches!(
+            state.tab,
+            DashTab::Home | DashTab::Worlds | DashTab::Inventory
+        )
+    {
+        // In-room shell on Home (Inventory blocked — Companion tab sync cannot escape).
+        // Settings/Exit stay reachable (Server Operator / quit).
+        rebuild_session_shell(tree, state, cx, cy0, cw, ch);
+    } else {
+        match state.tab {
+            DashTab::Home => {
+                rebuild_home(tree, state, cx, cy0, cw, ch, false);
+            }
+            // Legacy tab value after Join — treat as Home until Leave clears session.
+            DashTab::Worlds => {
+                rebuild_home(tree, state, cx, cy0, cw, ch, false);
+            }
+            DashTab::Inventory => {
+                rebuild_inventory(tree, state, cx, cy0, cw, ch);
+            }
+            // Pinned Exit Facet body — single Exit (Exit Client only abolished).
+            DashTab::Exit => {
+                tree.push_label(
+                    Rect::new(cx, cy0, cw, 28.0),
+                    "Exit Alchemy",
+                    Color::rgba(0.70, 0.45, 0.95, 1.0),
+                    3.0,
+                );
+
+                let btn_h = 64.0;
+                let btn_y = cy0 + 56.0;
+                let btn_w = cw.min(420.0);
+
+                let exit_btn = Rect::new(cx, btn_y, btn_w, btn_h);
+                tree.push_rect(
+                    exit_btn,
+                    state.interact(WidgetId::ExitClientAndHost, BTN_DANGER),
+                );
+                debug_assert!(DashRoot::is_pinned(facet_of(WidgetId::ExitClientAndHost)));
+                tree.push_icon(
+                    Rect::new(cx + 16.0, btn_y + 16.0, 32.0, 32.0),
+                    "exit_to_app",
+                );
+                tree.push_label(
+                    Rect::new(cx + 56.0, btn_y + 22.0, btn_w - 70.0, 24.0),
+                    "Exit",
+                    TEXT,
+                    2.0,
+                );
+                tree.register_hit(WidgetId::ExitClientAndHost, exit_btn);
+
+                tree.push_label(
+                    Rect::new(cx, btn_y + btn_h + 32.0, cw, 40.0),
+                    "Stops this client's supervised host only (if Start session spawned one). External/CI hosts are untouched. Leave/Logout keep host.",
+                    MUTED,
+                    1.0,
+                );
+            }
+            // Official Settings Facet body
+            DashTab::Settings => {
+                rebuild_settings(tree, state, cx, cy0, cw, ch);
+            }
+        }
+    }
+
+    // Bottom bar last: paints over center overflow and wins hit tests in the strip.
     if show_bottom_tabs {
-        // --- Bottom bar: Home · Worlds · Inventory · Settings · Exit ---
+        tree.clip = None;
         tree.push_rect(Rect::new(0.0, by, w, BOTTOM_H), BAR);
 
-        let tab_w = 68.0;
-        let gap = 8.0;
-        let tabs_total = tab_w * 5.0 + gap * 4.0;
+        let tab_w = 76.0;
+        let gap = 10.0;
+        let tabs_total = tab_w * 4.0 + gap * 3.0;
         let tab0_x = (w - tabs_total) * 0.5;
 
         let draw_tab = |tree: &mut LayoutTree,
@@ -2044,16 +2428,6 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
             tree,
             state,
             tab0_x + tab_w + gap,
-            DashTab::Worlds,
-            WidgetId::TabWorlds,
-            "public",
-            FacetId::Worlds.label(),
-            Color::rgba(0.18, 0.32, 0.34, 0.95),
-        );
-        draw_tab(
-            tree,
-            state,
-            tab0_x + (tab_w + gap) * 2.0,
             DashTab::Inventory,
             WidgetId::TabInventory,
             "inventory_2",
@@ -2063,7 +2437,7 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
         draw_tab(
             tree,
             state,
-            tab0_x + (tab_w + gap) * 3.0,
+            tab0_x + (tab_w + gap) * 2.0,
             DashTab::Settings,
             WidgetId::TabSettings,
             "settings",
@@ -2073,7 +2447,7 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
         draw_tab(
             tree,
             state,
-            tab0_x + (tab_w + gap) * 4.0,
+            tab0_x + (tab_w + gap) * 3.0,
             DashTab::Exit,
             WidgetId::TabExit,
             "power",
@@ -2081,105 +2455,35 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
             TAB_ON,
         );
     }
-
-    // --- Center ---
-    let cy0 = TOP_H + 24.0;
-    let cy1 = by - 24.0;
-    let ch = (cy1 - cy0).max(80.0);
-    let cx = w * 0.12;
-    let cw = w * 0.76;
-
-    if onboarding {
-        match state.shell {
-            OnboardingShell::Step1Operator => {
-                rebuild_step1_operator(tree, state, cx, cy0, cw, ch);
-            }
-            OnboardingShell::Step1FederationStub => {
-                rebuild_federation_stub(tree, state, cx, cy0, cw, ch);
-            }
-            OnboardingShell::Step2Auth => {
-                rebuild_home(tree, state, cx, cy0, cw, ch, true);
-            }
-            OnboardingShell::MainHub => {
-                rebuild_main_hub(tree, state, cx, cy0, cw, ch);
-            }
-            OnboardingShell::Dash => {}
-        }
-        return;
-    }
-
-    match state.tab {
-        DashTab::Home => {
-            rebuild_home(tree, state, cx, cy0, cw, ch, false);
-        }
-        DashTab::Worlds => {
-            rebuild_worlds(tree, state, cx, cy0, cw, ch);
-        }
-        DashTab::Inventory => {
-            rebuild_inventory(tree, state, cx, cy0, cw, ch);
-        }
-        // Pinned Exit Facet body — single Exit (Exit Client only abolished).
-        DashTab::Exit => {
-            tree.push_label(
-                Rect::new(cx, cy0, cw, 28.0),
-                "Exit Alchemy",
-                Color::rgba(0.70, 0.45, 0.95, 1.0),
-                3.0,
-            );
-
-            let btn_h = 64.0;
-            let btn_y = cy0 + 56.0;
-            let btn_w = cw.min(420.0);
-
-            let exit_btn = Rect::new(cx, btn_y, btn_w, btn_h);
-            tree.push_rect(
-                exit_btn,
-                state.interact(WidgetId::ExitClientAndHost, BTN_DANGER),
-            );
-            debug_assert!(DashRoot::is_pinned(facet_of(WidgetId::ExitClientAndHost)));
-            tree.push_icon(
-                Rect::new(cx + 16.0, btn_y + 16.0, 32.0, 32.0),
-                "exit_to_app",
-            );
-            tree.push_label(
-                Rect::new(cx + 56.0, btn_y + 22.0, btn_w - 70.0, 24.0),
-                "Exit",
-                TEXT,
-                2.0,
-            );
-            tree.register_hit(WidgetId::ExitClientAndHost, exit_btn);
-
-            tree.push_label(
-                Rect::new(cx, btn_y + btn_h + 32.0, cw, 40.0),
-                "Stops this client's supervised host only (if Start session spawned one). External/CI hosts are untouched. Leave/Logout keep host.",
-                MUTED,
-                1.0,
-            );
-        }
-        // Official Settings Facet body
-        DashTab::Settings => {
-            rebuild_settings(tree, state, cx, cy0, cw, ch);
-        }
-    }
 }
 
 fn rebuild_settings(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
-    let panel = Rect::new(cx, cy0, cw, ch.min(520.0));
+    let panel_h = ch;
+    let panel = Rect::new(cx, cy0, cw, panel_h);
     tree.push_rect(panel, Color::rgba(0.12, 0.13, 0.16, 1.0));
+
+    let content_h = settings_content_height(state);
+    let max_scroll = (content_h - panel_h).max(0.0);
+    let scroll = state.settings_scroll.clamp(0.0, max_scroll);
+    let y0 = cy0 - scroll;
+
+    // Primary overflow mask: scissor body to the Settings panel.
+    tree.clip = Some(panel);
+
     tree.push_label(
-        Rect::new(cx + 24.0, cy0 + 16.0, cw - 48.0, 24.0),
+        Rect::new(cx + 24.0, y0 + 16.0, cw - 48.0, 24.0),
         "Locomotion",
         TEXT,
         2.0,
     );
     tree.push_label(
-        Rect::new(cx + 24.0, cy0 + 48.0, cw - 48.0, 22.0),
+        Rect::new(cx + 24.0, y0 + 48.0, cw - 48.0, 22.0),
         &state.max_speed_label,
         TEXT,
         1.5,
     );
 
-    let toggle = Rect::new(cx + 24.0, cy0 + 80.0, (cw - 48.0).min(420.0), 40.0);
+    let toggle = Rect::new(cx + 24.0, y0 + 80.0, (cw - 48.0).min(420.0), 40.0);
     tree.push_rect(toggle, state.interact(WidgetId::TurnModeToggle, ACCENT));
     tree.push_label(
         Rect::new(toggle.x + 16.0, toggle.y + 10.0, toggle.w - 32.0, 22.0),
@@ -2190,19 +2494,19 @@ fn rebuild_settings(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32,
     tree.register_hit(WidgetId::TurnModeToggle, toggle);
 
     tree.push_label(
-        Rect::new(cx + 24.0, cy0 + 132.0, cw - 48.0, 18.0),
+        Rect::new(cx + 24.0, y0 + 132.0, cw - 48.0, 18.0),
         &state.snap_degrees_label,
         TEXT,
         1.2,
     );
     tree.push_label(
-        Rect::new(cx + 24.0, cy0 + 154.0, cw - 48.0, 18.0),
+        Rect::new(cx + 24.0, y0 + 154.0, cw - 48.0, 18.0),
         &state.smooth_turn_label,
         TEXT,
         1.2,
     );
 
-    let hs = Rect::new(cx + 24.0, cy0 + 184.0, (cw - 48.0).min(520.0), 40.0);
+    let hs = Rect::new(cx + 24.0, y0 + 184.0, (cw - 48.0).min(520.0), 40.0);
     let hs_color = if state.hotswitch_available {
         state.interact(WidgetId::HotswitchAutoToggle, ACCENT)
     } else {
@@ -2219,8 +2523,46 @@ fn rebuild_settings(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32,
         tree.register_hit(WidgetId::HotswitchAutoToggle, hs);
     }
 
+    // Server Operator: local HostSupervisor / Organizing (distinct from Step1 OperatorKind).
+    let so_y = y0 + 240.0;
+    tree.push_label(
+        Rect::new(cx + 24.0, so_y, cw - 48.0, 22.0),
+        "Server Operator",
+        TEXT,
+        1.8,
+    );
+    tree.push_label(
+        Rect::new(cx + 24.0, so_y + 26.0, cw - 48.0, 36.0),
+        "Hosts a world on this PC (CPU/GPU load). Not recommended on weak machines.",
+        MUTED,
+        1.0,
+    );
+    let so = Rect::new(cx + 24.0, so_y + 68.0, (cw - 48.0).min(520.0), 40.0);
+    tree.push_rect(so, state.interact(WidgetId::ServerOperatorToggle, ACCENT));
+    tree.push_label(
+        Rect::new(so.x + 16.0, so.y + 10.0, so.w - 32.0, 22.0),
+        if state.server_operator {
+            "Server Operator: ON — Organizing enabled"
+        } else {
+            "Server Operator: OFF — join only"
+        },
+        TEXT,
+        1.4,
+    );
+    tree.register_hit(WidgetId::ServerOperatorToggle, so);
+    let mut adv_y = so_y + 124.0;
+    // Visible while Settings is open during an in-room session (worlds_status is Home-only).
+    if state.session_shell_active() && !state.home_status.is_empty() {
+        tree.push_label(
+            Rect::new(cx + 24.0, so_y + 116.0, cw - 48.0, 28.0),
+            &state.home_status,
+            Color::rgba(0.95, 0.75, 0.35, 1.0),
+            1.1,
+        );
+        adv_y = so_y + 152.0;
+    }
+
     // Advanced: fixed ROOM_ID Join/Start (prefer Worlds for normal use · x007c Phase 4).
-    let adv_y = cy0 + 240.0;
     tree.push_label(
         Rect::new(cx + 24.0, adv_y, cw - 48.0, 22.0),
         "Advanced room (debug)",
@@ -2229,7 +2571,7 @@ fn rebuild_settings(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32,
     );
     tree.push_label(
         Rect::new(cx + 24.0, adv_y + 26.0, cw - 48.0, 28.0),
-        "Prefer Worlds tab for catalog Join/Host. These use a fixed ROOM_ID (env retarget).",
+        "Prefer Main hub for catalog Join/Host. These use a fixed ROOM_ID (env retarget).",
         MUTED,
         1.0,
     );
@@ -2276,7 +2618,10 @@ fn rebuild_settings(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32,
     let btn_y = adv_y + 108.0;
     let join = Rect::new(cx + 24.0, btn_y, 160.0, 40.0);
     let start = Rect::new(cx + 200.0, btn_y, 180.0, 40.0);
-    if state.home_logged_in_as.is_some() && state.home_session_actions_enabled {
+    let advanced_session_ok = state.home_logged_in_as.is_some()
+        && state.home_session_actions_enabled
+        && !state.session_shell_active();
+    if advanced_session_ok {
         tree.push_rect(join, state.interact(WidgetId::SettingsJoinRoom, BTN));
         tree.push_label(
             Rect::new(join.x + 12.0, join.y + 10.0, join.w - 24.0, 20.0),
@@ -2298,7 +2643,9 @@ fn rebuild_settings(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32,
         );
         tree.register_hit(WidgetId::SettingsStartSession, start);
     } else {
-        let (join_l, start_l) = if state.home_logged_in_as.is_none() {
+        let (join_l, start_l) = if state.session_shell_active() {
+            ("Join (Leave first)", "Start (Leave first)")
+        } else if state.home_logged_in_as.is_none() {
             ("Join (sign in)", "Start (sign in)")
         } else {
             // Signed in but XR / browse-only: HTTP Start/Join is Desktop-only.
@@ -2325,6 +2672,30 @@ fn rebuild_settings(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32,
         MUTED,
         1.0,
     );
+
+    tree.clip = None;
+
+    // Scroll affordance (wheel on Desktop; buttons for XR / no-wheel).
+    if max_scroll > 1.0 {
+        let up = Rect::new(cx + cw - 44.0, cy0 + 8.0, 36.0, 28.0);
+        let down = Rect::new(cx + cw - 44.0, cy0 + panel_h - 36.0, 36.0, 28.0);
+        tree.push_rect(up, state.interact(WidgetId::SettingsScrollUp, BTN));
+        tree.push_label(
+            Rect::new(up.x + 10.0, up.y + 6.0, 16.0, 16.0),
+            "^",
+            TEXT,
+            1.2,
+        );
+        tree.register_hit(WidgetId::SettingsScrollUp, up);
+        tree.push_rect(down, state.interact(WidgetId::SettingsScrollDown, BTN));
+        tree.push_label(
+            Rect::new(down.x + 10.0, down.y + 6.0, 16.0, 16.0),
+            "v",
+            TEXT,
+            1.2,
+        );
+        tree.register_hit(WidgetId::SettingsScrollDown, down);
+    }
 }
 
 #[cfg(test)]
@@ -2398,7 +2769,7 @@ mod tests {
     #[test]
     fn settings_advanced_has_join_start_when_signed_in() {
         let mut tree = LayoutTree::default();
-        let state = DashState {
+        let mut state = DashState {
             open: true,
             shell: OnboardingShell::Dash,
             tab: DashTab::Settings,
@@ -2407,6 +2778,7 @@ mod tests {
             home_logged_in_as: Some("alice".into()),
             ..Default::default()
         };
+        state.settings_scroll = state.settings_max_scroll();
         rebuild(&mut tree, &state);
         assert!(tree
             .hits
@@ -2420,12 +2792,16 @@ mod tests {
             .hits
             .iter()
             .any(|(id, _)| *id == WidgetId::SettingsStartSession));
+        assert!(tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::SettingsScrollUp));
     }
 
     #[test]
     fn settings_advanced_omits_join_start_hits_when_desktop_actions_disabled() {
         let mut tree = LayoutTree::default();
-        let state = DashState {
+        let mut state = DashState {
             open: true,
             shell: OnboardingShell::Dash,
             tab: DashTab::Settings,
@@ -2435,6 +2811,7 @@ mod tests {
             home_session_actions_enabled: false,
             ..Default::default()
         };
+        state.settings_scroll = state.settings_max_scroll();
         rebuild(&mut tree, &state);
         assert!(tree
             .hits

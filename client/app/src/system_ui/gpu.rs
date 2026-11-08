@@ -260,7 +260,7 @@ impl UiGpu {
                         *rect,
                         *color,
                     ),
-                    DrawCmd::Icon { rect, name } => {
+                    DrawCmd::Icon { rect, name, clip } => {
                         if let Some(img) = self.icons.get(name) {
                             blit_icon(
                                 CanvasBlit {
@@ -270,6 +270,7 @@ impl UiGpu {
                                 },
                                 *rect,
                                 img,
+                                *clip,
                             );
                         }
                     }
@@ -278,6 +279,7 @@ impl UiGpu {
                         text,
                         color,
                         scale,
+                        clip,
                     } => {
                         let rgba = [
                             (color.r * 255.0) as u8,
@@ -285,6 +287,14 @@ impl UiGpu {
                             (color.b * 255.0) as u8,
                             (color.a * 255.0) as u8,
                         ];
+                        let text_clip = clip.map(|c| {
+                            (
+                                c.x.floor() as i32,
+                                c.y.floor() as i32,
+                                (c.x + c.w).ceil() as i32,
+                                (c.y + c.h).ceil() as i32,
+                            )
+                        });
                         font::blit_text(font::TextBlit {
                             buf: &mut self.pixels,
                             stride: self.canvas_w as usize,
@@ -294,6 +304,7 @@ impl UiGpu {
                             text,
                             scale: scale.round() as i32,
                             rgba,
+                            clip: text_clip,
                         });
                     }
                 }
@@ -394,16 +405,33 @@ fn fill_rect(canvas: CanvasBlit<'_>, rect: super::layout::Rect, color: Color) {
     }
 }
 
-fn blit_icon(canvas: CanvasBlit<'_>, rect: super::layout::Rect, img: &RgbaImage) {
+fn blit_icon(
+    canvas: CanvasBlit<'_>,
+    rect: super::layout::Rect,
+    img: &RgbaImage,
+    clip: Option<super::layout::Rect>,
+) {
     let dst_w = rect.w.max(1.0) as i32;
     let dst_h = rect.h.max(1.0) as i32;
     let x0 = rect.x.floor() as i32;
     let y0 = rect.y.floor() as i32;
+    let (cx0, cy0, cx1, cy1) = match clip {
+        Some(c) => (
+            c.x.floor() as i32,
+            c.y.floor() as i32,
+            (c.x + c.w).ceil() as i32,
+            (c.y + c.h).ceil() as i32,
+        ),
+        None => (0, 0, canvas.width as i32, canvas.height as i32),
+    };
     let stride = canvas.width as usize;
     for dy in 0..dst_h {
         for dx in 0..dst_w {
             let px = x0 + dx;
             let py = y0 + dy;
+            if px < cx0 || py < cy0 || px >= cx1 || py >= cy1 {
+                continue;
+            }
             if px < 0 || py < 0 || px as u32 >= canvas.width || py as u32 >= canvas.height {
                 continue;
             }

@@ -57,68 +57,70 @@ WAN 購読面・`wire_cap`・mTLS・`epoch` 等の内部用語は UI に出さ�
 ### 1. 画面階層ツリー（Master-Detail ＆ In-room Shell）
 
 ```text
-Home（ログイン後 Dash）
- ├─ Worlds タブ（2ペイン構成）
- │   ├─ [左ペイン] カタログ一覧（見える Room のみ）
- │   │   ├─ ツールバー: [一覧を更新] / フィルタ [すべて | 自分の部屋] / [＋ 新規部屋作成 (Create world)]
- │   │   ├─ 一覧行（タップで右ペインに詳細を展開）
- │   │   └─ 0件時 (Empty State): 「部屋がありません」＋ [＋ 新規部屋作成] CTA
- │   │
- │   └─ [右ペイン] Room 詳細パネル（選択中 Room の「入れる／回す」分岐）
- │       ├─ [owner の場合]
- │       │   ├─ 主 CTA: ホストとして部屋を起動 (Host this room)  ← 自前 host を立てて Live へ
- │       │   ├─ 副 CTA: ゲストとして入室 (Join as guest)        ← Token のみ（host は立てない）
- │       │   └─ 設定:   公開範囲の変更 (Change visibility)      ← 「参加者は再接続が必要」と注記
- │       └─ [guest の場合]
- │           └─ 主 CTA: ゲストとして入室 (Join as guest)        ← Token のみ（host 不在時は待機へ）
+Step2 Auth → MainHub（ログイン後の③・底タブ Home）
+ ├─ [Participation*]（デフォルト）
+ │   ├─ Friends & Following — Active sessions（スタブ空状態）
+ │   └─ Public sessions（見える Room カタログ投影）
+ │       └─ 主 CTA: Join のみ → Session shell
  │
- └─ In-room shell（入室後の空間・オーバーレイ表示：「読める」状態の明示）
-     ├─ Live（Frame / Manifest 受信中：通常プレイ状態）
-     │   └─ メニュー内: [退室 (Leave)] / （owner時）[公開範囲変更]
-     │
-     ├─ Waiting for host（Token OK・バス接続済み・Frame 未着）
-     │   ├─ ステータス表示: 「ホストの起動を待っています（ホストが開始すると自動で始まります）」
-     │   ├─ 主アクション:   [退室して一覧へ戻る (Leave)]
-     │   └─ オーナー救済:   [自分がホストを起動する (Host this room)] ※owner/権限保持時のみ表示
-     │
-     └─ KeyStale（鍵世代更新 / 公開範囲変更検知 ※epoch 実装後に本採用）
-         ├─ ステータス表示: 「部屋の公開設定が更新されました。再接続してください」
-         ├─ 主アクション:   [再接続する (Rejoin)]  ← 新 Token + 新 key 取得へ（403 時は一覧へ戻す）
-         └─ 副アクション:   [退室する (Leave)]
+ ├─ [Organizing] ※ Settings「Server Operator」ON 時のみ（既定 OFF）
+ │   ├─ Popular worlds（スタブ）
+ │   ├─ My worlds（スタブ → 将来 owner 一覧 → Host のみ）
+ │   └─ Create new world → Start session / Host
+ │
+ └─ Session shell（入室中。Home タブで表示。Settings/Exit は到達可）
+     ├─ Live … [Leave session]
+     ├─ Waiting for host … [Leave] / owner:
+     │     Server Operator ON → [Host Rescue]
+     │     OFF → [Enable Server Operator]（弱い PC 注意）→ その後 Host Rescue
+     └─ KeyStale … [Rejoin] / [Leave]
+         Leave → MainHub Participation（host 維持・catalog は Refresh）
 ```
+
+補足: MainHub では Participation と Organizing を同じ画面に Join+Host 並列で出さない。カタログは MainHub のみ。底バーは Home / Inventory / Settings / Exit。
+**入室中（Session shell）は Inventory を遮断**（Put back / Despawn も不可）。到達保証は Settings / Exit のみ。Inventory は Leave 後に再開。`in_session` を SharedDashLogic 経由で XR に同期し、Companion の Inventory タブ押し込みも Desktop 側で拒否する。
+**Server Operator**（Settings・prefs 既定 OFF）はローカル HostSupervisor / Organizing / Create / Host / Host Rescue のゲート。UI ヒットに加え Enter（create）と Desktop の Start/Host/HostRescue ハンドラでも再検証する。Step1 の OperatorKind（Official/Custom）とは別。弱い PC では非推奨の注意を Settings と Waiting シェルに出す。
+**公開セッション一覧**はウィンドウ内スクロール（行ウィンドウ・ホイール積算）。ページング API は後続。選択は `room_id` 保持（Refresh 並び替え耐性）。
+**Logout×in-flight Join/Host**: `auth_work_epoch` を先に bump。`join_room_with_access` は access 照合と `apply_room` / AEAD を同一 auth ロック内で行い epoch も確認。stale ワーカーの host stop は **epoch 現行のときだけ**。Leave は supervised host を止めない（再 Host / Rescue 再利用）。Leave 直後の catalog 自動取得はしない（`auth_job` 占有で即 Join を塞がない）。
+**in_session sync**: Desktop は `worlds_*` だけから `SharedDashLogic.in_session` を書く。XR だけが `in_session`→`in_session_peer` を受ける。Desktop の chrome CAS miss で `store.in_session != local` なら shell/tab/open をローカル着地に戻し dirty 再 push（Leave の false と Join 直後の true の両方）。peer の古い Dash shell を Leave の MainHub に上書きさせない。起動中 Leave で supervised host が残るのは意図（再 Host / Rescue；spawn cancel は HostSupervisor 側）。mTLS env 書き換えは auth ロック外（epoch 前後チェックのみ・abort 時の env 汚れは既知）。
+**XR**: Session shell 操作（Leave / Rejoin / Host Rescue）とカタログ HTTP は Desktop-only。XR サインアウトは Desktop へ Leave 依頼し、ローカルでは Session/catalog を即クリアする。
+既存 owner 部屋の **Host this room** は Organizing「My worlds」スタブ期間中は出さない（起動経路は Create / Start session と Waiting 時 Host Rescue のみ）。
+**サインアウト着地**: 同一プロセス内は Step1（Operator 再選択）。`operator_chosen` は維持するためコールドスタートは Step2 — 意図的。
 
 ### 2. 状態機械（Mermaid State Diagram）
 
 ```mermaid
 stateDiagram-v2
     [*] --> LoggedOut
-    LoggedOut --> WorldsCatalog: ログイン完了
+    LoggedOut --> MainHubParticipation: ログイン完了
 
-    state "Worlds タブ (2ペイン)" as WorldsTab {
-        WorldsCatalog --> RoomDetail: 行を選択 (見える Room)
-        WorldsCatalog --> CreateRoom: [＋ 新規部屋作成]
+    state "MainHub" as MainHub {
+        MainHubParticipation --> MainHubOrganizing: Organizing タブ\n(Server Operator ON のみ)
+        MainHubOrganizing --> MainHubParticipation: Participation タブ
+        MainHubOrganizing --> CreateRoom: Create new world
+        MainHubParticipation --> Joining: Join 公開セッション
+        MainHubOrganizing --> Hosting: Create / Start session\n(Organizing My worlds Host はスタブ)
     }
 
     CreateRoom --> Hosting: 作成 ＆ Start session\n(visibility 適用)
-    RoomDetail --> Joining: Join as guest\n(Token 要求のみ)
-    RoomDetail --> Hosting: Host this room\n(owner / ホスト権あり)
 
-    Joining --> RoomDetail: Join 失敗 (403 等)\n理由をトースト表示
+    Joining --> MainHubParticipation: Join 失敗 (403 等)\n理由をトースト表示
     Joining --> WaitingHost: Token OK ＆ バス接続完了\n(ホスト配信なし)
     Joining --> Live: Token OK\n(Presence + Frame 受信)
 
     Hosting --> Live: ローカル host 起動完了\n(Manifest 配信開始)
 
     WaitingHost --> Live: ホストが起動・配信開始
-    WaitingHost --> Hosting: [自分がホストを起動]\n(owner 救済ショートカット)
-    WaitingHost --> WorldsCatalog: Leave (退室)
+    WaitingHost --> Hosting: [Host Rescue]\n(owner・Server Operator ON)
+    WaitingHost --> WaitingHost: [Enable Server Operator]\n(owner・OFF 時)
+    WaitingHost --> MainHubParticipation: Leave (退室)
 
     Live --> WaitingHost: ホスト切断・退室検知
     Live --> KeyStale: epoch 更新 / 公開範囲変更
-    Live --> WorldsCatalog: Leave (退室)
+    Live --> MainHubParticipation: Leave (退室)
 
     KeyStale --> Joining: Rejoin (新 Token 要求)
-    KeyStale --> WorldsCatalog: Leave (退室)
+    KeyStale --> MainHubParticipation: Leave (退室)
 ```
 
 ---
