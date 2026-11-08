@@ -480,7 +480,8 @@ impl SystemUi {
                     UiAction::WorldsHostRescue
                 }
             }
-            WidgetId::WorldsLeave => UiAction::WorldsLeave,
+            WidgetId::WorldsLeave | WidgetId::SessionEnterCancel => UiAction::WorldsLeave,
+            WidgetId::SessionEnterBlocker => UiAction::None,
             WidgetId::WorldsRejoin => UiAction::WorldsRejoin,
             // Catalog UI removed; row ids kept for WidgetId exhaustiveness only.
             WidgetId::WorldsRow0
@@ -1438,6 +1439,93 @@ mod tests {
             .hits
             .iter()
             .any(|(id, _)| *id == WidgetId::TabWorlds));
+    }
+
+    #[test]
+    fn session_enter_overlay_shows_progress_cancel_and_logs() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::MainHub;
+        ui.state.tab = DashTab::Home;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.home_room_id = "demo".into();
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.state.begin_session_enter("Starting local host…");
+        ui.state.set_session_enter_progress(0.40);
+        ui.state
+            .push_session_enter_log("Spawning host-server (cargo run can take a while)");
+        ui.rebuild();
+        assert!(ui.state.session_shell_active());
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::SessionEnterCancel));
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::SessionEnterBlocker));
+        assert!(ui.tree.draws.iter().any(|d| {
+            matches!(
+                d,
+                crate::system_ui::layout::DrawCmd::Label { text, .. }
+                    if text.contains("Starting local host")
+            )
+        }));
+        assert!(ui.tree.draws.iter().any(|d| {
+            matches!(
+                d,
+                crate::system_ui::layout::DrawCmd::Label { text, .. }
+                    if text.contains("Spawning host-server")
+            )
+        }));
+        assert!(ui.tree.draws.iter().any(|d| {
+            matches!(
+                d,
+                crate::system_ui::layout::DrawCmd::Label { text, .. } if text.contains("40%")
+            )
+        }));
+        let cancel = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::SessionEnterCancel)
+            .map(|(_, r)| *r)
+            .expect("cancel");
+        assert_eq!(
+            ui.on_click(cancel.x + 1.0, cancel.y + 1.0),
+            UiAction::WorldsLeave
+        );
+    }
+
+    #[test]
+    fn session_enter_bus_bound_marks_wait_and_logs_phases() {
+        let mut ui = SystemUi::new();
+        ui.state.begin_session_enter("Joining…");
+        ui.state.mark_session_enter_bus_bound();
+        assert!(ui.state.session_enter_wait_since.is_some());
+        assert!(!ui.state.session_enter_seen_manifest);
+        assert!(ui
+            .state
+            .session_enter_logs
+            .iter()
+            .any(|l| l.contains("listening for Manifest")));
+        assert!(ui
+            .state
+            .session_enter_title
+            .contains("Waiting for host publish"));
+        ui.state.apply_session_enter_progress(
+            0.96,
+            "Manifest OK — waiting for Frame…",
+            "Manifest accepted gen=1 rev=1 — waiting for first Frame",
+        );
+        assert!(ui
+            .state
+            .session_enter_logs
+            .iter()
+            .any(|l| l.contains("Manifest accepted")));
     }
 
     #[test]

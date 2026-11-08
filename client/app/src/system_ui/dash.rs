@@ -160,6 +160,19 @@ pub struct DashState {
     pub worlds_in_room: bool,
     /// Room key epoch advanced on Token refresh — Rejoin / Leave required (x007e).
     pub worlds_key_stale: bool,
+    /// Create / Join / Host: modal until first host frame (or Cancel).
+    pub session_enter_active: bool,
+    /// 0.0..=1.0 enter progress (discrete steps from auth worker).
+    pub session_enter_progress: f32,
+    pub session_enter_title: String,
+    /// Newest last; capped in [`DashState::push_session_enter_log`].
+    pub session_enter_logs: Vec<String>,
+    /// Wall time when post-join Frame wait began (heartbeat elapsed).
+    pub session_enter_wait_since: Option<std::time::Instant>,
+    /// True after Manifest watermark observed during enter wait.
+    pub session_enter_seen_manifest: bool,
+    /// Last enter-wait detail / heartbeat log.
+    pub session_enter_last_detail_at: Option<std::time::Instant>,
     /// Settings body scroll offset (px); content above bottom tabs is clipped.
     pub settings_scroll: f32,
 }
@@ -228,6 +241,13 @@ impl Default for DashState {
             worlds_last_frame_at: None,
             worlds_in_room: false,
             worlds_key_stale: false,
+            session_enter_active: false,
+            session_enter_progress: 0.0,
+            session_enter_title: String::new(),
+            session_enter_logs: Vec::new(),
+            session_enter_wait_since: None,
+            session_enter_seen_manifest: false,
+            session_enter_last_detail_at: None,
             settings_scroll: 0.0,
         }
     }
@@ -825,9 +845,78 @@ const SCENE_MESH_ROW_IDS: [WidgetId; 4] = [
 ];
 
 impl DashState {
-    /// True while Join/Host has an active room session (Waiting / Live / KeyStale).
+    /// True while Join/Host has an active room session (Waiting / Live / KeyStale / Entering).
     pub fn session_shell_active(&self) -> bool {
-        self.worlds_in_room || self.worlds_waiting_host || self.worlds_key_stale
+        self.session_enter_active
+            || self.worlds_in_room
+            || self.worlds_waiting_host
+            || self.worlds_key_stale
+    }
+
+    /// Open the enter modal (Create / Join / Host until first frame or Cancel).
+    pub fn begin_session_enter(&mut self, title: &str) {
+        self.session_enter_active = true;
+        self.session_enter_progress = 0.05;
+        self.session_enter_title = title.to_string();
+        self.session_enter_logs.clear();
+        self.session_enter_wait_since = None;
+        self.session_enter_seen_manifest = false;
+        self.session_enter_last_detail_at = None;
+    }
+
+    pub fn set_session_enter_progress(&mut self, progress: f32) {
+        self.session_enter_progress = progress.clamp(0.0, 1.0);
+    }
+
+    pub fn push_session_enter_log(&mut self, line: impl Into<String>) {
+        const MAX: usize = 14;
+        let mut s = line.into();
+        if s.chars().count() > 110 {
+            s = s.chars().take(107).collect::<String>() + "…";
+        }
+        if s.is_empty() {
+            return;
+        }
+        self.session_enter_logs.push(s);
+        if self.session_enter_logs.len() > MAX {
+            let drop_n = self.session_enter_logs.len() - MAX;
+            self.session_enter_logs.drain(0..drop_n);
+        }
+    }
+
+    pub fn apply_session_enter_progress(&mut self, progress: f32, title: &str, log: &str) {
+        if !self.session_enter_active {
+            self.begin_session_enter(title);
+        } else if !title.is_empty() {
+            self.session_enter_title = title.to_string();
+        }
+        self.set_session_enter_progress(progress);
+        if !log.is_empty() {
+            self.push_session_enter_log(log);
+        }
+    }
+
+    /// Mark post-join wait (bus bound; listening for Manifest then Frame).
+    pub fn mark_session_enter_bus_bound(&mut self) {
+        let now = std::time::Instant::now();
+        self.session_enter_wait_since = Some(now);
+        self.session_enter_seen_manifest = false;
+        self.session_enter_last_detail_at = Some(now);
+        self.apply_session_enter_progress(
+            0.90,
+            "Waiting for host publish…",
+            "Room bus bound — listening for Manifest then Frame",
+        );
+    }
+
+    pub fn end_session_enter(&mut self) {
+        self.session_enter_active = false;
+        self.session_enter_progress = 0.0;
+        self.session_enter_title.clear();
+        self.session_enter_logs.clear();
+        self.session_enter_wait_since = None;
+        self.session_enter_seen_manifest = false;
+        self.session_enter_last_detail_at = None;
     }
 
     /// Inventory is blocked in-session.
@@ -1098,6 +1187,94 @@ fn rebuild_session_shell(
     if !state.worlds_status.is_empty() {
         tree.push_label(Rect::new(cx, y, cw, 20.0), &state.worlds_status, MUTED, 1.0);
     }
+}
+
+/// Modal covering Create/Join/Host until first host frame (or Cancel).
+fn rebuild_session_enter_overlay(tree: &mut LayoutTree, state: &DashState, w: f32, h: f32) {
+    // Dim + hit sink so hub/create controls cannot fire underneath.
+    tree.push_rect(
+        Rect::new(0.0, 0.0, w, h),
+        Color::rgba(0.02, 0.03, 0.05, 0.88),
+    );
+    tree.register_hit(WidgetId::SessionEnterBlocker, Rect::new(0.0, 0.0, w, h));
+
+    let pw = (w * 0.62).clamp(360.0, 640.0);
+    let ph = (h * 0.55).clamp(260.0, 420.0);
+    let px = (w - pw) * 0.5;
+    let py = (h - ph) * 0.42;
+    let panel = Rect::new(px, py, pw, ph);
+    tree.push_rect(panel, Color::rgba(0.11, 0.12, 0.16, 1.0));
+
+    let pad = 20.0;
+    tree.push_label(
+        Rect::new(px + pad, py + 16.0, pw - pad * 2.0, 24.0),
+        if state.session_enter_title.is_empty() {
+            "Entering world…"
+        } else {
+            state.session_enter_title.as_str()
+        },
+        TEXT,
+        1.6,
+    );
+    tree.push_label(
+        Rect::new(px + pad, py + 44.0, pw - pad * 2.0, 16.0),
+        format!("room {}", state.home_room_id),
+        MUTED,
+        1.0,
+    );
+
+    let track = Rect::new(px + pad, py + 78.0, pw - pad * 2.0, 14.0);
+    tree.push_rect(track, Color::rgba(0.08, 0.09, 0.12, 1.0));
+    let fill_w = (track.w * state.session_enter_progress.clamp(0.0, 1.0)).max(2.0);
+    tree.push_rect(
+        Rect::new(track.x, track.y, fill_w, track.h),
+        Color::rgba(0.40, 0.55, 0.95, 1.0),
+    );
+    tree.push_label(
+        Rect::new(px + pad, py + 98.0, pw - pad * 2.0, 14.0),
+        format!(
+            "{:.0}%",
+            state.session_enter_progress.clamp(0.0, 1.0) * 100.0
+        ),
+        MUTED,
+        0.95,
+    );
+
+    let log_top = py + 122.0;
+    let log_h = ph - 122.0 - 56.0;
+    tree.push_rect(
+        Rect::new(px + pad, log_top, pw - pad * 2.0, log_h),
+        Color::rgba(0.07, 0.08, 0.10, 1.0),
+    );
+    let mut ly = log_top + 8.0;
+    let line_h = 16.0;
+    let max_lines = ((log_h - 12.0) / line_h).floor() as usize;
+    let start = state
+        .session_enter_logs
+        .len()
+        .saturating_sub(max_lines.max(1));
+    for line in state.session_enter_logs.iter().skip(start) {
+        tree.push_label(
+            Rect::new(px + pad + 8.0, ly, pw - pad * 2.0 - 16.0, line_h),
+            line,
+            MUTED,
+            0.95,
+        );
+        ly += line_h;
+    }
+
+    let cancel = Rect::new(px + pad, py + ph - 44.0, 140.0, 32.0);
+    tree.push_rect(
+        cancel,
+        state.interact(WidgetId::SessionEnterCancel, BTN_DANGER),
+    );
+    tree.push_label(
+        Rect::new(cancel.x + 18.0, cancel.y + 8.0, 104.0, 16.0),
+        "Cancel",
+        TEXT,
+        1.1,
+    );
+    tree.register_hit(WidgetId::SessionEnterCancel, cancel);
 }
 
 fn rebuild_inventory(
@@ -2454,6 +2631,11 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
             FacetId::Exit.label(),
             TAB_ON,
         );
+    }
+
+    // Enter modal last: covers hub/session chrome until first frame or Cancel.
+    if state.session_enter_active {
+        rebuild_session_enter_overlay(tree, state, w, h);
     }
 }
 
