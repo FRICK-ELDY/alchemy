@@ -10,6 +10,14 @@
 //!   `session_pub` (x003e)
 //! - `ensure_room_bus` idempotent via `room_bus_started`; spawn failure clears the flag
 //! - Reopen after join only when `mtls_reopen_pending` or session was dropped (x0068)
+//! - While `room_bus_started`, soft refresh skips CSR and disk PEM rewrite (Token / epoch
+//!   only). PEMs apply on next open / Leave→Join / `mtls_reopen` — mid-flight reopen is
+//!   not done (full close orphans Intent → Presence TTL / liveliness Delete). NotAfter hang
+//!   across a long live session is **not** guaranteed
+//! - Epoch probe (~15s) only rotates Room Token / liveliness when `room_key_epoch` advances
+//!   or soft-TTL is due; same-epoch probes must not churn `jti` (Presence reclaim).
+//!   Probe still POSTs `/tokens` today (world has no epoch-only API) — issued jti is
+//!   discarded on unchanged epoch (load/log noise; not a Presence hazard)
 //! - Join starts a mesh-remount worker: Manifest blake3 → assets GET →
 //!   `try_apply_world_remount` (x007d)
 //! - In-flight remount after Leave / host-generation reset is discarded via
@@ -429,7 +437,15 @@ fn bind_room_after_join_inner(
     let session = zenoh
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("bind_room_after_join: no zenoh session"))?;
+    // Join / post-reopen declare: never retain. Session close already undeclared any prior
+    // wire key; retain_previous=true here only dual-declared the same jti and risked Delete.
+    // Room Token refresh rebind (input publisher) is the sole retain_previous=true path.
     declare_room_alive(shared, session, false).context("liveliness after join")?;
+    // Manifest / Presence need JWKS; boot soft-fail can leave the cache empty for tens of
+    // seconds (Frames dropped, Presence reclaim invisible → no Intent rebind).
+    if let Err(err) = shared.world_jwks.refresh() {
+        log::warn!("JWKS refresh after room bind: {err:#}");
+    }
     Ok(())
 }
 
@@ -599,9 +615,12 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                         rearm_epoch_probe_if_due();
                         continue;
                     };
-                    // Guest refresh: re-issue Room Token; when WAN, new CSR → world mtls env.
-                    // x0068: set mtls_reopen_pending so desktop/XR reapplies via bind_room_after_join.
-                    let (csr_pem, eph_key) = if zenoh_connect::should_request_world_mtls() {
+                    // Guest refresh: re-issue Room Token. New CSR only when the bus is down —
+                    // mid-flight PEM rewrite is unnecessary for epoch probes and can churn
+                    // liveliness; soft-TTL PEMs apply on next open / Leave→Join (x0068).
+                    let bus_up = shared.room_bus_started.load(Ordering::SeqCst);
+                    let (csr_pem, eph_key) = if !bus_up && zenoh_connect::should_request_world_mtls()
+                    {
                         match zenoh_connect::EphemeralMtlsIdentity::generate() {
                             Ok(eph) => (
                                 Some(eph.csr_pem.clone()),
@@ -624,29 +643,55 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                         csr_pem.as_deref(),
                     ) {
                         Ok(guest) => {
-                            match zenoh_connect::apply_world_mtls_or_allocate(
-                                guest.mtls.as_ref().map(|m| m.client_cert_pem.as_str()),
-                                eph_key.as_deref(),
-                                &guest.wire_cap,
-                                "guest",
-                                &guest.allocation_token,
-                                guest
-                                    .mtls
-                                    .as_ref()
-                                    .map(|m| m.expires_at.as_str())
-                                    .filter(|s| !s.is_empty()),
-                            ) {
-                                Ok(Some(id)) => {
-                                    shared.mtls_reopen_pending.store(true, Ordering::SeqCst);
-                                    log::info!(
-                                        "guest refresh mTLS cn={} soft_ttl={}s (mtls_reopen_pending)",
-                                        id.cn,
-                                        id.expires_in
-                                    );
-                                }
-                                Ok(None) => {}
-                                Err(err) => {
-                                    log::warn!("guest refresh mTLS update failed: {err:#}");
+                            // Epoch probe only: same epoch → do not rotate Room Token jti /
+                            // liveliness (was reclaiming Presence every ~15s).
+                            let probe_only = epoch_probe_due && !room_due && !pending_due;
+                            if probe_only
+                                && guest.room_key_epoch == shared.room_key_epoch()
+                                && !shared.key_stale()
+                            {
+                                let _ = shared.note_room_aead_from_refresh(
+                                    guest.room_key,
+                                    guest.room_key_epoch,
+                                );
+                                shared.schedule_room_key_epoch_probe(
+                                    crate::scene::ROOM_KEY_EPOCH_PROBE,
+                                );
+                                log::debug!(
+                                    "room_key_epoch probe: unchanged epoch={}; skip Token rotate",
+                                    guest.room_key_epoch
+                                );
+                                continue;
+                            }
+                            // Live bus: skip disk PEM rewrite (CSR already omitted when bus_up).
+                            // Soft/hard TTL PEMs apply on next open / Leave→Join / mtls_reopen.
+                            if !bus_up {
+                                match zenoh_connect::apply_world_mtls_or_allocate(
+                                    guest.mtls.as_ref().map(|m| m.client_cert_pem.as_str()),
+                                    eph_key.as_deref(),
+                                    &guest.wire_cap,
+                                    "guest",
+                                    &guest.allocation_token,
+                                    guest
+                                        .mtls
+                                        .as_ref()
+                                        .map(|m| m.expires_at.as_str())
+                                        .filter(|s| !s.is_empty()),
+                                ) {
+                                    Ok(Some(id)) => {
+                                        shared
+                                            .mtls_reopen_pending
+                                            .store(true, Ordering::SeqCst);
+                                        log::info!(
+                                            "guest refresh mTLS cn={} soft_ttl={}s (mtls_reopen_pending)",
+                                            id.cn,
+                                            id.expires_in
+                                        );
+                                    }
+                                    Ok(None) => {}
+                                    Err(err) => {
+                                        log::warn!("guest refresh mTLS update failed: {err:#}");
+                                    }
                                 }
                             }
                             let local_sub = match jwt_sub::sub_unverified(&guest.token) {

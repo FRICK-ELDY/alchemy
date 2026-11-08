@@ -118,9 +118,9 @@ struct PoseOverride {
 /// Grace before confirming liveliness Delete reclaim (x0022).
 ///
 /// Covers Intent↔Delete reorder after Room Token refresh (distinct Zenoh keys).
-/// Limits: only cancels when `session_jti` **rotates**; same-jti Intent during grace does not
-/// clear a pending Delete (legitimate disconnect stays ~+1.5s). If Intent(new) arrives **after**
-/// this window, Delete(old) can still reclaim (extreme delay / partition — out of guarantee).
+/// Cancels when: `session_jti` rotates, same-jti liveliness Put, or Intent stays fresh
+/// (`last_input` within [`PRESENCE_SLOT_TTL`]) — spurious WAN Delete must not kick a live client.
+/// Silent crash (no Intent) still confirms after grace.
 const LIVELINESS_RECLAIM_GRACE: Duration = Duration::from_millis(1_500);
 
 /// Per-sub input slots (x0015) + Leave / jti-bound liveliness / Intent TTL reclaim (x0022).
@@ -244,10 +244,19 @@ impl PresenceIntents {
         None
     }
 
+    /// True when this slot saw a verified Intent within [`PRESENCE_SLOT_TTL`].
+    /// Spurious liveliness Delete while the client is still putting Intent must not reclaim
+    /// (Intent path is the liveness proof; liveliness is for crash when Intent also stops).
+    fn intent_fresh_at(&self, slot: usize, now: Instant) -> bool {
+        self.last_input[slot].is_some_and(|t| now.duration_since(t) < PRESENCE_SLOT_TTL)
+    }
+
     /// Schedule reclaim when Delete `jti` matches the bound session (x0022).
     ///
     /// Does **not** free immediately: grace lets a refresh Intent with a new `jti` cancel the
     /// pending Delete when liveliness arrives before the Intent (no cross-key order).
+    /// Same-jti Put during grace also cancels (spurious Delete while token still held).
+    /// Fresh Intent at schedule time ignores Delete entirely (WAN / router glitch).
     fn schedule_liveliness_reclaim(&mut self, sub: &str, jti: &str, now: Instant) -> bool {
         for i in 0..self.slot_count() {
             if self.occupied_sub[i].as_deref() != Some(sub) {
@@ -255,6 +264,12 @@ impl PresenceIntents {
             }
             match self.session_jti[i].as_deref() {
                 Some(bound) if bound == jti => {
+                    if self.intent_fresh_at(i, now) {
+                        log::warn!(
+                            "liveliness Delete ignored: sub={sub} jti={jti} (Intent still fresh)"
+                        );
+                        return false;
+                    }
                     let confirm_at = now + LIVELINESS_RECLAIM_GRACE;
                     self.pending_liveliness[i] = Some((jti.to_string(), confirm_at));
                     log::info!(
@@ -280,7 +295,28 @@ impl PresenceIntents {
         false
     }
 
+    /// Cancel a pending same-jti Delete when liveliness Put reappears during grace.
+    fn cancel_liveliness_reclaim_on_put(&mut self, sub: &str, jti: &str) -> bool {
+        for i in 0..self.slot_count() {
+            if self.occupied_sub[i].as_deref() != Some(sub) {
+                continue;
+            }
+            match &self.pending_liveliness[i] {
+                Some((pending_jti, _)) if pending_jti == jti => {
+                    self.pending_liveliness[i] = None;
+                    log::info!(
+                        "liveliness Delete cancelled: sub={sub} jti={jti} (Put while grace)"
+                    );
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
     /// Confirm scheduled liveliness reclaim if grace elapsed and `jti` still bound.
+    /// Intent that arrived during grace also cancels (same proof as schedule-time ignore).
     fn confirm_liveliness_reclaims(&mut self, now: Instant) -> Vec<(u32, String)> {
         let mut freed = Vec::new();
         for i in 0..self.slot_count() {
@@ -293,6 +329,12 @@ impl PresenceIntents {
             self.pending_liveliness[i] = None;
             match self.session_jti[i].as_deref() {
                 Some(bound) if bound == jti && self.occupied_sub[i].is_some() => {
+                    if self.intent_fresh_at(i, now) {
+                        log::info!(
+                            "liveliness Delete cancelled after grace: deleted_jti={jti} (Intent still fresh)"
+                        );
+                        continue;
+                    }
                     freed.push(self.free_slot_at(i, "liveliness"));
                 }
                 Some(bound) => {
@@ -768,16 +810,22 @@ fn spawn_liveliness_watcher(
             let _session = session;
             log::info!("subscribed to liveliness {key}");
             while let Ok(sample) = subscriber.recv() {
-                if sample.kind() != SampleKind::Delete {
-                    continue;
-                }
                 let key_str = sample.key_expr().as_str();
                 let Some((sub, jti)) = liveliness_binding_from_key(key_str) else {
-                    log::warn!("liveliness Delete: unparseable key={key_str}");
+                    if sample.kind() == SampleKind::Delete {
+                        log::warn!("liveliness Delete: unparseable key={key_str}");
+                    }
                     continue;
                 };
                 let mut guard = lock_or_fatal(&presence, "presence");
-                let _ = guard.schedule_liveliness_reclaim(sub, jti, Instant::now());
+                match sample.kind() {
+                    SampleKind::Delete => {
+                        let _ = guard.schedule_liveliness_reclaim(sub, jti, Instant::now());
+                    }
+                    SampleKind::Put => {
+                        let _ = guard.cancel_liveliness_reclaim_on_put(sub, jti);
+                    }
+                }
             }
         })
         .context("spawn liveliness thread")?;
@@ -1455,6 +1503,8 @@ mod presence_reclaim_tests {
         let mut p = PresenceIntents::with_slots(USER_ROOT_SLOTS_MAX);
         let t0 = Instant::now();
         assert_eq!(p.assign_or_lookup("alice", "jti-real", t0), Some(0));
+        // Stale Intent so the fresh-Intent guard does not suppress Delete.
+        p.last_input[0] = Some(t0 - PRESENCE_SLOT_TTL - Duration::from_millis(1));
 
         assert!(!p.schedule_liveliness_reclaim("alice", "jti-fake", t0));
         assert!(p.occupied_sub[0].is_some());
@@ -1503,6 +1553,7 @@ mod presence_reclaim_tests {
         let mut p = PresenceIntents::with_slots(USER_ROOT_SLOTS_MAX);
         let t0 = Instant::now();
         assert_eq!(p.assign_or_lookup("alice", "jti-old", t0), Some(0));
+        p.last_input[0] = Some(t0 - PRESENCE_SLOT_TTL - Duration::from_millis(1));
         assert!(p.schedule_liveliness_reclaim("alice", "jti-old", t0));
 
         // New Room Token Intent arrives within grace.
@@ -1519,5 +1570,49 @@ mod presence_reclaim_tests {
         assert!(freed.is_empty());
         assert_eq!(p.occupied_sub[0].as_deref(), Some("alice"));
         assert_eq!(p.session_jti[0].as_deref(), Some("jti-new"));
+    }
+
+    #[test]
+    fn liveliness_put_cancels_same_jti_pending_delete() {
+        // Spurious Delete while token still held: Put for same jti during grace must not reclaim.
+        // Schedule with a stale last_input so Intent-fresh guard does not short-circuit.
+        let mut p = PresenceIntents::with_slots(USER_ROOT_SLOTS_MAX);
+        let t0 = Instant::now();
+        assert_eq!(p.assign_or_lookup("alice", "jti-real", t0), Some(0));
+        p.last_input[0] = Some(t0 - PRESENCE_SLOT_TTL - Duration::from_millis(1));
+        assert!(p.schedule_liveliness_reclaim("alice", "jti-real", t0));
+        assert!(p.cancel_liveliness_reclaim_on_put("alice", "jti-real"));
+        assert!(p.pending_liveliness[0].is_none());
+        let freed = p.confirm_liveliness_reclaims(t0 + LIVELINESS_RECLAIM_GRACE);
+        assert!(freed.is_empty());
+        assert_eq!(p.occupied_sub[0].as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn liveliness_delete_ignored_while_intent_fresh() {
+        let mut p = PresenceIntents::with_slots(USER_ROOT_SLOTS_MAX);
+        let t0 = Instant::now();
+        assert_eq!(p.assign_or_lookup("alice", "jti-real", t0), Some(0));
+        // assign_or_lookup stamps last_input = t0 → fresh.
+        assert!(!p.schedule_liveliness_reclaim("alice", "jti-real", t0));
+        assert!(p.pending_liveliness[0].is_none());
+        assert!(p.occupied_sub[0].is_some());
+    }
+
+    #[test]
+    fn liveliness_delete_cancelled_if_intent_arrives_during_grace() {
+        let mut p = PresenceIntents::with_slots(USER_ROOT_SLOTS_MAX);
+        let t0 = Instant::now();
+        assert_eq!(p.assign_or_lookup("alice", "jti-real", t0), Some(0));
+        p.last_input[0] = Some(t0 - PRESENCE_SLOT_TTL - Duration::from_millis(1));
+        assert!(p.schedule_liveliness_reclaim("alice", "jti-real", t0));
+        // Intent during grace refreshes last_input.
+        assert_eq!(
+            p.assign_or_lookup("alice", "jti-real", t0 + Duration::from_millis(100)),
+            Some(0)
+        );
+        let freed = p.confirm_liveliness_reclaims(t0 + LIVELINESS_RECLAIM_GRACE);
+        assert!(freed.is_empty());
+        assert_eq!(p.occupied_sub[0].as_deref(), Some("alice"));
     }
 }

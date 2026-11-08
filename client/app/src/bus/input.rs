@@ -8,7 +8,8 @@
 //! - Liveliness rebind after Room Token refresh only after a bind Intent put succeeds
 //!
 //! Non-guarantees: `put().wait()` is router accept, not host verify; no ACK / retransmit; Leave
-//! Intent is published by `room::leave_room`, not here.
+//! Intent is published by `room::leave_room`, not here. Session-closed stop prefers
+//! `Session::is_closed` + `zenoh::session::SessionClosedError`; Display substring is fallback only.
 
 use std::sync::Arc;
 use std::thread;
@@ -98,6 +99,14 @@ pub(crate) fn spawn_input_publisher(
                     .timestamp(session.new_timestamp())
                     .wait()
                 {
+                    // Session closed/reopened: this publisher is orphaned — exit so a new
+                    // bus thread can take over (avoid 30Hz warn flood + stuck Presence).
+                    if session_put_means_closed(&session, &err) {
+                        log::warn!(
+                            "input publisher stopping (session closed); wait for bus rebind"
+                        );
+                        break;
+                    }
                     log::warn!("input publish failed: {err}");
                     // Keep bind_pending so the next Intent still carries room_token.
                     continue;
@@ -140,4 +149,29 @@ pub(crate) fn spawn_input_publisher(
         })
         .context("spawn input publisher")?;
     Ok(())
+}
+
+/// Prefer typed / API signals; Display substring is last-resort for wrapped Zenoh errors.
+fn session_put_means_closed(session: &zenoh::Session, err: &zenoh::Error) -> bool {
+    if session.is_closed() {
+        return true;
+    }
+    // `zenoh::Error` is `Box<dyn Error + Send + Sync>`; walk the chain for SessionClosedError.
+    if error_chain_has_session_closed(err.as_ref()) {
+        return true;
+    }
+    let msg = format!("{err}").to_ascii_lowercase();
+    msg.contains("session closed")
+}
+
+fn error_chain_has_session_closed(err: &(dyn std::error::Error + 'static)) -> bool {
+    use zenoh::session::SessionClosedError;
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = cur {
+        if e.is::<SessionClosedError>() {
+            return true;
+        }
+        cur = e.source();
+    }
+    false
 }

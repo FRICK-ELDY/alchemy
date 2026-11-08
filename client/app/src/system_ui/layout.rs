@@ -138,6 +138,10 @@ pub enum WidgetId {
     /// KeyStale: Leave → Join with current room (x007e).
     WorldsRejoin,
     WorldsHostRescue,
+    /// Full-canvas hit sink under the enter overlay (blocks hub clicks).
+    SessionEnterBlocker,
+    /// Cancel / abort in-flight Create·Join·Host enter overlay.
+    SessionEnterCancel,
     WorldsRow0,
     WorldsRow1,
     WorldsRow2,
