@@ -310,6 +310,9 @@ pub struct SharedState {
     pub remounted_blake3: Mutex<Option<String>>,
     /// Bumped on Leave and host-generation reset so in-flight remount GET results are discarded (x007d).
     pub remount_generation: AtomicU64,
+    /// Bumped on Logout / Leave discard so in-flight auth-http workers abort before
+    /// `ensure_running` / `join_room_with_access` commit (x007c).
+    pub auth_work_epoch: AtomicU64,
     pub look: Mutex<CameraLook>,
     pub intent: Mutex<MoveIntent>,
     /// XR ↔ Desktop present ownership (x0053). Desktop-only keeps `vr_active=false`.
@@ -381,6 +384,7 @@ impl SharedState {
     /// stop and Host again so the child picks up new URLs (same as ZENOH retarget).
     /// UI ApplyOperatorEndpoints wins over a prior boot-time env for this process.
     pub fn apply_endpoints(&self, ep: &crate::operator_prefs::Endpoints) {
+        let world_changed = self.get_world_url() != ep.world_url;
         *self.auth_url.lock().unwrap_or_else(|p| p.into_inner()) = ep.auth_url.clone();
         *self.world_url.lock().unwrap_or_else(|p| p.into_inner()) = ep.world_url.clone();
         *self.assets_url.lock().unwrap_or_else(|p| p.into_inner()) = ep.assets_url.clone();
@@ -390,8 +394,12 @@ impl SharedState {
         std::env::set_var("ASSETS_URL", &ep.assets_url);
         std::env::set_var("ZENOH_CONNECT", &ep.zenoh_connect);
         self.world_jwks.retarget_world(&ep.world_url);
-        if let Err(err) = self.world_jwks.refresh() {
-            log::warn!("world JWKS refresh after operator switch: {err:#}");
+        // Boot env sync often re-applies the same world_url after an initial JWKS fetch —
+        // skip a second refresh so a soft-fail cannot wipe a successful first cache.
+        if world_changed {
+            if let Err(err) = self.world_jwks.refresh() {
+                log::warn!("world JWKS refresh after operator switch: {err:#}");
+            }
         }
     }
 
@@ -543,6 +551,19 @@ impl SharedState {
 
     fn bump_remount_generation(&self) {
         self.remount_generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Invalidate in-flight auth-http / join / host workers (Logout, XR leave).
+    pub fn bump_auth_work_epoch(&self) -> u64 {
+        self.auth_work_epoch.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub fn auth_work_epoch(&self) -> u64 {
+        self.auth_work_epoch.load(Ordering::SeqCst)
+    }
+
+    pub fn auth_work_is_current(&self, epoch: u64) -> bool {
+        self.auth_work_epoch() == epoch
     }
 
     pub fn local_user_root(&self) -> u32 {

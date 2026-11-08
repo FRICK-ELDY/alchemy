@@ -25,7 +25,7 @@ use alchemy_protocol::input_buttons;
 use anyhow::{Context, Result};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{DeviceEvent, ElementState, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Cursor, CursorGrabMode, CustomCursor, Window, WindowId};
@@ -171,8 +171,8 @@ struct App {
     lmb_grab_armed: bool,
     /// Rate-limit "grab miss" logs.
     last_grab_miss_log: Option<std::time::Instant>,
-    /// In-flight Auth HTTP (+ join) worker result (x002e).
-    auth_job: Option<Receiver<AuthJobOutcome>>,
+    /// In-flight Auth HTTP (+ join) worker: `(auth_work_epoch, rx)` (x002e / x007c).
+    auth_job: Option<(u64, Receiver<AuthJobOutcome>)>,
     /// Last observed Desktop input ownership (READY / vr_active edges).
     last_owns_input: bool,
     /// Last applied [`SharedState::pending_mesh_epoch`] (x007d remount).
@@ -225,6 +225,43 @@ fn clear_worlds_session_shell(ui: &mut SystemUi) {
     ui.state.worlds_last_frame_at = None;
     ui.state.worlds_in_room = false;
     ui.state.worlds_key_stale = false;
+    // Drop peer bit so Leave/Logout can push in_session=false (XR Inventory unblocks).
+    ui.state.in_session_peer = false;
+    ui.mark_dash_chrome_dirty();
+}
+
+/// Drop catalog + selection (logout / XR leave). Does not touch session shell flags.
+fn clear_worlds_catalog(ui: &mut SystemUi) {
+    ui.state.worlds_rooms.clear();
+    ui.state.worlds_selected = None;
+    ui.state.worlds_catalog_scroll = 0;
+    ui.state.worlds_catalog_scroll_accum = 0.0;
+    ui.state.worlds_status.clear();
+}
+
+/// Discard in-flight auth/catalog worker and bump epoch so the thread cannot commit.
+fn discard_auth_job(shared: &SharedState, auth_job: &mut Option<(u64, Receiver<AuthJobOutcome>)>) {
+    shared.bump_auth_work_epoch();
+    *auth_job = None;
+}
+
+/// Arm a new worker against the current epoch (call only when `auth_job` is empty).
+fn arm_auth_job(
+    shared: &SharedState,
+    auth_job: &mut Option<(u64, Receiver<AuthJobOutcome>)>,
+    rx: Receiver<AuthJobOutcome>,
+) -> u64 {
+    let epoch = shared.auth_work_epoch();
+    *auth_job = Some((epoch, rx));
+    epoch
+}
+
+/// Stop local host only while this job's epoch is still current.
+/// Stale workers must not touch host — Leave keeps access and a newer Host may already run.
+fn stop_host_if_job_current(shared: &SharedState, epoch: u64) {
+    if shared.auth_work_is_current(epoch) {
+        stop_supervised_host(shared);
+    }
 }
 
 /// Failed Start / guest path: cancel in-flight spawn; allow a later ensure retry.
@@ -349,7 +386,12 @@ impl App {
                     "hotswitch: leave requested but Zenoh is None — clearing auth without Leave put"
                 );
             }
+            // Bump epoch before Leave so in-flight join cannot commit past this point.
+            discard_auth_job(&self.shared, &mut self.auth_job);
             leave_room(&self.shared, &mut self.zenoh);
+            stop_supervised_host(&self.shared);
+            clear_worlds_session_shell(&mut self.ui);
+            clear_worlds_catalog(&mut self.ui);
             if let Ok(mut gate) = self.shared.auth.lock() {
                 gate.clear_session();
             }
@@ -358,11 +400,11 @@ impl App {
             operator_prefs::save(&prefs);
             self.ui.state.home_logged_in_as = None;
             self.ui.state.home_create_open = false;
-            self.ui.state.shell = OnboardingShell::Step2Auth;
+            self.ui.state.shell = OnboardingShell::Step1Operator;
             self.ui.state.home_status = if had_zenoh {
-                "Signed out — Leave sent (host reclaim immediate)".into()
+                "Signed out — Leave sent; select a server operator".into()
             } else {
-                "Signed out — local only (no Zenoh; Leave put skipped)".into()
+                "Signed out — local only; select a server operator".into()
             };
             self.ui.state.open = true;
             self.ui.state.tab = DashTab::Home;
@@ -419,13 +461,19 @@ impl App {
 
     /// Non-blocking poll of Auth worker (x002e). Safe to call every frame.
     fn poll_auth_job(&mut self) {
-        let outcome = match self.auth_job.as_ref() {
-            Some(rx) => match rx.try_recv() {
-                Ok(outcome) => Some(Ok(outcome)),
-                Err(TryRecvError::Empty) => None,
-                Err(TryRecvError::Disconnected) => Some(Err(())),
-            },
-            None => None,
+        let Some((epoch, rx)) = self.auth_job.as_ref() else {
+            return;
+        };
+        if !self.shared.auth_work_is_current(*epoch) {
+            // Logout / Leave discarded this generation — drop without UI noise.
+            self.auth_job = None;
+            return;
+        }
+        let epoch = *epoch;
+        let outcome = match rx.try_recv() {
+            Ok(outcome) => Some(Ok(outcome)),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(())),
         };
         match outcome {
             None => {}
@@ -437,8 +485,19 @@ impl App {
                 log::warn!("auth worker disconnected before result");
             }
             Some(Ok(outcome)) => {
+                if !self.shared.auth_work_is_current(epoch) {
+                    self.auth_job = None;
+                    return;
+                }
+                let refresh_main_hub = matches!(
+                    &outcome,
+                    AuthJobOutcome::LoginOk { .. } | AuthJobOutcome::RegisterOk { .. }
+                );
                 self.auth_job = None;
                 self.apply_auth_outcome(outcome);
+                if refresh_main_hub {
+                    start_worlds_catalog_refresh(&mut self.ui, &self.shared, &mut self.auth_job);
+                }
             }
         }
     }
@@ -474,7 +533,8 @@ impl App {
                 self.ui.state.home_password.clear();
                 self.ui.state.home_create_open = false;
                 self.ui.state.shell = OnboardingShell::MainHub;
-                self.ui.state.home_status = "Signed in — Join a host or Host a room".into();
+                self.ui.state.main_hub_tab = crate::system_ui::MainHubTab::Participation;
+                self.ui.state.home_status = "Signed in — join a public session".into();
                 self.ui.mark_dash_logic_dirty();
                 self.ui.rebuild();
                 log::info!("auth login ok (no auto-join)");
@@ -485,7 +545,8 @@ impl App {
                 self.ui.state.home_password.clear();
                 self.ui.state.home_create_open = false;
                 self.ui.state.shell = OnboardingShell::MainHub;
-                self.ui.state.home_status = "Account created — Join a host or Host a room".into();
+                self.ui.state.main_hub_tab = crate::system_ui::MainHubTab::Participation;
+                self.ui.state.home_status = "Account created — join a public session".into();
                 self.ui.mark_dash_logic_dirty();
                 self.ui.rebuild();
                 log::info!("auth register ok (no auto-join)");
@@ -529,29 +590,39 @@ impl App {
                     },
                 );
             }
-            AuthJobOutcome::WorldsList { result } => match result {
-                Ok(rooms) => {
-                    self.ui.state.worlds_rooms = rooms
-                        .into_iter()
-                        .map(|r| (r.room_id, r.visibility, r.role_hint, r.owner_sub))
-                        .collect();
-                    if let Some(sel) = self.ui.state.worlds_selected {
-                        if sel >= self.ui.state.worlds_rooms.len() {
-                            self.ui.state.worlds_selected = None;
+            AuthJobOutcome::WorldsList { result } => {
+                // Stale completion after logout / account switch — drop payload.
+                if self.ui.state.home_logged_in_as.is_none() {
+                    clear_worlds_catalog(&mut self.ui);
+                    self.ui.mark_dash_logic_dirty();
+                    self.ui.rebuild();
+                    return;
+                }
+                match result {
+                    Ok(rooms) => {
+                        self.ui.state.worlds_rooms = rooms
+                            .into_iter()
+                            .map(|r| (r.room_id, r.visibility, r.role_hint, r.owner_sub))
+                            .collect();
+                        if let Some(sel) = self.ui.state.worlds_selected.as_ref() {
+                            if !self.ui.state.worlds_rooms.iter().any(|(id, ..)| id == sel) {
+                                self.ui.state.worlds_selected = None;
+                            }
                         }
+                        self.ui.state.clamp_worlds_catalog_scroll();
+                        self.ui.state.worlds_status =
+                            format!("{} visible room(s)", self.ui.state.worlds_rooms.len());
+                        self.ui.mark_dash_logic_dirty();
+                        self.ui.rebuild();
                     }
-                    self.ui.state.worlds_status =
-                        format!("{} visible room(s)", self.ui.state.worlds_rooms.len());
-                    self.ui.mark_dash_logic_dirty();
-                    self.ui.rebuild();
+                    Err(err) => {
+                        self.ui.state.worlds_status = format!("Catalog failed: {err}");
+                        self.ui.mark_dash_logic_dirty();
+                        self.ui.rebuild();
+                        log::warn!("worlds catalog failed: {err}");
+                    }
                 }
-                Err(err) => {
-                    self.ui.state.worlds_status = format!("Catalog failed: {err}");
-                    self.ui.mark_dash_logic_dirty();
-                    self.ui.rebuild();
-                    log::warn!("worlds catalog failed: {err}");
-                }
-            },
+            }
         }
     }
 
@@ -960,6 +1031,16 @@ impl ApplicationHandler for App {
                     self.cursor = (position.x, position.y);
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if self.ui.state.open {
+                    let dy = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => -y * 48.0,
+                        MouseScrollDelta::PixelDelta(p) => -p.y as f32,
+                    };
+                    self.ui
+                        .on_scroll(self.cursor.0 as f32, self.cursor.1 as f32, dy);
+                }
+            }
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
@@ -1081,7 +1162,7 @@ impl ApplicationHandler for App {
                         if stale {
                             self.ui.state.worlds_status =
                                 "Room updated — reconnect required".into();
-                            self.ui.state.tab = DashTab::Worlds;
+                            self.ui.state.tab = DashTab::Home;
                             self.ui.state.shell = OnboardingShell::Dash;
                             self.ui.state.open = true;
                         }
@@ -1114,7 +1195,7 @@ impl ApplicationHandler for App {
                         self.ui.state.worlds_host_disconnect = true;
                         self.ui.state.worlds_status =
                             "Host connection lost — wait for return or Leave".into();
-                        self.ui.state.tab = DashTab::Worlds;
+                        self.ui.state.tab = DashTab::Home;
                         self.ui.state.shell = OnboardingShell::Dash;
                         self.ui.state.open = true;
                         dirty = true;
@@ -1266,6 +1347,7 @@ fn apply_start_session_result(
             log::warn!("unexpected visibility Err + join Ok: {vis_err}");
         }
     }
+    ui.mark_dash_chrome_dirty();
     ui.mark_dash_logic_dirty();
     ui.rebuild();
 }
@@ -1334,7 +1416,7 @@ fn apply_join_result(
                 ui.state.home_room_id = shared.get_room_id().to_string();
                 if opts.enter_waiting_shell {
                     ui.state.worlds_waiting_host = true;
-                    ui.state.tab = DashTab::Worlds;
+                    ui.state.tab = DashTab::Home;
                     ui.state.shell = OnboardingShell::Dash;
                     ui.state.open = true;
                 } else {
@@ -1357,6 +1439,7 @@ fn apply_join_result(
             log::warn!("join failed (session kept): {err}");
         }
     }
+    ui.mark_dash_chrome_dirty();
     ui.mark_dash_logic_dirty();
     ui.rebuild();
 }
@@ -1366,7 +1449,7 @@ fn start_worlds_host(
     ui: &mut SystemUi,
     shared: &Arc<SharedState>,
     zenoh: &mut Option<zenoh::Session>,
-    auth_job: &mut Option<Receiver<AuthJobOutcome>>,
+    auth_job: &mut Option<(u64, Receiver<AuthJobOutcome>)>,
     room_id: String,
 ) {
     if auth_job.is_some() {
@@ -1395,13 +1478,20 @@ fn start_worlds_host(
     ui.state.worlds_status = format!("Starting host ({})…", level.as_str());
     ui.rebuild();
     let (tx, rx) = mpsc::channel();
-    *auth_job = Some(rx);
+    let epoch = arm_auth_job(shared, auth_job, rx);
     spawn_auth_http(move || {
+        if !shared_job.auth_work_is_current(epoch) {
+            return;
+        }
         let world_url = shared_job.get_world_url();
         let room_id = shared_job.get_room_id();
         let visibility =
             world_api::ensure_room_visibility(&world_url, room_id.as_ref(), &access, level)
                 .map_err(|e| format!("{e:#}"));
+        if !shared_job.auth_work_is_current(epoch) {
+            return;
+        }
+        let mut host_started = false;
         // Server-side owner proof: spawn only on Applied (PUT/create ok).
         let join = match &visibility {
             Ok(world_api::VisibilityEnsure::Applied) => {
@@ -1410,7 +1500,14 @@ fn start_worlds_host(
                     .ensure_running_for_room(room_id.as_ref(), Some(access.as_str()))
                 {
                     Ok(()) => {
-                        join_room_with_access(&shared_job, &access).map_err(|e| format!("{e:#}"))
+                        host_started = true;
+                        if !shared_job.auth_work_is_current(epoch) {
+                            // Stale: Leave keeps host; do not stop a possible re-Host.
+                            Err("host start aborted: signed out".into())
+                        } else {
+                            join_room_with_access(&shared_job, &access, epoch)
+                                .map_err(|e| format!("{e:#}"))
+                        }
                     }
                     Err(err) => Err(format!("local host-server start failed: {err:#}")),
                 }
@@ -1420,10 +1517,45 @@ fn start_worlds_host(
             }
             Err(_) => Err("skipped join (visibility step failed)".into()),
         };
-        if join.is_err() {
-            stop_supervised_host(&shared_job);
+        if join.is_err() && host_started {
+            stop_host_if_job_current(&shared_job, epoch);
         }
-        let _ = tx.send(AuthJobOutcome::StartSession { visibility, join });
+        if shared_job.auth_work_is_current(epoch) {
+            let _ = tx.send(AuthJobOutcome::StartSession { visibility, join });
+        }
+        // Stale: Leave/Logout already bumped epoch and owns teardown — do not stop a newer host.
+    });
+}
+
+/// Load Worlds catalog into `ui.state.worlds_rooms` (MainHub Participation / Dash Worlds).
+fn start_worlds_catalog_refresh(
+    ui: &mut SystemUi,
+    shared: &Arc<SharedState>,
+    auth_job: &mut Option<(u64, Receiver<AuthJobOutcome>)>,
+) {
+    let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+    let Some(access) = access else {
+        ui.state.worlds_status = "Sign in to load Worlds".into();
+        ui.rebuild();
+        return;
+    };
+    if auth_job.is_some() {
+        ui.state.worlds_status = "Auth busy…".into();
+        ui.rebuild();
+        return;
+    }
+    let mine = ui.state.worlds_mine_only;
+    let shared_job = Arc::clone(shared);
+    ui.state.worlds_status = "Loading catalog…".into();
+    ui.rebuild();
+    let (tx, rx) = mpsc::channel();
+    let epoch = arm_auth_job(shared, auth_job, rx);
+    spawn_auth_http(move || {
+        let world_url = shared_job.get_world_url();
+        let result = world_api::list_rooms(&world_url, &access, mine).map_err(|e| format!("{e:#}"));
+        if shared_job.auth_work_is_current(epoch) {
+            let _ = tx.send(AuthJobOutcome::WorldsList { result });
+        }
     });
 }
 
@@ -1432,7 +1564,7 @@ fn handle_ui_action(
     ui: &mut SystemUi,
     shared: &Arc<SharedState>,
     zenoh: &mut Option<zenoh::Session>,
-    auth_job: &mut Option<Receiver<AuthJobOutcome>>,
+    auth_job: &mut Option<(u64, Receiver<AuthJobOutcome>)>,
     event_loop: &ActiveEventLoop,
 ) {
     match action {
@@ -1451,6 +1583,12 @@ fn handle_ui_action(
             }
             ui.rebuild();
             log::info!("hotswitch auto stored → {}", ui.state.hotswitch_auto);
+        }
+        UiAction::ServerOperatorChanged => {
+            let mut prefs = operator_prefs::load();
+            prefs.server_operator = ui.state.server_operator;
+            operator_prefs::save(&prefs);
+            log::info!("server operator prefs → {}", ui.state.server_operator);
         }
         UiAction::ExitClientOnly | UiAction::ExitClientAndHost => {
             // Exit Client only abolished: stop supervisor-owned host only.
@@ -1500,18 +1638,38 @@ fn handle_ui_action(
             ui.mark_dash_form_dirty();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
-            *auth_job = Some(rx);
+            let epoch = arm_auth_job(shared, auth_job, rx);
             spawn_auth_http(move || {
                 match auth::login(&auth_url, &identifier, &password, remember) {
                     Ok(session) => {
+                        if !shared_job.auth_work_is_current(epoch) {
+                            return;
+                        }
                         let username = session.user.username.clone();
-                        if let Ok(mut gate) = shared_job.auth.lock() {
+                        let applied_access = session.access_token.clone();
+                        {
+                            let Ok(mut gate) = shared_job.auth.lock() else {
+                                return;
+                            };
+                            if !shared_job.auth_work_is_current(epoch) {
+                                return;
+                            }
                             gate.apply_auth_session(session);
+                        }
+                        if !shared_job.auth_work_is_current(epoch) {
+                            if let Ok(mut gate) = shared_job.auth.lock() {
+                                if gate.access_token.as_deref() == Some(applied_access.as_str()) {
+                                    gate.clear_session();
+                                }
+                            }
+                            return;
                         }
                         let _ = tx.send(AuthJobOutcome::LoginOk { username });
                     }
                     Err(err) => {
-                        let _ = tx.send(AuthJobOutcome::LoginFailed(format!("{err:#}")));
+                        if shared_job.auth_work_is_current(epoch) {
+                            let _ = tx.send(AuthJobOutcome::LoginFailed(format!("{err:#}")));
+                        }
                     }
                 }
             });
@@ -1541,20 +1699,40 @@ fn handle_ui_action(
             ui.mark_dash_form_dirty();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
-            *auth_job = Some(rx);
+            let epoch = arm_auth_job(shared, auth_job, rx);
             spawn_auth_http(move || {
                 match auth::register(
                     &auth_url, &username, &email, &password, &birthday, tos_agreed, remember,
                 ) {
                     Ok(session) => {
+                        if !shared_job.auth_work_is_current(epoch) {
+                            return;
+                        }
                         let username = session.user.username.clone();
-                        if let Ok(mut gate) = shared_job.auth.lock() {
+                        let applied_access = session.access_token.clone();
+                        {
+                            let Ok(mut gate) = shared_job.auth.lock() else {
+                                return;
+                            };
+                            if !shared_job.auth_work_is_current(epoch) {
+                                return;
+                            }
                             gate.apply_auth_session(session);
+                        }
+                        if !shared_job.auth_work_is_current(epoch) {
+                            if let Ok(mut gate) = shared_job.auth.lock() {
+                                if gate.access_token.as_deref() == Some(applied_access.as_str()) {
+                                    gate.clear_session();
+                                }
+                            }
+                            return;
                         }
                         let _ = tx.send(AuthJobOutcome::RegisterOk { username });
                     }
                     Err(err) => {
-                        let _ = tx.send(AuthJobOutcome::RegisterFailed(format!("{err:#}")));
+                        if shared_job.auth_work_is_current(epoch) {
+                            let _ = tx.send(AuthJobOutcome::RegisterFailed(format!("{err:#}")));
+                        }
                     }
                 }
             });
@@ -1566,10 +1744,13 @@ fn handle_ui_action(
                 .ok()
                 .map(|g| (g.access_token.clone(), g.refresh_token.clone()))
                 .unwrap_or((None, None));
-            // Zenoh Leave + drop session (kills room bus threads) on UI thread.
+            // Bump epoch first so in-flight join cannot commit past Logout.
             // HTTP logout is best-effort on a worker (does not gate UI).
+            discard_auth_job(shared, auth_job);
             leave_room(shared, zenoh);
+            stop_supervised_host(shared);
             clear_worlds_session_shell(ui);
+            clear_worlds_catalog(ui);
             if let Ok(mut gate) = shared.auth.lock() {
                 gate.clear_session();
             }
@@ -1578,12 +1759,12 @@ fn handle_ui_action(
             operator_prefs::save(&prefs);
             ui.state.home_logged_in_as = None;
             ui.state.home_create_open = false;
-            ui.state.shell = OnboardingShell::Step2Auth;
-            ui.state.home_status = "Signed out — sign in again".into();
+            ui.state.shell = OnboardingShell::Step1Operator;
+            ui.state.home_status = "Signed out — select a server operator".into();
             ui.state.tab = DashTab::Home;
             ui.mark_dash_logic_dirty();
             ui.rebuild();
-            log::info!("auth logout — Leave + local session cleared");
+            log::info!("auth logout — Leave + local session cleared; back to operator select");
             if let Some(access) = access {
                 let auth_url = shared.get_auth_url();
                 spawn_auth_http(move || {
@@ -1592,6 +1773,12 @@ fn handle_ui_action(
             }
         }
         UiAction::StartSession => {
+            if !ui.state.server_operator {
+                ui.state.home_status = "Enable Server Operator in Settings to start a host".into();
+                ui.mark_dash_form_dirty();
+                ui.rebuild();
+                return;
+            }
             if auth_job.is_some() {
                 ui.state.home_status = "Auth busy…".into();
                 ui.mark_dash_form_dirty();
@@ -1625,8 +1812,11 @@ fn handle_ui_action(
             ui.mark_dash_form_dirty();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
-            *auth_job = Some(rx);
+            let epoch = arm_auth_job(shared, auth_job, rx);
             spawn_auth_http(move || {
+                if !shared_job.auth_work_is_current(epoch) {
+                    return;
+                }
                 let world_url = shared_job.get_world_url();
                 let visibility = world_api::ensure_room_visibility(
                     &world_url,
@@ -1635,28 +1825,48 @@ fn handle_ui_action(
                     level,
                 )
                 .map_err(|e| format!("{e:#}"));
+                if !shared_job.auth_work_is_current(epoch) {
+                    return;
+                }
                 // Spawn local host only when we own/create the room. Existing rooms → guest Join.
                 let room_id = shared_job.get_room_id();
+                let mut host_started = false;
                 let join = match &visibility {
                     Ok(world_api::VisibilityEnsure::Applied) => {
                         match shared_job
                             .host_supervisor
                             .ensure_running_for_room(room_id.as_ref(), Some(access.as_str()))
                         {
-                            Ok(()) => join_room_with_access(&shared_job, &access)
-                                .map_err(|e| format!("{e:#}")),
+                            Ok(()) => {
+                                host_started = true;
+                                if !shared_job.auth_work_is_current(epoch) {
+                                    // Stale: Leave keeps host; do not stop a possible re-Host.
+                                    Err("start aborted: signed out".into())
+                                } else {
+                                    join_room_with_access(&shared_job, &access, epoch)
+                                        .map_err(|e| format!("{e:#}"))
+                                }
+                            }
                             Err(err) => Err(format!("local host-server start failed: {err:#}")),
                         }
                     }
                     Ok(world_api::VisibilityEnsure::LeftExisting) => {
-                        join_room_with_access(&shared_job, &access).map_err(|e| format!("{e:#}"))
+                        if !shared_job.auth_work_is_current(epoch) {
+                            Err("join aborted: signed out".into())
+                        } else {
+                            join_room_with_access(&shared_job, &access, epoch)
+                                .map_err(|e| format!("{e:#}"))
+                        }
                     }
                     Err(_) => Err("skipped join (visibility step failed)".into()),
                 };
-                if join.is_err() {
-                    stop_supervised_host(&shared_job);
+                if join.is_err() && host_started {
+                    stop_host_if_job_current(&shared_job, epoch);
                 }
-                let _ = tx.send(AuthJobOutcome::StartSession { visibility, join });
+                if shared_job.auth_work_is_current(epoch) {
+                    let _ = tx.send(AuthJobOutcome::StartSession { visibility, join });
+                }
+                // Stale: do not leave_room / stop host — same access Leave→re-Host must stay intact.
             });
         }
         UiAction::JoinRoom => {
@@ -1705,42 +1915,25 @@ fn handle_ui_action(
             ui.mark_dash_form_dirty();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
-            *auth_job = Some(rx);
+            let epoch = arm_auth_job(shared, auth_job, rx);
             spawn_auth_http(move || {
-                let result =
-                    join_room_with_access(&shared_job, &access).map_err(|e| format!("{e:#}"));
-                // Align with Worlds Join: Waiting/Live shell after ticket OK.
-                let _ = tx.send(AuthJobOutcome::JoinRoom {
-                    result,
-                    enter_waiting_shell: true,
-                    can_host_rescue_on_ok,
-                });
+                if !shared_job.auth_work_is_current(epoch) {
+                    return;
+                }
+                let result = join_room_with_access(&shared_job, &access, epoch)
+                    .map_err(|e| format!("{e:#}"));
+                if shared_job.auth_work_is_current(epoch) {
+                    // Align with Worlds Join: Waiting/Live shell after ticket OK.
+                    let _ = tx.send(AuthJobOutcome::JoinRoom {
+                        result,
+                        enter_waiting_shell: true,
+                        can_host_rescue_on_ok,
+                    });
+                }
             });
         }
         UiAction::WorldsRefresh => {
-            let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
-            let Some(access) = access else {
-                ui.state.worlds_status = "Sign in to load Worlds".into();
-                ui.rebuild();
-                return;
-            };
-            if auth_job.is_some() {
-                ui.state.worlds_status = "Auth busy…".into();
-                ui.rebuild();
-                return;
-            }
-            let mine = ui.state.worlds_mine_only;
-            let shared_job = Arc::clone(shared);
-            ui.state.worlds_status = "Loading catalog…".into();
-            ui.rebuild();
-            let (tx, rx) = mpsc::channel();
-            *auth_job = Some(rx);
-            spawn_auth_http(move || {
-                let world_url = shared_job.get_world_url();
-                let result =
-                    world_api::list_rooms(&world_url, &access, mine).map_err(|e| format!("{e:#}"));
-                let _ = tx.send(AuthJobOutcome::WorldsList { result });
-            });
+            start_worlds_catalog_refresh(ui, shared, auth_job);
         }
         UiAction::WorldsJoinGuest => {
             if auth_job.is_some() {
@@ -1748,12 +1941,18 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             }
-            let Some(sel) = ui.state.worlds_selected else {
+            let Some(room_id) = ui.state.worlds_selected.clone() else {
                 ui.state.worlds_status = "Select a room first".into();
                 ui.rebuild();
                 return;
             };
-            let Some((room_id, _, role_hint, _)) = ui.state.worlds_rooms.get(sel).cloned() else {
+            let Some((_, _, role_hint, _)) = ui
+                .state
+                .worlds_rooms
+                .iter()
+                .find(|(id, ..)| id == &room_id)
+                .cloned()
+            else {
                 ui.state.worlds_status = "Select a room first".into();
                 ui.rebuild();
                 return;
@@ -1774,22 +1973,33 @@ fn handle_ui_action(
             ui.state.worlds_status = "Joining as guest…".into();
             ui.rebuild();
             let (tx, rx) = mpsc::channel();
-            *auth_job = Some(rx);
+            let epoch = arm_auth_job(shared, auth_job, rx);
             spawn_auth_http(move || {
-                let result =
-                    join_room_with_access(&shared_job, &access).map_err(|e| format!("{e:#}"));
-                let _ = tx.send(AuthJobOutcome::JoinRoom {
-                    result,
-                    enter_waiting_shell: true,
-                    can_host_rescue_on_ok,
-                });
+                if !shared_job.auth_work_is_current(epoch) {
+                    return;
+                }
+                let result = join_room_with_access(&shared_job, &access, epoch)
+                    .map_err(|e| format!("{e:#}"));
+                if shared_job.auth_work_is_current(epoch) {
+                    let _ = tx.send(AuthJobOutcome::JoinRoom {
+                        result,
+                        enter_waiting_shell: true,
+                        can_host_rescue_on_ok,
+                    });
+                }
             });
         }
         UiAction::WorldsHostRoom => {
+            if !ui.state.server_operator {
+                ui.state.worlds_status = "Enable Server Operator in Settings to host".into();
+                ui.rebuild();
+                return;
+            }
             let room_id = match ui
                 .state
                 .worlds_selected
-                .and_then(|i| ui.state.worlds_rooms.get(i))
+                .as_ref()
+                .and_then(|sel| ui.state.worlds_rooms.iter().find(|(id, ..)| id == sel))
             {
                 Some((id, _, role, _)) if role == "owner" => id.clone(),
                 Some(_) => {
@@ -1807,6 +2017,12 @@ fn handle_ui_action(
         }
         UiAction::WorldsHostRescue => {
             // Ignore catalog selection — always the actually joined room.
+            if !ui.state.server_operator {
+                ui.state.worlds_status =
+                    "Enable Server Operator in Settings to host this room".into();
+                ui.rebuild();
+                return;
+            }
             if !ui.state.worlds_can_host_rescue {
                 ui.state.worlds_status = "Only the owner can host this room".into();
                 ui.rebuild();
@@ -1821,33 +2037,45 @@ fn handle_ui_action(
             start_worlds_host(ui, shared, zenoh, auth_job, room_id);
         }
         UiAction::WorldsLeave => {
+            // Invalidate in-flight Join/Host so Leave status is not overwritten by Auth busy.
+            // Do not auto-refresh catalog — that would occupy auth_job and block immediate re-Join.
+            discard_auth_job(shared, auth_job);
             leave_room(shared, zenoh);
+            // Leave does not stop a supervised host (re-Host / Rescue may reuse it).
             clear_worlds_session_shell(ui);
-            ui.state.worlds_status = "Left room".into();
-            ui.state.tab = DashTab::Worlds;
-            ui.state.shell = OnboardingShell::Dash;
+            ui.state.worlds_status = "Left room — Refresh for catalog".into();
+            ui.state.home_status = "Left session — back to Main hub".into();
+            ui.state.tab = DashTab::Home;
+            ui.state.shell = OnboardingShell::MainHub;
+            ui.state.main_hub_tab = crate::system_ui::MainHubTab::Participation;
             ui.mark_dash_chrome_dirty();
             ui.rebuild();
         }
         UiAction::WorldsRejoin => {
             let room_id = shared.get_room_id().to_string();
             let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+            discard_auth_job(shared, auth_job);
             leave_room(shared, zenoh);
             clear_worlds_session_shell(ui);
             let Some(access) = access else {
                 ui.state.worlds_status = "Rejoin failed: not signed in".into();
-                ui.state.tab = DashTab::Worlds;
-                ui.state.shell = OnboardingShell::Dash;
+                ui.state.tab = DashTab::Home;
+                ui.state.shell = OnboardingShell::MainHub;
+                ui.state.main_hub_tab = crate::system_ui::MainHubTab::Participation;
                 ui.rebuild();
                 return;
             };
             if room_id.is_empty() {
                 ui.state.worlds_status = "Rejoin failed: no room".into();
+                ui.state.tab = DashTab::Home;
+                ui.state.shell = OnboardingShell::MainHub;
+                ui.state.main_hub_tab = crate::system_ui::MainHubTab::Participation;
                 ui.rebuild();
                 return;
             }
             shared.set_room_id(std::sync::Arc::<str>::from(room_id));
-            let join = join_room_with_access(shared, &access).map_err(|e| format!("{e:#}"));
+            let epoch = shared.auth_work_epoch();
+            let join = join_room_with_access(shared, &access, epoch).map_err(|e| format!("{e:#}"));
             apply_join_result(
                 ui,
                 shared,
@@ -1865,6 +2093,13 @@ fn handle_ui_action(
             ui.rebuild();
         }
         UiAction::InventoryRefresh => {
+            if ui.state.inventory_blocked() {
+                ui.state.tab = DashTab::Home;
+                ui.state.home_status = "Leave session before opening Inventory".into();
+                ui.mark_dash_chrome_dirty();
+                ui.rebuild();
+                return;
+            }
             let assets = shared.get_assets_url();
             let token = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
             ui.state.scene_meshes = shared.scene_meshes();
@@ -1895,6 +2130,13 @@ fn handle_ui_action(
             ui.rebuild();
         }
         UiAction::InventoryTakeOut => {
+            if ui.state.inventory_blocked() {
+                ui.state.tab = DashTab::Home;
+                ui.state.home_status = "Leave session before opening Inventory".into();
+                ui.mark_dash_chrome_dirty();
+                ui.rebuild();
+                return;
+            }
             let selected = ui.state.inventory_selected.and_then(|i| {
                 ui.state
                     .inventory_nodes
@@ -1978,6 +2220,14 @@ fn handle_ui_action(
             ui.rebuild();
         }
         UiAction::InventoryOpen => {
+            if ui.state.inventory_blocked() {
+                ui.state.tab = DashTab::Home;
+                ui.state.home_status = "Leave session before opening Inventory".into();
+                ui.mark_dash_chrome_dirty();
+                ui.mark_dash_form_dirty();
+                ui.rebuild();
+                return;
+            }
             // Scene list is Manifest-derived; refresh without Drive HTTP (x006e).
             ui.state.scene_meshes = shared.scene_meshes();
             if ui
@@ -1990,6 +2240,13 @@ fn handle_ui_action(
             ui.rebuild();
         }
         UiAction::InventoryPutBack => {
+            if ui.state.inventory_blocked() {
+                ui.state.tab = DashTab::Home;
+                ui.state.home_status = "Leave session before opening Inventory".into();
+                ui.mark_dash_chrome_dirty();
+                ui.rebuild();
+                return;
+            }
             // Always re-sync from SharedState so Put back sees post-spawn Manifest (x006e).
             let prev_entity = ui
                 .state
@@ -2065,6 +2322,13 @@ fn handle_ui_action(
             ui.rebuild();
         }
         UiAction::InventoryDespawn => {
+            if ui.state.inventory_blocked() {
+                ui.state.tab = DashTab::Home;
+                ui.state.home_status = "Leave session before opening Inventory".into();
+                ui.mark_dash_chrome_dirty();
+                ui.rebuild();
+                return;
+            }
             let prev_entity = ui
                 .state
                 .scene_selected
@@ -2165,6 +2429,7 @@ pub fn run(
     let prefs = operator_prefs::load();
     ui.state.operator = prefs.operator;
     ui.state.custom_host = prefs.custom_host.clone();
+    ui.state.server_operator = prefs.server_operator;
     ui.state.hotswitch_available = role == DesktopRole::Companion;
     ui.state.hotswitch_auto = shared
         .presentation
@@ -2185,15 +2450,18 @@ pub fn run(
     if joined {
         ui.state.home_logged_in_as = username;
         ui.state.shell = OnboardingShell::Dash;
-        ui.state.tab = DashTab::Worlds;
-        ui.state.home_status = "In room — use Worlds for Leave / Host".into();
+        ui.state.tab = DashTab::Home;
+        ui.state.worlds_in_room = true;
+        ui.state.home_status = "In room — use Session for Leave / Host Rescue".into();
+        ui.state.worlds_status = "In room — Leave or Host Rescue from Session".into();
     } else {
         ui.state.open = true;
         ui.state.tab = DashTab::Home;
         if authenticated {
             ui.state.home_logged_in_as = username;
             ui.state.shell = OnboardingShell::MainHub;
-            ui.state.home_status = "Signed in — Join a host or Host a room".into();
+            ui.state.main_hub_tab = crate::system_ui::MainHubTab::Participation;
+            ui.state.home_status = "Signed in — join a public session".into();
         } else if !prefs.operator_chosen {
             ui.state.shell = OnboardingShell::Step1Operator;
             ui.state.home_status = "Select a server operator".into();
@@ -2214,6 +2482,9 @@ pub fn run(
     ui.mark_dash_logic_dirty();
     ui.push_dash_logic(&shared);
     let last_owns_input = role.owns_input(&shared.presentation);
+    let boot_catalog = ui.state.shell == OnboardingShell::MainHub
+        && ui.state.home_logged_in_as.is_some()
+        && !joined;
     let mut app = App {
         mesh,
         shared,
@@ -2238,6 +2509,10 @@ pub fn run(
         last_owns_input,
         mesh_epoch: 0,
     };
+    // silent / remember-me MainHub entry — same catalog load as LoginOk / RegisterOk.
+    if boot_catalog {
+        start_worlds_catalog_refresh(&mut app.ui, &app.shared, &mut app.auth_job);
+    }
     event_loop.run_app(&mut app)?;
     Ok(())
 }

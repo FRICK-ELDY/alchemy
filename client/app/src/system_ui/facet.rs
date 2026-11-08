@@ -62,6 +62,7 @@ impl FacetId {
 pub const OFFICIAL_DEFAULT_FACETS: &[FacetId] = &[
     FacetId::Chrome,
     FacetId::Home,
+    // Worlds Facet widgets remain for session shell; no bottom tab.
     FacetId::Worlds,
     FacetId::Inventory,
     FacetId::Settings,
@@ -78,6 +79,9 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         WidgetId::TabSettings
         | WidgetId::TurnModeToggle
         | WidgetId::HotswitchAutoToggle
+        | WidgetId::ServerOperatorToggle
+        | WidgetId::SettingsScrollUp
+        | WidgetId::SettingsScrollDown
         | WidgetId::SettingsRoomId
         | WidgetId::SettingsJoinRoom
         | WidgetId::SettingsStartSession
@@ -151,12 +155,34 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::Step1Back
         | WidgetId::FederationStubBack
         | WidgetId::Step2Back
-        | WidgetId::MainJoinHost
-        | WidgetId::MainHostRoom => FacetId::Home,
+        | WidgetId::MainTabParticipation
+        | WidgetId::MainTabOrganizing
+        | WidgetId::MainHubRefresh
+        | WidgetId::MainHubJoin
+        | WidgetId::MainHubCreateWorld
+        | WidgetId::MainHubHostWorld
+        | WidgetId::MainPublicRow0
+        | WidgetId::MainPublicRow1
+        | WidgetId::MainPublicRow2
+        | WidgetId::MainPublicRow3
+        | WidgetId::MainPublicRow4
+        | WidgetId::MainPublicRow5
+        | WidgetId::MainPublicRow6
+        | WidgetId::MainPublicRow7
+        | WidgetId::MainMyWorldRow0
+        | WidgetId::MainMyWorldRow1
+        | WidgetId::MainMyWorldRow2
+        | WidgetId::MainMyWorldRow3
+        | WidgetId::MainMyWorldRow4
+        | WidgetId::MainMyWorldRow5
+        | WidgetId::MainMyWorldRow6
+        | WidgetId::MainMyWorldRow7 => FacetId::Home,
         WidgetId::Mic
         | WidgetId::MicOff
         | WidgetId::Volume
         | WidgetId::Hearing
+        | WidgetId::ChromeLoginRegister
+        | WidgetId::ChromeLogout
         | WidgetId::SyncBadge => FacetId::Chrome,
     }
 }

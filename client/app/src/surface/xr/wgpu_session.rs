@@ -209,6 +209,11 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         .auto_suppressed
         .load(std::sync::atomic::Ordering::SeqCst);
     ui.state.refresh_hotswitch_label();
+    // Server Operator is prefs-backed; XR has no catalog HTTP but must mirror the gate.
+    {
+        let prefs = crate::operator_prefs::load();
+        ui.state.server_operator = prefs.server_operator;
+    }
     if shared.overlay_asset_home_status(&mut ui.state.home_status) {
         ui.state.open = true;
         ui.state.tab = crate::system_ui::DashTab::Home;
@@ -766,11 +771,27 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                         }
                         UiAction::AuthLogout => {
                             // Desktop owns Zenoh + auth clear (needs room_token for Leave put).
+                            // Clear local session/catalog immediately so Session shell cannot stick.
                             shared.presentation.request_leave();
+                            ui.state.worlds_waiting_host = false;
+                            ui.state.worlds_host_disconnect = false;
+                            ui.state.worlds_can_host_rescue = false;
+                            ui.state.worlds_seen_frame_tick = None;
+                            ui.state.worlds_last_frame_at = None;
+                            ui.state.worlds_in_room = false;
+                            ui.state.worlds_key_stale = false;
+                            ui.state.worlds_rooms.clear();
+                            ui.state.worlds_selected = None;
+                            ui.state.worlds_catalog_scroll = 0;
+                            ui.state.worlds_catalog_scroll_accum = 0.0;
+                            ui.state.worlds_status.clear();
+                            ui.state.in_session_peer = false;
                             ui.state.home_logged_in_as = None;
                             ui.state.home_create_open = false;
-                            ui.state.shell = crate::system_ui::OnboardingShell::Step2Auth;
-                            ui.state.home_status = "Signing out… (Desktop owns Zenoh leave)".into();
+                            ui.state.shell = crate::system_ui::OnboardingShell::Step1Operator;
+                            ui.state.home_status =
+                                "Signing out… (Desktop owns Zenoh leave) — operator select".into();
+                            ui.mark_dash_chrome_dirty();
                             ui.mark_dash_logic_dirty();
                             ui.rebuild();
                         }
@@ -809,6 +830,11 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                                 ui.state.refresh_hotswitch_label();
                             }
                             ui.rebuild();
+                        }
+                        UiAction::ServerOperatorChanged => {
+                            let mut prefs = crate::operator_prefs::load();
+                            prefs.server_operator = ui.state.server_operator;
+                            crate::operator_prefs::save(&prefs);
                         }
                         UiAction::None => {}
                     }

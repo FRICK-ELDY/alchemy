@@ -198,7 +198,14 @@ pub(crate) fn open_zenoh_for(shared: &SharedState) -> Result<zenoh::Session> {
 
 /// Apply auth session + guest Room Token into SharedState (x0018 join).
 /// x003e: mint Intent session first so Token `cnf.spk` matches bind `session_pub`.
-pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result<()> {
+///
+/// `work_epoch` must match [`SharedState::auth_work_epoch`] at commit time so a
+/// discarded Logout/Leave worker cannot install room state onto a newer session.
+pub fn join_room_with_access(
+    shared: &SharedState,
+    access_token: &str,
+    work_epoch: u64,
+) -> Result<()> {
     let session = intent_session::IntentSession::new();
     let session_pub_b64 = session.session_pub_b64();
     let (csr_pem, eph_key) = if zenoh_connect::should_request_world_mtls() {
@@ -221,13 +228,13 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
     .context("fetch guest Room Token")?;
     let local_sub = jwt_sub::sub_unverified(&guest.token)
         .context("read Room Token sub (unverified payload)")?;
-    if let Ok(mut cap) = shared.wire_cap.lock() {
-        *cap = Some(Arc::<str>::from(guest.wire_cap.as_str()));
-    }
-    // Fresh Join / Rejoin: commit live AEAD (clears KeyStale + pending).
-    shared.commit_room_aead(guest.room_key, guest.room_key_epoch);
-    // mTLS: world-issued preferred; else Relay allocate (x0066 / x004e).
-    if let Some(id) = zenoh_connect::apply_world_mtls_or_allocate(
+    // Skip mTLS env rewrite if already superseded. Allocate still runs outside the
+    // auth lock (HTTP); Leave→re-Join can race env PEMs — known; re-Join recovers.
+    anyhow::ensure!(
+        shared.auth_work_is_current(work_epoch),
+        "join aborted: auth work superseded before mTLS"
+    );
+    let mtls_ready = zenoh_connect::apply_world_mtls_or_allocate(
         guest.mtls.as_ref().map(|m| m.client_cert_pem.as_str()),
         eph_key.as_deref(),
         &guest.wire_cap,
@@ -239,19 +246,29 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
             .map(|m| m.expires_at.as_str())
             .filter(|s| !s.is_empty()),
     )
-    .context("guest mTLS (world or relay allocate)")?
+    .context("guest mTLS (world or relay allocate)")?;
+    // Allocate may have rewritten env; refuse auth commit if superseded mid-flight.
+    anyhow::ensure!(
+        shared.auth_work_is_current(work_epoch),
+        "join aborted: auth work superseded after mTLS"
+    );
+    // Access check + apply_room + AEAD/wire under one auth lock so Logout cannot
+    // interleave a clear between the check and commit.
     {
-        shared.mtls_reopen_pending.store(true, Ordering::SeqCst);
-        log::info!(
-            "guest mTLS ready cn={} role={} soft_ttl={}s (mtls_reopen_pending)",
-            id.cn,
-            id.role,
-            id.expires_in
+        let mut gate = shared
+            .auth
+            .lock()
+            .map_err(|_| anyhow::anyhow!("auth lock poisoned"))?;
+        anyhow::ensure!(
+            gate.access_token.as_deref() == Some(access_token),
+            "join aborted: access session no longer active"
         );
-    }
-    // Lock order: auth → intent_session → pending (same as generation commit).
-    if let Ok(mut gate) = shared.auth.lock() {
+        anyhow::ensure!(
+            shared.auth_work_is_current(work_epoch),
+            "join aborted: auth work superseded"
+        );
         gate.apply_room(guest.token, local_sub.clone(), guest.expires_in);
+        // Lock order: auth → intent_session → pending (same as generation commit).
         if let Ok(mut slot) = shared.intent_session.lock() {
             *slot = Some(session);
             if let Ok(mut pending) = shared.pending_intent_session.lock() {
@@ -260,6 +277,20 @@ pub fn join_room_with_access(shared: &SharedState, access_token: &str) -> Result
         }
         if let Ok(mut retry) = shared.pending_retry.lock() {
             *retry = None;
+        }
+        if let Ok(mut cap) = shared.wire_cap.lock() {
+            *cap = Some(Arc::<str>::from(guest.wire_cap.as_str()));
+        }
+        // Fresh Join / Rejoin: commit live AEAD (clears KeyStale + pending).
+        shared.commit_room_aead(guest.room_key, guest.room_key_epoch);
+        if let Some(id) = mtls_ready.as_ref() {
+            shared.mtls_reopen_pending.store(true, Ordering::SeqCst);
+            log::info!(
+                "guest mTLS ready cn={} role={} soft_ttl={}s (mtls_reopen_pending)",
+                id.cn,
+                id.role,
+                id.expires_in
+            );
         }
     }
     log::info!(

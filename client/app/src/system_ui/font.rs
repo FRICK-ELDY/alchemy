@@ -69,12 +69,17 @@ pub struct TextBlit<'a> {
     pub text: &'a str,
     pub scale: i32,
     pub rgba: [u8; 4],
+    /// Inclusive-exclusive pixel scissor in canvas space; `None` = canvas only.
+    pub clip: Option<(i32, i32, i32, i32)>,
 }
 
 /// Blit glyphs into an RGBA buffer (`stride` = width in pixels).
 pub fn blit_text(args: TextBlit<'_>) {
     let scale = args.scale.max(1);
     let mut cursor_x = args.origin_x;
+    let (cx0, cy0, cx1, cy1) = args
+        .clip
+        .unwrap_or((0, 0, args.stride as i32, args.height as i32));
     for (gi, b) in args.text.bytes().enumerate() {
         if gi > 0 {
             cursor_x += scale;
@@ -92,6 +97,9 @@ pub fn blit_text(args: TextBlit<'_>) {
                     for sx in 0..scale {
                         let x = cursor_x + (col as i32) * scale + sx;
                         let y = args.origin_y + (row as i32) * scale + sy;
+                        if x < cx0 || y < cy0 || x >= cx1 || y >= cy1 {
+                            continue;
+                        }
                         if x < 0 || y < 0 {
                             continue;
                         }
@@ -127,6 +135,7 @@ mod tests {
             text: "FPS",
             scale: 2,
             rgba: [255, 255, 255, 255],
+            clip: None,
         });
         assert!(buf.iter().any(|&b| b != 0));
     }

@@ -10,7 +10,7 @@
 //! chrome CAS; `PresentationGate` is SoT for hotswitch auto/suppressed.
 //! Non-guarantees: OpenXR types inside this module, user Facet rearrange, Vault layout
 //! persist, WorldRoot, XR virtual keyboard, auth/world HTTP (surface modules), final UI art,
-//! Federation directory / Join-a-host session list (future).
+//! Federation directory / friends active-session list (future).
 
 mod dash;
 pub mod facet;
@@ -22,7 +22,7 @@ mod layout;
 #[allow(unused_imports)] // public re-export; store.logic type for callers
 pub use dash::SharedDashLogic;
 pub use dash::{
-    access_level_from_widget, DashState, DashTab, HomeField, HomeMode, OnboardingShell,
+    access_level_from_widget, DashState, DashTab, HomeField, HomeMode, MainHubTab, OnboardingShell,
     SharedDashStore, SESSION_NAME_MAX,
 };
 pub use gpu::UiGpu;
@@ -87,6 +87,44 @@ impl SystemUi {
         self.dash_form_dirty = true;
     }
 
+    /// Block MainHub / Inventory while in-session (Desktop `worlds_*` or XR `in_session_peer`).
+    /// Local session: keep Dash shell so Session UI stays reachable.
+    fn block_nav_while_session(&mut self, msg: &str) -> bool {
+        if !self.state.inventory_blocked() {
+            return false;
+        }
+        if self.state.session_shell_active() {
+            self.state.shell = OnboardingShell::Dash;
+        }
+        self.state.worlds_status = msg.into();
+        self.state.home_status = msg.into();
+        self.mark_dash_form_dirty();
+        self.rebuild();
+        true
+    }
+
+    /// Official / Custom card: apply endpoints and open Step2 auth.
+    fn advance_step1_operator(&mut self) -> UiAction {
+        if self.state.operator == OperatorKind::Federation {
+            return UiAction::None;
+        }
+        if !self.state.home_session_actions_enabled {
+            self.state.home_status =
+                "Operator select / login is Desktop-only (use Desktop client)".into();
+            self.mark_dash_form_dirty();
+            self.rebuild();
+            return UiAction::None;
+        }
+        self.state.custom_host_focus = false;
+        self.state.shell = OnboardingShell::Step2Auth;
+        self.state.tab = DashTab::Home;
+        self.state.home_focus = Some(HomeField::Identifier);
+        self.state.home_status = "Sign in to continue".into();
+        self.mark_dash_logic_dirty();
+        self.rebuild();
+        UiAction::ApplyOperatorEndpoints
+    }
+
     /// Pull from a dash store (testable without full [`SharedState`]).
     ///
     /// Chrome merges while form-dirty (Esc/Menu during typing). Chrome pull is
@@ -98,8 +136,16 @@ impl SystemUi {
         };
         let mut changed = false;
         if !self.dash_chrome_dirty && store.chrome_revision != self.dash_chrome_rev {
+            let peer_inventory = store.logic.tab == DashTab::Inventory;
             changed |= store.logic.apply_chrome_to(&mut self.state);
             self.dash_chrome_rev = store.chrome_revision;
+            // Reject Companion Inventory while Desktop session is live — push Home back.
+            if peer_inventory
+                && self.state.inventory_blocked()
+                && self.state.tab != DashTab::Inventory
+            {
+                self.mark_dash_chrome_dirty();
+            }
         }
         if !self.dash_form_dirty && store.revision != self.dash_logic_rev {
             changed |= store.logic.apply_form_to(&mut self.state);
@@ -145,16 +191,29 @@ impl SystemUi {
                 self.dash_chrome_rev = store.chrome_revision;
                 self.dash_chrome_dirty = false;
             } else {
-                // Peer chrome advanced: adopt it; do not clobber with stale local.
-                // Concurrent Esc/Menu: the side that lost the CAS drops its intent.
+                // Peer chrome advanced: adopt Esc/Menu/settings; session landing is Desktop-owned.
                 log::info!(
                     "dash chrome CAS miss: local_rev={} store_rev={} — adopting peer chrome",
                     self.dash_chrome_rev,
                     store.chrome_revision
                 );
+                let peer_in_session = store.logic.in_session;
+                let local_in_session = self.state.in_session_for_store();
+                let saved_shell = self.state.shell;
+                let saved_tab = self.state.tab;
+                let saved_open = self.state.open;
                 rebuild_after = store.logic.apply_chrome_to(&mut self.state);
                 self.dash_chrome_rev = store.chrome_revision;
                 self.dash_chrome_dirty = false;
+                if self.state.home_session_actions_enabled && local_in_session != peer_in_session {
+                    // Leave (local false / peer true) or Join (local true / peer false):
+                    // keep Desktop shell landing and retry push so store.in_session matches.
+                    self.state.shell = saved_shell;
+                    self.state.tab = saved_tab;
+                    self.state.open = saved_open;
+                    self.dash_chrome_dirty = true;
+                    rebuild_after = true;
+                }
             }
         }
         drop(store);
@@ -186,6 +245,7 @@ impl SystemUi {
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         self.state.canvas_w = width.max(1) as f32;
         self.state.canvas_h = height.max(1) as f32;
+        self.state.clamp_settings_scroll();
         if let Some(gpu) = self.gpu.as_mut() {
             gpu.resize(device, width, height);
         }
@@ -200,6 +260,39 @@ impl SystemUi {
         }
         self.mark_dash_chrome_dirty();
         self.rebuild();
+    }
+
+    /// Mouse wheel / trackpad scroll (canvas pixels).
+    /// Settings: continuous pixel scroll. MainHub Participation catalog: discrete row steps.
+    /// Positive `delta_y` scrolls content up (reveal lower widgets / later rooms).
+    pub fn on_scroll(&mut self, px: f32, py: f32, delta_y: f32) {
+        if !self.state.open {
+            return;
+        }
+        if self.state.tab == DashTab::Settings {
+            if !self.state.settings_panel_rect().contains(px, py) {
+                return;
+            }
+            if self.state.settings_max_scroll() <= 0.0 {
+                return;
+            }
+            self.state.scroll_settings_by(delta_y);
+            self.rebuild();
+            return;
+        }
+        if self.state.shell == OnboardingShell::MainHub
+            && self.state.main_hub_tab == MainHubTab::Participation
+            && self.state.home_logged_in_as.is_some()
+            && !self.state.session_shell_active()
+            && self.state.worlds_catalog_list_rect().contains(px, py)
+            && self
+                .state
+                .worlds_catalog_max_scroll(self.state.worlds_catalog_list_h())
+                > 0
+            && self.state.scroll_worlds_catalog_pixels(delta_y)
+        {
+            self.rebuild();
+        }
     }
 
     /// Pointer / laser UV in canvas pixels. `primary_down` = mouse LMB or XR Select.
@@ -290,21 +383,32 @@ impl SystemUi {
                 UiAction::None
             }
             WidgetId::TabSettings => {
+                // Allowed during session so Server Operator can be enabled for Host Rescue.
                 self.state.shell = OnboardingShell::Dash;
                 self.state.tab = DashTab::Settings;
+                self.state.settings_scroll = 0.0;
                 self.mark_dash_chrome_dirty();
                 self.rebuild();
                 UiAction::None
             }
             WidgetId::TabWorlds => {
+                // Worlds bottom tab removed — route to MainHub catalog (not during session).
+                if self.block_nav_while_session("Leave session before opening Main hub") {
+                    return UiAction::None;
+                }
                 self.clear_settings_room_focus();
-                self.state.shell = OnboardingShell::Dash;
-                self.state.tab = DashTab::Worlds;
+                self.state.home_create_open = false;
+                self.state.shell = OnboardingShell::MainHub;
+                self.state.tab = DashTab::Home;
+                self.state.main_hub_tab = MainHubTab::Participation;
                 self.mark_dash_chrome_dirty();
                 self.rebuild();
                 UiAction::WorldsRefresh
             }
             WidgetId::TabInventory => {
+                if self.block_nav_while_session("Leave session before opening Inventory") {
+                    return UiAction::None;
+                }
                 self.clear_settings_room_focus();
                 self.state.shell = OnboardingShell::Dash;
                 self.state.tab = DashTab::Inventory;
@@ -314,17 +418,16 @@ impl SystemUi {
                 UiAction::InventoryOpen
             }
             WidgetId::WorldsRefresh => UiAction::WorldsRefresh,
-            WidgetId::WorldsFilterAll => {
-                self.state.worlds_mine_only = false;
-                self.rebuild();
-                UiAction::WorldsRefresh
-            }
-            WidgetId::WorldsFilterMine => {
-                self.state.worlds_mine_only = true;
-                self.rebuild();
-                UiAction::WorldsRefresh
-            }
-            WidgetId::WorldsCreate | WidgetId::HomeNewWorld => {
+            // Catalog UI removed; filter/row ids kept for WidgetId exhaustiveness only.
+            WidgetId::WorldsFilterAll | WidgetId::WorldsFilterMine => UiAction::None,
+            WidgetId::WorldsCreate | WidgetId::HomeNewWorld | WidgetId::MainHubCreateWorld => {
+                if !self.state.server_operator {
+                    self.state.home_status =
+                        "Enable Server Operator in Settings to create or host".into();
+                    self.mark_dash_form_dirty();
+                    self.rebuild();
+                    return UiAction::None;
+                }
                 self.state.home_create_open = true;
                 self.state.tab = DashTab::Home;
                 self.state.shell = OnboardingShell::Dash;
@@ -340,21 +443,46 @@ impl SystemUi {
                 UiAction::None
             }
             WidgetId::HomeOpenWorlds => {
+                if self.block_nav_while_session("Leave session before opening Main hub") {
+                    return UiAction::None;
+                }
                 self.clear_settings_room_focus();
                 self.state.home_create_open = false;
-                self.state.tab = DashTab::Worlds;
-                self.state.shell = OnboardingShell::Dash;
-                self.state.home_status = "Worlds catalog — Join as guest or Host this room".into();
+                self.state.tab = DashTab::Home;
+                self.state.shell = OnboardingShell::MainHub;
+                self.state.main_hub_tab = MainHubTab::Participation;
+                self.state.home_status = "Main hub — join a session or organize a world".into();
                 self.mark_dash_chrome_dirty();
                 self.mark_dash_form_dirty();
                 self.rebuild();
-                UiAction::None
+                UiAction::WorldsRefresh
             }
             WidgetId::WorldsJoinGuest => UiAction::WorldsJoinGuest,
-            WidgetId::WorldsHostRoom => UiAction::WorldsHostRoom,
-            WidgetId::WorldsHostRescue => UiAction::WorldsHostRescue,
+            WidgetId::WorldsHostRoom => {
+                if !self.state.server_operator {
+                    self.state.home_status = "Enable Server Operator in Settings to host".into();
+                    self.state.worlds_status = self.state.home_status.clone();
+                    self.mark_dash_form_dirty();
+                    self.rebuild();
+                    UiAction::None
+                } else {
+                    UiAction::WorldsHostRoom
+                }
+            }
+            WidgetId::WorldsHostRescue => {
+                if !self.state.server_operator {
+                    self.state.worlds_status =
+                        "Enable Server Operator in Settings to host this room".into();
+                    self.mark_dash_form_dirty();
+                    self.rebuild();
+                    UiAction::None
+                } else {
+                    UiAction::WorldsHostRescue
+                }
+            }
             WidgetId::WorldsLeave => UiAction::WorldsLeave,
             WidgetId::WorldsRejoin => UiAction::WorldsRejoin,
+            // Catalog UI removed; row ids kept for WidgetId exhaustiveness only.
             WidgetId::WorldsRow0
             | WidgetId::WorldsRow1
             | WidgetId::WorldsRow2
@@ -362,26 +490,7 @@ impl SystemUi {
             | WidgetId::WorldsRow4
             | WidgetId::WorldsRow5
             | WidgetId::WorldsRow6
-            | WidgetId::WorldsRow7 => {
-                let idx = match hit {
-                    WidgetId::WorldsRow0 => 0,
-                    WidgetId::WorldsRow1 => 1,
-                    WidgetId::WorldsRow2 => 2,
-                    WidgetId::WorldsRow3 => 3,
-                    WidgetId::WorldsRow4 => 4,
-                    WidgetId::WorldsRow5 => 5,
-                    WidgetId::WorldsRow6 => 6,
-                    WidgetId::WorldsRow7 => 7,
-                    _ => 0,
-                };
-                if idx < self.state.worlds_rooms.len() {
-                    // Preview only — do not retarget home_room_id / rescue / SharedState.
-                    // Host Rescue uses the actually joined room (`shared.get_room_id`).
-                    self.state.worlds_selected = Some(idx);
-                    self.rebuild();
-                }
-                UiAction::None
-            }
+            | WidgetId::WorldsRow7 => UiAction::None,
             WidgetId::InventoryRefresh => UiAction::InventoryRefresh,
             WidgetId::InventoryTakeOut => UiAction::InventoryTakeOut,
             WidgetId::InventoryPutBack => UiAction::InventoryPutBack,
@@ -432,24 +541,41 @@ impl SystemUi {
             }
             WidgetId::TabHome => {
                 self.clear_settings_room_focus();
+                // In-room: Home returns to Session shell (not MainHub catalog).
+                if self.state.session_shell_active() {
+                    self.state.shell = OnboardingShell::Dash;
+                    self.state.tab = DashTab::Home;
+                    self.mark_dash_chrome_dirty();
+                    self.rebuild();
+                    return UiAction::None;
+                }
+                // XR: Desktop still in session — do not push MainHub into shared chrome.
+                if self.block_nav_while_session("Leave session before opening Main hub") {
+                    return UiAction::None;
+                }
                 if self.state.home_logged_in_as.is_some() && !self.state.home_create_open {
-                    // Return to Join a host / Host a room hub when signed in.
+                    let already_hub = self.state.shell == OnboardingShell::MainHub;
                     self.state.shell = OnboardingShell::MainHub;
                     self.state.tab = DashTab::Home;
+                    self.mark_dash_chrome_dirty();
+                    self.rebuild();
+                    // Refresh catalog only when entering hub, not on every Home re-click.
+                    if already_hub {
+                        UiAction::None
+                    } else {
+                        UiAction::WorldsRefresh
+                    }
                 } else {
                     self.state.shell = OnboardingShell::Dash;
                     self.state.tab = DashTab::Home;
+                    self.mark_dash_chrome_dirty();
+                    self.rebuild();
+                    UiAction::None
                 }
-                self.mark_dash_chrome_dirty();
-                self.rebuild();
-                UiAction::None
             }
             WidgetId::OperatorOfficial => {
                 self.state.operator = OperatorKind::Official;
-                self.state.custom_host_focus = false;
-                self.mark_dash_form_dirty();
-                self.rebuild();
-                UiAction::None
+                self.advance_step1_operator()
             }
             WidgetId::OperatorFederation => {
                 self.state.operator = OperatorKind::Federation;
@@ -461,43 +587,18 @@ impl SystemUi {
             }
             WidgetId::OperatorCustom => {
                 self.state.operator = OperatorKind::Custom;
-                self.state.custom_host_focus = true;
-                self.mark_dash_form_dirty();
-                self.rebuild();
-                UiAction::None
+                self.advance_step1_operator()
             }
             WidgetId::OperatorCustomHost => {
+                // Edit host without leaving Step1; Enter advances (on_home_enter).
                 self.state.operator = OperatorKind::Custom;
                 self.state.custom_host_focus = true;
                 self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
-            WidgetId::Step1Next => {
-                if self.state.operator == OperatorKind::Federation {
-                    return UiAction::None;
-                }
-                // XR: home_session_actions_enabled=false — do not advance without applying endpoints.
-                if !self.state.home_session_actions_enabled {
-                    self.state.home_status =
-                        "Operator select / login is Desktop-only (use Desktop client)".into();
-                    self.mark_dash_form_dirty();
-                    self.rebuild();
-                    return UiAction::None;
-                }
-                self.state.custom_host_focus = false;
-                self.state.shell = OnboardingShell::Step2Auth;
-                self.state.tab = DashTab::Home;
-                self.state.home_focus = Some(HomeField::Identifier);
-                self.state.home_status = "Sign in to continue".into();
-                self.mark_dash_logic_dirty();
-                self.rebuild();
-                UiAction::ApplyOperatorEndpoints
-            }
-            WidgetId::Step1Back => {
-                // First-launch: no prior step. Keep Step1.
-                UiAction::None
-            }
+            // NEXT removed — cards advance immediately. Id kept for exhaustiveness.
+            WidgetId::Step1Next | WidgetId::Step1Back => UiAction::None,
             WidgetId::FederationStubBack => {
                 self.state.shell = OnboardingShell::Step1Operator;
                 self.state.operator = OperatorKind::Official;
@@ -512,25 +613,81 @@ impl SystemUi {
                 self.rebuild();
                 UiAction::None
             }
-            WidgetId::MainJoinHost => {
-                self.clear_settings_room_focus();
-                self.state.shell = OnboardingShell::Dash;
-                self.state.tab = DashTab::Worlds;
-                self.state.home_create_open = false;
-                self.state.home_status = "Join a host — pick a room, then Join as guest".into();
-                self.mark_dash_logic_dirty();
+            WidgetId::MainTabParticipation => {
+                let switched = self.state.main_hub_tab != MainHubTab::Participation;
+                self.state.main_hub_tab = MainHubTab::Participation;
+                self.state.home_status = "Participation — join a public session".into();
+                self.mark_dash_form_dirty();
+                self.rebuild();
+                // Catalog refresh only when entering Participation (Refresh button otherwise).
+                if switched {
+                    UiAction::WorldsRefresh
+                } else {
+                    UiAction::None
+                }
+            }
+            WidgetId::MainTabOrganizing => {
+                if !self.state.server_operator {
+                    self.state.home_status =
+                        "Enable Server Operator in Settings to organize worlds".into();
+                    self.mark_dash_form_dirty();
+                    self.rebuild();
+                    return UiAction::None;
+                }
+                self.state.main_hub_tab = MainHubTab::Organizing;
+                self.state.home_status = "Organizing — create or host a world".into();
+                self.mark_dash_form_dirty();
                 self.rebuild();
                 UiAction::None
             }
-            WidgetId::MainHostRoom => {
-                self.clear_settings_room_focus();
-                self.state.shell = OnboardingShell::Dash;
-                self.state.tab = DashTab::Worlds;
-                self.state.home_create_open = false;
-                self.state.home_status =
-                    "Host a room — Create world or Host this room on this PC".into();
-                self.mark_dash_logic_dirty();
+            WidgetId::MainHubRefresh => UiAction::WorldsRefresh,
+            WidgetId::MainHubJoin => UiAction::WorldsJoinGuest,
+            WidgetId::MainHubHostWorld => {
+                // My worlds rows are stubbed; Host CTA reserved for owner catalog.
+                self.state.home_status = "My worlds hosting is not connected yet".into();
+                self.mark_dash_form_dirty();
                 self.rebuild();
+                UiAction::None
+            }
+            WidgetId::MainPublicRow0
+            | WidgetId::MainPublicRow1
+            | WidgetId::MainPublicRow2
+            | WidgetId::MainPublicRow3
+            | WidgetId::MainPublicRow4
+            | WidgetId::MainPublicRow5
+            | WidgetId::MainPublicRow6
+            | WidgetId::MainPublicRow7 => {
+                let vis = match hit {
+                    WidgetId::MainPublicRow0 => 0,
+                    WidgetId::MainPublicRow1 => 1,
+                    WidgetId::MainPublicRow2 => 2,
+                    WidgetId::MainPublicRow3 => 3,
+                    WidgetId::MainPublicRow4 => 4,
+                    WidgetId::MainPublicRow5 => 5,
+                    WidgetId::MainPublicRow6 => 6,
+                    WidgetId::MainPublicRow7 => 7,
+                    _ => 0,
+                };
+                let list_h = self.state.worlds_catalog_list_h();
+                let visible = DashState::worlds_catalog_visible_rows(list_h);
+                let max_scroll = self.state.worlds_rooms.len().saturating_sub(visible);
+                let start = self.state.worlds_catalog_scroll.min(max_scroll);
+                let idx = start + vis;
+                if let Some((room_id, ..)) = self.state.worlds_rooms.get(idx) {
+                    self.state.worlds_selected = Some(room_id.clone());
+                    self.rebuild();
+                }
+                UiAction::None
+            }
+            WidgetId::MainMyWorldRow0
+            | WidgetId::MainMyWorldRow1
+            | WidgetId::MainMyWorldRow2
+            | WidgetId::MainMyWorldRow3
+            | WidgetId::MainMyWorldRow4
+            | WidgetId::MainMyWorldRow5
+            | WidgetId::MainMyWorldRow6
+            | WidgetId::MainMyWorldRow7 => {
+                // Stub rows are not registered as hits yet.
                 UiAction::None
             }
             WidgetId::ExitClientOnly => UiAction::ExitClientOnly,
@@ -555,6 +712,46 @@ impl SystemUi {
                     }
                 );
                 UiAction::HotswitchAutoChanged
+            }
+            WidgetId::SettingsScrollUp => {
+                self.state.scroll_settings_by(-48.0);
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::SettingsScrollDown => {
+                self.state.scroll_settings_by(48.0);
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::ServerOperatorToggle => {
+                self.state.server_operator = !self.state.server_operator;
+                if !self.state.server_operator && self.state.main_hub_tab == MainHubTab::Organizing
+                {
+                    self.state.main_hub_tab = MainHubTab::Participation;
+                }
+                let msg = if self.state.server_operator {
+                    if self.state.session_shell_active() {
+                        "Server Operator ON — you can Host this room now"
+                    } else {
+                        "Server Operator ON — Organizing unlocked (loads this PC)"
+                    }
+                } else {
+                    "Server Operator OFF — join-only"
+                };
+                self.state.home_status = msg.into();
+                self.state.worlds_status = msg.into();
+                self.mark_dash_chrome_dirty();
+                self.mark_dash_form_dirty();
+                self.rebuild();
+                log::info!(
+                    "server operator → {}",
+                    if self.state.server_operator {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
+                );
+                UiAction::ServerOperatorChanged
             }
             WidgetId::HomeFieldIdentifier => {
                 self.state.home_focus = Some(HomeField::Identifier);
@@ -619,18 +816,64 @@ impl SystemUi {
                 HomeMode::Login => UiAction::AuthLogin,
                 HomeMode::Register => UiAction::AuthRegister,
             },
-            WidgetId::HomeLogout => {
+            WidgetId::ChromeLoginRegister => {
+                self.clear_settings_room_focus();
                 self.state.home_create_open = false;
+                self.state.home_mode = HomeMode::Login;
+                self.state.tab = DashTab::Home;
+                self.state.home_focus = Some(HomeField::Identifier);
+                if self.state.shell == OnboardingShell::Step1Operator
+                    || self.state.shell == OnboardingShell::Step1FederationStub
+                {
+                    // Reach auth after operator pick; apply Official/Custom endpoints on Desktop.
+                    if self.state.operator == OperatorKind::Federation {
+                        self.state.home_status =
+                            "Federation is not available yet — pick Official or Custom".into();
+                        self.mark_dash_form_dirty();
+                        self.rebuild();
+                        return UiAction::None;
+                    }
+                    if !self.state.home_session_actions_enabled {
+                        self.state.home_status =
+                            "Operator select / login is Desktop-only (use Desktop client)".into();
+                        self.mark_dash_form_dirty();
+                        self.rebuild();
+                        return UiAction::None;
+                    }
+                    self.state.custom_host_focus = false;
+                    self.state.shell = OnboardingShell::Step2Auth;
+                    self.state.home_status = "Sign in to continue".into();
+                    self.mark_dash_logic_dirty();
+                    self.rebuild();
+                    return UiAction::ApplyOperatorEndpoints;
+                }
                 self.state.shell = OnboardingShell::Step2Auth;
+                self.state.home_status = "Sign in or create an account".into();
+                self.mark_dash_logic_dirty();
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::HomeLogout | WidgetId::ChromeLogout => {
+                self.state.home_create_open = false;
+                self.state.shell = OnboardingShell::Step1Operator;
                 self.mark_dash_logic_dirty();
                 UiAction::AuthLogout
             }
             WidgetId::HomeCreateBack => {
                 self.state.home_create_open = false;
                 self.state.home_focus = None;
-                self.state.tab = DashTab::Worlds;
-                self.state.home_status =
-                    "Worlds — create cancelled; pick a room or Create world".into();
+                self.state.tab = DashTab::Home;
+                self.state.shell = OnboardingShell::MainHub;
+                self.state.main_hub_tab = if self.state.server_operator {
+                    MainHubTab::Organizing
+                } else {
+                    MainHubTab::Participation
+                };
+                self.state.home_status = if self.state.server_operator {
+                    "Create cancelled — organize a world or go back to Participation".into()
+                } else {
+                    "Create cancelled — enable Server Operator in Settings to organize".into()
+                };
                 self.mark_dash_chrome_dirty();
                 self.mark_dash_form_dirty();
                 self.rebuild();
@@ -644,7 +887,19 @@ impl SystemUi {
             }
             WidgetId::HomeTemplateGrid => UiAction::None,
             WidgetId::HomeStartSession | WidgetId::SettingsStartSession => {
-                if self.state.home_session_actions_enabled {
+                if self.state.session_shell_active() {
+                    self.state.home_status =
+                        "Leave session from Home before Advanced Start / Join".into();
+                    self.mark_dash_form_dirty();
+                    self.rebuild();
+                    UiAction::None
+                } else if !self.state.server_operator {
+                    self.state.home_status =
+                        "Enable Server Operator in Settings to start a host".into();
+                    self.mark_dash_form_dirty();
+                    self.rebuild();
+                    UiAction::None
+                } else if self.state.home_session_actions_enabled {
                     UiAction::StartSession
                 } else {
                     self.state.home_status = "Start session HTTP is Desktop-only this Slice".into();
@@ -654,7 +909,13 @@ impl SystemUi {
                 }
             }
             WidgetId::HomeJoinRoom | WidgetId::SettingsJoinRoom => {
-                if self.state.home_session_actions_enabled {
+                if self.state.session_shell_active() {
+                    self.state.home_status =
+                        "Leave session from Home before Advanced Start / Join".into();
+                    self.mark_dash_form_dirty();
+                    self.rebuild();
+                    UiAction::None
+                } else if self.state.home_session_actions_enabled {
                     UiAction::JoinRoom
                 } else {
                     self.state.home_status = "Join room HTTP is Desktop-only this Slice".into();
@@ -823,6 +1084,13 @@ impl SystemUi {
         }
         if self.state.home_logged_in_as.is_some() {
             if self.state.home_create_open {
+                if !self.state.server_operator {
+                    self.state.home_status =
+                        "Enable Server Operator in Settings to start a host".into();
+                    self.mark_dash_form_dirty();
+                    self.rebuild();
+                    return UiAction::None;
+                }
                 if self.state.home_session_actions_enabled {
                     return UiAction::StartSession;
                 }
@@ -917,6 +1185,8 @@ pub enum UiAction {
     JoinRoom,
     /// Settings: VR hotswitch auto toggled (surface writes PresentationGate).
     HotswitchAutoChanged,
+    /// Settings: Server Operator toggled (persist to onboarding prefs).
+    ServerOperatorChanged,
     /// Inventory: tab opened — sync scene mesh list from SharedState (x006e).
     InventoryOpen,
     /// Inventory: reload Drive nodes from assets (x006d).
@@ -1004,7 +1274,7 @@ mod tests {
     }
 
     #[test]
-    fn step1_shows_operator_cards_and_next() {
+    fn step1_shows_operator_cards_without_next() {
         let mut ui = SystemUi::new();
         ui.state.open = true;
         ui.state.shell = OnboardingShell::Step1Operator;
@@ -1020,16 +1290,31 @@ mod tests {
             .tree
             .hits
             .iter()
+            .any(|(id, _)| *id == WidgetId::OperatorCustom));
+        assert!(!ui
+            .tree
+            .hits
+            .iter()
             .any(|(id, _)| *id == WidgetId::Step1Next));
+        assert!(!ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::Step1Back));
         assert!(!ui.tree.hits.iter().any(|(id, _)| *id == WidgetId::TabHome));
+        assert!(!ui.tree.draws.iter().any(|d| {
+            matches!(
+                d,
+                crate::system_ui::layout::DrawCmd::Label { text, .. } if text.contains("STEP 1")
+            )
+        }));
     }
 
     #[test]
-    fn step1_next_official_goes_to_step2() {
+    fn step1_official_card_goes_to_step2() {
         let mut ui = SystemUi::new();
         ui.state.open = true;
         ui.state.shell = OnboardingShell::Step1Operator;
-        ui.state.operator = crate::operator_prefs::OperatorKind::Official;
         ui.state.canvas_w = 960.0;
         ui.state.canvas_h = 540.0;
         ui.rebuild();
@@ -1037,12 +1322,16 @@ mod tests {
             .tree
             .hits
             .iter()
-            .find(|(id, _)| *id == WidgetId::Step1Next)
+            .find(|(id, _)| *id == WidgetId::OperatorOfficial)
             .map(|(_, r)| *r)
-            .expect("next");
+            .expect("official");
         let action = ui.on_click(rect.x + 1.0, rect.y + 1.0);
         assert_eq!(action, UiAction::ApplyOperatorEndpoints);
         assert_eq!(ui.state.shell, OnboardingShell::Step2Auth);
+        assert_eq!(
+            ui.state.operator,
+            crate::operator_prefs::OperatorKind::Official
+        );
         assert!(ui
             .tree
             .hits
@@ -1051,11 +1340,10 @@ mod tests {
     }
 
     #[test]
-    fn main_hub_has_join_and_host() {
+    fn chrome_shows_login_when_signed_out_and_logout_when_signed_in() {
         let mut ui = SystemUi::new();
         ui.state.open = true;
-        ui.state.shell = OnboardingShell::MainHub;
-        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.shell = OnboardingShell::Step1Operator;
         ui.state.canvas_w = 960.0;
         ui.state.canvas_h = 540.0;
         ui.rebuild();
@@ -1063,12 +1351,366 @@ mod tests {
             .tree
             .hits
             .iter()
-            .any(|(id, _)| *id == WidgetId::MainJoinHost));
+            .any(|(id, _)| *id == WidgetId::ChromeLoginRegister));
+        assert!(!ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::ChromeLogout));
+
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.shell = OnboardingShell::MainHub;
+        ui.rebuild();
         assert!(ui
             .tree
             .hits
             .iter()
-            .any(|(id, _)| *id == WidgetId::MainHostRoom));
+            .any(|(id, _)| *id == WidgetId::ChromeLogout));
+        assert!(!ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::ChromeLoginRegister));
+    }
+
+    #[test]
+    fn chrome_logout_returns_auth_logout_action() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::MainHub;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        let rect = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::ChromeLogout)
+            .map(|(_, r)| *r)
+            .expect("chrome logout");
+        let action = ui.on_click(rect.x + 1.0, rect.y + 1.0);
+        assert_eq!(action, UiAction::AuthLogout);
+        assert_eq!(ui.state.shell, OnboardingShell::Step1Operator);
+    }
+
+    #[test]
+    fn bottom_bar_omits_worlds_tab() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::MainHub;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        assert!(!ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::TabWorlds));
+        assert!(ui.tree.hits.iter().any(|(id, _)| *id == WidgetId::TabHome));
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::TabInventory));
+    }
+
+    #[test]
+    fn session_shell_shows_leave_while_waiting() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::Dash;
+        ui.state.tab = DashTab::Home;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.worlds_in_room = true;
+        ui.state.worlds_waiting_host = true;
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::WorldsLeave));
+        assert!(!ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::TabWorlds));
+    }
+
+    #[test]
+    fn session_shell_home_tab_does_not_escape_to_main_hub() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::Dash;
+        ui.state.tab = DashTab::Home;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.worlds_in_room = true;
+        ui.state.worlds_waiting_host = true;
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        let rect = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::TabHome)
+            .map(|(_, r)| *r)
+            .expect("home tab");
+        let action = ui.on_click(rect.x + 1.0, rect.y + 1.0);
+        assert_eq!(action, UiAction::None);
+        assert_eq!(ui.state.shell, OnboardingShell::Dash);
+        assert_eq!(ui.state.tab, DashTab::Home);
+        assert!(ui.state.session_shell_active());
+        ui.rebuild();
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::WorldsLeave));
+        assert!(!ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::MainHubRefresh));
+    }
+
+    #[test]
+    fn session_allows_settings_and_host_rescue_enable() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::Dash;
+        ui.state.tab = DashTab::Home;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.worlds_in_room = true;
+        ui.state.worlds_waiting_host = true;
+        ui.state.worlds_can_host_rescue = true;
+        ui.state.server_operator = false;
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::ServerOperatorToggle));
+        assert!(!ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::WorldsHostRescue));
+        let settings = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::TabSettings)
+            .map(|(_, r)| *r)
+            .expect("settings tab");
+        assert_eq!(
+            ui.on_click(settings.x + 1.0, settings.y + 1.0),
+            UiAction::None
+        );
+        assert_eq!(ui.state.tab, DashTab::Settings);
+        assert!(!ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::SettingsJoinRoom));
+        assert!(!ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::SettingsStartSession));
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::ServerOperatorToggle));
+        let enable = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::ServerOperatorToggle)
+            .map(|(_, r)| *r)
+            .expect("server operator toggle");
+        assert_eq!(
+            ui.on_click(enable.x + 1.0, enable.y + 1.0),
+            UiAction::ServerOperatorChanged
+        );
+        assert!(ui.state.server_operator);
+        assert!(ui.tree.draws.iter().any(|d| {
+            matches!(
+                d,
+                crate::system_ui::layout::DrawCmd::Label { text, .. }
+                    if text.contains("Host this room now")
+            )
+        }));
+        ui.state.tab = DashTab::Home;
+        ui.rebuild();
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::WorldsHostRescue));
+    }
+
+    #[test]
+    fn session_shell_inventory_tab_stays_on_session() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::Dash;
+        ui.state.tab = DashTab::Home;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.worlds_in_room = true;
+        ui.state.worlds_waiting_host = true;
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        let rect = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::TabInventory)
+            .map(|(_, r)| *r)
+            .expect("inventory tab");
+        let action = ui.on_click(rect.x + 1.0, rect.y + 1.0);
+        assert_eq!(action, UiAction::None);
+        assert_eq!(ui.state.tab, DashTab::Home);
+        assert!(ui.state.session_shell_active());
+        assert!(ui
+            .state
+            .worlds_status
+            .contains("Leave session before opening Inventory"));
+    }
+
+    #[test]
+    fn main_hub_home_reclick_skips_worlds_refresh() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::MainHub;
+        ui.state.tab = DashTab::Home;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        let rect = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::TabHome)
+            .map(|(_, r)| *r)
+            .expect("home tab");
+        let action = ui.on_click(rect.x + 1.0, rect.y + 1.0);
+        assert_eq!(action, UiAction::None);
+        assert_eq!(ui.state.shell, OnboardingShell::MainHub);
+    }
+
+    #[test]
+    fn main_hub_defaults_to_participation_tabs() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::MainHub;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        assert_eq!(ui.state.main_hub_tab, MainHubTab::Participation);
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::MainTabParticipation));
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::MainTabOrganizing));
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::MainHubRefresh));
+        assert!(!ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::MainHubCreateWorld));
+    }
+
+    #[test]
+    fn main_hub_organizing_requires_server_operator() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::MainHub;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.server_operator = false;
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        let rect = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::MainTabOrganizing)
+            .map(|(_, r)| *r)
+            .expect("organizing tab");
+        let action = ui.on_click(rect.x + 1.0, rect.y + 1.0);
+        assert_eq!(action, UiAction::None);
+        assert_eq!(ui.state.main_hub_tab, MainHubTab::Participation);
+        assert!(ui.state.home_status.contains("Enable Server Operator"));
+    }
+
+    #[test]
+    fn main_hub_organizing_tab_keeps_shell_and_shows_create() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::MainHub;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.server_operator = true;
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        let rect = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::MainTabOrganizing)
+            .map(|(_, r)| *r)
+            .expect("organizing tab");
+        let action = ui.on_click(rect.x + 1.0, rect.y + 1.0);
+        assert_eq!(action, UiAction::None);
+        assert_eq!(ui.state.shell, OnboardingShell::MainHub);
+        assert_eq!(ui.state.main_hub_tab, MainHubTab::Organizing);
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::MainHubCreateWorld));
+    }
+
+    #[test]
+    fn settings_server_operator_toggle_persists_action() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::Dash;
+        ui.state.tab = DashTab::Settings;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.server_operator = false;
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        let rect = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::ServerOperatorToggle)
+            .map(|(_, r)| *r)
+            .expect("server operator toggle");
+        let action = ui.on_click(rect.x + 1.0, rect.y + 1.0);
+        assert_eq!(action, UiAction::ServerOperatorChanged);
+        assert!(ui.state.server_operator);
     }
 
     #[test]
@@ -1156,6 +1798,124 @@ mod tests {
         assert!(!a.state.open);
         assert_eq!(a.state.tab, DashTab::Exit);
         assert!(!a.dash_chrome_dirty);
+    }
+
+    #[test]
+    fn desktop_apply_chrome_does_not_latch_peer_in_session() {
+        let logic = SharedDashLogic {
+            in_session: true,
+            tab: DashTab::Home,
+            shell: OnboardingShell::Dash,
+            open: true,
+            ..Default::default()
+        };
+        let mut desktop = DashState {
+            home_session_actions_enabled: true,
+            in_session_peer: false,
+            worlds_in_room: false,
+            ..Default::default()
+        };
+        logic.apply_chrome_to(&mut desktop);
+        assert!(
+            !desktop.in_session_peer,
+            "Desktop must not latch peer in_session into in_session_peer"
+        );
+        assert!(!desktop.inventory_blocked());
+    }
+
+    #[test]
+    fn xr_apply_chrome_echoes_in_session_peer() {
+        let logic = SharedDashLogic {
+            in_session: true,
+            tab: DashTab::Home,
+            shell: OnboardingShell::Dash,
+            open: true,
+            ..Default::default()
+        };
+        let mut xr = DashState {
+            home_session_actions_enabled: false,
+            in_session_peer: false,
+            ..Default::default()
+        };
+        logic.apply_chrome_to(&mut xr);
+        assert!(xr.in_session_peer);
+        assert!(xr.inventory_blocked());
+    }
+
+    #[test]
+    fn leave_cas_miss_keeps_main_hub_and_retries_in_session_false() {
+        let dash = Mutex::new(SharedDashStore::default());
+        {
+            let mut store = dash.lock().unwrap();
+            store.logic.open = true;
+            store.logic.shell = OnboardingShell::Dash;
+            store.logic.tab = DashTab::Home;
+            store.logic.in_session = true; // XR still echoing pre-Leave
+            store.chrome_revision = 2;
+        }
+
+        let mut desktop = SystemUi::new();
+        desktop.state.home_session_actions_enabled = true;
+        desktop.state.open = true;
+        desktop.state.shell = OnboardingShell::MainHub;
+        desktop.state.tab = DashTab::Home;
+        desktop.state.worlds_in_room = false;
+        desktop.state.worlds_waiting_host = false;
+        desktop.state.worlds_key_stale = false;
+        desktop.state.in_session_peer = false;
+        desktop.dash_chrome_rev = 1; // stale vs store rev 2
+        desktop.dash_chrome_dirty = true;
+
+        desktop.push_dash_store(&dash);
+
+        assert_eq!(desktop.state.shell, OnboardingShell::MainHub);
+        assert!(!desktop.state.in_session_for_store());
+        assert!(
+            desktop.dash_chrome_dirty,
+            "must retry push so store.in_session becomes false"
+        );
+
+        // Second push (rev now matches after adopt) writes false.
+        desktop.dash_chrome_rev = dash.lock().unwrap().chrome_revision;
+        desktop.push_dash_store(&dash);
+        let store = dash.lock().unwrap();
+        assert!(!store.logic.in_session);
+        assert_eq!(store.logic.shell, OnboardingShell::MainHub);
+        assert!(!desktop.dash_chrome_dirty);
+    }
+
+    #[test]
+    fn join_cas_miss_retries_in_session_true() {
+        let dash = Mutex::new(SharedDashStore::default());
+        {
+            let mut store = dash.lock().unwrap();
+            store.logic.open = true;
+            store.logic.shell = OnboardingShell::MainHub;
+            store.logic.tab = DashTab::Home;
+            store.logic.in_session = false; // peer lagging behind Join
+            store.chrome_revision = 2;
+        }
+
+        let mut desktop = SystemUi::new();
+        desktop.state.home_session_actions_enabled = true;
+        desktop.state.open = true;
+        desktop.state.shell = OnboardingShell::Dash;
+        desktop.state.tab = DashTab::Home;
+        desktop.state.worlds_in_room = true;
+        desktop.state.worlds_waiting_host = true;
+        desktop.dash_chrome_rev = 1;
+        desktop.dash_chrome_dirty = true;
+
+        desktop.push_dash_store(&dash);
+        assert!(desktop.state.session_shell_active());
+        assert_eq!(desktop.state.shell, OnboardingShell::Dash);
+        assert!(desktop.dash_chrome_dirty);
+
+        desktop.dash_chrome_rev = dash.lock().unwrap().chrome_revision;
+        desktop.push_dash_store(&dash);
+        let store = dash.lock().unwrap();
+        assert!(store.logic.in_session);
+        assert_eq!(store.logic.shell, OnboardingShell::Dash);
     }
 
     #[test]

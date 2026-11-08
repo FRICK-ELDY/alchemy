@@ -62,8 +62,6 @@ fn main() -> Result<()> {
     let auth_url = boot_ep.auth_url.clone();
     let world_url = boot_ep.world_url.clone();
     let zenoh_connect = boot_ep.zenoh_connect.clone();
-    // SharedState is the source of truth; sync env only when we actually open Zenoh
-    // (open_zenoh_for) or when ApplyOperatorEndpoints updates endpoints.
     let room_id_raw = std::env::var("ROOM_ID").unwrap_or_else(|_| DEFAULT_ROOM_ID.to_string());
     let room_id = validate_room_id(&room_id_raw)
         .map_err(|e| anyhow::anyhow!("invalid ROOM_ID={room_id_raw:?}: {e}"))?
@@ -153,12 +151,22 @@ fn main() -> Result<()> {
         pending_mesh_epoch: AtomicU64::new(0),
         remounted_blake3: Mutex::new(None),
         remount_generation: AtomicU64::new(0),
+        auth_work_epoch: AtomicU64::new(0),
         look: Mutex::new(Default::default()),
         intent: Mutex::new(Default::default()),
         presentation: crate::surface::PresentationGate::default(),
         dash: Mutex::new(crate::system_ui::SharedDashStore::default()),
         host_supervisor: Arc::new(crate::host_supervisor::HostSupervisor::default()),
     });
+    // Sync AUTH/WORLD/ASSETS/ZENOH into process env for supervised host spawn.
+    // Same world_url as the JWKS fetch above → apply_endpoints skips a second refresh.
+    shared.apply_endpoints(&boot_ep);
+    log::info!(
+        "boot endpoints: auth={} world={} zenoh={}",
+        boot_ep.auth_url,
+        boot_ep.world_url,
+        boot_ep.zenoh_connect
+    );
 
     // Boot never joins a room. Silent / remember-me authenticate only; Worlds Join/Host
     // opens Zenoh and remounts Manifest mesh (x007d).

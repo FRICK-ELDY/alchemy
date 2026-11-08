@@ -13,6 +13,10 @@ pub enum WidgetId {
     MicOff,
     Volume,
     Hearing,
+    /// Top chrome: not signed in → open login/register.
+    ChromeLoginRegister,
+    /// Top chrome: signed in → logout.
+    ChromeLogout,
     SyncBadge,
     CloseSession,
     TabHome,
@@ -46,6 +50,11 @@ pub enum WidgetId {
     TurnModeToggle,
     /// Toggle XR↔Desktop auto hotswitch (x0053).
     HotswitchAutoToggle,
+    /// Settings: enable local host / Organizing (Server Operator mode).
+    ServerOperatorToggle,
+    /// Settings panel scroll (overflow above bottom tabs).
+    SettingsScrollUp,
+    SettingsScrollDown,
     /// Home / account shell (x0018).
     HomeFieldIdentifier,
     HomeFieldPassword,
@@ -88,11 +97,36 @@ pub enum WidgetId {
     Step1Back,
     FederationStubBack,
     Step2Back,
-    /// Main hub after login.
-    /// MainHub: Join a host → Worlds catalog.
-    MainJoinHost,
-    /// MainHub: Host a room → Worlds Create / Host this room.
-    MainHostRoom,
+    /// MainHub tab: join sessions (default).
+    MainTabParticipation,
+    /// MainHub tab: create / host worlds.
+    MainTabOrganizing,
+    /// Participation: refresh public session catalog.
+    MainHubRefresh,
+    /// Participation: Join selected public session as guest.
+    MainHubJoin,
+    /// Organizing: open create-world flow.
+    MainHubCreateWorld,
+    /// Organizing: host selected owned world (stub rows until API).
+    MainHubHostWorld,
+    /// Participation public session rows (maps into `worlds_selected`).
+    MainPublicRow0,
+    MainPublicRow1,
+    MainPublicRow2,
+    MainPublicRow3,
+    MainPublicRow4,
+    MainPublicRow5,
+    MainPublicRow6,
+    MainPublicRow7,
+    /// Organizing my-world rows (stub; reserved for owner catalog).
+    MainMyWorldRow0,
+    MainMyWorldRow1,
+    MainMyWorldRow2,
+    MainMyWorldRow3,
+    MainMyWorldRow4,
+    MainMyWorldRow5,
+    MainMyWorldRow6,
+    MainMyWorldRow7,
     /// Worlds catalog (x007c).
     WorldsRefresh,
     WorldsFilterAll,
@@ -134,6 +168,19 @@ impl Rect {
     pub fn center(&self) -> (f32, f32) {
         (self.x + self.w * 0.5, self.y + self.h * 0.5)
     }
+
+    /// Axis-aligned intersection; `None` if empty.
+    pub fn intersect(self, other: Rect) -> Option<Rect> {
+        let x0 = self.x.max(other.x);
+        let y0 = self.y.max(other.y);
+        let x1 = (self.x + self.w).min(other.x + other.w);
+        let y1 = (self.y + self.h).min(other.y + other.h);
+        if x1 <= x0 || y1 <= y0 {
+            None
+        } else {
+            Some(Rect::new(x0, y0, x1 - x0, y1 - y0))
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -159,12 +206,16 @@ pub enum DrawCmd {
     Icon {
         rect: Rect,
         name: &'static str,
+        /// Optional scissor (canvas pixels); applied at rasterize.
+        clip: Option<Rect>,
     },
     Label {
         rect: Rect,
         text: String,
         color: Color,
         scale: f32,
+        /// Optional scissor (canvas pixels); applied at rasterize.
+        clip: Option<Rect>,
     },
 }
 
@@ -173,32 +224,64 @@ pub struct LayoutTree {
     pub draws: Vec<DrawCmd>,
     /// Later entries are front-most for hit testing.
     pub hits: Vec<(WidgetId, Rect)>,
+    /// Optional scissor for subsequent draws / hits (Settings scroll panel, etc.).
+    pub clip: Option<Rect>,
 }
 
 impl LayoutTree {
     pub fn clear(&mut self) {
         self.draws.clear();
         self.hits.clear();
+        self.clip = None;
     }
 
     pub fn push_rect(&mut self, rect: Rect, color: Color) {
+        let rect = match self.clip {
+            Some(clip) => match rect.intersect(clip) {
+                Some(r) => r,
+                None => return,
+            },
+            None => rect,
+        };
         self.draws.push(DrawCmd::Rect { rect, color });
     }
 
     pub fn push_icon(&mut self, rect: Rect, name: &'static str) {
-        self.draws.push(DrawCmd::Icon { rect, name });
+        if let Some(clip) = self.clip {
+            if rect.intersect(clip).is_none() {
+                return;
+            }
+        }
+        self.draws.push(DrawCmd::Icon {
+            rect,
+            name,
+            clip: self.clip,
+        });
     }
 
     pub fn push_label(&mut self, rect: Rect, text: impl Into<String>, color: Color, scale: f32) {
+        if let Some(clip) = self.clip {
+            if rect.intersect(clip).is_none() {
+                return;
+            }
+        }
         self.draws.push(DrawCmd::Label {
             rect,
             text: text.into(),
             color,
             scale,
+            clip: self.clip,
         });
     }
 
     pub fn register_hit(&mut self, id: WidgetId, rect: Rect) {
+        let rect = match self.clip {
+            Some(clip) => match rect.intersect(clip) {
+                Some(r) => r,
+                None => return,
+            },
+            None => rect,
+        };
         self.hits.push((id, rect));
     }
 
