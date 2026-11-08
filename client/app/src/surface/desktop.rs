@@ -188,8 +188,13 @@ struct App {
 
 /// Success UI after a deferred [`bind_room_after_join`] (one frame of enter overlay).
 enum PendingBindSuccess {
-    StartGuestNotOwner { wanted: String },
-    Host { name: String, wanted: String },
+    StartGuestNotOwner {
+        wanted: String,
+    },
+    Host {
+        name: String,
+        wanted: String,
+    },
     Join {
         ok_status: String,
         ok_log: String,
@@ -201,6 +206,19 @@ enum PendingBindSuccess {
 struct PendingRoomBind {
     stop_host_on_fail: bool,
     success: PendingBindSuccess,
+}
+
+/// Mut refs for deferred bind scheduling (keeps `handle_ui_action` under clippy arity).
+struct RoomBindDefer<'a> {
+    pending: &'a mut Option<PendingRoomBind>,
+    painted: &'a mut bool,
+}
+
+impl RoomBindDefer<'_> {
+    fn clear(&mut self) {
+        *self.pending = None;
+        *self.painted = false;
+    }
 }
 
 /// Outcome of Auth / world HTTP work off the UI thread (x002e / P3-9 / x0037).
@@ -1236,8 +1254,10 @@ impl ApplicationHandler for App {
                             &self.shared,
                             &mut self.zenoh,
                             &mut self.auth_job,
-                            &mut self.pending_room_bind,
-                            &mut self.room_bind_progress_painted,
+                            RoomBindDefer {
+                                pending: &mut self.pending_room_bind,
+                                painted: &mut self.room_bind_progress_painted,
+                            },
                             event_loop,
                         );
                     }
@@ -1300,8 +1320,10 @@ impl ApplicationHandler for App {
                                     &self.shared,
                                     &mut self.zenoh,
                                     &mut self.auth_job,
-                                    &mut self.pending_room_bind,
-                                    &mut self.room_bind_progress_painted,
+                                    RoomBindDefer {
+                                        pending: &mut self.pending_room_bind,
+                                        painted: &mut self.room_bind_progress_painted,
+                                    },
                                     event_loop,
                                 );
                             }
@@ -1897,8 +1919,7 @@ fn handle_ui_action(
     shared: &Arc<SharedState>,
     zenoh: &mut Option<zenoh::Session>,
     auth_job: &mut Option<(u64, Receiver<AuthJobOutcome>)>,
-    pending_room_bind: &mut Option<PendingRoomBind>,
-    room_bind_progress_painted: &mut bool,
+    mut room_bind: RoomBindDefer<'_>,
     event_loop: &ActiveEventLoop,
 ) {
     match action {
@@ -2081,8 +2102,7 @@ fn handle_ui_action(
             // Bump epoch first so in-flight join cannot commit past Logout.
             // HTTP logout is best-effort on a worker (does not gate UI).
             discard_auth_job(shared, auth_job);
-            *pending_room_bind = None;
-            *room_bind_progress_painted = false;
+            room_bind.clear();
             leave_room(shared, zenoh);
             stop_supervised_host(shared);
             clear_worlds_session_shell(ui);
@@ -2455,8 +2475,7 @@ fn handle_ui_action(
             // Do not auto-refresh catalog — that would occupy auth_job and block immediate re-Join.
             let aborting_enter = ui.state.session_enter_active && !ui.state.worlds_in_room;
             discard_auth_job(shared, auth_job);
-            *pending_room_bind = None;
-            *room_bind_progress_painted = false;
+            room_bind.clear();
             leave_room(shared, zenoh);
             // Abort mid-Create/Join: stop in-flight local host. Live Leave keeps it for re-Host.
             // After bus bind (`worlds_in_room`), Cancel ≡ Leave (host may survive for re-Host).
@@ -2484,8 +2503,7 @@ fn handle_ui_action(
             let room_id = shared.get_room_id().to_string();
             let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
             discard_auth_job(shared, auth_job);
-            *pending_room_bind = None;
-            *room_bind_progress_painted = false;
+            room_bind.clear();
             leave_room(shared, zenoh);
             clear_worlds_session_shell(ui);
             let Some(access) = access else {
@@ -2509,8 +2527,8 @@ fn handle_ui_action(
             let join = join_room_with_access(shared, &access, epoch).map_err(|e| format!("{e:#}"));
             apply_join_result(
                 ui,
-                pending_room_bind,
-                room_bind_progress_painted,
+                room_bind.pending,
+                room_bind.painted,
                 join,
                 JoinUiOpts {
                     ok_status: "Rejoined — waiting for host frames",

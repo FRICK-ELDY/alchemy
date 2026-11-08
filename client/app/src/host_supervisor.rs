@@ -1071,7 +1071,10 @@ mod tests {
         let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
         let t1 = t0 + Duration::from_secs(10);
         assert!(host_mtime_stale(None, Some(t1)), "missing host is stale");
-        assert!(!host_mtime_stale(Some(t1), None), "no client mtime → not stale");
+        assert!(
+            !host_mtime_stale(Some(t1), None),
+            "no client mtime → not stale"
+        );
         assert!(host_mtime_stale(Some(t0), Some(t1)), "older host is stale");
         assert!(!host_mtime_stale(Some(t1), Some(t0)), "newer host ok");
         assert!(!host_mtime_stale(Some(t1), Some(t1)), "same mtime ok");
