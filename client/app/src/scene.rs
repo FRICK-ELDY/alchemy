@@ -1190,14 +1190,24 @@ impl SharedState {
     }
 
     /// Same host dropped our session (Presence reclaim): keep key, resend Room Token binds.
+    /// Also re-declare liveliness — reclaim often follows wire Delete of the current jti.
     pub fn request_intent_rebind(&self) {
+        let mut marked = false;
         if let Ok(mut sess) = self.intent_session.lock() {
             if let Some(s) = sess.as_mut() {
                 if !s.bind_pending() {
                     s.mark_bind_pending();
-                    log::info!("intent rebind pending (Presence missing while steady)");
+                    marked = true;
                 }
             }
+        }
+        if let Ok(mut auth) = self.auth.lock() {
+            if auth.is_joined() {
+                auth.liveliness_rebind = true;
+            }
+        }
+        if marked {
+            log::info!("intent+liveliness rebind pending (Presence missing while steady)");
         }
     }
 }

@@ -177,6 +177,27 @@ struct App {
     last_owns_input: bool,
     /// Last applied [`SharedState::pending_mesh_epoch`] (x007d remount).
     mesh_epoch: u64,
+    /// After Join/Host ticket OK: show "Binding room bus…" for one paint, then bind.
+    pending_room_bind: Option<PendingRoomBind>,
+    /// Set after "Binding…" has been drawn once; [`Self::poll_pending_room_bind`] then runs bind.
+    room_bind_progress_painted: bool,
+}
+
+/// Success UI after a deferred [`bind_room_after_join`] (one frame of enter overlay).
+enum PendingBindSuccess {
+    StartGuestNotOwner { wanted: String },
+    Host { name: String, wanted: String },
+    Join {
+        ok_status: String,
+        ok_log: String,
+        can_host_rescue: bool,
+        enter_log_detail: String,
+    },
+}
+
+struct PendingRoomBind {
+    stop_host_on_fail: bool,
+    success: PendingBindSuccess,
 }
 
 /// Outcome of Auth / world HTTP work off the UI thread (x002e / P3-9 / x0037).
@@ -716,7 +737,8 @@ impl App {
                 apply_start_session_result(
                     &mut self.ui,
                     &self.shared,
-                    &mut self.zenoh,
+                    &mut self.pending_room_bind,
+                    &mut self.room_bind_progress_painted,
                     visibility,
                     join,
                 );
@@ -728,8 +750,8 @@ impl App {
             } => {
                 apply_join_result(
                     &mut self.ui,
-                    &self.shared,
-                    &mut self.zenoh,
+                    &mut self.pending_room_bind,
+                    &mut self.room_bind_progress_painted,
                     result,
                     JoinUiOpts {
                         ok_status: "Joined — waiting for host if space is still empty",
@@ -1211,6 +1233,8 @@ impl ApplicationHandler for App {
                             &self.shared,
                             &mut self.zenoh,
                             &mut self.auth_job,
+                            &mut self.pending_room_bind,
+                            &mut self.room_bind_progress_painted,
                             event_loop,
                         );
                     }
@@ -1273,6 +1297,8 @@ impl ApplicationHandler for App {
                                     &self.shared,
                                     &mut self.zenoh,
                                     &mut self.auth_job,
+                                    &mut self.pending_room_bind,
+                                    &mut self.room_bind_progress_painted,
                                     event_loop,
                                 );
                             }
@@ -1360,6 +1386,9 @@ impl ApplicationHandler for App {
                             .worlds_last_frame_at
                             .is_some_and(|at| now.duration_since(at) > FRAME_STALL)
                     {
+                        // One-shot recovery: Presence may be invisible if RX stalled; still
+                        // re-bind Intent + liveliness so a transient liveliness Delete can heal.
+                        self.shared.request_intent_rebind();
                         self.ui.state.worlds_waiting_host = true;
                         self.ui.state.worlds_host_disconnect = true;
                         self.ui.state.worlds_status =
@@ -1392,10 +1421,20 @@ impl ApplicationHandler for App {
                 } else {
                     None
                 };
-                if let Some(gpu) = self.gpu.as_mut() {
-                    if let Err(err) = gpu.render(&mut self.ui, highlight) {
-                        log::error!("render failed: {err:#}");
+                let rendered = if let Some(gpu) = self.gpu.as_mut() {
+                    match gpu.render(&mut self.ui, highlight) {
+                        Ok(()) => true,
+                        Err(err) => {
+                            log::error!("render failed: {err:#}");
+                            false
+                        }
                     }
+                } else {
+                    false
+                };
+                // Only after a successful paint — never skip the Binding frame on gpu miss/fail.
+                if rendered && self.pending_room_bind.is_some() {
+                    self.room_bind_progress_painted = true;
                 }
                 self.ui.push_dash_logic(&self.shared);
                 if let Some(window) = self.window.as_ref() {
@@ -1414,6 +1453,8 @@ impl ApplicationHandler for App {
         }
         self.on_input_ownership_edge();
         self.poll_auth_job();
+        // After Join/Host ticket: bind only once "Binding room bus…" has painted.
+        self.poll_pending_room_bind();
         self.poll_mtls_reopen();
         self.apply_pending_world_mesh();
         // x0048: re-apply sticky asset failure after Login/Start/Join settle (skips "…").
@@ -1444,12 +1485,135 @@ impl App {
             gpu.scene.replace_world_mesh(&self.mesh);
         }
     }
+
+    /// Run deferred bind only after "Binding room bus…" has painted once.
+    fn poll_pending_room_bind(&mut self) {
+        let Some(pending) = self.pending_room_bind.take() else {
+            return;
+        };
+        if !self.room_bind_progress_painted {
+            self.pending_room_bind = Some(pending);
+            return;
+        }
+        self.room_bind_progress_painted = false;
+        complete_pending_room_bind(&mut self.ui, &self.shared, &mut self.zenoh, pending);
+    }
+}
+
+fn schedule_binding_room_bus(
+    ui: &mut SystemUi,
+    pending: &mut Option<PendingRoomBind>,
+    painted: &mut bool,
+    bind: PendingRoomBind,
+) {
+    ui.state.apply_session_enter_progress(
+        0.86,
+        "Binding room bus…",
+        "Opening Zenoh (mTLS reopen / liveliness / subscribers)",
+    );
+    ui.state.open = true;
+    ui.rebuild();
+    *pending = Some(bind);
+    // Always wait one successful paint for this pending (Rejoin must not inherit prior true).
+    *painted = false;
+}
+
+fn complete_pending_room_bind(
+    ui: &mut SystemUi,
+    shared: &Arc<SharedState>,
+    zenoh: &mut Option<zenoh::Session>,
+    pending: PendingRoomBind,
+) {
+    match bind_room_after_join(shared, zenoh) {
+        Ok(()) => match pending.success {
+            PendingBindSuccess::StartGuestNotOwner { wanted } => {
+                ui.state.home_create_open = false;
+                ui.state.home_status =
+                    format!("Joined as guest (not owner) — waiting for host (wanted {wanted})");
+                ui.state.worlds_status = ui.state.home_status.clone();
+                ui.state.worlds_waiting_host = true;
+                ui.state.worlds_host_disconnect = false;
+                ui.state.worlds_can_host_rescue = false;
+                ui.state.worlds_seen_frame_tick = None;
+                ui.state.worlds_last_frame_at = None;
+                ui.state.worlds_in_room = true;
+                ui.state.mark_session_enter_bus_bound();
+                ui.state.push_session_enter_log(
+                    "Joined existing room as guest — waiting Manifest then Frame",
+                );
+                ui.state.open = true;
+                ui.state.tab = DashTab::Home;
+                ui.state.shell = OnboardingShell::Dash;
+                log::info!("start session joined existing as guest (wanted {wanted})");
+            }
+            PendingBindSuccess::Host { name, wanted } => {
+                ui.state.home_create_open = false;
+                let status = if name.is_empty() {
+                    format!("Hosting — waiting for first frame ({wanted})")
+                } else {
+                    format!("Hosting: {name} — waiting for first frame ({wanted})")
+                };
+                ui.state.home_status = status.clone();
+                ui.state.worlds_status = status;
+                ui.state.worlds_waiting_host = true;
+                ui.state.worlds_host_disconnect = false;
+                ui.state.worlds_can_host_rescue = true;
+                ui.state.worlds_seen_frame_tick = None;
+                ui.state.worlds_last_frame_at = None;
+                ui.state.worlds_in_room = true;
+                ui.state.mark_session_enter_bus_bound();
+                ui.state.push_session_enter_log(
+                    "Local host joined — next: Manifest seal/publish, then Frame",
+                );
+                ui.state.open = true;
+                ui.state.tab = DashTab::Home;
+                ui.state.shell = OnboardingShell::Dash;
+                log::info!("start/host session ok; local host up; wanted={wanted}");
+            }
+            PendingBindSuccess::Join {
+                ok_status,
+                ok_log,
+                can_host_rescue,
+                enter_log_detail,
+            } => {
+                ui.state.home_create_open = false;
+                ui.state.home_status = ok_status.clone();
+                ui.state.worlds_status = ok_status;
+                ui.state.worlds_host_disconnect = false;
+                ui.state.worlds_seen_frame_tick = None;
+                ui.state.worlds_last_frame_at = None;
+                ui.state.worlds_can_host_rescue = can_host_rescue;
+                ui.state.worlds_in_room = true;
+                ui.state.home_room_id = shared.get_room_id().to_string();
+                ui.state.worlds_waiting_host = true;
+                ui.state.tab = DashTab::Home;
+                ui.state.shell = OnboardingShell::Dash;
+                ui.state.open = true;
+                ui.state.mark_session_enter_bus_bound();
+                ui.state.push_session_enter_log(enter_log_detail);
+                log::info!("{ok_log}");
+            }
+        },
+        Err(err) => {
+            if pending.stop_host_on_fail {
+                stop_supervised_host(shared);
+            }
+            clear_worlds_session_shell(ui);
+            ui.state.home_status = format!("Joined but room bus failed: {err:#}");
+            ui.state.worlds_status = ui.state.home_status.clone();
+            log::warn!("room bus after join/start failed: {err:#}");
+        }
+    }
+    ui.mark_dash_chrome_dirty();
+    ui.mark_dash_logic_dirty();
+    ui.rebuild();
 }
 
 fn apply_start_session_result(
     ui: &mut SystemUi,
     shared: &Arc<SharedState>,
-    zenoh: &mut Option<zenoh::Session>,
+    pending_room_bind: &mut Option<PendingRoomBind>,
+    room_bind_progress_painted: &mut bool,
     visibility: Result<world_api::VisibilityEnsure, String>,
     join: Result<(), String>,
 ) {
@@ -1463,46 +1627,33 @@ fn apply_start_session_result(
         .collect::<String>();
     match (&visibility, join) {
         (Ok(world_api::VisibilityEnsure::Applied), Ok(())) => {
-            finish_host_session_ok(ui, shared, zenoh, &name, wanted);
+            schedule_binding_room_bus(
+                ui,
+                pending_room_bind,
+                room_bind_progress_painted,
+                PendingRoomBind {
+                    stop_host_on_fail: true,
+                    success: PendingBindSuccess::Host {
+                        name,
+                        wanted: wanted.to_string(),
+                    },
+                },
+            );
         }
         (Ok(world_api::VisibilityEnsure::LeftExisting), Ok(())) => {
             // Not owner (PUT 403/404) — never keep a local host, even if a job spawned by mistake.
             stop_supervised_host(shared);
-            ui.state.apply_session_enter_progress(
-                0.86,
-                "Binding room bus…",
-                "Opening Zenoh (mTLS reopen / liveliness / subscribers)",
+            schedule_binding_room_bus(
+                ui,
+                pending_room_bind,
+                room_bind_progress_painted,
+                PendingRoomBind {
+                    stop_host_on_fail: false,
+                    success: PendingBindSuccess::StartGuestNotOwner {
+                        wanted: wanted.to_string(),
+                    },
+                },
             );
-            ui.state.open = true;
-            ui.rebuild();
-            match bind_room_after_join(shared, zenoh) {
-                Ok(()) => {
-                    ui.state.home_create_open = false;
-                    ui.state.home_status =
-                        format!("Joined as guest (not owner) — waiting for host (wanted {wanted})");
-                    ui.state.worlds_status = ui.state.home_status.clone();
-                    ui.state.worlds_waiting_host = true;
-                    ui.state.worlds_host_disconnect = false;
-                    ui.state.worlds_can_host_rescue = false;
-                    ui.state.worlds_seen_frame_tick = None;
-                    ui.state.worlds_last_frame_at = None;
-                    ui.state.worlds_in_room = true;
-                    ui.state.mark_session_enter_bus_bound();
-                    ui.state.push_session_enter_log(
-                        "Joined existing room as guest — waiting Manifest then Frame",
-                    );
-                    ui.state.open = true;
-                    ui.state.tab = DashTab::Home;
-                    ui.state.shell = OnboardingShell::Dash;
-                    log::info!("start session joined existing as guest (wanted {wanted})");
-                }
-                Err(err) => {
-                    clear_worlds_session_shell(ui);
-                    ui.state.home_status = format!("Joined but room bus failed: {err:#}");
-                    ui.state.worlds_status = ui.state.home_status.clone();
-                    log::warn!("room bus after start failed: {err:#}");
-                }
-            }
         }
         (vis, Err(err)) => {
             stop_supervised_host(shared);
@@ -1536,113 +1687,42 @@ fn apply_start_session_result(
     ui.rebuild();
 }
 
-fn finish_host_session_ok(
-    ui: &mut SystemUi,
-    shared: &Arc<SharedState>,
-    zenoh: &mut Option<zenoh::Session>,
-    name: &str,
-    wanted: &str,
-) {
-    // Show bind step before the (possibly slow) mTLS / liveliness call.
-    ui.state.apply_session_enter_progress(
-        0.86,
-        "Binding room bus…",
-        "Opening Zenoh (mTLS reopen / liveliness / subscribers)",
-    );
-    ui.state.open = true;
-    ui.rebuild();
-    match bind_room_after_join(shared, zenoh) {
-        Ok(()) => {
-            ui.state.home_create_open = false;
-            let status = if name.is_empty() {
-                format!("Hosting — waiting for first frame ({wanted})")
-            } else {
-                format!("Hosting: {name} — waiting for first frame ({wanted})")
-            };
-            ui.state.home_status = status.clone();
-            ui.state.worlds_status = status;
-            // Stay on enter overlay until first host frame (fully entered).
-            ui.state.worlds_waiting_host = true;
-            ui.state.worlds_host_disconnect = false;
-            ui.state.worlds_can_host_rescue = true;
-            ui.state.worlds_seen_frame_tick = None;
-            ui.state.worlds_last_frame_at = None;
-            ui.state.worlds_in_room = true;
-            ui.state.mark_session_enter_bus_bound();
-            ui.state.push_session_enter_log(
-                "Local host joined — next: Manifest seal/publish, then Frame",
-            );
-            ui.state.open = true;
-            ui.state.tab = DashTab::Home;
-            ui.state.shell = OnboardingShell::Dash;
-            log::info!("start/host session ok; local host up; wanted={wanted}");
-        }
-        Err(err) => {
-            stop_supervised_host(shared);
-            clear_worlds_session_shell(ui);
-            ui.state.home_status = format!("Joined but room bus failed: {err:#}");
-            ui.state.worlds_status = ui.state.home_status.clone();
-            log::warn!("room bus after start failed: {err:#}");
-        }
-    }
-}
-
 struct JoinUiOpts<'a> {
     ok_status: &'a str,
     ok_log: &'a str,
-    /// Worlds / Settings Advanced Join: open Waiting shell after ticket OK.
+    /// Worlds / Settings Advanced Join: log wording only (enter always waits for Frame).
     enter_waiting_shell: bool,
     can_host_rescue_on_ok: bool,
 }
 
 fn apply_join_result(
     ui: &mut SystemUi,
-    shared: &Arc<SharedState>,
-    zenoh: &mut Option<zenoh::Session>,
+    pending_room_bind: &mut Option<PendingRoomBind>,
+    room_bind_progress_painted: &mut bool,
     join: Result<(), String>,
     opts: JoinUiOpts<'_>,
 ) {
     match join {
         Ok(()) => {
-            ui.state.apply_session_enter_progress(
-                0.86,
-                "Binding room bus…",
-                "Opening Zenoh (mTLS reopen / liveliness / subscribers)",
+            let enter_log_detail = if opts.enter_waiting_shell {
+                "Ticket OK — waiting Manifest then Frame".to_string()
+            } else {
+                "Joined — waiting Manifest then Frame".to_string()
+            };
+            schedule_binding_room_bus(
+                ui,
+                pending_room_bind,
+                room_bind_progress_painted,
+                PendingRoomBind {
+                    stop_host_on_fail: false,
+                    success: PendingBindSuccess::Join {
+                        ok_status: opts.ok_status.to_string(),
+                        ok_log: opts.ok_log.to_string(),
+                        can_host_rescue: opts.can_host_rescue_on_ok,
+                        enter_log_detail,
+                    },
+                },
             );
-            ui.state.open = true;
-            ui.rebuild();
-            match bind_room_after_join(shared, zenoh) {
-                Ok(()) => {
-                    ui.state.home_create_open = false;
-                    ui.state.home_status = opts.ok_status.into();
-                    ui.state.worlds_status = opts.ok_status.into();
-                    ui.state.worlds_host_disconnect = false;
-                    ui.state.worlds_seen_frame_tick = None;
-                    ui.state.worlds_last_frame_at = None;
-                    ui.state.worlds_can_host_rescue = opts.can_host_rescue_on_ok;
-                    ui.state.worlds_in_room = true;
-                    ui.state.home_room_id = shared.get_room_id().to_string();
-                    // Always wait for first frame before treating enter as complete.
-                    ui.state.worlds_waiting_host = true;
-                    ui.state.tab = DashTab::Home;
-                    ui.state.shell = OnboardingShell::Dash;
-                    ui.state.open = true;
-                    ui.state.mark_session_enter_bus_bound();
-                    let detail = if opts.enter_waiting_shell {
-                        "Ticket OK — waiting Manifest then Frame"
-                    } else {
-                        "Joined — waiting Manifest then Frame"
-                    };
-                    ui.state.push_session_enter_log(detail);
-                    log::info!("{}", opts.ok_log);
-                }
-                Err(err) => {
-                    clear_worlds_session_shell(ui);
-                    ui.state.home_status = format!("Joined but room bus failed: {err:#}");
-                    ui.state.worlds_status = format!("Joined but room bus failed: {err:#}");
-                    log::warn!("room bus after join failed: {err:#}");
-                }
-            }
         }
         Err(err) => {
             clear_worlds_session_shell(ui);
@@ -1814,6 +1894,8 @@ fn handle_ui_action(
     shared: &Arc<SharedState>,
     zenoh: &mut Option<zenoh::Session>,
     auth_job: &mut Option<(u64, Receiver<AuthJobOutcome>)>,
+    pending_room_bind: &mut Option<PendingRoomBind>,
+    room_bind_progress_painted: &mut bool,
     event_loop: &ActiveEventLoop,
 ) {
     match action {
@@ -1996,6 +2078,8 @@ fn handle_ui_action(
             // Bump epoch first so in-flight join cannot commit past Logout.
             // HTTP logout is best-effort on a worker (does not gate UI).
             discard_auth_job(shared, auth_job);
+            *pending_room_bind = None;
+            *room_bind_progress_painted = false;
             leave_room(shared, zenoh);
             stop_supervised_host(shared);
             clear_worlds_session_shell(ui);
@@ -2368,8 +2452,11 @@ fn handle_ui_action(
             // Do not auto-refresh catalog — that would occupy auth_job and block immediate re-Join.
             let aborting_enter = ui.state.session_enter_active && !ui.state.worlds_in_room;
             discard_auth_job(shared, auth_job);
+            *pending_room_bind = None;
+            *room_bind_progress_painted = false;
             leave_room(shared, zenoh);
             // Abort mid-Create/Join: stop in-flight local host. Live Leave keeps it for re-Host.
+            // After bus bind (`worlds_in_room`), Cancel ≡ Leave (host may survive for re-Host).
             if aborting_enter {
                 stop_supervised_host(shared);
             }
@@ -2394,6 +2481,8 @@ fn handle_ui_action(
             let room_id = shared.get_room_id().to_string();
             let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
             discard_auth_job(shared, auth_job);
+            *pending_room_bind = None;
+            *room_bind_progress_painted = false;
             leave_room(shared, zenoh);
             clear_worlds_session_shell(ui);
             let Some(access) = access else {
@@ -2417,8 +2506,8 @@ fn handle_ui_action(
             let join = join_room_with_access(shared, &access, epoch).map_err(|e| format!("{e:#}"));
             apply_join_result(
                 ui,
-                shared,
-                zenoh,
+                pending_room_bind,
+                room_bind_progress_painted,
                 join,
                 JoinUiOpts {
                     ok_status: "Rejoined — waiting for host frames",
@@ -2761,6 +2850,8 @@ pub fn run(
     zenoh: Option<zenoh::Session>,
     role: DesktopRole,
 ) -> Result<()> {
+    // Dev target/: refresh sibling host-server.exe off the UI/Auth path when stale.
+    host_supervisor::spawn_warm_dev_host_bin();
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut ui = SystemUi::new();
@@ -2847,6 +2938,8 @@ pub fn run(
         auth_job: None,
         last_owns_input,
         mesh_epoch: 0,
+        pending_room_bind: None,
+        room_bind_progress_painted: false,
     };
     // silent / remember-me MainHub entry — same catalog load as LoginOk / RegisterOk.
     if boot_catalog {

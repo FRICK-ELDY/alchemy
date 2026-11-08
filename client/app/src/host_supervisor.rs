@@ -17,6 +17,10 @@
 //! - macOS hard-kill orphan prevention (Drop best-effort kill only)
 //! - Crash 道連れ when spawning via `cargo run -p host-server` (PDEATHSIG/Job attach to
 //!   cargo, not the eventual host binary — use `ALCHEMY_HOST_BIN` or adjacent exe)
+//! - Dev (`target/debug|release` sibling): always spawn the **exe**. If missing/older than
+//!   the running client, one `cargo build -p host-server` refreshes it (not `cargo run`).
+//!   [`spawn_warm_dev_host_bin`] starts that build at Desktop surface boot so Auth/Host
+//!   rarely blocks on a multi-minute sync build; `host_command` still rebuilds if still stale
 //! - Leave/Logout do **not** stop the supervised host (only Exit / failed Start / Drop)
 //! - UI access JWT handoff (`ALCHEMY_AUTH_TOKEN` on child): **only when** parent env lacks
 //!   `AUTH_USER` (password optional — debug host may seed it) and lacks `ALCHEMY_AUTH_TOKEN`.
@@ -575,18 +579,165 @@ pub(crate) fn prefers_durable_auth(
     user.is_some() || tok.is_some()
 }
 
+/// True when `dir` looks like a Cargo artifact folder (`target/debug`, `target/release`, …).
+pub(crate) fn is_cargo_artifact_dir(dir: &Path) -> bool {
+    let mut saw_target = false;
+    for c in dir.components() {
+        let s = c.as_os_str();
+        if s == "target" {
+            saw_target = true;
+            continue;
+        }
+        if saw_target {
+            // `target/<profile>` or `target/<triple>/<profile>`
+            if s == "debug" || s == "release" || s == "tmp" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn sibling_host_bin(dir: &Path) -> PathBuf {
+    dir.join(if cfg!(windows) {
+        "host-server.exe"
+    } else {
+        "host-server"
+    })
+}
+
+fn file_mtime(path: &Path) -> Option<std::time::SystemTime> {
+    path.metadata().ok().and_then(|m| m.modified().ok())
+}
+
+/// `host` missing, or strictly older than `client` → rebuild before spawn (dev target/).
+pub(crate) fn host_bin_stale_vs_client(host: &Path, client: &Path) -> bool {
+    host_mtime_stale(file_mtime(host), file_mtime(client))
+}
+
+pub(crate) fn host_mtime_stale(
+    host: Option<std::time::SystemTime>,
+    client: Option<std::time::SystemTime>,
+) -> bool {
+    match (host, client) {
+        (_, None) => false,
+        (None, Some(_)) => true,
+        (Some(h), Some(c)) => h < c,
+    }
+}
+
+fn artifact_dir_wants_release(dir: &Path) -> bool {
+    dir.components().any(|c| c.as_os_str() == "release")
+}
+
+/// Serializes warm + spawn-path rebuilds so two `cargo build`s do not race.
+fn host_build_lock() -> &'static Mutex<()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    &LOCK
+}
+
+/// Rebuild sibling host when still stale; no-op if warm already refreshed under the same lock.
+fn ensure_dev_host_bin_fresh(artifact_dir: &Path, client_exe: &Path) -> Result<()> {
+    let _guard = host_build_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let sibling = sibling_host_bin(artifact_dir);
+    if !host_bin_stale_vs_client(&sibling, client_exe) {
+        return Ok(());
+    }
+    cargo_build_host_server_unlocked(artifact_dir)
+}
+
+/// `cargo build -p host-server` into the same profile as the running client (exe, not `run`).
+/// Caller must hold [`host_build_lock`].
+fn cargo_build_host_server_unlocked(artifact_dir: &Path) -> Result<()> {
+    let client_dir = resolve_client_dir();
+    let release = artifact_dir_wants_release(artifact_dir);
+    log::info!(
+        "cargo build -p host-server{} (refresh sibling under {})",
+        if release { " --release" } else { "" },
+        artifact_dir.display()
+    );
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build").arg("-p").arg("host-server");
+    if release {
+        cmd.arg("--release");
+    }
+    cmd.arg("--manifest-path")
+        .arg(client_dir.join("Cargo.toml"))
+        .current_dir(&client_dir);
+    let status = cmd.status().context("spawn cargo build -p host-server")?;
+    if !status.success() {
+        bail!("cargo build -p host-server failed ({status})");
+    }
+    Ok(())
+}
+
+/// Background refresh of sibling `host-server` when running from `target/{debug,release}`.
+/// Call once at Desktop surface start so Enter/Host rarely hits a cold sync build.
+pub fn spawn_warm_dev_host_bin() {
+    match std::thread::Builder::new()
+        .name("warm-host-bin".into())
+        .spawn(|| {
+            if let Err(err) = warm_dev_host_bin() {
+                log::warn!("warm host-server: {err:#}");
+            }
+        }) {
+        Ok(_) => {}
+        Err(err) => log::warn!("warm host-server thread spawn failed: {err}"),
+    }
+}
+
+fn warm_dev_host_bin() -> Result<()> {
+    let exe = std::env::current_exe().context("current_exe for warm host")?;
+    let Some(dir) = exe.parent() else {
+        bail!("current_exe has no parent");
+    };
+    if !is_cargo_artifact_dir(dir) {
+        return Ok(());
+    }
+    let sibling = sibling_host_bin(dir);
+    if !host_bin_stale_vs_client(&sibling, &exe) {
+        log::debug!(
+            "warm host-server skipped (fresh sibling {})",
+            sibling.display()
+        );
+        return Ok(());
+    }
+    ensure_dev_host_bin_fresh(dir, &exe)?;
+    log::info!("warmed host-server at {}", sibling_host_bin(dir).display());
+    Ok(())
+}
+
 fn host_command() -> Command {
     if let Ok(bin) = std::env::var("ALCHEMY_HOST_BIN") {
         return Command::new(bin);
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let sibling = dir.join(if cfg!(windows) {
-                "host-server.exe"
-            } else {
-                "host-server"
-            });
-            if sibling.is_file() {
+            let sibling = sibling_host_bin(dir);
+            if is_cargo_artifact_dir(dir) {
+                if host_bin_stale_vs_client(&sibling, &exe) {
+                    // Prefer warm thread; still rebuild here if Enter races warm or warm failed.
+                    log::warn!(
+                        "host-server sibling stale vs client — sync cargo build (may take minutes; prefer waiting for warm-host-bin)"
+                    );
+                    match ensure_dev_host_bin_fresh(dir, &exe) {
+                        Ok(()) => {
+                            if sibling.is_file() {
+                                return Command::new(sibling);
+                            }
+                            log::error!(
+                                "cargo build -p host-server ok but {} missing",
+                                sibling.display()
+                            );
+                        }
+                        Err(err) => log::error!("host-server rebuild failed: {err:#}"),
+                    }
+                } else if sibling.is_file() {
+                    return Command::new(sibling);
+                }
+            } else if sibling.is_file() {
                 return Command::new(sibling);
             }
         }
@@ -893,5 +1044,34 @@ mod tests {
             !s.is_exit_latched(),
             "failed-Start shutdown must allow a later ensure (cancel may clear; latch must not)"
         );
+    }
+
+    #[test]
+    fn cargo_artifact_dir_detects_target_profiles() {
+        assert!(is_cargo_artifact_dir(Path::new(
+            "D:/github/frick/alchemy/client/target/debug"
+        )));
+        assert!(is_cargo_artifact_dir(Path::new(
+            "/home/u/alchemy/client/target/release"
+        )));
+        assert!(is_cargo_artifact_dir(Path::new(
+            "D:/repo/client/target/x86_64-pc-windows-msvc/debug"
+        )));
+        assert!(!is_cargo_artifact_dir(Path::new(
+            "D:/github/frick/alchemy/dist/alchemy-windows-x64-v0.0.0-dev"
+        )));
+        assert!(!is_cargo_artifact_dir(Path::new("/usr/local/bin")));
+    }
+
+    #[test]
+    fn host_mtime_stale_vs_client_rules() {
+        use std::time::{Duration, SystemTime};
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let t1 = t0 + Duration::from_secs(10);
+        assert!(host_mtime_stale(None, Some(t1)), "missing host is stale");
+        assert!(!host_mtime_stale(Some(t1), None), "no client mtime → not stale");
+        assert!(host_mtime_stale(Some(t0), Some(t1)), "older host is stale");
+        assert!(!host_mtime_stale(Some(t1), Some(t0)), "newer host ok");
+        assert!(!host_mtime_stale(Some(t1), Some(t1)), "same mtime ok");
     }
 }

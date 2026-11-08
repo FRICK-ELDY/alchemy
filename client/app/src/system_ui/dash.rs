@@ -1225,11 +1225,14 @@ fn rebuild_session_enter_overlay(tree: &mut LayoutTree, state: &DashState, w: f3
 
     let track = Rect::new(px + pad, py + 78.0, pw - pad * 2.0, 14.0);
     tree.push_rect(track, Color::rgba(0.08, 0.09, 0.12, 1.0));
-    let fill_w = (track.w * state.session_enter_progress.clamp(0.0, 1.0)).max(2.0);
-    tree.push_rect(
-        Rect::new(track.x, track.y, fill_w, track.h),
-        Color::rgba(0.40, 0.55, 0.95, 1.0),
-    );
+    let progress = state.session_enter_progress.clamp(0.0, 1.0);
+    if progress > 0.0 {
+        let fill_w = (track.w * progress).max(2.0);
+        tree.push_rect(
+            Rect::new(track.x, track.y, fill_w, track.h),
+            Color::rgba(0.40, 0.55, 0.95, 1.0),
+        );
+    }
     tree.push_label(
         Rect::new(px + pad, py + 98.0, pw - pad * 2.0, 14.0),
         format!(
