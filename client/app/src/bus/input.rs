@@ -98,6 +98,15 @@ pub(crate) fn spawn_input_publisher(
                     .timestamp(session.new_timestamp())
                     .wait()
                 {
+                    let msg = format!("{err}");
+                    // Session closed/reopened: this publisher is orphaned — exit so a new
+                    // bus thread can take over (avoid 30Hz warn flood + stuck Presence).
+                    if msg.contains("session closed") || msg.contains("Session closed") {
+                        log::warn!(
+                            "input publisher stopping (session closed); wait for bus rebind"
+                        );
+                        break;
+                    }
                     log::warn!("input publish failed: {err}");
                     // Keep bind_pending so the next Intent still carries room_token.
                     continue;

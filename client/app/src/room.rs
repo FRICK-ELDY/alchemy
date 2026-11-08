@@ -10,6 +10,9 @@
 //!   `session_pub` (x003e)
 //! - `ensure_room_bus` idempotent via `room_bus_started`; spawn failure clears the flag
 //! - Reopen after join only when `mtls_reopen_pending` or session was dropped (x0068)
+//! - Guest Token **soft** refresh may rewrite mTLS PEMs but must **not** mid-flight
+//!   reopen while `room_bus_started` (host same policy) — full close orphans Intent and
+//!   trips Presence TTL / liveliness Delete
 //! - Join starts a mesh-remount worker: Manifest blake3 → assets GET →
 //!   `try_apply_world_remount` (x007d)
 //! - In-flight remount after Leave / host-generation reset is discarded via
@@ -429,7 +432,13 @@ fn bind_room_after_join_inner(
     let session = zenoh
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("bind_room_after_join: no zenoh session"))?;
-    declare_room_alive(shared, session, false).context("liveliness after join")?;
+    // Mid-session mTLS reopen: retain previous liveliness until bind Intent puts the new jti
+    // (Delete(old) during the gap would reclaim Presence before rebind).
+    let retain_previous = mtls_pending && shared.auth.lock().ok().is_some_and(|g| g.is_joined());
+    declare_room_alive(shared, session, retain_previous).context("liveliness after join")?;
+    if retain_previous {
+        shared.request_intent_rebind();
+    }
     Ok(())
 }
 
@@ -637,12 +646,26 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                                     .filter(|s| !s.is_empty()),
                             ) {
                                 Ok(Some(id)) => {
-                                    shared.mtls_reopen_pending.store(true, Ordering::SeqCst);
-                                    log::info!(
-                                        "guest refresh mTLS cn={} soft_ttl={}s (mtls_reopen_pending)",
-                                        id.cn,
-                                        id.expires_in
-                                    );
+                                    // Live bus: keep Zenoh; PEMs apply on next open / Leave→Join.
+                                    // Mid-flight close orphans input publisher → Presence reclaim.
+                                    let bus_up =
+                                        shared.room_bus_started.load(Ordering::SeqCst);
+                                    if bus_up {
+                                        log::info!(
+                                            "guest refresh mTLS cn={} soft_ttl={}s (PEMs updated; mid-flight reopen deferred)",
+                                            id.cn,
+                                            id.expires_in
+                                        );
+                                    } else {
+                                        shared
+                                            .mtls_reopen_pending
+                                            .store(true, Ordering::SeqCst);
+                                        log::info!(
+                                            "guest refresh mTLS cn={} soft_ttl={}s (mtls_reopen_pending)",
+                                            id.cn,
+                                            id.expires_in
+                                        );
+                                    }
                                 }
                                 Ok(None) => {}
                                 Err(err) => {
