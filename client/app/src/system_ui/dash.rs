@@ -35,6 +35,26 @@ pub enum MainHubTab {
 
 /// Session display-name cap (input + status; keep in sync with desktop join status).
 pub const SESSION_NAME_MAX: usize = 48;
+
+/// New `room_id` for Create → Start (16 lowercase hex, same shape as world-server
+/// `Rooms.random_room_id/0`). Charset `[A-Za-z0-9_-]+`, max 64 bytes.
+///
+/// Not CSPRNG: time+seq mix is enough to avoid accidental reuse across Create opens;
+/// collision/prediction risk is negligible for local room ids (no secrecy).
+pub fn fresh_create_room_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // Mix time + a process-local counter so rapid Create opens do not collide.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mixed = nanos
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(u128::from(seq) << 48);
+    format!("{:016x}", mixed as u64)
+}
 /// Login / register field cap (identifier, password, email, …).
 const HOME_ACCOUNT_FIELD_MAX: usize = 64;
 
@@ -130,9 +150,13 @@ pub struct DashState {
     /// Inventory Drive rows (x006d); filled by surface after refresh.
     pub inventory_nodes: Vec<(String, String, String)>, // node_id, kind, name
     pub inventory_selected: Option<usize>,
+    /// One-shot take-out target (XR peer / lag); not mirrored.
+    /// Consumed at InventoryTakeOut entry (discarded on busy/blocked — XR re-fires).
+    pub inventory_take_out_override: Option<(String, String)>,
     /// Scene mesh rows for put-back (x006e); `(entity_id, blake3)`.
     pub scene_meshes: Vec<(u32, String)>,
-    pub scene_selected: Option<usize>,
+    /// Multi-select indices into `scene_meshes` (x007f put-back). Despawn uses first.
+    pub scene_selected: Vec<usize>,
     pub inventory_status: String,
     /// Worlds catalog rows (x007c): room_id, visibility, role_hint, owner_sub.
     pub worlds_rooms: Vec<(String, String, String, String)>,
@@ -146,15 +170,17 @@ pub struct DashState {
     pub worlds_status: String,
     /// Desktop-authored in-session flag mirrored via SharedDashLogic (XR Inventory gate).
     pub in_session_peer: bool,
+    /// Desktop-authored Live flag (Inventory allowed · x007f); XR echoes via SharedDashLogic.
+    pub inventory_live_peer: bool,
     /// In-room shell: waiting for host frames after Join (x007c).
     pub worlds_waiting_host: bool,
     /// Waiting overlay may show Host Rescue only when viewer owns the room (x007c).
     pub worlds_can_host_rescue: bool,
     /// Live → WaitingHost after frames stall (distinct copy from first join wait).
     pub worlds_host_disconnect: bool,
-    /// Last observed `last_frame_tick` used to detect stall / Live transition.
+    /// Last observed `last_frame_tick` used for first-Frame Live transition.
     pub worlds_seen_frame_tick: Option<u64>,
-    /// Wall time of last *new* host frame tick (Live stall detection · x007c).
+    /// Wall time of last *new* frame tick (enter UX). Stall uses SharedState host-alive.
     pub worlds_last_frame_at: Option<std::time::Instant>,
     /// True after successful Join/Host until Leave/Logout (gates stall UX).
     pub worlds_in_room: bool,
@@ -224,8 +250,9 @@ impl Default for DashState {
             server_operator: false,
             inventory_nodes: Vec::new(),
             inventory_selected: None,
+            inventory_take_out_override: None,
             scene_meshes: Vec::new(),
-            scene_selected: None,
+            scene_selected: Vec::new(),
             inventory_status: String::new(),
             worlds_rooms: Vec::new(),
             worlds_selected: None,
@@ -234,6 +261,7 @@ impl Default for DashState {
             worlds_catalog_scroll_accum: 0.0,
             worlds_status: String::new(),
             in_session_peer: false,
+            inventory_live_peer: false,
             worlds_waiting_host: false,
             worlds_can_host_rescue: false,
             worlds_host_disconnect: false,
@@ -268,7 +296,8 @@ impl Default for DashState {
 ///
 /// Not shared (per-surface): `time_label` / `fps_label` / `canvas_*` / `hover` /
 /// `pressed` / `home_session_actions_enabled` / `hotswitch_available` /
-/// derived `hotswitch_label` / `home_password` / `worlds_*` / `in_session_peer`.
+/// derived `hotswitch_label` / `home_password` / `worlds_*` / `in_session_peer` /
+/// `inventory_live_peer`.
 /// Hotswitch auto/suppressed SoT is [`crate::surface::PresentationGate`], not here.
 #[derive(Clone, Debug)]
 pub struct SharedDashLogic {
@@ -301,6 +330,8 @@ pub struct SharedDashLogic {
     pub server_operator: bool,
     /// Desktop session shell active — XR uses this to block Inventory without local worlds_*.
     pub in_session: bool,
+    /// Desktop Live (Inventory allowed · x007f). XR echoes into `inventory_live_peer`.
+    pub inventory_live: bool,
 }
 
 impl Default for SharedDashLogic {
@@ -316,6 +347,15 @@ fn dash_in_session_for_store(s: &DashState) -> bool {
         s.session_shell_active()
     } else {
         s.in_session_peer
+    }
+}
+
+/// Live-only Inventory gate (x007f): in-room, not waiting / KeyStale / entering.
+fn dash_inventory_live_for_store(s: &DashState) -> bool {
+    if s.home_session_actions_enabled {
+        s.inventory_live_allowed()
+    } else {
+        s.inventory_live_peer
     }
 }
 
@@ -350,6 +390,7 @@ impl SharedDashLogic {
             custom_host_focus: s.custom_host_focus,
             server_operator: s.server_operator,
             in_session: dash_in_session_for_store(s),
+            inventory_live: dash_inventory_live_for_store(s),
         }
     }
 
@@ -365,6 +406,7 @@ impl SharedDashLogic {
             && self.smooth_turn_label == s.smooth_turn_label
             && self.server_operator == s.server_operator
             && self.in_session == dash_in_session_for_store(s)
+            && self.inventory_live == dash_inventory_live_for_store(s)
     }
 
     pub fn form_eq(&self, s: &DashState) -> bool {
@@ -400,6 +442,7 @@ impl SharedDashLogic {
         self.smooth_turn_label = s.smooth_turn_label.clone();
         self.server_operator = s.server_operator;
         self.in_session = dash_in_session_for_store(s);
+        self.inventory_live = dash_inventory_live_for_store(s);
     }
 
     /// Write form fields only (push path — does not touch chrome / password).
@@ -430,11 +473,11 @@ impl SharedDashLogic {
         if s.open != self.open {
             s.open = self.open;
         }
-        // Companion must not open Inventory while Desktop session is live.
+        // Live Inventory (x007f): peer Inventory tab is allowed when not blocked.
         let peer_inventory = self.tab == DashTab::Inventory;
         if s.tab != self.tab {
             if s.inventory_blocked() && peer_inventory {
-                // keep local tab (Home/Settings/Exit)
+                // keep local tab (Home/Settings/Exit) while Waiting / KeyStale / etc.
             } else {
                 s.tab = self.tab;
             }
@@ -471,15 +514,25 @@ impl SharedDashLogic {
             changed = true;
         }
         // Desktop owns worlds_* — never latch peer in_session into in_session_peer (CAS miss heal).
-        // XR only: mirror Desktop-authored in_session for Inventory gate.
+        // XR only: mirror Desktop-authored in_session / inventory_live for Inventory gate (x007f).
         if s.home_session_actions_enabled {
             if s.in_session_peer {
                 s.in_session_peer = false;
                 changed = true;
             }
-        } else if s.in_session_peer != self.in_session {
-            s.in_session_peer = self.in_session;
-            changed = true;
+            if s.inventory_live_peer {
+                s.inventory_live_peer = false;
+                changed = true;
+            }
+        } else {
+            if s.in_session_peer != self.in_session {
+                s.in_session_peer = self.in_session;
+                changed = true;
+            }
+            if s.inventory_live_peer != self.inventory_live {
+                s.inventory_live_peer = self.inventory_live;
+                changed = true;
+            }
         }
         if layout_changed || !s.open {
             s.hover = None;
@@ -919,13 +972,21 @@ impl DashState {
         self.session_enter_last_detail_at = None;
     }
 
-    /// Inventory is blocked in-session.
-    /// Desktop: local `worlds_*` only. XR: Desktop-authored `in_session` via `in_session_peer`.
+    /// Live session allows Inventory (x007f). Waiting / KeyStale / Entering stay blocked.
+    pub fn inventory_live_allowed(&self) -> bool {
+        self.worlds_in_room
+            && !self.worlds_waiting_host
+            && !self.worlds_key_stale
+            && !self.session_enter_active
+    }
+
+    /// Inventory blocked outside Live while a session shell is active.
+    /// Desktop: local `worlds_*`. XR: Desktop-authored flags via `*_peer`.
     pub fn inventory_blocked(&self) -> bool {
         if self.home_session_actions_enabled {
-            self.session_shell_active()
+            self.session_shell_active() && !self.inventory_live_allowed()
         } else {
-            self.in_session_peer
+            self.in_session_peer && !self.inventory_live_peer
         }
     }
 
@@ -1302,7 +1363,7 @@ fn rebuild_inventory(
     tree.push_label(
         Rect::new(cx + 24.0, cy0 + 36.0, cw - 48.0, 16.0),
         if state.inventory_status.is_empty() {
-            "Drive→Take out. Scene→Put back (copy) / Despawn removes from room (host)."
+            "Live only. Drive→Take out (blob/prefab). Scene multi-select→Put back / Despawn (first)."
         } else {
             &state.inventory_status
         },
@@ -1402,7 +1463,7 @@ fn rebuild_inventory(
         }
         let id = SCENE_MESH_ROW_IDS[i];
         let row = Rect::new(cx + 24.0, y, cw - 48.0, row_h);
-        let selected = state.scene_selected == Some(i);
+        let selected = state.scene_selected.contains(&i);
         let base = if selected {
             Color::rgba(0.28, 0.30, 0.42, 1.0)
         } else {
@@ -1828,7 +1889,7 @@ fn rebuild_home_create(
     tree.push_label(
         Rect::new(right_x + 12.0, ry, right_w - 24.0, 14.0),
         format!(
-            "room_id={} (Start uses this; edit in Settings Advanced)",
+            "room_id={} (minted for this Create; DemoScene on first Start)",
             state.home_room_id
         ),
         MUTED,
@@ -2487,13 +2548,9 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
             }
             OnboardingShell::Dash => {}
         }
-    } else if state.session_shell_active()
-        && matches!(
-            state.tab,
-            DashTab::Home | DashTab::Worlds | DashTab::Inventory
-        )
-    {
-        // In-room shell on Home (Inventory blocked — Companion tab sync cannot escape).
+    } else if state.session_shell_active() && matches!(state.tab, DashTab::Home | DashTab::Worlds) {
+        // In-room shell on Home/Worlds only. Inventory is Live-unlocked (x007f) and
+        // must render `rebuild_inventory` — not the session Leave/status panel.
         // Settings/Exit stay reachable (Server Operator / quit).
         rebuild_session_shell(tree, state, cx, cy0, cw, ch);
     } else {

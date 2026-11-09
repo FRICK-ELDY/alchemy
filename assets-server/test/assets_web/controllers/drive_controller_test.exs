@@ -4,6 +4,7 @@ defmodule AssetsWeb.DriveControllerTest do
   alias Assets.Blobs
   alias Assets.Blobs.BlobGrant
   alias Assets.Drive
+  alias Assets.Prefab.Payload
   alias Assets.Repo
   alias Assets.TestAuthHelpers
 
@@ -45,6 +46,41 @@ defmodule AssetsWeb.DriveControllerTest do
 
     assert nid == node.node_id
     assert b3 == cas_obj.blake3
+  end
+
+  test "take_out expands prefab children", %{conn: conn, signer: signer} do
+    {:ok, mesh_a, _} = Blobs.upload(@sub_a, "prefab-mesh-a", "application/octet-stream")
+    {:ok, mesh_b, _} = Blobs.upload(@sub_a, "prefab-mesh-b", "application/octet-stream")
+
+    {:ok, payload} =
+      Payload.new(1, [
+        %{local_id: "a", blake3: mesh_a.blake3, trs: nil},
+        %{
+          local_id: "b",
+          blake3: mesh_b.blake3,
+          trs: %{
+            translation: [1.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0]
+          }
+        }
+      ])
+
+    {:ok, node} = Drive.save_prefab(@sub_a, "Multi", payload)
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "application/json")
+      |> post("/api/v1/drive/take_out", Jason.encode!(%{node_id: node.node_id}))
+
+    assert %{"node" => %{"kind" => "prefab"}, "blobs" => blobs} = json_response(conn, 200)
+    assert length(blobs) == 2
+    assert Enum.at(blobs, 0)["blake3"] == mesh_a.blake3
+    assert Enum.at(blobs, 0)["local_id"] == "a"
+    assert Enum.at(blobs, 1)["blake3"] == mesh_b.blake3
+    assert Enum.at(blobs, 1)["local_id"] == "b"
+    assert Enum.at(blobs, 1)["trs"]["translation"] == [1.0, 0.0, 0.0]
   end
 
   test "take_out other owner is not_found", %{conn: conn, signer: signer} do

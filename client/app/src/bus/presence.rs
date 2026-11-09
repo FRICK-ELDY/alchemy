@@ -114,6 +114,8 @@ pub(crate) fn spawn_presence_subscriber(
                                 if let Ok(mut slot) = shared.presence_gen_rev.lock() {
                                     *slot = Some(incoming);
                                 }
+                                // Keepalive even when Frame net_tick is idle (empty deltas · x0024).
+                                shared.note_host_alive();
                             }
                             other => {
                                 dropped_gen_rev += 1;

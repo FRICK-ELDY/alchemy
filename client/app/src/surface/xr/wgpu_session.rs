@@ -33,7 +33,7 @@ use crate::mesh::CpuMesh;
 use crate::scene::{
     create_depth_view, EntityPose, MoveIntent, SceneGpu, SharedState, BOX_HALF_EXTENT,
 };
-use crate::system_ui::{SystemUi, UiAction};
+use crate::system_ui::{InventoryPeerRequest, SystemUi, UiAction};
 use crate::turn::{update_turn_yaw, TURN_DEADZONE};
 use crate::world_hit::ray_hit_grabbable_boxes_with_extents;
 
@@ -296,6 +296,13 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
 
         hotswitch.tick(&shared.presentation, Instant::now());
         ui.pull_dash_logic(&shared);
+        let mut inventory_ui_dirty = ui.pull_inventory_mirror(&shared);
+        if ui.state.tab == crate::system_ui::DashTab::Inventory {
+            inventory_ui_dirty |= ui.sync_inventory_scene_meshes(&shared);
+        }
+        if inventory_ui_dirty {
+            ui.rebuild();
+        }
         sync_xr_hotswitch_ui(&mut ui, &shared);
 
         if !session_running {
@@ -786,6 +793,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                             ui.state.worlds_catalog_scroll_accum = 0.0;
                             ui.state.worlds_status.clear();
                             ui.state.in_session_peer = false;
+                            ui.state.inventory_live_peer = false;
                             ui.state.home_logged_in_as = None;
                             ui.state.home_create_open = false;
                             ui.state.shell = crate::system_ui::OnboardingShell::Step1Operator;
@@ -809,13 +817,12 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                             ui.mark_dash_form_dirty();
                             ui.rebuild();
                         }
-                        UiAction::InventoryOpen
+                        action @ (UiAction::InventoryOpen
                         | UiAction::InventoryRefresh
                         | UiAction::InventoryTakeOut
                         | UiAction::InventoryPutBack
-                        | UiAction::InventoryDespawn => {
-                            // Desktop owns assets HTTP + Zenoh spawn / put-back / despawn.
-                            log::info!("inventory actions are Desktop-only this Slice");
+                        | UiAction::InventoryDespawn) => {
+                            enqueue_inventory_peer(&mut ui, &shared, action);
                         }
                         UiAction::HotswitchAutoChanged => {
                             shared
@@ -868,6 +875,70 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
 }
 
 /// Keep XR Settings hotswitch row gated on READY (same as Desktop / F8).
+/// Build XR→Desktop Inventory request with XR selection payloads (x007f).
+fn enqueue_inventory_peer(ui: &mut SystemUi, shared: &SharedState, action: UiAction) {
+    let reqs: Vec<InventoryPeerRequest> = match action {
+        // Open syncs scene; Refresh fills Drive mirror so XR list is usable.
+        UiAction::InventoryOpen => {
+            vec![InventoryPeerRequest::Open, InventoryPeerRequest::Refresh]
+        }
+        UiAction::InventoryRefresh => vec![InventoryPeerRequest::Refresh],
+        UiAction::InventoryTakeOut => {
+            let Some(i) = ui.state.inventory_selected else {
+                ui.state.inventory_status = "select a blob or prefab node first".into();
+                ui.rebuild();
+                return;
+            };
+            let Some((node_id, kind, _)) = ui.state.inventory_nodes.get(i) else {
+                ui.state.inventory_status = "select a blob or prefab node first".into();
+                ui.rebuild();
+                return;
+            };
+            vec![InventoryPeerRequest::TakeOut {
+                node_id: node_id.clone(),
+                kind: kind.clone(),
+            }]
+        }
+        UiAction::InventoryPutBack => {
+            let entity_ids: Vec<u32> = ui
+                .state
+                .scene_selected
+                .iter()
+                .filter_map(|&i| ui.state.scene_meshes.get(i).map(|(eid, _)| *eid))
+                .collect();
+            if entity_ids.is_empty() {
+                ui.state.inventory_status =
+                    "select one or more scene meshes first (Refresh if empty)".into();
+                ui.rebuild();
+                return;
+            }
+            vec![InventoryPeerRequest::PutBack { entity_ids }]
+        }
+        UiAction::InventoryDespawn => {
+            let Some(&i) = ui.state.scene_selected.first() else {
+                ui.state.inventory_status = "select a scene mesh first (Refresh if empty)".into();
+                ui.rebuild();
+                return;
+            };
+            let Some(&(entity_id, _)) = ui.state.scene_meshes.get(i) else {
+                ui.state.inventory_status = "select a scene mesh first (Refresh if empty)".into();
+                ui.rebuild();
+                return;
+            };
+            vec![InventoryPeerRequest::Despawn { entity_id }]
+        }
+        _ => return,
+    };
+    match shared.inventory_peer_actions.lock() {
+        Ok(mut q) => q.extend(reqs),
+        Err(_) => {
+            ui.state.inventory_status = "inventory peer queue unavailable".into();
+            ui.rebuild();
+            log::warn!("inventory_peer_actions lock poisoned — XR Inventory op dropped");
+        }
+    }
+}
+
 fn sync_xr_hotswitch_ui(ui: &mut SystemUi, shared: &SharedState) {
     let started = shared.presentation.xr_session_started();
     let auto = shared

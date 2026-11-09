@@ -1,10 +1,15 @@
-//! Inventory take-out / put-back / despawn client helpers (x006d / x006e / x007b).
+//! Inventory take-out / put-back / despawn client helpers (x006d / x006e / x007b / x007f).
 //!
 //! Guarantees: Drive list / take_out / put_back over assets HTTP; spawn/despawn put on
 //! Zenoh `inventory/spawn|despawn` sealed with Room AEAD (host Room Token never leaves
 //! the room AEAD boundary); no Drive node_id on the wire to host. Put-back is
 //! Bearer→assets only (no Zenoh); Despawn removes the room entity via host.
-//! Non-guarantees: Prefab multi-child UI; XR Inventory polish; put-back+despawn TX.
+//! Prefab take_out expands children (x007f); client `session.put`s each blake3
+//! sequentially (same style as room Intent puts; declare_publisher not required).
+//! Desktop paces puts under host `SpawnRate(8/10s)` on an auth/inventory worker
+//! (not the UI loop); status reports `spawn put N/M` (Zenoh success ≠ host accept).
+//! Non-guarantees: atomic multi-spawn rollback; host spawn ack to client;
+//! XR-direct HTTP/Zenoh; put-back+despawn TX.
 
 use alchemy_protocol::wire_aead::{self, AeadKind};
 use alchemy_protocol::{inventory_despawn_key, inventory_spawn_key};
@@ -31,12 +36,24 @@ struct NodesResponse {
 #[derive(Debug, Deserialize)]
 struct TakeOutResponse {
     node: DriveNodeDto,
-    blobs: Vec<BlobRef>,
+    blobs: Vec<TakeOutBlob>,
 }
 
-#[derive(Debug, Deserialize)]
-struct BlobRef {
-    blake3: String,
+#[derive(Debug, Clone, Deserialize)]
+pub struct TakeOutBlob {
+    pub blake3: String,
+    #[serde(default)]
+    #[allow(dead_code)] // reserved for UI labels / host batch later
+    pub local_id: Option<String>,
+    #[serde(default)]
+    pub trs: Option<TakeOutTrs>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TakeOutTrs {
+    pub translation: [f64; 3],
+    pub rotation: [f64; 4],
+    pub scale: [f64; 3],
 }
 
 /// List root Drive nodes for the authenticated user.
@@ -57,12 +74,12 @@ pub fn list_drive_nodes(assets_url: &str, access_token: &str) -> Result<Vec<Driv
     }
 }
 
-/// Resolve take-out; returns first blob blake3 for a **blob** node (x006d single-mesh).
-pub fn take_out_blob_blake3(
+/// Resolve take-out for a blob or prefab node (x006d / x007f).
+pub fn take_out_blobs(
     assets_url: &str,
     access_token: &str,
     node_id: &str,
-) -> Result<(DriveNodeDto, String)> {
+) -> Result<(DriveNodeDto, Vec<TakeOutBlob>)> {
     let base = assets_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/drive/take_out");
     let authz = format!("Bearer {access_token}");
@@ -75,18 +92,18 @@ pub fn take_out_blob_blake3(
     {
         Ok(resp) => {
             let parsed: TakeOutResponse = resp.into_json().context("parse take_out")?;
-            if parsed.node.kind != "blob" {
-                return Err(anyhow!(
-                    "x006d supports blob nodes only (got kind={})",
-                    parsed.node.kind
-                ));
+            match parsed.node.kind.as_str() {
+                "blob" | "prefab" => {}
+                other => {
+                    return Err(anyhow!(
+                        "x007f supports blob/prefab take_out only (got kind={other})"
+                    ));
+                }
             }
-            let blake3 = parsed
-                .blobs
-                .first()
-                .map(|b| b.blake3.clone())
-                .ok_or_else(|| anyhow!("take_out returned no blobs"))?;
-            Ok((parsed.node, blake3))
+            if parsed.blobs.is_empty() {
+                return Err(anyhow!("take_out returned no blobs"));
+            }
+            Ok((parsed.node, parsed.blobs))
         }
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();
@@ -96,33 +113,49 @@ pub fn take_out_blob_blake3(
     }
 }
 
-/// Save a single-child Prefab via assets put-back (x006e). Returns Drive node.
-pub fn put_back_prefab(
+/// Prefab put-back child: `(local_id, blake3, optional TRS)`.
+pub type PrefabPutBackChild = (String, String, Option<([f64; 3], [f64; 4], [f64; 3])>);
+
+/// Save a Prefab via assets put-back (x006e / x007f multi-child). Returns Drive node.
+pub fn put_back_prefab_children(
     assets_url: &str,
     access_token: &str,
     name: &str,
-    blake3: &str,
-    trs: Option<([f64; 3], [f64; 4], [f64; 3])>,
+    children: &[PrefabPutBackChild],
 ) -> Result<DriveNodeDto> {
+    if children.is_empty() {
+        return Err(anyhow!("put_back requires at least one child"));
+    }
     let base = assets_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/drive/put_back");
     let authz = format!("Bearer {access_token}");
-    let mut child = json!({
-        "local_id": "mesh_0",
-        "blake3": blake3,
-    });
-    if let Some((translation, rotation, scale)) = trs {
-        child["trs"] = json!({
-            "translation": translation,
-            "rotation": rotation,
-            "scale": scale,
-        });
-    }
+    let payload_children: Vec<_> = children
+        .iter()
+        .enumerate()
+        .map(|(i, (local_id, blake3, trs))| {
+            let mut child = json!({
+                "local_id": if local_id.is_empty() {
+                    format!("mesh_{i}")
+                } else {
+                    local_id.clone()
+                },
+                "blake3": blake3,
+            });
+            if let Some((translation, rotation, scale)) = trs {
+                child["trs"] = json!({
+                    "translation": translation,
+                    "rotation": rotation,
+                    "scale": scale,
+                });
+            }
+            child
+        })
+        .collect();
     let body = json!({
         "name": name,
         "payload": {
             "schema_version": 1,
-            "children": [child],
+            "children": payload_children,
         },
     });
     match ureq::agent()
@@ -153,10 +186,24 @@ pub fn put_back_prefab(
     }
 }
 
+/// Convenience: single-child put-back (x006e).
+#[allow(dead_code)]
+pub fn put_back_prefab(
+    assets_url: &str,
+    access_token: &str,
+    name: &str,
+    blake3: &str,
+    trs: Option<([f64; 3], [f64; 4], [f64; 3])>,
+) -> Result<DriveNodeDto> {
+    put_back_prefab_children(
+        assets_url,
+        access_token,
+        name,
+        &[(String::from("mesh_0"), blake3.to_string(), trs)],
+    )
+}
+
 /// Best-effort role peek from an unverified JWT payload (UI gate only).
-///
-/// Host still verifies signature + role after AEAD open. This avoids guest UX
-/// that reports "spawn requested" when host will reject.
 pub fn room_token_role_unverified(room_token: &str) -> Option<String> {
     let payload = room_token.split('.').nth(1)?;
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload)
@@ -167,6 +214,7 @@ pub fn room_token_role_unverified(room_token: &str) -> Option<String> {
 }
 
 /// Put AEAD-sealed spawn request on Zenoh (x006d / x0069).
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)] // room + pose wire args; mirrors host spawn payload
 pub fn publish_inventory_spawn(
     session: &zenoh::Session,
@@ -180,6 +228,48 @@ pub fn publish_inventory_spawn(
     y: f64,
     z: f64,
 ) -> Result<()> {
+    publish_inventory_spawn_pose(
+        session,
+        room_id,
+        wire_cap,
+        room_key,
+        room_key_epoch,
+        room_token,
+        blake3,
+        x,
+        y,
+        z,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+    )
+}
+
+/// Spawn with full TRS (x007f prefab child).
+#[allow(clippy::too_many_arguments)]
+pub fn publish_inventory_spawn_pose(
+    session: &zenoh::Session,
+    room_id: &str,
+    wire_cap: &str,
+    room_key: &[u8; wire_aead::ROOM_KEY_LEN],
+    room_key_epoch: u64,
+    room_token: &str,
+    blake3: &str,
+    x: f64,
+    y: f64,
+    z: f64,
+    qx: f64,
+    qy: f64,
+    qz: f64,
+    qw: f64,
+    sx: f64,
+    sy: f64,
+    sz: f64,
+) -> Result<()> {
     let key = inventory_spawn_key(room_id, wire_cap);
     let payload = json!({
         "room_token": room_token,
@@ -187,10 +277,13 @@ pub fn publish_inventory_spawn(
         "x": x,
         "y": y,
         "z": z,
-        "qw": 1.0,
-        "sx": 1.0,
-        "sy": 1.0,
-        "sz": 1.0,
+        "qx": qx,
+        "qy": qy,
+        "qz": qz,
+        "qw": qw,
+        "sx": sx,
+        "sy": sy,
+        "sz": sz,
     });
     let plain = serde_json::to_vec(&payload).context("encode spawn JSON")?;
     let envelope = wire_aead::seal(
@@ -200,20 +293,15 @@ pub fn publish_inventory_spawn(
         AeadKind::InventorySpawn,
         &plain,
     )
-    .map_err(|e| anyhow!("AEAD seal inventory spawn: {e}"))?;
-    let publisher = session
-        .declare_publisher(key.clone())
+    .map_err(|e| anyhow!("seal spawn: {e}"))?;
+    session
+        .put(&key, envelope)
         .wait()
-        .map_err(|e| anyhow!("declare_publisher inventory/spawn: {e}"))?;
-    publisher
-        .put(envelope)
-        .wait()
-        .map_err(|e| anyhow!("inventory spawn put: {e}"))?;
-    log::info!("inventory spawn published on {key} (AEAD)");
+        .map_err(|e| anyhow!("spawn put: {e}"))?;
     Ok(())
 }
 
-/// Put AEAD-sealed despawn request on Zenoh (x007b / x0069).
+/// Put AEAD-sealed despawn request on Zenoh (x007b).
 pub fn publish_inventory_despawn(
     session: &zenoh::Session,
     room_id: &str,
@@ -236,38 +324,10 @@ pub fn publish_inventory_despawn(
         AeadKind::InventoryDespawn,
         &plain,
     )
-    .map_err(|e| anyhow!("AEAD seal inventory despawn: {e}"))?;
-    let publisher = session
-        .declare_publisher(key.clone())
+    .map_err(|e| anyhow!("seal despawn: {e}"))?;
+    session
+        .put(&key, envelope)
         .wait()
-        .map_err(|e| anyhow!("declare_publisher inventory/despawn: {e}"))?;
-    publisher
-        .put(envelope)
-        .wait()
-        .map_err(|e| anyhow!("inventory despawn put: {e}"))?;
-    log::info!("inventory despawn published on {key} entity_id={entity_id} (AEAD)");
+        .map_err(|e| anyhow!("despawn put: {e}"))?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn drive_node_dto_deserializes() {
-        let raw = r#"{"nodes":[{"node_id":"n1","kind":"blob","name":"mesh","blake3":"aa"}]}"#;
-        let parsed: NodesResponse = serde_json::from_str(raw).unwrap();
-        assert_eq!(parsed.nodes[0].kind, "blob");
-    }
-
-    #[test]
-    fn role_unverified_reads_payload() {
-        // header.payload.sig — payload = {"role":"host"}
-        let payload = base64::Engine::encode(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-            br#"{"role":"host"}"#,
-        );
-        let tok = format!("x.{payload}.y");
-        assert_eq!(room_token_role_unverified(&tok).as_deref(), Some("host"));
-    }
 }

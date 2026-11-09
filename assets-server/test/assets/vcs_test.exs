@@ -29,9 +29,13 @@ defmodule Assets.VcsTest do
   # ---------------------------------------------------------------------------
 
   defp build_prefab_node(owner_sub, name \\ "test-prefab") do
+    # Upload so child Grant exists — take_out expands children (x007f).
+    {:ok, mesh, _} =
+      Assets.Blobs.upload(owner_sub, "vcs-prefab-#{name}", "application/octet-stream")
+
     {:ok, payload} =
       Payload.new(1, [
-        %{local_id: "c0", blake3: @blake3, trs: nil}
+        %{local_id: "c0", blake3: mesh.blake3, trs: nil}
       ])
 
     {:ok, node} = Drive.save_prefab(owner_sub, name, payload)

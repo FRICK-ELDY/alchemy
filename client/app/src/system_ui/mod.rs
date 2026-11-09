@@ -17,15 +17,19 @@ pub mod facet;
 mod font;
 mod gpu;
 mod icons;
+mod inventory_peer;
 mod layout;
 
 #[allow(unused_imports)] // public re-export; store.logic type for callers
 pub use dash::SharedDashLogic;
 pub use dash::{
-    access_level_from_widget, DashState, DashTab, HomeField, HomeMode, MainHubTab, OnboardingShell,
-    SharedDashStore, SESSION_NAME_MAX,
+    access_level_from_widget, fresh_create_room_id, DashState, DashTab, HomeField, HomeMode,
+    MainHubTab, OnboardingShell, SharedDashStore, SESSION_NAME_MAX,
 };
 pub use gpu::UiGpu;
+pub use inventory_peer::{
+    rematch_inventory_selection, rematch_scene_selection, InventoryMirror, InventoryPeerRequest,
+};
 pub use layout::{LayoutTree, WidgetId};
 
 use std::sync::Mutex;
@@ -52,6 +56,8 @@ pub struct SystemUi {
     dash_chrome_dirty: bool,
     /// Local form edits not yet pushed.
     dash_form_dirty: bool,
+    /// Last applied [`crate::scene::SharedState::inventory_mirror`] revision (XR).
+    inventory_mirror_rev: u64,
 }
 
 impl SystemUi {
@@ -68,7 +74,47 @@ impl SystemUi {
             dash_chrome_rev: 0,
             dash_chrome_dirty: false,
             dash_form_dirty: false,
+            inventory_mirror_rev: 0,
         }
+    }
+
+    /// XR: adopt Desktop Drive list + inventory status when mirror advances.
+    pub fn pull_inventory_mirror(&mut self, shared: &SharedState) -> bool {
+        let Ok(m) = shared.inventory_mirror.lock() else {
+            return false;
+        };
+        if m.revision == self.inventory_mirror_rev {
+            return false;
+        }
+        let prev_node_id = self.state.inventory_selected.and_then(|i| {
+            self.state
+                .inventory_nodes
+                .get(i)
+                .map(|(id, _, _)| id.clone())
+        });
+        self.state.inventory_nodes = m.nodes.clone();
+        self.state.inventory_selected =
+            rematch_inventory_selection(&self.state.inventory_nodes, prev_node_id.as_deref());
+        self.state.inventory_status = m.status.clone();
+        self.inventory_mirror_rev = m.revision;
+        true
+    }
+
+    /// XR: keep scene mesh rows in sync with Manifest-derived SharedState.
+    pub fn sync_inventory_scene_meshes(&mut self, shared: &SharedState) -> bool {
+        let meshes = shared.scene_meshes();
+        if meshes == self.state.scene_meshes {
+            return false;
+        }
+        let prev: Vec<u32> = self
+            .state
+            .scene_selected
+            .iter()
+            .filter_map(|&i| self.state.scene_meshes.get(i).map(|(eid, _)| *eid))
+            .collect();
+        self.state.scene_meshes = meshes;
+        self.state.scene_selected = rematch_scene_selection(&self.state.scene_meshes, &prev);
+        true
     }
 
     /// Mark chrome (`open`/`tab`/`shell`/Settings) dirty.
@@ -406,7 +452,7 @@ impl SystemUi {
                 UiAction::WorldsRefresh
             }
             WidgetId::TabInventory => {
-                if self.block_nav_while_session("Leave session before opening Inventory") {
+                if self.block_nav_while_session("Inventory is available when Live (x007f)") {
                     return UiAction::None;
                 }
                 self.clear_settings_room_focus();
@@ -428,12 +474,18 @@ impl SystemUi {
                     self.rebuild();
                     return UiAction::None;
                 }
+                // Mint a fresh room_id so Start creates DemoScene — do not reuse `local`
+                // (existing rooms keep take-out/despawn history in world DB).
+                self.state.home_room_id = dash::fresh_create_room_id();
                 self.state.home_create_open = true;
                 self.state.tab = DashTab::Home;
                 self.state.shell = OnboardingShell::Dash;
                 self.state.home_focus = Some(crate::system_ui::HomeField::SessionName);
                 self.state.home_status = if self.state.home_session_actions_enabled {
-                    "Pick access level, then Start session".into()
+                    format!(
+                        "New room_id={} — pick access, then Start (DemoScene)",
+                        self.state.home_room_id
+                    )
                 } else {
                     "Create panel (browse only) — Start HTTP is Desktop-only".into()
                 };
@@ -517,7 +569,7 @@ impl SystemUi {
                 };
                 if idx < self.state.inventory_nodes.len() {
                     self.state.inventory_selected = Some(idx);
-                    self.state.scene_selected = None;
+                    self.state.scene_selected.clear();
                     self.rebuild();
                 }
                 UiAction::None
@@ -534,7 +586,13 @@ impl SystemUi {
                     _ => 0,
                 };
                 if idx < self.state.scene_meshes.len() {
-                    self.state.scene_selected = Some(idx);
+                    // Toggle multi-select for put-back (x007f).
+                    if let Some(pos) = self.state.scene_selected.iter().position(|&i| i == idx) {
+                        self.state.scene_selected.remove(pos);
+                    } else {
+                        self.state.scene_selected.push(idx);
+                        self.state.scene_selected.sort_unstable();
+                    }
                     self.state.inventory_selected = None;
                     self.rebuild();
                 }
@@ -1670,7 +1728,42 @@ mod tests {
         assert!(ui
             .state
             .worlds_status
-            .contains("Leave session before opening Inventory"));
+            .contains("Inventory is available when Live"));
+    }
+
+    #[test]
+    fn live_session_allows_inventory_tab() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::Dash;
+        ui.state.tab = DashTab::Home;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.home_session_actions_enabled = true;
+        ui.state.worlds_in_room = true;
+        ui.state.worlds_waiting_host = false;
+        ui.state.worlds_key_stale = false;
+        ui.state.session_enter_active = false;
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        let rect = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::TabInventory)
+            .map(|(_, r)| *r)
+            .expect("inventory tab");
+        let action = ui.on_click(rect.x + 1.0, rect.y + 1.0);
+        assert_eq!(action, UiAction::InventoryOpen);
+        assert_eq!(ui.state.tab, DashTab::Inventory);
+        ui.rebuild();
+        assert!(
+            ui.tree
+                .hits
+                .iter()
+                .any(|(id, _)| *id == WidgetId::InventoryRefresh),
+            "Live Inventory tab must show inventory controls, not session shell"
+        );
     }
 
     #[test]
@@ -1915,6 +2008,7 @@ mod tests {
     fn xr_apply_chrome_echoes_in_session_peer() {
         let logic = SharedDashLogic {
             in_session: true,
+            inventory_live: false,
             tab: DashTab::Home,
             shell: OnboardingShell::Dash,
             open: true,
@@ -1923,11 +2017,43 @@ mod tests {
         let mut xr = DashState {
             home_session_actions_enabled: false,
             in_session_peer: false,
+            inventory_live_peer: false,
             ..Default::default()
         };
         logic.apply_chrome_to(&mut xr);
         assert!(xr.in_session_peer);
+        assert!(!xr.inventory_live_peer);
         assert!(xr.inventory_blocked());
+    }
+
+    #[test]
+    fn inventory_unblocked_when_live() {
+        let desktop = DashState {
+            home_session_actions_enabled: true,
+            worlds_in_room: true,
+            worlds_waiting_host: false,
+            worlds_key_stale: false,
+            session_enter_active: false,
+            ..Default::default()
+        };
+        assert!(desktop.inventory_live_allowed());
+        assert!(!desktop.inventory_blocked());
+
+        let waiting = DashState {
+            home_session_actions_enabled: true,
+            worlds_in_room: true,
+            worlds_waiting_host: true,
+            ..Default::default()
+        };
+        assert!(waiting.inventory_blocked());
+
+        let xr_live = DashState {
+            home_session_actions_enabled: false,
+            in_session_peer: true,
+            inventory_live_peer: true,
+            ..Default::default()
+        };
+        assert!(!xr_live.inventory_blocked());
     }
 
     #[test]

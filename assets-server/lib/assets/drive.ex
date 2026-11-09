@@ -1,18 +1,23 @@
 defmodule Assets.Drive do
   @moduledoc """
   Personal Drive CRUD (x005c folder/blob, x005d prefab kind, x005f take-out, x0060 put-back,
-  x006e HTTP put_back).
+  x006e HTTP put_back, x007f prefab multi-child expand).
 
   Guarantees:
   - Owner-only CRUD for DriveNode (folder / blob / prefab).
   - blob/prefab creation requires owner to hold a BlobGrant for the referenced blake3.
   - parent_id must point to an owner-controlled folder (not another kind).
   - Circular parent chain is rejected (bounded hop walk).
-  - resolve_for_take_out/2 verifies grant ownership before host spawn (x005f).
+  - resolve_for_take_out/2: blob → single `%{blake3}`; prefab → Payload children
+    (`blake3` + `local_id` + optional `trs`) with Grant on payload and every child (x007f).
   - save_prefab/4 validates Prefab.Payload schema and parent authz before upload (x0060).
+    Child BlobGrants are **not** required at save time; take_out will fail with
+    `:no_grant` until every child Grant exists (intentional gap vs take_out).
 
   Non-guarantees:
   - Group Vault, sharing, Mail/Comms, Shop, VcsRepo ops (→ Assets.Vcs).
+  - folder / vcs_repo take-out; host multi-child spawn.
+  - save_prefab rejecting Grant-less children (deferred; take_out enforces).
   - Compensating delete when upload succeeds but DriveNode upsert fails (CAS bytes +
     quota/Grant may remain; CAS orphan bytes without CasObject are handled by
     Assets.CAS.OrphanGc (x0074), not by Drive delete).
@@ -22,6 +27,7 @@ defmodule Assets.Drive do
 
   alias Assets.Blobs
   alias Assets.Blobs.BlobGrant
+  alias Assets.CAS
   alias Assets.Drive.Node
   alias Assets.Prefab.Payload
   alias Assets.Repo
@@ -174,26 +180,34 @@ defmodule Assets.Drive do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Resolve a DriveNode for inventory take-out (x005f).
+  Resolve a DriveNode for inventory take-out (x005f / x007f).
 
-  Verifies the owner holds a BlobGrant for every blob referenced by the node.
-  Returns the node and the list of blake3 refs the host may use.
+  - `blob`: single `%{blake3}` after Grant check.
+  - `prefab`: read Payload from CAS; return **child mesh** refs
+    (`blake3` + `local_id` + optional `trs`). Payload blake3 is not listed.
+    Requires Grant on the payload object and every child blake3.
+  - other kinds: `:unsupported_kind`.
 
-  Host receives blake3 refs only — NOT Drive node_id (Drive IDs are private
-  persistent identifiers; host works only with ItemRef / entity_id at runtime).
+  Host receives blake3 refs only — NOT Drive node_id.
   """
   @spec resolve_for_take_out(String.t(), String.t()) ::
-          {:ok, %{node: Node.t(), blobs: [%{blake3: String.t()}]}}
-          | {:error, :not_found | :no_grant}
+          {:ok, %{node: Node.t(), blobs: [map()]}}
+          | {:error, :not_found | :no_grant | :unsupported_kind | :invalid_prefab | :cas_missing}
   def resolve_for_take_out(owner_sub, node_id) do
     case get_node(owner_sub, node_id) do
       nil ->
         {:error, :not_found}
 
-      %Node{} = node ->
-        with :ok <- assert_all_grants(owner_sub, node) do
-          {:ok, %{node: node, blobs: collect_blobs(node)}}
+      %Node{kind: "blob"} = node ->
+        with :ok <- assert_blob_grant(owner_sub, node.blake3) do
+          {:ok, %{node: node, blobs: [%{blake3: node.blake3}]}}
         end
+
+      %Node{kind: "prefab"} = node ->
+        expand_prefab_take_out(owner_sub, node)
+
+      %Node{} ->
+        {:error, :unsupported_kind}
     end
   end
 
@@ -268,17 +282,59 @@ defmodule Assets.Drive do
     end
   end
 
-  defp assert_all_grants(owner_sub, %Node{kind: kind, blake3: blake3})
-       when kind in ["blob", "prefab"] do
-    assert_blob_grant(owner_sub, blake3)
+  defp expand_prefab_take_out(owner_sub, %Node{blake3: payload_blake3} = node)
+       when is_binary(payload_blake3) do
+    result =
+      with :ok <- assert_blob_grant(owner_sub, payload_blake3),
+           {:ok, json} <- CAS.read(payload_blake3),
+           {:ok, %Payload{children: children}} <- Payload.from_json(json),
+           :ok <- assert_child_grants(owner_sub, children) do
+        {:ok, %{node: node, blobs: children_to_take_out_blobs(children)}}
+      end
+
+    map_prefab_take_out_error(result)
   end
 
-  defp assert_all_grants(_owner_sub, %Node{}), do: :ok
+  defp expand_prefab_take_out(_owner_sub, %Node{}), do: {:error, :invalid_prefab}
 
-  defp collect_blobs(%Node{kind: kind, blake3: blake3}) when kind in ["blob", "prefab"],
-    do: [%{blake3: blake3}]
+  defp children_to_take_out_blobs(children) do
+    Enum.map(children, &child_to_take_out_blob/1)
+  end
 
-  defp collect_blobs(%Node{}), do: []
+  defp child_to_take_out_blob(%{blake3: blake3, local_id: local_id, trs: nil}) do
+    %{blake3: blake3, local_id: local_id}
+  end
+
+  defp child_to_take_out_blob(%{blake3: blake3, local_id: local_id, trs: %{} = trs}) do
+    %{blake3: blake3, local_id: local_id, trs: trs}
+  end
+
+  defp map_prefab_take_out_error({:ok, _} = ok), do: ok
+  defp map_prefab_take_out_error({:error, :no_grant}), do: {:error, :no_grant}
+  defp map_prefab_take_out_error({:error, :not_found}), do: {:error, :cas_missing}
+  defp map_prefab_take_out_error({:error, :invalid_payload_shape}), do: {:error, :invalid_prefab}
+
+  defp map_prefab_take_out_error({:error, {:unsupported_schema_version, _}}),
+    do: {:error, :invalid_prefab}
+
+  defp map_prefab_take_out_error({:error, {:invalid_child, _, _}}), do: {:error, :invalid_prefab}
+  # Unknown atoms (incl. transient CAS/S3) → :invalid_prefab (422). Avoids CaseClauseError;
+  # tradeoff: ops cannot tell storage 5xx from bad payload via this path alone.
+  defp map_prefab_take_out_error({:error, reason}) when is_atom(reason),
+    do: {:error, :invalid_prefab}
+
+  defp map_prefab_take_out_error({:error, _}), do: {:error, :invalid_prefab}
+
+  defp assert_child_grants(_owner_sub, []), do: :ok
+
+  defp assert_child_grants(owner_sub, children) do
+    Enum.reduce_while(children, :ok, fn %{blake3: blake3}, :ok ->
+      case assert_blob_grant(owner_sub, blake3) do
+        :ok -> {:cont, :ok}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
 
   defp folder_has_children?(owner_sub, parent_id) do
     Repo.exists?(from(n in Node, where: n.owner_sub == ^owner_sub and n.parent_id == ^parent_id))

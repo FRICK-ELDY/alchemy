@@ -33,9 +33,9 @@ defmodule Assets.DriveTakeOutTest do
     assert b3 == cas_obj.blake3
   end
 
-  test "resolve_for_take_out returns empty blobs for folder" do
+  test "resolve_for_take_out rejects folder as unsupported_kind" do
     {:ok, folder} = Drive.create_folder(@sub_a, "Folder")
-    assert {:ok, %{blobs: []}} = Drive.resolve_for_take_out(@sub_a, folder.node_id)
+    assert {:error, :unsupported_kind} = Drive.resolve_for_take_out(@sub_a, folder.node_id)
   end
 
   test "resolve_for_take_out returns not_found for wrong owner" do
@@ -50,17 +50,20 @@ defmodule Assets.DriveTakeOutTest do
              Drive.resolve_for_take_out(@sub_a, "00000000-0000-0000-0000-000000000001")
   end
 
-  test "resolve_for_take_out for prefab returns payload blob" do
+  test "resolve_for_take_out for prefab expands child mesh (x007f)" do
+    {:ok, mesh, _} = Blobs.upload(@sub_a, "mesh-child", "application/octet-stream")
+
     {:ok, payload} =
-      Payload.new(1, [%{local_id: "m0", blake3: @blake3, trs: nil}])
+      Payload.new(1, [%{local_id: "m0", blake3: mesh.blake3, trs: nil}])
 
     {:ok, node} = Drive.save_prefab(@sub_a, "my-prefab", payload)
 
-    assert {:ok, %{node: n, blobs: [%{blake3: b3}]}} =
+    assert {:ok, %{node: n, blobs: [%{blake3: b3, local_id: "m0"}]}} =
              Drive.resolve_for_take_out(@sub_a, node.node_id)
 
     assert n.kind == "prefab"
-    assert is_binary(b3) and byte_size(b3) == 64
+    assert b3 == mesh.blake3
+    refute b3 == node.blake3
   end
 
   # ---------------------------------------------------------------------------
