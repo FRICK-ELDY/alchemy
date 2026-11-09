@@ -2,7 +2,7 @@
 
 正本の進捗目次は [README.md](README.md)。本ファイルは **未完了帯の優先度ビュー**。
 
-**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**、**x0070 trust WAN E2E**、**x0071 world RL / Room cap**、**x0072 launcher discovery**。**x0073** 軽量衛生 **done**。**x0074** reserved reaper / orphan CAS GC **done**。**x0075** BLAKE3 / seal-hash 常駐 Port **done**。**x0076**–**x0078**（保証単位分割 / bind 送信元 / mTLS temp）**done**。**x0079** DemoScene 共有テストベクタ **done**。**x007a** metrics+jti **done**。**x007b** scene despawn **done**。**x007d** Live Manifest remount **done**。空き ID = `x007f`。
+**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**、**x0070 trust WAN E2E**、**x0071 world RL / Room cap**、**x0072 launcher discovery**。**x0073** 軽量衛生 **done**。**x0074** reserved reaper / orphan CAS GC **done**。**x0075** BLAKE3 / seal-hash 常駐 Port **done**。**x0076**–**x0078**（保証単位分割 / bind 送信元 / mTLS temp）**done**。**x0079** DemoScene 共有テストベクタ **done**。**x007a** metrics+jti **done**。**x007b** scene despawn **done**。**x007c** Worlds カタログ / Join・Host **done**。**x007d** Live Manifest remount **done**。**x007e** Room key epoch **done**。空き ID = `x007f`。
 
 ---
 
@@ -10,8 +10,8 @@
 
 | 優先 | ID | 内容 | 状態 |
 |:---|:---|:---|:---|
-| **P0-UX** | [x007c](slices/x007c-worlds-catalog-join-host.md) | Worlds カタログ / Join・Host 分離（見える・入れる・読める・回す） | **active**（Phase 0–4 done；Phase 5 KeyStale は x007e 待ち） |
-| **P0-鍵寿命** | [x007e](slices/x007e-room-key-epoch.md) | Room key epoch / revoke-driven rotation（improvement P0-2） | **active** |
+| **P0-閉** | [x007c](slices/x007c-worlds-catalog-join-host.md) | Worlds カタログ / Join・Host 分離（見える・入れる・読める・回す） | **done** |
+| **P0-閉** | [x007e](slices/x007e-room-key-epoch.md) | Room key epoch / revoke-driven rotation（improvement P0-2） | **done** |
 | **P0-閉** | [x007d](slices/x007d-live-manifest-mesh-remount.md) | Live Manifest mesh remount（MainHub 空シェル） | **done** |
 | **P0-ladder** | x0054–x0065 | inventory Wave 0–4 | **done（host take-out UI は x006d）** |
 | **P0-体感** | [x0053](slices/x0053-xr-desktop-hotswitch.md) | XR ↔ Desktop ホットスイッチ | **done** |
@@ -103,8 +103,7 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 
 ## 推奨着手順（要約・本作業後）
 
-1. **[x007e](slices/x007e-room-key-epoch.md) Room key epoch**（P0-2）→ その後 x007c KeyStale 本採用
-2. Prefab 多子 / XR Inventory（薄皮残り）または verifier Spot-Check（保留）
-3. Formula / market / 検疫（条件: seal / gen-rev 済み）
+1. Prefab 多子 / XR Inventory（薄皮残り）または verifier Spot-Check（保留）— 次 ID `x007f`
+2. Formula / market / 検疫（条件: seal / gen-rev 済み）
 
 ← [Roadmap 目次](README.md)

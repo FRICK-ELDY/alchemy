@@ -1,9 +1,9 @@
-# x007c — Worlds カタログ / Join・Host 分離（草案）
+# x007c — Worlds カタログ / Join・Host 分離
 
-> **ID:** `x007c` · **slug:** `worlds-catalog-join-host` · **status:** `active` · **area:** `[world, client, system_ui, docs]` · **depends_on:** `[x0034, x0035, x0036, x0037, x0018, x0019, x0032]`  
-> **優先度:** UX 本線草案（評価 P0-2 Room key epoch とは分離。epoch 実装後に KeyStale を本採用）
+> **ID:** `x007c` · **slug:** `worlds-catalog-join-host` · **status:** `done` · **area:** `[world, client, system_ui, docs]` · **depends_on:** `[x0034, x0035, x0036, x0037, x0018, x0019, x0032]`  
+> **優先度:** UX 本線（見える・入れる・読める・回す）。KeyStale 本採用は [x007e](x007e-room-key-epoch.md)
 
-目標: Dash に **Worlds タブ**を追加し、Room の **見える / 入れる / 読める / 回す** を UI 遷移で混ぜない。一覧はカタログのみ、Join は guest 入場券のみ、自 host 起動は別 CTA とし、役割（owner / guest）に応じて迷わない優先表示を行う。Join 成功後は必ず **Waiting for host / Live** を分岐し、待機中もユーザーが次の行動（退室・オーナーによるその場ホスト起動）を選べるようにする。
+目標: MainHub で Room の **見える / 入れる / 読める / 回す** を UI 遷移で混ぜない（Participation＝参加、Organizing＝主催）。一覧はカタログのみ、Join は guest 入場券のみ、自 host 起動は別 CTA とし、役割（owner / guest）に応じて迷わない優先表示を行う。Join 成功後は必ず **Waiting for host / Live / KeyStale** を分岐し、待機中もユーザーが次の行動（退室・オーナーによるその場ホスト起動）を選べるようにする。
 
 根拠: テスター手通し（2026-11-06）で Join 後に host 不在だと空間が動かないことが判明。visibility ACL（x0034–x0036）・仮作成 UI（x0037）はあるが **一覧 API / 一覧 UI は未整備**（[world-server.md](../../0_doc/architecture/world-server.md)）。評価提案の Room key epoch（[improvement-plan-2026-11-05.md](../../0_doc/evaluation/improvement-plan-2026-11-05.md) **P0-2**）とセットで「読める」境界を UI に載せる。
 
@@ -18,7 +18,7 @@ WAN 購読面・`wire_cap`・mTLS・`epoch` 等の内部用語は UI に出さ�
 |:---|:---|:---|:---|:---|
 | **見える** | 一覧 API（本 Slice） | 候補として行を出してよい | カタログ一覧への表示 | 一覧に行が出ない（0件時は作成ガイドを表示） |
 | **入れる** | `POST …/tokens`（既存 visibility ACL） | Room Token 発行可 | 「入室可能」バッジ / 入室ボタン有効 | ボタン無効化、または入室時エラー通知（「公開範囲により入室できません」） |
-| **読める** | 有効 `room_key`（将来 epoch）＋ host 配信 | Manifest / Frame / Presence が生きている | **稼働中 (Live)** | **ホストの起動待ち (Waiting for host)** / **部屋の更新あり・再接続が必要 (KeyStale)** |
+| **読める** | 有効 `room_key` + `room_key_epoch`（x007e）＋ host 配信 | Manifest / Frame / Presence が生きている | **稼働中 (Live)** | **ホストの起動待ち (Waiting for host)** / **部屋の更新あり・再接続が必要 (KeyStale)** |
 | **回す** | Start session / Host this room（既存 HostSupervisor） | 自前 host-server を立てて配信 | **ホストとして部屋を起動** | オーナー／権限保持者にのみ起動 CTA を提示 |
 
 ---
@@ -32,7 +32,7 @@ WAN 購読面・`wire_cap`・mTLS・`epoch` 等の内部用語は UI に出さ�
 | client: **Join as guest** と **Host this room** を明確に別 CTA としつつ、自分の部屋（owner）では「Host this room」を主ボタンにして押し間違いを防ぐ | 一覧行の Live 状態を権威保証すること（best-effort ヒントまたは非表示） |
 | Join 成功後の in-room 状態は **Waiting for host** と **Live** を明確に区別し、Waiting 画面内に「退室」および「（owner時）今すぐ自分がホストを起動」の導線を置く | デザイン最終化；XR 専用 Worlds；招待リンク本実装 |
 | Waiting 中の owner 救済 CTA（owner のみ表示）。**MVP 実装は Leave → spawn host → rejoin**（バス鍵・seal retarget を単純化）。Rescue 対象は `shared.get_room_id()`（実入室）のみ；カタログ行プレビューの `home_room_id` は使わない。Host spawn は visibility `Applied`（owner PUT 成功）のみ | 入室維持のままの host 昇格；guest→host 権限モデル；他マシンの remote host 委任；social カタログの友達グラフ走査 |
-| Home の固定 `ROOM_ID` Join / Start は Worlds へ移行（上級者・デバッグ向けに Settings 残し可） | **本 Slice 単体での Room key epoch 実装**（別 Slice。未実装時 KeyStale は殻のみ） |
+| Home の固定 `ROOM_ID` Join / Start は Worlds へ移行（上級者・デバッグ向けに Settings 残し可） | Room key epoch / AAD 回転の実装本体（[x007e](x007e-room-key-epoch.md)） |
 | visibility 変更 UI がある場合、「既存参加者は再接続が必要」と明記 | |
 
 ---
@@ -180,12 +180,13 @@ stateDiagram-v2
 
 ## やらない（本 Slice）
 
-- Room key epoch / AAD 回転の実装本体 → **[x007e](x007e-room-key-epoch.md)**（improvement **P0-2**）
+- Room key epoch / AAD 回転の実装本体 → **[x007e](x007e-room-key-epoch.md)** で閉じ済み（improvement **P0-2**）
 - WAN ACL のキー式縮小・mTLS room 束縛
 - Group ACL / 招待コード / ディープリンク本実装
 - Prefab 多子・XR Inventory
 - 一覧 API での権威ある host 死活保証
 - 最終ビジュアル（絵文字アイコン必須化含む）
+- Organizing「My worlds」の owner 本一覧 Host CTA（スタブ期間）
 
 ---
 
@@ -196,10 +197,10 @@ stateDiagram-v2
 | 0 | Slice 草案 + 目次 / backlog | **done** |
 | 1 | world 一覧 API + 単体テスト（visibility 行列）。`host_status_hint` は既定オフ | **done** |
 | 2 | client Worlds タブ（2ペイン構成・更新ボタン・Empty State）+ Room 詳細 CTA 分離（owner 優先表示） | **done**（Desktop；XR は Desktop-only メッセージ） |
-| 3 | Join 後 `Waiting for host` / `Live` シェル（ホスト不在の明示 ＋ Leave ＋ owner 直接 Host 起動導線） | **done**（Frame 到達で Live；3s stall で Live→WaitingHost；Host Rescue は leave→rejoin MVP；KeyStale は殻のみ） |
+| 3 | Join 後 `Waiting for host` / `Live` シェル（ホスト不在の明示 ＋ Leave ＋ owner 直接 Host 起動導線） | **done**（Frame 到達で Live；3s stall で Live→WaitingHost；Host Rescue は leave→rejoin MVP） |
 | 3b | レビュー重大修正: `ROOM_ID` env 同期・HostSupervisor room retarget 再起動・Host CTA owner のみ・カタログ owned∪public∪social 候補 | **done** |
-| 4 | Home の固定 Join/Start を Worlds へ移設（Settings に上級者・デバッグ用として残し可） | **done**（Home＝Open Worlds / Create；Settings Advanced＝固定 ROOM_ID Join/Start） |
-| 5 | architecture（client / world-server）鮮度更新・`KeyStale` 殻実装（epoch Slice 待ち） | **partial**（world-server.md retarget 保証追記；KeyStale UI 本採用は [x007e](x007e-room-key-epoch.md)） |
+| 4 | Home の固定 Join/Start を Worlds へ移設（Settings に上級者・デバッグ用として残し可） | **done**（MainHub Participation/Organizing；Settings Advanced＝固定 ROOM_ID Join/Start） |
+| 5 | architecture（client / world-server）鮮度更新・`KeyStale` 本採用（x007e） | **done**（保証表・カタログ API・KeyStale Rejoin/Leave） |
 
 ---
 
