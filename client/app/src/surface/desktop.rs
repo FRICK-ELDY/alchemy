@@ -37,6 +37,7 @@ use crate::auth;
 use crate::host_supervisor;
 use crate::mesh::CpuMesh;
 use crate::operator_prefs::{self, endpoints_for, OperatorKind};
+use crate::room::install_host_inventory_token;
 use crate::scene::{
     create_depth_view, create_wgpu_for_window, CameraLook, EntityPose, MoveIntent, SceneGpu,
     SharedState,
@@ -1468,15 +1469,28 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    // Live → WaitingHost: new tick value stalled while still in-room.
+                    // Live stall / recovery: host skips empty Frame deltas without advancing
+                    // net_tick (x0024). Presence/Manifest keepalive must count as alive.
                     const FRAME_STALL: std::time::Duration = std::time::Duration::from_secs(10);
+                    if self.ui.state.worlds_waiting_host
+                        && self.ui.state.worlds_host_disconnect
+                        && self
+                            .shared
+                            .last_host_alive_at()
+                            .is_some_and(|at| now.duration_since(at) < FRAME_STALL)
+                    {
+                        self.ui.state.worlds_waiting_host = false;
+                        self.ui.state.worlds_host_disconnect = false;
+                        self.ui.state.worlds_status = "Live — host signals arriving".into();
+                        self.ui.state.home_status = "Live — host signals arriving".into();
+                        dirty = true;
+                    }
                     if self.ui.state.worlds_in_room
                         && !self.ui.state.worlds_waiting_host
                         && self.ui.state.worlds_seen_frame_tick.is_some()
                         && self
-                            .ui
-                            .state
-                            .worlds_last_frame_at
+                            .shared
+                            .last_host_alive_at()
                             .is_some_and(|at| now.duration_since(at) > FRAME_STALL)
                     {
                         // One-shot recovery: Presence may be invisible if RX stalled; still
@@ -1486,7 +1500,16 @@ impl ApplicationHandler for App {
                         self.ui.state.worlds_host_disconnect = true;
                         self.ui.state.worlds_status =
                             "Host connection lost — wait for return or Leave".into();
-                        self.ui.state.tab = DashTab::Home;
+                        self.ui.state.home_status =
+                            "Host connection lost — wait for return or Leave".into();
+                        // Inventory is Live-only (x007f): stall → Waiting drops Inventory/Home/
+                        // Worlds to Home so the session shell is visible. Settings may stay.
+                        if matches!(
+                            self.ui.state.tab,
+                            DashTab::Inventory | DashTab::Home | DashTab::Worlds
+                        ) {
+                            self.ui.state.tab = DashTab::Home;
+                        }
                         self.ui.state.shell = OnboardingShell::Dash;
                         self.ui.state.open = true;
                         dirty = true;
@@ -1643,11 +1666,19 @@ fn complete_pending_room_bind(
             }
             PendingBindSuccess::Host { name, wanted } => {
                 ui.state.home_create_open = false;
-                let status = if name.is_empty() {
+                let mut status = if name.is_empty() {
                     format!("Hosting — waiting for first frame ({wanted})")
                 } else {
                     format!("Hosting: {name} — waiting for first frame ({wanted})")
                 };
+                // Soft-fail Host/Start only: install_host_inventory_token failed after join.
+                // Guest Join (even as owner) must not look like a Token error.
+                if !shared_has_host_inventory_token(shared) {
+                    status.push_str("; inventory host Token missing");
+                    ui.state.inventory_status =
+                        "host inventory Token missing — Take-out/Despawn gated (re-Host)".into();
+                    publish_inventory_mirror_from_ui(ui, shared);
+                }
                 ui.state.home_status = status.clone();
                 ui.state.worlds_status = status;
                 ui.state.worlds_waiting_host = true;
@@ -1919,8 +1950,19 @@ fn start_worlds_host(
                             // Stale: Leave keeps host; do not stop a possible re-Host.
                             Err("host start aborted: signed out".into())
                         } else {
-                            join_room_with_access(&shared_job, &access, epoch)
-                                .map_err(|e| format!("{e:#}"))
+                            match join_room_with_access(&shared_job, &access, epoch) {
+                                Ok(()) => {
+                                    if let Err(err) =
+                                        install_host_inventory_token(&shared_job, &access)
+                                    {
+                                        log::warn!(
+                                            "host inventory Token after Host join failed: {err:#}"
+                                        );
+                                    }
+                                    Ok(())
+                                }
+                                Err(e) => Err(format!("{e:#}")),
+                            }
                         }
                     }
                     Err(err) => Err(format!("local host-server start failed: {err:#}")),
@@ -2046,6 +2088,26 @@ fn inventory_status_rebuild(ui: &mut SystemUi, shared: &SharedState, status: imp
     ui.state.inventory_status = status.into();
     publish_inventory_mirror_from_ui(ui, shared);
     ui.rebuild();
+}
+
+fn shared_has_host_inventory_token(shared: &SharedState) -> bool {
+    shared
+        .auth
+        .lock()
+        .ok()
+        .is_some_and(|g| g.host_room_token.is_some())
+}
+
+/// Gate copy when Take-out/Despawn lacks `host_room_token` (not the same as "not joined").
+fn inventory_host_token_gate_status(
+    access: &Option<String>,
+    host_room_token: &Option<String>,
+) -> Option<&'static str> {
+    match (access.as_ref(), host_room_token.as_ref()) {
+        (None, _) => Some("sign in required"),
+        (Some(_), None) => Some("host inventory Token missing — re-Host / Start as owner"),
+        _ => None,
+    }
 }
 
 /// Host `SpawnRate(8/10s)` — client spaces puts so host does not silently reject.
@@ -2381,6 +2443,14 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             }
+            // Create panel must not reuse an existing room (e.g. `local`) — that keeps
+            // prior take-out/despawn scene. Mint once more if the field was never refreshed.
+            if ui.state.home_create_open {
+                let cur = ui.state.home_room_id.trim();
+                if cur.is_empty() || cur.eq_ignore_ascii_case("local") {
+                    ui.state.home_room_id = crate::system_ui::fresh_create_room_id();
+                }
+            }
             let room = ui.state.home_room_id.trim().to_string();
             if room.is_empty() {
                 ui.state.home_status =
@@ -2465,8 +2535,19 @@ fn handle_ui_action(
                                     // Stale: Leave keeps host; do not stop a possible re-Host.
                                     Err("start aborted: signed out".into())
                                 } else {
-                                    join_room_with_access(&shared_job, &access, epoch)
-                                        .map_err(|e| format!("{e:#}"))
+                                    match join_room_with_access(&shared_job, &access, epoch) {
+                                        Ok(()) => {
+                                            if let Err(err) =
+                                                install_host_inventory_token(&shared_job, &access)
+                                            {
+                                                log::warn!(
+                                                    "host inventory Token after StartSession host failed: {err:#}"
+                                                );
+                                            }
+                                            Ok(())
+                                        }
+                                        Err(e) => Err(format!("{e:#}")),
+                                    }
                                 }
                             }
                             Err(err) => Err(format!("local host-server start failed: {err:#}")),
@@ -2741,7 +2822,14 @@ fn handle_ui_action(
         }
         UiAction::WorldsRejoin => {
             let room_id = shared.get_room_id().to_string();
-            let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+            let (access, restore_host_inventory) = {
+                let Ok(auth) = shared.auth.lock() else {
+                    ui.state.worlds_status = "Rejoin failed: auth lock".into();
+                    ui.rebuild();
+                    return;
+                };
+                (auth.access_token.clone(), auth.host_room_token.is_some())
+            };
             discard_auth_job(ui, shared, auth_job);
             room_bind.clear();
             leave_room(shared, zenoh);
@@ -2764,7 +2852,17 @@ fn handle_ui_action(
             }
             shared.set_room_id(std::sync::Arc::<str>::from(room_id));
             let epoch = shared.auth_work_epoch();
-            let join = join_room_with_access(shared, &access, epoch).map_err(|e| format!("{e:#}"));
+            let join = match join_room_with_access(shared, &access, epoch) {
+                Ok(()) => {
+                    if restore_host_inventory {
+                        if let Err(err) = install_host_inventory_token(shared, &access) {
+                            log::warn!("host inventory Token after Rejoin failed: {err:#}");
+                        }
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(format!("{e:#}")),
+            };
             apply_join_result(
                 ui,
                 room_bind.pending,
@@ -2863,10 +2961,15 @@ fn handle_ui_action(
                     inventory_status_rebuild(ui, shared, "auth lock failed");
                     return;
                 };
-                (auth.access_token.clone(), auth.room_token.clone())
+                (auth.access_token.clone(), auth.host_room_token.clone())
             };
+            if let Some(msg) = inventory_host_token_gate_status(&access, &room_token) {
+                inventory_status_rebuild(ui, shared, msg);
+                return;
+            }
             let (Some(access), Some(room_token)) = (access, room_token) else {
-                inventory_status_rebuild(ui, shared, "join a room as host first");
+                // Exhaustiveness: gate helper already covered None cases.
+                inventory_status_rebuild(ui, shared, "host inventory Token missing");
                 return;
             };
             if crate::inventory::room_token_role_unverified(&room_token).as_deref() != Some("host")
@@ -3073,15 +3176,19 @@ fn handle_ui_action(
                 );
                 return;
             };
-            let room_token = {
+            let (access, room_token) = {
                 let Ok(auth) = shared.auth.lock() else {
                     inventory_status_rebuild(ui, shared, "auth lock failed");
                     return;
                 };
-                auth.room_token.clone()
+                (auth.access_token.clone(), auth.host_room_token.clone())
             };
+            if let Some(msg) = inventory_host_token_gate_status(&access, &room_token) {
+                inventory_status_rebuild(ui, shared, msg);
+                return;
+            }
             let Some(room_token) = room_token else {
-                inventory_status_rebuild(ui, shared, "join a room as host first");
+                inventory_status_rebuild(ui, shared, "host inventory Token missing");
                 return;
             };
             if crate::inventory::room_token_role_unverified(&room_token).as_deref() != Some("host")

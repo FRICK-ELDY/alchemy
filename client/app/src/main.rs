@@ -142,6 +142,7 @@ fn main() -> Result<()> {
         liveliness: Mutex::new(None),
         liveliness_prev: Mutex::new(None),
         world: Mutex::new(scene::WorldView::default()),
+        last_host_alive_at: Mutex::new(None),
         metrics: Arc::clone(&client_metrics),
         box_defs: Mutex::new(Arc::new(scene::BoxDefs::default())),
         mesh_entity_id: AtomicU32::new(0),

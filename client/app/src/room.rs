@@ -204,8 +204,13 @@ pub(crate) fn open_zenoh_for(shared: &SharedState) -> Result<zenoh::Session> {
     zenoh_connect::open_client(&endpoint)
 }
 
-/// Apply auth session + guest Room Token into SharedState (x0018 join).
+/// Apply auth session + Room Token into SharedState (x0018 join).
 /// x003e: mint Intent session first so Token `cnf.spk` matches bind `session_pub`.
+///
+/// Always joins as **guest** Room Token + guest mTLS CN (`alchemy-guest`). WAN ACL
+/// only allows guest CN to put Intent / inventory keys; host CN is the host-server
+/// process. Owner Inventory take-out uses a separate host JWT via
+/// [`install_host_inventory_token`] (x006d / x007f / x0067).
 ///
 /// `work_epoch` must match [`SharedState::auth_work_epoch`] at commit time so a
 /// discarded Logout/Leave worker cannot install room state onto a newer session.
@@ -226,12 +231,13 @@ pub fn join_room_with_access(
         (None, None)
     };
     let world_url = shared.get_world_url();
-    let guest = world_token::fetch_guest_token(
+    let guest = world_token::fetch_room_token(
         &world_url,
         shared.get_room_id().as_ref(),
         access_token,
         &session_pub_b64,
         csr_pem.as_deref(),
+        "guest",
     )
     .context("fetch guest Room Token")?;
     let local_sub = jwt_sub::sub_unverified(&guest.token)
@@ -254,7 +260,7 @@ pub fn join_room_with_access(
             .map(|m| m.expires_at.as_str())
             .filter(|s| !s.is_empty()),
     )
-    .context("guest mTLS (world or relay allocate)")?;
+    .context("room mTLS (world or relay allocate)")?;
     // Allocate may have rewritten env; refuse auth commit if superseded mid-flight.
     anyhow::ensure!(
         shared.auth_work_is_current(work_epoch),
@@ -307,6 +313,50 @@ pub fn join_room_with_access(
         guest.expires_in,
         guest.wire_cap.len()
     );
+    Ok(())
+}
+
+/// Fetch owner `role=host` JWT into [`crate::auth::AuthGate::host_room_token`].
+///
+/// Does **not** change live guest Token / mTLS (no CSR). Failures clear the slot so
+/// Take-out stays gated. Call after a successful Host / Start / Rescue join.
+pub fn install_host_inventory_token(shared: &SharedState, access_token: &str) -> Result<()> {
+    let session_pub_b64 = {
+        let Ok(slot) = shared.intent_session.lock() else {
+            anyhow::bail!("intent_session lock poisoned");
+        };
+        let Some(session) = slot.as_ref() else {
+            anyhow::bail!("host inventory Token requires live Intent session");
+        };
+        session.session_pub_b64()
+    };
+    let world_url = shared.get_world_url();
+    let host = world_token::fetch_room_token(
+        &world_url,
+        shared.get_room_id().as_ref(),
+        access_token,
+        &session_pub_b64,
+        /* csr_pem */ None,
+        "host",
+    )
+    .context("fetch host Room Token for inventory")?;
+    if crate::inventory::room_token_role_unverified(&host.token).as_deref() != Some("host") {
+        anyhow::bail!("inventory host Token missing role=host");
+    }
+    let mut gate = shared
+        .auth
+        .lock()
+        .map_err(|_| anyhow::anyhow!("auth lock poisoned"))?;
+    anyhow::ensure!(
+        gate.access_token.as_deref() == Some(access_token),
+        "host inventory Token aborted: access session no longer active"
+    );
+    anyhow::ensure!(
+        gate.room_token.is_some(),
+        "host inventory Token aborted: not joined"
+    );
+    gate.set_host_room_token(Some(host.token));
+    log::info!("installed host Room Token for inventory take-out / despawn");
     Ok(())
 }
 
@@ -635,12 +685,18 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                         (None, None)
                     };
                     let world_url = shared.get_world_url();
-                    match world_token::fetch_guest_token(
+                    let refresh_host_inventory = shared
+                        .auth
+                        .lock()
+                        .ok()
+                        .is_some_and(|g| g.host_room_token.is_some());
+                    match world_token::fetch_room_token(
                         &world_url,
                         shared.get_room_id().as_ref(),
                         &access,
                         &session_pub_b64,
                         csr_pem.as_deref(),
+                        "guest",
                     ) {
                         Ok(guest) => {
                             // Epoch probe only: same epoch → do not rotate Room Token jti /
@@ -729,6 +785,18 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                                         "refreshed; session rebind + liveliness pending"
                                     }
                                 );
+                                if refresh_host_inventory {
+                                    if let Err(err) =
+                                        install_host_inventory_token(&shared, &access)
+                                    {
+                                        log::warn!(
+                                            "host inventory Token refresh failed: {err:#}"
+                                        );
+                                        if let Ok(mut gate) = shared.auth.lock() {
+                                            gate.set_host_room_token(None);
+                                        }
+                                    }
+                                }
                             } else {
                                 log::info!(
                                     "discard Room Token fetch (session_pub no longer expected; pending={for_pending})"

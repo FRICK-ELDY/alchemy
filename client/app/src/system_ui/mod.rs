@@ -23,8 +23,8 @@ mod layout;
 #[allow(unused_imports)] // public re-export; store.logic type for callers
 pub use dash::SharedDashLogic;
 pub use dash::{
-    access_level_from_widget, DashState, DashTab, HomeField, HomeMode, MainHubTab, OnboardingShell,
-    SharedDashStore, SESSION_NAME_MAX,
+    access_level_from_widget, fresh_create_room_id, DashState, DashTab, HomeField, HomeMode,
+    MainHubTab, OnboardingShell, SharedDashStore, SESSION_NAME_MAX,
 };
 pub use gpu::UiGpu;
 pub use inventory_peer::{
@@ -474,12 +474,18 @@ impl SystemUi {
                     self.rebuild();
                     return UiAction::None;
                 }
+                // Mint a fresh room_id so Start creates DemoScene — do not reuse `local`
+                // (existing rooms keep take-out/despawn history in world DB).
+                self.state.home_room_id = dash::fresh_create_room_id();
                 self.state.home_create_open = true;
                 self.state.tab = DashTab::Home;
                 self.state.shell = OnboardingShell::Dash;
                 self.state.home_focus = Some(crate::system_ui::HomeField::SessionName);
                 self.state.home_status = if self.state.home_session_actions_enabled {
-                    "Pick access level, then Start session".into()
+                    format!(
+                        "New room_id={} — pick access, then Start (DemoScene)",
+                        self.state.home_room_id
+                    )
                 } else {
                     "Create panel (browse only) — Start HTTP is Desktop-only".into()
                 };
@@ -1750,6 +1756,14 @@ mod tests {
         let action = ui.on_click(rect.x + 1.0, rect.y + 1.0);
         assert_eq!(action, UiAction::InventoryOpen);
         assert_eq!(ui.state.tab, DashTab::Inventory);
+        ui.rebuild();
+        assert!(
+            ui.tree
+                .hits
+                .iter()
+                .any(|(id, _)| *id == WidgetId::InventoryRefresh),
+            "Live Inventory tab must show inventory controls, not session shell"
+        );
     }
 
     #[test]

@@ -5,10 +5,13 @@
 //!
 //! Guarantees: draw with caller-supplied view/proj; grabbable boxes from Manifest (x0027);
 //! remote roots 3..6 (x0015); Frame TRS on draw (x0029);
+//! remounted world GLB instanced at each Manifest mesh entry pose (take-out visible; same GPU
+//! asset for all blake3 until multi-GLB; first [`MESH_DRAW_SLOTS`] poses only);
 //! [`SharedState::asset_status`] sticky Home overlay for auth asset failure (x0048);
 //! empty shell (`index_count==0`) skips floor+world mesh (MainHub; x007d);
 //! [`SceneGpu::replace_world_mesh`] + [`SharedState::pending_world_mesh`] for Manifest remount.
-//! Non-guarantees: XR swapchain ownership, system_ui layout, avatar GLB.
+//! Non-guarantees: per-blake3 multi-GLB download; mesh draw beyond [`MESH_DRAW_SLOTS`];
+//! XR swapchain ownership, system_ui layout, avatar GLB.
 //! Grab hits use OBB in `world_hit` (x002b; draw TRS aligned).
 //! Leave / liveliness token ownership lives here; put/undeclare is `room::leave_room` (re-exported as `crate::leave_room`).
 
@@ -42,6 +45,9 @@ pub use alchemy_shared_sim::demo::DEMO_MESH_ENTITY_ID as MESH_ENTITY_ID;
 pub const LOCAL_USER_ROOT_UNSET: u32 = 0;
 /// Max cuboid draw UBOs (demo has 9; headroom for Manifest-driven scenes).
 pub const BOX_DRAW_SLOTS: usize = 16;
+/// Max remounted-GLB instances (primary coin + take-out meshes; x006d / x007f).
+/// Match [`BOX_DRAW_SLOTS`] headroom so multi-child Prefab + DemoScene coin fit before clip.
+pub const MESH_DRAW_SLOTS: usize = 16;
 /// Default half-extent when Manifest omits per-entity size.
 pub use alchemy_shared_sim::DEFAULT_BOX_HALF_EXTENT as BOX_HALF_EXTENT;
 /// Placeholder size for remote player (meters half-extent).
@@ -291,6 +297,9 @@ pub struct SharedState {
     pub liveliness_prev: Mutex<Option<zenoh::liveliness::LivelinessToken>>,
     /// Entity poses + last applied frame tick (single mutex).
     pub world: Mutex<WorldView>,
+    /// Wall time of last accepted host signal (Frame / Presence / Manifest).
+    /// Empty-delta hosts do not advance `net_tick` (x0024); stall UX must not rely on tick alone.
+    pub last_host_alive_at: Mutex<Option<Instant>>,
     /// Optional localhost Prometheus metrics (x0049); always present, server off unless env.
     pub metrics: Arc<crate::metrics::ClientMetrics>,
     /// Manifest cuboid defs (Grab flags + half_extents); Arc-swapped on apply (x0027).
@@ -414,9 +423,11 @@ impl SharedState {
         }
     }
 
-    /// Sticky Home status: if an asset failure is recorded, overwrite `home_status` and
-    /// return `true` (caller should keep Home tab open). Skips while status looks busy
-    /// (`…` / `...`) so "Signing in…" is not clobbered mid-flight.
+    /// Sticky Home status: if an asset failure is recorded and `home_status` differs,
+    /// overwrite it and return `true` (caller may open Home **once** on that edge).
+    /// Already-applied overlay returns `false` so Inventory / Settings are not yanked
+    /// every `about_to_wait` / redraw (x0048 / x007f handthrough).
+    /// Skips while status looks busy (`…` / `...`) so "Signing in…" is not clobbered.
     pub fn overlay_asset_home_status(&self, home_status: &mut String) -> bool {
         if home_status.ends_with('…') || home_status.ends_with("...") {
             return false;
@@ -429,7 +440,7 @@ impl SharedState {
             return false;
         };
         if home_status.as_str() == msg.as_str() {
-            return true;
+            return false;
         }
         *home_status = msg.clone();
         true
@@ -623,6 +634,18 @@ impl SharedState {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default()
+    }
+
+    /// Host Frame / Presence / Manifest accepted — keepalive for Live stall UX (x007c).
+    pub fn note_host_alive(&self) {
+        if let Ok(mut slot) = self.last_host_alive_at.lock() {
+            *slot = Some(Instant::now());
+        }
+    }
+
+    /// Instant of last [`Self::note_host_alive`], if any.
+    pub fn last_host_alive_at(&self) -> Option<Instant> {
+        self.last_host_alive_at.lock().ok().and_then(|g| *g)
     }
 
     /// Desktop → XR: publish Drive rows + inventory status (x007f).
@@ -835,6 +858,9 @@ impl SharedState {
         if let Ok(mut world) = self.world.lock() {
             *world = WorldView::default();
         }
+        if let Ok(mut alive) = self.last_host_alive_at.lock() {
+            *alive = None;
+        }
         if let Ok(mut slot) = self.box_defs.lock() {
             *slot = Arc::new(BoxDefs::default());
         }
@@ -862,6 +888,9 @@ impl SharedState {
     pub fn reset_for_host_generation(&self) {
         if let Ok(mut world) = self.world.lock() {
             *world = WorldView::default();
+        }
+        if let Ok(mut alive) = self.last_host_alive_at.lock() {
+            *alive = None;
         }
         if let Ok(mut slot) = self.box_defs.lock() {
             *slot = Arc::new(BoxDefs::default());
@@ -904,12 +933,18 @@ impl SharedState {
         };
         let world_url = self.get_world_url();
         let room_id = self.get_room_id();
-        match crate::world_token::fetch_guest_token(
+        let refresh_host_inventory = self
+            .auth
+            .lock()
+            .ok()
+            .is_some_and(|g| g.host_room_token.is_some());
+        match crate::world_token::fetch_room_token(
             &world_url,
             room_id.as_ref(),
             &access,
             &session_pub_b64,
             csr_pem.as_deref(),
+            "guest",
         ) {
             Ok(guest) => {
                 match zenoh_connect::apply_world_mtls_or_allocate(
@@ -952,6 +987,20 @@ impl SharedState {
                     log::info!(
                         "Room Token + Intent session swapped for new host generation (cnf aligned)"
                     );
+                    if refresh_host_inventory {
+                        if let Some(access) =
+                            self.auth.lock().ok().and_then(|g| g.access_token.clone())
+                        {
+                            if let Err(err) =
+                                crate::room::install_host_inventory_token(self, &access)
+                            {
+                                log::warn!("host inventory Token after generation failed: {err:#}");
+                                if let Ok(mut gate) = self.auth.lock() {
+                                    gate.set_host_room_token(None);
+                                }
+                            }
+                        }
+                    }
                 } else {
                     log::warn!(
                         "host generation commit skipped (leave/newer pending); schedule retry if still joined"
@@ -1289,8 +1338,9 @@ pub struct SceneGpu {
     floor_index_count: u32,
     floor_uniform_buffer: wgpu::Buffer,
     floor_bind_group: wgpu::BindGroup,
-    coin_uniform_buffer: wgpu::Buffer,
-    coin_bind_group: wgpu::BindGroup,
+    /// One UBO per mesh instance — same remounted GLB at each scene mesh pose.
+    mesh_uniform_buffers: Vec<wgpu::Buffer>,
+    mesh_bind_groups: Vec<wgpu::BindGroup>,
     box_vertex_buffer: wgpu::Buffer,
     box_index_buffer: wgpu::Buffer,
     box_index_count: u32,
@@ -1410,12 +1460,26 @@ impl SceneGpu {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let coin_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("coin-uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let mut mesh_uniform_buffers = Vec::with_capacity(MESH_DRAW_SLOTS);
+        let mut mesh_bind_groups = Vec::with_capacity(MESH_DRAW_SLOTS);
+        for i in 0..MESH_DRAW_SLOTS {
+            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("mesh-uniforms-{i}")),
+                size: std::mem::size_of::<Uniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(&format!("mesh-bg-{i}")),
+                layout: &bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf.as_entire_binding(),
+                }],
+            });
+            mesh_uniform_buffers.push(buf);
+            mesh_bind_groups.push(bg);
+        }
 
         let (box_verts, box_indices) = unit_cube_mesh();
         let box_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1457,14 +1521,6 @@ impl SceneGpu {
                 resource: floor_uniform_buffer.as_entire_binding(),
             }],
         });
-        let coin_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("coin-bg"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: coin_uniform_buffer.as_entire_binding(),
-            }],
-        });
 
         Ok(Self {
             device,
@@ -1479,8 +1535,8 @@ impl SceneGpu {
             floor_index_count: floor_indices.len() as u32,
             floor_uniform_buffer,
             floor_bind_group,
-            coin_uniform_buffer,
-            coin_bind_group,
+            mesh_uniform_buffers,
+            mesh_bind_groups,
             box_vertex_buffer,
             box_index_buffer,
             box_index_count: box_indices.len() as u32,
@@ -1618,7 +1674,6 @@ impl SceneGpu {
 
             // MainHub / Leave empty shell: clear color only (no floor / world mesh; x007d).
             if self.index_count > 0 {
-                let pose = self.coin_pose();
                 let floor_uniforms = Uniforms {
                     mvp: (proj * view).to_cols_array_2d(),
                     color: [0.22, 0.24, 0.28, 1.0],
@@ -1633,35 +1688,69 @@ impl SceneGpu {
                 pass.set_index_buffer(self.floor_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..self.floor_index_count, 0, 0..1);
 
+                // Instance the remounted GLB at every Manifest mesh pose (take-out siblings).
+                // Different blake3 still share this GPU mesh until multi-GLB remount exists.
+                let mesh_ids: Vec<u32> = {
+                    let listed: Vec<u32> = self
+                        .shared
+                        .scene_meshes()
+                        .into_iter()
+                        .map(|(id, _)| id)
+                        .collect();
+                    if listed.is_empty() {
+                        let mid = self.shared.mesh_entity_id();
+                        if mid != 0 {
+                            vec![mid]
+                        } else {
+                            vec![MESH_ENTITY_ID]
+                        }
+                    } else {
+                        listed
+                    }
+                };
+                let poses: Vec<(u32, EntityPose)> = self
+                    .shared
+                    .world
+                    .lock()
+                    .ok()
+                    .map(|w| {
+                        mesh_ids
+                            .iter()
+                            .filter_map(|id| w.entities.get(id).copied().map(|p| (*id, p)))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let visual_scale = (alchemy_shared_sim::PHYS_BALL_RADIUS * 0.95
                     / self.mesh_radius.max(1e-3))
                 .clamp(0.02, 4.0);
-                // Mesh asset tilt (0.25 rad X) stays client-local; Frame TRS is sim authority (x0029).
-                let model = Mat4::from_scale_rotation_translation(
-                    pose.scale() * visual_scale,
-                    pose.rotation() * glam::Quat::from_rotation_x(0.25),
-                    pose.position(),
-                );
-                let height_t = (pose.y / 5.0).clamp(0.0, 1.0);
-                let coin_color = [
-                    0.95 * height_t + 0.15,
-                    0.75 * (1.0 - height_t) + 0.25,
-                    0.2,
-                    1.0,
-                ];
-                let coin_uniforms = Uniforms {
-                    mvp: (proj * view * model).to_cols_array_2d(),
-                    color: coin_color,
-                };
-                self.queue.write_buffer(
-                    &self.coin_uniform_buffer,
-                    0,
-                    bytemuck::bytes_of(&coin_uniforms),
-                );
-                pass.set_bind_group(0, &self.coin_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.index_count, 0, 0..1);
+                for (slot, (_id, pose)) in poses.into_iter().enumerate().take(MESH_DRAW_SLOTS) {
+                    // Mesh asset tilt (0.25 rad X) stays client-local; Frame TRS is sim authority.
+                    let model = Mat4::from_scale_rotation_translation(
+                        pose.scale() * visual_scale,
+                        pose.rotation() * glam::Quat::from_rotation_x(0.25),
+                        pose.position(),
+                    );
+                    let height_t = (pose.y / 5.0).clamp(0.0, 1.0);
+                    let coin_color = [
+                        0.95 * height_t + 0.15,
+                        0.75 * (1.0 - height_t) + 0.25,
+                        0.2,
+                        1.0,
+                    ];
+                    let mesh_uniforms = Uniforms {
+                        mvp: (proj * view * model).to_cols_array_2d(),
+                        color: coin_color,
+                    };
+                    self.queue.write_buffer(
+                        &self.mesh_uniform_buffers[slot],
+                        0,
+                        bytemuck::bytes_of(&mesh_uniforms),
+                    );
+                    pass.set_bind_group(0, &self.mesh_bind_groups[slot], &[]);
+                    pass.draw_indexed(0..self.index_count, 0, 0..1);
+                }
             }
 
             // Cuboid boxes (`half_extent > 0`) + remote user_roots: unit cube mesh.

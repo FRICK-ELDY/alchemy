@@ -35,6 +35,9 @@ pub struct AuthGate {
     pub refresh_token: Option<String>,
     pub username: Option<String>,
     pub room_token: Option<String>,
+    /// Owner Host path only: JWT `role=host` for Inventory take-out / despawn (x006d / x007f).
+    /// Live Intent / Presence / mTLS stay on [`Self::room_token`] (`guest` CN — WAN ACL).
+    pub host_room_token: Option<String>,
     pub local_sub: Option<String>,
     /// When `Instant::now() >= deadline`, refresh access (None = do not auto-refresh).
     pub access_deadline: Option<Instant>,
@@ -61,6 +64,7 @@ impl AuthGate {
         self.refresh_token = None;
         self.username = None;
         self.room_token = None;
+        self.host_room_token = None;
         self.local_sub = None;
         self.access_deadline = None;
         self.room_deadline = None;
@@ -96,10 +100,15 @@ impl AuthGate {
 
     pub fn clear_room(&mut self) {
         self.room_token = None;
+        self.host_room_token = None;
         self.local_sub = None;
         self.room_deadline = None;
         self.liveliness_rebind = false;
         self.liveliness_retire_prev = false;
+    }
+
+    pub fn set_host_room_token(&mut self, token: Option<String>) {
+        self.host_room_token = token;
     }
 }
 
@@ -264,13 +273,16 @@ mod tests {
             },
         });
         g.apply_room("rt".into(), "sub".into(), 300);
+        g.set_host_room_token(Some("hrt".into()));
         assert!(g.is_authenticated());
         assert!(g.is_joined());
+        assert!(g.host_room_token.is_some());
         assert!(g.room_deadline.is_some());
         assert!(g.access_deadline.is_some());
         g.clear_session();
         assert!(!g.is_authenticated());
         assert!(!g.is_joined());
+        assert!(g.host_room_token.is_none());
         assert!(g.room_deadline.is_none());
         assert!(g.access_deadline.is_none());
     }

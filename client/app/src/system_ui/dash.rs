@@ -35,6 +35,26 @@ pub enum MainHubTab {
 
 /// Session display-name cap (input + status; keep in sync with desktop join status).
 pub const SESSION_NAME_MAX: usize = 48;
+
+/// New `room_id` for Create → Start (16 lowercase hex, same shape as world-server
+/// `Rooms.random_room_id/0`). Charset `[A-Za-z0-9_-]+`, max 64 bytes.
+///
+/// Not CSPRNG: time+seq mix is enough to avoid accidental reuse across Create opens;
+/// collision/prediction risk is negligible for local room ids (no secrecy).
+pub fn fresh_create_room_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // Mix time + a process-local counter so rapid Create opens do not collide.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mixed = nanos
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(u128::from(seq) << 48);
+    format!("{:016x}", mixed as u64)
+}
 /// Login / register field cap (identifier, password, email, …).
 const HOME_ACCOUNT_FIELD_MAX: usize = 64;
 
@@ -158,9 +178,9 @@ pub struct DashState {
     pub worlds_can_host_rescue: bool,
     /// Live → WaitingHost after frames stall (distinct copy from first join wait).
     pub worlds_host_disconnect: bool,
-    /// Last observed `last_frame_tick` used to detect stall / Live transition.
+    /// Last observed `last_frame_tick` used for first-Frame Live transition.
     pub worlds_seen_frame_tick: Option<u64>,
-    /// Wall time of last *new* host frame tick (Live stall detection · x007c).
+    /// Wall time of last *new* frame tick (enter UX). Stall uses SharedState host-alive.
     pub worlds_last_frame_at: Option<std::time::Instant>,
     /// True after successful Join/Host until Leave/Logout (gates stall UX).
     pub worlds_in_room: bool,
@@ -1869,7 +1889,7 @@ fn rebuild_home_create(
     tree.push_label(
         Rect::new(right_x + 12.0, ry, right_w - 24.0, 14.0),
         format!(
-            "room_id={} (Start uses this; edit in Settings Advanced)",
+            "room_id={} (minted for this Create; DemoScene on first Start)",
             state.home_room_id
         ),
         MUTED,
@@ -2528,13 +2548,9 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
             }
             OnboardingShell::Dash => {}
         }
-    } else if state.session_shell_active()
-        && matches!(
-            state.tab,
-            DashTab::Home | DashTab::Worlds | DashTab::Inventory
-        )
-    {
-        // In-room shell on Home (Inventory blocked — Companion tab sync cannot escape).
+    } else if state.session_shell_active() && matches!(state.tab, DashTab::Home | DashTab::Worlds) {
+        // In-room shell on Home/Worlds only. Inventory is Live-unlocked (x007f) and
+        // must render `rebuild_inventory` — not the session Leave/status panel.
         // Settings/Exit stay reachable (Server Operator / quit).
         rebuild_session_shell(tree, state, cx, cy0, cw, ch);
     } else {

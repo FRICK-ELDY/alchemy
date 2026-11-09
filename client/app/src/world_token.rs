@@ -89,9 +89,12 @@ fn token_agent() -> ureq::Agent {
         .build()
 }
 
-/// Issue a guest Room Token bound to `session_pub_b64` (`cnf.spk`, x003e).
+/// Issue a Room Token bound to `session_pub_b64` (`cnf.spk`, x003e).
 ///
+/// `role` is `"guest"` or `"host"` (owner-only; world returns `forbidden_host` otherwise).
+/// Host role is required for client Inventory take-out / despawn (x006d / x007f).
 /// When `csr_pem` is `Some`, world may return `mtls` (x0066). CA unset → token without mtls.
+#[allow(dead_code)] // Convenience wrapper; join/refresh use `fetch_room_token` with explicit role.
 pub fn fetch_guest_token(
     world_url: &str,
     room_id: &str,
@@ -99,6 +102,29 @@ pub fn fetch_guest_token(
     session_pub_b64: &str,
     csr_pem: Option<&str>,
 ) -> Result<GuestToken> {
+    fetch_room_token(
+        world_url,
+        room_id,
+        auth_token,
+        session_pub_b64,
+        csr_pem,
+        "guest",
+    )
+}
+
+/// Like [`fetch_guest_token`] but with explicit `role` (`guest` | `host`).
+pub fn fetch_room_token(
+    world_url: &str,
+    room_id: &str,
+    auth_token: &str,
+    session_pub_b64: &str,
+    csr_pem: Option<&str>,
+    role: &str,
+) -> Result<GuestToken> {
+    let role = match role {
+        "host" | "guest" => role,
+        other => anyhow::bail!("invalid Room Token role: {other}"),
+    };
     // x0025: env bypass is debug-only (release fail-closed).
     // x003e: bypass JWT must include cnf.spk for this session_pub or host bind fails.
     if cfg!(debug_assertions) {
@@ -125,7 +151,7 @@ pub fn fetch_guest_token(
     let authz = format!("Bearer {auth_token}");
     let token_url = format!("{base}/api/v1/rooms/{room_id}/tokens");
     let mut body = serde_json::json!({
-        "role": "guest",
+        "role": role,
         "session_pub": session_pub_b64,
     });
     if let Some(csr) = csr_pem {
@@ -138,15 +164,15 @@ pub fn fetch_guest_token(
         .set("content-type", "application/json")
         .set("authorization", &authz)
         .send_json(body)
-        .context("issue guest Room Token (is host up and room created?)")?
+        .with_context(|| format!("issue {role} Room Token (is host up and room created?)"))?
         .into_json()
         .context("parse token response")?;
     if resp.expires_in == 0 {
-        anyhow::bail!("guest Room Token response missing positive expires_in");
+        anyhow::bail!("{role} Room Token response missing positive expires_in");
     }
     let wire_cap = zenoh_connect::require_wire_cap(Some(resp.wire_cap.as_str()))
-        .context("guest token wire_cap")?;
-    let room_key = parse_room_key_b64(&resp.room_key).context("guest token room_key")?;
+        .context("room token wire_cap")?;
+    let room_key = parse_room_key_b64(&resp.room_key).context("room token room_key")?;
     let mtls = resp.mtls.map(|m| WorldMtls {
         client_cert_pem: m.client_cert_pem,
         expires_at: m.expires_at,

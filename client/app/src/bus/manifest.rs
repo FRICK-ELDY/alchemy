@@ -144,6 +144,7 @@ pub(crate) fn spawn_manifest_subscriber(
                                             "manifest accept: room_jti={jti_label}"
                                         ),
                                     }
+                                    shared.note_host_alive();
                                     (generation_changed, manifest, watermarks.last_world_seal)
                                 }
                             }

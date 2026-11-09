@@ -153,9 +153,12 @@ fn apply_frame(
                 frame.tick,
                 prev_tick
             );
+            // Verified host Frame still proves the host is alive (x007c stall / Inventory Live).
+            shared.note_host_alive();
         }
         ApplyFrameOutcome::Applied => {
             shared.metrics.note_frame_accepted();
+            shared.note_host_alive();
         }
         _ => {}
     }
