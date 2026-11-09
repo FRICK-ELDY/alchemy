@@ -613,6 +613,30 @@ impl App {
         }
     }
 
+    /// XR Inventory actions queued on SharedState (x007f). Desktop owns HTTP/Zenoh.
+    fn drain_inventory_peer_actions(&mut self, event_loop: &ActiveEventLoop) {
+        let pending: Vec<UiAction> = self
+            .shared
+            .inventory_peer_actions
+            .lock()
+            .map(|mut q| std::mem::take(&mut *q))
+            .unwrap_or_default();
+        for action in pending {
+            handle_ui_action(
+                action,
+                &mut self.ui,
+                &self.shared,
+                &mut self.zenoh,
+                &mut self.auth_job,
+                RoomBindDefer {
+                    pending: &mut self.pending_room_bind,
+                    painted: &mut self.room_bind_progress_painted,
+                },
+                event_loop,
+            );
+        }
+    }
+
     /// Non-blocking poll of Auth worker (x002e). Safe to call every frame.
     /// Drains `EnterProgress` without clearing the job; finals clear it.
     fn poll_auth_job(&mut self) {
@@ -1433,6 +1457,7 @@ impl ApplicationHandler for App {
                 self.sync_hotswitch_ui();
                 self.poll_presentation_requests();
                 self.poll_auth_job();
+                self.drain_inventory_peer_actions(event_loop);
                 self.poll_mtls_reopen();
                 if self.owns_input() {
                     self.maintain_look_capture();
@@ -1478,6 +1503,7 @@ impl ApplicationHandler for App {
         }
         self.on_input_ownership_edge();
         self.poll_auth_job();
+        self.drain_inventory_peer_actions(event_loop);
         // After Join/Host ticket: bind only once "Binding room bus…" has painted.
         self.poll_pending_room_bind();
         self.poll_mtls_reopen();
@@ -2544,7 +2570,7 @@ fn handle_ui_action(
         UiAction::InventoryRefresh => {
             if ui.state.inventory_blocked() {
                 ui.state.tab = DashTab::Home;
-                ui.state.home_status = "Leave session before opening Inventory".into();
+                ui.state.home_status = "Inventory is available when Live (x007f)".into();
                 ui.mark_dash_chrome_dirty();
                 ui.rebuild();
                 return;
@@ -2552,7 +2578,7 @@ fn handle_ui_action(
             let assets = shared.get_assets_url();
             let token = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
             ui.state.scene_meshes = shared.scene_meshes();
-            ui.state.scene_selected = None;
+            ui.state.scene_selected.clear();
             match token {
                 Some(access) => match crate::inventory::list_drive_nodes(&assets, &access) {
                     Ok(nodes) => {
@@ -2581,7 +2607,7 @@ fn handle_ui_action(
         UiAction::InventoryTakeOut => {
             if ui.state.inventory_blocked() {
                 ui.state.tab = DashTab::Home;
-                ui.state.home_status = "Leave session before opening Inventory".into();
+                ui.state.home_status = "Inventory is available when Live (x007f)".into();
                 ui.mark_dash_chrome_dirty();
                 ui.rebuild();
                 return;
@@ -2593,12 +2619,12 @@ fn handle_ui_action(
                     .map(|(id, kind, _)| (id.clone(), kind.clone()))
             });
             let Some((node_id, kind)) = selected else {
-                ui.state.inventory_status = "select a blob node first".into();
+                ui.state.inventory_status = "select a blob or prefab node first".into();
                 ui.rebuild();
                 return;
             };
-            if kind != "blob" {
-                ui.state.inventory_status = "x006d: blob nodes only".into();
+            if kind != "blob" && kind != "prefab" {
+                ui.state.inventory_status = "x007f: blob/prefab nodes only".into();
                 ui.rebuild();
                 return;
             }
@@ -2637,28 +2663,61 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             };
-            match crate::inventory::take_out_blob_blake3(&assets, &access, &node_id) {
-                Ok((_node, blake3)) => {
-                    match crate::inventory::publish_inventory_spawn(
-                        session,
-                        shared.get_room_id().as_ref(),
-                        wire_cap.as_ref(),
-                        room_key.as_ref(),
-                        room_key_epoch,
-                        &room_token,
-                        &blake3,
-                        0.0,
-                        1.5,
-                        2.0,
-                    ) {
-                        Ok(()) => {
-                            ui.state.inventory_status =
-                                format!("spawn requested {}", &blake3[..8.min(blake3.len())]);
+            match crate::inventory::take_out_blobs(&assets, &access, &node_id) {
+                Ok((_node, blobs)) => {
+                    let total = blobs.len();
+                    let mut spawned = 0usize;
+                    for (i, blob) in blobs.iter().enumerate() {
+                        let (x, y, z, qx, qy, qz, qw, sx, sy, sz) =
+                            if let Some(trs) = blob.trs.as_ref() {
+                                (
+                                    trs.translation[0],
+                                    trs.translation[1],
+                                    trs.translation[2],
+                                    trs.rotation[0],
+                                    trs.rotation[1],
+                                    trs.rotation[2],
+                                    trs.rotation[3],
+                                    trs.scale[0],
+                                    trs.scale[1],
+                                    trs.scale[2],
+                                )
+                            } else {
+                                // Default pose with slight X offset so children do not stack.
+                                (i as f64 * 0.35, 1.5, 2.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
+                            };
+                        match crate::inventory::publish_inventory_spawn_pose(
+                            session,
+                            shared.get_room_id().as_ref(),
+                            wire_cap.as_ref(),
+                            room_key.as_ref(),
+                            room_key_epoch,
+                            &room_token,
+                            &blob.blake3,
+                            x,
+                            y,
+                            z,
+                            qx,
+                            qy,
+                            qz,
+                            qw,
+                            sx,
+                            sy,
+                            sz,
+                        ) {
+                            Ok(()) => spawned += 1,
+                            Err(err) => {
+                                ui.state.inventory_status =
+                                    format!("spawn {spawned}/{total} then failed: {err:#}");
+                                log::warn!("inventory spawn: {err:#}");
+                                break;
+                            }
                         }
-                        Err(err) => {
-                            ui.state.inventory_status = format!("spawn put failed: {err:#}");
-                            log::warn!("inventory spawn: {err:#}");
-                        }
+                    }
+                    if spawned == total {
+                        ui.state.inventory_status = format!("spawn requested {spawned}/{total}");
+                    } else if spawned > 0 && ui.state.inventory_status.is_empty() {
+                        ui.state.inventory_status = format!("spawn partial {spawned}/{total}");
                     }
                 }
                 Err(err) => {
@@ -2671,7 +2730,7 @@ fn handle_ui_action(
         UiAction::InventoryOpen => {
             if ui.state.inventory_blocked() {
                 ui.state.tab = DashTab::Home;
-                ui.state.home_status = "Leave session before opening Inventory".into();
+                ui.state.home_status = "Inventory is available when Live (x007f)".into();
                 ui.mark_dash_chrome_dirty();
                 ui.mark_dash_form_dirty();
                 ui.rebuild();
@@ -2679,50 +2738,62 @@ fn handle_ui_action(
             }
             // Scene list is Manifest-derived; refresh without Drive HTTP (x006e).
             ui.state.scene_meshes = shared.scene_meshes();
-            if ui
-                .state
+            ui.state
                 .scene_selected
-                .is_some_and(|i| i >= ui.state.scene_meshes.len())
-            {
-                ui.state.scene_selected = None;
-            }
+                .retain(|&i| i < ui.state.scene_meshes.len());
             ui.rebuild();
         }
         UiAction::InventoryPutBack => {
             if ui.state.inventory_blocked() {
                 ui.state.tab = DashTab::Home;
-                ui.state.home_status = "Leave session before opening Inventory".into();
+                ui.state.home_status = "Inventory is available when Live (x007f)".into();
                 ui.mark_dash_chrome_dirty();
                 ui.rebuild();
                 return;
             }
             // Always re-sync from SharedState so Put back sees post-spawn Manifest (x006e).
-            let prev_entity = ui
+            let prev_entities: Vec<u32> = ui
                 .state
                 .scene_selected
-                .and_then(|i| ui.state.scene_meshes.get(i).map(|(eid, _)| *eid));
+                .iter()
+                .filter_map(|&i| ui.state.scene_meshes.get(i).map(|(eid, _)| *eid))
+                .collect();
             ui.state.scene_meshes = shared.scene_meshes();
-            if let Some(eid) = prev_entity {
-                ui.state.scene_selected =
-                    ui.state.scene_meshes.iter().position(|(id, _)| *id == eid);
-            } else if ui
-                .state
-                .scene_selected
-                .is_some_and(|i| i >= ui.state.scene_meshes.len())
-            {
-                ui.state.scene_selected = None;
+            ui.state.scene_selected = prev_entities
+                .iter()
+                .filter_map(|eid| ui.state.scene_meshes.iter().position(|(id, _)| id == eid))
+                .collect();
+            if ui.state.scene_selected.is_empty() {
+                ui.state.inventory_status =
+                    "select one or more scene meshes first (Refresh if empty)".into();
+                ui.rebuild();
+                return;
             }
-            let selected = ui.state.scene_selected.and_then(|i| {
+            let children: Vec<(String, String, Option<([f64; 3], [f64; 4], [f64; 3])>)> = {
+                let world = shared.world.lock().ok();
                 ui.state
-                    .scene_meshes
-                    .get(i)
-                    .map(|(eid, b3)| (*eid, b3.clone()))
-            });
-            let Some((entity_id, blake3)) = selected else {
+                    .scene_selected
+                    .iter()
+                    .filter_map(|&i| {
+                        let (entity_id, blake3) = ui.state.scene_meshes.get(i)?;
+                        let trs = world.as_ref().and_then(|w| {
+                            w.entities.get(entity_id).map(|p| {
+                                (
+                                    [p.x as f64, p.y as f64, p.z as f64],
+                                    [p.qx as f64, p.qy as f64, p.qz as f64, p.qw as f64],
+                                    [p.sx as f64, p.sy as f64, p.sz as f64],
+                                )
+                            })
+                        });
+                        Some((format!("mesh_{entity_id}"), blake3.clone(), trs))
+                    })
+                    .collect()
+            };
+            if children.is_empty() {
                 ui.state.inventory_status = "select a scene mesh first (Refresh if empty)".into();
                 ui.rebuild();
                 return;
-            };
+            }
             let assets = shared.get_assets_url();
             let access = {
                 let Ok(auth) = shared.auth.lock() else {
@@ -2737,24 +2808,19 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             };
-            let trs = shared.world.lock().ok().and_then(|world| {
-                world.entities.get(&entity_id).map(|p| {
-                    (
-                        [p.x as f64, p.y as f64, p.z as f64],
-                        [p.qx as f64, p.qy as f64, p.qz as f64, p.qw as f64],
-                        [p.sx as f64, p.sy as f64, p.sz as f64],
-                    )
-                })
-            });
-            // Include entity_id so same blake3 / different entities do not upsert-collide.
-            let name = format!("putback-e{entity_id}-{}", &blake3[..8.min(blake3.len())]);
-            match crate::inventory::put_back_prefab(&assets, &access, &name, &blake3, trs) {
+            let first_eid = children[0].0.strip_prefix("mesh_").unwrap_or("0");
+            let name = format!(
+                "putback-n{}-e{first_eid}-{}",
+                children.len(),
+                &children[0].1[..8.min(children[0].1.len())]
+            );
+            match crate::inventory::put_back_prefab_children(&assets, &access, &name, &children) {
                 Ok(node) => {
                     ui.state.inventory_status = format!(
-                        "put-back ok {} (#{entity_id} stays; Take out is blob-only)",
-                        node.name
+                        "put-back ok {} ({} children stay in room)",
+                        node.name,
+                        children.len()
                     );
-                    // Refresh Drive list so the new prefab is visible.
                     if let Ok(nodes) = crate::inventory::list_drive_nodes(&assets, &access) {
                         ui.state.inventory_nodes = nodes
                             .into_iter()
@@ -2773,7 +2839,7 @@ fn handle_ui_action(
         UiAction::InventoryDespawn => {
             if ui.state.inventory_blocked() {
                 ui.state.tab = DashTab::Home;
-                ui.state.home_status = "Leave session before opening Inventory".into();
+                ui.state.home_status = "Inventory is available when Live (x007f)".into();
                 ui.mark_dash_chrome_dirty();
                 ui.rebuild();
                 return;
@@ -2781,19 +2847,23 @@ fn handle_ui_action(
             let prev_entity = ui
                 .state
                 .scene_selected
-                .and_then(|i| ui.state.scene_meshes.get(i).map(|(eid, _)| *eid));
+                .first()
+                .and_then(|&i| ui.state.scene_meshes.get(i).map(|(eid, _)| *eid));
             ui.state.scene_meshes = shared.scene_meshes();
             if let Some(eid) = prev_entity {
-                ui.state.scene_selected =
-                    ui.state.scene_meshes.iter().position(|(id, _)| *id == eid);
-            } else if ui
-                .state
-                .scene_selected
-                .is_some_and(|i| i >= ui.state.scene_meshes.len())
-            {
-                ui.state.scene_selected = None;
+                ui.state.scene_selected = ui
+                    .state
+                    .scene_meshes
+                    .iter()
+                    .position(|(id, _)| *id == eid)
+                    .into_iter()
+                    .collect();
+            } else {
+                ui.state
+                    .scene_selected
+                    .retain(|&i| i < ui.state.scene_meshes.len());
             }
-            let selected = ui.state.scene_selected.and_then(|i| {
+            let selected = ui.state.scene_selected.first().and_then(|&i| {
                 ui.state
                     .scene_meshes
                     .get(i)
@@ -2852,7 +2922,7 @@ fn handle_ui_action(
                         "despawn requested #{entity_id} ({})",
                         &blake3[..8.min(blake3.len())]
                     );
-                    ui.state.scene_selected = None;
+                    ui.state.scene_selected.clear();
                 }
                 Err(err) => {
                     ui.state.inventory_status = format!("despawn put failed: {err:#}");

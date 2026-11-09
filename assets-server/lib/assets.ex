@@ -24,7 +24,8 @@ defmodule Assets do
     blob/prefab; circular parent rejected (x005c/x005d)
   - Prefab.Payload validates schema_version=1, children blake3 (64-char hex), finite-float
     TRS (non-finite NaN/Inf rejected) (x005e)
-  - Drive.resolve_for_take_out/2: BlobGrant verified before returning refs to host (x005f)
+  - Drive.resolve_for_take_out/2: blob → single blake3; prefab → child mesh expand with
+    Grant on payload + every child (x005f / x007f)
   - Drive.save_prefab/4: Payload validated + uploaded + DriveNode upserted
     (x0060; invariant: save→reload→from_json round-trip is lossless — x0061)
   - HTTP `POST /api/v1/drive/put_back` wraps save_prefab for Desktop Inventory (x006e)

@@ -1,9 +1,10 @@
 defmodule AssetsWeb.DriveController do
   @moduledoc """
-  Personal Drive HTTP surface (x006d / x006e).
+  Personal Drive HTTP surface (x006d / x006e / x007f).
 
   Guarantees: owner-only list + take_out + put_back wrapping `Assets.Drive`.
-  Non-guarantees: Prefab multi-child expand UI, folder UX (scene despawn is world/host x007b).
+  Prefab take_out expands Payload children (blake3 + local_id + optional trs).
+  Non-guarantees: folder / vcs_repo take-out UX; host multi-child spawn.
   """
 
   use AssetsWeb, :controller
@@ -38,7 +39,7 @@ defmodule AssetsWeb.DriveController do
         {:ok, %{node: node, blobs: blobs}} ->
           json(conn, %{
             node: node_json(node),
-            blobs: Enum.map(blobs, fn %{blake3: b} -> %{blake3: b} end)
+            blobs: Enum.map(blobs, &blob_ref_json/1)
           })
 
         {:error, :not_found} ->
@@ -50,6 +51,21 @@ defmodule AssetsWeb.DriveController do
           conn
           |> put_status(:forbidden)
           |> json(%{error: "no_grant"})
+
+        {:error, :unsupported_kind} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "unsupported_kind"})
+
+        {:error, :invalid_prefab} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "invalid_prefab"})
+
+        {:error, :cas_missing} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "cas_missing"})
       end
     else
       {:error, :node_id_required} ->
@@ -166,5 +182,20 @@ defmodule AssetsWeb.DriveController do
       parent_id: node.parent_id,
       blake3: node.blake3
     }
+  end
+
+  defp blob_ref_json(%{blake3: b3} = blob) do
+    base = %{blake3: b3}
+
+    base =
+      case Map.get(blob, :local_id) do
+        id when is_binary(id) -> Map.put(base, :local_id, id)
+        _ -> base
+      end
+
+    case Map.get(blob, :trs) do
+      %{} = trs -> Map.put(base, :trs, trs)
+      _ -> base
+    end
   end
 end

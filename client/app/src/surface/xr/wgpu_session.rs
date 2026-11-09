@@ -786,6 +786,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                             ui.state.worlds_catalog_scroll_accum = 0.0;
                             ui.state.worlds_status.clear();
                             ui.state.in_session_peer = false;
+                            ui.state.inventory_live_peer = false;
                             ui.state.home_logged_in_as = None;
                             ui.state.home_create_open = false;
                             ui.state.shell = crate::system_ui::OnboardingShell::Step1Operator;
@@ -809,13 +810,15 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                             ui.mark_dash_form_dirty();
                             ui.rebuild();
                         }
-                        UiAction::InventoryOpen
+                        action @ (UiAction::InventoryOpen
                         | UiAction::InventoryRefresh
                         | UiAction::InventoryTakeOut
                         | UiAction::InventoryPutBack
-                        | UiAction::InventoryDespawn => {
-                            // Desktop owns assets HTTP + Zenoh spawn / put-back / despawn.
-                            log::info!("inventory actions are Desktop-only this Slice");
+                        | UiAction::InventoryDespawn) => {
+                            // x007f: enqueue for Desktop (HTTP / Zenoh SoT).
+                            if let Ok(mut q) = shared.inventory_peer_actions.lock() {
+                                q.push(action);
+                            }
                         }
                         UiAction::HotswitchAutoChanged => {
                             shared

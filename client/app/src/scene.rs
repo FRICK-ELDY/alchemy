@@ -319,6 +319,8 @@ pub struct SharedState {
     pub presentation: crate::surface::PresentationGate,
     /// Dash logical state shared Desktop ↔ XR (x0053). Layout/hover stay per-surface.
     pub dash: Mutex<crate::system_ui::SharedDashStore>,
+    /// XR → Desktop Inventory action queue (x007f). Desktop owns HTTP/Zenoh.
+    pub inventory_peer_actions: Mutex<Vec<crate::system_ui::UiAction>>,
     /// On-demand local host-server child (Start session only; Join stays idle).
     pub host_supervisor: Arc<crate::host_supervisor::HostSupervisor>,
 }

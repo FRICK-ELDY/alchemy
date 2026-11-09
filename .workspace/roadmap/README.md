@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x007f`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0080`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -177,11 +177,12 @@ depends_on: [x0006]
 | x007c | — | done | Worlds カタログ / Join・Host 分離（見える・入れる・読める・回す） | [x007c-worlds-catalog-join-host.md](slices/x007c-worlds-catalog-join-host.md) |
 | x007d | — | done | Live Manifest mesh remount（MainHub 空シェル + Join 後 assets GET） | [x007d-live-manifest-mesh-remount.md](slices/x007d-live-manifest-mesh-remount.md) |
 | x007e | — | done | Room key epoch / revoke-driven rotation（AAD+Token・KeyStale） | [x007e-room-key-epoch.md](slices/x007e-room-key-epoch.md) |
+| x007f | — | done | Prefab 多子展開 + XR Inventory 薄皮（Live 解禁・Desktop 委譲） | [x007f-prefab-multi-xr-inventory.md](slices/x007f-prefab-multi-xr-inventory.md) |
 
-**現在の次:** Prefab 多子 / XR Inventory / verifier Spot-Check（未採番 · `x007f`）。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
+**現在の次:** verifier Spot-Check（未採番）· assets 公開体裁（monorepo 衛生）— `x0080`。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x007f`**。
+次の空き番号は **`x0080`**。
 
 ## 関連
 

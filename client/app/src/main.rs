@@ -156,6 +156,7 @@ fn main() -> Result<()> {
         intent: Mutex::new(Default::default()),
         presentation: crate::surface::PresentationGate::default(),
         dash: Mutex::new(crate::system_ui::SharedDashStore::default()),
+        inventory_peer_actions: Mutex::new(Vec::new()),
         host_supervisor: Arc::new(crate::host_supervisor::HostSupervisor::default()),
     });
     // Sync AUTH/WORLD/ASSETS/ZENOH into process env for supervised host spawn.
