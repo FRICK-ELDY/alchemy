@@ -42,7 +42,9 @@ use crate::scene::{
     SharedState,
 };
 use crate::surface::hotswitch::DesktopRole;
-use crate::system_ui::{DashTab, OnboardingShell, SystemUi, UiAction};
+use crate::system_ui::{
+    rematch_scene_selection, DashTab, InventoryPeerRequest, OnboardingShell, SystemUi, UiAction,
+};
 use crate::world_api;
 use crate::world_hit::{desktop_look_ray, pick_grabbable_desktop};
 use crate::{bind_room_after_join, close_zenoh, join_room_with_access, leave_room};
@@ -253,6 +255,14 @@ enum AuthJobOutcome {
     WorldsList {
         result: Result<Vec<world_api::RoomSummary>, String>,
     },
+    /// Mid-flight paced inventory spawn (does not clear `auth_job`).
+    InventoryTakeOutProgress {
+        status: String,
+    },
+    /// Prefab/blob take-out HTTP + paced Zenoh puts finished.
+    InventoryTakeOutDone {
+        status: String,
+    },
 }
 
 fn send_enter_progress(
@@ -393,10 +403,22 @@ fn clear_worlds_catalog(ui: &mut SystemUi) {
     ui.state.worlds_status.clear();
 }
 
-/// Discard in-flight auth/catalog worker and bump epoch so the thread cannot commit.
-fn discard_auth_job(shared: &SharedState, auth_job: &mut Option<(u64, Receiver<AuthJobOutcome>)>) {
+/// Discard in-flight auth/catalog/inventory worker and bump epoch so the thread cannot commit.
+/// Clears sticky take_out / spawn-put status so Leave/Logout does not leave Mirror mid-flight.
+fn discard_auth_job(
+    ui: &mut SystemUi,
+    shared: &SharedState,
+    auth_job: &mut Option<(u64, Receiver<AuthJobOutcome>)>,
+) {
     shared.bump_auth_work_epoch();
     *auth_job = None;
+    let sticky = ui.state.inventory_status.starts_with("take_out")
+        || ui.state.inventory_status.starts_with("spawn put");
+    if sticky {
+        ui.state.inventory_status = "take_out cancelled".into();
+        ui.state.inventory_take_out_override = None;
+        publish_inventory_mirror_from_ui(ui, shared);
+    }
 }
 
 /// Arm a new worker against the current epoch (call only when `auth_job` is empty).
@@ -541,7 +563,7 @@ impl App {
                 );
             }
             // Bump epoch before Leave so in-flight join cannot commit past this point.
-            discard_auth_job(&self.shared, &mut self.auth_job);
+            discard_auth_job(&mut self.ui, &self.shared, &mut self.auth_job);
             leave_room(&self.shared, &mut self.zenoh);
             stop_supervised_host(&self.shared);
             clear_worlds_session_shell(&mut self.ui);
@@ -613,15 +635,20 @@ impl App {
         }
     }
 
-    /// XR Inventory actions queued on SharedState (x007f). Desktop owns HTTP/Zenoh.
+    /// XR Inventory ops queued on SharedState (x007f). Desktop owns HTTP/Zenoh.
     fn drain_inventory_peer_actions(&mut self, event_loop: &ActiveEventLoop) {
-        let pending: Vec<UiAction> = self
-            .shared
-            .inventory_peer_actions
-            .lock()
-            .map(|mut q| std::mem::take(&mut *q))
-            .unwrap_or_default();
-        for action in pending {
+        let pending = match self.shared.inventory_peer_actions.lock() {
+            Ok(mut q) => std::mem::take(&mut *q),
+            Err(_) => {
+                log::warn!("inventory_peer_actions lock poisoned — XR queue dropped");
+                Vec::new()
+            }
+        };
+        for req in pending {
+            let action = match apply_inventory_peer_request(&mut self.ui, &self.shared, &req) {
+                Some(a) => a,
+                None => continue,
+            };
             handle_ui_action(
                 action,
                 &mut self.ui,
@@ -689,6 +716,15 @@ impl App {
                     self.ui.mark_dash_chrome_dirty();
                     self.ui.rebuild();
                     // Keep draining progress / possible final in the same frame.
+                }
+                Ok(AuthJobOutcome::InventoryTakeOutProgress { status }) => {
+                    if !self.shared.auth_work_is_current(epoch) {
+                        self.auth_job = None;
+                        return;
+                    }
+                    self.ui.state.inventory_status = status;
+                    publish_inventory_mirror_from_ui(&self.ui, &self.shared);
+                    self.ui.rebuild();
                 }
                 Ok(outcome) => {
                     if !self.shared.auth_work_is_current(epoch) {
@@ -805,6 +841,14 @@ impl App {
                         can_host_rescue_on_ok,
                     },
                 );
+            }
+            AuthJobOutcome::InventoryTakeOutProgress { .. } => {
+                // Handled in poll_auth_job (keep auth_job armed).
+            }
+            AuthJobOutcome::InventoryTakeOutDone { status } => {
+                self.ui.state.inventory_status = status;
+                publish_inventory_mirror_from_ui(&self.ui, &self.shared);
+                self.ui.rebuild();
             }
             AuthJobOutcome::WorldsList { result } => {
                 // Stale completion after logout / account switch — drop payload.
@@ -1939,6 +1983,176 @@ fn start_worlds_catalog_refresh(
     });
 }
 
+/// Map XR peer request → Desktop `UiAction`, applying XR selection into local state.
+fn apply_inventory_peer_request(
+    ui: &mut SystemUi,
+    shared: &SharedState,
+    req: &InventoryPeerRequest,
+) -> Option<UiAction> {
+    match req {
+        InventoryPeerRequest::Open => Some(UiAction::InventoryOpen),
+        InventoryPeerRequest::Refresh => Some(UiAction::InventoryRefresh),
+        InventoryPeerRequest::TakeOut { node_id, kind } => {
+            // Override carries ids without injecting a ghost Drive row into the list/mirror.
+            ui.state.inventory_take_out_override = Some((node_id.clone(), kind.clone()));
+            if let Some(i) = ui
+                .state
+                .inventory_nodes
+                .iter()
+                .position(|(id, _, _)| id == node_id)
+            {
+                ui.state.inventory_selected = Some(i);
+            }
+            Some(UiAction::InventoryTakeOut)
+        }
+        InventoryPeerRequest::PutBack { entity_ids } => {
+            ui.state.scene_meshes = shared.scene_meshes();
+            ui.state.scene_selected = rematch_scene_selection(&ui.state.scene_meshes, entity_ids);
+            ui.state.inventory_selected = None;
+            if ui.state.scene_selected.is_empty() {
+                ui.state.inventory_status =
+                    "XR put-back: selected meshes not in scene (Refresh / wait Manifest)".into();
+                publish_inventory_mirror_from_ui(ui, shared);
+                ui.rebuild();
+                return None;
+            }
+            Some(UiAction::InventoryPutBack)
+        }
+        InventoryPeerRequest::Despawn { entity_id } => {
+            ui.state.scene_meshes = shared.scene_meshes();
+            ui.state.scene_selected =
+                rematch_scene_selection(&ui.state.scene_meshes, &[*entity_id]);
+            ui.state.inventory_selected = None;
+            if ui.state.scene_selected.is_empty() {
+                ui.state.inventory_status =
+                    "XR despawn: entity not in scene (Refresh / wait Manifest)".into();
+                publish_inventory_mirror_from_ui(ui, shared);
+                ui.rebuild();
+                return None;
+            }
+            Some(UiAction::InventoryDespawn)
+        }
+    }
+}
+
+fn publish_inventory_mirror_from_ui(ui: &SystemUi, shared: &SharedState) {
+    shared.publish_inventory_mirror(
+        ui.state.inventory_nodes.clone(),
+        ui.state.inventory_status.clone(),
+    );
+}
+
+fn inventory_status_rebuild(ui: &mut SystemUi, shared: &SharedState, status: impl Into<String>) {
+    ui.state.inventory_status = status.into();
+    publish_inventory_mirror_from_ui(ui, shared);
+    ui.rebuild();
+}
+
+/// Host `SpawnRate(8/10s)` — client spaces puts so host does not silently reject.
+const HOST_SPAWN_MAX_PER_WINDOW: u32 = 8;
+const HOST_SPAWN_WINDOW_MS: u64 = 10_000;
+
+/// HTTP take_out + paced Zenoh puts off the UI thread (x007f).
+#[allow(clippy::too_many_arguments)]
+fn run_paced_inventory_take_out(
+    shared: &SharedState,
+    epoch: u64,
+    tx: &std::sync::mpsc::Sender<AuthJobOutcome>,
+    session: &zenoh::Session,
+    assets: &str,
+    access: &str,
+    room_token: &str,
+    room_id: &str,
+    wire_cap: &str,
+    room_key: &[u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
+    room_key_epoch: u64,
+    node_id: &str,
+) -> String {
+    let blobs = match crate::inventory::take_out_blobs(assets, access, node_id) {
+        Ok((_node, blobs)) => blobs,
+        Err(err) => {
+            log::warn!("inventory take_out: {err:#}");
+            return format!("take_out failed: {err:#}");
+        }
+    };
+    let total = blobs.len();
+    if total == 0 {
+        return "take_out returned 0 blobs".into();
+    }
+    let gap_ms = HOST_SPAWN_WINDOW_MS / u64::from(HOST_SPAWN_MAX_PER_WINDOW);
+    let gap = std::time::Duration::from_millis(gap_ms);
+    let mut spawned = 0usize;
+    for (i, blob) in blobs.iter().enumerate() {
+        if !shared.auth_work_is_current(epoch) {
+            return format!("spawn put aborted {spawned}/{total} (left/logout)");
+        }
+        if i > 0 {
+            std::thread::sleep(gap);
+            if !shared.auth_work_is_current(epoch) {
+                return format!("spawn put aborted {spawned}/{total} (left/logout)");
+            }
+        }
+        let (x, y, z, qx, qy, qz, qw, sx, sy, sz) = if let Some(trs) = blob.trs.as_ref() {
+            (
+                trs.translation[0],
+                trs.translation[1],
+                trs.translation[2],
+                trs.rotation[0],
+                trs.rotation[1],
+                trs.rotation[2],
+                trs.rotation[3],
+                trs.scale[0],
+                trs.scale[1],
+                trs.scale[2],
+            )
+        } else {
+            // Default pose with slight X offset so children do not stack.
+            (i as f64 * 0.35, 1.5, 2.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
+        };
+        match crate::inventory::publish_inventory_spawn_pose(
+            session,
+            room_id,
+            wire_cap,
+            room_key,
+            room_key_epoch,
+            room_token,
+            &blob.blake3,
+            x,
+            y,
+            z,
+            qx,
+            qy,
+            qz,
+            qw,
+            sx,
+            sy,
+            sz,
+        ) {
+            Ok(()) => {
+                spawned += 1;
+                if shared.auth_work_is_current(epoch) {
+                    let _ = tx.send(AuthJobOutcome::InventoryTakeOutProgress {
+                        status: format!(
+                            "spawn put {spawned}/{total} (paced ≤{HOST_SPAWN_MAX_PER_WINDOW}/{HOST_SPAWN_WINDOW_MS}ms)"
+                        ),
+                    });
+                }
+            }
+            Err(err) => {
+                // Leave/close often races the put; prefer abort copy when epoch already bumped.
+                if !shared.auth_work_is_current(epoch) {
+                    return format!("spawn put aborted {spawned}/{total} (left/logout)");
+                }
+                log::warn!("inventory spawn: {err:#}");
+                return format!("spawn put {spawned}/{total} then failed: {err:#}");
+            }
+        }
+    }
+    format!(
+        "spawn put {spawned}/{total} (paced ≤{HOST_SPAWN_MAX_PER_WINDOW}/{HOST_SPAWN_WINDOW_MS}ms; host may still reject)"
+    )
+}
+
 fn handle_ui_action(
     action: UiAction,
     ui: &mut SystemUi,
@@ -2127,7 +2341,7 @@ fn handle_ui_action(
                 .unwrap_or((None, None));
             // Bump epoch first so in-flight join cannot commit past Logout.
             // HTTP logout is best-effort on a worker (does not gate UI).
-            discard_auth_job(shared, auth_job);
+            discard_auth_job(ui, shared, auth_job);
             room_bind.clear();
             leave_room(shared, zenoh);
             stop_supervised_host(shared);
@@ -2500,7 +2714,7 @@ fn handle_ui_action(
             // Invalidate in-flight Join/Host so Leave status is not overwritten by Auth busy.
             // Do not auto-refresh catalog — that would occupy auth_job and block immediate re-Join.
             let aborting_enter = ui.state.session_enter_active && !ui.state.worlds_in_room;
-            discard_auth_job(shared, auth_job);
+            discard_auth_job(ui, shared, auth_job);
             room_bind.clear();
             leave_room(shared, zenoh);
             // Abort mid-Create/Join: stop in-flight local host. Live Leave keeps it for re-Host.
@@ -2528,7 +2742,7 @@ fn handle_ui_action(
         UiAction::WorldsRejoin => {
             let room_id = shared.get_room_id().to_string();
             let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
-            discard_auth_job(shared, auth_job);
+            discard_auth_job(ui, shared, auth_job);
             room_bind.clear();
             leave_room(shared, zenoh);
             clear_worlds_session_shell(ui);
@@ -2577,8 +2791,15 @@ fn handle_ui_action(
             }
             let assets = shared.get_assets_url();
             let token = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+            let prev_scene: Vec<u32> = ui
+                .state
+                .scene_selected
+                .iter()
+                .filter_map(|&i| ui.state.scene_meshes.get(i).map(|(eid, _)| *eid))
+                .collect();
             ui.state.scene_meshes = shared.scene_meshes();
-            ui.state.scene_selected.clear();
+            // Keep Desktop/XR scene multi-select across Drive Refresh (XR Open stacks Refresh).
+            ui.state.scene_selected = rematch_scene_selection(&ui.state.scene_meshes, &prev_scene);
             match token {
                 Some(access) => match crate::inventory::list_drive_nodes(&assets, &access) {
                     Ok(nodes) => {
@@ -2602,9 +2823,13 @@ fn handle_ui_action(
                     ui.state.inventory_status = "sign in required".into();
                 }
             }
+            publish_inventory_mirror_from_ui(ui, shared);
             ui.rebuild();
         }
         UiAction::InventoryTakeOut => {
+            // Consume XR override immediately so busy/blocked early returns cannot
+            // leak it into a later Desktop TakeOut (re-fire from XR to retry).
+            let override_target = ui.state.inventory_take_out_override.take();
             if ui.state.inventory_blocked() {
                 ui.state.tab = DashTab::Home;
                 ui.state.home_status = "Inventory is available when Live (x007f)".into();
@@ -2612,120 +2837,82 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             }
-            let selected = ui.state.inventory_selected.and_then(|i| {
-                ui.state
-                    .inventory_nodes
-                    .get(i)
-                    .map(|(id, kind, _)| (id.clone(), kind.clone()))
+            if auth_job.is_some() {
+                inventory_status_rebuild(ui, shared, "busy — wait for auth/inventory job");
+                return;
+            }
+            let selected = override_target.or_else(|| {
+                ui.state.inventory_selected.and_then(|i| {
+                    ui.state
+                        .inventory_nodes
+                        .get(i)
+                        .map(|(id, kind, _)| (id.clone(), kind.clone()))
+                })
             });
             let Some((node_id, kind)) = selected else {
-                ui.state.inventory_status = "select a blob or prefab node first".into();
-                ui.rebuild();
+                inventory_status_rebuild(ui, shared, "select a blob or prefab node first");
                 return;
             };
             if kind != "blob" && kind != "prefab" {
-                ui.state.inventory_status = "x007f: blob/prefab nodes only".into();
-                ui.rebuild();
+                inventory_status_rebuild(ui, shared, "x007f: blob/prefab nodes only");
                 return;
             }
             let assets = shared.get_assets_url();
             let (access, room_token) = {
                 let Ok(auth) = shared.auth.lock() else {
-                    ui.state.inventory_status = "auth lock failed".into();
-                    ui.rebuild();
+                    inventory_status_rebuild(ui, shared, "auth lock failed");
                     return;
                 };
                 (auth.access_token.clone(), auth.room_token.clone())
             };
             let (Some(access), Some(room_token)) = (access, room_token) else {
-                ui.state.inventory_status = "join a room as host first".into();
-                ui.rebuild();
+                inventory_status_rebuild(ui, shared, "join a room as host first");
                 return;
             };
             if crate::inventory::room_token_role_unverified(&room_token).as_deref() != Some("host")
             {
-                ui.state.inventory_status = "host role required for take-out".into();
-                ui.rebuild();
+                inventory_status_rebuild(ui, shared, "host role required for take-out");
                 return;
             }
-            let Some(session) = zenoh.as_ref() else {
-                ui.state.inventory_status = "zenoh not connected".into();
-                ui.rebuild();
+            let Some(session) = zenoh.as_ref().cloned() else {
+                inventory_status_rebuild(ui, shared, "zenoh not connected");
                 return;
             };
             let Some(wire_cap) = shared.wire_cap() else {
-                ui.state.inventory_status = "no wire_cap".into();
-                ui.rebuild();
+                inventory_status_rebuild(ui, shared, "no wire_cap");
                 return;
             };
             let Some((room_key, room_key_epoch)) = shared.live_room_aead() else {
-                ui.state.inventory_status = "room_key missing".into();
-                ui.rebuild();
+                inventory_status_rebuild(ui, shared, "room_key missing");
                 return;
             };
-            match crate::inventory::take_out_blobs(&assets, &access, &node_id) {
-                Ok((_node, blobs)) => {
-                    let total = blobs.len();
-                    let mut spawned = 0usize;
-                    for (i, blob) in blobs.iter().enumerate() {
-                        let (x, y, z, qx, qy, qz, qw, sx, sy, sz) =
-                            if let Some(trs) = blob.trs.as_ref() {
-                                (
-                                    trs.translation[0],
-                                    trs.translation[1],
-                                    trs.translation[2],
-                                    trs.rotation[0],
-                                    trs.rotation[1],
-                                    trs.rotation[2],
-                                    trs.rotation[3],
-                                    trs.scale[0],
-                                    trs.scale[1],
-                                    trs.scale[2],
-                                )
-                            } else {
-                                // Default pose with slight X offset so children do not stack.
-                                (i as f64 * 0.35, 1.5, 2.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
-                            };
-                        match crate::inventory::publish_inventory_spawn_pose(
-                            session,
-                            shared.get_room_id().as_ref(),
-                            wire_cap.as_ref(),
-                            room_key.as_ref(),
-                            room_key_epoch,
-                            &room_token,
-                            &blob.blake3,
-                            x,
-                            y,
-                            z,
-                            qx,
-                            qy,
-                            qz,
-                            qw,
-                            sx,
-                            sy,
-                            sz,
-                        ) {
-                            Ok(()) => spawned += 1,
-                            Err(err) => {
-                                ui.state.inventory_status =
-                                    format!("spawn {spawned}/{total} then failed: {err:#}");
-                                log::warn!("inventory spawn: {err:#}");
-                                break;
-                            }
-                        }
-                    }
-                    if spawned == total {
-                        ui.state.inventory_status = format!("spawn requested {spawned}/{total}");
-                    } else if spawned > 0 && ui.state.inventory_status.is_empty() {
-                        ui.state.inventory_status = format!("spawn partial {spawned}/{total}");
-                    }
-                }
-                Err(err) => {
-                    ui.state.inventory_status = format!("take_out failed: {err:#}");
-                    log::warn!("inventory take_out: {err:#}");
-                }
-            }
+            let room_id = shared.get_room_id().to_string();
+            let wire_cap = wire_cap.to_string();
+            let shared_job = Arc::clone(shared);
+            ui.state.inventory_status = "take_out…".into();
+            publish_inventory_mirror_from_ui(ui, shared);
             ui.rebuild();
+            let (tx, rx) = mpsc::channel();
+            let epoch = arm_auth_job(shared, auth_job, rx);
+            spawn_auth_http(move || {
+                let status = run_paced_inventory_take_out(
+                    &shared_job,
+                    epoch,
+                    &tx,
+                    &session,
+                    &assets,
+                    &access,
+                    &room_token,
+                    &room_id,
+                    &wire_cap,
+                    room_key.as_ref(),
+                    room_key_epoch,
+                    &node_id,
+                );
+                if shared_job.auth_work_is_current(epoch) {
+                    let _ = tx.send(AuthJobOutcome::InventoryTakeOutDone { status });
+                }
+            });
         }
         UiAction::InventoryOpen => {
             if ui.state.inventory_blocked() {
@@ -2737,10 +2924,15 @@ fn handle_ui_action(
                 return;
             }
             // Scene list is Manifest-derived; refresh without Drive HTTP (x006e).
-            ui.state.scene_meshes = shared.scene_meshes();
-            ui.state
+            let prev_scene: Vec<u32> = ui
+                .state
                 .scene_selected
-                .retain(|&i| i < ui.state.scene_meshes.len());
+                .iter()
+                .filter_map(|&i| ui.state.scene_meshes.get(i).map(|(eid, _)| *eid))
+                .collect();
+            ui.state.scene_meshes = shared.scene_meshes();
+            ui.state.scene_selected = rematch_scene_selection(&ui.state.scene_meshes, &prev_scene);
+            publish_inventory_mirror_from_ui(ui, shared);
             ui.rebuild();
         }
         UiAction::InventoryPutBack => {
@@ -2764,12 +2956,14 @@ fn handle_ui_action(
                 .filter_map(|eid| ui.state.scene_meshes.iter().position(|(id, _)| id == eid))
                 .collect();
             if ui.state.scene_selected.is_empty() {
-                ui.state.inventory_status =
-                    "select one or more scene meshes first (Refresh if empty)".into();
-                ui.rebuild();
+                inventory_status_rebuild(
+                    ui,
+                    shared,
+                    "select one or more scene meshes first (Refresh if empty)",
+                );
                 return;
             }
-            let children: Vec<(String, String, Option<([f64; 3], [f64; 4], [f64; 3])>)> = {
+            let children: Vec<crate::inventory::PrefabPutBackChild> = {
                 let world = shared.world.lock().ok();
                 ui.state
                     .scene_selected
@@ -2790,22 +2984,23 @@ fn handle_ui_action(
                     .collect()
             };
             if children.is_empty() {
-                ui.state.inventory_status = "select a scene mesh first (Refresh if empty)".into();
-                ui.rebuild();
+                inventory_status_rebuild(
+                    ui,
+                    shared,
+                    "select a scene mesh first (Refresh if empty)",
+                );
                 return;
             }
             let assets = shared.get_assets_url();
             let access = {
                 let Ok(auth) = shared.auth.lock() else {
-                    ui.state.inventory_status = "auth lock failed".into();
-                    ui.rebuild();
+                    inventory_status_rebuild(ui, shared, "auth lock failed");
                     return;
                 };
                 auth.access_token.clone()
             };
             let Some(access) = access else {
-                ui.state.inventory_status = "sign in required".into();
-                ui.rebuild();
+                inventory_status_rebuild(ui, shared, "sign in required");
                 return;
             };
             let first_eid = children[0].0.strip_prefix("mesh_").unwrap_or("0");
@@ -2834,6 +3029,7 @@ fn handle_ui_action(
                     log::warn!("inventory put_back: {err:#}");
                 }
             }
+            publish_inventory_mirror_from_ui(ui, shared);
             ui.rebuild();
         }
         UiAction::InventoryDespawn => {
@@ -2870,42 +3066,39 @@ fn handle_ui_action(
                     .map(|(eid, b3)| (*eid, b3.clone()))
             });
             let Some((entity_id, blake3)) = selected else {
-                ui.state.inventory_status = "select a scene mesh first (Refresh if empty)".into();
-                ui.rebuild();
+                inventory_status_rebuild(
+                    ui,
+                    shared,
+                    "select a scene mesh first (Refresh if empty)",
+                );
                 return;
             };
             let room_token = {
                 let Ok(auth) = shared.auth.lock() else {
-                    ui.state.inventory_status = "auth lock failed".into();
-                    ui.rebuild();
+                    inventory_status_rebuild(ui, shared, "auth lock failed");
                     return;
                 };
                 auth.room_token.clone()
             };
             let Some(room_token) = room_token else {
-                ui.state.inventory_status = "join a room as host first".into();
-                ui.rebuild();
+                inventory_status_rebuild(ui, shared, "join a room as host first");
                 return;
             };
             if crate::inventory::room_token_role_unverified(&room_token).as_deref() != Some("host")
             {
-                ui.state.inventory_status = "host role required for despawn".into();
-                ui.rebuild();
+                inventory_status_rebuild(ui, shared, "host role required for despawn");
                 return;
             }
             let Some(session) = zenoh.as_ref() else {
-                ui.state.inventory_status = "zenoh not connected".into();
-                ui.rebuild();
+                inventory_status_rebuild(ui, shared, "zenoh not connected");
                 return;
             };
             let Some(wire_cap) = shared.wire_cap() else {
-                ui.state.inventory_status = "no wire_cap".into();
-                ui.rebuild();
+                inventory_status_rebuild(ui, shared, "no wire_cap");
                 return;
             };
             let Some((room_key, room_key_epoch)) = shared.live_room_aead() else {
-                ui.state.inventory_status = "room_key missing".into();
-                ui.rebuild();
+                inventory_status_rebuild(ui, shared, "room_key missing");
                 return;
             };
             match crate::inventory::publish_inventory_despawn(
@@ -2929,6 +3122,7 @@ fn handle_ui_action(
                     log::warn!("inventory despawn: {err:#}");
                 }
             }
+            publish_inventory_mirror_from_ui(ui, shared);
             ui.rebuild();
         }
         UiAction::None => {}

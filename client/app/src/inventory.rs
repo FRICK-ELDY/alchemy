@@ -4,8 +4,12 @@
 //! Zenoh `inventory/spawn|despawn` sealed with Room AEAD (host Room Token never leaves
 //! the room AEAD boundary); no Drive node_id on the wire to host. Put-back is
 //! Bearer→assets only (no Zenoh); Despawn removes the room entity via host.
-//! Prefab take_out expands children (x007f); client spawns each blake3 sequentially.
-//! Non-guarantees: atomic multi-spawn rollback; XR-direct HTTP/Zenoh; put-back+despawn TX.
+//! Prefab take_out expands children (x007f); client `session.put`s each blake3
+//! sequentially (same style as room Intent puts; declare_publisher not required).
+//! Desktop paces puts under host `SpawnRate(8/10s)` on an auth/inventory worker
+//! (not the UI loop); status reports `spawn put N/M` (Zenoh success ≠ host accept).
+//! Non-guarantees: atomic multi-spawn rollback; host spawn ack to client;
+//! XR-direct HTTP/Zenoh; put-back+despawn TX.
 
 use alchemy_protocol::wire_aead::{self, AeadKind};
 use alchemy_protocol::{inventory_despawn_key, inventory_spawn_key};
@@ -109,12 +113,15 @@ pub fn take_out_blobs(
     }
 }
 
+/// Prefab put-back child: `(local_id, blake3, optional TRS)`.
+pub type PrefabPutBackChild = (String, String, Option<([f64; 3], [f64; 4], [f64; 3])>);
+
 /// Save a Prefab via assets put-back (x006e / x007f multi-child). Returns Drive node.
 pub fn put_back_prefab_children(
     assets_url: &str,
     access_token: &str,
     name: &str,
-    children: &[(String, String, Option<([f64; 3], [f64; 4], [f64; 3])>)],
+    children: &[PrefabPutBackChild],
 ) -> Result<DriveNodeDto> {
     if children.is_empty() {
         return Err(anyhow!("put_back requires at least one child"));

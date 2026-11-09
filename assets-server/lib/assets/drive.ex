@@ -11,10 +11,13 @@ defmodule Assets.Drive do
   - resolve_for_take_out/2: blob → single `%{blake3}`; prefab → Payload children
     (`blake3` + `local_id` + optional `trs`) with Grant on payload and every child (x007f).
   - save_prefab/4 validates Prefab.Payload schema and parent authz before upload (x0060).
+    Child BlobGrants are **not** required at save time; take_out will fail with
+    `:no_grant` until every child Grant exists (intentional gap vs take_out).
 
   Non-guarantees:
   - Group Vault, sharing, Mail/Comms, Shop, VcsRepo ops (→ Assets.Vcs).
   - folder / vcs_repo take-out; host multi-child spawn.
+  - save_prefab rejecting Grant-less children (deferred; take_out enforces).
   - Compensating delete when upload succeeds but DriveNode upsert fails (CAS bytes +
     quota/Grant may remain; CAS orphan bytes without CasObject are handled by
     Assets.CAS.OrphanGc (x0074), not by Drive delete).
@@ -315,7 +318,11 @@ defmodule Assets.Drive do
     do: {:error, :invalid_prefab}
 
   defp map_prefab_take_out_error({:error, {:invalid_child, _, _}}), do: {:error, :invalid_prefab}
-  defp map_prefab_take_out_error({:error, other}) when is_atom(other), do: {:error, other}
+  # Unknown atoms (incl. transient CAS/S3) → :invalid_prefab (422). Avoids CaseClauseError;
+  # tradeoff: ops cannot tell storage 5xx from bad payload via this path alone.
+  defp map_prefab_take_out_error({:error, reason}) when is_atom(reason),
+    do: {:error, :invalid_prefab}
+
   defp map_prefab_take_out_error({:error, _}), do: {:error, :invalid_prefab}
 
   defp assert_child_grants(_owner_sub, []), do: :ok

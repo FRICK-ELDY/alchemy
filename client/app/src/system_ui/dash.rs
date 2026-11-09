@@ -130,6 +130,9 @@ pub struct DashState {
     /// Inventory Drive rows (x006d); filled by surface after refresh.
     pub inventory_nodes: Vec<(String, String, String)>, // node_id, kind, name
     pub inventory_selected: Option<usize>,
+    /// One-shot take-out target (XR peer / lag); not mirrored.
+    /// Consumed at InventoryTakeOut entry (discarded on busy/blocked — XR re-fires).
+    pub inventory_take_out_override: Option<(String, String)>,
     /// Scene mesh rows for put-back (x006e); `(entity_id, blake3)`.
     pub scene_meshes: Vec<(u32, String)>,
     /// Multi-select indices into `scene_meshes` (x007f put-back). Despawn uses first.
@@ -227,6 +230,7 @@ impl Default for DashState {
             server_operator: false,
             inventory_nodes: Vec::new(),
             inventory_selected: None,
+            inventory_take_out_override: None,
             scene_meshes: Vec::new(),
             scene_selected: Vec::new(),
             inventory_status: String::new(),
@@ -449,11 +453,11 @@ impl SharedDashLogic {
         if s.open != self.open {
             s.open = self.open;
         }
-        // Companion must not open Inventory while Desktop session is live.
+        // Live Inventory (x007f): peer Inventory tab is allowed when not blocked.
         let peer_inventory = self.tab == DashTab::Inventory;
         if s.tab != self.tab {
             if s.inventory_blocked() && peer_inventory {
-                // keep local tab (Home/Settings/Exit)
+                // keep local tab (Home/Settings/Exit) while Waiting / KeyStale / etc.
             } else {
                 s.tab = self.tab;
             }

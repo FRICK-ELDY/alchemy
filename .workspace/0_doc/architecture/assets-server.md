@@ -27,7 +27,7 @@
 | `CasObject`（物理・所有者なし・size/mime のみ）と `BlobRef`（owner×blake3）を分離（x003f / x006f） | StorageVault / `:purchased` / `:mail_temp` |
 | PUT finalize で uploader に `:owned` `BlobGrant`（x004f） | room スコープ grant・Manifest 連動付与以外の Grant 種別 |
 | `POST /api/v1/inventory/blobs` は inventory 用パス契約（x0054）。中身は通常 PUT と同じ（常に owned Grant・x006f） | DriveNode / Prefab / Vault 表・client UI |
-| Drive `take_out`（x007f）: blob → 単一 blake3；prefab → Payload 子 mesh（`blake3`+`local_id`+任意 `trs`）。payload + 各子に Grant。欠落は全体 `:no_grant` | folder / vcs_repo take-out；payload blake3 を blobs に載せる；host 一括 spawn |
+| Drive `take_out`（x007f）: blob → 単一 blake3；prefab → Payload 子 mesh（`blake3`+`local_id`+任意 `trs`）。payload + 各子に Grant。欠落は全体 `:no_grant` | folder / vcs_repo take-out；payload blake3 を blobs に載せる；host 一括 spawn；`save_prefab` 時の子 Grant 必須化（take_out 側で弾く） |
 | 同一 blake3 を `/blobs` と `/inventory/blobs` から別 owner が PUT しても共存（x006f） | mime/size 先勝ちの変更；CasObject あり・refcount=0 の GC |
 | PUT: `quota_reservations` + `reserved_bytes` 予約 → TX 外 CAS put → used 振替。失敗時は**予約解放のみ**（compensate は CAS 非削除＝並行同一 hash 安全）（x003f / x0074） | Oban・署名 URL 直 PUT；S3 バケット全 listing |
 | TTL 超過予約の reaper 解放 + CasObject 無し orphan bytes の grace GC（GenServer・x0074）。削除は quarantine→再検証→discard/restore。中断後は q-only を再試行し、CasObject ありなら restore 成功時のみ候補 drop | 実行中 PUT をゼロ失敗にする超短 TTL；S3 listing 全走査；exists? 一時障害の完全排除 |

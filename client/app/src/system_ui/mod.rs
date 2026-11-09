@@ -17,6 +17,7 @@ pub mod facet;
 mod font;
 mod gpu;
 mod icons;
+mod inventory_peer;
 mod layout;
 
 #[allow(unused_imports)] // public re-export; store.logic type for callers
@@ -26,6 +27,9 @@ pub use dash::{
     SharedDashStore, SESSION_NAME_MAX,
 };
 pub use gpu::UiGpu;
+pub use inventory_peer::{
+    rematch_inventory_selection, rematch_scene_selection, InventoryMirror, InventoryPeerRequest,
+};
 pub use layout::{LayoutTree, WidgetId};
 
 use std::sync::Mutex;
@@ -52,6 +56,8 @@ pub struct SystemUi {
     dash_chrome_dirty: bool,
     /// Local form edits not yet pushed.
     dash_form_dirty: bool,
+    /// Last applied [`crate::scene::SharedState::inventory_mirror`] revision (XR).
+    inventory_mirror_rev: u64,
 }
 
 impl SystemUi {
@@ -68,7 +74,47 @@ impl SystemUi {
             dash_chrome_rev: 0,
             dash_chrome_dirty: false,
             dash_form_dirty: false,
+            inventory_mirror_rev: 0,
         }
+    }
+
+    /// XR: adopt Desktop Drive list + inventory status when mirror advances.
+    pub fn pull_inventory_mirror(&mut self, shared: &SharedState) -> bool {
+        let Ok(m) = shared.inventory_mirror.lock() else {
+            return false;
+        };
+        if m.revision == self.inventory_mirror_rev {
+            return false;
+        }
+        let prev_node_id = self.state.inventory_selected.and_then(|i| {
+            self.state
+                .inventory_nodes
+                .get(i)
+                .map(|(id, _, _)| id.clone())
+        });
+        self.state.inventory_nodes = m.nodes.clone();
+        self.state.inventory_selected =
+            rematch_inventory_selection(&self.state.inventory_nodes, prev_node_id.as_deref());
+        self.state.inventory_status = m.status.clone();
+        self.inventory_mirror_rev = m.revision;
+        true
+    }
+
+    /// XR: keep scene mesh rows in sync with Manifest-derived SharedState.
+    pub fn sync_inventory_scene_meshes(&mut self, shared: &SharedState) -> bool {
+        let meshes = shared.scene_meshes();
+        if meshes == self.state.scene_meshes {
+            return false;
+        }
+        let prev: Vec<u32> = self
+            .state
+            .scene_selected
+            .iter()
+            .filter_map(|&i| self.state.scene_meshes.get(i).map(|(eid, _)| *eid))
+            .collect();
+        self.state.scene_meshes = meshes;
+        self.state.scene_selected = rematch_scene_selection(&self.state.scene_meshes, &prev);
+        true
     }
 
     /// Mark chrome (`open`/`tab`/`shell`/Settings) dirty.

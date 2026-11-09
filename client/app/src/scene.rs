@@ -319,8 +319,10 @@ pub struct SharedState {
     pub presentation: crate::surface::PresentationGate,
     /// Dash logical state shared Desktop ↔ XR (x0053). Layout/hover stay per-surface.
     pub dash: Mutex<crate::system_ui::SharedDashStore>,
-    /// XR → Desktop Inventory action queue (x007f). Desktop owns HTTP/Zenoh.
-    pub inventory_peer_actions: Mutex<Vec<crate::system_ui::UiAction>>,
+    /// XR → Desktop Inventory ops with selection payloads (x007f). Desktop owns HTTP/Zenoh.
+    pub inventory_peer_actions: Mutex<Vec<crate::system_ui::InventoryPeerRequest>>,
+    /// Desktop → XR Drive list + inventory status (x007f). Scene meshes stay on `scene_meshes`.
+    pub inventory_mirror: Mutex<crate::system_ui::InventoryMirror>,
     /// On-demand local host-server child (Start session only; Join stays idle).
     pub host_supervisor: Arc<crate::host_supervisor::HostSupervisor>,
 }
@@ -621,6 +623,17 @@ impl SharedState {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default()
+    }
+
+    /// Desktop → XR: publish Drive rows + inventory status (x007f).
+    pub fn publish_inventory_mirror(&self, nodes: Vec<(String, String, String)>, status: String) {
+        let Ok(mut m) = self.inventory_mirror.lock() else {
+            log::warn!("inventory_mirror lock poisoned — XR list not updated");
+            return;
+        };
+        m.nodes = nodes;
+        m.status = status;
+        m.revision = m.revision.saturating_add(1);
     }
 
     /// Current Zenoh `wire_cap` after join (x004e).
