@@ -4,6 +4,7 @@ defmodule AssetsWeb.DriveControllerTest do
   alias Assets.Blobs
   alias Assets.Blobs.BlobGrant
   alias Assets.Drive
+  alias Assets.Prefab.Payload
   alias Assets.Repo
   alias Assets.TestAuthHelpers
 
@@ -52,7 +53,7 @@ defmodule AssetsWeb.DriveControllerTest do
     {:ok, mesh_b, _} = Blobs.upload(@sub_a, "prefab-mesh-b", "application/octet-stream")
 
     {:ok, payload} =
-      Assets.Prefab.Payload.new(1, [
+      Payload.new(1, [
         %{local_id: "a", blake3: mesh_a.blake3, trs: nil},
         %{
           local_id: "b",
