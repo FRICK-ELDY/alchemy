@@ -174,11 +174,11 @@ depends_on: [x0006]
 | x0079 | — | done | DemoScene 共有テストベクタ（P2-11） | [x0079-demoscene-shared-vector.md](slices/x0079-demoscene-shared-vector.md) |
 | x007a | — | done | auth/world/relay metrics + Room Token `jti` 相関（P2-12） | [x007a-metrics-jti-correlation.md](slices/x007a-metrics-jti-correlation.md) |
 | x007b | — | done | scene despawn（world DELETE / host Rapier+reseal / Inventory UI） | [x007b-scene-despawn.md](slices/x007b-scene-despawn.md) |
-| x007c | — | active | Worlds カタログ / Join・Host 分離（見える・入れる・読める・回す） | [x007c-worlds-catalog-join-host.md](slices/x007c-worlds-catalog-join-host.md) |
+| x007c | — | done | Worlds カタログ / Join・Host 分離（見える・入れる・読める・回す） | [x007c-worlds-catalog-join-host.md](slices/x007c-worlds-catalog-join-host.md) |
 | x007d | — | done | Live Manifest mesh remount（MainHub 空シェル + Join 後 assets GET） | [x007d-live-manifest-mesh-remount.md](slices/x007d-live-manifest-mesh-remount.md) |
 | x007e | — | done | Room key epoch / revoke-driven rotation（AAD+Token・KeyStale） | [x007e-room-key-epoch.md](slices/x007e-room-key-epoch.md) |
 
-**現在の次:** [x007c](slices/x007c-worlds-catalog-join-host.md) 残作業（KeyStale は x007e で本採用済み）· Prefab 多子 / XR Inventory / verifier Spot-Check（未採番）。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
+**現在の次:** Prefab 多子 / XR Inventory / verifier Spot-Check（未採番 · `x007f`）。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
 次の空き番号は **`x007f`**。
