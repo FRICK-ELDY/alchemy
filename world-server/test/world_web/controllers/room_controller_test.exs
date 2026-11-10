@@ -1429,13 +1429,18 @@ defmodule WorldWeb.RoomControllerTest do
       |> post("/api/v1/rooms/#{room}/tokens", token_params(%{role: "guest"}))
       |> json_response(200)
 
+    base_scene =
+      build_conn()
+      |> TestAuthHelpers.get_host(host_token, priv, "/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
     scene =
       build_conn()
       |> TestAuthHelpers.post_host_json(
         host_token,
         priv,
         "/api/v1/rooms/#{room}/scene/entries",
-        %{blake3: blake3, x: 1.0, y: 1.0, z: 1.0}
+        %{blake3: blake3, x: 1.0, y: 1.0, z: 1.0, expected_revision: base_scene["revision"]}
       )
       |> json_response(200)
 
@@ -1464,28 +1469,51 @@ defmodule WorldWeb.RoomControllerTest do
 
     assert %{"error" => "not_mesh_entry"} =
              build_conn()
-             |> TestAuthHelpers.delete_host(
+             |> TestAuthHelpers.delete_host_json(
                host_token,
                priv,
-               "/api/v1/rooms/#{room}/scene/entries/#{box_id}"
+               "/api/v1/rooms/#{room}/scene/entries/#{box_id}",
+               %{expected_revision: scene["revision"]}
              )
              |> json_response(422)
 
     assert %{"error" => "entry_not_found"} =
              build_conn()
-             |> TestAuthHelpers.delete_host(
+             |> TestAuthHelpers.delete_host_json(
                host_token,
                priv,
-               "/api/v1/rooms/#{room}/scene/entries/999999"
+               "/api/v1/rooms/#{room}/scene/entries/999999",
+               %{expected_revision: scene["revision"]}
              )
              |> json_response(404)
 
+    assert %{"error" => "invalid_revision"} =
+             build_conn()
+             |> TestAuthHelpers.delete_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/scene/entries/#{entity_id}",
+               %{}
+             )
+             |> json_response(422)
+
+    assert %{"error" => "scene_revision_conflict"} =
+             build_conn()
+             |> TestAuthHelpers.delete_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/scene/entries/#{entity_id}",
+               %{expected_revision: scene["revision"] + 1}
+             )
+             |> json_response(409)
+
     deleted =
       build_conn()
-      |> TestAuthHelpers.delete_host(
+      |> TestAuthHelpers.delete_host_json(
         host_token,
         priv,
-        "/api/v1/rooms/#{room}/scene/entries/#{entity_id}"
+        "/api/v1/rooms/#{room}/scene/entries/#{entity_id}",
+        %{expected_revision: scene["revision"]}
       )
       |> json_response(200)
 
@@ -1612,7 +1640,7 @@ defmodule WorldWeb.RoomControllerTest do
         new_host_token,
         new_priv,
         "/api/v1/rooms/#{room}/scene/entries",
-        %{blake3: blake3}
+        %{blake3: blake3, expected_revision: scene["revision"]}
       )
       |> json_response(200)
 

@@ -776,13 +776,15 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
-  x006d: append one mesh SceneEntry to the room scene (host Room Token + active ledger host).
+  x006d / x0082: append one mesh SceneEntry (host Room Token + active ledger host).
 
-  Body: `%{"blake3" => 64-hex, optional pose/color}`. Assigns `entity_id`,
-  bumps revision. Returned scene is the new canonical seal input.
+  Body: `%{"blake3" => 64-hex, "expected_revision" => int, optional pose/color}`.
+  Assigns `entity_id`, CAS-bumps revision. Returned scene is the new canonical seal input.
   """
   def create_scene_entry(conn, %{"room_id" => room_id} = params) do
-    entry = Map.get(params, "entry") || Map.drop(params, ["room_id"])
+    entry =
+      (Map.get(params, "entry") || Map.drop(params, ["room_id"]))
+      |> Map.drop(["expected_revision", :expected_revision])
 
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
@@ -790,7 +792,9 @@ defmodule WorldWeb.RoomController do
          :ok <- require_http_pop(conn, claims),
          :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
          :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
-         {:ok, scene} <- Rooms.append_scene_entry(room_id, entry) do
+         {:ok, expected_revision} <-
+           ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
+         {:ok, scene} <- Rooms.append_scene_entry(room_id, entry, expected_revision) do
       json(conn, Map.put(scene, "room_id", room_id))
     else
       {:error, :missing_bearer} ->
@@ -821,6 +825,16 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:conflict)
         |> json(%{error: "host_lease_conflict"})
+
+      {:error, :invalid_revision} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_revision"})
+
+      {:error, :scene_revision_conflict} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "scene_revision_conflict"})
 
       {:error, :not_found} ->
         conn
@@ -855,12 +869,12 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
-  x007b: remove one mesh SceneEntry by entity_id (host Room Token + active ledger host).
+  x007b / x0082: remove one mesh SceneEntry by entity_id (host Room Token + active ledger host).
 
-  Requires the entry to carry a 64-hex blake3. Returned scene is the new
-  canonical seal input.
+  Body: `%{"expected_revision" => int}`. Requires the entry to carry a 64-hex blake3.
+  CAS-bumps revision. Returned scene is the new canonical seal input.
   """
-  def delete_scene_entry(conn, %{"room_id" => room_id, "entity_id" => entity_id_param}) do
+  def delete_scene_entry(conn, %{"room_id" => room_id, "entity_id" => entity_id_param} = params) do
     with {:ok, entity_id} <- parse_entity_id(entity_id_param),
          {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
@@ -868,7 +882,9 @@ defmodule WorldWeb.RoomController do
          :ok <- require_http_pop(conn, claims),
          :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
          :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
-         {:ok, scene} <- Rooms.delete_scene_entry(room_id, entity_id) do
+         {:ok, expected_revision} <-
+           ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
+         {:ok, scene} <- Rooms.delete_scene_entry(room_id, entity_id, expected_revision) do
       json(conn, Map.put(scene, "room_id", room_id))
     else
       {:error, :invalid_entity_id} ->
@@ -904,6 +920,16 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:conflict)
         |> json(%{error: "host_lease_conflict"})
+
+      {:error, :invalid_revision} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid_revision"})
+
+      {:error, :scene_revision_conflict} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "scene_revision_conflict"})
 
       {:error, :not_found} ->
         conn

@@ -1,10 +1,11 @@
-//! Inventory take-out spawn control plane (x006d / x0081).
+//! Inventory take-out spawn control plane (x006d / x0081 / x0082).
 //!
 //! Guarantees: Zenoh `…/inventory/spawn` is **Room AEAD** (`AeadKind::InventorySpawn`);
 //! after open, session Ed25519 + SessionTable (**`role=host` bind** + `sub` == host Token
-//! sub); world HTTP append uses **host** Token + PoP (client JWT never on the bus); physics
-//! only applies a ready `SceneEntry` (+ shared scene / re-seal flag). Order mirrors Intent:
-//! evaluate (no seq) → rate → commit seq → HTTP (unbound/guest cannot burn shared rate).
+//! sub); world HTTP append uses **host** Token + PoP + **scene revision CAS** (client JWT
+//! never on the bus); physics only applies a ready `SceneEntry` (+ shared scene / re-seal
+//! flag). Order mirrors Intent: evaluate (no seq) → rate → commit seq → HTTP
+//! (unbound/guest cannot burn shared rate).
 //! Non-guarantees: guest take-out for non-host sub; put-back; Intent path;
 //! distributed TX / **HTTP failure after `control_seq` commit** (seq stays advanced);
 //! evaluate→rate→commit のあいだに host→guest 降格が挟まると **rate だけ消費して commit 失敗**
@@ -161,6 +162,7 @@ pub fn spawn_listener(
     world_url: String,
     sessions: Arc<Mutex<SessionTable>>,
     http_auth: SharedHostHttpAuth,
+    shared_scene: Arc<RwLock<RoomScene>>,
 ) -> Result<SpawnInbox> {
     let key = inventory_spawn_key(room_id, wire_cap);
     let room_id = room_id.to_string();
@@ -187,6 +189,7 @@ pub fn spawn_listener(
                     &world_url,
                     &sessions,
                     &http_auth,
+                    &shared_scene,
                     &mut rate,
                 ) {
                     Ok(ready) => {
@@ -210,6 +213,7 @@ fn process_sample(
     world_url: &str,
     sessions: &Arc<Mutex<SessionTable>>,
     http_auth: &SharedHostHttpAuth,
+    shared_scene: &Arc<RwLock<RoomScene>>,
     rate: &mut SpawnRate,
 ) -> Result<ReadySpawn> {
     wire_aead::check_aead_envelope_bytes(AeadKind::InventorySpawn, envelope.len())
@@ -261,6 +265,7 @@ fn process_sample(
         room_id,
         &auth.token,
         &auth.pop_key,
+        shared_scene,
         &blake3,
         parsed.x,
         parsed.y,

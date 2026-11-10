@@ -14,7 +14,7 @@
 | assets: `GET /drive/nodes` + `POST /drive/take_out` が owner + Grant 検証済み blake3 を返す | put-back / Prefab 多子展開 / `repo@rev` |
 | Desktop Inventory 最小 UI（一覧 + 取り出す）。単一 blob ノードのみ | XR Inventory・Drive フォルダ UX 完成 |
 | host role のみが Zenoh inventory spawn で要求可能。host は **Drive `node_id` を受け取らない** | guest take-out；Intent / PROTOCOL_PIN 拡張 |
-| world: host が `POST …/scene/entries` で mesh 追記・revision bump（canonical seal 入力） | フル UGC エディタ |
+| world: host が `POST …/scene/entries` で mesh 追記・revision bump（canonical seal 入力）。**DB 楽観 CAS は [x0082](x0082-scene-revision-cas.md)** | フル UGC エディタ |
 | world 追記成功後は **shared scene + 再 seal を必ず適用**（Manifest/PlaceRead 優先）。Rapier はその後；拒否時も scene は残し物理のみ欠ける | `extra_blake3`；PlaceRead TTL UI；分散 TX ロールバック |
 | 再 seal 後の scene hash で guest PlaceRead が新 mesh をカバー可能 | 同時多発 spawn の公平スケジューリング |
 

@@ -1,9 +1,9 @@
-//! Inventory scene despawn control plane (x007b / x0081).
+//! Inventory scene despawn control plane (x007b / x0081 / x0082).
 //!
 //! Guarantees: Zenoh `…/inventory/despawn` is **Room AEAD**; session Ed25519 + SessionTable
-//! (**`role=host` bind** + `sub` == host Token sub); world HTTP delete uses host Token + PoP;
-//! physics applies shared scene / re-seal and best-effort Rapier remove. Order: evaluate →
-//! rate → commit seq → HTTP (unbound/guest cannot burn shared rate).
+//! (**`role=host` bind** + `sub` == host Token sub); world HTTP delete uses host Token + PoP
+//! + **scene revision CAS**; physics applies shared scene / re-seal and best-effort Rapier
+//! remove. Order: evaluate → rate → commit seq → HTTP (unbound/guest cannot burn shared rate).
 //! Non-guarantees: guest despawn for non-host sub; put-back coupling; Intent path;
 //! **HTTP failure after `control_seq` commit** (seq stays advanced); evaluate→rate→commit
 //! のあいだの host→guest 降格で rate のみ消費（Intent と同様・許容）。
@@ -106,6 +106,7 @@ pub fn despawn_listener(
     world_url: String,
     sessions: Arc<Mutex<SessionTable>>,
     http_auth: SharedHostHttpAuth,
+    shared_scene: Arc<RwLock<RoomScene>>,
 ) -> Result<DespawnInbox> {
     let key = inventory_despawn_key(room_id, wire_cap);
     let room_id = room_id.to_string();
@@ -132,6 +133,7 @@ pub fn despawn_listener(
                     &world_url,
                     &sessions,
                     &http_auth,
+                    &shared_scene,
                     &mut rate,
                 ) {
                     Ok(ready) => {
@@ -155,6 +157,7 @@ fn process_sample(
     world_url: &str,
     sessions: &Arc<Mutex<SessionTable>>,
     http_auth: &SharedHostHttpAuth,
+    shared_scene: &Arc<RwLock<RoomScene>>,
     rate: &mut DespawnRate,
 ) -> Result<ReadyDespawn> {
     wire_aead::check_aead_envelope_bytes(AeadKind::InventoryDespawn, envelope.len())
@@ -203,6 +206,7 @@ fn process_sample(
         room_id,
         &auth.token,
         &auth.pop_key,
+        shared_scene,
         parsed.entity_id,
     )
     .context("world scene delete")?;

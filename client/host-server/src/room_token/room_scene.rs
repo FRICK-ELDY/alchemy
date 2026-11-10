@@ -1,9 +1,10 @@
-//! World-authored room scene: JSON DTOs, fetch, append, and delete (x0027 / x006d / x007b).
+//! World-authored room scene: JSON DTOs, fetch, append, and delete (x0027 / x006d / x007b / x0082).
 //!
 //! Guarantees: host Room Token Bearer + `cnf.spk` PoP on every request (x0081); scene entries
 //! TRS-normalized on parse; shared-scene install is **revision-monotonic** (strictly newer only;
-//! x007b spawn/despawn race).
-//! Non-guarantees: scene persistence, Manifest sealing.
+//! x007b spawn/despawn race); append/delete send `expected_revision` and retry on
+//! `scene_revision_conflict` only (x0082).
+//! Non-guarantees: scene persistence, Manifest sealing; infinite CAS retries.
 
 use super::http::{credential_agent, is_blake3_hex};
 use super::http_pop_client::{request_path, with_pop};
@@ -179,13 +180,50 @@ pub fn fetch_room_scene(
     }
 }
 
-/// Append one mesh entry to world scene (x006d). Returns updated scene + new entry.
+/// Max optimistic CAS attempts for scene append/delete (x0082).
+const MAX_SCENE_CAS_ATTEMPTS: u32 = 5;
+
+#[derive(Debug, Deserialize)]
+struct SceneErrorJson {
+    error: String,
+}
+
+fn is_scene_revision_conflict(body: &str) -> bool {
+    serde_json::from_str::<SceneErrorJson>(body)
+        .map(|e| e.error == "scene_revision_conflict")
+        .unwrap_or(false)
+}
+
+fn shared_revision(shared: &Arc<RwLock<RoomScene>>) -> Result<u64> {
+    Ok(shared
+        .read()
+        .map_err(|_| anyhow!("shared scene RwLock poisoned"))?
+        .revision)
+}
+
+fn refresh_expected_revision(
+    world_url: &str,
+    room_id: &str,
+    host_room_token: &str,
+    pop_key: &SigningKey,
+    shared: &Arc<RwLock<RoomScene>>,
+) -> Result<u64> {
+    let fresh = fetch_room_scene(world_url, room_id, host_room_token, pop_key)?;
+    let rev = fresh.revision;
+    let _ = install_shared_scene_if_newer(shared, fresh)?;
+    Ok(rev)
+}
+
+/// Append one mesh entry to world scene (x006d / x0082). Returns updated scene + new entry.
+///
+/// Sends `expected_revision` from `shared_scene` and retries on `scene_revision_conflict` only.
 #[allow(clippy::too_many_arguments)] // world HTTP body fields (TRS) stay flat at the wire edge
 pub fn append_room_scene_entry(
     world_url: &str,
     room_id: &str,
     host_room_token: &str,
     pop_key: &SigningKey,
+    shared_scene: &Arc<RwLock<RoomScene>>,
     blake3: &str,
     x: f64,
     y: f64,
@@ -201,12 +239,76 @@ pub fn append_room_scene_entry(
     if !is_blake3_hex(blake3) {
         return Err(anyhow!("invalid blake3 for scene append"));
     }
+    let mut expected = shared_revision(shared_scene)?;
+    for attempt in 1..=MAX_SCENE_CAS_ATTEMPTS {
+        match append_room_scene_entry_once(
+            world_url,
+            room_id,
+            host_room_token,
+            pop_key,
+            expected,
+            blake3,
+            x,
+            y,
+            z,
+            qx,
+            qy,
+            qz,
+            qw,
+            sx,
+            sy,
+            sz,
+        ) {
+            Ok((scene, entry)) => {
+                let _ = install_shared_scene_if_newer(shared_scene, scene.clone())?;
+                return Ok((scene, entry));
+            }
+            Err(CasAttempt::Conflict) => {
+                expected = refresh_expected_revision(
+                    world_url,
+                    room_id,
+                    host_room_token,
+                    pop_key,
+                    shared_scene,
+                )
+                .with_context(|| {
+                    format!("scene append CAS refetch after conflict (attempt {attempt})")
+                })?;
+            }
+            Err(CasAttempt::Other(err)) => return Err(err),
+        }
+    }
+    Err(anyhow!(
+        "scene append CAS exhausted after {MAX_SCENE_CAS_ATTEMPTS} attempts"
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_room_scene_entry_once(
+    world_url: &str,
+    room_id: &str,
+    host_room_token: &str,
+    pop_key: &SigningKey,
+    expected_revision: u64,
+    blake3: &str,
+    x: f64,
+    y: f64,
+    z: f64,
+    qx: f64,
+    qy: f64,
+    qz: f64,
+    qw: f64,
+    sx: f64,
+    sy: f64,
+    sz: f64,
+) -> std::result::Result<(RoomScene, alchemy_protocol::SceneEntry), CasAttempt> {
     let base = world_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/rooms/{room_id}/scene/entries");
     let path = request_path(&url);
     let authz = format!("Bearer {host_room_token}");
     let raw = serde_json::to_vec(&serde_json::json!({
         "blake3": blake3,
+        "expected_revision": expected_revision,
         "x": x,
         "y": y,
         "z": z,
@@ -218,7 +320,7 @@ pub fn append_room_scene_entry(
         "sy": sy,
         "sz": sz,
     }))
-    .context("encode scene append body")?;
+    .map_err(|e| CasAttempt::Other(anyhow!("encode scene append body: {e:#}")))?;
     let req = with_pop(
         credential_agent()
             .post(&url)
@@ -231,7 +333,9 @@ pub fn append_room_scene_entry(
     );
     match req.send(raw.as_slice()) {
         Ok(resp) => {
-            let parsed: SceneResponseJson = resp.into_json().context("parse scene append")?;
+            let parsed: SceneResponseJson = resp
+                .into_json()
+                .map_err(|e| CasAttempt::Other(anyhow!("parse scene append: {e:#}")))?;
             let scene = scene_from_response(parsed);
             let entry = scene
                 .entries
@@ -239,49 +343,128 @@ pub fn append_room_scene_entry(
                 .rev()
                 .find(|e| e.blake3.eq_ignore_ascii_case(blake3))
                 .cloned()
-                .ok_or_else(|| anyhow!("appended blake3 missing from scene response"))?;
+                .ok_or_else(|| {
+                    CasAttempt::Other(anyhow!("appended blake3 missing from scene response"))
+                })?;
             Ok((scene, entry))
         }
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();
-            Err(anyhow!("scene append failed status={code} body={body}"))
+            if code == 409 && is_scene_revision_conflict(&body) {
+                Err(CasAttempt::Conflict)
+            } else {
+                Err(CasAttempt::Other(anyhow!(
+                    "scene append failed status={code} body={body}"
+                )))
+            }
         }
-        Err(err) => Err(anyhow!("scene append request failed: {err:#}")),
+        Err(err) => Err(CasAttempt::Other(anyhow!(
+            "scene append request failed: {err:#}"
+        ))),
     }
 }
 
-/// Delete one mesh entry from world scene by entity_id (x007b). Returns updated scene.
+/// Delete one mesh entry from world scene by entity_id (x007b / x0082). Returns updated scene.
+///
+/// Sends JSON `expected_revision` (PoP-bound) and retries on `scene_revision_conflict` only.
 pub fn delete_room_scene_entry(
     world_url: &str,
     room_id: &str,
     host_room_token: &str,
     pop_key: &SigningKey,
+    shared_scene: &Arc<RwLock<RoomScene>>,
     entity_id: u32,
 ) -> Result<RoomScene> {
+    let mut expected = shared_revision(shared_scene)?;
+    for attempt in 1..=MAX_SCENE_CAS_ATTEMPTS {
+        match delete_room_scene_entry_once(
+            world_url,
+            room_id,
+            host_room_token,
+            pop_key,
+            expected,
+            entity_id,
+        ) {
+            Ok(scene) => {
+                let _ = install_shared_scene_if_newer(shared_scene, scene.clone())?;
+                return Ok(scene);
+            }
+            Err(CasAttempt::Conflict) => {
+                expected = refresh_expected_revision(
+                    world_url,
+                    room_id,
+                    host_room_token,
+                    pop_key,
+                    shared_scene,
+                )
+                .with_context(|| {
+                    format!("scene delete CAS refetch after conflict (attempt {attempt})")
+                })?;
+            }
+            Err(CasAttempt::Other(err)) => return Err(err),
+        }
+    }
+    Err(anyhow!(
+        "scene delete CAS exhausted after {MAX_SCENE_CAS_ATTEMPTS} attempts"
+    ))
+}
+
+fn delete_room_scene_entry_once(
+    world_url: &str,
+    room_id: &str,
+    host_room_token: &str,
+    pop_key: &SigningKey,
+    expected_revision: u64,
+    entity_id: u32,
+) -> std::result::Result<RoomScene, CasAttempt> {
     let base = world_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/rooms/{room_id}/scene/entries/{entity_id}");
     let path = request_path(&url);
     let authz = format!("Bearer {host_room_token}");
+    let raw = serde_json::to_vec(&serde_json::json!({
+        "expected_revision": expected_revision,
+    }))
+    .map_err(|e| CasAttempt::Other(anyhow!("encode scene delete body: {e:#}")))?;
     let req = with_pop(
-        credential_agent().delete(&url).set("authorization", &authz),
+        credential_agent()
+            .delete(&url)
+            .set("authorization", &authz)
+            .set("content-type", "application/json"),
         pop_key,
         "DELETE",
         path,
-        b"",
+        &raw,
     );
-    match req.call() {
+    match req.send(raw.as_slice()) {
         Ok(resp) => {
-            let parsed: SceneResponseJson = resp.into_json().context("parse scene delete")?;
+            let parsed: SceneResponseJson = resp
+                .into_json()
+                .map_err(|e| CasAttempt::Other(anyhow!("parse scene delete: {e:#}")))?;
             let scene = scene_from_response(parsed);
             if scene.entries.iter().any(|e| e.entity_id == entity_id) {
-                return Err(anyhow!("deleted entity_id still present in scene response"));
+                return Err(CasAttempt::Other(anyhow!(
+                    "deleted entity_id still present in scene response"
+                )));
             }
             Ok(scene)
         }
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();
-            Err(anyhow!("scene delete failed status={code} body={body}"))
+            if code == 409 && is_scene_revision_conflict(&body) {
+                Err(CasAttempt::Conflict)
+            } else {
+                Err(CasAttempt::Other(anyhow!(
+                    "scene delete failed status={code} body={body}"
+                )))
+            }
         }
-        Err(err) => Err(anyhow!("scene delete request failed: {err:#}")),
+        Err(err) => Err(CasAttempt::Other(anyhow!(
+            "scene delete request failed: {err:#}"
+        ))),
     }
+}
+
+enum CasAttempt {
+    Conflict,
+    Other(anyhow::Error),
 }

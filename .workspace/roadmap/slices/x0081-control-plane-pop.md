@@ -76,7 +76,7 @@ skew 既定 ±60s。`cnf.spk` は Token 発行時の session_pub（host Credenti
 
 ## やらない（本 Slice）
 
-- Scene revision CAS（P0-3）
+- Scene revision CAS（P0-3）→ [x0082](x0082-scene-revision-cas.md)
 - relay-agent CSR-only（P0-4）
 - host-token 操作別 rate limit（P1）
 - 任意 guest take-out の本格 ACL
@@ -87,6 +87,7 @@ skew 既定 ±60s。`cnf.spk` は Token 発行時の session_pub（host Credenti
 - [x003e-room-token-cnf.md](x003e-room-token-cnf.md)
 - [x006d-host-take-out-control.md](x006d-host-take-out-control.md)
 - [x007b-scene-despawn.md](x007b-scene-despawn.md)
+- [x0082-scene-revision-cas.md](x0082-scene-revision-cas.md)
 - [improvement-plan-2026-11-05.md](../../0_doc/evaluation/improvement-plan-2026-11-05.md)
 
 ← [目次](../README.md)

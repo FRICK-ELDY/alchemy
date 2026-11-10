@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0082`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0083`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -180,8 +180,9 @@ depends_on: [x0006]
 | x007f | — | done | Prefab 多子展開 + XR Inventory 薄皮（Live 解禁・Desktop 委譲） | [x007f-prefab-multi-xr-inventory.md](slices/x007f-prefab-multi-xr-inventory.md) |
 | x0080 | — | done | host handover / takeover + session dormant（owner≠計算ホスト） | [x0080-host-handover-and-takeover.md](slices/x0080-host-handover-and-takeover.md) |
 | x0081 | — | done | 制御面 session 署名 + world host HTTP PoP（Token を Zenoh から外す） | [x0081-control-plane-pop.md](slices/x0081-control-plane-pop.md) |
+| x0082 | — | done | Scene revision CAS（append/delete expected_revision + 409 再試行） | [x0082-scene-revision-cas.md](slices/x0082-scene-revision-cas.md) |
 
-**現在の次:** 優先度ビュー [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md) を参照（x0081 done）。assets 別リポ／公開体裁は monorepo のまま後回し。  
+**現在の次:** 優先度ビュー [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md) を参照（x0082 done）。assets 別リポ／公開体裁は monorepo のまま後回し。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
 次の空き番号は **`x0082`**。

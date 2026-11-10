@@ -11,7 +11,7 @@
 
 | 保証する | 保証しない |
 |:---|:---|
-| world: host Room Token で `DELETE …/scene/entries/:entity_id`（mesh blake3 必須・revision bump） | user_root / cuboid（blake3 無し）削除；guest DELETE |
+| world: host Room Token で `DELETE …/scene/entries/:entity_id`（mesh blake3 必須・revision bump）。**DB 楽観 CAS は [x0082](x0082-scene-revision-cas.md)** | user_root / cuboid（blake3 無し）削除；guest DELETE |
 | Zenoh `…/inventory/despawn` は Room AEAD（`AeadKind::InventoryDespawn`）。host role 検証後に world HTTP | Intent 経路；guest despawn |
 | world 削除成功後は **shared scene + 再 seal を必ず適用**。Rapier 除去はその後最良努力（失敗時も scene は権威）。host 内は `revision` 単調（新しい shared のみ採用；stale spawn/despawn は skip） | 分散 TX（world↔host↔guest）；Rapier 失敗時の自動再同期；HTTP 完了順の保証 |
 | Desktop Inventory: scene mesh 選択 → **Despawn**（host）。put-back とは独立 | XR Inventory；Prefab 多子；put-back と一体 TX |

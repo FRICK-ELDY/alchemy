@@ -964,6 +964,7 @@ fn main() -> Result<()> {
         world_url.clone(),
         Arc::clone(&sessions),
         http_auth.clone(),
+        Arc::clone(&shared_scene),
     )
     .context("inventory spawn listener")?;
     let despawn_inbox = inventory_despawn::despawn_listener(
@@ -974,6 +975,7 @@ fn main() -> Result<()> {
         world_url.clone(),
         Arc::clone(&sessions),
         http_auth,
+        Arc::clone(&shared_scene),
     )
     .context("inventory despawn listener")?;
 
