@@ -93,3 +93,4 @@ flowchart TB
 | x0066 | world が CSR から短命 mTLS を署名；zenohd は同一 client CA で検証；IP allowlist 非保証 |
 | x0069 | Room 鍵 AEAD（XChaCha20Poly1305）；部屋機密性の第2壁；`wire_cap` 秘匿は非保証 |
 | x0070 | headless trust consumer + WAN 否定系 E2E（偽 seal で watermark 不変；wildcard でも他室平文不可） |
+| x0087 | 実 host WAN 一往復（CSR→credential worker→sealed Frame Accept；no-cert / guest put deny / 旧 epoch は local `process_manifest_bytes`） |

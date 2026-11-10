@@ -111,7 +111,8 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 4. ~~[x0084](slices/x0084-host-token-rate-limit.md) host-token 操作別 RL~~ **done**
 5. ~~[x0085](slices/x0085-glb-decode-budget.md) GLB decode budget~~ **done**
 6. ~~assets test hermetic（P1-3）~~ **→ [x0086](slices/x0086-assets-test-hermetic.md) done**
-7. WAN host E2E / Allocation throughput（P1-4〜）← **いま**
-8. verifier Spot-Check（保留）· Formula / market / 検疫（減点対象外）
+7. 実 host WAN 一往復 E2E（P1-4）← **いま** **→ [x0087](slices/x0087-wan-host-e2e.md) in_progress**（CI 緑で done）
+8. Allocation throughput（P1-5）
+9. verifier Spot-Check（保留）· Formula / market / 検疫（減点対象外）
 
 ← [Roadmap 目次](README.md)

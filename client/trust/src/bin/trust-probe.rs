@@ -1,11 +1,13 @@
-//! x0070 headless trust consumer — same gates as GUI client.
+//! x0070 / x0087 headless trust consumer — same gates as GUI client.
 //!
 //! Guarantees (hermetic): login → Room Token → Accept host Manifest → adversarial
 //! fake-seal / wrong-key Discard leaves [`TrustWatermarks`] unchanged.
-//! Guarantees (WAN mode via `TRUST_PROBE_MODE=wan`): wildcard `*/*/manifest` may
-//! deliver other-room ciphertext, but open with own `room_key` fails (unreadable);
-//! connect without client cert fails.
-//! Non-guarantees: GUI leave, valid old-seal JWT matrix (unit), L7 room isolation.
+//! Guarantees (WAN mode via `TRUST_PROBE_MODE=wan`, x0087): real host-server Manifest
+//! Accept + Frame open; no client cert fails; guest sim put ingress denied; old
+//! `room_key_epoch` AEAD Discard; wildcard other-room ciphertext unreadable with
+//! own `room_key`.
+//! Non-guarantees: GUI leave, valid old-seal JWT matrix (unit), L7 room isolation,
+//! hermetic adversarial puts on WAN ACL (guest cannot put sim ingress).
 
 use std::env;
 use std::sync::Arc;
@@ -503,14 +505,17 @@ fn run_wan() -> Result<()> {
     let zenoh_connect = env_or("ZENOH_CONNECT", "tls/127.0.0.1:7547");
     let user = env_or("AUTH_USER", DEFAULT_AUTH_USER);
     let password = env_or("AUTH_PASSWORD", DEFAULT_AUTH_PASSWORD);
-    let room_a = validate_room_id(&env_or("ROOM_ID", "local"))
+    let room_a = validate_room_id(&env_or("ROOM_ID", "wana"))
         .map_err(|e| anyhow!("ROOM_ID: {e}"))?
         .to_string();
     let room_b = validate_room_id(&env_or("ROOM_ID_B", "wanb"))
         .map_err(|e| anyhow!("ROOM_ID_B: {e}"))?
         .to_string();
+    let timeout_secs: u64 = env_or("E2E_TIMEOUT_SECS", "90")
+        .parse()
+        .context("E2E_TIMEOUT_SECS")?;
 
-    log::info!("trust-probe WAN; zenoh={zenoh_connect} room_a={room_a} room_b={room_b}");
+    log::info!("trust-probe WAN (x0087); zenoh={zenoh_connect} room_a={room_a} room_b={room_b}");
 
     // 1) No client cert → open must fail.
     std::env::remove_var("ZENOH_TLS_CONNECT_CERT");
@@ -549,8 +554,187 @@ fn run_wan() -> Result<()> {
     .context("install guest A mTLS")?;
 
     let session = open_zenoh(&zenoh_connect).context("open with guest mTLS")?;
+    let manifest_k = manifest_key(&room_a, &bundle_a.wire_cap);
+    let frame_k = frame_key(&room_a, &bundle_a.wire_cap);
+    let input_k = input_key(&room_a, &bundle_a.wire_cap);
 
-    // Wildcard subscribe — samples from other rooms may arrive (non-guarantee of isolation).
+    let jwks = Arc::new(WorldJwks::new(&world_url));
+    jwks.refresh().context("JWKS refresh")?;
+    let seal = ManifestSealVerifier::new(Arc::clone(&jwks), &room_a);
+    let attest = HostAttestationVerifier::new(Arc::clone(&jwks), &room_a);
+    let mut watermarks = TrustWatermarks::default();
+
+    let manifest_sub = session
+        .declare_subscriber(manifest_k.clone())
+        .wait()
+        .map_err(|e| anyhow!("subscribe manifest: {e}"))?;
+    let frame_sub = session
+        .declare_subscriber(frame_k.clone())
+        .wait()
+        .map_err(|e| anyhow!("subscribe frame: {e}"))?;
+
+    // Nudge real host-server (smoke starts it) so Manifest/Frame flow.
+    let mut event = InputEvent {
+        room_token: bundle_a.token.clone(),
+        client_time_ms: Instant::now().elapsed().as_millis() as u64,
+        move_x: 0.0,
+        move_y: 0.0,
+        move_z: 0.0,
+        buttons: 0,
+        grab_entity_id: 0,
+        aim_x: 0.0,
+        aim_y: 1.6,
+        aim_z: 0.0,
+        leave: false,
+        session_pub: public_key_bytes(&key_a),
+        intent_seq: 1,
+        intent_sig: vec![],
+    };
+    alchemy_protocol::wire_crypto::sign_input(&key_a, &mut event);
+    let env = wire_aead::seal(
+        &bundle_a.room_key,
+        &room_a,
+        0,
+        AeadKind::Input,
+        &event.encode_to_vec(),
+    )
+    .map_err(|e| anyhow!("seal input: {e}"))?;
+    session
+        .put(&input_k, env)
+        .timestamp(session.new_timestamp())
+        .wait()
+        .map_err(|e| anyhow!("put input: {e}"))?;
+
+    // 2) Accept Manifest from real host-server (CSR → credential worker → seal).
+    let accept_deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let mut accepted = false;
+    while Instant::now() < accept_deadline {
+        if let Ok(Some(sample)) = manifest_sub.try_recv() {
+            let bytes: ZBytes = sample.payload().clone();
+            match process_manifest_bytes(
+                &room_a,
+                &bundle_a.room_key,
+                bytes.to_bytes().as_ref(),
+                &room_a,
+                &mut watermarks,
+                &seal,
+                &attest,
+            ) {
+                TrustOutcome::Accept { .. } => {
+                    accepted = true;
+                    log::info!(
+                        "WAN: Accept real host Manifest (gen_rev={:?})",
+                        watermarks.manifest_gen_rev
+                    );
+                    break;
+                }
+                TrustOutcome::Discard { reason, detail } => {
+                    log::debug!("pre-accept discard {reason:?}: {detail}");
+                }
+            }
+        } else {
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+    if !accepted {
+        bail!("timeout waiting for Accept from real host-server Manifest");
+    }
+    if watermarks.host_pub.is_none() || watermarks.last_world_seal.is_none() {
+        bail!("Accept left watermarks incomplete");
+    }
+    let snapshot = watermarks.clone();
+
+    // 3) Frame from real host (AEAD open + decode). Same budget as Manifest Accept.
+    let frame_deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let mut saw_frame = false;
+    while Instant::now() < frame_deadline {
+        if let Ok(Some(sample)) = frame_sub.try_recv() {
+            let bytes: ZBytes = sample.payload().clone();
+            if let Ok(pt) = wire_aead::open(
+                &bundle_a.room_key,
+                &room_a,
+                0,
+                AeadKind::Frame,
+                bytes.to_bytes().as_ref(),
+            ) {
+                if RenderFrame::decode(pt.as_ref()).is_ok() {
+                    saw_frame = true;
+                    log::info!("WAN: opened Frame from real host-server");
+                    break;
+                }
+            }
+        } else {
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+    if !saw_frame {
+        bail!("timeout waiting for Frame from real host-server");
+    }
+
+    // 4) Guest sim put ingress must be ACL-denied (x0067 / P1-4).
+    // Message allowlist is best-effort (Zenoh wording varies); first CI log should confirm.
+    match session.put(&manifest_k, b"guest-sim-put-probe").wait() {
+        Ok(()) => bail!("guest put ingress on sim/manifest must be denied by WAN ACL"),
+        Err(err) => {
+            let msg = format!("{err:#}").to_lowercase();
+            let deny_like = [
+                "unauthor",
+                "denied",
+                "forbidden",
+                "not allowed",
+                "acl",
+                "reject",
+                "insufficient",
+                "permission",
+            ]
+            .iter()
+            .any(|needle| msg.contains(needle));
+            if !deny_like {
+                bail!(
+                    "guest put failed but not ACL-deny-like (got: {err:#}); \
+                     expected unauthorized/denied/forbidden (widen allowlist from CI log if needed)"
+                );
+            }
+            log::info!("guest sim put ACL deny ok: {err}");
+        }
+    }
+
+    // 5) Old room_key_epoch — **local** trust-gate check (no Zenoh put).
+    // Wire-path old-epoch inject via host B is out of scope (slice やらない).
+    let stale_plain = fake_seal_manifest(&room_a).encode_to_vec();
+    let stale_env = wire_aead::seal(
+        &bundle_a.room_key,
+        &room_a,
+        99,
+        AeadKind::Manifest,
+        &stale_plain,
+    )
+    .map_err(|e| anyhow!("seal old-epoch manifest: {e}"))?;
+    let mut trial = snapshot.clone();
+    match process_manifest_bytes(
+        &room_a,
+        &bundle_a.room_key,
+        &stale_env,
+        &room_a,
+        &mut trial,
+        &seal,
+        &attest,
+    ) {
+        TrustOutcome::Discard {
+            reason: DiscardReason::Aead,
+            ..
+        } => {
+            if trial != snapshot {
+                bail!("watermarks mutated on old-epoch AEAD Discard");
+            }
+            log::info!(
+                "WAN: old-epoch AEAD Discard + watermark stable ok (local process_manifest_bytes)"
+            );
+        }
+        other => bail!("old-epoch: expected Aead Discard, got {other:?}"),
+    }
+
+    // 6) Wildcard other-room ciphertext unreadable with room A key (x0070).
     let wild = "alchemy/dev/room/*/*/manifest";
     let wild_sub = session
         .declare_subscriber(wild)
@@ -558,18 +742,9 @@ fn run_wan() -> Result<()> {
         .map_err(|e| anyhow!("wildcard subscribe: {e}"))?;
     log::info!("subscribed {wild}");
 
-    // Put other-room AEAD ciphertext (room B key) onto a synthetic key expr.
-    // We seal with room_b key and publish under room_b/wire_cap so ACL allows guest put egress
-    // only for sim? Actually guest cannot put ingress on manifest — so we need a second
-    // session as host, or publish from this process if ACL allows put egress that peers see.
-    // Guest sim put ingress is deny; put egress is for receiving host traffic.
-    // So another peer must put. For CI without a second host, seal locally and put as host CN.
     let key_b = generate_signing_key();
     let eph_host = zenoh_connect::EphemeralMtlsIdentity::generate().context("CSR host B")?;
-    // Create room B as host role to obtain host CN + room_key B.
     let access_host = login(&auth_url, &user, &password)?;
-    // Ensure room B exists: create via host token on room_a owner path may fail; use alice create.
-    // Minimal: request host token for room_b (world creates on first token if allowed).
     let bundle_b = fetch_room_token(
         &world_url,
         &room_b,
@@ -619,7 +794,6 @@ fn run_wan() -> Result<()> {
         if let Ok(Some(sample)) = wild_sub.try_recv() {
             let key = sample.key_expr().as_str().to_string();
             let bytes: ZBytes = sample.payload().clone();
-            // Own room_key A must not open room B ciphertext.
             match wire_aead::open(
                 &bundle_a.room_key,
                 &room_a,
@@ -633,7 +807,6 @@ fn run_wan() -> Result<()> {
                         log::info!("wildcard sample on {key} unreadable with room A key (ok)");
                         break;
                     }
-                    // May be own-room noise or AAD mismatch; keep waiting for room B key.
                     log::debug!("AEAD fail on {key} (keep waiting for room B)");
                 }
                 Ok(_) => {
@@ -651,7 +824,7 @@ fn run_wan() -> Result<()> {
     }
 
     drop(host_pems);
-    log::info!("trust-probe WAN ok");
+    log::info!("trust-probe WAN ok (x0087 host round-trip + negatives)");
     Ok(())
 }
 
