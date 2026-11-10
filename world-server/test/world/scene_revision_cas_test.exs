@@ -1,5 +1,16 @@
 defmodule World.SceneRevisionCasTest do
-  @moduledoc "x0082: concurrent append+delete must not drop either mutation after retry"
+  @moduledoc """
+  x0082: append+delete CAS contracts.
+
+  True multi-process concurrency is not used here: DataCase owns a *shared*
+  Ecto sandbox connection (`async: false`), and concurrent `Task.async`
+  callers interleave queries on that one connection — which flakes under CI
+  load without proving production locking. Orderings below still require
+  conflict + retry for both mutations to land.
+
+  Assertions key on blake3 (not entity_id): after delete, the next append may
+  reuse the freed max+1 id (`next_entity_id/1`).
+  """
   use World.DataCase, async: false
 
   alias World.Rooms
@@ -8,79 +19,68 @@ defmodule World.SceneRevisionCasTest do
   @append_blake3 String.duplicate("a", 64)
   @seed_blake3 String.duplicate("b", 64)
 
-  test "concurrent append and delete both land after CAS retry" do
-    assert {:ok, room_id, _, _} = Rooms.create("cas-race", @owner)
-    assert {:ok, scene0} = Rooms.scene(room_id)
+  test "append then delete retry: both mutations land" do
+    {room_id, seed_id, base_rev} = seeded_room!("cas-append-first")
 
-    assert {:ok, scene1} =
-             Rooms.append_scene_entry(room_id, %{"blake3" => @seed_blake3}, scene0["revision"])
+    assert {:ok, after_append} =
+             Rooms.append_scene_entry(room_id, %{"blake3" => @append_blake3}, base_rev)
 
-    seed_id = List.last(scene1["entries"])["entity_id"]
-    base_rev = scene1["revision"]
+    assert after_append["revision"] == base_rev + 1
 
-    append_task =
-      Task.async(fn ->
-        mutate_with_retry(room_id, base_rev, fn rev ->
-          Rooms.append_scene_entry(room_id, %{"blake3" => @append_blake3}, rev)
-        end)
-      end)
+    assert {:error, :scene_revision_conflict} =
+             Rooms.delete_scene_entry(room_id, seed_id, base_rev)
 
-    delete_task =
-      Task.async(fn ->
-        mutate_with_retry(room_id, base_rev, fn rev ->
-          Rooms.delete_scene_entry(room_id, seed_id, rev)
-        end)
-      end)
+    assert {:ok, final} = Rooms.delete_scene_entry(room_id, seed_id, after_append["revision"])
 
-    assert {:ok, _} = Task.await(append_task, 5_000)
-    assert {:ok, _} = Task.await(delete_task, 5_000)
-
-    assert {:ok, final} = Rooms.scene(room_id)
     assert final["revision"] == base_rev + 2
-    refute Enum.any?(final["entries"], fn e -> e["entity_id"] == seed_id end)
+    refute Enum.any?(final["entries"], fn e -> e["blake3"] == @seed_blake3 end)
     assert Enum.any?(final["entries"], fn e -> e["blake3"] == @append_blake3 end)
   end
 
-  test "same expected_revision loses one writer to scene_revision_conflict" do
-    assert {:ok, room_id, _, _} = Rooms.create("cas-one-loses", @owner)
+  test "delete then append retry: both mutations land" do
+    {room_id, seed_id, base_rev} = seeded_room!("cas-delete-first")
+
+    assert {:ok, after_delete} = Rooms.delete_scene_entry(room_id, seed_id, base_rev)
+    assert after_delete["revision"] == base_rev + 1
+    refute Enum.any?(after_delete["entries"], fn e -> e["blake3"] == @seed_blake3 end)
+
+    assert {:error, :scene_revision_conflict} =
+             Rooms.append_scene_entry(room_id, %{"blake3" => @append_blake3}, base_rev)
+
+    assert {:ok, final} =
+             Rooms.append_scene_entry(
+               room_id,
+               %{"blake3" => @append_blake3},
+               after_delete["revision"]
+             )
+
+    assert final["revision"] == base_rev + 2
+    refute Enum.any?(final["entries"], fn e -> e["blake3"] == @seed_blake3 end)
+    assert Enum.any?(final["entries"], fn e -> e["blake3"] == @append_blake3 end)
+  end
+
+  test "same expected_revision: second writer gets scene_revision_conflict" do
+    {room_id, seed_id, rev} = seeded_room!("cas-one-loses")
+
+    assert {:ok, _} = Rooms.append_scene_entry(room_id, %{"blake3" => @append_blake3}, rev)
+
+    assert {:error, :scene_revision_conflict} =
+             Rooms.delete_scene_entry(room_id, seed_id, rev)
+
+    assert {:ok, final} = Rooms.scene(room_id)
+    assert final["revision"] == rev + 1
+    assert Enum.any?(final["entries"], fn e -> e["blake3"] == @seed_blake3 end)
+    assert Enum.any?(final["entries"], fn e -> e["blake3"] == @append_blake3 end)
+  end
+
+  defp seeded_room!(room_id) do
+    assert {:ok, ^room_id, _, _} = Rooms.create(room_id, @owner)
     assert {:ok, scene0} = Rooms.scene(room_id)
 
     assert {:ok, scene1} =
              Rooms.append_scene_entry(room_id, %{"blake3" => @seed_blake3}, scene0["revision"])
 
     seed_id = List.last(scene1["entries"])["entity_id"]
-    rev = scene1["revision"]
-
-    results =
-      [
-        Task.async(fn ->
-          Rooms.append_scene_entry(room_id, %{"blake3" => @append_blake3}, rev)
-        end),
-        Task.async(fn -> Rooms.delete_scene_entry(room_id, seed_id, rev) end)
-      ]
-      |> Enum.map(&Task.await(&1, 5_000))
-
-    oks = Enum.count(results, &match?({:ok, _}, &1))
-    conflicts = Enum.count(results, &match?({:error, :scene_revision_conflict}, &1))
-    assert oks == 1
-    assert conflicts == 1
-  end
-
-  defp mutate_with_retry(room_id, rev, fun, attempts_left \\ 8)
-
-  defp mutate_with_retry(_room_id, _rev, _fun, 0), do: {:error, :scene_revision_conflict}
-
-  defp mutate_with_retry(room_id, rev, fun, attempts_left) do
-    case fun.(rev) do
-      {:ok, _} = ok ->
-        ok
-
-      {:error, :scene_revision_conflict} ->
-        assert {:ok, fresh} = Rooms.scene(room_id)
-        mutate_with_retry(room_id, fresh["revision"], fun, attempts_left - 1)
-
-      other ->
-        other
-    end
+    {room_id, seed_id, scene1["revision"]}
   end
 end

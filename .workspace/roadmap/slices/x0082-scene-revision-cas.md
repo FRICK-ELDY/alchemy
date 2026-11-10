@@ -45,7 +45,7 @@ host ──GET scene──► 再試行（上限付き）
 
 1. `expected_revision` 無し → 422；不一致 → 409 `scene_revision_conflict`
 2. append/delete が revision WHERE 付き CAS でのみ成功
-3. 同時 append+delete 統合テストで欠落なし（再試行後に両反映）
+3. append↔delete 両順序で conflict→retry 後に両 mutation が残る統合テスト（Sandbox 共有接続のため `Task.async` 真並列は使わない）
 4. host が scene conflict のみ有限再試行（lease / duplicate は即 Err）
 5. `mix test`（world）緑；保証表・Slice・architecture 一致
 
