@@ -25,6 +25,7 @@
 | ManifestSeal JWT（`typ=manifest_seal` / `aud=alchemy-manifest-seal` + **`host_generation`**）を host Room Token のみ発行（x0026 / **x0039** / **x003a**）。**DB scene + HostAttestation から canonical blake3 を再計算**し、host 提出 hash と不一致なら 422（署名 oracle 廃止）。`manifest-seal-hash --serve` 常駐 Port 必須（x0075） | UGC scene 編集；host ローカル改変 body への seal |
 | DemoScene（entries + loco + **初期 quat/scale**）を Room 作成時に紐付け。`GET …/scene` は **host** Room Token のみ（x0027 / x002c）。**x006d / x0082**: `POST …/scene/entries` で mesh 1 件追記（**`expected_revision` CAS**・revision bump・canonical seal 入力）。**x007b / x0082**: `DELETE …/scene/entries/:entity_id` で mesh 削除（64-hex blake3 必須・**`expected_revision` CAS**）。競合は **409** `scene_revision_conflict`（host が GET 後に有限再試行） | guest への scene 配布・フル UGC エディタ・collider scale；user_root / cuboid 削除；Room 単位グローバル直列化 alone；無限再試行 |
 | PlaceRead JWT（`typ=place_read` / `aud=alchemy-assets-place-read`）を Room Token + 検証済み `world_seal` で発行（x006b）。scene blake3 は **ManifestSeal 時**固定。PlaceRead `exp` = **seal 絶対 unix `exp`**＋`touch_until`。期限切れ seal → `seal_expired`。再起動後 re-seal。`extra_blake3` 無効 | JWT 内全 hash 列挙；durable 永続／canonical 再 hydrate；PlaceRead が seal より長生き；退出即時 revoke；client 自動取得 |
+| HTTP rate limit（x0071 / **x0084**）: auth-JWT scope は IP+user；host-token scope（`host_seal`=`host_keys`+`manifest_seal` / `host_scene` / `place_read`）は操作別 IP + **claims** `room_id\|jti` で 429。`place_read` 発行と hashes の jti は別 Bearer のため非連動（共有床は IP） | 分散ノード横断カウンタ；発行↔PlaceRead の jti 相関；JWT 署名検証前の jti 真正性 |
 
 ## 契約（Room Token）
 
@@ -73,6 +74,8 @@
 | DELETE | `/api/v1/rooms/:room_id/scene/entries/:entity_id` | Bearer（**host Room Token**）+ PoP（x0081） | mesh SceneEntry 削除 + **`expected_revision` body CAS**（x007b / x0082；blake3 必須） |
 | POST | `/api/v1/rooms/:room_id/place_read` | Bearer（**Room Token**） | PlaceRead 発行（`world_seal` 必須・`extra_blake3` 無効・x006b） |
 | GET | `/api/v1/rooms/:room_id/place_hashes` | Bearer（**PlaceRead**） | seal 時固定の scene blake3s（x006b） |
+
+host-token / PlaceRead 系は x0084 で操作別 rate limit（超過は **429** + `retry-after`）。
 
 ## 永続（x0028）
 

@@ -16,6 +16,18 @@ config :world, World.RateLimit,
     room_visibility: %{
       ip: %{limit: 300, period_ms: 60_000},
       user: %{limit: 300, period_ms: 60_000}
+    },
+    host_seal: %{
+      ip: %{limit: 300, period_ms: 60_000},
+      jti: %{limit: 300, period_ms: 60_000}
+    },
+    host_scene: %{
+      ip: %{limit: 300, period_ms: 60_000},
+      jti: %{limit: 300, period_ms: 60_000}
+    },
+    place_read: %{
+      ip: %{limit: 300, period_ms: 60_000},
+      jti: %{limit: 300, period_ms: 60_000}
     }
   }
 

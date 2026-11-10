@@ -9,7 +9,14 @@ defmodule World.RateLimit do
     room_token_ip: {:room_token, :ip},
     room_token_user: {:room_token, :user},
     room_visibility_ip: {:room_visibility, :ip},
-    room_visibility_user: {:room_visibility, :user}
+    room_visibility_user: {:room_visibility, :user},
+    # x0084: host Room Token / PlaceRead scope
+    host_seal_ip: {:host_seal, :ip},
+    host_seal_jti: {:host_seal, :jti},
+    host_scene_ip: {:host_scene, :ip},
+    host_scene_jti: {:host_scene, :jti},
+    place_read_ip: {:place_read, :ip},
+    place_read_jti: {:place_read, :jti}
   ]
 
   @type limit_config :: AlchemyRateLimit.limit_config()

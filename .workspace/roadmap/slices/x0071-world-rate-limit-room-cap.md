@@ -10,7 +10,7 @@
 
 | 保証する | 保証しない |
 |:---|:---|
-| `:user_auth` の create / token / visibility は IP+user で 429 | host Room Token ルートの RL |
+| `:user_auth` の create / token / visibility は IP+user で 429 | ~~host Room Token ルートの RL~~ → [x0084](x0084-host-token-rate-limit.md) |
 | owner あたり Room 数は設定上限で create 拒否（403） | 並行 insert の厳密直列化・DB trigger |
 | auth 既存 RL 挙動は API 互換のまま | BLAKE3 / seal-hash 常駐化 |
 
