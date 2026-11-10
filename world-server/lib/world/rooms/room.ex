@@ -3,9 +3,10 @@ defmodule World.Rooms.Room do
   Persistent room ledger row (x0028).
 
   Guarantees: `room_id` + `owner_sub` + DemoScene `scene` + `visibility` + `wire_cap` (x004e) +
-  `room_key` (x0069) + `room_key_epoch` (x007e) survive restart.
+  `room_key` (x0069) + `room_key_epoch` (x007e) + host session (`active_host_sub` / `state` /
+  `host_lease_expires_at` · x0080) survive restart.
   Non-guarantees: Presence / physics pose; UGC edit history; previous-epoch key durability
-  (grace is memory-only via `RoomKeyGrace`).
+  (grace is memory-only via `RoomKeyGrace`); seamless sim handoff of poses.
   """
 
   use Ash.Resource,
@@ -78,6 +79,27 @@ defmodule World.Rooms.Room do
 
     # base64url (no pad) of last attested 32-byte host_pub; nil until first host_keys.
     attribute :attested_host_pub, :string do
+      allow_nil? true
+      public? true
+    end
+
+    # x0080: current compute host (nullable). Distinct from persistent `owner_sub`.
+    attribute :active_host_sub, :string do
+      allow_nil? true
+      public? true
+    end
+
+    # x0080: session projection — Public catalog is `active` only.
+    attribute :state, :string do
+      allow_nil? false
+      public? true
+      default "dormant"
+
+      constraints match: ~r/^(active|dormant)$/
+    end
+
+    # x0080: host heartbeat deadline while `state = active`.
+    attribute :host_lease_expires_at, :utc_datetime do
       allow_nil? true
       public? true
     end

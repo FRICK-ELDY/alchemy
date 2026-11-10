@@ -176,6 +176,12 @@ pub struct DashState {
     pub worlds_waiting_host: bool,
     /// Waiting overlay may show Host Rescue only when viewer owns the room (x007c).
     pub worlds_can_host_rescue: bool,
+    /// Waiting overlay may show Takeover when session is dormant / lease-expired (x0080).
+    pub worlds_can_takeover: bool,
+    /// Local sub was nominated as `active_host_sub` (x0080 auto-host when Server Operator ON).
+    pub worlds_nominated_host: bool,
+    /// Last Waiting host-session poll (x0080 nomination / takeover CTA).
+    pub worlds_session_poll_at: Option<std::time::Instant>,
     /// Live → WaitingHost after frames stall (distinct copy from first join wait).
     pub worlds_host_disconnect: bool,
     /// Last observed `last_frame_tick` used for first-Frame Live transition.
@@ -264,6 +270,9 @@ impl Default for DashState {
             inventory_live_peer: false,
             worlds_waiting_host: false,
             worlds_can_host_rescue: false,
+            worlds_can_takeover: false,
+            worlds_nominated_host: false,
+            worlds_session_poll_at: None,
             worlds_host_disconnect: false,
             worlds_seen_frame_tick: None,
             worlds_last_frame_at: None,
@@ -1060,8 +1069,26 @@ impl DashState {
         Rect::new(panel.x, list_y, panel.w, self.worlds_catalog_list_h())
     }
 
+    /// Organizing "My worlds" window size (matches `MAIN_MY_WORLD_ROW_IDS`).
+    pub const WORLDS_ORGANIZING_VISIBLE_ROWS: usize = 8;
+
+    pub fn worlds_organizing_max_scroll(&self) -> usize {
+        self.worlds_rooms
+            .len()
+            .saturating_sub(Self::WORLDS_ORGANIZING_VISIBLE_ROWS)
+    }
+
+    /// Active catalog max scroll for the current MainHub tab.
+    pub fn worlds_active_catalog_max_scroll(&self) -> usize {
+        if self.main_hub_tab == MainHubTab::Organizing && self.server_operator {
+            self.worlds_organizing_max_scroll()
+        } else {
+            self.worlds_catalog_max_scroll(self.worlds_catalog_list_h())
+        }
+    }
+
     pub fn clamp_worlds_catalog_scroll(&mut self) {
-        let max = self.worlds_catalog_max_scroll(self.worlds_catalog_list_h());
+        let max = self.worlds_active_catalog_max_scroll();
         if self.worlds_catalog_scroll > max {
             self.worlds_catalog_scroll = max;
         }
@@ -1069,8 +1096,7 @@ impl DashState {
 
     /// Scroll catalog by room rows (`delta_rows` > 0 → later rooms).
     pub fn scroll_worlds_catalog_by(&mut self, delta_rows: i32) {
-        let list_h = self.worlds_catalog_list_h();
-        let max = self.worlds_catalog_max_scroll(list_h) as i32;
+        let max = self.worlds_active_catalog_max_scroll() as i32;
         let next = (self.worlds_catalog_scroll as i32 + delta_rows).clamp(0, max);
         self.worlds_catalog_scroll = next as usize;
     }
@@ -1188,17 +1214,28 @@ fn rebuild_session_shell(
             1.2,
         );
         tree.register_hit(WidgetId::WorldsLeave, leave);
-        if state.worlds_can_host_rescue {
+        let host_cta = state.worlds_can_host_rescue
+            || state.worlds_can_takeover
+            || state.worlds_nominated_host;
+        if host_cta {
             if state.server_operator {
-                let rescue = Rect::new(cx + 172.0, y, 200.0, btn_h);
-                tree.push_rect(rescue, state.interact(WidgetId::WorldsHostRescue, ACCENT));
+                let (label, widget) = if state.worlds_can_takeover && !state.worlds_can_host_rescue
+                {
+                    ("Take over host", WidgetId::WorldsTakeover)
+                } else if state.worlds_nominated_host && !state.worlds_can_host_rescue {
+                    ("Start as nominated host", WidgetId::WorldsHostRescue)
+                } else {
+                    ("Host this room now", WidgetId::WorldsHostRescue)
+                };
+                let rescue = Rect::new(cx + 172.0, y, 220.0, btn_h);
+                tree.push_rect(rescue, state.interact(widget, ACCENT));
                 tree.push_label(
-                    Rect::new(rescue.x + 12.0, rescue.y + 10.0, 176.0, 16.0),
-                    "Host this room now",
+                    Rect::new(rescue.x + 12.0, rescue.y + 10.0, 196.0, 16.0),
+                    label,
                     TEXT,
                     1.2,
                 );
-                tree.register_hit(WidgetId::WorldsHostRescue, rescue);
+                tree.register_hit(widget, rescue);
             } else {
                 // Avoid Settings deadlock: enable here (or via Settings tab while in-room).
                 let enable = Rect::new(cx + 172.0, y, 260.0, btn_h);
@@ -1216,7 +1253,7 @@ fn rebuild_session_shell(
             }
         }
         y += btn_h + gap;
-        if state.worlds_can_host_rescue && !state.server_operator {
+        if host_cta && !state.server_operator {
             tree.push_label(
                 Rect::new(cx, y, cw, 32.0),
                 "Hosts on this PC (CPU/GPU load). Not recommended on weak machines. Or open Settings.",
@@ -2107,6 +2144,17 @@ const MAIN_PUBLIC_ROW_IDS: [WidgetId; 8] = [
     WidgetId::MainPublicRow7,
 ];
 
+const MAIN_MY_WORLD_ROW_IDS: [WidgetId; 8] = [
+    WidgetId::MainMyWorldRow0,
+    WidgetId::MainMyWorldRow1,
+    WidgetId::MainMyWorldRow2,
+    WidgetId::MainMyWorldRow3,
+    WidgetId::MainMyWorldRow4,
+    WidgetId::MainMyWorldRow5,
+    WidgetId::MainMyWorldRow6,
+    WidgetId::MainMyWorldRow7,
+];
+
 fn rebuild_main_hub(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
     tree.push_label(Rect::new(cx, cy0, cw, 18.0), &state.home_status, MUTED, 1.0);
 
@@ -2347,25 +2395,90 @@ fn rebuild_main_hub_organizing(
     );
     y += 68.0;
 
-    tree.push_label(Rect::new(cx, y, cw, 18.0), "My worlds", TEXT, 1.4);
-    y += 24.0;
-    tree.push_rect(
-        Rect::new(cx, y, cw, 56.0),
-        Color::rgba(0.10, 0.11, 0.14, 1.0),
-    );
+    tree.push_label(Rect::new(cx, y, cw * 0.55, 18.0), "My worlds", TEXT, 1.4);
+    let refresh = Rect::new(cx + cw - 100.0, y - 4.0, 100.0, 28.0);
+    tree.push_rect(refresh, state.interact(WidgetId::MainHubRefresh, BTN));
     tree.push_label(
-        Rect::new(cx + 12.0, y + 12.0, cw - 24.0, 16.0),
-        "Your worlds list is not connected yet.",
-        MUTED,
+        Rect::new(refresh.x + 16.0, refresh.y + 6.0, 68.0, 16.0),
+        "Refresh",
+        TEXT,
         1.1,
     );
+    tree.register_hit(WidgetId::MainHubRefresh, refresh);
+    y += 28.0;
+
+    let row_h = 32.0;
+    let gap = 4.0;
+    let visible = DashState::WORLDS_ORGANIZING_VISIBLE_ROWS;
+    debug_assert_eq!(visible, MAIN_MY_WORLD_ROW_IDS.len());
+    let max_scroll = state.worlds_rooms.len().saturating_sub(visible);
+    let start = state.worlds_catalog_scroll.min(max_scroll);
+    let shown = state.worlds_rooms.len().min(visible).max(1);
+    let list_h = 8.0 + shown as f32 * (row_h + gap) + 4.0;
+    let list = Rect::new(cx, y, cw, list_h);
+    tree.push_rect(list, Color::rgba(0.10, 0.11, 0.14, 1.0));
+    if state.worlds_rooms.is_empty() {
+        tree.push_label(
+            Rect::new(cx + 12.0, y + 20.0, cw - 24.0, 40.0),
+            "No owned worlds yet. Create one below, or Refresh after Hosting.",
+            MUTED,
+            1.1,
+        );
+    } else {
+        for (vis_i, &id) in MAIN_MY_WORLD_ROW_IDS.iter().enumerate().take(visible) {
+            let room_i = start + vis_i;
+            let Some((room_id, visibility, _role, _owner)) = state.worlds_rooms.get(room_i) else {
+                break;
+            };
+            let ry = y + 8.0 + vis_i as f32 * (row_h + gap);
+            let r = Rect::new(cx + 8.0, ry, cw - 16.0, row_h);
+            let selected = state.worlds_selected.as_deref() == Some(room_id.as_str());
+            let base = if selected { ACCENT } else { BTN };
+            tree.push_rect(r, state.interact(id, base));
+            tree.push_label(
+                Rect::new(r.x + 8.0, r.y + 8.0, r.w - 16.0, 16.0),
+                format!("{room_id} · {visibility}"),
+                TEXT,
+                1.0,
+            );
+            tree.register_hit(id, r);
+        }
+        if max_scroll > 0 {
+            tree.push_label(
+                Rect::new(cx + 12.0, y + list_h - 18.0, cw - 24.0, 14.0),
+                format!(
+                    "{}–{} / {} (scroll)",
+                    start + 1,
+                    (start + visible).min(state.worlds_rooms.len()),
+                    state.worlds_rooms.len()
+                ),
+                MUTED,
+                0.9,
+            );
+        }
+    }
+    y += list_h + 8.0;
+
+    let host = Rect::new(cx, y, cw.min(280.0), 36.0);
+    // tuple: (room_id, visibility, role_hint, owner_sub)
+    let host_enabled = state.worlds_selected.as_ref().is_some_and(|sel| {
+        state
+            .worlds_rooms
+            .iter()
+            .any(|(id, _, role, _)| id == sel && role == "owner")
+    });
+    let host_c = if host_enabled { ACCENT } else { BTN };
+    tree.push_rect(host, state.interact(WidgetId::WorldsHostRoom, host_c));
     tree.push_label(
-        Rect::new(cx + 12.0, y + 32.0, cw - 24.0, 16.0),
-        "Coming soon — owned worlds will host from here.",
-        MUTED,
-        1.0,
+        Rect::new(host.x + 12.0, host.y + 10.0, host.w - 24.0, 16.0),
+        "Host this room",
+        TEXT,
+        1.3,
     );
-    y += 68.0;
+    if host_enabled {
+        tree.register_hit(WidgetId::WorldsHostRoom, host);
+    }
+    y += 48.0;
 
     let create = Rect::new(cx, y, cw.min(320.0), 44.0);
     tree.push_rect(create, state.interact(WidgetId::MainHubCreateWorld, ACCENT));

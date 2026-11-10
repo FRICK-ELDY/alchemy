@@ -43,14 +43,10 @@ use std::time::{Duration, Instant};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// Best-effort host authority handoff before local host stop.
-///
-/// MVP: log only. Failure contract = room ends with host shutdown (no hang).
-/// Full 0s migration lives with world-server verifier (P4).
+/// Legacy no-op log (x0080 real path is `world_api::handover` from Desktop Leave/Exit).
+#[allow(dead_code)] // retained for unit test + API stability
 pub fn request_handover_stub() {
-    log::info!(
-        "host handover stub: no world-server candidates yet — local host will stop (room ends)"
-    );
+    log::debug!("host handover stub retained for tests; prefer world_api::handover");
 }
 
 /// Process-manager for a single local host-server child.

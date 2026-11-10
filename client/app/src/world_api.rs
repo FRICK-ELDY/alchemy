@@ -1,26 +1,37 @@
-//! world-server Room HTTP helpers (x0037 + x007c catalog).
+//! world-server Room HTTP helpers (x0037 + x007c catalog + x0080 host session).
 //!
 //! Guarantees: create-with-visibility; owner visibility update; reports soft-skip distinctly;
-//! catalog list returns visible rooms only (no room_key / Token / wire_cap).
+//! catalog list returns visible rooms only (no room_key / Token / wire_cap);
+//! Public catalog is `state=active` only; mine may include dormant (x0080).
 //! Non-guarantees: room_id rename / Zenoh resubscribe; display-name persistence;
-//! authoritative host_status in catalog.
+//! Frame reachability from catalog rows.
 //!
 //! Ownership note (x0021 / x0037): host normally `POST /rooms` first (same account as client).
 //! Client may also `POST` when host has not created yet — then host must use the **same**
 //! auth identity or host Token will 403. Prefer launcher order: host up → client Start.
+//! x0080: compute host may differ from `owner_sub` after handover / takeover.
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 pub use crate::access_level::AccessLevel;
 
-/// One visible room from `GET /api/v1/rooms` (x007c).
+/// One visible room from `GET /api/v1/rooms` (x007c / x0080).
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct RoomSummary {
     pub room_id: String,
     pub visibility: String,
     pub owner_sub: String,
     pub role_hint: String,
+    /// Missing/unknown → `"unknown"` (fail-closed for Takeover CTA; not treated as dormant).
+    #[serde(default = "default_unknown_state")]
+    pub state: String,
+    #[serde(default)]
+    pub active_host_sub: Option<String>,
+}
+
+fn default_unknown_state() -> String {
+    "unknown".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +159,76 @@ fn map_put_visibility_http_status(status: u16) -> Result<VisibilityEnsure> {
     match status {
         403 | 404 => Ok(VisibilityEnsure::LeftExisting),
         code => bail!("set visibility failed status={code}"),
+    }
+}
+
+/// Session summary from `GET /api/v1/rooms/:id` (x0080; no secrets).
+pub fn get_room(world_url: &str, access_token: &str, room_id: &str) -> Result<RoomSummary> {
+    let base = world_url.trim_end_matches('/');
+    let authz = format!("Bearer {access_token}");
+    let url = format!("{base}/api/v1/rooms/{room_id}");
+
+    match ureq::get(&url).set("authorization", &authz).call() {
+        Ok(resp) => resp.into_json().context("parse room session"),
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            bail!("get room failed status={code} body={body}")
+        }
+        Err(err) => Err(err).context("get room request failed"),
+    }
+}
+
+/// Graceful Handover (`target_sub = None` → dormant). Caller must be active host or owner.
+pub fn handover(
+    world_url: &str,
+    access_token: &str,
+    room_id: &str,
+    target_sub: Option<&str>,
+) -> Result<RoomSummary> {
+    let base = world_url.trim_end_matches('/');
+    let authz = format!("Bearer {access_token}");
+    let url = format!("{base}/api/v1/rooms/{room_id}/handover");
+    let body = match target_sub {
+        Some(sub) => serde_json::json!({ "target_sub": sub }),
+        None => serde_json::json!({ "target_sub": null }),
+    };
+
+    match ureq::post(&url)
+        .set("content-type", "application/json")
+        .set("authorization", &authz)
+        .send_json(body)
+    {
+        Ok(resp) => resp.into_json().context("parse handover"),
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            bail!("handover failed status={code} body={body}")
+        }
+        Err(err) => Err(err).context("handover request failed"),
+    }
+}
+
+/// Manual Takeover CAS while dormant / lease-expired (x0080).
+pub fn takeover(world_url: &str, access_token: &str, room_id: &str) -> Result<RoomSummary> {
+    let base = world_url.trim_end_matches('/');
+    let authz = format!("Bearer {access_token}");
+    let url = format!("{base}/api/v1/rooms/{room_id}/takeover");
+
+    match ureq::post(&url)
+        .set("content-type", "application/json")
+        .set("authorization", &authz)
+        .send_json(serde_json::json!({}))
+    {
+        Ok(resp) => resp.into_json().context("parse takeover"),
+        Err(ureq::Error::Status(409, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            // x0080: another caller won CAS — stay joined as guest; do not re-login.
+            bail!("takeover_conflict (409): another host claimed; body={body}")
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            bail!("takeover failed status={code} body={body}")
+        }
+        Err(err) => Err(err).context("takeover request failed"),
     }
 }
 

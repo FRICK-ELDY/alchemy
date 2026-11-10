@@ -334,6 +334,8 @@ pub struct SharedState {
     pub inventory_mirror: Mutex<crate::system_ui::InventoryMirror>,
     /// On-demand local host-server child (Start session only; Join stays idle).
     pub host_supervisor: Arc<crate::host_supervisor::HostSupervisor>,
+    /// Other Presence assignment `sub`s (x0080 handover candidate list; hint only).
+    pub presence_peer_subs: Mutex<Vec<String>>,
 }
 
 impl SharedState {
@@ -371,6 +373,14 @@ impl SharedState {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
+    }
+
+    /// First other Presence `sub` for Graceful Handover nomination (x0080).
+    pub fn first_presence_peer_sub(&self) -> Option<String> {
+        self.presence_peer_subs
+            .lock()
+            .ok()
+            .and_then(|g| g.first().cloned())
     }
 
     /// Retarget room id + seal/attestation verifiers + process `ROOM_ID` env (x007c).
@@ -854,6 +864,9 @@ impl SharedState {
         }
         if let Ok(mut slot) = self.presence_gen_rev.lock() {
             *slot = None;
+        }
+        if let Ok(mut peers) = self.presence_peer_subs.lock() {
+            peers.clear();
         }
         if let Ok(mut world) = self.world.lock() {
             *world = WorldView::default();

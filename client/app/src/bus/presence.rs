@@ -142,6 +142,14 @@ pub(crate) fn spawn_presence_subscriber(
                             }
                             break 'sample;
                         }
+                        if let Ok(mut slot) = shared.presence_peer_subs.lock() {
+                            slot.clear();
+                            for a in &state.assignments {
+                                if a.sub != local_sub && !a.sub.is_empty() {
+                                    slot.push(a.sub.clone());
+                                }
+                            }
+                        }
                         let mine = state
                             .assignments
                             .iter()

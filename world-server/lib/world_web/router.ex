@@ -17,9 +17,12 @@ defmodule WorldWeb.Router do
     pipe_through [:api, :user_auth, :rate_limited]
 
     get "/rooms", RoomController, :index
+    get "/rooms/:room_id", RoomController, :show
     post "/rooms", RoomController, :create
     post "/rooms/:room_id/tokens", RoomController, :create_token
     put "/rooms/:room_id/visibility", RoomController, :update_visibility
+    post "/rooms/:room_id/handover", RoomController, :handover
+    post "/rooms/:room_id/takeover", RoomController, :takeover
   end
 
   # x0025 / x0026: Bearer is host Room Token (not auth JWT).

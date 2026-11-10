@@ -30,7 +30,18 @@ defmodule WorldWeb.RoomControllerTest do
     assert %{"error" => "missing_auth_token"} = json_response(conn, 401)
   end
 
-  test "lists visible rooms without secrets (x007c)", %{conn: conn, signer: signer} do
+  defp activate_host!(signer, sub, room_id) do
+    assert %{"role" => "host", "state" => "active"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, sub)
+             |> post("/api/v1/rooms/#{room_id}/tokens", token_params(%{role: "host"}))
+             |> json_response(200)
+  end
+
+  test "lists visible rooms without secrets (x007c / x0080 active-only public)", %{
+    conn: conn,
+    signer: signer
+  } do
     owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     guest = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
@@ -46,6 +57,18 @@ defmodule WorldWeb.RoomControllerTest do
              |> post("/api/v1/rooms", %{room_id: "cat-private", visibility: "private"})
              |> json_response(201)
 
+    # x0080: create leaves dormant — Public catalog empty until host activates.
+    dormant_public =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> get("/api/v1/rooms")
+      |> json_response(200)
+
+    refute "cat-public" in Enum.map(dormant_public["rooms"], & &1["room_id"])
+
+    activate_host!(signer, owner, "cat-public")
+    activate_host!(signer, owner, "cat-private")
+
     body =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, guest)
@@ -60,6 +83,8 @@ defmodule WorldWeb.RoomControllerTest do
     assert public["visibility"] == "public"
     assert public["owner_sub"] == owner
     assert public["role_hint"] == "joinable"
+    assert public["state"] == "active"
+    assert public["active_host_sub"] == owner
     refute Map.has_key?(public, "room_key")
     refute Map.has_key?(public, "wire_cap")
     refute Map.has_key?(public, "token")
@@ -111,6 +136,17 @@ defmodule WorldWeb.RoomControllerTest do
                |> json_response(201)
     end
 
+    # x0080: dormant owned rooms appear on mine=1, not Public projection.
+    mine =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> get("/api/v1/rooms?mine=1")
+      |> json_response(200)
+
+    assert "old-owned-priv" in Enum.map(mine["rooms"], & &1["room_id"])
+
+    activate_host!(signer, owner, "old-owned-priv")
+
     body =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, owner)
@@ -146,6 +182,8 @@ defmodule WorldWeb.RoomControllerTest do
              |> TestAuthHelpers.put_auth(signer, owner)
              |> post("/api/v1/rooms", %{room_id: "friends-cat", visibility: "friends"})
              |> json_response(201)
+
+    activate_host!(signer, owner, "friends-cat")
 
     friend_ids =
       build_conn()
@@ -272,7 +310,7 @@ defmodule WorldWeb.RoomControllerTest do
       |> TestAuthHelpers.put_auth(signer, guest)
       |> post("/api/v1/rooms/owned/tokens", token_params(%{role: "host"}))
 
-    assert %{"error" => "host_role_owner_only"} = json_response(conn, 403)
+    assert %{"error" => "host_role_forbidden"} = json_response(conn, 403)
 
     conn =
       build_conn()
@@ -1252,5 +1290,177 @@ defmodule WorldWeb.RoomControllerTest do
 
     assert deleted["room_id"] == room
     refute Enum.any?(deleted["entries"], fn e -> e["entity_id"] == entity_id end)
+  end
+
+  test "handover nominates guest host without changing owner (x0080)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "10101010-1010-1010-1010-101010101010"
+    guest = "20202020-2020-2020-2020-202020202020"
+
+    assert %{"room_id" => "ho-1"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "ho-1", visibility: "public"})
+             |> json_response(201)
+
+    activate_host!(signer, owner, "ho-1")
+
+    assert %{"state" => "active", "active_host_sub" => ^guest, "owner_sub" => ^owner} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms/ho-1/handover", %{target_sub: guest})
+             |> json_response(200)
+
+    # Nominated guest may issue host Token; previous host may not.
+    assert %{"role" => "host", "active_host_sub" => ^guest} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, guest)
+             |> post("/api/v1/rooms/ho-1/tokens", token_params(%{role: "host"}))
+             |> json_response(200)
+
+    assert %{"error" => "host_role_forbidden"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms/ho-1/tokens", token_params(%{role: "host"}))
+             |> json_response(403)
+  end
+
+  test "scene HTTP rejects stale host Token after handover (x0080 ledger)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "11111111-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    guest = "22222222-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    room = "scene-ho-stale"
+    blake3 = String.duplicate("ab", 32)
+
+    assert %{"room_id" => ^room} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: room, visibility: "public"})
+             |> json_response(201)
+
+    %{"token" => stale_host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post("/api/v1/rooms/#{room}/tokens", token_params(%{role: "host"}))
+      |> json_response(200)
+
+    assert %{"state" => "active", "active_host_sub" => ^guest} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms/#{room}/handover", %{target_sub: guest})
+             |> json_response(200)
+
+    assert %{"error" => "host_role_forbidden"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{stale_host_token}")
+             |> get("/api/v1/rooms/#{room}/scene")
+             |> json_response(403)
+
+    assert %{"error" => "host_role_forbidden"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{stale_host_token}")
+             |> post("/api/v1/rooms/#{room}/scene/entries", %{blake3: blake3})
+             |> json_response(403)
+
+    assert %{"error" => "host_role_forbidden"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{stale_host_token}")
+             |> delete("/api/v1/rooms/#{room}/scene/entries/1")
+             |> json_response(403)
+
+    # Nominated host with a fresh Host Token may read / write scene.
+    %{"token" => new_host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> post("/api/v1/rooms/#{room}/tokens", token_params(%{role: "host"}))
+      |> json_response(200)
+
+    scene =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{new_host_token}")
+      |> get("/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
+    assert scene["room_id"] == room
+    assert is_list(scene["entries"])
+
+    appended =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{new_host_token}")
+      |> post("/api/v1/rooms/#{room}/scene/entries", %{blake3: blake3})
+      |> json_response(200)
+
+    assert appended["room_id"] == room
+    assert Enum.any?(appended["entries"], fn e -> e["blake3"] == blake3 end)
+  end
+
+  test "handover null dormants session and drops public catalog (x0080)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "30303030-3030-3030-3030-303030303030"
+    guest = "40404040-4040-4040-4040-404040404040"
+
+    assert %{"room_id" => "ho-dorm"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "ho-dorm", visibility: "public"})
+             |> json_response(201)
+
+    activate_host!(signer, owner, "ho-dorm")
+
+    assert %{"state" => "dormant", "active_host_sub" => nil} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms/ho-dorm/handover", %{target_sub: nil})
+             |> json_response(200)
+
+    public_ids =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> get("/api/v1/rooms")
+      |> json_response(200)
+      |> Map.fetch!("rooms")
+      |> Enum.map(& &1["room_id"])
+
+    refute "ho-dorm" in public_ids
+
+    mine =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> get("/api/v1/rooms?mine=1")
+      |> json_response(200)
+      |> Map.fetch!("rooms")
+      |> Enum.find(&(&1["room_id"] == "ho-dorm"))
+
+    assert mine["state"] == "dormant"
+  end
+
+  test "takeover CAS succeeds once from dormant (x0080)", %{conn: conn, signer: signer} do
+    owner = "50505050-5050-5050-5050-505050505050"
+    guest_a = "60606060-6060-6060-6060-606060606060"
+    guest_b = "70707070-7070-7070-7070-707070707070"
+
+    assert %{"room_id" => "to-1"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "to-1", visibility: "public"})
+             |> json_response(201)
+
+    assert %{"state" => "active", "active_host_sub" => ^guest_a} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, guest_a)
+             |> post("/api/v1/rooms/to-1/takeover", %{})
+             |> json_response(200)
+
+    assert %{"error" => "takeover_conflict"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, guest_b)
+             |> post("/api/v1/rooms/to-1/takeover", %{})
+             |> json_response(409)
   end
 end

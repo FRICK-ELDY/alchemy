@@ -9,6 +9,8 @@ config :world,
   # x0071: structural Room quota per owner (rate limit is separate / temporal).
   max_rooms_per_owner: 32,
   room_token_ttl_seconds: 300,
+  # x0080: compute-host heartbeat budget while session is active.
+  host_lease_ttl_seconds: 300,
   # x007e: periodic room_key rotate interval (hours). 0 disables.
   # Runtime override: ROOM_KEY_ROTATE_HOURS (see runtime.exs when present).
   room_key_rotate_hours: 24,

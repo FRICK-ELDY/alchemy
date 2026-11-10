@@ -216,6 +216,74 @@ defmodule World.RoomsTest do
     restart_repo!()
   end
 
+  test "host lease expiry dormants session (x0080)" do
+    assert {:ok, "lease-1", _, _} = Rooms.create("lease-1", @owner)
+    assert {:ok, %Room{state: "dormant"}} = Rooms.get("lease-1")
+
+    assert {:ok, %Room{state: "active", active_host_sub: @owner}} =
+             Rooms.activate_as_host("lease-1", @owner)
+
+    stale = DateTime.add(DateTime.utc_now(), -10, :second) |> DateTime.truncate(:second)
+
+    assert {:ok, %{num_rows: 1}} =
+             World.Repo.query(
+               """
+               UPDATE rooms
+               SET host_lease_expires_at = ?
+               WHERE room_id = ?
+               """,
+               [stale, "lease-1"]
+             )
+
+    assert {1, 0} = Rooms.expire_due_host_leases()
+    assert {:ok, %Room{state: "dormant", active_host_sub: nil}} = Rooms.get("lease-1")
+  end
+
+  test "handover and takeover CAS (x0080)" do
+    guest = "88888888-8888-8888-8888-888888888888"
+    assert {:ok, "ht-1", _, _} = Rooms.create("ht-1", @owner)
+    assert {:ok, _} = Rooms.activate_as_host("ht-1", @owner)
+
+    assert {:ok, %Room{active_host_sub: ^guest, state: "active", owner_sub: @owner}} =
+             Rooms.handover("ht-1", @owner, guest)
+
+    assert {:error, :conflict} = Rooms.takeover("ht-1", @owner)
+    assert {:ok, _} = Rooms.handover("ht-1", guest, nil)
+    assert {:ok, %Room{active_host_sub: ^guest, state: "active"}} = Rooms.takeover("ht-1", guest)
+  end
+
+  test "owner Host Token activate cannot overwrite live takeover host (x0080)" do
+    guest = "98989898-9898-9898-9898-989898989898"
+    assert {:ok, "race-1", _, _} = Rooms.create("race-1", @owner)
+    assert {:ok, %Room{state: "dormant"}} = Rooms.get("race-1")
+    assert {:ok, _} = Rooms.takeover("race-1", guest)
+    # Full path: authorize fails once takeover committed.
+    assert {:error, :forbidden_host} = Rooms.activate_as_host("race-1", @owner)
+    # TOCTOU window after authorize-OK on dormant: CAS alone must not steal live host.
+    assert {:error, :conflict} = Rooms.activate_as_host_cas("race-1", @owner)
+    assert {:ok, %Room{active_host_sub: ^guest, state: "active"}} = Rooms.get("race-1")
+  end
+
+  test "renew_host_lease CAS conflicts when active_host was stolen (x0080)" do
+    guest = "a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1"
+    assert {:ok, "race-2", _, _} = Rooms.create("race-2", @owner)
+    assert {:ok, _} = Rooms.activate_as_host("race-2", @owner)
+
+    # Simulate TOCTOU: another host claimed between authorize-view and renew UPDATE.
+    assert {:ok, %{num_rows: 1}} =
+             World.Repo.query(
+               """
+               UPDATE rooms
+               SET active_host_sub = ?
+               WHERE room_id = ? AND state = 'active'
+               """,
+               [guest, "race-2"]
+             )
+
+    assert {:error, :conflict} = Rooms.renew_host_lease("race-2", @owner)
+    assert {:ok, %Room{active_host_sub: ^guest}} = Rooms.get("race-2")
+  end
+
   defp stop_repo! do
     case Supervisor.terminate_child(World.Supervisor, World.Repo) do
       :ok -> :ok

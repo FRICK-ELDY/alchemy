@@ -91,7 +91,7 @@ fn token_agent() -> ureq::Agent {
 
 /// Issue a Room Token bound to `session_pub_b64` (`cnf.spk`, x003e).
 ///
-/// `role` is `"guest"` or `"host"` (owner-only; world returns `forbidden_host` otherwise).
+/// `role` is `"guest"` or `"host"` (host = active_host / owner-resume; world may 403).
 /// Host role is required for client Inventory take-out / despawn (x006d / x007f).
 /// When `csr_pem` is `Some`, world may return `mtls` (x0066). CA unset → token without mtls.
 #[allow(dead_code)] // Convenience wrapper; join/refresh use `fetch_room_token` with explicit role.
@@ -159,14 +159,30 @@ pub fn fetch_room_token(
             body["csr_pem"] = serde_json::Value::String(csr.to_string());
         }
     }
-    let resp: TokenResponse = token_agent()
+    let resp: TokenResponse = match token_agent()
         .post(&token_url)
         .set("content-type", "application/json")
         .set("authorization", &authz)
         .send_json(body)
-        .with_context(|| format!("issue {role} Room Token (is host up and room created?)"))?
-        .into_json()
-        .context("parse token response")?;
+    {
+        Ok(resp) => resp.into_json().context("parse token response")?,
+        Err(ureq::Error::Status(409, resp)) if role == "host" => {
+            let body = resp.into_string().unwrap_or_default();
+            // x0080: access JWT still good — lost host claim race. Stop host; do not re-login.
+            anyhow::bail!(
+                "host_claim_conflict (409): stop hosting / wait for takeover; body={body}"
+            )
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            anyhow::bail!("issue {role} Room Token failed status={code} body={body}")
+        }
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("issue {role} Room Token (is host up and room created?)")
+            });
+        }
+    };
     if resp.expires_in == 0 {
         anyhow::bail!("{role} Room Token response missing positive expires_in");
     }
