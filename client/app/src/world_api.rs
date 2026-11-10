@@ -23,14 +23,15 @@ pub struct RoomSummary {
     pub visibility: String,
     pub owner_sub: String,
     pub role_hint: String,
-    #[serde(default = "default_dormant")]
+    /// Missing/unknown → `"unknown"` (fail-closed for Takeover CTA; not treated as dormant).
+    #[serde(default = "default_unknown_state")]
     pub state: String,
     #[serde(default)]
     pub active_host_sub: Option<String>,
 }
 
-fn default_dormant() -> String {
-    "dormant".into()
+fn default_unknown_state() -> String {
+    "unknown".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -218,6 +219,11 @@ pub fn takeover(world_url: &str, access_token: &str, room_id: &str) -> Result<Ro
         .send_json(serde_json::json!({}))
     {
         Ok(resp) => resp.into_json().context("parse takeover"),
+        Err(ureq::Error::Status(409, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            // x0080: another caller won CAS — stay joined as guest; do not re-login.
+            bail!("takeover_conflict (409): another host claimed; body={body}")
+        }
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();
             bail!("takeover failed status={code} body={body}")

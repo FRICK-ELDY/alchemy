@@ -327,17 +327,20 @@ impl SystemUi {
             return;
         }
         if self.state.shell == OnboardingShell::MainHub
-            && self.state.main_hub_tab == MainHubTab::Participation
             && self.state.home_logged_in_as.is_some()
             && !self.state.session_shell_active()
-            && self.state.worlds_catalog_list_rect().contains(px, py)
-            && self
-                .state
-                .worlds_catalog_max_scroll(self.state.worlds_catalog_list_h())
-                > 0
-            && self.state.scroll_worlds_catalog_pixels(delta_y)
+            && self.state.worlds_active_catalog_max_scroll() > 0
         {
-            self.rebuild();
+            let over_list = match self.state.main_hub_tab {
+                MainHubTab::Participation => self.state.worlds_catalog_list_rect().contains(px, py),
+                // Organizing list Y is content-driven; accept wheel over the hub panel.
+                MainHubTab::Organizing => {
+                    self.state.server_operator && self.state.settings_panel_rect().contains(px, py)
+                }
+            };
+            if over_list && self.state.scroll_worlds_catalog_pixels(delta_y) {
+                self.rebuild();
+            }
         }
     }
 
@@ -704,21 +707,21 @@ impl SystemUi {
                     self.rebuild();
                     return UiAction::None;
                 }
+                let switched = self.state.main_hub_tab != MainHubTab::Organizing;
                 self.state.main_hub_tab = MainHubTab::Organizing;
                 self.state.home_status = "Organizing — create or host a world".into();
                 self.mark_dash_form_dirty();
                 self.rebuild();
-                UiAction::None
+                // x0080: mine=1 catalog on enter (symmetric with Participation refresh).
+                if switched {
+                    UiAction::WorldsRefresh
+                } else {
+                    UiAction::None
+                }
             }
             WidgetId::MainHubRefresh => UiAction::WorldsRefresh,
             WidgetId::MainHubJoin => UiAction::WorldsJoinGuest,
-            WidgetId::MainHubHostWorld => {
-                // My worlds rows are stubbed; Host CTA reserved for owner catalog.
-                self.state.home_status = "My worlds hosting is not connected yet".into();
-                self.mark_dash_form_dirty();
-                self.rebuild();
-                UiAction::None
-            }
+            WidgetId::MainHubHostWorld => UiAction::WorldsHostRoom,
             WidgetId::MainPublicRow0
             | WidgetId::MainPublicRow1
             | WidgetId::MainPublicRow2
@@ -757,7 +760,25 @@ impl SystemUi {
             | WidgetId::MainMyWorldRow5
             | WidgetId::MainMyWorldRow6
             | WidgetId::MainMyWorldRow7 => {
-                // Stub rows are not registered as hits yet.
+                let vis = match hit {
+                    WidgetId::MainMyWorldRow0 => 0,
+                    WidgetId::MainMyWorldRow1 => 1,
+                    WidgetId::MainMyWorldRow2 => 2,
+                    WidgetId::MainMyWorldRow3 => 3,
+                    WidgetId::MainMyWorldRow4 => 4,
+                    WidgetId::MainMyWorldRow5 => 5,
+                    WidgetId::MainMyWorldRow6 => 6,
+                    WidgetId::MainMyWorldRow7 => 7,
+                    _ => 0,
+                };
+                let visible = DashState::WORLDS_ORGANIZING_VISIBLE_ROWS;
+                let max_scroll = self.state.worlds_rooms.len().saturating_sub(visible);
+                let start = self.state.worlds_catalog_scroll.min(max_scroll);
+                let idx = start + vis;
+                if let Some((room_id, ..)) = self.state.worlds_rooms.get(idx) {
+                    self.state.worlds_selected = Some(room_id.clone());
+                    self.rebuild();
+                }
                 UiAction::None
             }
             WidgetId::ExitClientOnly => UiAction::ExitClientOnly,

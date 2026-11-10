@@ -2,6 +2,10 @@ defmodule World.Repo.Migrations.RoomsX0080HostSession do
   @moduledoc """
   x0080: separate persistent `owner_sub` from compute host (`active_host_sub`) +
   session `state` (`active` | `dormant`) and host lease expiry.
+
+  **Ops note (breaking for live sessions):** existing rows default to `dormant` with
+  null `active_host_sub`. After migrate, any in-flight host must re-issue a Host Token
+  (or takeover) before the room reappears on Public Sessions.
   """
   use Ecto.Migration
 

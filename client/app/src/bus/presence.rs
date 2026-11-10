@@ -142,14 +142,13 @@ pub(crate) fn spawn_presence_subscriber(
                             }
                             break 'sample;
                         }
-                        let peers: Vec<String> = state
-                            .assignments
-                            .iter()
-                            .filter(|a| a.sub != local_sub && !a.sub.is_empty())
-                            .map(|a| a.sub.clone())
-                            .collect();
                         if let Ok(mut slot) = shared.presence_peer_subs.lock() {
-                            *slot = peers;
+                            slot.clear();
+                            for a in &state.assignments {
+                                if a.sub != local_sub && !a.sub.is_empty() {
+                                    slot.push(a.sub.clone());
+                                }
+                            }
                         }
                         let mine = state
                             .assignments

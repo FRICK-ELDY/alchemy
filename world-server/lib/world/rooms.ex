@@ -715,13 +715,15 @@ defmodule World.Rooms do
   defp lease_valid?(_), do: false
 
   @doc """
-  x0080: re-read room and apply lazy lease expiry (active → dormant when past).
+  x0080: re-read room with **read-only** lease view (expired active looks dormant).
+
+  Does not write DB — durable expiry is `expire_due_host_leases/0` (sweeper).
   """
   @spec get_session(room_id()) ::
           {:ok, Room.t()} | {:error, :invalid_room_id | :not_found | storage_error()}
   def get_session(room_id) when is_binary(room_id) do
     with {:ok, %Room{} = room} <- get(room_id) do
-      {:ok, materialize_lease(room)}
+      {:ok, lease_view(room)}
     end
   end
 
@@ -736,7 +738,7 @@ defmodule World.Rooms do
   """
   @spec authorize_host_role(Room.t(), owner_sub()) :: :ok | {:error, :forbidden_host}
   def authorize_host_role(%Room{} = room, sub) when is_binary(sub) and sub != "" do
-    room = materialize_lease(room)
+    room = lease_view(room)
 
     cond do
       room.state == "active" and room.active_host_sub == sub ->
@@ -754,37 +756,51 @@ defmodule World.Rooms do
 
   @doc """
   x0080: mark `sub` as active compute host and renew lease (Host Token / Start path).
+
+  CAS: renew only if already `active_host_sub`, or claim only from dormant / lease-expired.
+  Prevents owner Host Token from overwriting a concurrent successful `takeover`.
   """
   @spec activate_as_host(room_id(), owner_sub()) ::
           {:ok, Room.t()}
-          | {:error, :invalid_room_id | :not_found | :forbidden_host | storage_error()}
+          | {:error,
+             :invalid_room_id | :not_found | :forbidden_host | :conflict | storage_error()}
   def activate_as_host(room_id, sub) when is_binary(room_id) and is_binary(sub) and sub != "" do
     with :ok <- validate_room_id(room_id),
          {:ok, %Room{} = room} <- get(room_id),
          :ok <- authorize_host_role(room, sub) do
-      write_active_host(room_id, sub)
+      cas_activate_host_token(room_id, sub)
     end
   end
 
   def activate_as_host(_, _), do: {:error, :invalid_room_id}
 
+  @doc false
+  @spec activate_as_host_cas(room_id(), owner_sub()) ::
+          {:ok, Room.t()}
+          | {:error, :invalid_room_id | :not_found | :conflict | storage_error()}
+  def activate_as_host_cas(room_id, sub)
+      when is_binary(room_id) and is_binary(sub) and sub != "" do
+    with :ok <- validate_room_id(room_id) do
+      cas_activate_host_token(room_id, sub)
+    end
+  end
+
+  def activate_as_host_cas(_, _), do: {:error, :invalid_room_id}
+
   @doc """
   x0080: renew lease when caller is the current active host (heartbeat / seal / host_keys).
   """
   @spec renew_host_lease(room_id(), owner_sub()) ::
-          :ok | {:error, :invalid_room_id | :not_found | :forbidden_host | storage_error()}
+          :ok
+          | {:error,
+             :invalid_room_id | :not_found | :forbidden_host | :conflict | storage_error()}
   def renew_host_lease(room_id, sub) when is_binary(room_id) and is_binary(sub) and sub != "" do
     with :ok <- validate_room_id(room_id),
-         {:ok, %Room{} = room} <- get(room_id) do
-      room = materialize_lease(room)
-
-      if room.state == "active" and room.active_host_sub == sub do
-        case write_active_host(room_id, sub) do
-          {:ok, _} -> :ok
-          other -> other
-        end
-      else
-        {:error, :forbidden_host}
+         {:ok, %Room{}} <- get(room_id) do
+      # CAS-only: lost active_host (handover/takeover race) → :conflict, not authorize guess.
+      case cas_renew_active_host(room_id, sub) do
+        {:ok, _} -> :ok
+        other -> other
       end
     end
   end
@@ -799,7 +815,7 @@ defmodule World.Rooms do
   def ensure_active_host(room_id, sub) when is_binary(room_id) and is_binary(sub) do
     with :ok <- validate_room_id(room_id),
          {:ok, %Room{} = room} <- get(room_id) do
-      room = materialize_lease(room)
+      room = lease_view(room)
 
       if room.state == "active" and room.active_host_sub == sub do
         :ok
@@ -815,7 +831,8 @@ defmodule World.Rooms do
   x0080: Graceful Handover. Caller must be `active_host_sub` or `owner_sub`.
 
   `target_sub` binary → nominate and keep `active`; `nil` → dormant (clear host).
-  Does not change `owner_sub`.
+  Does not change `owner_sub`. Owner may nominate even while another host is active
+  (owner privilege); concurrent Token activate still uses stricter CAS.
   """
   @spec handover(room_id(), owner_sub(), owner_sub() | nil) ::
           {:ok, Room.t()}
@@ -824,6 +841,7 @@ defmodule World.Rooms do
              | :not_found
              | :forbidden_host
              | :invalid_target
+             | :conflict
              | storage_error()}
   def handover(room_id, caller_sub, target_sub)
 
@@ -834,9 +852,8 @@ defmodule World.Rooms do
          {:ok, %Room{} = room} <- get(room_id),
          :ok <- authorize_handover_caller(room, caller_sub) do
       case target_sub do
-        nil -> write_dormant(room_id)
-        target when target == caller_sub -> write_active_host(room_id, target)
-        target -> write_active_host(room_id, target)
+        nil -> cas_write_dormant(room_id, caller_sub)
+        target -> cas_handover_nominate(room_id, caller_sub, target)
       end
     end
   end
@@ -915,7 +932,7 @@ defmodule World.Rooms do
   end
 
   defp authorize_handover_caller(%Room{} = room, caller_sub) do
-    room = materialize_lease(room)
+    room = lease_view(room)
 
     cond do
       room.state == "active" and room.active_host_sub == caller_sub -> :ok
@@ -924,18 +941,17 @@ defmodule World.Rooms do
     end
   end
 
-  defp materialize_lease(%Room{} = room) do
+  # Read-only: expired lease looks dormant without writing (GET / Waiting poll safe).
+  defp lease_view(%Room{} = room) do
     if room.state == "active" and not lease_valid?(room.host_lease_expires_at) do
-      case write_dormant(room.room_id) do
-        {:ok, %Room{} = fresh} -> fresh
-        _ -> %{room | state: "dormant", active_host_sub: nil, host_lease_expires_at: nil}
-      end
+      %{room | state: "dormant", active_host_sub: nil, host_lease_expires_at: nil}
     else
       room
     end
   end
 
-  defp write_active_host(room_id, sub) do
+  # Host Token path: renew self OR claim from dormant/expired only (never steal live host).
+  defp cas_activate_host_token(room_id, sub) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     expires = DateTime.add(now, host_lease_ttl_seconds(), :second)
 
@@ -946,16 +962,66 @@ defmodule World.Rooms do
         host_lease_expires_at = ?,
         updated_at = CURRENT_TIMESTAMP
     WHERE room_id = ?
+      AND (
+        (state = 'active' AND active_host_sub = ?)
+        OR state = 'dormant'
+        OR host_lease_expires_at IS NULL
+        OR host_lease_expires_at <= ?
+      )
     """
 
-    case World.Repo.query(sql, [sub, expires, room_id]) do
+    case World.Repo.query(sql, [sub, expires, room_id, sub, now]) do
       {:ok, %{num_rows: 1}} -> get(room_id)
-      {:ok, %{num_rows: 0}} -> {:error, :not_found}
+      {:ok, %{num_rows: 0}} -> {:error, :conflict}
       {:error, error} -> storage_error(error, :activate_as_host)
     end
   end
 
-  defp write_dormant(room_id) do
+  defp cas_renew_active_host(room_id, sub) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    expires = DateTime.add(now, host_lease_ttl_seconds(), :second)
+
+    sql = """
+    UPDATE rooms
+    SET host_lease_expires_at = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE room_id = ?
+      AND state = 'active'
+      AND active_host_sub = ?
+    """
+
+    case World.Repo.query(sql, [expires, room_id, sub]) do
+      {:ok, %{num_rows: 1}} -> get(room_id)
+      {:ok, %{num_rows: 0}} -> {:error, :conflict}
+      {:error, error} -> storage_error(error, :renew_host_lease)
+    end
+  end
+
+  defp cas_handover_nominate(room_id, caller_sub, target_sub) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    expires = DateTime.add(now, host_lease_ttl_seconds(), :second)
+
+    sql = """
+    UPDATE rooms
+    SET active_host_sub = ?,
+        state = 'active',
+        host_lease_expires_at = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE room_id = ?
+      AND (
+        (state = 'active' AND active_host_sub = ?)
+        OR owner_sub = ?
+      )
+    """
+
+    case World.Repo.query(sql, [target_sub, expires, room_id, caller_sub, caller_sub]) do
+      {:ok, %{num_rows: 1}} -> get(room_id)
+      {:ok, %{num_rows: 0}} -> {:error, :conflict}
+      {:error, error} -> storage_error(error, :handover)
+    end
+  end
+
+  defp cas_write_dormant(room_id, caller_sub) do
     sql = """
     UPDATE rooms
     SET active_host_sub = NULL,
@@ -963,11 +1029,15 @@ defmodule World.Rooms do
         host_lease_expires_at = NULL,
         updated_at = CURRENT_TIMESTAMP
     WHERE room_id = ?
+      AND (
+        (state = 'active' AND active_host_sub = ?)
+        OR owner_sub = ?
+      )
     """
 
-    case World.Repo.query(sql, [room_id]) do
+    case World.Repo.query(sql, [room_id, caller_sub, caller_sub]) do
       {:ok, %{num_rows: 1}} -> get(room_id)
-      {:ok, %{num_rows: 0}} -> {:error, :not_found}
+      {:ok, %{num_rows: 0}} -> {:error, :conflict}
       {:error, error} -> storage_error(error, :handover)
     end
   end

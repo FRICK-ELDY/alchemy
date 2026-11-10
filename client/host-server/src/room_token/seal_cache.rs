@@ -57,6 +57,13 @@ pub fn fetch_manifest_seal(
             }
             Ok((parsed.seal, parsed.expires_in))
         }
+        Err(ureq::Error::Status(409, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            // x0080: Room Token may still verify — lost compute-host race.
+            Err(anyhow!(
+                "host_lease_conflict (409): stop hosting / wait for takeover; body={body}"
+            ))
+        }
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();
             Err(anyhow!("manifest_seal failed status={code} body={body}"))

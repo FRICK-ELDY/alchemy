@@ -394,7 +394,14 @@ pub fn fetch_host_token(
         Err(ureq::Error::Status(403, resp)) => {
             let body = resp.into_string().unwrap_or_default();
             Err(anyhow!(
-                "host Room Token forbidden (not room owner — another sub may have created the room first): {body}"
+                "host Room Token forbidden (not active host / owner-resume — another sub may hold the host): {body}"
+            ))
+        }
+        Err(ureq::Error::Status(409, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            // x0080: auth JWT still good — lost host claim race. Stop host; do not re-login.
+            Err(anyhow!(
+                "host_claim_conflict (409): stop hosting / wait for takeover; body={body}"
             ))
         }
         Err(ureq::Error::Status(404, resp)) => {
@@ -733,6 +740,13 @@ pub fn fetch_host_attestation(
                 parsed.attestation,
                 parsed.host_generation,
                 parsed.expires_in,
+            ))
+        }
+        Err(ureq::Error::Status(409, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            // x0080: Token may still verify — lost compute-host race. Stop host; do not re-login.
+            Err(anyhow!(
+                "host_lease_conflict (409): stop hosting / wait for takeover; body={body}"
             ))
         }
         Err(ureq::Error::Status(code, resp)) => {

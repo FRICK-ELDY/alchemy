@@ -335,6 +335,7 @@ defmodule WorldWeb.RoomController do
        when reason in [
               :not_found,
               :forbidden_host,
+              :conflict,
               :forbidden_visibility,
               :lan_required,
               :invalid_role,
@@ -399,6 +400,12 @@ defmodule WorldWeb.RoomController do
     conn
     |> put_status(:forbidden)
     |> json(%{error: "host_role_forbidden"})
+  end
+
+  defp issue_token_error(conn, {:error, :conflict}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "host_claim_conflict"})
   end
 
   defp issue_token_error(conn, {:error, :forbidden_visibility}) do
@@ -545,7 +552,7 @@ defmodule WorldWeb.RoomController do
           target_sub ->
             room_id
             |> Rooms.handover(caller_sub, target_sub)
-            |> render_host_session(conn)
+            |> render_host_session(conn, caller_sub)
         end
 
       {:error, :anon_disabled} ->
@@ -589,27 +596,31 @@ defmodule WorldWeb.RoomController do
     end
   end
 
-  defp render_host_session({:ok, room}, conn) do
-    json(conn, room_session_summary(room, room.owner_sub))
+  defp render_host_session({:ok, room}, conn, caller_sub) do
+    json(conn, room_session_summary(room, caller_sub))
   end
 
-  defp render_host_session({:error, :not_found}, conn) do
+  defp render_host_session({:error, :not_found}, conn, _caller_sub) do
     conn |> put_status(:not_found) |> json(%{error: "room_not_found"})
   end
 
-  defp render_host_session({:error, :forbidden_host}, conn) do
+  defp render_host_session({:error, :forbidden_host}, conn, _caller_sub) do
     conn |> put_status(:forbidden) |> json(%{error: "handover_forbidden"})
   end
 
-  defp render_host_session({:error, :invalid_room_id}, conn) do
+  defp render_host_session({:error, :conflict}, conn, _caller_sub) do
+    conn |> put_status(:conflict) |> json(%{error: "handover_conflict"})
+  end
+
+  defp render_host_session({:error, :invalid_room_id}, conn, _caller_sub) do
     conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_room_id"})
   end
 
-  defp render_host_session({:error, :invalid_target}, conn) do
+  defp render_host_session({:error, :invalid_target}, conn, _caller_sub) do
     conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_target"})
   end
 
-  defp render_host_session({:error, :storage_error}, conn) do
+  defp render_host_session({:error, :storage_error}, conn, _caller_sub) do
     storage_unavailable(conn)
   end
 
@@ -661,6 +672,12 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:forbidden)
         |> json(%{error: "host_role_forbidden"})
+
+      # Lease renew CAS lost (handover / takeover raced) — Token may still verify.
+      {:error, :conflict} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "host_lease_conflict"})
 
       {:error, :not_found} ->
         conn
@@ -940,6 +957,12 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:forbidden)
         |> json(%{error: "host_role_forbidden"})
+
+      # Lease renew CAS lost (handover / takeover raced) — Token may still verify.
+      {:error, :conflict} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "host_lease_conflict"})
 
       {:error, :not_found} ->
         conn

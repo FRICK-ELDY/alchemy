@@ -179,6 +179,8 @@ struct App {
     last_grab_miss_log: Option<std::time::Instant>,
     /// In-flight Auth HTTP (+ join) worker: `(auth_work_epoch, rx)` (x002e / x007c).
     auth_job: Option<(u64, Receiver<AuthJobOutcome>)>,
+    /// Waiting-shell host-session poll (x0080); off UI thread so ureq never blocks paint.
+    waiting_session_job: Option<Receiver<WaitingSessionSnapshot>>,
     /// Last observed Desktop input ownership (READY / vr_active edges).
     last_owns_input: bool,
     /// Last applied [`SharedState::pending_mesh_epoch`] (x007d remount).
@@ -446,18 +448,30 @@ fn stop_host_if_job_current(shared: &SharedState, epoch: u64) {
 
 /// Failed Start / guest path: cancel in-flight spawn; allow a later ensure retry.
 /// External / CI hosts are never touched.
-/// x0080: while Waiting, poll world session for nomination / dormant Takeover CTA.
-/// Returns `(ui_dirty, should_auto_start_nominated_host)`.
-fn poll_waiting_host_session(
+/// Result of one background Waiting host-session GET (x0080).
+struct WaitingSessionSnapshot {
+    nominated: bool,
+    can_takeover: bool,
+    /// Server Operator ON + nominated + not already hosting.
+    auto_start: bool,
+}
+
+/// Kick a background GET when Waiting; apply via [`apply_waiting_host_session_poll`].
+fn kick_waiting_host_session_poll(
     ui: &mut SystemUi,
     shared: &SharedState,
+    job: &mut Option<Receiver<WaitingSessionSnapshot>>,
     now: std::time::Instant,
-) -> (bool, bool) {
+) {
     if !ui.state.worlds_in_room || !ui.state.worlds_waiting_host {
-        return (false, false);
+        *job = None;
+        return;
+    }
+    if job.is_some() {
+        return;
     }
     if shared.host_supervisor.owns_local_host() {
-        return (false, false);
+        return;
     }
     const PERIOD: std::time::Duration = std::time::Duration::from_secs(3);
     if ui
@@ -465,52 +479,88 @@ fn poll_waiting_host_session(
         .worlds_session_poll_at
         .is_some_and(|t| now.duration_since(t) < PERIOD)
     {
-        return (false, false);
+        return;
     }
-    ui.state.worlds_session_poll_at = Some(now);
-
     let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
     let local_sub = shared.auth.lock().ok().and_then(|g| g.local_sub.clone());
     let (Some(access), Some(local_sub)) = (access, local_sub) else {
-        return (false, false);
+        return;
     };
     let room_id = shared.get_room_id();
     if room_id.is_empty() {
-        return (false, false);
+        return;
     }
+    ui.state.worlds_session_poll_at = Some(now);
     let world_url = shared.get_world_url();
-    let Ok(summary) = world_api::get_room(&world_url, &access, room_id.as_ref()) else {
+    let server_operator = ui.state.server_operator;
+    let session_enter_active = ui.state.session_enter_active;
+    let (tx, rx) = mpsc::channel();
+    *job = Some(rx);
+    std::thread::spawn(move || {
+        let Ok(summary) = world_api::get_room(&world_url, &access, room_id.as_ref()) else {
+            return;
+        };
+        let nominated = summary
+            .active_host_sub
+            .as_deref()
+            .is_some_and(|s| s == local_sub)
+            && summary.state == "active";
+        let can_takeover = summary.state == "dormant";
+        let auto_start = nominated && server_operator && !session_enter_active;
+        let _ = tx.send(WaitingSessionSnapshot {
+            nominated,
+            can_takeover,
+            auto_start,
+        });
+    });
+}
+
+/// Apply a finished Waiting poll. Returns `(ui_dirty, should_auto_start_nominated_host)`.
+fn apply_waiting_host_session_poll(
+    ui: &mut SystemUi,
+    shared: &SharedState,
+    job: &mut Option<Receiver<WaitingSessionSnapshot>>,
+) -> (bool, bool) {
+    let Some(rx) = job.as_ref() else {
         return (false, false);
     };
-
-    let mut dirty = false;
-    let nominated = summary
-        .active_host_sub
-        .as_deref()
-        .is_some_and(|s| s == local_sub)
-        && summary.state == "active";
-    let can_takeover = summary.state == "dormant";
-
-    if ui.state.worlds_nominated_host != nominated {
-        ui.state.worlds_nominated_host = nominated;
-        dirty = true;
+    match rx.try_recv() {
+        Ok(snap) => {
+            *job = None;
+            if shared.host_supervisor.owns_local_host()
+                || !ui.state.worlds_in_room
+                || !ui.state.worlds_waiting_host
+            {
+                return (false, false);
+            }
+            let mut dirty = false;
+            if ui.state.worlds_nominated_host != snap.nominated {
+                ui.state.worlds_nominated_host = snap.nominated;
+                dirty = true;
+            }
+            if ui.state.worlds_can_takeover != snap.can_takeover {
+                ui.state.worlds_can_takeover = snap.can_takeover;
+                dirty = true;
+            }
+            let auto_start = snap.auto_start
+                && snap.nominated
+                && !shared.host_supervisor.owns_local_host();
+            if auto_start {
+                ui.state.worlds_status = "Nominated as host — starting local host…".into();
+                dirty = true;
+            }
+            (dirty, auto_start)
+        }
+        Err(TryRecvError::Empty) => (false, false),
+        Err(TryRecvError::Disconnected) => {
+            *job = None;
+            (false, false)
+        }
     }
-    if ui.state.worlds_can_takeover != can_takeover {
-        ui.state.worlds_can_takeover = can_takeover;
-        dirty = true;
-    }
-    let auto_start = nominated
-        && ui.state.server_operator
-        && !ui.state.session_enter_active
-        && !shared.host_supervisor.owns_local_host();
-    if auto_start {
-        ui.state.worlds_status = "Nominated as host — starting local host…".into();
-        dirty = true;
-    }
-    (dirty, auto_start)
 }
 
 /// x0080: nominate a Presence peer or dormant the session before stopping local host.
+/// Runs ureq off this thread but waits up to 3s so stop-host does not race the CAS.
 fn maybe_handover_before_leave(shared: &SharedState) {
     let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
     let Some(access) = access else {
@@ -523,13 +573,18 @@ fn maybe_handover_before_leave(shared: &SharedState) {
     }
     let target = shared.first_presence_peer_sub();
     let world_url = shared.get_world_url();
-    match world_api::handover(
-        &world_url,
-        &access,
-        room_id.as_ref(),
-        target.as_deref(),
-    ) {
-        Ok(summary) => {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = world_api::handover(
+            &world_url,
+            &access,
+            room_id.as_ref(),
+            target.as_deref(),
+        );
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        Ok(Ok(summary)) => {
             log::info!(
                 "handover ok room={} state={} active_host={:?}",
                 summary.room_id,
@@ -537,8 +592,37 @@ fn maybe_handover_before_leave(shared: &SharedState) {
                 summary.active_host_sub
             );
         }
-        Err(err) => log::warn!("handover before Leave failed: {err:#}"),
+        Ok(Err(err)) => log::warn!("handover before Leave failed: {err:#}"),
+        Err(_) => log::warn!("handover before Leave timed out (3s)"),
     }
+}
+
+/// x0080: world 409 host claim/lease race — keep access JWT; stop local host / stay Waiting.
+fn is_host_authority_conflict(err: &str) -> bool {
+    err.contains("host_claim_conflict")
+        || err.contains("host_lease_conflict")
+        || err.contains("takeover_conflict")
+}
+
+fn apply_host_authority_conflict(ui: &mut SystemUi, shared: &SharedState, err: &str) {
+    stop_supervised_host(shared);
+    ui.state.worlds_nominated_host = false;
+    // Stay in-room Waiting when already joined; otherwise clear enter shell only.
+    if ui.state.worlds_in_room {
+        ui.state.worlds_waiting_host = true;
+        ui.state.worlds_can_takeover = true;
+        ui.state.worlds_can_host_rescue = false;
+        ui.state.session_enter_active = false;
+        ui.state.home_status =
+            "Host claim lost (409) — waiting; Takeover when dormant (no re-login)".into();
+        ui.state.worlds_status = ui.state.home_status.clone();
+    } else {
+        clear_worlds_session_shell(ui);
+        ui.state.home_status =
+            "Host claim lost (409) — another host holds the room (no re-login)".into();
+        ui.state.worlds_status = ui.state.home_status.clone();
+    }
+    log::warn!("host authority conflict (session kept): {err}");
 }
 
 fn stop_supervised_host(shared: &SharedState) {
@@ -1612,8 +1696,17 @@ impl ApplicationHandler for App {
                         self.ui.state.open = true;
                         dirty = true;
                     }
-                    let (session_dirty, auto_nominated) =
-                        poll_waiting_host_session(&mut self.ui, &self.shared, now);
+                    kick_waiting_host_session_poll(
+                        &mut self.ui,
+                        &self.shared,
+                        &mut self.waiting_session_job,
+                        now,
+                    );
+                    let (session_dirty, auto_nominated) = apply_waiting_host_session_poll(
+                        &mut self.ui,
+                        &self.shared,
+                        &mut self.waiting_session_job,
+                    );
                     if session_dirty {
                         dirty = true;
                     }
@@ -1767,8 +1860,8 @@ fn complete_pending_room_bind(
                 ui.state.worlds_waiting_host = true;
                 ui.state.worlds_host_disconnect = false;
                 ui.state.worlds_can_host_rescue = false;
-    ui.state.worlds_can_takeover = false;
-    ui.state.worlds_nominated_host = false;
+                ui.state.worlds_can_takeover = false;
+                ui.state.worlds_nominated_host = false;
                 ui.state.worlds_seen_frame_tick = None;
                 ui.state.worlds_last_frame_at = None;
                 ui.state.worlds_in_room = true;
@@ -1899,21 +1992,25 @@ fn apply_start_session_result(
             );
         }
         (vis, Err(err)) => {
-            stop_supervised_host(shared);
-            clear_worlds_session_shell(ui);
-            ui.state.home_status = match vis {
-                Ok(world_api::VisibilityEnsure::Applied) => {
-                    format!("Access level applied ({wanted}) but join failed: {err}")
-                }
-                Ok(world_api::VisibilityEnsure::LeftExisting) => {
-                    format!("Visibility unchanged (not owner); join failed: {err}")
-                }
-                Err(vis_err) => {
-                    format!("Start failed: visibility={vis_err}; join={err}")
-                }
-            };
-            ui.state.worlds_status = ui.state.home_status.clone();
-            log::warn!("start session join failed: {err}");
+            if is_host_authority_conflict(&err) {
+                apply_host_authority_conflict(ui, shared, &err);
+            } else {
+                stop_supervised_host(shared);
+                clear_worlds_session_shell(ui);
+                ui.state.home_status = match vis {
+                    Ok(world_api::VisibilityEnsure::Applied) => {
+                        format!("Access level applied ({wanted}) but join failed: {err}")
+                    }
+                    Ok(world_api::VisibilityEnsure::LeftExisting) => {
+                        format!("Visibility unchanged (not owner); join failed: {err}")
+                    }
+                    Err(vis_err) => {
+                        format!("Start failed: visibility={vis_err}; join={err}")
+                    }
+                };
+                ui.state.worlds_status = ui.state.home_status.clone();
+                log::warn!("start session join failed: {err}");
+            }
         }
         // StartSession worker always pairs visibility Err with join Err; keep arm for exhaustiveness.
         (Err(vis_err), Ok(())) => {
@@ -1968,10 +2065,21 @@ fn apply_join_result(
             );
         }
         Err(err) => {
-            clear_worlds_session_shell(ui);
-            ui.state.home_status = format!("Join failed: {err}");
-            ui.state.worlds_status = format!("Join failed: {err}");
-            log::warn!("join failed (session kept): {err}");
+            if is_host_authority_conflict(&err) {
+                // Takeover race while Waiting — keep Waiting shell; access JWT stays.
+                ui.state.worlds_nominated_host = false;
+                ui.state.worlds_can_takeover = true;
+                ui.state.session_enter_active = false;
+                ui.state.home_status =
+                    "Takeover lost (409) — another host claimed; wait or retry".into();
+                ui.state.worlds_status = ui.state.home_status.clone();
+                log::warn!("takeover conflict (session kept): {err}");
+            } else {
+                clear_worlds_session_shell(ui);
+                ui.state.home_status = format!("Join failed: {err}");
+                ui.state.worlds_status = format!("Join failed: {err}");
+                log::warn!("join failed (session kept): {err}");
+            }
         }
     }
     ui.mark_dash_chrome_dirty();
@@ -3522,6 +3630,7 @@ pub fn run(
         lmb_grab_armed: false,
         last_grab_miss_log: None,
         auth_job: None,
+        waiting_session_job: None,
         last_owns_input,
         mesh_epoch: 0,
         pending_room_bind: None,
