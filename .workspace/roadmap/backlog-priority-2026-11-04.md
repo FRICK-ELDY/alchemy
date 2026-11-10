@@ -2,7 +2,7 @@
 
 正本の進捗目次は [README.md](README.md)。本ファイルは **未完了帯の優先度ビュー**。
 
-**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**、**x0070 trust WAN E2E**、**x0071 world RL / Room cap**、**x0072 launcher discovery**。**x0073** 軽量衛生 **done**。**x0074** reserved reaper / orphan CAS GC **done**。**x0075** BLAKE3 / seal-hash 常駐 Port **done**。**x0076**–**x0078**（保証単位分割 / bind 送信元 / mTLS temp）**done**。**x0079** DemoScene 共有テストベクタ **done**。**x007a** metrics+jti **done**。**x007b** scene despawn **done**。**x007c** Worlds カタログ / Join・Host **done**。**x007d** Live Manifest remount **done**。**x007e** Room key epoch **done**。**x007f** Prefab 多子 / XR Inventory **done**。**x0080** host handover / takeover + dormant **done**。**x0081** 制御面 PoP **done**。**x0082** Scene CAS **done**。**x0083** Agent CSR-only **done**。**x0084** host-token RL **done**。空き ID = `x0085`。
+**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**、**x0070 trust WAN E2E**、**x0071 world RL / Room cap**、**x0072 launcher discovery**。**x0073** 軽量衛生 **done**。**x0074** reserved reaper / orphan CAS GC **done**。**x0075** BLAKE3 / seal-hash 常駐 Port **done**。**x0076**–**x0078**（保証単位分割 / bind 送信元 / mTLS temp）**done**。**x0079** DemoScene 共有テストベクタ **done**。**x007a** metrics+jti **done**。**x007b** scene despawn **done**。**x007c** Worlds カタログ / Join・Host **done**。**x007d** Live Manifest remount **done**。**x007e** Room key epoch **done**。**x007f** Prefab 多子 / XR Inventory **done**。**x0080** host handover / takeover + dormant **done**。**x0081** 制御面 PoP **done**。**x0082** Scene CAS **done**。**x0083** Agent CSR-only **done**。**x0084** host-token RL **done**。**x0085** GLB decode budget **done**。空き ID = `x0086`。
 
 ---
 
@@ -109,7 +109,8 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 2. ~~[x0082](slices/x0082-scene-revision-cas.md) Scene revision CAS（improvement P0-3）~~ **done**
 3. ~~[x0083](slices/x0083-relay-agent-csr-only.md) relay-agent CSR-only（improvement P0-4）~~ **done**
 4. ~~[x0084](slices/x0084-host-token-rate-limit.md) host-token 操作別 RL~~ **done**
-5. GLB budget / assets hermetic / WAN host E2E（P1-2〜）← **いま**
-6. verifier Spot-Check（保留）· Formula / market / 検疫（減点対象外）
+5. ~~[x0085](slices/x0085-glb-decode-budget.md) GLB decode budget~~ **done**
+6. assets hermetic / WAN host E2E（P1-3〜）← **いま**
+7. verifier Spot-Check（保留）· Formula / market / 検疫（減点対象外）
 
 ← [Roadmap 目次](README.md)

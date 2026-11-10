@@ -1,4 +1,4 @@
-//! GLB → CPU mesh (Slice C-B / x000b flatten / x000c baseColor / x000d rig / x0048).
+//! GLB → CPU mesh (Slice C-B / x000b flatten / x000c baseColor / x000d rig / x0048 / x0085).
 //!
 //! Guarantees: BLAKE3 verify before decode; first mesh positions (+ indices if present);
 //! `load_flattened_mesh_from_glb` bakes node transforms across primitives;
@@ -6,12 +6,20 @@
 //! `load_textured_rigged_from_glb` keeps a node hierarchy for runtime-replaced locals;
 //! [`placeholder_error_mesh`] is visually distinct from the Coin fixture (auth asset failure).
 //! [`empty_shell_mesh`] is the MainHub / post-Leave display (no world draw; x007d).
-//! Non-guarantees: PBR maps, skins, morphs, external URI textures, Coin textured draw.
+//! Decode respects [`crate::asset_decode_budget::AssetDecodeBudget`] (x0085) — over budget → `Err`.
+//! Auth remount (`load_mesh_from_glb`) imports **buffers only** (no image decode).
+//! Textured paths convert each embedded image to RGBA **once** and share via [`std::sync::Arc`].
+//! Non-guarantees: PBR maps, skins, morphs, external URI textures, Coin textured draw;
+//! peak RAM inside a single `image` crate decode of one embedded texture.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use glam::{Mat4, Quat, Vec3};
+use gltf::Semantic;
+
+use crate::asset_decode_budget::AssetDecodeBudget;
 
 /// Expected BLAKE3 of `client/fixtures/Coin_PolygonalMind.glb`.
 pub const COIN_BLAKE3_HEX: &str =
@@ -33,6 +41,9 @@ pub struct CpuRgbaImage {
     pub pixels: Vec<u8>,
 }
 
+/// Per-image RGBA slot after import (`None` = unsupported / truncated decode).
+type ImportedRgba = Option<Arc<CpuRgbaImage>>;
+
 /// One node in a textured rig (x000d). World = parent_world * local.
 #[derive(Clone, Copy, Debug)]
 pub struct RigNode {
@@ -50,7 +61,8 @@ pub struct CpuSubmesh {
     pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
     /// Present only when baseColorTexture + TEXCOORD_0 were both available.
-    pub base_color: Option<CpuRgbaImage>,
+    /// Shared across primitives that reference the same glTF image (x0085).
+    pub base_color: Option<Arc<CpuRgbaImage>>,
     pub base_color_factor: [f32; 4],
     /// Index into [`CpuTexturedMesh::nodes`] (mesh-local verts).
     pub node_index: usize,
@@ -123,10 +135,17 @@ pub fn placeholder_error_mesh() -> CpuMesh {
 }
 
 pub fn load_mesh_from_glb(bytes: &[u8]) -> Result<CpuMesh> {
-    let (doc, buffers, _images) = gltf::import_slice(bytes).context("gltf import_slice")?;
+    load_mesh_from_glb_with_budget(bytes, &mut AssetDecodeBudget::standard())
+}
 
-    let mut positions = Vec::new();
-    let mut indices = Vec::new();
+/// Same as [`load_mesh_from_glb`] with an injectable budget (x0085 tests / tooling).
+///
+/// Buffers-only import (no glTF image decode) — remount path never uses textures.
+pub fn load_mesh_from_glb_with_budget(
+    bytes: &[u8],
+    budget: &mut AssetDecodeBudget,
+) -> Result<CpuMesh> {
+    let (doc, buffers) = import_glb_buffers_only(bytes, budget)?;
 
     // C-B: first mesh / first primitive only.
     let mesh = doc.meshes().next().context("GLB contained no meshes")?;
@@ -134,12 +153,30 @@ pub fn load_mesh_from_glb(bytes: &[u8]) -> Result<CpuMesh> {
         .primitives()
         .next()
         .context("mesh contained no primitives")?;
+
+    let n_vert = prim
+        .get(&Semantic::Positions)
+        .map(|a| a.count())
+        .context("mesh primitive missing POSITION")?;
+    if n_vert == 0 {
+        bail!("GLB contained no mesh positions");
+    }
+    budget.add_vertices(n_vert)?;
+
+    let n_idx = prim.indices().map(|a| a.count()).unwrap_or(n_vert);
+    budget.add_indices(n_idx)?;
+
+    let mut positions = Vec::with_capacity(n_vert);
+    let mut indices = Vec::with_capacity(n_idx);
     let reader = prim.reader(|buffer| Some(&buffers[buffer.index()].0));
     let pos_iter = reader
         .read_positions()
         .context("mesh primitive missing POSITION")?;
     for p in pos_iter {
         positions.push(p);
+    }
+    if positions.len() != n_vert {
+        bail!("POSITION accessor count mismatch");
     }
 
     if let Some(idx) = reader.read_indices() {
@@ -151,9 +188,8 @@ pub fn load_mesh_from_glb(bytes: &[u8]) -> Result<CpuMesh> {
             indices.push(i);
         }
     }
-
-    if positions.is_empty() {
-        bail!("GLB contained no mesh positions");
+    if indices.len() != n_idx {
+        bail!("index accessor count mismatch");
     }
 
     let radius = framing_radius(&positions);
@@ -162,6 +198,47 @@ pub fn load_mesh_from_glb(bytes: &[u8]) -> Result<CpuMesh> {
         indices,
         radius,
     })
+}
+
+/// Parse GLB, enforce input + declared/actual buffer budgets, load buffers only.
+fn import_glb_buffers_only(
+    bytes: &[u8],
+    budget: &mut AssetDecodeBudget,
+) -> Result<(gltf::Document, Vec<gltf::buffer::Data>)> {
+    budget.check_input_bytes(bytes.len())?;
+    let gltf = gltf::Gltf::from_slice(bytes).context("gltf Gltf::from_slice")?;
+    let declared: usize = gltf.buffers().map(|b| b.length()).sum();
+    budget.add_expanded_bytes(declared)?;
+    let buffers = gltf::import_buffers(&gltf.document, None, gltf.blob)
+        .map_err(|e| anyhow!("gltf import_buffers: {e}"))?;
+    // Reconcile actual sizes (padding may grow slightly; never shrink below declared).
+    let actual: usize = buffers.iter().map(|b| b.0.len()).sum();
+    if actual > declared {
+        budget.add_expanded_bytes(actual - declared)?;
+    }
+    Ok((gltf.document, buffers))
+}
+
+/// Buffers + images; each image is decoded once, charged, converted to RGBA once, then shared.
+fn import_glb_with_images(
+    bytes: &[u8],
+    budget: &mut AssetDecodeBudget,
+) -> Result<(gltf::Document, Vec<gltf::buffer::Data>, Vec<ImportedRgba>)> {
+    let (doc, buffers) = import_glb_buffers_only(bytes, budget)?;
+    let mut images = Vec::with_capacity(doc.images().count());
+    for image in doc.images() {
+        let data = gltf::image::Data::from_source(image.source(), None, &buffers)
+            .map_err(|e| anyhow!("gltf image decode: {e}"))?;
+        budget.add_image_pixels(data.width, data.height)?;
+        // Source decode bytes always (transient). RGBA retain only if conversion keeps it.
+        budget.add_expanded_bytes(data.pixels.len())?;
+        let rgba = image_to_rgba8(&data).map(Arc::new);
+        if let Some(ref img) = rgba {
+            budget.add_expanded_bytes(img.pixels.len())?;
+        }
+        images.push(rgba);
+    }
+    Ok((doc, buffers, images))
 }
 
 fn framing_radius(positions: &[[f32; 3]]) -> f32 {
@@ -247,20 +324,34 @@ pub fn load_flattened_mesh_from_glb(bytes: &[u8]) -> Result<CpuMesh> {
 /// Flatten with per-primitive UVs and optional embedded baseColor (x000c).
 /// Produces a single identity rig node; verts are already in root space.
 pub fn load_flattened_textured_from_glb(bytes: &[u8]) -> Result<CpuTexturedMesh> {
-    let (doc, buffers, images) = gltf::import_slice(bytes).context("gltf import_slice")?;
+    load_flattened_textured_from_glb_with_budget(bytes, &mut AssetDecodeBudget::standard())
+}
+
+pub fn load_flattened_textured_from_glb_with_budget(
+    bytes: &[u8],
+    budget: &mut AssetDecodeBudget,
+) -> Result<CpuTexturedMesh> {
+    let (doc, buffers, images) = import_glb_with_images(bytes, budget)?;
 
     let mut submeshes = Vec::new();
 
     let Some(scene) = doc.default_scene().or_else(|| doc.scenes().next()) else {
-        return textured_from_first_primitive(&doc, &buffers, &images);
+        return textured_from_first_primitive(&doc, &buffers, &images, budget);
     };
 
     for node in scene.nodes() {
-        flatten_textured_node(node, Mat4::IDENTITY, &buffers, &images, &mut submeshes)?;
+        flatten_textured_node(
+            node,
+            Mat4::IDENTITY,
+            &buffers,
+            &images,
+            budget,
+            &mut submeshes,
+        )?;
     }
 
     if submeshes.is_empty() {
-        return textured_from_first_primitive(&doc, &buffers, &images);
+        return textured_from_first_primitive(&doc, &buffers, &images, budget);
     }
 
     let radius = framing_radius_rigged(&root_only_nodes(), &submeshes);
@@ -277,11 +368,23 @@ pub fn load_textured_rigged_from_glb(
     bytes: &[u8],
     animatable_names: &[&str],
 ) -> Result<CpuTexturedMesh> {
+    load_textured_rigged_from_glb_with_budget(
+        bytes,
+        animatable_names,
+        &mut AssetDecodeBudget::standard(),
+    )
+}
+
+pub fn load_textured_rigged_from_glb_with_budget(
+    bytes: &[u8],
+    animatable_names: &[&str],
+    budget: &mut AssetDecodeBudget,
+) -> Result<CpuTexturedMesh> {
     if animatable_names.is_empty() {
-        return load_flattened_textured_from_glb(bytes);
+        return load_flattened_textured_from_glb_with_budget(bytes, budget);
     }
 
-    let (doc, buffers, images) = gltf::import_slice(bytes).context("gltf import_slice")?;
+    let (doc, buffers, images) = import_glb_with_images(bytes, budget)?;
     let name_to_anim: HashMap<&str, u32> = animatable_names
         .iter()
         .enumerate()
@@ -292,7 +395,7 @@ pub fn load_textured_rigged_from_glb(
     let mut submeshes = Vec::new();
 
     let Some(scene) = doc.default_scene().or_else(|| doc.scenes().next()) else {
-        return textured_from_first_primitive(&doc, &buffers, &images);
+        return textured_from_first_primitive(&doc, &buffers, &images, budget);
     };
 
     for node in scene.nodes() {
@@ -302,13 +405,14 @@ pub fn load_textured_rigged_from_glb(
             &name_to_anim,
             &buffers,
             &images,
+            budget,
             &mut nodes,
             &mut submeshes,
         )?;
     }
 
     if submeshes.is_empty() {
-        return textured_from_first_primitive(&doc, &buffers, &images);
+        return textured_from_first_primitive(&doc, &buffers, &images, budget);
     }
 
     let radius = framing_radius_rigged(&nodes, &submeshes);
@@ -322,14 +426,16 @@ pub fn load_textured_rigged_from_glb(
 fn textured_from_first_primitive(
     doc: &gltf::Document,
     buffers: &[gltf::buffer::Data],
-    images: &[gltf::image::Data],
+    images: &[ImportedRgba],
+    budget: &mut AssetDecodeBudget,
 ) -> Result<CpuTexturedMesh> {
     let mesh = doc.meshes().next().context("GLB contained no meshes")?;
     let prim = mesh
         .primitives()
         .next()
         .context("mesh contained no primitives")?;
-    let Some(mut sub) = primitive_to_submesh(&prim, Mat4::IDENTITY, buffers, images)? else {
+    let Some(mut sub) = primitive_to_submesh(&prim, Mat4::IDENTITY, buffers, images, budget)?
+    else {
         bail!("GLB contained no mesh positions");
     };
     sub.node_index = 0;
@@ -345,7 +451,8 @@ fn flatten_textured_node(
     node: gltf::Node<'_>,
     parent: Mat4,
     buffers: &[gltf::buffer::Data],
-    images: &[gltf::image::Data],
+    images: &[ImportedRgba],
+    budget: &mut AssetDecodeBudget,
     out: &mut Vec<CpuSubmesh>,
 ) -> Result<()> {
     let local = node_asset_local(&node);
@@ -353,7 +460,7 @@ fn flatten_textured_node(
 
     if let Some(mesh) = node.mesh() {
         for prim in mesh.primitives() {
-            if let Some(mut sub) = primitive_to_submesh(&prim, world, buffers, images)? {
+            if let Some(mut sub) = primitive_to_submesh(&prim, world, buffers, images, budget)? {
                 sub.node_index = 0;
                 out.push(sub);
             }
@@ -361,17 +468,19 @@ fn flatten_textured_node(
     }
 
     for child in node.children() {
-        flatten_textured_node(child, world, buffers, images, out)?;
+        flatten_textured_node(child, world, buffers, images, budget, out)?;
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // glTF walk + budget counters; keep flat for clarity
 fn walk_rigged_node(
     node: gltf::Node<'_>,
     parent: Option<usize>,
     name_to_anim: &HashMap<&str, u32>,
     buffers: &[gltf::buffer::Data],
-    images: &[gltf::image::Data],
+    images: &[ImportedRgba],
+    budget: &mut AssetDecodeBudget,
     nodes: &mut Vec<RigNode>,
     out: &mut Vec<CpuSubmesh>,
 ) -> Result<()> {
@@ -387,7 +496,9 @@ fn walk_rigged_node(
     if let Some(mesh) = node.mesh() {
         for prim in mesh.primitives() {
             // Mesh-local verts; node world is applied at draw time.
-            if let Some(mut sub) = primitive_to_submesh(&prim, Mat4::IDENTITY, buffers, images)? {
+            if let Some(mut sub) =
+                primitive_to_submesh(&prim, Mat4::IDENTITY, buffers, images, budget)?
+            {
                 sub.node_index = idx;
                 out.push(sub);
             }
@@ -395,7 +506,16 @@ fn walk_rigged_node(
     }
 
     for child in node.children() {
-        walk_rigged_node(child, Some(idx), name_to_anim, buffers, images, nodes, out)?;
+        walk_rigged_node(
+            child,
+            Some(idx),
+            name_to_anim,
+            buffers,
+            images,
+            budget,
+            nodes,
+            out,
+        )?;
     }
     Ok(())
 }
@@ -404,23 +524,36 @@ fn primitive_to_submesh(
     prim: &gltf::Primitive<'_>,
     world: Mat4,
     buffers: &[gltf::buffer::Data],
-    images: &[gltf::image::Data],
+    images: &[ImportedRgba],
+    budget: &mut AssetDecodeBudget,
 ) -> Result<Option<CpuSubmesh>> {
-    let reader = prim.reader(|buffer| Some(&buffers[buffer.index()].0));
-    let Some(pos_iter) = reader.read_positions() else {
+    let Some(pos_acc) = prim.get(&Semantic::Positions) else {
         return Ok(None);
     };
+    let n_vert = pos_acc.count();
+    if n_vert == 0 {
+        return Ok(None);
+    }
+    // Accessor count **before** Vec growth (x0085 review).
+    budget.add_vertices(n_vert)?;
+    let n_idx = prim.indices().map(|a| a.count()).unwrap_or(n_vert);
+    budget.add_indices(n_idx)?;
 
-    let mut positions = Vec::new();
+    let reader = prim.reader(|buffer| Some(&buffers[buffer.index()].0));
+    let Some(pos_iter) = reader.read_positions() else {
+        bail!("POSITION accessor present but read_positions failed");
+    };
+
+    let mut positions = Vec::with_capacity(n_vert);
     for p in pos_iter {
         let v = world.transform_point3(Vec3::from(p));
         positions.push([v.x, v.y, v.z]);
     }
-    if positions.is_empty() {
-        return Ok(None);
+    if positions.len() != n_vert {
+        bail!("POSITION accessor count mismatch");
     }
 
-    let mut uvs = Vec::with_capacity(positions.len());
+    let mut uvs = Vec::with_capacity(n_vert);
     let has_uv = if let Some(tc) = reader.read_tex_coords(0) {
         for uv in tc.into_f32() {
             uvs.push(uv);
@@ -434,7 +567,7 @@ fn primitive_to_submesh(
         uvs.resize(positions.len(), [0.0, 0.0]);
     }
 
-    let mut indices = Vec::new();
+    let mut indices = Vec::with_capacity(n_idx);
     if let Some(idx) = reader.read_indices() {
         for i in idx.into_u32() {
             indices.push(i);
@@ -444,16 +577,20 @@ fn primitive_to_submesh(
             indices.push(i);
         }
     }
+    if indices.len() != n_idx {
+        bail!("index accessor count mismatch");
+    }
 
     let pbr = prim.material().pbr_metallic_roughness();
     let base_color_factor = pbr.base_color_factor();
+    // RGBA already converted once at import; Arc-clone only (no per-primitive Vec growth).
     let base_color = if has_uv {
-        pbr.base_color_texture()
-            .and_then(|info| {
-                let idx = info.texture().source().index();
-                images.get(idx)
-            })
-            .and_then(image_to_rgba8)
+        pbr.base_color_texture().and_then(|info| {
+            let idx = info.texture().source().index();
+            images
+                .get(idx)
+                .and_then(|slot| slot.as_ref().map(Arc::clone))
+        })
     } else {
         None
     };
@@ -468,6 +605,7 @@ fn primitive_to_submesh(
     }))
 }
 
+/// Convert imported image to RGBA8 (called once per glTF image at import).
 fn image_to_rgba8(img: &gltf::image::Data) -> Option<CpuRgbaImage> {
     use gltf::image::Format;
     let n = (img.width as usize).checked_mul(img.height as usize)?;
@@ -582,5 +720,161 @@ mod tests {
         let mesh = empty_shell_mesh();
         assert!(mesh.positions.is_empty());
         assert!(mesh.indices.is_empty());
+    }
+
+    #[test]
+    fn oversized_input_rejected_before_import() {
+        let mut budget = AssetDecodeBudget::for_test(16, 1024, 100, 100, 100);
+        let bomb = vec![0u8; 17];
+        let err = load_mesh_from_glb_with_budget(&bomb, &mut budget).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("input") && msg.contains("budget"),
+            "unexpected err: {msg}"
+        );
+    }
+
+    #[test]
+    fn coin_rejected_when_vertex_budget_tiny() {
+        let mut budget = AssetDecodeBudget::for_test(
+            AssetDecodeBudget::standard().max_input_bytes,
+            AssetDecodeBudget::standard().max_expanded_bytes,
+            1, // Coin has many vertices
+            AssetDecodeBudget::standard().max_indices,
+            AssetDecodeBudget::standard().max_image_pixels,
+        );
+        let err = load_mesh_from_glb_with_budget(FIXTURE, &mut budget).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("vertices"), "unexpected err: {msg}");
+    }
+
+    #[test]
+    fn coin_rejected_when_index_budget_tiny() {
+        let mut budget = AssetDecodeBudget::for_test(
+            AssetDecodeBudget::standard().max_input_bytes,
+            AssetDecodeBudget::standard().max_expanded_bytes,
+            AssetDecodeBudget::standard().max_vertices,
+            1,
+            AssetDecodeBudget::standard().max_image_pixels,
+        );
+        let err = load_mesh_from_glb_with_budget(FIXTURE, &mut budget).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("indices"), "unexpected err: {msg}");
+    }
+
+    #[test]
+    fn coin_rejected_when_expanded_budget_tiny() {
+        let mut budget = AssetDecodeBudget::for_test(
+            AssetDecodeBudget::standard().max_input_bytes,
+            64, // below Coin buffer payload
+            AssetDecodeBudget::standard().max_vertices,
+            AssetDecodeBudget::standard().max_indices,
+            AssetDecodeBudget::standard().max_image_pixels,
+        );
+        let err = load_mesh_from_glb_with_budget(FIXTURE, &mut budget).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("expanded"), "unexpected err: {msg}");
+    }
+
+    /// Minimal GLB: triangle(s) + TEXCOORD_0 + embedded 1×1 PNG baseColor (bufferView image).
+    fn tiny_textured_glb_bytes(primitive_count: usize) -> Vec<u8> {
+        assert!(primitive_count >= 1);
+        // 1×1 RGBA PNG (70 bytes)
+        const PNG: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0xDA, 0x63, 0xFC, 0xCF, 0xC0, 0x50, 0x0F, 0x00, 0x04, 0x85, 0x01, 0x80, 0x84, 0xA9,
+            0x8C, 0x21, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        let mut bin = Vec::with_capacity(36 + 24 + PNG.len());
+        for p in [[0f32, 0., 0.], [1., 0., 0.], [0., 1., 0.]] {
+            for f in p {
+                bin.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+        for p in [[0f32, 0.], [1., 0.], [0., 1.]] {
+            for f in p {
+                bin.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+        let png_off = bin.len();
+        bin.extend_from_slice(PNG);
+        while bin.len() % 4 != 0 {
+            bin.push(0);
+        }
+        let bin_len = bin.len();
+        let prim = r#"{"attributes":{"POSITION":0,"TEXCOORD_0":1},"material":0}"#;
+        let prims = std::iter::repeat(prim)
+            .take(primitive_count)
+            .collect::<Vec<_>>()
+            .join(",");
+        let json = format!(
+            concat!(
+                r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"#,
+                r#""nodes":[{{"mesh":0}}],"meshes":[{{"primitives":[{prims}]}}],"#,
+                r#""materials":[{{"pbrMetallicRoughness":{{"baseColorTexture":{{"index":0}}}}}}],"#,
+                r#""textures":[{{"source":0}}],"images":[{{"bufferView":2,"mimeType":"image/png"}}],"#,
+                r#""accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","max":[1,1,0],"min":[0,0,0]}},"#,
+                r#"{{"bufferView":1,"componentType":5126,"count":3,"type":"VEC2"}}],"#,
+                r#""bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":36}},"#,
+                r#"{{"buffer":0,"byteOffset":36,"byteLength":24}},"#,
+                r#"{{"buffer":0,"byteOffset":{png_off},"byteLength":{png_len}}}],"#,
+                r#""buffers":[{{"byteLength":{bin_len}}}]}}"#
+            ),
+            prims = prims,
+            png_off = png_off,
+            png_len = PNG.len(),
+            bin_len = bin_len
+        );
+        let mut json_bytes = json.into_bytes();
+        while json_bytes.len() % 4 != 0 {
+            json_bytes.push(b' ');
+        }
+        let total = 12 + 8 + json_bytes.len() + 8 + bin.len();
+        let mut out = Vec::with_capacity(total);
+        out.extend_from_slice(&0x46546C67u32.to_le_bytes()); // glTF
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&(total as u32).to_le_bytes());
+        out.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0x4E4F534Au32.to_le_bytes()); // JSON
+        out.extend_from_slice(&json_bytes);
+        out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0x004E4942u32.to_le_bytes()); // BIN
+        out.extend_from_slice(&bin);
+        out
+    }
+
+    #[test]
+    fn textured_rejected_when_pixel_budget_zero() {
+        let bytes = tiny_textured_glb_bytes(1);
+        let mut budget = AssetDecodeBudget::for_test(
+            AssetDecodeBudget::standard().max_input_bytes,
+            AssetDecodeBudget::standard().max_expanded_bytes,
+            AssetDecodeBudget::standard().max_vertices,
+            AssetDecodeBudget::standard().max_indices,
+            0,
+        );
+        let err = load_flattened_textured_from_glb_with_budget(&bytes, &mut budget).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("image pixels"), "unexpected err: {msg}");
+    }
+
+    #[test]
+    fn shared_base_color_is_one_arc_across_primitives() {
+        let bytes = tiny_textured_glb_bytes(2);
+        let mut budget = AssetDecodeBudget::standard();
+        let mesh = load_flattened_textured_from_glb_with_budget(&bytes, &mut budget).unwrap();
+        assert_eq!(mesh.submeshes.len(), 2);
+        let a = mesh.submeshes[0].base_color.as_ref().expect("baseColor");
+        let b = mesh.submeshes[1].base_color.as_ref().expect("baseColor");
+        assert!(Arc::ptr_eq(a, b), "baseColor must be shared by Arc");
+    }
+
+    #[test]
+    fn coin_passes_standard_budget() {
+        let mut budget = AssetDecodeBudget::standard();
+        let mesh = load_mesh_from_glb_with_budget(FIXTURE, &mut budget).unwrap();
+        assert!(!mesh.positions.is_empty());
     }
 }

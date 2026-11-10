@@ -18,6 +18,7 @@
 //! Quest/WebXR hotswitch; Virtual Desktop presence parity
 
 mod access_level;
+mod asset_decode_budget;
 mod assets_fetch;
 mod auth;
 mod bus;
