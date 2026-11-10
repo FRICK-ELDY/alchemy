@@ -25,7 +25,7 @@
 | P0-1 | 制御面を session 署名 + world PoP | -3 | spawn/despawn から `room_token` フィールド削除。Intent と同じ Ed25519。`host_keys`/seal/scene に `cnf.spk` 署名ヘッダ | Token が Zenoh に載らない。盗んだ host Token だけでは host_keys が 401。否定系 E2E |
 | P0-2 | Room key epoch / revoke | -3 | `room_key_epoch`。visibility 縮小・kick・定期で回転。AAD+Token に epoch。猶予=Token TTL | 旧参加者の鍵で新 epoch 平文が読めない否定系。保証表に寿命を明記 |
 | P0-3 | Scene revision CAS | -3 | `expected_revision` + `UPDATE … WHERE revision=?`。host は 409 再試行 | 同時 append+delete で欠落しない統合テスト — **x0082 done** |
-| P0-4 | relay-agent CSR-only or 退役 | -2 | `csr_pem` 必須・`key_pem` 削除。非 loopback cleartext は起動拒否。不要なら allocate 廃止 | 応答に秘密鍵が無い。手順書も CSR のみ |
+| P0-4 | relay-agent CSR-only or 退役 | -2 | `csr_pem` 必須・`key_pem` 削除。非 loopback cleartext は起動拒否。不要なら allocate 廃止 | 応答に秘密鍵が無い。手順書も CSR のみ — **[x0083](../../roadmap/slices/x0083-relay-agent-csr-only.md) done** |
 
 ---
 
@@ -82,7 +82,7 @@
 | P0-1 NotAfter = expires_in | **完了** |
 | P0-2 Allocation hard JWKS / body / thread / jti | **完了** |
 | P0-3 部屋隔離（AEAD 本対応 + 保証表） | **完了**（revoke 寿命は今回 P0-2） |
-| P0-4 秘密鍵をネットワークに出さない | **部分完了** — world CSR done。Agent 互換は今回 P0-4 |
+| P0-4 秘密鍵をネットワークに出さない | **完了** — world CSR + Agent CSR-only（x0083） |
 | P0-5 CAS access → Grant/ref | **完了** |
 | P1-1 relay CI | **完了** |
 | P1-2 headless trust + WAN E2E | **方向完了** — 実 host 一往復は今回 P1-4 |
@@ -98,7 +98,7 @@
 1. **制御面 + PoP**（P0-1 + P2-7）— Token をバスから外す
 2. **Room key epoch**（P0-2）— 保証表更新を同 PR に含める
 3. **Scene CAS**（P0-3）— inventory 同時更新の否定系
-4. **Agent CSR-only**（P0-4）
+4. ~~**Agent CSR-only**（P0-4）~~ **done**（x0083）
 5. **host RL / GLB budget / assets hermetic / WAN host E2E**（P1）を並行
 
 スライス完了条件に必ず含める:

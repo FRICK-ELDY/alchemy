@@ -197,9 +197,11 @@ nc -vz <VPS_IP> 7447
 
 `bash .scripts/smoke-zenoh-wan.sh` は TCP 待受の確認であり、TLS 握手は見ない。
 
-### 7. Relay Agent（任意・互換）
+### 7. Relay Agent（任意・互換 / CSR-only）
 
 world に `MTLS_CA_*` が無い既存構成向け。推奨経路（world が `mtls` を返す）では起動しない。
+
+`POST /v1/allocate` は world と同じく **client CSR 必須・応答に秘密鍵無し**（P0-4）。`RELAY_AGENT_LISTEN` は **loopback のみ**（`0.0.0.0` 等の cleartext は起動拒否）。WAN の host / client から届けるときは SSH トンネルや sidecar で VPS の `127.0.0.1:7450` に寄せる。
 
 ```bash
 cd relay-agent
@@ -210,7 +212,7 @@ cargo build --release
 ./target/release/alchemy-relay-agent
 ```
 
-host / client に `RELAY_ALLOCATE_URL=http://<到達できるホスト>:7450` を付ける。待受を VPS の外に出すときは、7450 も送信元を絞る。world が `mtls` を返した接続は、この URL が設定されていても allocate しない。
+host / client に `RELAY_ALLOCATE_URL=http://127.0.0.1:7450`（またはトンネル先）を付ける。world が `mtls` を返した接続は、この URL が設定されていても allocate しない。
 
 ---
 

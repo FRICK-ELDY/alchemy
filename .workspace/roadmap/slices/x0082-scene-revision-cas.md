@@ -53,7 +53,7 @@ host ──GET scene──► 再試行（上限付き）
 
 - `scene_revision` 列マイグレーション
 - PoP / session 制御面の変更（x0081）
-- relay-agent CSR-only（P0-4）
+- ~~relay-agent CSR-only（P0-4）~~ → [x0083](x0083-relay-agent-csr-only.md)
 - host-token 操作別 rate limit（P1）
 - 新規 Hex / Cargo 依存
 

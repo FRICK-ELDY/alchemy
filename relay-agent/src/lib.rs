@@ -1,10 +1,13 @@
-//! Alchemy Relay Agent (x004e / x0068 / x007a).
+//! Alchemy Relay Agent (x004e / x0068 / x007a / P0-4).
 //!
 //! Guarantees: `POST /v1/allocate` verifies Allocation Token (`aud=alchemy-relay`) via world JWKS
-//! (soft refresh + hard TTL), then issues a client cert with CN `alchemy-host` / `alchemy-guest`
-//! whose **NotAfter ≈ `expires_in` (300s)**. Body size, in-flight concurrency, and `jti` reuse are
-//! bounded. Optional loopback `/metrics` + `room_jti` log correlation (x007a).
-//! Non-guarantees: CCU/QoS, multi-relay discovery, L7 Zenoh proxy, CSR-only allocate (P0-4).
+//! (soft refresh + hard TTL), then **signs a client-supplied CSR** with forced CN
+//! `alchemy-host` / `alchemy-guest` whose **NotAfter ≈ `expires_in` (300s)**. Response has
+//! **no private key** (`key_pem` removed). Non-loopback cleartext bind is refused at startup.
+//! Body size, in-flight concurrency, and `jti` reuse are bounded. Optional loopback `/metrics`
+//! + `room_jti` log correlation (x007a).
+//!
+//! Non-guarantees: CCU/QoS, multi-relay discovery, L7 Zenoh proxy, TLS-terminated non-loopback.
 
 mod metrics;
 
@@ -74,6 +77,10 @@ pub struct AllocClaims {
 #[derive(Debug, Deserialize)]
 struct AllocateRequest {
     allocation_token: String,
+    /// Client-held keypair CSR (P0-4). Agent signs only; never returns a private key.
+    /// Missing / `null` / blank → `csr_pem_required` (`Option` so JSON null is not `invalid_json`).
+    #[serde(default)]
+    csr_pem: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -82,7 +89,6 @@ pub struct AllocateResponse {
     pub room_id: String,
     pub wire_cap: String,
     pub cert_pem: String,
-    pub key_pem: String,
     pub ca_pem: String,
     pub expires_in: u64,
     pub cn: String,
@@ -225,16 +231,41 @@ pub fn content_length_over_limit(buf: &[u8], limit: usize) -> bool {
     content_length(buf).is_some_and(|cl| cl > limit)
 }
 
+/// True when `RELAY_AGENT_LISTEN` is loopback-only (P0-4: refuse non-loopback cleartext).
+pub fn is_loopback_listen(listen: &str) -> bool {
+    let listen = listen.trim();
+    if let Ok(addr) = listen.parse::<std::net::SocketAddr>() {
+        return addr.ip().is_loopback();
+    }
+    // `localhost:7450` is not a SocketAddr literal.
+    let Some((host, port)) = listen.rsplit_once(':') else {
+        return false;
+    };
+    if port.parse::<u16>().is_err() {
+        return false;
+    }
+    let host = host.trim().trim_matches(|c| c == '[' || c == ']');
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+}
+
+/// Refuse serve when the OS-resolved bind address is not loopback (hosts remap of `localhost`).
+pub fn ensure_bound_loopback(listener: &TcpListener) -> Result<()> {
+    let addr = listener.local_addr().context("local_addr")?;
+    if !addr.ip().is_loopback() {
+        anyhow::bail!(
+            "bound address {addr} is not loopback — refuse cleartext serve (P0-4); check RELAY_AGENT_LISTEN / hosts"
+        );
+    }
+    Ok(())
+}
+
 pub fn run() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let listen = std::env::var("RELAY_AGENT_LISTEN").unwrap_or_else(|_| "127.0.0.1:7450".into());
-    if !listen.starts_with("127.0.0.1")
-        && !listen.starts_with("localhost")
-        && !listen.starts_with("[::1]")
-    {
-        log::warn!(
-            "RELAY_AGENT_LISTEN={listen} is not loopback — allocate responses include private keys over cleartext HTTP"
+    if !is_loopback_listen(&listen) {
+        anyhow::bail!(
+            "RELAY_AGENT_LISTEN={listen} is not loopback — refuse cleartext bind (P0-4). Use 127.0.0.1 / localhost / ::1, or terminate TLS in front and keep Agent on loopback"
         );
     }
     let jwks_url = std::env::var("WORLD_JWKS_URL")
@@ -276,8 +307,11 @@ pub fn run() -> Result<()> {
     state.refresh_jwks().context("initial JWKS fetch")?;
     metrics::maybe_spawn_from_env(Arc::clone(relay_metrics()));
     let listener = TcpListener::bind(&listen).with_context(|| format!("bind {listen}"))?;
+    // String allow-list can be fooled by hosts remap of `localhost`; verify the bound IP.
+    ensure_bound_loopback(&listener)?;
+    let bound = listener.local_addr().context("local_addr after bind")?;
     log::info!(
-        "relay-agent x0068 listening on http://{listen} relay_id={} jwks={} cert_ttl_secs={CERT_TTL_SECS} max_body={MAX_BODY_BYTES} max_in_flight={MAX_IN_FLIGHT} max_connections={MAX_CONNECTIONS}",
+        "relay-agent x0083 (CSR-only) listening on http://{bound} (listen={listen}) relay_id={} jwks={} cert_ttl_secs={CERT_TTL_SECS} max_body={MAX_BODY_BYTES} max_in_flight={MAX_IN_FLIGHT} max_connections={MAX_CONNECTIONS}",
         state.relay_id,
         state.jwks_url
     );
@@ -480,7 +514,9 @@ impl AgentState {
         }
     }
 
-    pub fn issue_cert(&self, role: &str) -> Result<(String, String, String)> {
+    /// Sign `csr_pem` for an authorized role. CSR Subject is ignored (`-subj` forces CN).
+    /// Returns `(cert_pem, ca_pem)` — never a client private key (P0-4).
+    pub fn sign_csr(&self, csr_pem: &str, role: &str) -> Result<(String, String)> {
         let _guard = self
             .cert_issue_lock
             .lock()
@@ -499,33 +535,18 @@ impl AgentState {
         // OpenSSL -set_serial parses decimal unless 0x-prefixed (full nanos hex).
         let serial = format!("0x{stamp:x}");
         let prefix = self.work_dir.join(format!("ephemeral-{stamp}"));
-        let key_path = PathBuf::from(format!("{}.key.pem", prefix.display()));
         let csr_path = PathBuf::from(format!("{}.csr.pem", prefix.display()));
         let cert_path = PathBuf::from(format!("{}.cert.pem", prefix.display()));
         let ext_path = PathBuf::from(format!("{}.ext", prefix.display()));
 
-        run_openssl(
-            &self.openssl,
-            &[
-                "req",
-                "-newkey",
-                "rsa:2048",
-                "-nodes",
-                "-keyout",
-                key_path.to_str().ok_or_else(|| anyhow!("key path utf8"))?,
-                "-out",
-                csr_path.to_str().ok_or_else(|| anyhow!("csr path utf8"))?,
-                "-subj",
-                &format!("/CN={cn}"),
-            ],
-        )?;
-
+        fs::write(&csr_path, csr_pem).context("write csr")?;
         fs::write(
             &ext_path,
             "basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=clientAuth\n",
         )?;
 
-        run_openssl(
+        // -subj replaces CSR subject (do not trust client-supplied CN). Same as world MtlsIssuer.
+        let sign_result = run_openssl(
             &self.openssl,
             &[
                 "x509",
@@ -550,19 +571,23 @@ impl AgentState {
                 &not_before,
                 "-not_after",
                 &not_after,
+                "-subj",
+                &format!("/CN={cn}"),
                 "-extfile",
                 ext_path.to_str().ok_or_else(|| anyhow!("ext path utf8"))?,
             ],
-        )?;
+        );
 
-        let cert_pem = fs::read_to_string(&cert_path)?;
-        let key_pem = fs::read_to_string(&key_path)?;
-        let ca_pem = fs::read_to_string(&self.client_ca_cert)?;
-        let _ = fs::remove_file(&key_path);
+        let result = sign_result.and_then(|_| {
+            let cert_pem = fs::read_to_string(&cert_path)?;
+            let ca_pem = fs::read_to_string(&self.client_ca_cert)?;
+            Ok((cert_pem, ca_pem))
+        });
+
         let _ = fs::remove_file(&csr_path);
         let _ = fs::remove_file(&cert_path);
         let _ = fs::remove_file(&ext_path);
-        Ok((cert_pem, key_pem, ca_pem))
+        result
     }
 }
 
@@ -665,6 +690,13 @@ pub fn handle_client(mut stream: TcpStream, state: &AgentState) -> Result<()> {
         Ok(v) => v,
         Err(_) => return allocate_deny(&mut stream, 400, "{\"error\":\"invalid_json\"}"),
     };
+    let csr_pem = req_json.csr_pem.as_deref().unwrap_or("").trim();
+    if csr_pem.is_empty() {
+        return allocate_deny(&mut stream, 400, "{\"error\":\"csr_pem_required\"}");
+    }
+    if !csr_pem.contains("BEGIN CERTIFICATE REQUEST") {
+        return allocate_deny(&mut stream, 400, "{\"error\":\"invalid_csr_pem\"}");
+    }
 
     let claims = match state.verify_allocation(&req_json.allocation_token) {
         Ok(c) => c,
@@ -680,7 +712,7 @@ pub fn handle_client(mut stream: TcpStream, state: &AgentState) -> Result<()> {
         return allocate_deny(&mut stream, 401, "{\"error\":\"jti_reused\"}");
     }
 
-    let (cert_pem, key_pem, ca_pem) = match state.issue_cert(&claims.role) {
+    let (cert_pem, ca_pem) = match state.sign_csr(csr_pem, &claims.role) {
         Ok(v) => v,
         Err(e) => {
             state.release_jti(&claims.jti);
@@ -701,7 +733,6 @@ pub fn handle_client(mut stream: TcpStream, state: &AgentState) -> Result<()> {
         room_id: claims.room_id,
         wire_cap: claims.wire_cap,
         cert_pem,
-        key_pem,
         ca_pem,
         expires_in: CERT_TTL_SECS,
         cn: cn.to_string(),
@@ -788,6 +819,17 @@ mod tests {
         assert_eq!(asn1_utc_from_unix(0), "19700101000000Z");
         // 2026-11-01 00:00:00 UTC
         assert_eq!(asn1_utc_from_unix(1_793_491_200), "20261101000000Z");
+    }
+
+    #[test]
+    fn loopback_listen_accepts_only_loopback() {
+        assert!(is_loopback_listen("127.0.0.1:7450"));
+        assert!(is_loopback_listen("localhost:7450"));
+        assert!(is_loopback_listen("[::1]:7450"));
+        assert!(is_loopback_listen("::1:7450"));
+        assert!(!is_loopback_listen("0.0.0.0:7450"));
+        assert!(!is_loopback_listen("192.168.1.10:7450"));
+        assert!(!is_loopback_listen("localhost.evil.example:7450"));
     }
 
     #[test]
@@ -1206,7 +1248,11 @@ mod tests {
             let (stream, _) = listener.accept().unwrap();
             let _ = handle_client(stream, &st);
         });
-        let body = serde_json::json!({ "allocation_token": token }).to_string();
+        let body = serde_json::json!({
+            "allocation_token": token,
+            "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----\nMIIB\n-----END CERTIFICATE REQUEST-----\n"
+        })
+        .to_string();
         let mut client = TcpStream::connect(addr).unwrap();
         let req = format!(
             "POST /v1/allocate HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
@@ -1221,8 +1267,88 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
+    fn post_allocate_body(body: &[u8]) -> String {
+        let state = test_state_minimal();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let st = Arc::new(state);
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let _ = handle_client(stream, &st);
+        });
+        let mut client = TcpStream::connect(addr).unwrap();
+        let req = format!(
+            "POST /v1/allocate HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        client.write_all(req.as_bytes()).unwrap();
+        client.write_all(body).unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).unwrap();
+        resp
+    }
+
     #[test]
-    fn issue_cert_not_after_matches_ttl() {
+    fn http_allocate_400_when_csr_pem_field_missing() {
+        let resp = post_allocate_body(br#"{"allocation_token":"x"}"#);
+        assert!(resp.starts_with("HTTP/1.1 400"), "{resp}");
+        assert!(resp.contains("csr_pem_required"), "{resp}");
+        assert!(!resp.contains("invalid_json"), "{resp}");
+    }
+
+    #[test]
+    fn http_allocate_400_when_csr_pem_blank() {
+        let resp = post_allocate_body(br#"{"allocation_token":"x","csr_pem":"  "}"#);
+        assert!(resp.starts_with("HTTP/1.1 400"), "{resp}");
+        assert!(resp.contains("csr_pem_required"), "{resp}");
+    }
+
+    #[test]
+    fn http_allocate_400_when_csr_pem_null() {
+        let resp = post_allocate_body(br#"{"allocation_token":"x","csr_pem":null}"#);
+        assert!(resp.starts_with("HTTP/1.1 400"), "{resp}");
+        assert!(resp.contains("csr_pem_required"), "{resp}");
+        assert!(!resp.contains("invalid_json"), "{resp}");
+    }
+
+    #[test]
+    fn ensure_bound_loopback_accepts_127() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        ensure_bound_loopback(&listener).expect("loopback bind");
+    }
+
+    #[test]
+    fn ensure_bound_loopback_rejects_unspecified() {
+        // `0.0.0.0:0` binds all interfaces; local_addr is not loopback.
+        let listener = TcpListener::bind("0.0.0.0:0").unwrap();
+        let err = ensure_bound_loopback(&listener).unwrap_err().to_string();
+        assert!(err.contains("not loopback"), "{err}");
+    }
+
+    fn make_client_csr(openssl: &Path, work: &Path) -> String {
+        let key = work.join("client.key.pem");
+        let csr = work.join("client.csr.pem");
+        run_openssl(
+            openssl,
+            &[
+                "req",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                key.to_str().unwrap(),
+                "-out",
+                csr.to_str().unwrap(),
+                "-subj",
+                "/CN=alchemy-ephemeral-request",
+            ],
+        )
+        .unwrap();
+        fs::read_to_string(&csr).unwrap()
+    }
+
+    #[test]
+    fn sign_csr_not_after_matches_ttl_and_forces_cn() {
         let openssl = openssl_bin();
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1271,15 +1397,21 @@ mod tests {
         };
         fs::create_dir_all(&state.work_dir).unwrap();
 
+        let csr_pem = make_client_csr(&openssl, &work);
         let before = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let (cert_pem, _key, _ca) = state.issue_cert("guest").expect("issue");
+        let (cert_pem, ca_pem) = state.sign_csr(&csr_pem, "guest").expect("sign");
         let after = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
+        assert!(ca_pem.contains("BEGIN CERTIFICATE"));
+        assert!(
+            !cert_pem.contains("PRIVATE KEY"),
+            "signed cert must not embed a private key"
+        );
 
         let cert_path = work.join("issued.pem");
         fs::write(&cert_path, &cert_pem).unwrap();
@@ -1290,6 +1422,7 @@ mod tests {
                 cert_path.to_str().unwrap(),
                 "-noout",
                 "-enddate",
+                "-subject",
             ])
             .output()
             .unwrap();
@@ -1298,14 +1431,36 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        let enddate = String::from_utf8_lossy(&out.stdout);
-        // enddate=Nov  1 14:45:03 2026 GMT
-        let parsed = parse_openssl_enddate(enddate.trim());
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.contains(CN_GUEST),
+            "forced CN missing in subject: {text}"
+        );
+        let enddate_line = text
+            .lines()
+            .find(|l| l.starts_with("notAfter="))
+            .expect("enddate line");
+        let parsed = parse_openssl_enddate(enddate_line.trim());
         let lo = before + CERT_TTL_SECS - 30;
         let hi = after + CERT_TTL_SECS + 30;
         assert!(
             parsed >= lo && parsed <= hi,
-            "NotAfter unix={parsed} expected in [{lo},{hi}]; raw={enddate}"
+            "NotAfter unix={parsed} expected in [{lo},{hi}]; raw={text}"
+        );
+
+        let resp = AllocateResponse {
+            role: "guest".into(),
+            room_id: "r1".into(),
+            wire_cap: "w".into(),
+            cert_pem,
+            ca_pem,
+            expires_in: CERT_TTL_SECS,
+            cn: CN_GUEST.into(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(
+            !json.contains("key_pem"),
+            "AllocateResponse must not serialize key_pem: {json}"
         );
 
         let _ = fs::remove_dir_all(&work);
