@@ -24,7 +24,7 @@
 |:---|:---|:---|:---|:---|
 | P0-1 | 制御面を session 署名 + world PoP | -3 | spawn/despawn から `room_token` フィールド削除。Intent と同じ Ed25519。`host_keys`/seal/scene に `cnf.spk` 署名ヘッダ | Token が Zenoh に載らない。盗んだ host Token だけでは host_keys が 401。否定系 E2E |
 | P0-2 | Room key epoch / revoke | -3 | `room_key_epoch`。visibility 縮小・kick・定期で回転。AAD+Token に epoch。猶予=Token TTL | 旧参加者の鍵で新 epoch 平文が読めない否定系。保証表に寿命を明記 |
-| P0-3 | Scene revision CAS | -3 | `expected_revision` + `UPDATE … WHERE revision=?`。host は 409 再試行 | 同時 append+delete で欠落しない統合テスト |
+| P0-3 | Scene revision CAS | -3 | `expected_revision` + `UPDATE … WHERE revision=?`。host は 409 再試行 | 同時 append+delete で欠落しない統合テスト — **x0082 done** |
 | P0-4 | relay-agent CSR-only or 退役 | -2 | `csr_pem` 必須・`key_pem` 削除。非 loopback cleartext は起動拒否。不要なら allocate 廃止 | 応答に秘密鍵が無い。手順書も CSR のみ |
 
 ---

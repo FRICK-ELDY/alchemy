@@ -3,9 +3,10 @@ defmodule World.Rooms do
   Room ledger facade (x0028).
 
   Guarantees: create / owner / scene / visibility backed by Ash + SQLite (survives restart).
-  x006d: host may append a single mesh SceneEntry via `append_scene_entry/2` (revision bump).
-  x007b: host may remove a mesh SceneEntry via `delete_scene_entry/2` (64-hex blake3 required;
-  revision bump).
+  x006d / x0082: host may append a single mesh SceneEntry via
+  `append_scene_entry/3` (`expected_revision` CAS + revision bump).
+  x007b / x0082: host may remove a mesh SceneEntry via `delete_scene_entry/3`
+  (64-hex blake3 required; `expected_revision` CAS + revision bump).
   x0071: create rejects when owner already holds `max_rooms_per_owner` rooms (best-effort;
   concurrent races may overshoot slightly — no DB trigger).
   x007c: `list_visible_summaries/3` returns catalog rows (no room_key / wire_cap / scene).
@@ -21,7 +22,8 @@ defmodule World.Rooms do
   grace durability across world restart; strict serialization of per-owner room counts
   under concurrent create; user_root / cuboid (empty blake3) despawn;
   catalog Frame reachability; seamless pose / grab inheritance across hosts;
-  paginated periodic rotate (due rooms loaded in one tick).
+  paginated periodic rotate (due rooms loaded in one tick);
+  room-wide scene serialization alone (x0082 is optimistic CAS + host retry).
 
   x0021: `owner_sub` set only via `create/3` (`{:ok, room_id, visibility, wire_cap}` · x004e).
   Token issuance never creates a room.
@@ -180,40 +182,48 @@ defmodule World.Rooms do
   def scene(_), do: {:error, :invalid_room_id}
 
   @doc """
-  Append one mesh SceneEntry for inventory take-out (x006d).
+  Append one mesh SceneEntry for inventory take-out (x006d / x0082).
 
   Assigns the next free `entity_id` (max existing + 1, skipping nothing —
   caller must not collide with reserved bands by sending entity_id).
-  Bumps `revision`. Returns the updated scene map.
+  Requires `expected_revision` matching the current scene revision (optimistic CAS).
+  Bumps `revision` to `expected_revision + 1`. Returns the updated scene map.
   """
-  @spec append_scene_entry(room_id(), map()) ::
+  @spec append_scene_entry(room_id(), map(), non_neg_integer()) ::
           {:ok, map()}
           | {:error,
              :invalid_room_id
              | :not_found
              | :invalid_entry
              | :duplicate_blake3
+             | :scene_revision_conflict
+             | :invalid_scene_revision
              | storage_error()}
-  def append_scene_entry(room_id, entry) when is_binary(room_id) and is_map(entry) do
+  def append_scene_entry(room_id, entry, expected_revision)
+      when is_binary(room_id) and is_map(entry) and is_integer(expected_revision) and
+             expected_revision >= 0 do
     with :ok <- validate_room_id(room_id),
          {:ok, %Room{} = room} <- fetch_room(room_id),
+         {:ok, current_rev} <- scene_revision(room.scene),
+         :ok <- match_expected_revision(current_rev, expected_revision),
          {:ok, normalized} <- normalize_mesh_entry(entry),
-         {:ok, next_scene} <- build_appended_scene(room.scene, normalized),
-         {:ok, _} <- Room.set_scene(room, %{scene: next_scene}) do
+         {:ok, next_scene} <- build_appended_scene(room.scene, normalized, expected_revision),
+         :ok <- cas_set_scene(room_id, expected_revision, next_scene) do
       {:ok, next_scene}
     end
   end
 
-  def append_scene_entry(_, _), do: {:error, :invalid_room_id}
+  def append_scene_entry(_, _, _), do: {:error, :invalid_room_id}
 
   @doc """
-  Remove one mesh SceneEntry by `entity_id` for inventory despawn (x007b).
+  Remove one mesh SceneEntry by `entity_id` for inventory despawn (x007b / x0082).
 
   Requires the entry to carry a 64-hex `blake3` (same selection as put-back).
   Rejects missing entity, empty/invalid blake3, and non-list scenes.
-  Bumps `revision`. Returns the updated scene map.
+  Requires `expected_revision` matching the current scene revision (optimistic CAS).
+  Bumps `revision` to `expected_revision + 1`. Returns the updated scene map.
   """
-  @spec delete_scene_entry(room_id(), non_neg_integer()) ::
+  @spec delete_scene_entry(room_id(), non_neg_integer(), non_neg_integer()) ::
           {:ok, map()}
           | {:error,
              :invalid_room_id
@@ -221,18 +231,68 @@ defmodule World.Rooms do
              | :entry_not_found
              | :not_mesh_entry
              | :ambiguous_entity_id
+             | :scene_revision_conflict
+             | :invalid_scene_revision
              | storage_error()}
-  def delete_scene_entry(room_id, entity_id)
-      when is_binary(room_id) and is_integer(entity_id) and entity_id >= 0 do
+  def delete_scene_entry(room_id, entity_id, expected_revision)
+      when is_binary(room_id) and is_integer(entity_id) and entity_id >= 0 and
+             is_integer(expected_revision) and expected_revision >= 0 do
     with :ok <- validate_room_id(room_id),
          {:ok, %Room{} = room} <- fetch_room(room_id),
-         {:ok, next_scene} <- build_deleted_scene(room.scene, entity_id),
-         {:ok, _} <- Room.set_scene(room, %{scene: next_scene}) do
+         {:ok, current_rev} <- scene_revision(room.scene),
+         :ok <- match_expected_revision(current_rev, expected_revision),
+         {:ok, next_scene} <- build_deleted_scene(room.scene, entity_id, expected_revision),
+         :ok <- cas_set_scene(room_id, expected_revision, next_scene) do
       {:ok, next_scene}
     end
   end
 
-  def delete_scene_entry(_, _), do: {:error, :invalid_room_id}
+  def delete_scene_entry(_, _, _), do: {:error, :invalid_room_id}
+
+  defp scene_revision(scene) when is_map(scene) do
+    case Map.get(scene, "revision") || Map.get(scene, :revision) do
+      rev when is_integer(rev) and rev >= 0 -> {:ok, rev}
+      _ -> {:error, :invalid_scene_revision}
+    end
+  end
+
+  defp scene_revision(_), do: {:error, :invalid_scene_revision}
+
+  defp match_expected_revision(current, expected) when current == expected, do: :ok
+  defp match_expected_revision(_, _), do: {:error, :scene_revision_conflict}
+
+  # Optimistic CAS on JSON `scene.revision` (no separate column — x0082).
+  defp cas_set_scene(room_id, expected_revision, next_scene)
+       when is_binary(room_id) and is_integer(expected_revision) and is_map(next_scene) do
+    encoded = Jason.encode!(next_scene)
+
+    sql = """
+    UPDATE rooms
+    SET scene = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE room_id = ?
+      AND CAST(json_extract(scene, '$.revision') AS INTEGER) = ?
+    """
+
+    case World.Repo.query(sql, [encoded, room_id, expected_revision]) do
+      {:ok, %{num_rows: 1}} ->
+        :ok
+
+      {:ok, %{num_rows: 0}} ->
+        # Distinguish vanished room from lost CAS race.
+        # If the row still exists we return conflict (409). That includes rare cases where
+        # `json_extract` no longer matches after a concurrent corrupt write that slipped past
+        # the early `scene_revision/1` check — host may 409-retry once, then hit
+        # `:invalid_scene_revision` (500) on the next fetch. Acceptable; not treated as 404.
+        case fetch_room(room_id) do
+          {:ok, _} -> {:error, :scene_revision_conflict}
+          {:error, _} = err -> err
+        end
+
+      {:error, error} ->
+        storage_error(error, :cas_set_scene)
+    end
+  end
 
   defp fetch_room(room_id) do
     case Room.get_by_room_id(room_id) do
@@ -276,52 +336,49 @@ defmodule World.Rooms do
     end
   end
 
-  defp build_appended_scene(scene, normalized) when is_map(scene) do
+  defp build_appended_scene(scene, normalized, expected_revision) when is_map(scene) do
     entries = Map.get(scene, "entries") || Map.get(scene, :entries) || []
-    append_normalized_entry(scene, entries, normalized)
+    append_normalized_entry(scene, entries, normalized, expected_revision)
   end
 
-  defp build_appended_scene(_, _), do: {:error, :invalid_entry}
-
-  defp append_normalized_entry(_scene, entries, _normalized) when not is_list(entries) do
+  defp append_normalized_entry(_scene, entries, _normalized, _expected_revision)
+       when not is_list(entries) do
     {:error, :invalid_entry}
   end
 
-  defp append_normalized_entry(scene, entries, normalized) do
+  defp append_normalized_entry(scene, entries, normalized, expected_revision) do
     blake3 = normalized["blake3"]
 
     if Enum.any?(entries, fn e -> entry_string(e, "blake3") == blake3 end) do
       {:error, :duplicate_blake3}
     else
-      put_appended_entry(scene, entries, normalized)
+      put_appended_entry(scene, entries, normalized, expected_revision)
     end
   end
 
-  defp put_appended_entry(scene, entries, normalized) do
+  defp put_appended_entry(scene, entries, normalized, expected_revision) do
     next_id = next_entity_id(entries)
-    revision = (Map.get(scene, "revision") || Map.get(scene, :revision) || 1) + 1
     entry = Map.put(normalized, "entity_id", next_id)
 
     {:ok,
      %{
-       "revision" => revision,
+       "revision" => expected_revision + 1,
        "locomotion" => Map.get(scene, "locomotion") || Map.get(scene, :locomotion),
        "entries" => entries ++ [entry]
      }}
   end
 
-  defp build_deleted_scene(scene, entity_id) when is_map(scene) do
+  defp build_deleted_scene(scene, entity_id, expected_revision) when is_map(scene) do
     entries = Map.get(scene, "entries") || Map.get(scene, :entries) || []
-    delete_mesh_entry(scene, entries, entity_id)
+    delete_mesh_entry(scene, entries, entity_id, expected_revision)
   end
 
-  defp build_deleted_scene(_, _), do: {:error, :entry_not_found}
-
-  defp delete_mesh_entry(_scene, entries, _entity_id) when not is_list(entries) do
+  defp delete_mesh_entry(_scene, entries, _entity_id, _expected_revision)
+       when not is_list(entries) do
     {:error, :entry_not_found}
   end
 
-  defp delete_mesh_entry(scene, entries, entity_id) do
+  defp delete_mesh_entry(scene, entries, entity_id, expected_revision) do
     # Exactly one matching entity_id; corrupt duplicates fail closed (x007b review).
     case Enum.split_with(entries, fn e -> entry_entity_id(e) == entity_id end) do
       {[], _} ->
@@ -329,11 +386,9 @@ defmodule World.Rooms do
 
       {[target], rest} ->
         if mesh_blake3?(target) do
-          revision = (Map.get(scene, "revision") || Map.get(scene, :revision) || 1) + 1
-
           {:ok,
            %{
-             "revision" => revision,
+             "revision" => expected_revision + 1,
              "locomotion" => Map.get(scene, "locomotion") || Map.get(scene, :locomotion),
              "entries" => rest
            }}

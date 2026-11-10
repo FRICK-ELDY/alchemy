@@ -106,7 +106,7 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 ## 推奨着手順（要約・本作業後）
 
 1. ~~[x0081](slices/x0081-control-plane-pop.md) 制御面 session 署名 + world HTTP PoP~~ **done**
-2. Scene revision CAS（improvement P0-3）· relay-agent CSR-only（P0-4）
+2. ~~[x0082](slices/x0082-scene-revision-cas.md) Scene revision CAS（improvement P0-3）~~ **done** · relay-agent CSR-only（P0-4）
 3. host-token RL / GLB budget / assets hermetic（P1）
 4. verifier Spot-Check（保留）· Formula / market / 検疫（減点対象外）
 

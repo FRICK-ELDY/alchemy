@@ -109,11 +109,21 @@ defmodule World.TestAuthHelpers do
     |> Phoenix.ConnTest.dispatch(Endpoint, :get, path)
   end
 
-  @doc "DELETE with host Token + PoP."
+  @doc "DELETE with host Token + PoP (empty body)."
   def delete_host(conn, token, priv, path) do
     conn
     |> put_host_pop(token, priv, "DELETE", path, "")
     |> Phoenix.ConnTest.dispatch(Endpoint, :delete, path)
+  end
+
+  @doc "JSON DELETE with host Token + PoP (body signed as Jason.encode! · x0082)."
+  def delete_host_json(conn, token, priv, path, body_map) when is_map(body_map) do
+    raw = Jason.encode!(body_map)
+
+    conn
+    |> put_host_pop(token, priv, "DELETE", path, raw)
+    |> Plug.Conn.put_req_header("content-type", "application/json")
+    |> Phoenix.ConnTest.dispatch(Endpoint, :delete, path, raw)
   end
 
   defp thumbprint_kid(jwk) do

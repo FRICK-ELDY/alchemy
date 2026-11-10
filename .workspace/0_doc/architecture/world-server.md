@@ -23,7 +23,7 @@
 | auth JWKS（`AUTH_JWKS_URL`）によるユーザー JWT 検証 | auth の revocation 再確認 |
 | HostAttestation JWT（`typ=host_attestation` + **`host_generation`**）を host Room Token のみ発行（x0025 / **x003a**）。同一 `host_pub` は generation 維持、鍵変更で bump。発行失敗は 5xx（token 検証失敗は 401） | UGC scene 編集；完全な handoff UX |
 | ManifestSeal JWT（`typ=manifest_seal` / `aud=alchemy-manifest-seal` + **`host_generation`**）を host Room Token のみ発行（x0026 / **x0039** / **x003a**）。**DB scene + HostAttestation から canonical blake3 を再計算**し、host 提出 hash と不一致なら 422（署名 oracle 廃止）。`manifest-seal-hash --serve` 常駐 Port 必須（x0075） | UGC scene 編集；host ローカル改変 body への seal |
-| DemoScene（entries + loco + **初期 quat/scale**）を Room 作成時に紐付け。`GET …/scene` は **host** Room Token のみ（x0027 / x002c）。**x006d**: `POST …/scene/entries` で mesh 1 件追記（revision bump・canonical seal 入力）。**x007b**: `DELETE …/scene/entries/:entity_id` で mesh 削除（64-hex blake3 必須・revision bump） | guest への scene 配布・フル UGC エディタ・collider scale；user_root / cuboid 削除 |
+| DemoScene（entries + loco + **初期 quat/scale**）を Room 作成時に紐付け。`GET …/scene` は **host** Room Token のみ（x0027 / x002c）。**x006d / x0082**: `POST …/scene/entries` で mesh 1 件追記（**`expected_revision` CAS**・revision bump・canonical seal 入力）。**x007b / x0082**: `DELETE …/scene/entries/:entity_id` で mesh 削除（64-hex blake3 必須・**`expected_revision` CAS**）。競合は **409** `scene_revision_conflict`（host が GET 後に有限再試行） | guest への scene 配布・フル UGC エディタ・collider scale；user_root / cuboid 削除；Room 単位グローバル直列化 alone；無限再試行 |
 | PlaceRead JWT（`typ=place_read` / `aud=alchemy-assets-place-read`）を Room Token + 検証済み `world_seal` で発行（x006b）。scene blake3 は **ManifestSeal 時**固定。PlaceRead `exp` = **seal 絶対 unix `exp`**＋`touch_until`。期限切れ seal → `seal_expired`。再起動後 re-seal。`extra_blake3` 無効 | JWT 内全 hash 列挙；durable 永続／canonical 再 hydrate；PlaceRead が seal より長生き；退出即時 revoke；client 自動取得 |
 
 ## 契約（Room Token）
@@ -69,8 +69,8 @@
 | POST | `/api/v1/rooms/:room_id/host_keys` | Bearer（**host Room Token**）+ PoP（x0081） | HostAttestation 発行（`host_pub` base64url・`host_generation`・x0025 / x003a） |
 | POST | `/api/v1/rooms/:room_id/manifest_seal` | Bearer（**host Room Token**）+ PoP（x0081） | ManifestSeal 発行（`revision` + `host_generation` + `manifest_blake3` + `host_attestation`；canonical 照合・x0039 / x003a） |
 | GET | `/api/v1/rooms/:room_id/scene` | Bearer（**host Room Token**）+ PoP（x0081） | DemoScene `{ revision, entries, locomotion }`（x0027） |
-| POST | `/api/v1/rooms/:room_id/scene/entries` | Bearer（**host Room Token**）+ PoP（x0081） | mesh SceneEntry 追記 + revision bump（x006d） |
-| DELETE | `/api/v1/rooms/:room_id/scene/entries/:entity_id` | Bearer（**host Room Token**）+ PoP（x0081） | mesh SceneEntry 削除 + revision bump（x007b；blake3 必須） |
+| POST | `/api/v1/rooms/:room_id/scene/entries` | Bearer（**host Room Token**）+ PoP（x0081） | mesh SceneEntry 追記 + **`expected_revision` CAS**（x006d / x0082） |
+| DELETE | `/api/v1/rooms/:room_id/scene/entries/:entity_id` | Bearer（**host Room Token**）+ PoP（x0081） | mesh SceneEntry 削除 + **`expected_revision` body CAS**（x007b / x0082；blake3 必須） |
 | POST | `/api/v1/rooms/:room_id/place_read` | Bearer（**Room Token**） | PlaceRead 発行（`world_seal` 必須・`extra_blake3` 無効・x006b） |
 | GET | `/api/v1/rooms/:room_id/place_hashes` | Bearer（**PlaceRead**） | seal 時固定の scene blake3s（x006b） |
 
