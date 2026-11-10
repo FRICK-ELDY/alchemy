@@ -36,7 +36,7 @@
 | P1-1 | host-token 操作別 rate limit | -2 | `room_id+jti` / IP。seal / scene / PlaceRead で上限分離 | 連打で seal Port / DB が増幅しない — **[x0084](../../roadmap/slices/x0084-host-token-rate-limit.md) done** |
 | P1-2 | GLB decode budget | -2 | 頂点・index・pixel・展開 bytes ハード上限。超過は placeholder | 巨大/爆弾 fixture で OOM しないテスト — **[x0085](../../roadmap/slices/x0085-glb-decode-budget.md) done** |
 | P1-3 | assets test hermetic | -1 | test で reaper/GC `start: false`。CAS は `use …, cas: true`（tmp_dir） | 既定並列でも 0 failures が安定 — **[x0086](../../roadmap/slices/x0086-assets-test-hermetic.md) done** |
-| P1-4 | 実 host WAN 一往復 E2E | -1 | CSR→credential worker→signed Frame→trust consumer | no-cert / guest sim put / 旧 epoch 否定 |
+| P1-4 | 実 host WAN 一往復 E2E | -1 | CSR→credential worker→signed Frame→trust consumer | no-cert / guest sim put / 旧 epoch 否定 — **[x0087](../../roadmap/slices/x0087-wan-host-e2e.md) in_progress**（CI 緑で done） |
 | P1-5 | Allocation 主体別 throughput | -1 | sub/IP 短窓・長窓 bucket + metrics | 正規 jti 連打でも CPU 飽和しない |
 
 ---
@@ -85,7 +85,7 @@
 | P0-4 秘密鍵をネットワークに出さない | **完了** — world CSR + Agent CSR-only（x0083） |
 | P0-5 CAS access → Grant/ref | **完了** |
 | P1-1 relay CI | **完了** |
-| P1-2 headless trust + WAN E2E | **方向完了** — 実 host 一往復は今回 P1-4 |
+| P1-2 headless trust + WAN E2E | **方向完了** — 実 host 一往復は **x0087**（P1-4・CI 待ち） |
 | P1-3 world RL + Room 上限 | **部分完了** — auth scope done。host-token は今回 P1-1 |
 | P1-4 launcher discovery | **完了** |
 | P1-5 README 鮮度 | **部分完了** — README done。他 docs は P2-10 |

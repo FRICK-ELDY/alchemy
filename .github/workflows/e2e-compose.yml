@@ -1,4 +1,4 @@
-name: E2E Compose (x001f / x0070)
+name: E2E Compose (x001f / x0070 / x0087)
 
 on:
   workflow_dispatch:
@@ -93,8 +93,8 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.e2e.yml down -v
 
-  wan-negative-e2e:
-    name: "WAN negative E2E (x0070)"
+  wan-host-e2e:
+    name: "WAN host E2E (x0070/x0087)"
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -109,10 +109,11 @@ jobs:
           libxkbcommon-dev libwayland-dev
           libx11-dev libxcursor-dev libxi-dev libxrandr-dev
 
-      - name: Smoke WAN negative E2E
+      - name: Smoke WAN host E2E
         env:
           HEALTH_WAIT_SECS: "300"
           E2E_TIMEOUT_SECS: "90"
+          HOST_READY_SECS: "120"
           COMPOSE_DOWN: "1"
         run: bash .scripts/smoke-compose-wan-e2e.sh
 

@@ -58,7 +58,8 @@ pub fn spawn_listener() -> Result<()> {
     }
     log::info!("host IPC listening on {bound}");
 
-    // Ready as soon as IPC is bound — parent Start path must not wait for first frame put.
+    // Ready as soon as IPC is bound (before ensure_sealed_manifest / first put).
+    // Parent Start must not wait for first frame; WAN smoke watches HOST_PID while probe runs.
     write_ready_file_if_configured(Some(&bound));
 
     std::thread::Builder::new()
