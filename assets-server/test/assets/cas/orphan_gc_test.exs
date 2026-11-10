@@ -1,5 +1,5 @@
 defmodule Assets.CAS.OrphanGcTest do
-  use Assets.DataCase, async: false
+  use Assets.DataCase, async: false, cas: true
 
   alias Assets.Blobs
   alias Assets.Blobs.CasObject
@@ -15,9 +15,6 @@ defmodule Assets.CAS.OrphanGcTest do
   @sub_b "user-orphan-b"
 
   setup do
-    File.rm_rf!(Application.fetch_env!(:assets, :cas_path))
-    File.mkdir_p!(Application.fetch_env!(:assets, :cas_path))
-
     prev_grace = Application.get_env(:assets, :orphan_cas_grace_seconds)
     Application.put_env(:assets, :orphan_cas_grace_seconds, 0)
 

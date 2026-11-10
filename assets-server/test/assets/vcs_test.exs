@@ -2,7 +2,7 @@ defmodule Assets.VcsTest do
   @moduledoc """
   Tests for x0062 (promote_prefab), x0063 (ItemRef repo@rev), x0064 (Branch/Tag), x0065 (Cert).
   """
-  use Assets.DataCase, async: false
+  use Assets.DataCase, async: false, cas: true
 
   alias Assets.Drive
   alias Assets.ItemRef
@@ -17,8 +17,6 @@ defmodule Assets.VcsTest do
   @blake3 String.duplicate("a", 64)
 
   setup do
-    File.rm_rf!(Application.fetch_env!(:assets, :cas_path))
-    File.mkdir_p!(Application.fetch_env!(:assets, :cas_path))
     # Install cert key for x0065 tests
     Cert.install_test_key!()
     :ok

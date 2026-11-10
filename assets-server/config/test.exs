@@ -13,10 +13,14 @@ config :assets, AssetsWeb.Endpoint,
 
 config :assets,
   cas_backend: :local,
+  # Boot mkdir only (SSoT for Application env). CAS suites use `cas: true` (x0086).
+  # Keep in sync with Assets.CasTmp.boot_cas_path/0 (assertion mirror).
   cas_path: "priv/cas_test",
   quota_limit_bytes: 1024,
-  # Long defaults so Application timers do not race controller tests; suites
-  # that need short TTL/grace override via Application.put_env + on_exit.
+  # x0086: do not start reaper/GC GenServers in test (run_now remains for unit tests).
+  quota_reserved_reaper_start: false,
+  orphan_cas_gc_start: false,
+  # Long defaults if a suite starts the GenServer manually; short TTL/grace via put_env.
   quota_reservation_ttl_seconds: 3_600,
   quota_reserved_reaper_interval_ms: 86_400_000,
   orphan_cas_grace_seconds: 3_600,

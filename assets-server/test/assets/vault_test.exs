@@ -1,16 +1,10 @@
 defmodule Assets.VaultTest do
-  use Assets.DataCase, async: false
+  use Assets.DataCase, async: false, cas: true
 
   alias Assets.Blobs
   alias Assets.Vault
 
   @sub "44444444-4444-4444-4444-444444444444"
-
-  setup do
-    File.rm_rf!(Application.fetch_env!(:assets, :cas_path))
-    File.mkdir_p!(Application.fetch_env!(:assets, :cas_path))
-    :ok
-  end
 
   test "personal vault id is provisional owner_sub key" do
     assert Vault.personal_id(@sub) == @sub

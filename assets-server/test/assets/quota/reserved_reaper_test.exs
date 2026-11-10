@@ -1,5 +1,5 @@
 defmodule Assets.Quota.ReservedReaperTest do
-  use Assets.DataCase, async: false
+  use Assets.DataCase, async: false, cas: true
 
   alias Assets.Blobs
   alias Assets.Blobs.CasObject
@@ -13,9 +13,6 @@ defmodule Assets.Quota.ReservedReaperTest do
   @sub "user-reaper-a"
 
   setup do
-    File.rm_rf!(Application.fetch_env!(:assets, :cas_path))
-    File.mkdir_p!(Application.fetch_env!(:assets, :cas_path))
-
     prev_ttl = Application.get_env(:assets, :quota_reservation_ttl_seconds)
     Application.put_env(:assets, :quota_reservation_ttl_seconds, 60)
 

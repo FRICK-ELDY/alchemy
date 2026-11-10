@@ -1,5 +1,5 @@
 defmodule AssetsWeb.BlobControllerTest do
-  use AssetsWeb.ConnCase, async: false
+  use AssetsWeb.ConnCase, async: false, cas: true
 
   alias Assets.Blobs
   alias Assets.Blobs.BlobGrant
@@ -14,8 +14,6 @@ defmodule AssetsWeb.BlobControllerTest do
   @sub_b "33333333-3333-3333-3333-333333333333"
 
   setup do
-    File.rm_rf!(Application.fetch_env!(:assets, :cas_path))
-    File.mkdir_p!(Application.fetch_env!(:assets, :cas_path))
     Application.delete_env(:assets, :fail_finalize_blake3)
     %{signer: signer} = TestAuthHelpers.install_test_auth!()
     on_exit(fn -> Application.delete_env(:assets, :fail_finalize_blake3) end)

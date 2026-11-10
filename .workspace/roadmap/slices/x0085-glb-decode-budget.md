@@ -60,7 +60,7 @@
 
 ## やらない（本 Slice）
 
-- assets test hermetic（P1-3）
+- ~~assets test hermetic（P1-3）~~ → [x0086](x0086-assets-test-hermetic.md)
 - WAN host E2E（P1-4）
 - assets-server 側の展開検疫ヒューリスティック（Proprietary 境界）
 

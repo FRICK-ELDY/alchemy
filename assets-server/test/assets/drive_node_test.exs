@@ -2,7 +2,7 @@ defmodule Assets.DriveNodeTest do
   @moduledoc """
   Tests for x005c (DriveNode folder/blob) and x005d (kind=prefab).
   """
-  use Assets.DataCase, async: false
+  use Assets.DataCase, async: false, cas: true
 
   alias Assets.Blobs
   alias Assets.Drive
@@ -10,12 +10,6 @@ defmodule Assets.DriveNodeTest do
 
   @sub_a "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
   @sub_b "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-
-  setup do
-    File.rm_rf!(Application.fetch_env!(:assets, :cas_path))
-    File.mkdir_p!(Application.fetch_env!(:assets, :cas_path))
-    :ok
-  end
 
   # ---------------------------------------------------------------------------
   # x005c — folder
