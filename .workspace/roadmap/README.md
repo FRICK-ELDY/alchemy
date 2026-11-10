@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0085`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0086`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -183,11 +183,12 @@ depends_on: [x0006]
 | x0082 | — | done | Scene revision CAS（append/delete expected_revision + 409 再試行） | [x0082-scene-revision-cas.md](slices/x0082-scene-revision-cas.md) |
 | x0083 | — | done | relay-agent CSR-only（`csr_pem` 必須・`key_pem` 削除・非 loopback 起動拒否） | [x0083-relay-agent-csr-only.md](slices/x0083-relay-agent-csr-only.md) |
 | x0084 | — | done | host-token 操作別 rate limit（seal / scene / PlaceRead · IP + `room_id\|jti`） | [x0084-host-token-rate-limit.md](slices/x0084-host-token-rate-limit.md) |
+| x0085 | — | done | GLB decode budget（入力/展開 bytes・頂点・index・pixels · 超過は Err/placeholder） | [x0085-glb-decode-budget.md](slices/x0085-glb-decode-budget.md) |
 
-**現在の次:** GLB decode budget / assets hermetic / WAN host E2E（improvement P1-2〜 · [backlog](backlog-priority-2026-11-04.md)）。  
+**現在の次:** assets hermetic / WAN host E2E（improvement P1-3〜 · [backlog](backlog-priority-2026-11-04.md)）。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x0085`**。
+次の空き番号は **`x0086`**。
 
 ## 関連
 

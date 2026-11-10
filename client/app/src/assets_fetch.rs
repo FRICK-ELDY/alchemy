@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use crate::asset_decode_budget::{AssetDecodeBudget, MAX_INPUT_BYTES};
 use crate::mesh::{
     blake3_hex, load_mesh_from_glb, placeholder_error_mesh, verify_blake3, CpuMesh, COIN_BLAKE3_HEX,
 };
@@ -76,10 +77,15 @@ fn fetch_blob_bytes(
         req = req.set("x-alchemy-place-read", token);
     }
     let resp = req.call().context("assets blob download failed")?;
+    // x0085: stop reading past decode input budget (OOM / zip-bomb body).
+    let mut limited = resp
+        .into_reader()
+        .take((MAX_INPUT_BYTES as u64).saturating_add(1));
     let mut bytes = Vec::new();
-    resp.into_reader()
-        .read_to_end(&mut bytes)
-        .context("read blob body")?;
+    limited.read_to_end(&mut bytes).context("read blob body")?;
+    AssetDecodeBudget::standard()
+        .check_input_bytes(bytes.len())
+        .context("blob exceeds GLB decode input budget")?;
     Ok(bytes)
 }
 

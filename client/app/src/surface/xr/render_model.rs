@@ -515,6 +515,16 @@ unsafe fn fetch_glb_and_names<G>(
         }
         bail!("render model GLB size is 0");
     }
+    // x0085: enforce decode input budget before allocating the GLB buffer.
+    if let Err(err) =
+        crate::asset_decode_budget::AssetDecodeBudget::standard().check_input_bytes(size)
+    {
+        // Safety: Vulkan/OpenXR call on handles owned by this function; see paired create/destroy.
+        unsafe {
+            let _ = (rm.destroy_render_model_asset)(asset);
+        }
+        return Err(err).context("render model GLB exceeds decode input budget");
+    }
     let mut buf = vec![0u8; size];
     data.buffer_capacity_input = size as u32;
     data.buffer = buf.as_mut_ptr();
