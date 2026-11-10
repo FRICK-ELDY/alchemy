@@ -18,7 +18,7 @@
 | world scene append/delete は **host 自前 Token + PoP**（クライアント JWT を転用しない） | Scene revision CAS（P0-3・別 Slice） |
 | `host_keys` / `manifest_seal` / `GET\|POST\|DELETE …/scene*` は `cnf.spk` に対する PoP（`alchemy/pop/v1\|METHOD\|path\|ts\|raw_body`）必須。欠落・不一致・skew 超過は **401** | PlaceRead / tokens / handover 等の auth-JWT 経路への PoP；RFC 9449 完全互換；**nonce / skew 内リプレイ防止** |
 | 盗んだ host Room Token のみで `host_keys` を叩いても 401（秘密鍵無し） | 端末から session 秘密鍵まで盗まれた場合の防御 |
-| PROTOCOL_PIN bump（制御面 JSON 契約変更） | relay-agent `key_pem` 退役（P0-4） |
+| PROTOCOL_PIN bump（制御面 JSON 契約変更） | ~~relay-agent `key_pem` 退役（P0-4）~~ → [x0083](x0083-relay-agent-csr-only.md) |
 
 ---
 
@@ -77,7 +77,7 @@ skew 既定 ±60s。`cnf.spk` は Token 発行時の session_pub（host Credenti
 ## やらない（本 Slice）
 
 - Scene revision CAS（P0-3）→ [x0082](x0082-scene-revision-cas.md)
-- relay-agent CSR-only（P0-4）
+- ~~relay-agent CSR-only（P0-4）~~ → [x0083](x0083-relay-agent-csr-only.md)
 - host-token 操作別 rate limit（P1）
 - 任意 guest take-out の本格 ACL
 - PoP nonce / 厳密単回使用

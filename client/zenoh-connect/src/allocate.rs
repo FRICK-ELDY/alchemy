@@ -1,6 +1,7 @@
-//! Relay Agent allocate client (x004e) + world-issued PEM install (x0066).
+//! Relay Agent allocate client (x004e / P0-4) + world-issued PEM install (x0066).
 //!
-//! Guarantees: POST Allocation Token → write cert/key PEM files under a work dir;
+//! Guarantees: POST Allocation Token + **client CSR** → Agent returns cert only (no `key_pem`);
+//! local private key stays on the client; write cert/key PEM files under a work dir;
 //! world `mtls` PEMs + in-memory key install the same way (short-lived owner-only files);
 //! Unix `0600` / Windows user-only DACL (x0078); PEM bytes are written only after restrict;
 //! replace + stale sweep of managed `{client,world-mtls}-*.{cert,key}.pem` only;
@@ -9,6 +10,7 @@
 //! DPAPI/TPM; create-with-ACL atomicity (empty placeholder may exist briefly before restrict);
 //! exclusive locking of a shared work dir across processes.
 
+use crate::ephemeral::EphemeralMtlsIdentity;
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::fs;
@@ -73,7 +75,6 @@ pub struct AllocateResponse {
     pub room_id: String,
     pub wire_cap: String,
     pub cert_pem: String,
-    pub key_pem: String,
     #[serde(default)]
     #[allow(dead_code)]
     pub ca_pem: String,
@@ -216,6 +217,8 @@ pub fn should_request_world_mtls() -> bool {
 pub fn allocate(allocate_url: &str, allocation_token: &str) -> Result<AllocatedIdentity> {
     let base = allocate_url.trim_end_matches('/');
     let url = format!("{base}/v1/allocate");
+    // P0-4: key stays local; Agent signs CSR only (same shape as world mtls).
+    let eph = EphemeralMtlsIdentity::generate().context("ephemeral CSR for relay allocate")?;
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(ALLOCATE_HTTP_TIMEOUT)
         .timeout_read(ALLOCATE_HTTP_TIMEOUT)
@@ -223,14 +226,17 @@ pub fn allocate(allocate_url: &str, allocation_token: &str) -> Result<AllocatedI
     let resp: AllocateResponse = agent
         .post(&url)
         .set("content-type", "application/json")
-        .send_json(serde_json::json!({ "allocation_token": allocation_token }))
+        .send_json(serde_json::json!({
+            "allocation_token": allocation_token,
+            "csr_pem": eph.csr_pem,
+        }))
         .context("relay allocate HTTP")?
         .into_json()
         .context("parse allocate response")?;
 
     let id = write_identity_pems(
         &resp.cert_pem,
-        &resp.key_pem,
+        eph.private_key_pem(),
         &resp.wire_cap,
         &resp.role,
         MTLS_PEM_PREFIX_CLIENT,
@@ -428,10 +434,163 @@ pub fn require_wire_cap(from_token: Option<&str>) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::io::{ErrorKind, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
 
     /// Env-mutating tests must not run in parallel with each other.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Restores env keys (and optional work dir cleanup) on drop — including panic paths.
+    struct EnvRestore {
+        entries: Vec<(&'static str, Option<String>)>,
+        work_dir: Option<PathBuf>,
+    }
+
+    impl EnvRestore {
+        fn capture(keys: &[&'static str]) -> Self {
+            Self {
+                entries: keys.iter().map(|k| (*k, std::env::var(k).ok())).collect(),
+                work_dir: None,
+            }
+        }
+
+        fn set_work_dir(&mut self, path: PathBuf) {
+            std::env::set_var("RELAY_MTLS_WORK_DIR", path.display().to_string());
+            self.work_dir = Some(path);
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (key, prev) in &self.entries {
+                match prev {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+            if let Some(work) = self.work_dir.take() {
+                let _ = fs::remove_dir_all(work);
+            }
+        }
+    }
+
+    fn http_request_complete(buf: &[u8]) -> bool {
+        let Some(start) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+            return false;
+        };
+        let Ok(headers) = std::str::from_utf8(&buf[..start]) else {
+            return false;
+        };
+        match headers.lines().find_map(|line| {
+            line.to_ascii_lowercase()
+                .strip_prefix("content-length:")
+                .and_then(|v| v.trim().parse::<usize>().ok())
+        }) {
+            Some(cl) => buf.len() >= start + 4 + cl,
+            // No Content-Length: respond after headers to avoid client/server deadlock.
+            None => true,
+        }
+    }
+
+    /// P0-4: client must send `csr_pem`, ignore any legacy `key_pem`, and install the local key.
+    #[test]
+    fn allocate_sends_csr_and_installs_local_key_without_response_key_pem() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut env = EnvRestore::capture(&[
+            "ZENOH_TLS_CONNECT_CERT",
+            "ZENOH_TLS_CONNECT_KEY",
+            "RELAY_MTLS_WORK_DIR",
+        ]);
+        let stamp = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let work = std::env::temp_dir().join(format!("alchemy-mtls-test-allocate-csr-{stamp}"));
+        env.set_work_dir(work);
+
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_req = Arc::clone(&captured);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 2048];
+            loop {
+                if buf.len() > 64 * 1024 {
+                    break;
+                }
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        if http_request_complete(&buf) {
+                            break;
+                        }
+                    }
+                    Err(e)
+                        if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut =>
+                    {
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
+            let req = String::from_utf8_lossy(&buf).into_owned();
+            *captured_req.lock().unwrap() = Some(req);
+            // Deliberately include legacy `key_pem` — client must not use it (P0-4).
+            let body = serde_json::json!({
+                "role": "guest",
+                "room_id": "r1",
+                "wire_cap": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "cert_pem": "-----BEGIN CERTIFICATE-----\nCSRONLY\n-----END CERTIFICATE-----\n",
+                "key_pem": "-----BEGIN PRIVATE KEY-----\nLEGACY-SERVER-KEY\n-----END PRIVATE KEY-----\n",
+                "ca_pem": "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n",
+                "expires_in": 300,
+                "cn": "alchemy-guest",
+            })
+            .to_string();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(body.as_bytes());
+        });
+
+        let id = allocate(&format!("http://{addr}"), "alloc-token-1").expect("allocate");
+        let req = captured.lock().unwrap().clone().expect("captured request");
+        assert!(
+            req.contains("\"csr_pem\""),
+            "request must include csr_pem: {req}"
+        );
+        assert!(
+            req.contains("BEGIN CERTIFICATE REQUEST"),
+            "request csr must look like a CSR: {req}"
+        );
+        assert!(
+            req.contains("\"allocation_token\":\"alloc-token-1\""),
+            "token missing: {req}"
+        );
+
+        let cert = fs::read_to_string(&id.cert_path).unwrap();
+        let key = fs::read_to_string(&id.key_path).unwrap();
+        assert!(cert.contains("CSRONLY"), "installed cert={cert}");
+        assert!(
+            !key.contains("LEGACY-SERVER-KEY"),
+            "must not install response key_pem: {key}"
+        );
+        assert!(
+            key.contains("BEGIN PRIVATE KEY") || key.contains("BEGIN EC PRIVATE KEY"),
+            "must install local ephemeral key: {key}"
+        );
+        assert_eq!(id.cn, "alchemy-guest");
+        // `env` Drop restores TLS/work env and removes work dir (including panic paths).
+        drop(env);
+    }
 
     #[test]
     fn should_request_world_mtls_from_tls_connect() {

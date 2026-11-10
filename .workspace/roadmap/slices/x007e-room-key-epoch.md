@@ -88,7 +88,7 @@
 
 - 制御面 Room Token 排除 / session PoP（improvement **P0-1**・別 Slice）
 - Scene revision CAS（**P0-3**）
-- relay-agent CSR-only（**P0-4**）
+- ~~relay-agent CSR-only（**P0-4**）~~ → [x0083](x0083-relay-agent-csr-only.md)
 - WAN mTLS の room 束縛 L7（P3）
 
 ## 関連
