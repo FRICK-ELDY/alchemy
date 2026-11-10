@@ -1,5 +1,5 @@
 defmodule AssetsWeb.DriveControllerTest do
-  use AssetsWeb.ConnCase, async: false
+  use AssetsWeb.ConnCase, async: false, cas: true
 
   alias Assets.Blobs
   alias Assets.Blobs.BlobGrant
@@ -12,8 +12,6 @@ defmodule AssetsWeb.DriveControllerTest do
   @sub_b "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
   setup do
-    File.rm_rf!(Application.fetch_env!(:assets, :cas_path))
-    File.mkdir_p!(Application.fetch_env!(:assets, :cas_path))
     %{signer: signer} = TestAuthHelpers.install_test_auth!()
     %{signer: signer}
   end

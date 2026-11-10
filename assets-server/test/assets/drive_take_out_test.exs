@@ -2,7 +2,7 @@ defmodule Assets.DriveTakeOutTest do
   @moduledoc """
   Tests for x005f (Drive.resolve_for_take_out) and x0060/x0061 (save_prefab + roundtrip).
   """
-  use Assets.DataCase, async: false
+  use Assets.DataCase, async: false, cas: true
 
   alias Assets.Blobs
   alias Assets.Drive
@@ -12,12 +12,6 @@ defmodule Assets.DriveTakeOutTest do
   @sub_b "dddddddd-dddd-dddd-dddd-dddddddddddd"
 
   @blake3 String.duplicate("a", 64)
-
-  setup do
-    File.rm_rf!(Application.fetch_env!(:assets, :cas_path))
-    File.mkdir_p!(Application.fetch_env!(:assets, :cas_path))
-    :ok
-  end
 
   # ---------------------------------------------------------------------------
   # x005f — resolve_for_take_out

@@ -1,5 +1,5 @@
 defmodule Assets.DriveTest do
-  use Assets.DataCase, async: false
+  use Assets.DataCase, async: false, cas: true
 
   alias Assets.Blobs
   alias Assets.Drive
@@ -9,12 +9,6 @@ defmodule Assets.DriveTest do
   @sub_b "66666666-6666-6666-6666-666666666666"
   @blake3_a String.duplicate("a", 64)
   @blake3_b String.duplicate("b", 64)
-
-  setup do
-    File.rm_rf!(Application.fetch_env!(:assets, :cas_path))
-    File.mkdir_p!(Application.fetch_env!(:assets, :cas_path))
-    :ok
-  end
 
   test "folder CRUD is owner-only" do
     assert {:ok, folder} = Drive.create_folder(@sub_a, "Root")
