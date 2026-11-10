@@ -43,6 +43,34 @@ defmodule WorldWeb.RoomController do
     end
   end
 
+  # x0080: single-room session summary (no secrets) for Waiting / nomination polls.
+  def show(conn, %{"room_id" => room_id} = params) do
+    case resolve_sub(conn, params) do
+      {:ok, viewer_sub} ->
+        with {:ok, room} <- Rooms.get_session(room_id),
+             :ok <- RoomAccess.authorize(conn, room.owner_sub, viewer_sub, room.visibility) do
+          json(conn, room_session_summary(room, viewer_sub))
+        else
+          {:error, :not_found} ->
+            conn |> put_status(:not_found) |> json(%{error: "room_not_found"})
+
+          {:error, :invalid_room_id} ->
+            conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_room_id"})
+
+          {:error, :storage_error} ->
+            storage_unavailable(conn)
+
+          {:error, _} ->
+            conn |> put_status(:forbidden) |> json(%{error: "visibility_forbidden"})
+        end
+
+      {:error, :anon_disabled} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "anon_tokens_disabled"})
+    end
+  end
+
   def create(conn, params) do
     room_id = Map.get(params, "room_id")
     visibility = Map.get(params, "visibility", "public")
@@ -223,12 +251,14 @@ defmodule WorldWeb.RoomController do
   # x0066: optional csr_pem → mtls client cert (world-issued; CSR Subject ignored).
   # x0069: room_key (URL-safe base64 of 32B) for Zenoh payload AEAD — not in Allocation JWT.
   # x007e: room_key_epoch accompanies room_key (Allocation JWT still has neither).
+  # x0080: host role gated by active_host_sub / owner-resume; successful host issue activates lease.
   defp issue_token(conn, room_id, role, sub, session_pub, csr_pem) do
     relay_id = Application.fetch_env!(:world, :default_relay_id)
 
     with {:ok, room} <- Rooms.get(room_id),
          :ok <- RoomAccess.authorize(conn, room.owner_sub, sub, room.visibility),
          :ok <- authorize_role_cached(room, role, sub),
+         {:ok, room} <- maybe_activate_host(room, role, sub),
          {:ok, room_key_b64} <- Rooms.room_key_for_token(room.room_key),
          {:ok, token, room_jti, ttl} <- Token.generate(room_id, role, sub, session_pub),
          {:ok, allocation_token, alloc_jti, _} <-
@@ -237,7 +267,7 @@ defmodule WorldWeb.RoomController do
       Logger.metadata(jti: room_jti)
 
       Logger.info(
-        "room token issued room_jti=#{room_jti} alloc_jti=#{alloc_jti} sub=#{sub} room_id=#{room_id} room_key_epoch=#{room.room_key_epoch}"
+        "room token issued room_jti=#{room_jti} alloc_jti=#{alloc_jti} sub=#{sub} room_id=#{room_id} room_key_epoch=#{room.room_key_epoch} state=#{room.state}"
       )
 
       World.Metrics.inc(:token_issue_total)
@@ -253,7 +283,9 @@ defmodule WorldWeb.RoomController do
         room_key: room_key_b64,
         room_key_epoch: room.room_key_epoch,
         allocation_token: allocation_token,
-        token_type: "Bearer"
+        token_type: "Bearer",
+        state: room.state,
+        active_host_sub: room.active_host_sub
       }
 
       # x007e: host Token may carry RoomKeyGrace prev for dual-open after restart / late sync.
@@ -366,7 +398,7 @@ defmodule WorldWeb.RoomController do
   defp issue_token_error(conn, {:error, :forbidden_host}) do
     conn
     |> put_status(:forbidden)
-    |> json(%{error: "host_role_owner_only"})
+    |> json(%{error: "host_role_forbidden"})
   end
 
   defp issue_token_error(conn, {:error, :forbidden_visibility}) do
@@ -462,14 +494,124 @@ defmodule WorldWeb.RoomController do
     end
   end
 
-  # x0021 P1-4: only the room owner may request role=host (room already loaded).
+  # x0080: host role = active_host_sub (or owner resume from dormant), not owner alone.
   defp authorize_role_cached(_room, "guest", _sub), do: :ok
 
-  defp authorize_role_cached(%{owner_sub: owner}, "host", sub) when owner == sub, do: :ok
-
-  defp authorize_role_cached(_room, "host", _sub), do: {:error, :forbidden_host}
+  defp authorize_role_cached(%{} = room, "host", sub), do: Rooms.authorize_host_role(room, sub)
 
   defp authorize_role_cached(_room, _role, _sub), do: {:error, :invalid_role}
+
+  defp maybe_activate_host(room, "host", sub) do
+    Rooms.activate_as_host(room.room_id, sub)
+  end
+
+  defp maybe_activate_host(room, _role, _sub), do: {:ok, room}
+
+  defp room_session_summary(room, viewer_sub) do
+    role_hint = if room.owner_sub == viewer_sub, do: "owner", else: "joinable"
+
+    %{
+      room_id: room.room_id,
+      visibility: room.visibility,
+      owner_sub: room.owner_sub,
+      role_hint: role_hint,
+      state: room.state,
+      active_host_sub: room.active_host_sub
+    }
+  end
+
+  @doc """
+  x0080: Graceful Handover — nominate `target_sub` or pass null to dormant.
+  """
+  def handover(conn, %{"room_id" => room_id} = params) do
+    case resolve_sub(conn, params) do
+      {:ok, caller_sub} ->
+        target = Map.get(params, "target_sub")
+
+        target_sub =
+          cond do
+            is_nil(target) -> nil
+            target == "" -> nil
+            is_binary(target) -> target
+            true -> :invalid
+          end
+
+        case target_sub do
+          :invalid ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "invalid_target"})
+
+          target_sub ->
+            room_id
+            |> Rooms.handover(caller_sub, target_sub)
+            |> render_host_session(conn)
+        end
+
+      {:error, :anon_disabled} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "anon_tokens_disabled"})
+    end
+  end
+
+  @doc """
+  x0080: Manual Takeover CAS while dormant / lease-expired.
+  """
+  def takeover(conn, %{"room_id" => room_id} = params) do
+    case resolve_sub(conn, params) do
+      {:ok, caller_sub} ->
+        with {:ok, room} <- Rooms.get(room_id),
+             :ok <- RoomAccess.authorize(conn, room.owner_sub, caller_sub, room.visibility),
+             {:ok, updated} <- Rooms.takeover(room_id, caller_sub) do
+          json(conn, room_session_summary(updated, caller_sub))
+        else
+          {:error, :conflict} ->
+            conn |> put_status(:conflict) |> json(%{error: "takeover_conflict"})
+
+          {:error, :not_found} ->
+            conn |> put_status(:not_found) |> json(%{error: "room_not_found"})
+
+          {:error, :invalid_room_id} ->
+            conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_room_id"})
+
+          {:error, :storage_error} ->
+            storage_unavailable(conn)
+
+          {:error, _} ->
+            conn |> put_status(:forbidden) |> json(%{error: "visibility_forbidden"})
+        end
+
+      {:error, :anon_disabled} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "anon_tokens_disabled"})
+    end
+  end
+
+  defp render_host_session({:ok, room}, conn) do
+    json(conn, room_session_summary(room, room.owner_sub))
+  end
+
+  defp render_host_session({:error, :not_found}, conn) do
+    conn |> put_status(:not_found) |> json(%{error: "room_not_found"})
+  end
+
+  defp render_host_session({:error, :forbidden_host}, conn) do
+    conn |> put_status(:forbidden) |> json(%{error: "handover_forbidden"})
+  end
+
+  defp render_host_session({:error, :invalid_room_id}, conn) do
+    conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_room_id"})
+  end
+
+  defp render_host_session({:error, :invalid_target}, conn) do
+    conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_target"})
+  end
+
+  defp render_host_session({:error, :storage_error}, conn) do
+    storage_unavailable(conn)
+  end
 
   @doc """
   x0025: issue HostAttestation JWT. Authorization must be a **host** Room Token.
@@ -478,7 +620,8 @@ defmodule WorldWeb.RoomController do
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
-         :ok <- Rooms.ensure_owner(room_id, claims["sub"]),
+         :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
+         :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
          {:ok, host_pub} <- HostAttestation.decode_host_pub(Map.get(params, "host_pub")),
          {:ok, host_generation} <- Rooms.claim_host_generation(room_id, host_pub) do
       case HostAttestation.generate(room_id, host_pub, claims["sub"], host_generation) do
@@ -517,7 +660,7 @@ defmodule WorldWeb.RoomController do
       {:error, :forbidden_host} ->
         conn
         |> put_status(:forbidden)
-        |> json(%{error: "host_role_owner_only"})
+        |> json(%{error: "host_role_forbidden"})
 
       {:error, :not_found} ->
         conn
@@ -748,7 +891,8 @@ defmodule WorldWeb.RoomController do
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
-         :ok <- Rooms.ensure_owner(room_id, claims["sub"]),
+         :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
+         :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
          {:ok, host_attestation} <- require_host_attestation(params),
          {:ok, host_revision} <- ManifestSeal.parse_revision(Map.get(params, "revision")),
          {:ok, host_blake3} <- ManifestSeal.parse_blake3(Map.get(params, "manifest_blake3")),
@@ -795,7 +939,7 @@ defmodule WorldWeb.RoomController do
       {:error, :forbidden_host} ->
         conn
         |> put_status(:forbidden)
-        |> json(%{error: "host_role_owner_only"})
+        |> json(%{error: "host_role_forbidden"})
 
       {:error, :not_found} ->
         conn

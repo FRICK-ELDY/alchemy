@@ -160,6 +160,7 @@ fn main() -> Result<()> {
         inventory_peer_actions: Mutex::new(Vec::new()),
         inventory_mirror: Mutex::new(crate::system_ui::InventoryMirror::default()),
         host_supervisor: Arc::new(crate::host_supervisor::HostSupervisor::default()),
+        presence_peer_subs: Mutex::new(Vec::new()),
     });
     // Sync AUTH/WORLD/ASSETS/ZENOH into process env for supervised host spawn.
     // Same world_url as the JWKS fetch above → apply_endpoints skips a second refresh.

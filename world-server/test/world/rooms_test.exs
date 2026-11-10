@@ -216,6 +216,42 @@ defmodule World.RoomsTest do
     restart_repo!()
   end
 
+  test "host lease expiry dormants session (x0080)" do
+    assert {:ok, "lease-1", _, _} = Rooms.create("lease-1", @owner)
+    assert {:ok, %Room{state: "dormant"}} = Rooms.get("lease-1")
+
+    assert {:ok, %Room{state: "active", active_host_sub: @owner}} =
+             Rooms.activate_as_host("lease-1", @owner)
+
+    stale = DateTime.add(DateTime.utc_now(), -10, :second) |> DateTime.truncate(:second)
+
+    assert {:ok, %{num_rows: 1}} =
+             World.Repo.query(
+               """
+               UPDATE rooms
+               SET host_lease_expires_at = ?
+               WHERE room_id = ?
+               """,
+               [stale, "lease-1"]
+             )
+
+    assert {1, 0} = Rooms.expire_due_host_leases()
+    assert {:ok, %Room{state: "dormant", active_host_sub: nil}} = Rooms.get("lease-1")
+  end
+
+  test "handover and takeover CAS (x0080)" do
+    guest = "88888888-8888-8888-8888-888888888888"
+    assert {:ok, "ht-1", _, _} = Rooms.create("ht-1", @owner)
+    assert {:ok, _} = Rooms.activate_as_host("ht-1", @owner)
+
+    assert {:ok, %Room{active_host_sub: ^guest, state: "active", owner_sub: @owner}} =
+             Rooms.handover("ht-1", @owner, guest)
+
+    assert {:error, :conflict} = Rooms.takeover("ht-1", @owner)
+    assert {:ok, _} = Rooms.handover("ht-1", guest, nil)
+    assert {:ok, %Room{active_host_sub: ^guest, state: "active"}} = Rooms.takeover("ht-1", guest)
+  end
+
   defp stop_repo! do
     case Supervisor.terminate_child(World.Supervisor, World.Repo) do
       :ok -> :ok

@@ -1,6 +1,6 @@
 # x0080 — host handover / takeover + session dormant
 
-> **ID:** `x0080` · **slug:** `host-handover-and-takeover` · **status:** `planned` · **area:** `[world, client, system_ui, host, docs]` · **depends_on:** `[x007c, x007e, x0019, x0022, x0032]`  
+> **ID:** `x0080` · **slug:** `host-handover-and-takeover` · **status:** `done` · **area:** `[world, client, system_ui, host, docs]` · **depends_on:** `[x007c, x007e, x0019, x0022, x0032]`  
 > **優先度:** 体験本線（Public Sessions の抜け殻解消 · owner と計算ホスト分離 · Graceful Handover → Manual Takeover）
 
 目標: **永続オーナー (`owner_sub`)** と **現計算ホスト (`active_host_sub`)** を分離し、ホスト正常終了時は同室候補への **Graceful Handover**、候補なし／突然死後は **session を `dormant`** にして稼働一覧から外す。Phase 2 で Waiting からの **Manual Takeover** を足す。Room 定義行は即削除しない。
@@ -64,11 +64,11 @@ Zenoh HandoverNotice ──hint only──► 指名先が world を確認して
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | Slice + 目次 / backlog（本ファイル） | **planned** |
-| 1 | world: 列 + lease + Host Token 門番 + `handover` + カタログ `state` フィルタ；単体 | planned |
-| 2 | client: ホスト Leave = handover；Public は active のみ；dormant を mine に | planned |
-| 3 | client: 指名検知 → ゲート付き自動 Host；docs 保証表 | planned |
-| 4 | Phase 2: `takeover` CAS + Waiting CTA；crash→lease dormant E2E | planned |
+| 0 | Slice + 目次 / backlog（本ファイル） | **done** |
+| 1 | world: 列 + lease + Host Token 門番 + `handover` + カタログ `state` フィルタ；単体 | **done** |
+| 2 | client: ホスト Leave = handover；Public は active のみ；dormant を mine に | **done** |
+| 3 | client: 指名検知 → ゲート付き自動 Host；docs 保証表 | **done** |
+| 4 | Phase 2: `takeover` CAS + Waiting CTA；crash→lease dormant E2E | **done**（lease sweep + Waiting CTA；手通し E2E は起動節） |
 
 ---
 

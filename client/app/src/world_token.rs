@@ -91,7 +91,7 @@ fn token_agent() -> ureq::Agent {
 
 /// Issue a Room Token bound to `session_pub_b64` (`cnf.spk`, x003e).
 ///
-/// `role` is `"guest"` or `"host"` (owner-only; world returns `forbidden_host` otherwise).
+/// `role` is `"guest"` or `"host"` (host = active_host / owner-resume; world may 403).
 /// Host role is required for client Inventory take-out / despawn (x006d / x007f).
 /// When `csr_pem` is `Some`, world may return `mtls` (x0066). CA unset → token without mtls.
 #[allow(dead_code)] // Convenience wrapper; join/refresh use `fetch_room_token` with explicit role.

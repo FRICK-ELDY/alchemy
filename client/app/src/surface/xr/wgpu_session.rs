@@ -809,6 +809,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                         | UiAction::WorldsJoinGuest
                         | UiAction::WorldsHostRoom
                         | UiAction::WorldsHostRescue
+                        | UiAction::WorldsTakeover
                         | UiAction::WorldsLeave
                         | UiAction::WorldsRejoin => {
                             ui.state.home_status =

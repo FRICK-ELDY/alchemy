@@ -12,7 +12,8 @@
 | 保証する | 保証しない |
 |:---|:---|
 | Room の作成（Ash + SQLite。`owner_sub` + DemoScene + `visibility`・x0028/x0034） | Group ACL |
-| `GET /api/v1/rooms` カタログ（見える Room のみ・秘密なし・x007c） | 権威ある host 死活；`room_key` / `wire_cap` の一覧同梱 |
+| `GET /api/v1/rooms` カタログ（見える Room のみ・秘密なし・x007c）。**x0080**: 非 mine は `state=active`+未期限切れ lease のみ；`?mine=1` は dormant 定義も可。要約に `state` / `active_host_sub` | Frame 到達保証；`room_key` / `wire_cap` の一覧同梱 |
+| `owner_sub`（永続）と `active_host_sub`（計算ホスト）の分離。`POST …/handover` / `POST …/takeover`（CAS）/ host lease 失効で昇格・休止。Host Token は active_host または dormant からの owner 再開に限定（x0080） | 偽 Zenoh Notice 単独での Host Token；pose/grab のシームレス継承；Room 行の物理 DELETE |
 | 短命 Room Token（RS256）の発行（**`cnf.spk` = session_pub・x003e**） | Friendship 正本（auth）。Token 前に S2S 照会；`jkt` 互換 |
 | 7段階公開範囲 ACL（Token 発行時・x0034–x0036） | unfollow 単独の既発行 Token 即時失効（TTL まで有効） |
 | Room 鍵寿命（x007e）: `room_key_epoch` + Token JSON；visibility **縮小** / owner `rotate_room_key` / 定期（`ROOM_KEY_ROTATE_HOURS` 既定 24）で回転；直前世代は `RoomKeyGrace`（≈ Token TTL・メモリのみ）→ **host Token** に `room_key_prev*` として同梱（guest には載せない） | 3 世代以上の受理；world 再起動後の旧鍵；Allocation/Relay への `room_key` 配布；push 通知（host は ≈15s Token 再取得で採用） |
@@ -58,10 +59,13 @@
 |:---|:---|:---|:---|
 | GET | `/health` | 不要 | 生存確認 |
 | GET | `/.well-known/jwks.json` | 不要 | Room Token 検証用公開鍵 |
-| GET | `/api/v1/rooms` | Bearer（auth JWT） | 見える Room カタログ（`?mine=1` で自分の部屋のみ・x007c） |
-| POST | `/api/v1/rooms` | Bearer（auth JWT） | Room 作成（任意 `visibility`） |
+| GET | `/api/v1/rooms` | Bearer（auth JWT） | 見える Room カタログ（`?mine=1` で自分の部屋のみ・x007c；Public は active のみ・x0080） |
+| GET | `/api/v1/rooms/:room_id` | Bearer（auth JWT） | 単室セッション要約（`state` / `active_host_sub`・秘密なし・x0080） |
+| POST | `/api/v1/rooms` | Bearer（auth JWT） | Room 作成（任意 `visibility`；初期 `state=dormant`） |
 | PUT | `/api/v1/rooms/:room_id/visibility` | Bearer（auth JWT） | owner のみ更新 |
-| POST | `/api/v1/rooms/:room_id/tokens` | Bearer（auth JWT） | Token 発行（visibility ACL 後） |
+| POST | `/api/v1/rooms/:room_id/tokens` | Bearer（auth JWT） | Token 発行（visibility ACL 後；host は active_host / owner-resume・x0080） |
+| POST | `/api/v1/rooms/:room_id/handover` | Bearer（auth JWT） | Graceful Handover（active_host または owner；`target_sub` null → dormant・x0080） |
+| POST | `/api/v1/rooms/:room_id/takeover` | Bearer（auth JWT） | Manual Takeover CAS（dormant / lease 切れ・x0080） |
 | POST | `/api/v1/rooms/:room_id/host_keys` | Bearer（**host Room Token**） | HostAttestation 発行（`host_pub` base64url・`host_generation`・x0025 / x003a） |
 | POST | `/api/v1/rooms/:room_id/manifest_seal` | Bearer（**host Room Token**） | ManifestSeal 発行（`revision` + `host_generation` + `manifest_blake3` + `host_attestation`；canonical 照合・x0039 / x003a） |
 | GET | `/api/v1/rooms/:room_id/scene` | Bearer（**host Room Token**） | DemoScene `{ revision, entries, locomotion }`（x0027） |
@@ -76,7 +80,7 @@
 |:---|:---|
 | 既定 | AshSqlite。DB ファイルは `priv/data/world_dev.db`（test は `world_test.db`） |
 | 上書き | env `WORLD_DATABASE_PATH`（**`MIX_ENV=test` では無視**・x003b；assets CAS 隔離と同型） |
-| スキーマ | `rooms(room_id PK, owner_sub, scene JSON, visibility, timestamps)` |
+| スキーマ | `rooms(room_id PK, owner_sub, scene JSON, visibility, active_host_sub, state, host_lease_expires_at, timestamps)` |
 | Postgres 切替 | 属性は Postgres 互換のみ。運営規模拡大時は `ash_postgres` + `AshPostgres.DataLayer` / `AshPostgres.Repo` に差し替え、`mix ash.codegen` で再生成。API facade（`World.Rooms`）は変えない |
 | 障害 | SQLite / Ash 失敗は `:storage_error` → HTTP 503 `storage_unavailable`（404/422 に潰さない） |
 | prod volume | `world_prod_keys` に JWT PEM と SQLite を同居（`/var/lib/world`）。`-v` で両方消える |

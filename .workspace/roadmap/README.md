@@ -178,9 +178,9 @@ depends_on: [x0006]
 | x007d | — | done | Live Manifest mesh remount（MainHub 空シェル + Join 後 assets GET） | [x007d-live-manifest-mesh-remount.md](slices/x007d-live-manifest-mesh-remount.md) |
 | x007e | — | done | Room key epoch / revoke-driven rotation（AAD+Token・KeyStale） | [x007e-room-key-epoch.md](slices/x007e-room-key-epoch.md) |
 | x007f | — | done | Prefab 多子展開 + XR Inventory 薄皮（Live 解禁・Desktop 委譲） | [x007f-prefab-multi-xr-inventory.md](slices/x007f-prefab-multi-xr-inventory.md) |
-| x0080 | — | planned | host handover / takeover + session dormant（owner≠計算ホスト） | [x0080-host-handover-and-takeover.md](slices/x0080-host-handover-and-takeover.md) |
+| x0080 | — | done | host handover / takeover + session dormant（owner≠計算ホスト） | [x0080-host-handover-and-takeover.md](slices/x0080-host-handover-and-takeover.md) |
 
-**現在の次:** [x0080](slices/x0080-host-handover-and-takeover.md)（Handover / dormant · Public は active のみ）。assets 別リポ／公開体裁は monorepo のまま後回し。優先度ビュー: [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md)。  
+**現在の次:** 優先度ビュー [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md) を参照（x0080 done）。assets 別リポ／公開体裁は monorepo のまま後回し。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
 次の空き番号は **`x0081`**。

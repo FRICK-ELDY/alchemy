@@ -176,6 +176,12 @@ pub struct DashState {
     pub worlds_waiting_host: bool,
     /// Waiting overlay may show Host Rescue only when viewer owns the room (x007c).
     pub worlds_can_host_rescue: bool,
+    /// Waiting overlay may show Takeover when session is dormant / lease-expired (x0080).
+    pub worlds_can_takeover: bool,
+    /// Local sub was nominated as `active_host_sub` (x0080 auto-host when Server Operator ON).
+    pub worlds_nominated_host: bool,
+    /// Last Waiting host-session poll (x0080 nomination / takeover CTA).
+    pub worlds_session_poll_at: Option<std::time::Instant>,
     /// Live → WaitingHost after frames stall (distinct copy from first join wait).
     pub worlds_host_disconnect: bool,
     /// Last observed `last_frame_tick` used for first-Frame Live transition.
@@ -264,6 +270,9 @@ impl Default for DashState {
             inventory_live_peer: false,
             worlds_waiting_host: false,
             worlds_can_host_rescue: false,
+            worlds_can_takeover: false,
+            worlds_nominated_host: false,
+            worlds_session_poll_at: None,
             worlds_host_disconnect: false,
             worlds_seen_frame_tick: None,
             worlds_last_frame_at: None,
@@ -1188,17 +1197,28 @@ fn rebuild_session_shell(
             1.2,
         );
         tree.register_hit(WidgetId::WorldsLeave, leave);
-        if state.worlds_can_host_rescue {
+        let host_cta = state.worlds_can_host_rescue
+            || state.worlds_can_takeover
+            || state.worlds_nominated_host;
+        if host_cta {
             if state.server_operator {
-                let rescue = Rect::new(cx + 172.0, y, 200.0, btn_h);
-                tree.push_rect(rescue, state.interact(WidgetId::WorldsHostRescue, ACCENT));
+                let (label, widget) = if state.worlds_can_takeover && !state.worlds_can_host_rescue
+                {
+                    ("Take over host", WidgetId::WorldsTakeover)
+                } else if state.worlds_nominated_host && !state.worlds_can_host_rescue {
+                    ("Start as nominated host", WidgetId::WorldsHostRescue)
+                } else {
+                    ("Host this room now", WidgetId::WorldsHostRescue)
+                };
+                let rescue = Rect::new(cx + 172.0, y, 220.0, btn_h);
+                tree.push_rect(rescue, state.interact(widget, ACCENT));
                 tree.push_label(
-                    Rect::new(rescue.x + 12.0, rescue.y + 10.0, 176.0, 16.0),
-                    "Host this room now",
+                    Rect::new(rescue.x + 12.0, rescue.y + 10.0, 196.0, 16.0),
+                    label,
                     TEXT,
                     1.2,
                 );
-                tree.register_hit(WidgetId::WorldsHostRescue, rescue);
+                tree.register_hit(widget, rescue);
             } else {
                 // Avoid Settings deadlock: enable here (or via Settings tab while in-room).
                 let enable = Rect::new(cx + 172.0, y, 260.0, btn_h);
@@ -1216,7 +1236,7 @@ fn rebuild_session_shell(
             }
         }
         y += btn_h + gap;
-        if state.worlds_can_host_rescue && !state.server_operator {
+        if host_cta && !state.server_operator {
             tree.push_label(
                 Rect::new(cx, y, cw, 32.0),
                 "Hosts on this PC (CPU/GPU load). Not recommended on weak machines. Or open Settings.",
@@ -2347,25 +2367,71 @@ fn rebuild_main_hub_organizing(
     );
     y += 68.0;
 
-    tree.push_label(Rect::new(cx, y, cw, 18.0), "My worlds", TEXT, 1.4);
-    y += 24.0;
-    tree.push_rect(
-        Rect::new(cx, y, cw, 56.0),
-        Color::rgba(0.10, 0.11, 0.14, 1.0),
-    );
+    tree.push_label(Rect::new(cx, y, cw * 0.55, 18.0), "My worlds", TEXT, 1.4);
+    let refresh = Rect::new(cx + cw - 100.0, y - 4.0, 100.0, 28.0);
+    tree.push_rect(refresh, state.interact(WidgetId::MainHubRefresh, BTN));
     tree.push_label(
-        Rect::new(cx + 12.0, y + 12.0, cw - 24.0, 16.0),
-        "Your worlds list is not connected yet.",
-        MUTED,
+        Rect::new(refresh.x + 16.0, refresh.y + 6.0, 68.0, 16.0),
+        "Refresh",
+        TEXT,
         1.1,
     );
+    tree.register_hit(WidgetId::MainHubRefresh, refresh);
+    y += 28.0;
+
+    let list_h = 120.0_f32;
+    let list = Rect::new(cx, y, cw, list_h);
+    tree.push_rect(list, Color::rgba(0.10, 0.11, 0.14, 1.0));
+    if state.worlds_rooms.is_empty() {
+        tree.push_label(
+            Rect::new(cx + 12.0, y + 20.0, cw - 24.0, 40.0),
+            "No owned worlds yet. Create one below, or Refresh after Hosting.",
+            MUTED,
+            1.1,
+        );
+    } else {
+        let row_h = 32.0;
+        let gap = 4.0;
+        for (vis_i, &id) in MAIN_PUBLIC_ROW_IDS.iter().enumerate().take(3) {
+            let Some((room_id, visibility, _role, _owner)) = state.worlds_rooms.get(vis_i) else {
+                break;
+            };
+            let ry = y + 8.0 + vis_i as f32 * (row_h + gap);
+            let r = Rect::new(cx + 8.0, ry, cw - 16.0, row_h);
+            let selected = state.worlds_selected.as_deref() == Some(room_id.as_str());
+            let base = if selected { ACCENT } else { BTN };
+            tree.push_rect(r, state.interact(id, base));
+            tree.push_label(
+                Rect::new(r.x + 8.0, r.y + 8.0, r.w - 16.0, 16.0),
+                format!("{room_id} · {visibility}"),
+                TEXT,
+                1.0,
+            );
+            tree.register_hit(id, r);
+        }
+    }
+    y += list_h + 8.0;
+
+    let host = Rect::new(cx, y, cw.min(280.0), 36.0);
+    // tuple: (room_id, visibility, role_hint, owner_sub)
+    let host_enabled = state.worlds_selected.as_ref().is_some_and(|sel| {
+        state
+            .worlds_rooms
+            .iter()
+            .any(|(id, _, role, _)| id == sel && role == "owner")
+    });
+    let host_c = if host_enabled { ACCENT } else { BTN };
+    tree.push_rect(host, state.interact(WidgetId::WorldsHostRoom, host_c));
     tree.push_label(
-        Rect::new(cx + 12.0, y + 32.0, cw - 24.0, 16.0),
-        "Coming soon — owned worlds will host from here.",
-        MUTED,
-        1.0,
+        Rect::new(host.x + 12.0, host.y + 10.0, host.w - 24.0, 16.0),
+        "Host this room",
+        TEXT,
+        1.3,
     );
-    y += 68.0;
+    if host_enabled {
+        tree.register_hit(WidgetId::WorldsHostRoom, host);
+    }
+    y += 48.0;
 
     let create = Rect::new(cx, y, cw.min(320.0), 44.0);
     tree.push_rect(create, state.interact(WidgetId::MainHubCreateWorld, ACCENT));

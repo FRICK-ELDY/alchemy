@@ -385,6 +385,9 @@ fn clear_worlds_session_shell(ui: &mut SystemUi) {
     ui.state.worlds_waiting_host = false;
     ui.state.worlds_host_disconnect = false;
     ui.state.worlds_can_host_rescue = false;
+    ui.state.worlds_can_takeover = false;
+    ui.state.worlds_nominated_host = false;
+    ui.state.worlds_session_poll_at = None;
     ui.state.worlds_seen_frame_tick = None;
     ui.state.worlds_last_frame_at = None;
     ui.state.worlds_in_room = false;
@@ -443,10 +446,102 @@ fn stop_host_if_job_current(shared: &SharedState, epoch: u64) {
 
 /// Failed Start / guest path: cancel in-flight spawn; allow a later ensure retry.
 /// External / CI hosts are never touched.
-fn stop_supervised_host(shared: &SharedState) {
-    if shared.host_supervisor.owns_local_host() {
-        host_supervisor::request_handover_stub();
+/// x0080: while Waiting, poll world session for nomination / dormant Takeover CTA.
+/// Returns `(ui_dirty, should_auto_start_nominated_host)`.
+fn poll_waiting_host_session(
+    ui: &mut SystemUi,
+    shared: &SharedState,
+    now: std::time::Instant,
+) -> (bool, bool) {
+    if !ui.state.worlds_in_room || !ui.state.worlds_waiting_host {
+        return (false, false);
     }
+    if shared.host_supervisor.owns_local_host() {
+        return (false, false);
+    }
+    const PERIOD: std::time::Duration = std::time::Duration::from_secs(3);
+    if ui
+        .state
+        .worlds_session_poll_at
+        .is_some_and(|t| now.duration_since(t) < PERIOD)
+    {
+        return (false, false);
+    }
+    ui.state.worlds_session_poll_at = Some(now);
+
+    let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+    let local_sub = shared.auth.lock().ok().and_then(|g| g.local_sub.clone());
+    let (Some(access), Some(local_sub)) = (access, local_sub) else {
+        return (false, false);
+    };
+    let room_id = shared.get_room_id();
+    if room_id.is_empty() {
+        return (false, false);
+    }
+    let world_url = shared.get_world_url();
+    let Ok(summary) = world_api::get_room(&world_url, &access, room_id.as_ref()) else {
+        return (false, false);
+    };
+
+    let mut dirty = false;
+    let nominated = summary
+        .active_host_sub
+        .as_deref()
+        .is_some_and(|s| s == local_sub)
+        && summary.state == "active";
+    let can_takeover = summary.state == "dormant";
+
+    if ui.state.worlds_nominated_host != nominated {
+        ui.state.worlds_nominated_host = nominated;
+        dirty = true;
+    }
+    if ui.state.worlds_can_takeover != can_takeover {
+        ui.state.worlds_can_takeover = can_takeover;
+        dirty = true;
+    }
+    let auto_start = nominated
+        && ui.state.server_operator
+        && !ui.state.session_enter_active
+        && !shared.host_supervisor.owns_local_host();
+    if auto_start {
+        ui.state.worlds_status = "Nominated as host — starting local host…".into();
+        dirty = true;
+    }
+    (dirty, auto_start)
+}
+
+/// x0080: nominate a Presence peer or dormant the session before stopping local host.
+fn maybe_handover_before_leave(shared: &SharedState) {
+    let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+    let Some(access) = access else {
+        log::warn!("handover skipped: no access token");
+        return;
+    };
+    let room_id = shared.get_room_id();
+    if room_id.is_empty() {
+        return;
+    }
+    let target = shared.first_presence_peer_sub();
+    let world_url = shared.get_world_url();
+    match world_api::handover(
+        &world_url,
+        &access,
+        room_id.as_ref(),
+        target.as_deref(),
+    ) {
+        Ok(summary) => {
+            log::info!(
+                "handover ok room={} state={} active_host={:?}",
+                summary.room_id,
+                summary.state,
+                summary.active_host_sub
+            );
+        }
+        Err(err) => log::warn!("handover before Leave failed: {err:#}"),
+    }
+}
+
+fn stop_supervised_host(shared: &SharedState) {
     // Even when Idle: sets cancel_spawn so an in-flight ensure_running aborts.
     shared.host_supervisor.shutdown_graceful();
 }
@@ -454,7 +549,7 @@ fn stop_supervised_host(shared: &SharedState) {
 /// Client Exit: sticky exit latch + stop (Start HTTP 中の Exit でも後続 ensure を拒否).
 fn exit_stop_supervised_host(shared: &SharedState) {
     if shared.host_supervisor.owns_local_host() {
-        host_supervisor::request_handover_stub();
+        maybe_handover_before_leave(shared);
     }
     shared.host_supervisor.latch_exit_and_shutdown();
 }
@@ -565,6 +660,9 @@ impl App {
             }
             // Bump epoch before Leave so in-flight join cannot commit past this point.
             discard_auth_job(&mut self.ui, &self.shared, &mut self.auth_job);
+            if self.shared.host_supervisor.owns_local_host() {
+                maybe_handover_before_leave(&self.shared);
+            }
             leave_room(&self.shared, &mut self.zenoh);
             stop_supervised_host(&self.shared);
             clear_worlds_session_shell(&mut self.ui);
@@ -1514,6 +1612,23 @@ impl ApplicationHandler for App {
                         self.ui.state.open = true;
                         dirty = true;
                     }
+                    let (session_dirty, auto_nominated) =
+                        poll_waiting_host_session(&mut self.ui, &self.shared, now);
+                    if session_dirty {
+                        dirty = true;
+                    }
+                    if auto_nominated {
+                        let room_id = self.shared.get_room_id().to_string();
+                        start_worlds_host(
+                            &mut self.ui,
+                            &self.shared,
+                            &mut self.zenoh,
+                            &mut self.auth_job,
+                            room_id,
+                            HostStartKind::Nominated,
+                        );
+                        dirty = true;
+                    }
                     if dirty {
                         self.ui.mark_dash_logic_dirty();
                         self.ui.rebuild();
@@ -1652,6 +1767,8 @@ fn complete_pending_room_bind(
                 ui.state.worlds_waiting_host = true;
                 ui.state.worlds_host_disconnect = false;
                 ui.state.worlds_can_host_rescue = false;
+    ui.state.worlds_can_takeover = false;
+    ui.state.worlds_nominated_host = false;
                 ui.state.worlds_seen_frame_tick = None;
                 ui.state.worlds_last_frame_at = None;
                 ui.state.worlds_in_room = true;
@@ -1862,13 +1979,25 @@ fn apply_join_result(
     ui.rebuild();
 }
 
-/// Worlds Host / Host Rescue shared path (leave → Applied-only spawn → rejoin).
+/// How local host spawn claims compute-host authority (x0080).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostStartKind {
+    /// Owner create/PUT path (Organizing / Host Rescue as owner).
+    Owner,
+    /// CAS takeover while dormant / lease-expired.
+    Takeover,
+    /// Already nominated via handover (`active_host_sub == self`).
+    Nominated,
+}
+
+/// Worlds Host / Host Rescue / Takeover path (leave → spawn → rejoin).
 fn start_worlds_host(
     ui: &mut SystemUi,
     shared: &Arc<SharedState>,
     zenoh: &mut Option<zenoh::Session>,
     auth_job: &mut Option<(u64, Receiver<AuthJobOutcome>)>,
     room_id: String,
+    kind: HostStartKind,
 ) {
     if auth_job.is_some() {
         ui.state.worlds_status = "Auth busy…".into();
@@ -1920,10 +2049,32 @@ fn start_worlds_host(
         if !shared_job.auth_work_is_current(epoch) {
             return;
         }
+        let claim = match kind {
+            HostStartKind::Owner => match &visibility {
+                Ok(world_api::VisibilityEnsure::Applied) => Ok(()),
+                Ok(world_api::VisibilityEnsure::LeftExisting) => {
+                    Err("cannot host: not room owner (visibility unchanged)".into())
+                }
+                Err(e) => Err(e.clone()),
+            },
+            HostStartKind::Takeover => {
+                send_enter_progress(
+                    &tx,
+                    &shared_job,
+                    epoch,
+                    0.28,
+                    "Claiming host…",
+                    "POST /rooms/:id/takeover",
+                );
+                world_api::takeover(&world_url, &access, room_id.as_ref())
+                    .map(|_| ())
+                    .map_err(|e| format!("{e:#}"))
+            }
+            HostStartKind::Nominated => Ok(()),
+        };
         let mut host_started = false;
-        // Server-side owner proof: spawn only on Applied (PUT/create ok).
-        let join = match &visibility {
-            Ok(world_api::VisibilityEnsure::Applied) => {
+        let join = match claim {
+            Ok(()) => {
                 send_enter_progress(
                     &tx,
                     &shared_job,
@@ -1968,10 +2119,7 @@ fn start_worlds_host(
                     Err(err) => Err(format!("local host-server start failed: {err:#}")),
                 }
             }
-            Ok(world_api::VisibilityEnsure::LeftExisting) => {
-                Err("cannot host: not room owner (visibility unchanged)".into())
-            }
-            Err(_) => Err("skipped join (visibility step failed)".into()),
+            Err(err) => Err(err),
         };
         if join.is_err() && host_started {
             stop_host_if_job_current(&shared_job, epoch);
@@ -1986,6 +2134,15 @@ fn start_worlds_host(
                 "Room Token OK — opening Zenoh bus",
             );
         }
+        // Non-owner Takeover/Nominated often get LeftExisting on visibility PUT; UI Host path
+        // still needs Applied once claim+join succeeded (x0080).
+        let visibility = match kind {
+            HostStartKind::Owner => visibility,
+            HostStartKind::Takeover | HostStartKind::Nominated if join.is_ok() => {
+                Ok(world_api::VisibilityEnsure::Applied)
+            }
+            HostStartKind::Takeover | HostStartKind::Nominated => visibility,
+        };
         if shared_job.auth_work_is_current(epoch) {
             let _ = tx.send(AuthJobOutcome::StartSession { visibility, join });
         }
@@ -2010,9 +2167,15 @@ fn start_worlds_catalog_refresh(
         ui.rebuild();
         return;
     }
+    // x0080: Participation = Public active sessions; Organizing = mine (incl. dormant).
+    ui.state.worlds_mine_only = ui.state.main_hub_tab == crate::system_ui::MainHubTab::Organizing;
     let mine = ui.state.worlds_mine_only;
     let shared_job = Arc::clone(shared);
-    ui.state.worlds_status = "Loading catalog…".into();
+    ui.state.worlds_status = if mine {
+        "Loading my worlds…".into()
+    } else {
+        "Loading public sessions…".into()
+    };
     ui.rebuild();
     let (tx, rx) = mpsc::channel();
     let epoch = arm_auth_job(shared, auth_job, rx);
@@ -2768,7 +2931,7 @@ fn handle_ui_action(
                     return;
                 }
             };
-            start_worlds_host(ui, shared, zenoh, auth_job, room_id);
+            start_worlds_host(ui, shared, zenoh, auth_job, room_id, HostStartKind::Owner);
         }
         UiAction::WorldsHostRescue => {
             // Ignore catalog selection — always the actually joined room.
@@ -2778,34 +2941,65 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             }
-            if !ui.state.worlds_can_host_rescue {
-                ui.state.worlds_status = "Only the owner can host this room".into();
+            let kind = if ui.state.worlds_can_host_rescue {
+                HostStartKind::Owner
+            } else if ui.state.worlds_nominated_host {
+                HostStartKind::Nominated
+            } else {
+                ui.state.worlds_status = "Not allowed to host this room".into();
                 ui.rebuild();
                 return;
-            }
+            };
             let room_id = shared.get_room_id().to_string();
             if room_id.is_empty() {
                 ui.state.worlds_status = "Not in a room to host".into();
                 ui.rebuild();
                 return;
             }
-            start_worlds_host(ui, shared, zenoh, auth_job, room_id);
+            start_worlds_host(ui, shared, zenoh, auth_job, room_id, kind);
+        }
+        UiAction::WorldsTakeover => {
+            if !ui.state.server_operator {
+                ui.state.worlds_status =
+                    "Enable Server Operator in Settings to take over host".into();
+                ui.rebuild();
+                return;
+            }
+            if !ui.state.worlds_can_takeover {
+                ui.state.worlds_status = "Takeover unavailable (session still active)".into();
+                ui.rebuild();
+                return;
+            }
+            let room_id = shared.get_room_id().to_string();
+            if room_id.is_empty() {
+                ui.state.worlds_status = "Not in a room to take over".into();
+                ui.rebuild();
+                return;
+            }
+            start_worlds_host(ui, shared, zenoh, auth_job, room_id, HostStartKind::Takeover);
         }
         UiAction::WorldsLeave => {
             // Invalidate in-flight Join/Host so Leave status is not overwritten by Auth busy.
             // Do not auto-refresh catalog — that would occupy auth_job and block immediate re-Join.
             let aborting_enter = ui.state.session_enter_active && !ui.state.worlds_in_room;
+            let local_host = shared.host_supervisor.owns_local_host();
             discard_auth_job(ui, shared, auth_job);
             room_bind.clear();
+            // x0080: local compute host Leave must handover (or dormant) then stop host.
+            if local_host && !aborting_enter {
+                maybe_handover_before_leave(shared);
+            }
             leave_room(shared, zenoh);
-            // Abort mid-Create/Join: stop in-flight local host. Live Leave keeps it for re-Host.
-            // After bus bind (`worlds_in_room`), Cancel ≡ Leave (host may survive for re-Host).
-            if aborting_enter {
+            // Abort mid-Create/Join: stop in-flight local host.
+            // Live Leave while local host: stop after handover (no longer keep host for re-Host).
+            if aborting_enter || local_host {
                 stop_supervised_host(shared);
             }
             clear_worlds_session_shell(ui);
             ui.state.worlds_status = if aborting_enter {
                 "Enter cancelled — Refresh for catalog".into()
+            } else if local_host {
+                "Left as host — session handed over or dormant".into()
             } else {
                 "Left room — Refresh for catalog".into()
             };

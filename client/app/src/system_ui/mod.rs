@@ -532,6 +532,17 @@ impl SystemUi {
                     UiAction::WorldsHostRescue
                 }
             }
+            WidgetId::WorldsTakeover => {
+                if !self.state.server_operator {
+                    self.state.worlds_status =
+                        "Enable Server Operator in Settings to take over host".into();
+                    self.mark_dash_form_dirty();
+                    self.rebuild();
+                    UiAction::None
+                } else {
+                    UiAction::WorldsTakeover
+                }
+            }
             WidgetId::WorldsLeave | WidgetId::SessionEnterCancel => UiAction::WorldsLeave,
             WidgetId::SessionEnterBlocker => UiAction::None,
             WidgetId::WorldsRejoin => UiAction::WorldsRejoin,
@@ -1264,6 +1275,8 @@ pub enum UiAction {
     WorldsHostRoom,
     /// Worlds: Host Rescue while Waiting — always the joined room, ignore catalog selection.
     WorldsHostRescue,
+    /// Worlds: Manual Takeover while Waiting and session dormant (x0080).
+    WorldsTakeover,
     /// Worlds: Leave room bus back to catalog (x007c).
     WorldsLeave,
     /// Worlds: KeyStale Rejoin (Leave → Join same room · x007e).

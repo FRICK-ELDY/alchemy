@@ -21,6 +21,8 @@ defmodule World.Application do
         World.PlaceHashes,
         # x007e: periodic room_key rotate (ROOM_KEY_ROTATE_HOURS; 0 = off)
         World.Rooms.RoomKeyRotator,
+        # x0080: active → dormant when host lease expires
+        World.Rooms.HostLeaseSweeper,
         # x0075: permanent manifest-seal-hash Port (replaces per-request CLI)
         World.ManifestSealHash.Worker,
         # x007a: dedicated loopback Bandit — never on Endpoint

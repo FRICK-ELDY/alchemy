@@ -64,6 +64,13 @@ defmodule WorldWeb.Plugs.RateLimit do
   defp action_for(%{method: "PUT", path_info: ["api", "v1", "rooms", _room_id, "visibility"]}),
     do: :room_visibility
 
+  # x0080: reuse visibility budget for host transfer endpoints.
+  defp action_for(%{method: "POST", path_info: ["api", "v1", "rooms", _room_id, "handover"]}),
+    do: :room_visibility
+
+  defp action_for(%{method: "POST", path_info: ["api", "v1", "rooms", _room_id, "takeover"]}),
+    do: :room_visibility
+
   defp action_for(_conn), do: nil
 
   defp rate_limit_keys(conn, action)

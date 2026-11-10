@@ -113,6 +113,7 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::WorldsLeave
         | WidgetId::WorldsRejoin
         | WidgetId::WorldsHostRescue
+        | WidgetId::WorldsTakeover
         | WidgetId::SessionEnterBlocker
         | WidgetId::SessionEnterCancel
         | WidgetId::WorldsRow0
