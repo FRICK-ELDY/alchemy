@@ -3,11 +3,11 @@
 //! Guarantees (hermetic): login → Room Token → Accept host Manifest → adversarial
 //! fake-seal / wrong-key Discard leaves [`TrustWatermarks`] unchanged.
 //! Guarantees (WAN mode via `TRUST_PROBE_MODE=wan`, x0087): real host-server Manifest
-//! Accept + Frame open; no client cert fails; guest sim put ingress denied; old
-//! `room_key_epoch` AEAD Discard; wildcard other-room ciphertext unreadable with
-//! own `room_key`.
+//! Accept + Frame open; no client cert fails; guest sim put does not reach a peer
+//! guest; old `room_key_epoch` AEAD Discard (local); wildcard other-room ciphertext
+//! unreadable with own `room_key`.
 //! Non-guarantees: GUI leave, valid old-seal JWT matrix (unit), L7 room isolation,
-//! hermetic adversarial puts on WAN ACL (guest cannot put sim ingress).
+//! `put.wait` returning Err on ACL drop (Zenoh may return Ok).
 
 use std::env;
 use std::sync::Arc;
@@ -671,32 +671,139 @@ fn run_wan() -> Result<()> {
         bail!("timeout waiting for Frame from real host-server");
     }
 
-    // 4) Guest sim put ingress must be ACL-denied (x0067 / P1-4).
-    // Message allowlist is best-effort (Zenoh wording varies); first CI log should confirm.
-    match session.put(&manifest_k, b"guest-sim-put-probe").wait() {
-        Ok(()) => bail!("guest put ingress on sim/manifest must be denied by WAN ACL"),
-        Err(err) => {
-            let msg = format!("{err:#}").to_lowercase();
-            let deny_like = [
-                "unauthor",
-                "denied",
-                "forbidden",
-                "not allowed",
-                "acl",
-                "reject",
-                "insufficient",
-                "permission",
-            ]
-            .iter()
-            .any(|needle| msg.contains(needle));
-            if !deny_like {
-                bail!(
-                    "guest put failed but not ACL-deny-like (got: {err:#}); \
-                     expected unauthorized/denied/forbidden (widen allowlist from CI log if needed)"
-                );
+    // 4) Guest sim put ingress must not reach peer guests (x0067 / P1-4).
+    // Zenoh put.wait() often returns Ok even when ACL drops ingress — assert non-delivery.
+    // Observe window is a slice of E2E_TIMEOUT_SECS (not a fixed 3s).
+    const GUEST_SIM_PUT_PROBE: &[u8] = b"guest-sim-put-probe";
+    let observe_secs = timeout_secs.clamp(3, 15);
+    let key_obs = generate_signing_key();
+    let eph_obs = zenoh_connect::EphemeralMtlsIdentity::generate().context("CSR guest observer")?;
+    let access_obs = login(&auth_url, &user, &password)?;
+    let bundle_obs = fetch_room_token(
+        &world_url,
+        &room_a,
+        &access_obs,
+        "guest",
+        &public_key_bytes(&key_obs),
+        Some(&eph_obs.csr_pem),
+    )?;
+    let mtls_obs = bundle_obs
+        .mtls
+        .as_ref()
+        .ok_or_else(|| anyhow!("observer guest token missing mtls"))?;
+    let obs_pems = TempPemPair::write(&mtls_obs.client_cert_pem, eph_obs.private_key_pem())?;
+    {
+        let obs_session = zenoh_connect::open_client_mtls(
+            &zenoh_connect,
+            obs_pems.cert.to_str().context("obs cert path utf8")?,
+            obs_pems.key.to_str().context("obs key path utf8")?,
+        )
+        .context("open guest observer mTLS")?;
+        let obs_sub = obs_session
+            .declare_subscriber(manifest_k.clone())
+            .wait()
+            .map_err(|e| anyhow!("observer subscribe manifest: {e}"))?;
+        // Nudge host republish via presence join (ACL allows guest input put).
+        let obs_input_k = input_key(&room_a, &bundle_obs.wire_cap);
+        let mut obs_event = InputEvent {
+            room_token: bundle_obs.token.clone(),
+            client_time_ms: Instant::now().elapsed().as_millis() as u64,
+            move_x: 0.0,
+            move_y: 0.0,
+            move_z: 0.0,
+            buttons: 0,
+            grab_entity_id: 0,
+            aim_x: 0.0,
+            aim_y: 1.6,
+            aim_z: 0.0,
+            leave: false,
+            session_pub: public_key_bytes(&key_obs),
+            intent_seq: 1,
+            intent_sig: vec![],
+        };
+        alchemy_protocol::wire_crypto::sign_input(&key_obs, &mut obs_event);
+        let obs_env = wire_aead::seal(
+            &bundle_obs.room_key,
+            &room_a,
+            0,
+            AeadKind::Input,
+            &obs_event.encode_to_vec(),
+        )
+        .map_err(|e| anyhow!("seal observer input: {e}"))?;
+        obs_session
+            .put(&obs_input_k, obs_env)
+            .timestamp(obs_session.new_timestamp())
+            .wait()
+            .map_err(|e| anyhow!("observer put input (liveness nudge): {e}"))?;
+        // Positive liveness: observer must see at least one host Manifest before probe put.
+        let alive_deadline = Instant::now() + Duration::from_secs(timeout_secs);
+        let mut saw_host_sample = false;
+        while Instant::now() < alive_deadline {
+            if let Ok(Some(sample)) = obs_sub.try_recv() {
+                let bytes: ZBytes = sample.payload().clone();
+                if bytes.to_bytes().as_ref() != GUEST_SIM_PUT_PROBE {
+                    saw_host_sample = true;
+                    break;
+                }
+            } else {
+                thread::sleep(Duration::from_millis(50));
             }
-            log::info!("guest sim put ACL deny ok: {err}");
         }
+        if !saw_host_sample {
+            bail!(
+                "guest observer saw no host Manifest within {timeout_secs}s; \
+                 cannot trust sim-put non-delivery check"
+            );
+        }
+        log::info!("guest observer live (received host Manifest)");
+        match session.put(&manifest_k, GUEST_SIM_PUT_PROBE).wait() {
+            Ok(()) => log::info!(
+                "guest sim put returned Ok (Zenoh may still drop ACL ingress; checking peer)"
+            ),
+            Err(err) => {
+                let msg = format!("{err:#}").to_lowercase();
+                let deny_like = [
+                    "unauthor",
+                    "denied",
+                    "forbidden",
+                    "not allowed",
+                    "acl",
+                    "reject",
+                    "insufficient",
+                    "permission",
+                ]
+                .iter()
+                .any(|needle| msg.contains(needle));
+                if deny_like {
+                    log::info!("guest sim put returned ACL-like Err: {err}");
+                } else {
+                    bail!(
+                        "guest sim put failed unexpectedly (not ACL-like; got: {err:#}); \
+                         session/router may be dead — refusing non-delivery green"
+                    );
+                }
+            }
+        }
+        let observe_deadline = Instant::now() + Duration::from_secs(observe_secs);
+        while Instant::now() < observe_deadline {
+            if let Ok(Some(sample)) = obs_sub.try_recv() {
+                let bytes: ZBytes = sample.payload().clone();
+                if bytes.to_bytes().as_ref() == GUEST_SIM_PUT_PROBE {
+                    bail!(
+                        "guest put on sim/manifest was delivered to peer guest \
+                         (WAN ACL ingress drop failed)"
+                    );
+                }
+            } else {
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+        log::info!(
+            "guest sim put not delivered to peer guest (ACL ingress drop ok; observe={observe_secs}s)"
+        );
+        // Close observer before TempPemPair drop (Windows may block unlink while open).
+        drop(obs_sub);
+        drop(obs_session);
     }
 
     // 5) Old room_key_epoch — **local** trust-gate check (no Zenoh put).

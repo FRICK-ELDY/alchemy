@@ -260,4 +260,4 @@ if [[ "${PROBE_RC}" -ne 0 ]]; then
   exit 1
 fi
 
-echo "smoke-compose-wan-e2e: ok (host Accept/Frame + no-cert + guest put deny + old epoch + wildcard unreadable)"
+echo "smoke-compose-wan-e2e: ok (host Accept/Frame + no-cert + guest sim put peer-undelivered + old epoch + wildcard unreadable)"
