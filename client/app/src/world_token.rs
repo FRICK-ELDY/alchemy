@@ -165,13 +165,13 @@ pub fn fetch_room_token(
         .set("authorization", &authz)
         .send_json(body)
     {
-        Ok(resp) => resp
-            .into_json()
-            .context("parse token response")?,
+        Ok(resp) => resp.into_json().context("parse token response")?,
         Err(ureq::Error::Status(409, resp)) if role == "host" => {
             let body = resp.into_string().unwrap_or_default();
             // x0080: access JWT still good — lost host claim race. Stop host; do not re-login.
-            anyhow::bail!("host_claim_conflict (409): stop hosting / wait for takeover; body={body}")
+            anyhow::bail!(
+                "host_claim_conflict (409): stop hosting / wait for takeover; body={body}"
+            )
         }
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();

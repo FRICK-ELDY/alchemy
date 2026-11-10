@@ -1895,7 +1895,8 @@ mod tests {
             .map(|(_, r)| *r)
             .expect("organizing tab");
         let action = ui.on_click(rect.x + 1.0, rect.y + 1.0);
-        assert_eq!(action, UiAction::None);
+        // x0080: entering Organizing refreshes mine catalog (dormant rooms).
+        assert_eq!(action, UiAction::WorldsRefresh);
         assert_eq!(ui.state.shell, OnboardingShell::MainHub);
         assert_eq!(ui.state.main_hub_tab, MainHubTab::Organizing);
         assert!(ui

@@ -542,9 +542,8 @@ fn apply_waiting_host_session_poll(
                 ui.state.worlds_can_takeover = snap.can_takeover;
                 dirty = true;
             }
-            let auto_start = snap.auto_start
-                && snap.nominated
-                && !shared.host_supervisor.owns_local_host();
+            let auto_start =
+                snap.auto_start && snap.nominated && !shared.host_supervisor.owns_local_host();
             if auto_start {
                 ui.state.worlds_status = "Nominated as host — starting local host…".into();
                 dirty = true;
@@ -575,12 +574,7 @@ fn maybe_handover_before_leave(shared: &SharedState) {
     let world_url = shared.get_world_url();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let result = world_api::handover(
-            &world_url,
-            &access,
-            room_id.as_ref(),
-            target.as_deref(),
-        );
+        let result = world_api::handover(&world_url, &access, room_id.as_ref(), target.as_deref());
         let _ = tx.send(result);
     });
     match rx.recv_timeout(std::time::Duration::from_secs(3)) {
@@ -3084,7 +3078,14 @@ fn handle_ui_action(
                 ui.rebuild();
                 return;
             }
-            start_worlds_host(ui, shared, zenoh, auth_job, room_id, HostStartKind::Takeover);
+            start_worlds_host(
+                ui,
+                shared,
+                zenoh,
+                auth_job,
+                room_id,
+                HostStartKind::Takeover,
+            );
         }
         UiAction::WorldsLeave => {
             // Invalidate in-flight Join/Host so Leave status is not overwritten by Auth busy.
