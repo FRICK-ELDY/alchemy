@@ -26,8 +26,9 @@ defmodule WorldWeb.Router do
   end
 
   # x0025 / x0026: Bearer is host Room Token (not auth JWT).
+  # x0084: operation-separated IP + room_id|jti rate limits (seal / scene / PlaceRead).
   scope "/api/v1", WorldWeb do
-    pipe_through [:api]
+    pipe_through [:api, :rate_limited]
 
     post "/rooms/:room_id/host_keys", RoomController, :create_host_key
     post "/rooms/:room_id/manifest_seal", RoomController, :create_manifest_seal

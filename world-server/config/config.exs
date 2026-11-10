@@ -57,6 +57,19 @@ config :world, World.RateLimit,
     room_visibility: %{
       ip: %{limit: 60, period_ms: 60_000},
       user: %{limit: 30, period_ms: 60_000}
+    },
+    # x0084: host Room Token / PlaceRead (seal Port / DB amplification).
+    host_seal: %{
+      ip: %{limit: 30, period_ms: 60_000},
+      jti: %{limit: 15, period_ms: 60_000}
+    },
+    host_scene: %{
+      ip: %{limit: 120, period_ms: 60_000},
+      jti: %{limit: 60, period_ms: 60_000}
+    },
+    place_read: %{
+      ip: %{limit: 60, period_ms: 60_000},
+      jti: %{limit: 30, period_ms: 60_000}
     }
   }
 

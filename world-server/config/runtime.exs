@@ -182,6 +182,37 @@ if config_env() == :prod do
           period_ms:
             rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_VISIBILITY_USER_PERIOD_MS", 60_000)
         }
+      },
+      # x0084: host Room Token / PlaceRead
+      host_seal: %{
+        ip: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_HOST_SEAL_IP_LIMIT", 30),
+          period_ms: rate_limit_env_integer.("WORLD_RATE_LIMIT_HOST_SEAL_IP_PERIOD_MS", 60_000)
+        },
+        jti: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_HOST_SEAL_JTI_LIMIT", 15),
+          period_ms: rate_limit_env_integer.("WORLD_RATE_LIMIT_HOST_SEAL_JTI_PERIOD_MS", 60_000)
+        }
+      },
+      host_scene: %{
+        ip: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_HOST_SCENE_IP_LIMIT", 120),
+          period_ms: rate_limit_env_integer.("WORLD_RATE_LIMIT_HOST_SCENE_IP_PERIOD_MS", 60_000)
+        },
+        jti: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_HOST_SCENE_JTI_LIMIT", 60),
+          period_ms: rate_limit_env_integer.("WORLD_RATE_LIMIT_HOST_SCENE_JTI_PERIOD_MS", 60_000)
+        }
+      },
+      place_read: %{
+        ip: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_PLACE_READ_IP_LIMIT", 60),
+          period_ms: rate_limit_env_integer.("WORLD_RATE_LIMIT_PLACE_READ_IP_PERIOD_MS", 60_000)
+        },
+        jti: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_PLACE_READ_JTI_LIMIT", 30),
+          period_ms: rate_limit_env_integer.("WORLD_RATE_LIMIT_PLACE_READ_JTI_PERIOD_MS", 60_000)
+        }
       }
     }
 end

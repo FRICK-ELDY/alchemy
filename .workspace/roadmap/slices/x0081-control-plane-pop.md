@@ -78,7 +78,7 @@ skew 既定 ±60s。`cnf.spk` は Token 発行時の session_pub（host Credenti
 
 - Scene revision CAS（P0-3）→ [x0082](x0082-scene-revision-cas.md)
 - ~~relay-agent CSR-only（P0-4）~~ → [x0083](x0083-relay-agent-csr-only.md)
-- host-token 操作別 rate limit（P1）
+- ~~host-token 操作別 rate limit（P1）~~ → [x0084](x0084-host-token-rate-limit.md)
 - 任意 guest take-out の本格 ACL
 - PoP nonce / 厳密単回使用
 

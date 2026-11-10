@@ -33,7 +33,7 @@
 
 | ID | 項目 | 根拠 | 作業イメージ | 完了条件 |
 |:---|:---|:---|:---|:---|
-| P1-1 | host-token 操作別 rate limit | -2 | `room_id+jti` / IP。seal / scene / PlaceRead で上限分離 | 連打で seal Port / DB が増幅しない |
+| P1-1 | host-token 操作別 rate limit | -2 | `room_id+jti` / IP。seal / scene / PlaceRead で上限分離 | 連打で seal Port / DB が増幅しない — **[x0084](../../roadmap/slices/x0084-host-token-rate-limit.md) done** |
 | P1-2 | GLB decode budget | -2 | 頂点・index・pixel・展開 bytes ハード上限。超過は placeholder | 巨大/爆弾 fixture で OOM しないテスト |
 | P1-3 | assets test hermetic | -1 | test で reaper/GC `start: false`。CAS は `@tag :tmp_dir` | 既定並列でも 0 failures が安定 |
 | P1-4 | 実 host WAN 一往復 E2E | -1 | CSR→credential worker→signed Frame→trust consumer | no-cert / guest sim put / 旧 epoch 否定 |
