@@ -31,18 +31,48 @@ HOST_PID=""
 PROBE_PID=""
 HOST_WATCH_PID=""
 
-# Signal a setsid process-group leader (and children). Caller waits if it owns the PID.
+# Prefer setsid (Linux CI). Git Bash/MSYS often lacks it — fall back to job-control PG.
+HAVE_SETSID=0
+if command -v setsid >/dev/null 2>&1; then
+  HAVE_SETSID=1
+fi
+
+# Signal a process-group leader (and children). Caller waits if it owns the PID.
 kill_pg() {
   local pid="$1"
   [[ -n "${pid}" ]] || return 0
   kill -- -"${pid}" 2>/dev/null || kill "${pid}" 2>/dev/null || true
 }
 
-# Kill a PID and, when it is a process-group leader (setsid), its children too.
+# Kill a PID and its process group when possible.
 kill_tree() {
   local pid="$1"
   kill_pg "${pid}"
   wait "${pid}" 2>/dev/null || true
+}
+
+# Run a command string in its own process group; echo PID on stdout via caller capture.
+# Usage: run_pg_cmd LOGFILE 'shell commands…'  → sets RUN_PG_PID
+run_pg_cmd() {
+  local logfile="${1:-}"
+  local cmd="$2"
+  if [[ "${HAVE_SETSID}" -eq 1 ]]; then
+    if [[ -n "${logfile}" ]]; then
+      setsid bash -c "${cmd}" >"${logfile}" 2>&1 &
+    else
+      setsid bash -c "${cmd}" &
+    fi
+    RUN_PG_PID=$!
+    return 0
+  fi
+  # No setsid: enable monitor mode so background jobs get their own PGID (== PID).
+  set -m
+  if [[ -n "${logfile}" ]]; then
+    bash -c "${cmd}" >"${logfile}" 2>&1 &
+  else
+    bash -c "${cmd}" &
+  fi
+  RUN_PG_PID=$!
 }
 
 cleanup() {
@@ -110,9 +140,8 @@ if ! command -v openssl >/dev/null 2>&1; then
   echo "smoke-compose-wan-e2e: FAILED — openssl required" >&2
   exit 1
 fi
-if ! command -v setsid >/dev/null 2>&1; then
-  echo "smoke-compose-wan-e2e: FAILED — setsid required (process-group kill for host/probe)" >&2
-  exit 1
+if [[ "${HAVE_SETSID}" -eq 0 ]]; then
+  echo "smoke-compose-wan-e2e: setsid not found — using bash job-control process groups (Git Bash/MSYS)"
 fi
 
 rm -rf "${E2E_TLS_DIR}"
@@ -143,16 +172,16 @@ echo "smoke-compose-wan-e2e: starting host-server (log ${HOST_LOG}, ready ${HOST
 # x0087: real host on WAN TLS — CSR via should_request_world_mtls (ZENOH_CONNECT=tls/…).
 # Exit files (not kill -0): zombies still succeed kill -0 and would hang CI.
 export ALCHEMY_HOST_READY_FILE="${HOST_READY_FILE}"
-# setsid → own process group so cleanup/watcher can kill cargo children without orphans.
-setsid bash -c "
+# Own process group so cleanup/watcher can kill cargo children without orphans.
+run_pg_cmd "${HOST_LOG}" "
   cd \"${ROOT}/client\"
   set +e
   RUST_LOG=\"${RUST_LOG:-info}\" cargo run -q -p host-server
   ec=\$?
   set -e
   echo \"\${ec}\" >\"${HOST_EXIT_FILE}\"
-" >"${HOST_LOG}" 2>&1 &
-HOST_PID=$!
+"
+HOST_PID="${RUN_PG_PID}"
 
 host_deadline=$((SECONDS + HOST_READY_SECS))
 while (( SECONDS < host_deadline )); do
@@ -175,15 +204,15 @@ fi
 
 echo "smoke-compose-wan-e2e: building + running trust-probe WAN (x0070+x0087) …"
 export TRUST_PROBE_MODE=wan
-setsid bash -c "
+run_pg_cmd "" "
   cd \"${ROOT}/client\"
   set +e
   cargo run -q -p alchemy-client-trust --bin trust-probe
   ec=\$?
   set -e
   echo \"\${ec}\" >\"${PROBE_EXIT_FILE}\"
-" &
-PROBE_PID=$!
+"
+PROBE_PID="${RUN_PG_PID}"
 
 # Ready file is before first Manifest seal; watch host via exit file while probe runs.
 # Failure signal is HOST_EXIT_FILE only — do not treat intentional watcher SIGTERM as host death.

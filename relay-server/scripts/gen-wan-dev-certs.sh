@@ -11,13 +11,23 @@ CN="${1:?usage: $0 <cn-or-ip> [out-dir]}"
 OUT="${2:-./tls-wan-dev}"
 mkdir -p "$OUT"
 
+# Git Bash/MSYS rewrites "/CN=…" into a Windows path. "//CN=…" collapses to "/CN=…" there.
+# On Linux, "//CN=…" is invalid (openssl skips `/CN`) — keep a single slash.
+openssl_subj() {
+  if [[ -n "${MSYSTEM:-}" || "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
+    printf '//CN=%s' "$1"
+  else
+    printf '/CN=%s' "$1"
+  fi
+}
+
 openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
   -keyout "$OUT/ca-key.pem" -out "$OUT/ca-cert.pem" \
-  -subj "/CN=alchemy-wan-dev-ca"
+  -subj "$(openssl_subj alchemy-wan-dev-ca)"
 
 openssl req -newkey rsa:2048 -nodes \
   -keyout "$OUT/server-key.pem" -out "$OUT/server.csr" \
-  -subj "/CN=${CN}"
+  -subj "$(openssl_subj "${CN}")"
 
 # SAN: IPv4 / IPv6 / DNS
 if [[ "$CN" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -31,9 +41,12 @@ else
   SAN="DNS:${CN}"
 fi
 
+# Temp extfile (not process substitution): MSYS openssl cannot read /proc/self/fd.
+printf "subjectAltName=%s\n" "$SAN" >"$OUT/server-ext.cnf"
 openssl x509 -req -in "$OUT/server.csr" -CA "$OUT/ca-cert.pem" -CAkey "$OUT/ca-key.pem" \
   -CAcreateserial -out "$OUT/server-cert.pem" -days 825 \
-  -extfile <(printf "subjectAltName=%s\n" "$SAN")
+  -extfile "$OUT/server-ext.cnf"
+rm -f "$OUT/server-ext.cnf"
 
 # Client CA material (dev default: same CA as the server cert).
 # world (x0066) signs; zenohd only needs the cert. Relay Agent also needs the key.
