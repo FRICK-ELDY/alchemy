@@ -197,6 +197,7 @@ defmodule World.Rooms do
              | :invalid_entry
              | :duplicate_blake3
              | :scene_revision_conflict
+             | :invalid_scene_revision
              | storage_error()}
   def append_scene_entry(room_id, entry, expected_revision)
       when is_binary(room_id) and is_map(entry) and is_integer(expected_revision) and
@@ -231,6 +232,7 @@ defmodule World.Rooms do
              | :not_mesh_entry
              | :ambiguous_entity_id
              | :scene_revision_conflict
+             | :invalid_scene_revision
              | storage_error()}
   def delete_scene_entry(room_id, entity_id, expected_revision)
       when is_binary(room_id) and is_integer(entity_id) and entity_id >= 0 and
@@ -250,11 +252,11 @@ defmodule World.Rooms do
   defp scene_revision(scene) when is_map(scene) do
     case Map.get(scene, "revision") || Map.get(scene, :revision) do
       rev when is_integer(rev) and rev >= 0 -> {:ok, rev}
-      _ -> {:error, :scene_revision_conflict}
+      _ -> {:error, :invalid_scene_revision}
     end
   end
 
-  defp scene_revision(_), do: {:error, :scene_revision_conflict}
+  defp scene_revision(_), do: {:error, :invalid_scene_revision}
 
   defp match_expected_revision(current, expected) when current == expected, do: :ok
   defp match_expected_revision(_, _), do: {:error, :scene_revision_conflict}
@@ -273,9 +275,22 @@ defmodule World.Rooms do
     """
 
     case World.Repo.query(sql, [encoded, room_id, expected_revision]) do
-      {:ok, %{num_rows: 1}} -> :ok
-      {:ok, %{num_rows: 0}} -> {:error, :scene_revision_conflict}
-      {:error, error} -> storage_error(error, :cas_set_scene)
+      {:ok, %{num_rows: 1}} ->
+        :ok
+
+      {:ok, %{num_rows: 0}} ->
+        # Distinguish vanished room from lost CAS race.
+        # If the row still exists we return conflict (409). That includes rare cases where
+        # `json_extract` no longer matches after a concurrent corrupt write that slipped past
+        # the early `scene_revision/1` check — host may 409-retry once, then hit
+        # `:invalid_scene_revision` (500) on the next fetch. Acceptable; not treated as 404.
+        case fetch_room(room_id) do
+          {:ok, _} -> {:error, :scene_revision_conflict}
+          {:error, _} = err -> err
+        end
+
+      {:error, error} ->
+        storage_error(error, :cas_set_scene)
     end
   end
 

@@ -137,7 +137,9 @@ defmodule World.Rooms.Room do
       accept [:room_key, :room_key_epoch, :room_key_rotated_at]
     end
 
-    # x006d: host take-out appends a SceneEntry and bumps revision (canonical seal input).
+    # Test / admin corrupt-scene injection only. Production append/delete must use
+    # Rooms.append_scene_entry/3 · delete_scene_entry/3 (x0082 revision CAS SQL).
+    # Do not call set_scene from host HTTP paths — it bypasses expected_revision.
     update :set_scene do
       accept [:scene]
     end

@@ -185,7 +185,7 @@ depends_on: [x0006]
 **現在の次:** 優先度ビュー [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md) を参照（x0082 done）。assets 別リポ／公開体裁は monorepo のまま後回し。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x0082`**。
+次の空き番号は **`x0083`**。
 
 ## 関連
 

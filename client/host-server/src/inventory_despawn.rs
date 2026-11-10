@@ -1,9 +1,11 @@
 //! Inventory scene despawn control plane (x007b / x0081 / x0082).
 //!
 //! Guarantees: Zenoh `…/inventory/despawn` is **Room AEAD**; session Ed25519 + SessionTable
-//! (**`role=host` bind** + `sub` == host Token sub); world HTTP delete uses host Token + PoP
-//! + **scene revision CAS**; physics applies shared scene / re-seal and best-effort Rapier
-//! remove. Order: evaluate → rate → commit seq → HTTP (unbound/guest cannot burn shared rate).
+//! (**`role=host` bind** and `sub` == host Token sub); world HTTP delete uses host Token,
+//! PoP, and **scene revision CAS**; physics applies shared scene / re-seal and best-effort
+//! Rapier remove. Order: evaluate → rate → commit seq → HTTP (unbound/guest cannot burn
+//! shared rate).
+//!
 //! Non-guarantees: guest despawn for non-host sub; put-back coupling; Intent path;
 //! **HTTP failure after `control_seq` commit** (seq stays advanced); evaluate→rate→commit
 //! のあいだの host→guest 降格で rate のみ消費（Intent と同様・許容）。
@@ -98,6 +100,7 @@ impl DespawnRate {
 }
 
 /// Subscribe → AEAD open → session verify → world HTTP delete → enqueue for physics.
+#[allow(clippy::too_many_arguments)] // wire + shared_scene wiring stays flat at the listener edge
 pub fn despawn_listener(
     session: zenoh::Session,
     room_id: &str,
@@ -150,6 +153,7 @@ pub fn despawn_listener(
     Ok(DespawnInbox { rx: Mutex::new(rx) })
 }
 
+#[allow(clippy::too_many_arguments)] // HTTP CAS path needs auth + shared_scene beside rate
 fn process_sample(
     envelope: &[u8],
     room_aead: &host_server::room_aead::SharedRoomAead,

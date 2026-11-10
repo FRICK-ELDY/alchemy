@@ -3,6 +3,7 @@ defmodule World.SceneAppendTest do
   use World.DataCase, async: false
 
   alias World.Rooms
+  alias World.Rooms.Room
 
   @owner "11111111-1111-1111-1111-111111111111"
   @blake3 String.duplicate("c", 64)
@@ -39,6 +40,17 @@ defmodule World.SceneAppendTest do
 
     assert {:error, :scene_revision_conflict} =
              Rooms.append_scene_entry(room_id, %{"blake3" => @blake3}, scene0["revision"] + 1)
+  end
+
+  test "append_scene_entry rejects corrupt scene revision as invalid_scene_revision" do
+    assert {:ok, room_id, _, _} = Rooms.create("append-corrupt-rev", @owner)
+    assert {:ok, %Room{} = room} = Room.get_by_room_id(room_id)
+
+    corrupt = Map.put(room.scene, "revision", "not-an-int")
+    assert {:ok, _} = Room.set_scene(room, %{scene: corrupt})
+
+    assert {:error, :invalid_scene_revision} =
+             Rooms.append_scene_entry(room_id, %{"blake3" => @blake3}, 1)
   end
 
   test "append_scene_entry rejects duplicate blake3" do

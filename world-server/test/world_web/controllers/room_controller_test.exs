@@ -2,6 +2,7 @@ defmodule WorldWeb.RoomControllerTest do
   use WorldWeb.ConnCase, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias World.Rooms.Room
   alias World.TestAuthHelpers
 
   setup do
@@ -1434,6 +1435,27 @@ defmodule WorldWeb.RoomControllerTest do
       |> TestAuthHelpers.get_host(host_token, priv, "/api/v1/rooms/#{room}/scene")
       |> json_response(200)
 
+    # x0082: POST append CAS contract (missing / stale expected_revision).
+    assert %{"error" => "invalid_revision"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/scene/entries",
+               %{blake3: blake3}
+             )
+             |> json_response(422)
+
+    assert %{"error" => "scene_revision_conflict"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/scene/entries",
+               %{blake3: blake3, expected_revision: base_scene["revision"] + 1}
+             )
+             |> json_response(409)
+
     scene =
       build_conn()
       |> TestAuthHelpers.post_host_json(
@@ -1519,6 +1541,54 @@ defmodule WorldWeb.RoomControllerTest do
 
     assert deleted["room_id"] == room
     refute Enum.any?(deleted["entries"], fn e -> e["entity_id"] == entity_id end)
+  end
+
+  test "scene append/delete map corrupt revision to 500 invalid_scene_revision (x0082)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "44444444-4444-4444-4444-444444444444"
+    room = "scene-corrupt-rev-http"
+    blake3 = String.duplicate("ef", 32)
+    {pub, priv} = TestAuthHelpers.session_keypair()
+
+    conn
+    |> TestAuthHelpers.put_auth(signer, owner)
+    |> post("/api/v1/rooms", %{room_id: room})
+    |> json_response(201)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post(
+        "/api/v1/rooms/#{room}/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(pub)})
+      )
+      |> json_response(200)
+
+    assert {:ok, %Room{} = room_row} = Room.get_by_room_id(room)
+    corrupt = Map.put(room_row.scene, "revision", "not-an-int")
+    assert {:ok, _} = Room.set_scene(room_row, %{scene: corrupt})
+
+    assert %{"error" => "invalid_scene_revision"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/scene/entries",
+               %{blake3: blake3, expected_revision: 1}
+             )
+             |> json_response(500)
+
+    assert %{"error" => "invalid_scene_revision"} =
+             build_conn()
+             |> TestAuthHelpers.delete_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/scene/entries/100",
+               %{expected_revision: 1}
+             )
+             |> json_response(500)
   end
 
   test "handover nominates guest host without changing owner (x0080)", %{

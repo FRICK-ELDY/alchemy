@@ -836,6 +836,11 @@ defmodule WorldWeb.RoomController do
         |> put_status(:conflict)
         |> json(%{error: "scene_revision_conflict"})
 
+      {:error, :invalid_scene_revision} ->
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{error: "invalid_scene_revision"})
+
       {:error, :not_found} ->
         conn
         |> put_status(:not_found)
@@ -930,6 +935,11 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:conflict)
         |> json(%{error: "scene_revision_conflict"})
+
+      {:error, :invalid_scene_revision} ->
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{error: "invalid_scene_revision"})
 
       {:error, :not_found} ->
         conn

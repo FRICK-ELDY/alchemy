@@ -2,8 +2,10 @@
 //!
 //! Guarantees: host Room Token Bearer + `cnf.spk` PoP on every request (x0081); scene entries
 //! TRS-normalized on parse; shared-scene install is **revision-monotonic** (strictly newer only;
-//! x007b spawn/despawn race); append/delete send `expected_revision` and retry on
-//! `scene_revision_conflict` only (x0082).
+//! x007b spawn/despawn race) and is owned by the **physics apply** path; append/delete send
+//! `expected_revision` (seeded from shared) and retry on `scene_revision_conflict` only (x0082)
+//! **without** writing shared on success or conflict refetch (so apply's strictly-newer gate
+//! still runs Rapier / `force_reseal`).
 //! Non-guarantees: scene persistence, Manifest sealing; infinite CAS retries.
 
 use super::http::{credential_agent, is_blake3_hex};
@@ -201,17 +203,23 @@ fn shared_revision(shared: &Arc<RwLock<RoomScene>>) -> Result<u64> {
         .revision)
 }
 
-fn refresh_expected_revision(
+/// Re-read world revision for CAS retry. Does **not** install into `shared_scene` —
+/// physics apply owns shared updates (strictly-newer + Rapier / reseal).
+fn fetch_expected_revision(
     world_url: &str,
     room_id: &str,
     host_room_token: &str,
     pop_key: &SigningKey,
-    shared: &Arc<RwLock<RoomScene>>,
 ) -> Result<u64> {
-    let fresh = fetch_room_scene(world_url, room_id, host_room_token, pop_key)?;
-    let rev = fresh.revision;
-    let _ = install_shared_scene_if_newer(shared, fresh)?;
-    Ok(rev)
+    Ok(fetch_room_scene(world_url, room_id, host_room_token, pop_key)?.revision)
+}
+
+fn cas_backoff(attempt: u32) {
+    // Light delay before retry; Slice guarantees finite attempts only.
+    let ms = u64::from(attempt).saturating_mul(5).min(25);
+    if ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
 }
 
 /// Append one mesh entry to world scene (x006d / x0082). Returns updated scene + new entry.
@@ -259,21 +267,18 @@ pub fn append_room_scene_entry(
             sy,
             sz,
         ) {
-            Ok((scene, entry)) => {
-                let _ = install_shared_scene_if_newer(shared_scene, scene.clone())?;
-                return Ok((scene, entry));
+            Ok((scene, entry)) => return Ok((scene, entry)),
+            Err(CasAttempt::Conflict) if attempt < MAX_SCENE_CAS_ATTEMPTS => {
+                cas_backoff(attempt);
+                expected = fetch_expected_revision(world_url, room_id, host_room_token, pop_key)
+                    .with_context(|| {
+                        format!("scene append CAS refetch after conflict (attempt {attempt})")
+                    })?;
             }
             Err(CasAttempt::Conflict) => {
-                expected = refresh_expected_revision(
-                    world_url,
-                    room_id,
-                    host_room_token,
-                    pop_key,
-                    shared_scene,
-                )
-                .with_context(|| {
-                    format!("scene append CAS refetch after conflict (attempt {attempt})")
-                })?;
+                return Err(anyhow!(
+                    "scene append CAS exhausted after {MAX_SCENE_CAS_ATTEMPTS} attempts"
+                ));
             }
             Err(CasAttempt::Other(err)) => return Err(err),
         }
@@ -385,21 +390,18 @@ pub fn delete_room_scene_entry(
             expected,
             entity_id,
         ) {
-            Ok(scene) => {
-                let _ = install_shared_scene_if_newer(shared_scene, scene.clone())?;
-                return Ok(scene);
+            Ok(scene) => return Ok(scene),
+            Err(CasAttempt::Conflict) if attempt < MAX_SCENE_CAS_ATTEMPTS => {
+                cas_backoff(attempt);
+                expected = fetch_expected_revision(world_url, room_id, host_room_token, pop_key)
+                    .with_context(|| {
+                        format!("scene delete CAS refetch after conflict (attempt {attempt})")
+                    })?;
             }
             Err(CasAttempt::Conflict) => {
-                expected = refresh_expected_revision(
-                    world_url,
-                    room_id,
-                    host_room_token,
-                    pop_key,
-                    shared_scene,
-                )
-                .with_context(|| {
-                    format!("scene delete CAS refetch after conflict (attempt {attempt})")
-                })?;
+                return Err(anyhow!(
+                    "scene delete CAS exhausted after {MAX_SCENE_CAS_ATTEMPTS} attempts"
+                ));
             }
             Err(CasAttempt::Other(err)) => return Err(err),
         }
