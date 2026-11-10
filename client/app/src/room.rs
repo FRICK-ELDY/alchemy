@@ -356,7 +356,16 @@ pub fn install_host_inventory_token(shared: &SharedState, access_token: &str) ->
         "host inventory Token aborted: not joined"
     );
     gate.set_host_room_token(Some(host.token));
-    log::info!("installed host Room Token for inventory take-out / despawn");
+    drop(gate);
+    // Re-bind Intent with host JWT so SessionTable role=host (control plane x0081).
+    if let Ok(mut slot) = shared.intent_session.lock() {
+        if let Some(session) = slot.as_mut() {
+            session.mark_bind_pending();
+        }
+    }
+    log::info!(
+        "installed host Room Token for inventory take-out / despawn (Intent re-bind pending)"
+    );
     Ok(())
 }
 
@@ -836,7 +845,11 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
 /// / Publisher use `WeakSession`, so `recv` ends and input put stops (Leave→Join must not double Intent).
 pub fn leave_room(shared: &SharedState, zenoh: &mut Option<zenoh::Session>) {
     if let Some(session) = zenoh.as_ref() {
-        let room_token = shared.auth.lock().ok().and_then(|g| g.room_token.clone());
+        let room_token = shared
+            .auth
+            .lock()
+            .ok()
+            .and_then(|g| g.host_room_token.clone().or_else(|| g.room_token.clone()));
         let leave_event = {
             let mut slot = shared.intent_session.lock().ok();
             slot.as_mut().and_then(|opt| {

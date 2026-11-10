@@ -27,6 +27,7 @@
 mod credential_chain;
 mod credential_worker;
 mod http;
+mod http_pop_client;
 mod jwks;
 mod room_scene;
 mod seal_cache;
@@ -36,7 +37,7 @@ mod verify;
 pub use credential_chain::{
     default_auth_url, fetch_auth_session, fetch_host_attestation, fetch_host_token,
     plan_credential_refresh, refresh_auth_session, CredentialRefreshPlan, HostAuthSession,
-    HostCredentialChain, HostTokenBundle, WorldMtls,
+    HostCredentialChain, HostHttpAuthSnapshot, HostTokenBundle, SharedHostHttpAuth, WorldMtls,
 };
 pub use credential_worker::{
     build_manifest_from_scene, ensure_sealed_manifest, force_seal_retry, spawn_credential_worker,

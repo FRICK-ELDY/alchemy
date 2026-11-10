@@ -1,10 +1,13 @@
 //! World-authored room scene: JSON DTOs, fetch, append, and delete (x0027 / x006d / x007b).
 //!
-//! Guarantees: host Room Token Bearer on every request; scene entries TRS-normalized on parse;
-//! shared-scene install is **revision-monotonic** (strictly newer only; x007b spawn/despawn race).
+//! Guarantees: host Room Token Bearer + `cnf.spk` PoP on every request (x0081); scene entries
+//! TRS-normalized on parse; shared-scene install is **revision-monotonic** (strictly newer only;
+//! x007b spawn/despawn race).
 //! Non-guarantees: scene persistence, Manifest sealing.
 
 use super::http::{credential_agent, is_blake3_hex};
+use super::http_pop_client::{request_path, with_pop};
+use alchemy_protocol::wire_crypto::SigningKey;
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::sync::{Arc, RwLock};
@@ -145,20 +148,25 @@ pub fn install_shared_scene_if_newer(
     }
 }
 
-/// Fetch world DemoScene for this room (host Room Token).
+/// Fetch world DemoScene for this room (host Room Token + PoP).
 pub fn fetch_room_scene(
     world_url: &str,
     room_id: &str,
     host_room_token: &str,
+    pop_key: &SigningKey,
 ) -> Result<RoomScene> {
     let base = world_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/rooms/{room_id}/scene");
+    let path = request_path(&url);
     let authz = format!("Bearer {host_room_token}");
-    match credential_agent()
-        .get(&url)
-        .set("authorization", &authz)
-        .call()
-    {
+    let req = with_pop(
+        credential_agent().get(&url).set("authorization", &authz),
+        pop_key,
+        "GET",
+        path,
+        b"",
+    );
+    match req.call() {
         Ok(resp) => {
             let parsed: SceneResponseJson = resp.into_json().context("parse scene response")?;
             Ok(scene_from_response(parsed))
@@ -177,6 +185,7 @@ pub fn append_room_scene_entry(
     world_url: &str,
     room_id: &str,
     host_room_token: &str,
+    pop_key: &SigningKey,
     blake3: &str,
     x: f64,
     y: f64,
@@ -194,8 +203,9 @@ pub fn append_room_scene_entry(
     }
     let base = world_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/rooms/{room_id}/scene/entries");
+    let path = request_path(&url);
     let authz = format!("Bearer {host_room_token}");
-    let body = serde_json::json!({
+    let raw = serde_json::to_vec(&serde_json::json!({
         "blake3": blake3,
         "x": x,
         "y": y,
@@ -207,13 +217,19 @@ pub fn append_room_scene_entry(
         "sx": sx,
         "sy": sy,
         "sz": sz,
-    });
-    match credential_agent()
-        .post(&url)
-        .set("authorization", &authz)
-        .set("content-type", "application/json")
-        .send_json(&body)
-    {
+    }))
+    .context("encode scene append body")?;
+    let req = with_pop(
+        credential_agent()
+            .post(&url)
+            .set("authorization", &authz)
+            .set("content-type", "application/json"),
+        pop_key,
+        "POST",
+        path,
+        &raw,
+    );
+    match req.send(raw.as_slice()) {
         Ok(resp) => {
             let parsed: SceneResponseJson = resp.into_json().context("parse scene append")?;
             let scene = scene_from_response(parsed);
@@ -239,16 +255,21 @@ pub fn delete_room_scene_entry(
     world_url: &str,
     room_id: &str,
     host_room_token: &str,
+    pop_key: &SigningKey,
     entity_id: u32,
 ) -> Result<RoomScene> {
     let base = world_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/rooms/{room_id}/scene/entries/{entity_id}");
+    let path = request_path(&url);
     let authz = format!("Bearer {host_room_token}");
-    match credential_agent()
-        .delete(&url)
-        .set("authorization", &authz)
-        .call()
-    {
+    let req = with_pop(
+        credential_agent().delete(&url).set("authorization", &authz),
+        pop_key,
+        "DELETE",
+        path,
+        b"",
+    );
+    match req.call() {
         Ok(resp) => {
             let parsed: SceneResponseJson = resp.into_json().context("parse scene delete")?;
             let scene = scene_from_response(parsed);

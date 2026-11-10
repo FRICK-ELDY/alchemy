@@ -39,9 +39,9 @@ pub enum AeadKind {
     Presence,
     Snapshot,
     Input,
-    /// Low-frequency inventory take-out spawn (x006d); carries host Room Token.
+    /// Low-frequency inventory take-out spawn (x006d); session-signed control (x0081).
     InventorySpawn,
-    /// Low-frequency inventory scene despawn (x007b); carries host Room Token.
+    /// Low-frequency inventory scene despawn (x007b); session-signed control (x0081).
     InventoryDespawn,
 }
 
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn roundtrip_inventory_spawn() {
-        let pt = br#"{"room_token":"t","blake3":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
+        let pt = br#"{"session_pub":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","control_seq":1,"control_sig":"AA","blake3":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
         let env = seal(&key(), "local", 1, AeadKind::InventorySpawn, pt).unwrap();
         let out = open(&key(), "local", 1, AeadKind::InventorySpawn, &env).unwrap();
         assert_eq!(out, pt);

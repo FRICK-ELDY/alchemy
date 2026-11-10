@@ -37,10 +37,12 @@
 
 pub use prost::Message;
 
+pub mod control_plane;
 pub mod decode_limits;
 pub mod demo_scene_vector;
 pub mod generation_gate;
 pub mod host_ipc;
+pub mod http_pop;
 pub mod item_ref;
 pub mod manifest_seal_json;
 pub mod port_framing;
@@ -51,7 +53,8 @@ pub mod wire_crypto;
 /// Bump when `proto/` has an incompatible wire change.
 ///
 /// x0069: Zenoh payloads are Room-key AEAD envelopes (incompatible with x004e plain protobuf peers).
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.19.0-x007e";
+/// x0081: inventory control JSON drops `room_token` (session sig); host HTTP adds PoP headers.
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.20.0-x0081";
 
 /// Identity orientation on the wire (`Entity.qx..qw`, xyzw).
 pub const ENTITY_QUAT_IDENTITY: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -373,7 +376,7 @@ pub fn inventory_spawn_key(room_id: &str, wire_cap: &str) -> String {
     format!("{}/inventory/spawn", room_prefix(room_id, wire_cap))
 }
 
-/// Low-frequency inventory despawn request (x007b). Not Intent; host verifies Room Token.
+/// Low-frequency inventory despawn request (x007b). Not Intent; host verifies session sig (x0081).
 pub fn inventory_despawn_key(room_id: &str, wire_cap: &str) -> String {
     format!("{}/inventory/despawn", room_prefix(room_id, wire_cap))
 }

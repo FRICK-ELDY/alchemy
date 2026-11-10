@@ -1,13 +1,19 @@
-//! Inventory scene despawn control plane (x007b).
+//! Inventory scene despawn control plane (x007b / x0081).
 //!
-//! Guarantees: Zenoh `…/inventory/despawn` is **Room AEAD** (`AeadKind::InventoryDespawn`);
-//! host role Room Token verified after open; world HTTP delete runs on this worker (not the
-//! physics tick); physics applies shared scene / re-seal and best-effort Rapier remove.
-//! Non-guarantees: guest despawn; put-back coupling; Intent path; Rapier miss zero-failure.
+//! Guarantees: Zenoh `…/inventory/despawn` is **Room AEAD**; session Ed25519 + SessionTable
+//! (**`role=host` bind** + `sub` == host Token sub); world HTTP delete uses host Token + PoP;
+//! physics applies shared scene / re-seal and best-effort Rapier remove. Order: evaluate →
+//! rate → commit seq → HTTP (unbound/guest cannot burn shared rate).
+//! Non-guarantees: guest despawn for non-host sub; put-back coupling; Intent path;
+//! **HTTP failure after `control_seq` commit** (seq stays advanced); evaluate→rate→commit
+//! のあいだの host→guest 降格で rate のみ消費（Intent と同様・許容）。
 
+use alchemy_protocol::control_plane;
 use alchemy_protocol::inventory_despawn_key;
 use alchemy_protocol::wire_aead::{self, AeadKind};
+use alchemy_protocol::wire_crypto::PUBLIC_KEY_LENGTH;
 use anyhow::{anyhow, Context, Result};
+use base64::Engine;
 use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -16,7 +22,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 use zenoh::Wait;
 
-use crate::room_token::{delete_room_scene_entry, install_shared_scene_if_newer, RoomScene};
+use host_server::room_token::{
+    delete_room_scene_entry, install_shared_scene_if_newer, RoomScene, SharedHostHttpAuth,
+};
+use host_server::session::SessionTable;
 
 /// Ready for physics: world already deleted; apply shared scene + reseal + Rapier remove.
 #[derive(Debug, Clone)]
@@ -27,7 +36,9 @@ pub struct ReadyDespawn {
 
 #[derive(Debug, Deserialize)]
 struct DespawnPayloadJson {
-    room_token: String,
+    session_pub: String,
+    control_seq: u64,
+    control_sig: String,
     entity_id: u32,
 }
 
@@ -44,10 +55,16 @@ impl DespawnInbox {
 
 fn parse_payload(bytes: &[u8]) -> Result<DespawnPayloadJson> {
     let parsed: DespawnPayloadJson = serde_json::from_slice(bytes).context("despawn JSON")?;
-    if parsed.room_token.trim().is_empty() {
-        return Err(anyhow!("missing room_token"));
+    if parsed.session_pub.trim().is_empty() || parsed.control_sig.trim().is_empty() {
+        return Err(anyhow!("missing session_pub/control_sig"));
     }
     Ok(parsed)
+}
+
+fn decode_b64(field: &str, value: &str) -> Result<Vec<u8>> {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value.trim())
+        .with_context(|| format!("{field} base64url"))
 }
 
 struct DespawnRate {
@@ -80,18 +97,16 @@ impl DespawnRate {
     }
 }
 
-/// Subscribe → AEAD open → host role verify → world HTTP delete → enqueue for physics.
-pub fn despawn_listener<F>(
+/// Subscribe → AEAD open → session verify → world HTTP delete → enqueue for physics.
+pub fn despawn_listener(
     session: zenoh::Session,
     room_id: &str,
     wire_cap: &str,
     room_aead: host_server::room_aead::SharedRoomAead,
     world_url: String,
-    verify_host: F,
-) -> Result<DespawnInbox>
-where
-    F: Fn(&str) -> Result<()> + Send + 'static,
-{
+    sessions: Arc<Mutex<SessionTable>>,
+    http_auth: SharedHostHttpAuth,
+) -> Result<DespawnInbox> {
     let key = inventory_despawn_key(room_id, wire_cap);
     let room_id = room_id.to_string();
     let subscriber = session
@@ -107,7 +122,7 @@ where
         .spawn(move || {
             let _session = session;
             let mut rate = DespawnRate::new(8, Duration::from_secs(10));
-            log::info!("subscribed to {key} (x007b inventory despawn, AEAD)");
+            log::info!("subscribed to {key} (x0081 inventory despawn, session sig)");
             while let Ok(sample) = subscriber.recv() {
                 let bytes = sample.payload().to_bytes();
                 match process_sample(
@@ -115,7 +130,8 @@ where
                     &room_aead,
                     &room_id,
                     &world_url,
-                    &verify_host,
+                    &sessions,
+                    &http_auth,
                     &mut rate,
                 ) {
                     Ok(ready) => {
@@ -132,17 +148,15 @@ where
     Ok(DespawnInbox { rx: Mutex::new(rx) })
 }
 
-fn process_sample<F>(
+fn process_sample(
     envelope: &[u8],
     room_aead: &host_server::room_aead::SharedRoomAead,
     room_id: &str,
     world_url: &str,
-    verify_host: &F,
+    sessions: &Arc<Mutex<SessionTable>>,
+    http_auth: &SharedHostHttpAuth,
     rate: &mut DespawnRate,
-) -> Result<ReadyDespawn>
-where
-    F: Fn(&str) -> Result<()>,
-{
+) -> Result<ReadyDespawn> {
     wire_aead::check_aead_envelope_bytes(AeadKind::InventoryDespawn, envelope.len())
         .map_err(|e| anyhow!("aead envelope: {e}"))?;
     let plain = host_server::room_aead::open_shared(
@@ -153,15 +167,42 @@ where
     )
     .map_err(|e| anyhow!("aead open: {e}"))?;
     let parsed = parse_payload(&plain)?;
-    verify_host(parsed.room_token.trim())?;
+    let session_pub = decode_b64("session_pub", &parsed.session_pub)?;
+    if session_pub.len() != PUBLIC_KEY_LENGTH {
+        return Err(anyhow!("session_pub length {}", session_pub.len()));
+    }
+    let control_sig = decode_b64("control_sig", &parsed.control_sig)?;
+    control_plane::verify_despawn(
+        &session_pub,
+        room_id,
+        parsed.control_seq,
+        parsed.entity_id,
+        &control_sig,
+    )
+    .map_err(|e| anyhow!("control sig: {e}"))?;
+
+    let auth = http_auth.snapshot()?;
+    {
+        let table = sessions
+            .lock()
+            .map_err(|_| anyhow!("SessionTable poisoned"))?;
+        table.evaluate_control(&session_pub, parsed.control_seq, &auth.sub)?;
+    }
     if !rate.allow() {
         return Err(anyhow!("rate limited"));
+    }
+    {
+        let mut table = sessions
+            .lock()
+            .map_err(|_| anyhow!("SessionTable poisoned"))?;
+        table.commit_control(&session_pub, parsed.control_seq, &auth.sub)?;
     }
 
     let scene = delete_room_scene_entry(
         world_url,
         room_id,
-        parsed.room_token.trim(),
+        &auth.token,
+        &auth.pop_key,
         parsed.entity_id,
     )
     .context("world scene delete")?;
@@ -175,17 +216,11 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApplyOutcome {
     pub entity_id: u32,
-    /// False when `ready.scene.revision` was not strictly newer than shared (stale race).
     pub scene_applied: bool,
-    /// False when Manifest/PlaceRead path succeeded but Rapier had no such mesh.
     pub rapier_ok: bool,
 }
 
 /// Apply a ready despawn on the physics thread (no HTTP).
-///
-/// Installs `scene` + `force_reseal` **before** Rapier remove so Manifest/PlaceRead stay
-/// authoritative if physics already lacks the entity (spawn-failure leftover).
-/// Shared scene is revision-monotonic (x007b): stale despawn does not overwrite or Rapier-remove.
 pub fn apply_ready_despawn(
     ready: ReadyDespawn,
     shared_scene: &Arc<RwLock<RoomScene>>,
@@ -223,12 +258,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_payload_requires_token_and_entity() {
-        let ok = br#"{"room_token":"tok","entity_id":100}"#;
-        let p = parse_payload(ok).unwrap();
-        assert_eq!(p.entity_id, 100);
+    fn parse_rejects_legacy_room_token_payload() {
+        let legacy = br#"{"room_token":"tok","entity_id":100}"#;
+        assert!(parse_payload(legacy).is_err());
         assert!(parse_payload(br#"{"entity_id":1}"#).is_err());
-        assert!(parse_payload(br#"{"room_token":"","entity_id":1}"#).is_err());
     }
 
     #[test]

@@ -6,6 +6,7 @@ defmodule WorldWeb.RoomController do
   alias World.AllocationToken
   alias World.CanonicalManifest
   alias World.HostAttestation
+  alias World.HttpPop
   alias World.ManifestSeal
   alias World.MtlsIssuer
   alias World.PlaceHashes
@@ -631,6 +632,7 @@ defmodule WorldWeb.RoomController do
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
+         :ok <- require_http_pop(conn, claims),
          :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
          :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
          {:ok, host_pub} <- HostAttestation.decode_host_pub(Map.get(params, "host_pub")),
@@ -657,6 +659,9 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:unauthorized)
         |> json(%{error: "missing_room_token"})
+
+      {:error, :pop_required} ->
+        pop_unauthorized(conn)
 
       {:error, :not_host_token} ->
         conn
@@ -719,6 +724,7 @@ defmodule WorldWeb.RoomController do
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
+         :ok <- require_http_pop(conn, claims),
          # Ledger gate only; intentionally no renew_host_lease on read.
          :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
          {:ok, scene} <- Rooms.scene(room_id) do
@@ -728,6 +734,9 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:unauthorized)
         |> json(%{error: "missing_room_token"})
+
+      {:error, :pop_required} ->
+        pop_unauthorized(conn)
 
       {:error, :not_host_token} ->
         conn
@@ -778,6 +787,7 @@ defmodule WorldWeb.RoomController do
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
+         :ok <- require_http_pop(conn, claims),
          :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
          :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
          {:ok, scene} <- Rooms.append_scene_entry(room_id, entry) do
@@ -787,6 +797,9 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:unauthorized)
         |> json(%{error: "missing_room_token"})
+
+      {:error, :pop_required} ->
+        pop_unauthorized(conn)
 
       {:error, :not_host_token} ->
         conn
@@ -852,6 +865,7 @@ defmodule WorldWeb.RoomController do
          {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
+         :ok <- require_http_pop(conn, claims),
          :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
          :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
          {:ok, scene} <- Rooms.delete_scene_entry(room_id, entity_id) do
@@ -866,6 +880,9 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:unauthorized)
         |> json(%{error: "missing_room_token"})
+
+      {:error, :pop_required} ->
+        pop_unauthorized(conn)
 
       {:error, :not_host_token} ->
         conn
@@ -947,6 +964,7 @@ defmodule WorldWeb.RoomController do
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
+         :ok <- require_http_pop(conn, claims),
          :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
          :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
          {:ok, host_attestation} <- require_host_attestation(params),
@@ -981,6 +999,9 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:unauthorized)
         |> json(%{error: "missing_room_token"})
+
+      {:error, :pop_required} ->
+        pop_unauthorized(conn)
 
       {:error, :not_host_token} ->
         conn
@@ -1367,6 +1388,7 @@ defmodule WorldWeb.RoomController do
   # HTTP_* capabilities (scene / attest / seal) are defined in alchemy-protocol
   # `sim_capability` (x002a). Elixir cannot import that crate — keep `role == "host"`
   # here in lockstep with the protocol table.
+  # x0081: host routes also require `cnf.spk` PoP (stolen Token alone → 401).
   defp require_host_token(%{"role" => "host", "room_id" => token_room}, room_id) do
     if token_room == room_id do
       :ok
@@ -1376,6 +1398,25 @@ defmodule WorldWeb.RoomController do
   end
 
   defp require_host_token(_, _), do: {:error, :not_host_token}
+
+  defp require_http_pop(conn, claims) do
+    body =
+      case conn.assigns do
+        %{raw_body: body} when is_binary(body) -> body
+        _ -> ""
+      end
+
+    case HttpPop.verify(conn, claims, conn.method, conn.request_path, body) do
+      :ok -> :ok
+      {:error, _} -> {:error, :pop_required}
+    end
+  end
+
+  defp pop_unauthorized(conn) do
+    conn
+    |> put_status(:unauthorized)
+    |> json(%{error: "pop_required"})
+  end
 
   defp storage_unavailable(conn) do
     conn

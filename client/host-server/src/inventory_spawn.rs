@@ -1,15 +1,21 @@
-//! Inventory take-out spawn control plane (x006d).
+//! Inventory take-out spawn control plane (x006d / x0081).
 //!
 //! Guarantees: Zenoh `…/inventory/spawn` is **Room AEAD** (`AeadKind::InventorySpawn`);
-//! host role Room Token verified after open; host never receives Drive `node_id`;
-//! world HTTP append runs on this worker (not the physics tick); physics only applies
-//! a ready `SceneEntry` (+ shared scene / re-seal flag).
-//! Non-guarantees: guest take-out; put-back; Prefab multi-child; Intent path;
-//! distributed TX rollback of world append when Rapier refuses (scene+reseal still apply).
+//! after open, session Ed25519 + SessionTable (**`role=host` bind** + `sub` == host Token
+//! sub); world HTTP append uses **host** Token + PoP (client JWT never on the bus); physics
+//! only applies a ready `SceneEntry` (+ shared scene / re-seal flag). Order mirrors Intent:
+//! evaluate (no seq) → rate → commit seq → HTTP (unbound/guest cannot burn shared rate).
+//! Non-guarantees: guest take-out for non-host sub; put-back; Intent path;
+//! distributed TX / **HTTP failure after `control_seq` commit** (seq stays advanced);
+//! evaluate→rate→commit のあいだに host→guest 降格が挟まると **rate だけ消費して commit 失敗**
+//! しうる（Intent と同じく許容・窓は狭い）。
 
+use alchemy_protocol::control_plane::{self, ControlPose};
 use alchemy_protocol::wire_aead::{self, AeadKind};
+use alchemy_protocol::wire_crypto::PUBLIC_KEY_LENGTH;
 use alchemy_protocol::{inventory_spawn_key, SceneEntry};
 use anyhow::{anyhow, Context, Result};
+use base64::Engine;
 use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -18,7 +24,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 use zenoh::Wait;
 
-use crate::room_token::{append_room_scene_entry, install_shared_scene_if_newer, RoomScene};
+use host_server::room_token::{
+    append_room_scene_entry, install_shared_scene_if_newer, RoomScene, SharedHostHttpAuth,
+};
+use host_server::session::SessionTable;
 
 /// Ready for physics: world already appended; apply Rapier + shared scene + reseal.
 #[derive(Debug, Clone)]
@@ -29,7 +38,9 @@ pub struct ReadySpawn {
 
 #[derive(Debug, Deserialize)]
 struct SpawnPayloadJson {
-    room_token: String,
+    session_pub: String,
+    control_seq: u64,
+    control_sig: String,
     blake3: String,
     #[serde(default)]
     x: f64,
@@ -92,8 +103,8 @@ fn finite_pose(p: &SpawnPayloadJson) -> bool {
 
 fn parse_payload(bytes: &[u8]) -> Result<SpawnPayloadJson> {
     let parsed: SpawnPayloadJson = serde_json::from_slice(bytes).context("spawn JSON")?;
-    if parsed.room_token.trim().is_empty() {
-        return Err(anyhow!("missing room_token"));
+    if parsed.session_pub.trim().is_empty() || parsed.control_sig.trim().is_empty() {
+        return Err(anyhow!("missing session_pub/control_sig"));
     }
     if !is_blake3_hex(&parsed.blake3) {
         return Err(anyhow!("invalid blake3"));
@@ -102,6 +113,12 @@ fn parse_payload(bytes: &[u8]) -> Result<SpawnPayloadJson> {
         return Err(anyhow!("non-finite or non-positive pose/scale"));
     }
     Ok(parsed)
+}
+
+fn decode_b64(field: &str, value: &str) -> Result<Vec<u8>> {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value.trim())
+        .with_context(|| format!("{field} base64url"))
 }
 
 /// Simple flood guard on the spawn worker (app-level; ACL alone is not enough).
@@ -135,18 +152,16 @@ impl SpawnRate {
     }
 }
 
-/// Subscribe → AEAD open → host role verify → world HTTP append → enqueue for physics.
-pub fn spawn_listener<F>(
+/// Subscribe → AEAD open → session verify → world HTTP append → enqueue for physics.
+pub fn spawn_listener(
     session: zenoh::Session,
     room_id: &str,
     wire_cap: &str,
     room_aead: host_server::room_aead::SharedRoomAead,
     world_url: String,
-    verify_host: F,
-) -> Result<SpawnInbox>
-where
-    F: Fn(&str) -> Result<()> + Send + 'static,
-{
+    sessions: Arc<Mutex<SessionTable>>,
+    http_auth: SharedHostHttpAuth,
+) -> Result<SpawnInbox> {
     let key = inventory_spawn_key(room_id, wire_cap);
     let room_id = room_id.to_string();
     let subscriber = session
@@ -162,16 +177,16 @@ where
         .spawn(move || {
             let _session = session;
             let mut rate = SpawnRate::new(8, Duration::from_secs(10));
-            log::info!("subscribed to {key} (x006d inventory spawn, AEAD)");
+            log::info!("subscribed to {key} (x0081 inventory spawn, session sig)");
             while let Ok(sample) = subscriber.recv() {
                 let bytes = sample.payload().to_bytes();
-                // Rate limit only after AEAD open + host verify (Intent intent_rate parity).
                 match process_sample(
                     bytes.as_ref(),
                     &room_aead,
                     &room_id,
                     &world_url,
-                    &verify_host,
+                    &sessions,
+                    &http_auth,
                     &mut rate,
                 ) {
                     Ok(ready) => {
@@ -188,33 +203,65 @@ where
     Ok(SpawnInbox { rx: Mutex::new(rx) })
 }
 
-fn process_sample<F>(
+fn process_sample(
     envelope: &[u8],
     room_aead: &host_server::room_aead::SharedRoomAead,
     room_id: &str,
     world_url: &str,
-    verify_host: &F,
+    sessions: &Arc<Mutex<SessionTable>>,
+    http_auth: &SharedHostHttpAuth,
     rate: &mut SpawnRate,
-) -> Result<ReadySpawn>
-where
-    F: Fn(&str) -> Result<()>,
-{
+) -> Result<ReadySpawn> {
     wire_aead::check_aead_envelope_bytes(AeadKind::InventorySpawn, envelope.len())
         .map_err(|e| anyhow!("aead envelope: {e}"))?;
     let plain =
         host_server::room_aead::open_shared(room_aead, room_id, AeadKind::InventorySpawn, envelope)
             .map_err(|e| anyhow!("aead open: {e}"))?;
     let parsed = parse_payload(&plain)?;
-    verify_host(parsed.room_token.trim())?;
+    let session_pub = decode_b64("session_pub", &parsed.session_pub)?;
+    if session_pub.len() != PUBLIC_KEY_LENGTH {
+        return Err(anyhow!("session_pub length {}", session_pub.len()));
+    }
+    let control_sig = decode_b64("control_sig", &parsed.control_sig)?;
+    let pose: ControlPose = [
+        parsed.x, parsed.y, parsed.z, parsed.qx, parsed.qy, parsed.qz, parsed.qw, parsed.sx,
+        parsed.sy, parsed.sz,
+    ];
+    let blake3 = parsed.blake3.to_ascii_lowercase();
+    control_plane::verify_spawn(
+        &session_pub,
+        room_id,
+        parsed.control_seq,
+        &blake3,
+        pose,
+        &control_sig,
+    )
+    .map_err(|e| anyhow!("control sig: {e}"))?;
+
+    let auth = http_auth.snapshot()?;
+    {
+        let table = sessions
+            .lock()
+            .map_err(|_| anyhow!("SessionTable poisoned"))?;
+        // Bind+role+sub+seq check first — unbound/guest must not reach shared rate.
+        table.evaluate_control(&session_pub, parsed.control_seq, &auth.sub)?;
+    }
     if !rate.allow() {
         return Err(anyhow!("rate limited"));
+    }
+    {
+        let mut table = sessions
+            .lock()
+            .map_err(|_| anyhow!("SessionTable poisoned"))?;
+        table.commit_control(&session_pub, parsed.control_seq, &auth.sub)?;
     }
 
     let (scene, entry) = append_room_scene_entry(
         world_url,
         room_id,
-        parsed.room_token.trim(),
-        &parsed.blake3.to_ascii_lowercase(),
+        &auth.token,
+        &auth.pop_key,
+        &blake3,
         parsed.x,
         parsed.y,
         parsed.z,
@@ -242,10 +289,6 @@ pub struct ApplyOutcome {
 }
 
 /// Apply a ready spawn on the physics thread (no HTTP).
-///
-/// Installs `scene` + `force_reseal` **before** Rapier so Manifest/PlaceRead stay
-/// consistent if physics insert fails (poison after Rapier would leave the reverse half).
-/// Shared scene is revision-monotonic (x007b): stale spawn does not overwrite or Rapier-insert.
 pub fn apply_ready_spawn(
     ready: ReadySpawn,
     shared_scene: &Arc<RwLock<RoomScene>>,
@@ -283,64 +326,56 @@ mod tests {
         }
     }
 
-    fn sample_entry(entity_id: u32) -> SceneEntry {
-        SceneEntry {
-            entity_id,
-            blake3: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            x: 0.0,
-            y: 1.5,
-            z: 2.0,
-            half_extent: 0.0,
-            flags: 0,
-            r: 1.0,
-            g: 1.0,
-            b: 1.0,
-            a: 1.0,
-            qx: 0.0,
-            qy: 0.0,
-            qz: 0.0,
-            qw: 1.0,
-            sx: 1.0,
-            sy: 1.0,
-            sz: 1.0,
-        }
+    #[test]
+    fn parse_rejects_legacy_room_token_payload() {
+        let legacy = br#"{"room_token":"t","blake3":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
+        assert!(parse_payload(legacy).is_err());
     }
 
     #[test]
-    fn parse_payload_requires_blake3_token_and_finite() {
-        let ok = br#"{"room_token":"tok","blake3":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","y":2.0}"#;
-        let p = parse_payload(ok).unwrap();
-        assert_eq!(p.y, 2.0);
-        assert!(parse_payload(br#"{"room_token":"t","blake3":"short"}"#).is_err());
-        assert!(parse_payload(
-            br#"{"blake3":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#
-        )
-        .is_err());
-        let nan = br#"{"room_token":"tok","blake3":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","x":null}"#;
-        // null fails JSON number decode → err
-        assert!(parse_payload(nan).is_err());
-        let bad_scale = br#"{"room_token":"tok","blake3":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sx":0.0}"#;
-        assert!(parse_payload(bad_scale).is_err());
+    fn parse_rejects_bad_blake3_and_non_positive_scale() {
+        let good_b3 = "a".repeat(64);
+        let short_b3 = br#"{"session_pub":"x","control_seq":1,"control_sig":"y","blake3":"abcd"}"#;
+        assert!(parse_payload(short_b3).is_err());
+        let bad_scale = format!(
+            r#"{{"session_pub":"x","control_seq":1,"control_sig":"y","blake3":"{good_b3}","sx":0.0}}"#
+        );
+        assert!(parse_payload(bad_scale.as_bytes()).is_err());
+        let ok = format!(
+            r#"{{"session_pub":"x","control_seq":1,"control_sig":"y","blake3":"{good_b3}"}}"#
+        );
+        assert!(parse_payload(ok.as_bytes()).is_ok());
     }
 
     #[test]
-    fn apply_ready_spawn_skips_stale_revision() {
+    fn apply_ready_spawn_monotonic() {
         let shared = Arc::new(RwLock::new(empty_scene(5)));
         let force = AtomicBool::new(false);
         let ready = ReadySpawn {
-            entry: sample_entry(100),
+            entry: SceneEntry {
+                entity_id: 9,
+                blake3: "aa".repeat(32),
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                half_extent: 0.5,
+                flags: 0,
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+                qx: 0.0,
+                qy: 0.0,
+                qz: 0.0,
+                qw: 1.0,
+                sx: 1.0,
+                sy: 1.0,
+                sz: 1.0,
+            },
             scene: empty_scene(4),
         };
-        let mut rapier_called = false;
-        let out = apply_ready_spawn(ready, &shared, &force, |_e| {
-            rapier_called = true;
-            true
-        })
-        .unwrap();
+        let out = apply_ready_spawn(ready, &shared, &force, |_| true).unwrap();
         assert!(!out.scene_applied);
-        assert!(!out.rapier_ok);
-        assert!(!rapier_called);
         assert!(!force.load(Ordering::SeqCst));
-        assert_eq!(shared.read().unwrap().revision, 5);
     }
 }

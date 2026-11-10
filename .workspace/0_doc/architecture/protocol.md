@@ -2,7 +2,7 @@
 
 > **正本**: [`protocol/`](../../../protocol/)  
 > **配送契約**: [`protocol/peer-delivery.md`](../../../protocol/peer-delivery.md)（x0024）  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.19.0-x007e`（AAD v2 + `room_key_epoch` · x007e；x003b decode limits / x0055 ItemRef 草案は pin 非対象）
+> **PROTOCOL_PIN**: `alchemy-protocol/0.20.0-x0081`（制御面 session 署名 + HTTP PoP · x0081；x003b decode limits / x0055 ItemRef 草案は pin 非対象）
 
 ## 置き場の方針
 

@@ -1,6 +1,7 @@
 //! Shared blocking HTTP agent for credential / seal / scene calls (credential worker only; x003d).
 //!
 //! Guarantees: fixed connect/read timeout; canonical blake3 hex shape check.
+//! x0081: host HTTP also carries `cnf.spk` PoP (see `http_pop_client`).
 //! Non-guarantees: retries, auth, TLS configuration.
 
 use std::time::Duration;

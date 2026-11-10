@@ -53,7 +53,14 @@ pub(crate) fn spawn_input_publisher(
                 }
                 next += period;
 
-                let room_token = shared.auth.lock().ok().and_then(|g| g.room_token.clone());
+                // Prefer host JWT on bind so SessionTable stores role=host (x0081 control).
+                // Steady Intents omit Token; `room_token` presence still means "joined".
+                let room_token = shared.auth.lock().ok().and_then(|g| {
+                    g.room_token.as_ref()?;
+                    g.host_room_token
+                        .clone()
+                        .or_else(|| g.room_token.clone())
+                });
                 let Some(room_token) = room_token else {
                     continue;
                 };
