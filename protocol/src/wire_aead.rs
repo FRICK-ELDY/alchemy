@@ -39,7 +39,7 @@ pub enum AeadKind {
     Presence,
     Snapshot,
     Input,
-    /// Low-frequency inventory take-out spawn (x006d); carries host Room Token.
+    /// Low-frequency inventory take-out spawn (x006d); session-signed control (x0081).
     InventorySpawn,
     /// Low-frequency inventory scene despawn (x007b); session-signed control (x0081).
     InventoryDespawn,

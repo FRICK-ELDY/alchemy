@@ -5,8 +5,13 @@ defmodule WorldWeb.CacheBodyReader do
 
   @doc false
   def read_body(conn, opts) do
-    {:ok, body, conn} = Plug.Conn.read_body(conn, opts)
-    conn = Plug.Conn.assign(conn, :raw_body, body)
-    {:ok, body, conn}
+    case Plug.Conn.read_body(conn, opts) do
+      {:ok, body, conn} ->
+        # PoP signs the complete body only — do not stash partials from {:more, …}.
+        {:ok, body, Plug.Conn.assign(conn, :raw_body, body)}
+
+      other ->
+        other
+    end
   end
 end

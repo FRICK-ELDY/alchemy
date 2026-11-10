@@ -6,9 +6,7 @@
 
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 
-use crate::wire_crypto::{
-    WireCryptoError, SigningKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH,
-};
+use crate::wire_crypto::{SigningKey, WireCryptoError, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
 
 /// Pose TRS for spawn control: x y z qx qy qz qw sx sy sz.
 pub type ControlPose = [f64; 10];

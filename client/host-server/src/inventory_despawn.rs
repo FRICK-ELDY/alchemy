@@ -1,9 +1,12 @@
 //! Inventory scene despawn control plane (x007b / x0081).
 //!
 //! Guarantees: Zenoh `…/inventory/despawn` is **Room AEAD**; session Ed25519 + SessionTable
-//! (`sub` == host Token sub); world HTTP delete uses host Token + PoP; physics applies shared
-//! scene / re-seal and best-effort Rapier remove.
-//! Non-guarantees: guest despawn for non-host sub; put-back coupling; Intent path.
+//! (**`role=host` bind** + `sub` == host Token sub); world HTTP delete uses host Token + PoP;
+//! physics applies shared scene / re-seal and best-effort Rapier remove. Order: evaluate →
+//! rate → commit seq → HTTP (unbound/guest cannot burn shared rate).
+//! Non-guarantees: guest despawn for non-host sub; put-back coupling; Intent path;
+//! **HTTP failure after `control_seq` commit** (seq stays advanced); evaluate→rate→commit
+//! のあいだの host→guest 降格で rate のみ消費（Intent と同様・許容）。
 
 use alchemy_protocol::control_plane;
 use alchemy_protocol::inventory_despawn_key;
@@ -180,13 +183,19 @@ fn process_sample(
 
     let auth = http_auth.snapshot()?;
     {
-        let mut table = sessions
+        let table = sessions
             .lock()
             .map_err(|_| anyhow!("SessionTable poisoned"))?;
-        table.authorize_control(&session_pub, parsed.control_seq, &auth.sub)?;
+        table.evaluate_control(&session_pub, parsed.control_seq, &auth.sub)?;
     }
     if !rate.allow() {
         return Err(anyhow!("rate limited"));
+    }
+    {
+        let mut table = sessions
+            .lock()
+            .map_err(|_| anyhow!("SessionTable poisoned"))?;
+        table.commit_control(&session_pub, parsed.control_seq, &auth.sub)?;
     }
 
     let scene = delete_room_scene_entry(

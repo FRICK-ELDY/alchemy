@@ -4,7 +4,8 @@ defmodule World.HttpPop do
 
   Guarantees: Ed25519 over `alchemy/pop/v1|{METHOD}|{path}|{ts}|{raw_body}` verified
   against JWT `cnf.spk`; clock skew reject.
-  Non-guarantees: PlaceRead / auth-JWT routes; RFC 9449 DPoP JWT shape.
+  Non-guarantees: PlaceRead / auth-JWT routes; RFC 9449 DPoP JWT shape;
+  nonce / single-use (replay within skew is accepted).
   """
 
   alias World.Token
@@ -25,8 +26,9 @@ defmodule World.HttpPop do
   @doc """
   Verify PoP headers on `conn` against Room Token claims.
 
-  `raw_body` must be the exact bytes hashed into the signature (empty for GET/DELETE
-  with no body). `method` is upper-case HTTP verb; `path` is `conn.request_path`.
+  `raw_body` must be the exact request body bytes appended to the signing message
+  (empty for GET/DELETE with no body). `method` is upper-case HTTP verb; `path` is
+  `conn.request_path`.
   """
   @spec verify(Plug.Conn.t(), map(), String.t(), String.t(), binary()) ::
           :ok | {:error, verify_error()}

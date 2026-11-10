@@ -275,7 +275,7 @@ pub fn publish_inventory_spawn_pose(
         "session_pub": control.session_pub_b64,
         "control_seq": control.control_seq,
         "control_sig": control.control_sig_b64,
-        "blake3": blake3,
+        "blake3": blake3.to_ascii_lowercase(),
         "x": x,
         "y": y,
         "z": z,

@@ -263,9 +263,7 @@ pub fn delete_room_scene_entry(
     let path = request_path(&url);
     let authz = format!("Bearer {host_room_token}");
     let req = with_pop(
-        credential_agent()
-            .delete(&url)
-            .set("authorization", &authz),
+        credential_agent().delete(&url).set("authorization", &authz),
         pop_key,
         "DELETE",
         path,

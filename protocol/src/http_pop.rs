@@ -2,12 +2,13 @@
 //!
 //! Guarantees: Ed25519 over `alchemy/pop/v1|{METHOD}|{path}|{ts}|{raw_body}` bound to
 //! Room Token `cnf.spk`; callers enforce clock skew.
-//! Non-guarantees: RFC 9449 DPoP JWT shape; PlaceRead / auth-JWT routes; body streaming.
+//! Non-guarantees: RFC 9449 DPoP JWT shape; PlaceRead / auth-JWT routes; body streaming;
+//! **nonce / single-use** (replay within skew is accepted).
 
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 
 use crate::wire_crypto::{
-    public_key_bytes, WireCryptoError, SigningKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH,
+    public_key_bytes, SigningKey, WireCryptoError, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH,
 };
 
 /// Default accepted skew for `x-alchemy-pop-ts` (seconds).
@@ -26,7 +27,13 @@ pub fn pop_signing_bytes(method: &str, path: &str, ts: u64, body: &[u8]) -> Vec<
 }
 
 /// Sign a host HTTP request; returns raw 64-byte signature.
-pub fn sign_pop(key: &SigningKey, method: &str, path: &str, ts: u64, body: &[u8]) -> [u8; SIGNATURE_LENGTH] {
+pub fn sign_pop(
+    key: &SigningKey,
+    method: &str,
+    path: &str,
+    ts: u64,
+    body: &[u8],
+) -> [u8; SIGNATURE_LENGTH] {
     let msg = pop_signing_bytes(method, path, ts, body);
     key.sign(&msg).to_bytes()
 }
@@ -61,8 +68,7 @@ pub fn verify_pop(
 
 /// True when `|now - ts| <= skew` (unsigned distance).
 pub fn pop_ts_in_skew(now: u64, ts: u64, skew: u64) -> bool {
-    let dist = if now >= ts { now - ts } else { ts - now };
-    dist <= skew
+    now.abs_diff(ts) <= skew
 }
 
 /// Convenience: public key bytes for JWT `cnf.spk` / headers.

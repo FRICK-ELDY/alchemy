@@ -2363,14 +2363,24 @@ fn shared_has_host_inventory_token(shared: &SharedState) -> bool {
         .is_some_and(|g| g.host_room_token.is_some())
 }
 
-/// Gate copy when Take-out/Despawn lacks `host_room_token` (not the same as "not joined").
+/// Gate copy when Take-out/Despawn lacks host Token or host-role Intent re-bind.
+///
+/// `intent_bind_pending`: `None` = no Intent session / lock failed; `Some(true)` = re-bind
+/// still in progress; `Some(false)` = bind puts finished (host JWT should be on the table).
 fn inventory_host_token_gate_status(
     access: &Option<String>,
     host_room_token: &Option<String>,
+    intent_bind_pending: Option<bool>,
 ) -> Option<&'static str> {
-    match (access.as_ref(), host_room_token.as_ref()) {
-        (None, _) => Some("sign in required"),
-        (Some(_), None) => Some("host inventory Token missing — re-Host / Start as owner"),
+    match (
+        access.as_ref(),
+        host_room_token.as_ref(),
+        intent_bind_pending,
+    ) {
+        (None, _, _) => Some("sign in required"),
+        (Some(_), None, _) => Some("host inventory Token missing — re-Host / Start as owner"),
+        (Some(_), Some(_), None) => Some("Intent session required"),
+        (Some(_), Some(_), Some(true)) => Some("host Intent re-bind in progress — wait a moment"),
         _ => None,
     }
 }
@@ -2440,13 +2450,11 @@ fn run_paced_inventory_take_out(
                 return format!("spawn put {spawned}/{total} then failed: intent_session lock");
             };
             let Some(intent) = gate.as_mut() else {
-                return format!("spawn put {spawned}/{total} then failed: no Intent session (bind first)");
+                return format!(
+                    "spawn put {spawned}/{total} then failed: no Intent session (bind first)"
+                );
             };
-            intent.sign_control_spawn(
-                room_id,
-                &blob.blake3,
-                [x, y, z, qx, qy, qz, qw, sx, sy, sz],
-            )
+            intent.sign_control_spawn(room_id, &blob.blake3, [x, y, z, qx, qy, qz, qw, sx, sy, sz])
         };
         match crate::inventory::publish_inventory_spawn_pose(
             session,
@@ -3278,7 +3286,14 @@ fn handle_ui_action(
                 };
                 (auth.access_token.clone(), auth.host_room_token.clone())
             };
-            if let Some(msg) = inventory_host_token_gate_status(&access, &host_room_token) {
+            let intent_bind_pending = shared
+                .intent_session
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().map(|s| s.bind_pending()));
+            if let Some(msg) =
+                inventory_host_token_gate_status(&access, &host_room_token, intent_bind_pending)
+            {
                 inventory_status_rebuild(ui, shared, msg);
                 return;
             }
@@ -3300,7 +3315,11 @@ fn handle_ui_action(
                     return;
                 };
                 if sess.is_none() {
-                    inventory_status_rebuild(ui, shared, "Intent session required (join/bind first)");
+                    inventory_status_rebuild(
+                        ui,
+                        shared,
+                        "Intent session required (join/bind first)",
+                    );
                     return;
                 }
             }
@@ -3509,7 +3528,14 @@ fn handle_ui_action(
                 };
                 (auth.access_token.clone(), auth.host_room_token.clone())
             };
-            if let Some(msg) = inventory_host_token_gate_status(&access, &host_room_token) {
+            let intent_bind_pending = shared
+                .intent_session
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().map(|s| s.bind_pending()));
+            if let Some(msg) =
+                inventory_host_token_gate_status(&access, &host_room_token, intent_bind_pending)
+            {
                 inventory_status_rebuild(ui, shared, msg);
                 return;
             }

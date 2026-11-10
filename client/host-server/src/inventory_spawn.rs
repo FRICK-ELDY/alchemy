@@ -1,11 +1,14 @@
 //! Inventory take-out spawn control plane (x006d / x0081).
 //!
 //! Guarantees: Zenoh `…/inventory/spawn` is **Room AEAD** (`AeadKind::InventorySpawn`);
-//! after open, session Ed25519 + SessionTable (`sub` == host Token sub); world HTTP append
-//! uses **host** Token + PoP (client JWT never on the bus); physics only applies a ready
-//! `SceneEntry` (+ shared scene / re-seal flag).
+//! after open, session Ed25519 + SessionTable (**`role=host` bind** + `sub` == host Token
+//! sub); world HTTP append uses **host** Token + PoP (client JWT never on the bus); physics
+//! only applies a ready `SceneEntry` (+ shared scene / re-seal flag). Order mirrors Intent:
+//! evaluate (no seq) → rate → commit seq → HTTP (unbound/guest cannot burn shared rate).
 //! Non-guarantees: guest take-out for non-host sub; put-back; Intent path;
-//! distributed TX rollback of world append when Rapier refuses (scene+reseal still apply).
+//! distributed TX / **HTTP failure after `control_seq` commit** (seq stays advanced);
+//! evaluate→rate→commit のあいだに host→guest 降格が挟まると **rate だけ消費して commit 失敗**
+//! しうる（Intent と同じく許容・窓は狭い）。
 
 use alchemy_protocol::control_plane::{self, ControlPose};
 use alchemy_protocol::wire_aead::{self, AeadKind};
@@ -224,11 +227,12 @@ fn process_sample(
         parsed.x, parsed.y, parsed.z, parsed.qx, parsed.qy, parsed.qz, parsed.qw, parsed.sx,
         parsed.sy, parsed.sz,
     ];
+    let blake3 = parsed.blake3.to_ascii_lowercase();
     control_plane::verify_spawn(
         &session_pub,
         room_id,
         parsed.control_seq,
-        &parsed.blake3.to_ascii_lowercase(),
+        &blake3,
         pose,
         &control_sig,
     )
@@ -236,13 +240,20 @@ fn process_sample(
 
     let auth = http_auth.snapshot()?;
     {
-        let mut table = sessions
+        let table = sessions
             .lock()
             .map_err(|_| anyhow!("SessionTable poisoned"))?;
-        table.authorize_control(&session_pub, parsed.control_seq, &auth.sub)?;
+        // Bind+role+sub+seq check first — unbound/guest must not reach shared rate.
+        table.evaluate_control(&session_pub, parsed.control_seq, &auth.sub)?;
     }
     if !rate.allow() {
         return Err(anyhow!("rate limited"));
+    }
+    {
+        let mut table = sessions
+            .lock()
+            .map_err(|_| anyhow!("SessionTable poisoned"))?;
+        table.commit_control(&session_pub, parsed.control_seq, &auth.sub)?;
     }
 
     let (scene, entry) = append_room_scene_entry(
@@ -250,7 +261,7 @@ fn process_sample(
         room_id,
         &auth.token,
         &auth.pop_key,
-        &parsed.blake3.to_ascii_lowercase(),
+        &blake3,
         parsed.x,
         parsed.y,
         parsed.z,
@@ -319,6 +330,21 @@ mod tests {
     fn parse_rejects_legacy_room_token_payload() {
         let legacy = br#"{"room_token":"t","blake3":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
         assert!(parse_payload(legacy).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_bad_blake3_and_non_positive_scale() {
+        let good_b3 = "a".repeat(64);
+        let short_b3 = br#"{"session_pub":"x","control_seq":1,"control_sig":"y","blake3":"abcd"}"#;
+        assert!(parse_payload(short_b3).is_err());
+        let bad_scale = format!(
+            r#"{{"session_pub":"x","control_seq":1,"control_sig":"y","blake3":"{good_b3}","sx":0.0}}"#
+        );
+        assert!(parse_payload(bad_scale.as_bytes()).is_err());
+        let ok = format!(
+            r#"{{"session_pub":"x","control_seq":1,"control_sig":"y","blake3":"{good_b3}"}}"#
+        );
+        assert!(parse_payload(ok.as_bytes()).is_ok());
     }
 
     #[test]

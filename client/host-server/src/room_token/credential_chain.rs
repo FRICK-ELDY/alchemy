@@ -117,7 +117,11 @@ pub struct HostHttpAuthSnapshot {
 }
 
 impl SharedHostHttpAuth {
-    pub fn new(token: String, pop_key: alchemy_protocol::wire_crypto::SigningKey, sub: String) -> Self {
+    pub fn new(
+        token: String,
+        pop_key: alchemy_protocol::wire_crypto::SigningKey,
+        sub: String,
+    ) -> Self {
         Self {
             inner: std::sync::Arc::new(std::sync::RwLock::new(HostHttpAuthSnapshot {
                 token,
@@ -353,6 +357,10 @@ fn room_visibility_from_env() -> Result<String> {
 /// if a different sub creates first, this host Token path returns 403.
 /// x0025: `ALCHEMY_ROOM_TOKEN` bypass is **debug-only** (release fail-closed).
 /// x0066: optional `csr_pem` → `mtls` when world CA configured.
+///
+/// **Non-guarantee (debug bypass):** `ALCHEMY_ROOM_TOKEN` uses a random `pop_key` that is
+/// **not** bound as the bypass JWT `cnf.spk`, so world host HTTP PoP (x0081) will 401.
+/// Bypass is for local Intent/Wire paths only — not a substitute for a real host Token.
 pub fn fetch_host_token(
     world_url: &str,
     room_id: &str,
@@ -362,7 +370,7 @@ pub fn fetch_host_token(
     if let Some(token) = room_token_env_bypass() {
         let wire_cap = zenoh_connect::require_wire_cap(None)
             .unwrap_or_else(|_| alchemy_protocol::LOCAL_WIRE_CAP.to_string());
-        // Bypass Token cannot satisfy world PoP; key is retained for API shape only.
+        // Random key: bypass JWT has no matching cnf.spk → world PoP always fails (debug only).
         let pop_key = alchemy_protocol::wire_crypto::generate_signing_key();
         return Ok(HostTokenBundle {
             token,
@@ -600,16 +608,14 @@ impl HostCredentialChain {
         ) {
             log::warn!("host bootstrap mTLS: {err:#}");
         }
-        let http_auth =
-            SharedHostHttpAuth::new(bundle.token.clone(), bundle.pop_key.clone(), claims.sub.clone());
-        let (host_attestation, host_generation, attest_ttl) = fetch_host_attestation(
-            world_url,
-            room_id,
-            &bundle.token,
-            &bundle.pop_key,
-            host_pub,
-        )
-        .context("fetch HostAttestation")?;
+        let http_auth = SharedHostHttpAuth::new(
+            bundle.token.clone(),
+            bundle.pop_key.clone(),
+            claims.sub.clone(),
+        );
+        let (host_attestation, host_generation, attest_ttl) =
+            fetch_host_attestation(world_url, room_id, &bundle.token, &bundle.pop_key, host_pub)
+                .context("fetch HostAttestation")?;
         Ok(Self {
             auth,
             auth_refresh_at,
@@ -785,9 +791,14 @@ impl HostCredentialChain {
         room_id: &str,
         host_pub: &[u8],
     ) -> Result<()> {
-        let (attestation, generation, ttl) =
-            fetch_host_attestation(world_url, room_id, &self.host_token, &self.pop_key, host_pub)
-                .context("refresh HostAttestation")?;
+        let (attestation, generation, ttl) = fetch_host_attestation(
+            world_url,
+            room_id,
+            &self.host_token,
+            &self.pop_key,
+            host_pub,
+        )
+        .context("refresh HostAttestation")?;
         self.host_attestation = attestation;
         self.host_generation = generation;
         self.attest_refresh_at = refresh_deadline(ttl)

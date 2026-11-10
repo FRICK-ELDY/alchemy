@@ -96,6 +96,7 @@ pub struct ManifestSealCache {
 impl ManifestSealCache {
     /// Ensure seal matches `(revision, body_blake3)`; refresh when due or body changed.
     /// Returns `true` when `seal` string changed.
+    #[allow(clippy::too_many_arguments)] // world URL + Token/PoP + revision/blake3/attest
     pub fn ensure(
         &mut self,
         world_url: &str,

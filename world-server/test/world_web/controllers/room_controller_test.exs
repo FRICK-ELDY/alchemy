@@ -729,6 +729,70 @@ defmodule WorldWeb.RoomControllerTest do
              |> json_response(401)
   end
 
+  test "host_keys rejects bad PoP sig, skew, and cnf.spk mismatch (x0081)", %{
+    conn: conn,
+    signer: signer
+  } do
+    sub = "22222222-2222-2222-2222-222222222222"
+    host_pub = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+    path = "/api/v1/rooms/pop-bad/host_keys"
+    body_map = %{host_pub: host_pub}
+    raw = Jason.encode!(body_map)
+
+    conn
+    |> TestAuthHelpers.put_auth(signer, sub)
+    |> post("/api/v1/rooms", %{room_id: "pop-bad"})
+    |> json_response(201)
+
+    {pub, priv} = TestAuthHelpers.session_keypair()
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> post(
+        "/api/v1/rooms/pop-bad/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(pub)})
+      )
+      |> json_response(200)
+
+    # Wrong signature bytes → 401 (API maps all PoP failures to pop_required).
+    assert %{"error" => "pop_required"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> put_req_header("x-alchemy-pop-ts", Integer.to_string(System.system_time(:second)))
+             |> put_req_header(
+               "x-alchemy-pop-sig",
+               Base.url_encode64(:crypto.strong_rand_bytes(64), padding: false)
+             )
+             |> put_req_header("content-type", "application/json")
+             |> Phoenix.ConnTest.dispatch(WorldWeb.Endpoint, :post, path, raw)
+             |> json_response(401)
+
+    # Skew exceeded (±60s default).
+    stale_ts = System.system_time(:second) - 120
+    msg = World.HttpPop.signing_bytes("POST", path, stale_ts, raw)
+    stale_sig = :crypto.sign(:eddsa, :none, msg, [priv, :ed25519])
+
+    assert %{"error" => "pop_required"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> put_req_header("x-alchemy-pop-ts", Integer.to_string(stale_ts))
+             |> put_req_header("x-alchemy-pop-sig", Base.url_encode64(stale_sig, padding: false))
+             |> put_req_header("content-type", "application/json")
+             |> Phoenix.ConnTest.dispatch(WorldWeb.Endpoint, :post, path, raw)
+             |> json_response(401)
+
+    # Valid PoP key that is not the Token cnf.spk.
+    {_other_pub, other_priv} = TestAuthHelpers.session_keypair()
+
+    assert %{"error" => "pop_required"} =
+             build_conn()
+             |> TestAuthHelpers.put_host_pop(host_token, other_priv, "POST", path, raw)
+             |> put_req_header("content-type", "application/json")
+             |> Phoenix.ConnTest.dispatch(WorldWeb.Endpoint, :post, path, raw)
+             |> json_response(401)
+  end
+
   test "host_keys rejects missing bearer and bad host_pub", %{conn: conn, signer: signer} do
     sub = "22222222-2222-2222-2222-222222222222"
     {pub, priv} = TestAuthHelpers.session_keypair()

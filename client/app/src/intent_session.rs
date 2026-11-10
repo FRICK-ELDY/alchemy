@@ -110,6 +110,8 @@ impl IntentSession {
     }
 
     /// Sign inventory spawn control (advances `control_seq`).
+    ///
+    /// `blake3_hex` is normalized to lowercase so verify matches host-side canonical form.
     pub fn sign_control_spawn(
         &mut self,
         room_id: &str,
@@ -117,7 +119,8 @@ impl IntentSession {
         pose: ControlPose,
     ) -> ControlSig {
         self.control_seq = self.control_seq.saturating_add(1);
-        let sig = control_plane::sign_spawn(&self.key, room_id, self.control_seq, blake3_hex, pose);
+        let blake3 = blake3_hex.to_ascii_lowercase();
+        let sig = control_plane::sign_spawn(&self.key, room_id, self.control_seq, &blake3, pose);
         ControlSig {
             session_pub_b64: self.session_pub_b64(),
             control_seq: self.control_seq,

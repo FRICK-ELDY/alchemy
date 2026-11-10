@@ -2,8 +2,10 @@
 //!
 //! Guarantees: Room Token alone cannot forge steady Intent; seq must advance;
 //! bind requires JWT + matching Ed25519 sig + `cnf.spk` == `session_pub`;
-//! bind stores Intent caps from `role` (frozen until re-bind — mid-session role
-//! change is non-goal). Stolen JWT cannot bind with a different session key.
+//! bind stores Intent caps **and JWT `role`** from `role` (frozen until re-bind —
+//! mid-session role change is non-goal). Stolen JWT cannot bind with a different
+//! session key. Inventory control (x0081) requires bind with **`role=host`** plus
+//! `sub ==` current host Token sub (guest re-bind of the same account is rejected).
 //! x0040: [`SessionTable::evaluate_*`] does not mutate; callers rate-limit then
 //! [`commit_*`] so forged sigs cannot drain buckets and rate drops do not advance seq.
 //! Non-guarantees: Zenoh ACL; client private-key theft; same-key last-wins rebind;
@@ -41,6 +43,8 @@ pub struct SessionBinding {
     pub last_control_seq: u64,
     /// Intent-path capability bits from Room Token `role` at bind (x002a).
     pub caps: u32,
+    /// Room Token `role` at bind (`host` / `guest`); control plane requires `host` (x0081).
+    pub role: String,
 }
 
 /// Bind path after Ed25519 + JWT; not yet written to the table.
@@ -49,6 +53,7 @@ pub struct PendingBind {
     pub sub: String,
     pub jti: String,
     pub caps: u32,
+    pub role: String,
 }
 
 /// Steady path after Ed25519 + seq check; `last_seq` not yet advanced.
@@ -147,6 +152,7 @@ impl SessionTable {
             sub: claims.sub,
             jti: claims.jti,
             caps,
+            role: claims.role,
         })
     }
 
@@ -172,11 +178,18 @@ impl SessionTable {
 
     /// Apply bind. Returns `(sub, jti, caps, removed_other_session_pubs)`.
     /// `removed` excludes the pub being bound so rate GC does not reset its bucket.
+    /// Same `session_pub` re-bind keeps `last_control_seq` (host JWT upgrade must not
+    /// rewind control-plane anti-replay).
     pub fn commit_bind(
         &mut self,
         event: &InputEvent,
         pending: PendingBind,
     ) -> (String, String, u32, Vec<Vec<u8>>) {
+        let prior_control_seq = self
+            .by_pub
+            .get(&event.session_pub)
+            .map(|b| b.last_control_seq)
+            .unwrap_or(0);
         let mut removed = self.remove_by_sub(&pending.sub);
         removed.retain(|p| p.as_slice() != event.session_pub.as_slice());
         self.by_pub.insert(
@@ -185,23 +198,31 @@ impl SessionTable {
                 sub: pending.sub.clone(),
                 jti: pending.jti.clone(),
                 last_seq: event.intent_seq,
-                last_control_seq: 0,
+                last_control_seq: prior_control_seq,
                 caps: pending.caps,
+                role: pending.role.clone(),
             },
         );
         (pending.sub, pending.jti, pending.caps, removed)
     }
 
-    /// Authorize inventory control (x0081): bind required, `sub` match, control_seq advance.
-    pub fn authorize_control(
-        &mut self,
+    /// Control-plane checks without mutating `last_control_seq` (x0081).
+    /// Callers rate-limit then [`commit_control`] so forged/unbound traffic cannot burn rate.
+    pub fn evaluate_control(
+        &self,
         session_pub: &[u8],
         control_seq: u64,
         expected_sub: &str,
     ) -> Result<()> {
-        let Some(binding) = self.by_pub.get_mut(session_pub) else {
+        let Some(binding) = self.by_pub.get(session_pub) else {
             bail!("control plane with unknown session_pub (bind Intent first)");
         };
+        if binding.role != "host" {
+            bail!(
+                "control plane requires host-role Intent bind (got role={})",
+                binding.role
+            );
+        }
         if binding.sub != expected_sub {
             bail!(
                 "control plane sub mismatch (session {}, host {})",
@@ -216,8 +237,34 @@ impl SessionTable {
                 binding.last_control_seq
             );
         }
+        Ok(())
+    }
+
+    /// Advance `last_control_seq` after rate allow (re-checks binding).
+    pub fn commit_control(
+        &mut self,
+        session_pub: &[u8],
+        control_seq: u64,
+        expected_sub: &str,
+    ) -> Result<()> {
+        self.evaluate_control(session_pub, control_seq, expected_sub)?;
+        let binding = self.by_pub.get_mut(session_pub).ok_or_else(|| {
+            anyhow!("commit_control: session_pub unbound between evaluate and commit")
+        })?;
         binding.last_control_seq = control_seq;
         Ok(())
+    }
+
+    /// Test helper: evaluate + commit (no external rate gate).
+    #[cfg(test)]
+    pub fn authorize_control(
+        &mut self,
+        session_pub: &[u8],
+        control_seq: u64,
+        expected_sub: &str,
+    ) -> Result<()> {
+        self.evaluate_control(session_pub, control_seq, expected_sub)?;
+        self.commit_control(session_pub, control_seq, expected_sub)
     }
 
     /// Advance `last_seq` after rate allow. Err if binding vanished (reclaim race).
@@ -383,6 +430,7 @@ mod tests {
                 last_seq: 0,
                 last_control_seq: 0,
                 caps: guest_caps(),
+                role: "guest".into(),
             },
         );
         let verifier = RoomTokenVerifier::new("http://127.0.0.1:9", "local");
@@ -419,6 +467,7 @@ mod tests {
                 last_seq: 2,
                 last_control_seq: 0,
                 caps: guest_caps(),
+                role: "guest".into(),
             },
         );
         table.remove_by_sub("alice");
@@ -440,6 +489,7 @@ mod tests {
                 last_seq: 5,
                 last_control_seq: 0,
                 caps: guest_caps(),
+                role: "guest".into(),
             },
         );
 
@@ -477,6 +527,7 @@ mod tests {
                 last_seq: 3,
                 last_control_seq: 0,
                 caps: guest_caps(),
+                role: "guest".into(),
             },
         );
         let event = unsigned_intent(pub_bytes.clone(), 4);
@@ -484,6 +535,7 @@ mod tests {
             sub: "alice".into(),
             jti: "j-new".into(),
             caps: guest_caps(),
+            role: "guest".into(),
         };
         let (_sub, _jti, _caps, removed) = table.commit_bind(&event, pending);
         assert!(
@@ -505,6 +557,7 @@ mod tests {
                 last_seq: 0,
                 last_control_seq: 0,
                 caps: guest_caps(),
+                role: "guest".into(),
             },
         );
         let event = unsigned_intent(pub_bytes.clone(), 1);
@@ -565,6 +618,7 @@ mod tests {
                 last_seq: 0,
                 last_control_seq: 0,
                 caps: INTENT_MOVE,
+                role: "guest".into(),
             },
         );
 
@@ -600,6 +654,7 @@ mod tests {
                 last_seq: 0,
                 last_control_seq: 0,
                 caps: guest_caps(),
+                role: "guest".into(),
             },
         );
         let mut rates = IntentRateLimiter::new();
@@ -627,6 +682,7 @@ mod tests {
                 last_seq: 0,
                 last_control_seq: 0,
                 caps: guest_caps(),
+                role: "guest".into(),
             },
         );
         let mut rates = IntentRateLimiter::new();
@@ -642,5 +698,136 @@ mod tests {
         assert!(!rates.allow_steady(false, &pending.sub, t0));
         // No commit → seq stays 0.
         assert_eq!(table.get(&event.session_pub).unwrap().last_seq, 0);
+    }
+
+    #[test]
+    fn authorize_control_requires_host_role_bind() {
+        let mut table = SessionTable::default();
+        let pub_bytes = public_key_bytes(&generate_signing_key());
+        table.by_pub.insert(
+            pub_bytes.clone(),
+            SessionBinding {
+                sub: "owner".into(),
+                jti: "j".into(),
+                last_seq: 1,
+                last_control_seq: 0,
+                caps: guest_caps(),
+                role: "guest".into(),
+            },
+        );
+        let err = table
+            .authorize_control(&pub_bytes, 1, "owner")
+            .expect_err("guest bind must not control");
+        assert!(
+            err.to_string().contains("host-role"),
+            "expected host-role reject, got: {err:#}"
+        );
+        assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 0);
+    }
+
+    #[test]
+    fn authorize_control_rejects_unbound_sub_mismatch_and_stale_seq() {
+        let mut table = SessionTable::default();
+        let pub_bytes = public_key_bytes(&generate_signing_key());
+        assert!(table.authorize_control(&pub_bytes, 1, "owner").is_err());
+
+        table.by_pub.insert(
+            pub_bytes.clone(),
+            SessionBinding {
+                sub: "owner".into(),
+                jti: "j".into(),
+                last_seq: 1,
+                last_control_seq: 3,
+                caps: guest_caps(),
+                role: "host".into(),
+            },
+        );
+        let err = table
+            .authorize_control(&pub_bytes, 4, "other")
+            .expect_err("sub mismatch");
+        assert!(err.to_string().contains("sub mismatch"));
+        assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 3);
+
+        let err = table
+            .authorize_control(&pub_bytes, 3, "owner")
+            .expect_err("stale seq");
+        assert!(err.to_string().contains("control_seq"));
+        assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 3);
+
+        table
+            .authorize_control(&pub_bytes, 4, "owner")
+            .expect("host control");
+        assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 4);
+    }
+
+    #[test]
+    fn bind_host_role_is_visible_on_binding() {
+        let jwt = TestJwt::new("local");
+        let mut table = SessionTable::default();
+        let key = generate_signing_key();
+        let pub_bytes = public_key_bytes(&key);
+        let token = jwt.token("owner", "j-host", "host", "local", &pub_bytes);
+        let mut event = unsigned_intent(pub_bytes.clone(), 1);
+        event.room_token = token;
+        sign_input(&key, &mut event);
+        table.authorize(&event, &jwt.verifier).expect("host bind");
+        assert_eq!(table.get(&pub_bytes).unwrap().role, "host");
+    }
+
+    #[test]
+    fn evaluate_control_does_not_advance_seq() {
+        let mut table = SessionTable::default();
+        let pub_bytes = public_key_bytes(&generate_signing_key());
+        table.by_pub.insert(
+            pub_bytes.clone(),
+            SessionBinding {
+                sub: "owner".into(),
+                jti: "j".into(),
+                last_seq: 1,
+                last_control_seq: 2,
+                caps: guest_caps(),
+                role: "host".into(),
+            },
+        );
+        table
+            .evaluate_control(&pub_bytes, 3, "owner")
+            .expect("evaluate");
+        assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 2);
+        table
+            .commit_control(&pub_bytes, 3, "owner")
+            .expect("commit");
+        assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 3);
+    }
+
+    #[test]
+    fn same_pub_rebind_preserves_last_control_seq() {
+        let jwt = TestJwt::new("local");
+        let mut table = SessionTable::default();
+        let key = generate_signing_key();
+        let pub_bytes = public_key_bytes(&key);
+        let guest = jwt.token("owner", "j-guest", "guest", "local", &pub_bytes);
+        let mut event = unsigned_intent(pub_bytes.clone(), 1);
+        event.room_token = guest;
+        sign_input(&key, &mut event);
+        table.authorize(&event, &jwt.verifier).expect("guest bind");
+        table
+            .authorize_control(&pub_bytes, 1, "owner")
+            .expect_err("guest cannot control");
+
+        // Simulate prior host control seq then upgrade role via same-pub rebind.
+        table.by_pub.get_mut(&pub_bytes).unwrap().last_control_seq = 7;
+        table.by_pub.get_mut(&pub_bytes).unwrap().role = "host".into();
+        // Downgrade path used in test setup only; real upgrade:
+        let host = jwt.token("owner", "j-host", "host", "local", &pub_bytes);
+        let mut event = unsigned_intent(pub_bytes.clone(), 2);
+        event.room_token = host;
+        sign_input(&key, &mut event);
+        table.authorize(&event, &jwt.verifier).expect("host rebind");
+        assert_eq!(table.get(&pub_bytes).unwrap().role, "host");
+        assert_eq!(
+            table.get(&pub_bytes).unwrap().last_control_seq,
+            7,
+            "same-pub rebind must not rewind control_seq"
+        );
     }
 }
