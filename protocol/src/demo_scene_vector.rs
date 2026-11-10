@@ -33,7 +33,7 @@ pub const DEMO_SCENE_VECTOR_HOST_ATTESTATION: &str = "x0079-demo-scene-vector-at
 /// Recompute via `mix run world-server/scripts/regen_demo_scene_vector.exs`
 /// when `World.DemoScene` / Rust mirror / [`PROTOCOL_PIN`] change.
 pub const DEMO_SCENE_VECTOR_BLAKE3: &str =
-    "a7ee5e89ce73320052854cd0811089af8d0e9d47120bcf49b351adf659eb380a";
+    "c7e395dbd14c4c72a96673f0fc5a510dc9e4bf699bb368e64238ac65d26d291a";
 
 /// Decode [`DEMO_SCENE_VECTOR_HOST_PUB_HEX`] to 32 bytes.
 pub fn demo_scene_vector_host_pub() -> [u8; 32] {

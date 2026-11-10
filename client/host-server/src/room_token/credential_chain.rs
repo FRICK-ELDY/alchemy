@@ -70,7 +70,9 @@ pub struct WorldMtls {
 }
 
 /// Host Room Token bootstrap payload (x004e includes wire_cap + allocation; x0066 mtls).
-#[derive(Debug, Clone)]
+///
+/// `pop_key` is the Ed25519 secret bound as JWT `cnf.spk` for HTTP PoP (x0081).
+#[derive(Clone)]
 pub struct HostTokenBundle {
     pub token: String,
     pub expires_in: u64,
@@ -83,6 +85,70 @@ pub struct HostTokenBundle {
     pub room_key_prev: Option<([u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN], u64)>,
     pub allocation_token: String,
     pub mtls: Option<WorldMtls>,
+    /// Session key for `cnf.spk` HTTP PoP (x0081). Dropped only with the Token.
+    pub pop_key: alchemy_protocol::wire_crypto::SigningKey,
+}
+
+impl std::fmt::Debug for HostTokenBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostTokenBundle")
+            .field("token", &"<redacted>")
+            .field("expires_in", &self.expires_in)
+            .field("wire_cap", &self.wire_cap)
+            .field("room_key_epoch", &self.room_key_epoch)
+            .field("allocation_token_empty", &self.allocation_token.is_empty())
+            .field("mtls", &self.mtls.is_some())
+            .field("pop_key", &"<ed25519>")
+            .finish()
+    }
+}
+
+/// Live host HTTP credentials shared with inventory spawn/despawn workers (x0081).
+#[derive(Clone)]
+pub struct SharedHostHttpAuth {
+    inner: std::sync::Arc<std::sync::RwLock<HostHttpAuthSnapshot>>,
+}
+
+#[derive(Clone)]
+pub struct HostHttpAuthSnapshot {
+    pub token: String,
+    pub pop_key: alchemy_protocol::wire_crypto::SigningKey,
+    pub sub: String,
+}
+
+impl SharedHostHttpAuth {
+    pub fn new(token: String, pop_key: alchemy_protocol::wire_crypto::SigningKey, sub: String) -> Self {
+        Self {
+            inner: std::sync::Arc::new(std::sync::RwLock::new(HostHttpAuthSnapshot {
+                token,
+                pop_key,
+                sub,
+            })),
+        }
+    }
+
+    pub fn snapshot(&self) -> Result<HostHttpAuthSnapshot> {
+        self.inner
+            .read()
+            .map(|g| g.clone())
+            .map_err(|_| anyhow!("SharedHostHttpAuth poisoned"))
+    }
+
+    pub fn update(
+        &self,
+        token: String,
+        pop_key: alchemy_protocol::wire_crypto::SigningKey,
+        sub: String,
+    ) -> Result<()> {
+        let mut g = self
+            .inner
+            .write()
+            .map_err(|_| anyhow!("SharedHostHttpAuth poisoned"))?;
+        g.token = token;
+        g.pop_key = pop_key;
+        g.sub = sub;
+        Ok(())
+    }
 }
 
 fn parse_room_key_b64(b64: &str) -> Result<[u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]> {
@@ -296,6 +362,8 @@ pub fn fetch_host_token(
     if let Some(token) = room_token_env_bypass() {
         let wire_cap = zenoh_connect::require_wire_cap(None)
             .unwrap_or_else(|_| alchemy_protocol::LOCAL_WIRE_CAP.to_string());
+        // Bypass Token cannot satisfy world PoP; key is retained for API shape only.
+        let pop_key = alchemy_protocol::wire_crypto::generate_signing_key();
         return Ok(HostTokenBundle {
             token,
             expires_in: BYPASS_ROOM_TOKEN_TTL_HINT,
@@ -305,6 +373,7 @@ pub fn fetch_host_token(
             room_key_prev: None,
             allocation_token: String::new(),
             mtls: None,
+            pop_key,
         });
     }
 
@@ -337,11 +406,10 @@ pub fn fetch_host_token(
         }
     }
 
-    // x003e: API requires session_pub; HTTP credential paths do not check cnf.
-    // Ephemeral key binds the JWT claim only (not used for Intent).
-    let ephemeral = alchemy_protocol::wire_crypto::generate_signing_key();
+    // x003e + x0081: session_pub binds JWT `cnf.spk`; keep secret for HTTP PoP.
+    let pop_key = alchemy_protocol::wire_crypto::generate_signing_key();
     let session_pub_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(alchemy_protocol::wire_crypto::public_key_bytes(&ephemeral));
+        .encode(alchemy_protocol::wire_crypto::public_key_bytes(&pop_key));
     let token_url = format!("{base}/api/v1/rooms/{room_id}/tokens");
     let mut body = serde_json::json!({
         "role": "host",
@@ -389,6 +457,7 @@ pub fn fetch_host_token(
                 room_key_prev,
                 allocation_token: parsed.allocation_token,
                 mtls,
+                pop_key,
             })
         }
         Err(ureq::Error::Status(403, resp)) => {
@@ -457,6 +526,10 @@ pub struct HostCredentialChain {
     /// Full auth JWT expiry; `None` when `expires_in=0` (static `ALCHEMY_AUTH_TOKEN`).
     pub auth_hard_expire_at: Option<Instant>,
     pub host_token: String,
+    /// Ed25519 secret for host Token `cnf.spk` HTTP PoP (x0081).
+    pub pop_key: alchemy_protocol::wire_crypto::SigningKey,
+    /// Host Token `sub` (active compute host / owner-resume).
+    pub host_sub: String,
     pub host_refresh_at: Instant,
     pub host_hard_expire_at: Instant,
     pub host_attestation: String,
@@ -474,6 +547,8 @@ pub struct HostCredentialChain {
     pub room_key_prev: Option<([u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN], u64)>,
     /// Latest Allocation Token for Relay mTLS refresh (x004e).
     pub allocation_token: String,
+    /// Shared with inventory workers; updated on host Token refresh (x0081).
+    pub http_auth: SharedHostHttpAuth,
 }
 
 impl HostCredentialChain {
@@ -508,6 +583,9 @@ impl HostCredentialChain {
                 claims.role
             ));
         }
+        if claims.sub.is_empty() {
+            return Err(anyhow!("host Room Token missing sub"));
+        }
         if let Err(err) = zenoh_connect::apply_world_mtls_or_allocate(
             bundle.mtls.as_ref().map(|m| m.client_cert_pem.as_str()),
             eph_key.as_deref(),
@@ -522,14 +600,23 @@ impl HostCredentialChain {
         ) {
             log::warn!("host bootstrap mTLS: {err:#}");
         }
-        let (host_attestation, host_generation, attest_ttl) =
-            fetch_host_attestation(world_url, room_id, &bundle.token, host_pub)
-                .context("fetch HostAttestation")?;
+        let http_auth =
+            SharedHostHttpAuth::new(bundle.token.clone(), bundle.pop_key.clone(), claims.sub.clone());
+        let (host_attestation, host_generation, attest_ttl) = fetch_host_attestation(
+            world_url,
+            room_id,
+            &bundle.token,
+            &bundle.pop_key,
+            host_pub,
+        )
+        .context("fetch HostAttestation")?;
         Ok(Self {
             auth,
             auth_refresh_at,
             auth_hard_expire_at,
             host_token: bundle.token,
+            pop_key: bundle.pop_key,
+            host_sub: claims.sub,
             host_refresh_at: refresh_deadline(bundle.expires_in).unwrap_or_else(|| {
                 Instant::now() + Duration::from_secs(BYPASS_ROOM_TOKEN_TTL_HINT)
             }),
@@ -545,6 +632,7 @@ impl HostCredentialChain {
             room_key_epoch: bundle.room_key_epoch,
             room_key_prev: bundle.room_key_prev,
             allocation_token: bundle.allocation_token,
+            http_auth,
         })
     }
 
@@ -638,7 +726,15 @@ impl HostCredentialChain {
                 claims.role
             ));
         }
-        self.host_token = bundle.token;
+        if claims.sub.is_empty() {
+            return Err(anyhow!("refreshed host Room Token missing sub"));
+        }
+        self.host_token = bundle.token.clone();
+        self.pop_key = bundle.pop_key.clone();
+        self.host_sub = claims.sub.clone();
+        self.http_auth
+            .update(bundle.token, bundle.pop_key, claims.sub)
+            .context("update SharedHostHttpAuth")?;
         // wire_cap is room-lifetime stable (Zenoh keys fixed at boot).
         // room_key / epoch may rotate (x007e); caller syncs SharedRoomAead via apply_room_aead.
         if self.wire_cap.is_empty() {
@@ -690,7 +786,7 @@ impl HostCredentialChain {
         host_pub: &[u8],
     ) -> Result<()> {
         let (attestation, generation, ttl) =
-            fetch_host_attestation(world_url, room_id, &self.host_token, host_pub)
+            fetch_host_attestation(world_url, room_id, &self.host_token, &self.pop_key, host_pub)
                 .context("refresh HostAttestation")?;
         self.host_attestation = attestation;
         self.host_generation = generation;
@@ -703,31 +799,44 @@ impl HostCredentialChain {
 }
 
 /// Register host Ed25519 pub with world; returns HostAttestation JWT + generation + TTL (x0025 / x003a).
+///
+/// `pop_key` must be the secret bound as the host Room Token `cnf.spk` (x0081).
 pub fn fetch_host_attestation(
     world_url: &str,
     room_id: &str,
     host_room_token: &str,
+    pop_key: &alchemy_protocol::wire_crypto::SigningKey,
     host_pub: &[u8],
 ) -> Result<(String, u64, u64)> {
+    use super::http_pop_client::{request_path, with_pop};
+
     if host_pub.len() != 32 {
         return Err(anyhow!("host_pub length {} (want 32)", host_pub.len()));
     }
     let host_pub_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(host_pub);
     let base = world_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/rooms/{room_id}/host_keys");
+    let path = request_path(&url);
     let authz = format!("Bearer {host_room_token}");
+    let raw = serde_json::to_vec(&serde_json::json!({ "host_pub": host_pub_b64 }))
+        .context("encode host_keys body")?;
     #[derive(Debug, Deserialize)]
     struct AttestResponse {
         attestation: String,
         expires_in: u64,
         host_generation: u64,
     }
-    match credential_agent()
-        .post(&url)
-        .set("content-type", "application/json")
-        .set("authorization", &authz)
-        .send_json(serde_json::json!({ "host_pub": host_pub_b64 }))
-    {
+    let req = with_pop(
+        credential_agent()
+            .post(&url)
+            .set("content-type", "application/json")
+            .set("authorization", &authz),
+        pop_key,
+        "POST",
+        path,
+        &raw,
+    );
+    match req.send(raw.as_slice()) {
         Ok(resp) => {
             let parsed: AttestResponse = resp.into_json().context("parse host_keys response")?;
             if parsed.attestation.is_empty() || parsed.expires_in == 0 {

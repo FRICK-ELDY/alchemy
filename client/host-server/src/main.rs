@@ -79,7 +79,7 @@ use network_worker::{
 use room_token::{
     default_auth_url, earliest_hard_expire, ensure_sealed_manifest, fetch_room_scene,
     publish_allowed_at, spawn_credential_worker, CredentialWorkerConfig, HostCredentialChain,
-    HostPublishSnapshot, ManifestSealCache, RoomTokenVerifier,
+    HostPublishSnapshot, ManifestSealCache, RoomTokenVerifier, SharedHostHttpAuth,
 };
 use session::SessionTable;
 use sim::{LocoMode, PhysicsWorld, USER_ROOT_ENTITY_FIRST};
@@ -900,7 +900,7 @@ fn main() -> Result<()> {
     );
 
     // Scene is fetched at boot; x006d take-out may append mesh entries via world HTTP.
-    let room_scene = fetch_room_scene(&world_url, &room_id, &creds.host_token)
+    let room_scene = fetch_room_scene(&world_url, &room_id, &creds.host_token, &creds.pop_key)
         .context("fetch world DemoScene (GET …/scene)")?;
     // x0039: scene body is sealed against world DB — local blake3 override cannot get a seal.
     if let Ok(override_blake3) = std::env::var("ALCHEMY_BLOB_BLAKE3") {
@@ -955,36 +955,25 @@ fn main() -> Result<()> {
     spawn_liveliness_watcher(session.clone(), &room_id, &wire_cap, Arc::clone(&presence))?;
     host_control::spawn_listener(session.clone(), &room_id, &wire_cap)?;
     host_ipc::spawn_listener().context("host IPC listener")?;
-    let spawn_verifier = Arc::clone(&verifier);
+    let http_auth: SharedHostHttpAuth = creds.http_auth.clone();
     let spawn_inbox = inventory_spawn::spawn_listener(
         session.clone(),
         &room_id,
         &wire_cap,
         Arc::clone(&room_aead),
         world_url.clone(),
-        move |token| {
-            let claims = spawn_verifier.verify(token)?;
-            if claims.role != "host" {
-                anyhow::bail!("inventory spawn requires role=host (got {})", claims.role);
-            }
-            Ok(())
-        },
+        Arc::clone(&sessions),
+        http_auth.clone(),
     )
     .context("inventory spawn listener")?;
-    let despawn_verifier = Arc::clone(&verifier);
     let despawn_inbox = inventory_despawn::despawn_listener(
         session.clone(),
         &room_id,
         &wire_cap,
         Arc::clone(&room_aead),
         world_url.clone(),
-        move |token| {
-            let claims = despawn_verifier.verify(token)?;
-            if claims.role != "host" {
-                anyhow::bail!("inventory despawn requires role=host (got {})", claims.role);
-            }
-            Ok(())
-        },
+        Arc::clone(&sessions),
+        http_auth,
     )
     .context("inventory despawn listener")?;
 

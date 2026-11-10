@@ -39,7 +39,7 @@
 | `jti` | UUID |
 | `cnf.spk` | Intent 用 Ed25519 `session_pub`（base64url・32B・x003e）。`POST …/tokens` で必須 |
 
-検証は host-server が JWKS を取得して行う（転送経路は Zenoh、権威は Token）。bind 時は Intent の `session_pub` と `cnf.spk` の一致が必須（盗聴 JWT だけでは別鍵 bind 不可）。HTTP credential（scene / attest / seal）は `role` のみ見る。
+検証は host-server が JWKS を取得して行う（転送経路は Zenoh、権威は Token）。bind 時は Intent の `session_pub` と `cnf.spk` の一致が必須（盗聴 JWT だけでは別鍵 bind 不可）。HTTP credential（scene / attest / seal）は **host `role` + `cnf.spk` PoP**（x0081: `x-alchemy-pop-ts` / `x-alchemy-pop-sig`。盗んだ Token alone → 401）。
 
 ## API（Slice B.5）
 
@@ -66,11 +66,11 @@
 | POST | `/api/v1/rooms/:room_id/tokens` | Bearer（auth JWT） | Token 発行（visibility ACL 後；host は active_host / owner-resume・x0080） |
 | POST | `/api/v1/rooms/:room_id/handover` | Bearer（auth JWT） | Graceful Handover（active_host または owner；`target_sub` null → dormant・x0080） |
 | POST | `/api/v1/rooms/:room_id/takeover` | Bearer（auth JWT） | Manual Takeover CAS（dormant / lease 切れ・x0080） |
-| POST | `/api/v1/rooms/:room_id/host_keys` | Bearer（**host Room Token**） | HostAttestation 発行（`host_pub` base64url・`host_generation`・x0025 / x003a） |
-| POST | `/api/v1/rooms/:room_id/manifest_seal` | Bearer（**host Room Token**） | ManifestSeal 発行（`revision` + `host_generation` + `manifest_blake3` + `host_attestation`；canonical 照合・x0039 / x003a） |
-| GET | `/api/v1/rooms/:room_id/scene` | Bearer（**host Room Token**） | DemoScene `{ revision, entries, locomotion }`（x0027） |
-| POST | `/api/v1/rooms/:room_id/scene/entries` | Bearer（**host Room Token**） | mesh SceneEntry 追記 + revision bump（x006d） |
-| DELETE | `/api/v1/rooms/:room_id/scene/entries/:entity_id` | Bearer（**host Room Token**） | mesh SceneEntry 削除 + revision bump（x007b；blake3 必須） |
+| POST | `/api/v1/rooms/:room_id/host_keys` | Bearer（**host Room Token**）+ PoP（x0081） | HostAttestation 発行（`host_pub` base64url・`host_generation`・x0025 / x003a） |
+| POST | `/api/v1/rooms/:room_id/manifest_seal` | Bearer（**host Room Token**）+ PoP（x0081） | ManifestSeal 発行（`revision` + `host_generation` + `manifest_blake3` + `host_attestation`；canonical 照合・x0039 / x003a） |
+| GET | `/api/v1/rooms/:room_id/scene` | Bearer（**host Room Token**）+ PoP（x0081） | DemoScene `{ revision, entries, locomotion }`（x0027） |
+| POST | `/api/v1/rooms/:room_id/scene/entries` | Bearer（**host Room Token**）+ PoP（x0081） | mesh SceneEntry 追記 + revision bump（x006d） |
+| DELETE | `/api/v1/rooms/:room_id/scene/entries/:entity_id` | Bearer（**host Room Token**）+ PoP（x0081） | mesh SceneEntry 削除 + revision bump（x007b；blake3 必須） |
 | POST | `/api/v1/rooms/:room_id/place_read` | Bearer（**Room Token**） | PlaceRead 発行（`world_seal` 必須・`extra_blake3` 無効・x006b） |
 | GET | `/api/v1/rooms/:room_id/place_hashes` | Bearer（**PlaceRead**） | seal 時固定の scene blake3s（x006b） |
 

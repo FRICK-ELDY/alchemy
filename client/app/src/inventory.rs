@@ -1,8 +1,8 @@
-//! Inventory take-out / put-back / despawn client helpers (x006d / x006e / x007b / x007f).
+//! Inventory take-out / put-back / despawn client helpers (x006d / x006e / x007b / x007f / x0081).
 //!
 //! Guarantees: Drive list / take_out / put_back over assets HTTP; spawn/despawn put on
-//! Zenoh `inventory/spawn|despawn` sealed with Room AEAD (host Room Token never leaves
-//! the room AEAD boundary); no Drive node_id on the wire to host. Put-back is
+//! Zenoh `inventory/spawn|despawn` sealed with Room AEAD and **session-signed** (no Room
+//! Token on the bus · x0081); no Drive node_id on the wire to host. Put-back is
 //! Bearer→assets only (no Zenoh); Despawn removes the room entity via host.
 //! Prefab take_out expands children (x007f); client `session.put`s each blake3
 //! sequentially (same style as room Intent puts; declare_publisher not required).
@@ -213,7 +213,7 @@ pub fn room_token_role_unverified(room_token: &str) -> Option<String> {
     v.get("role")?.as_str().map(|s| s.to_string())
 }
 
-/// Put AEAD-sealed spawn request on Zenoh (x006d / x0069).
+/// Put AEAD-sealed spawn request on Zenoh (x006d / x0069 / x0081).
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)] // room + pose wire args; mirrors host spawn payload
 pub fn publish_inventory_spawn(
@@ -222,7 +222,7 @@ pub fn publish_inventory_spawn(
     wire_cap: &str,
     room_key: &[u8; wire_aead::ROOM_KEY_LEN],
     room_key_epoch: u64,
-    room_token: &str,
+    control: &crate::intent_session::ControlSig,
     blake3: &str,
     x: f64,
     y: f64,
@@ -234,7 +234,7 @@ pub fn publish_inventory_spawn(
         wire_cap,
         room_key,
         room_key_epoch,
-        room_token,
+        control,
         blake3,
         x,
         y,
@@ -249,7 +249,7 @@ pub fn publish_inventory_spawn(
     )
 }
 
-/// Spawn with full TRS (x007f prefab child).
+/// Spawn with full TRS (x007f prefab child). Session-signed — no Room Token (x0081).
 #[allow(clippy::too_many_arguments)]
 pub fn publish_inventory_spawn_pose(
     session: &zenoh::Session,
@@ -257,7 +257,7 @@ pub fn publish_inventory_spawn_pose(
     wire_cap: &str,
     room_key: &[u8; wire_aead::ROOM_KEY_LEN],
     room_key_epoch: u64,
-    room_token: &str,
+    control: &crate::intent_session::ControlSig,
     blake3: &str,
     x: f64,
     y: f64,
@@ -272,7 +272,9 @@ pub fn publish_inventory_spawn_pose(
 ) -> Result<()> {
     let key = inventory_spawn_key(room_id, wire_cap);
     let payload = json!({
-        "room_token": room_token,
+        "session_pub": control.session_pub_b64,
+        "control_seq": control.control_seq,
+        "control_sig": control.control_sig_b64,
         "blake3": blake3,
         "x": x,
         "y": y,
@@ -301,19 +303,21 @@ pub fn publish_inventory_spawn_pose(
     Ok(())
 }
 
-/// Put AEAD-sealed despawn request on Zenoh (x007b).
+/// Put AEAD-sealed despawn request on Zenoh (x007b / x0081).
 pub fn publish_inventory_despawn(
     session: &zenoh::Session,
     room_id: &str,
     wire_cap: &str,
     room_key: &[u8; wire_aead::ROOM_KEY_LEN],
     room_key_epoch: u64,
-    room_token: &str,
+    control: &crate::intent_session::ControlSig,
     entity_id: u32,
 ) -> Result<()> {
     let key = inventory_despawn_key(room_id, wire_cap);
     let payload = json!({
-        "room_token": room_token,
+        "session_pub": control.session_pub_b64,
+        "control_seq": control.control_seq,
+        "control_sig": control.control_sig_b64,
         "entity_id": entity_id,
     });
     let plain = serde_json::to_vec(&payload).context("encode despawn JSON")?;

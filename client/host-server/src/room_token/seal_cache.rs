@@ -18,10 +18,13 @@ pub fn fetch_manifest_seal(
     world_url: &str,
     room_id: &str,
     host_room_token: &str,
+    pop_key: &alchemy_protocol::wire_crypto::SigningKey,
     revision: u64,
     manifest_blake3_hex: &str,
     host_attestation: &str,
 ) -> Result<(String, u64)> {
+    use super::http_pop_client::{request_path, with_pop};
+
     if !is_blake3_hex(manifest_blake3_hex) {
         return Err(anyhow!(
             "manifest_blake3 must be 64 lowercase/uppercase hex chars (got len={})",
@@ -35,21 +38,30 @@ pub fn fetch_manifest_seal(
     }
     let base = world_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/rooms/{room_id}/manifest_seal");
+    let path = request_path(&url);
     let authz = format!("Bearer {host_room_token}");
+    let raw = serde_json::to_vec(&serde_json::json!({
+        "revision": revision,
+        "manifest_blake3": manifest_blake3_hex,
+        "host_attestation": host_attestation,
+    }))
+    .context("encode manifest_seal body")?;
     #[derive(Debug, Deserialize)]
     struct SealResponse {
         seal: String,
         expires_in: u64,
     }
-    match credential_agent()
-        .post(&url)
-        .set("content-type", "application/json")
-        .set("authorization", &authz)
-        .send_json(serde_json::json!({
-            "revision": revision,
-            "manifest_blake3": manifest_blake3_hex,
-            "host_attestation": host_attestation,
-        })) {
+    let req = with_pop(
+        credential_agent()
+            .post(&url)
+            .set("content-type", "application/json")
+            .set("authorization", &authz),
+        pop_key,
+        "POST",
+        path,
+        &raw,
+    );
+    match req.send(raw.as_slice()) {
         Ok(resp) => {
             let parsed: SealResponse = resp.into_json().context("parse manifest_seal response")?;
             if parsed.seal.is_empty() || parsed.expires_in == 0 {
@@ -89,6 +101,7 @@ impl ManifestSealCache {
         world_url: &str,
         room_id: &str,
         host_room_token: &str,
+        pop_key: &alchemy_protocol::wire_crypto::SigningKey,
         revision: u64,
         body_blake3: &str,
         host_attestation: &str,
@@ -103,6 +116,7 @@ impl ManifestSealCache {
             world_url,
             room_id,
             host_room_token,
+            pop_key,
             revision,
             body_blake3,
             host_attestation,

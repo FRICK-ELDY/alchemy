@@ -23,7 +23,7 @@ config :world,
   room_token_private_key_path: "priv/room_jwt_private.pem",
   room_token_generate_key_on_startup: true,
   # Must match alchemy-protocol `PROTOCOL_PIN` (ManifestSeal hash input · x0039 / x004e).
-  protocol_pin: "alchemy-protocol/0.19.0-x007e",
+  protocol_pin: "alchemy-protocol/0.20.0-x0081",
   # x0075: permanent manifest-seal-hash Port (path set in test_helper / env / PATH)
   manifest_seal_hash_bin: nil,
   manifest_seal_hash_call_timeout_ms: 30_000,

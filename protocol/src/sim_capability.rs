@@ -1,12 +1,12 @@
 //! Role → capability mapping (x002a / D4).
 //!
 //! Guarantees: Room Token `role` maps to a bitset; Intent path uses INTENT_* bits;
-//! world HTTP uses HTTP_* bits (enforced by world-server via `role == "host"`,
-//! matching this table — Elixir cannot import this crate).
+//! world HTTP uses HTTP_* bits (enforced by world-server via `role == "host"` plus
+//! `cnf.spk` PoP · x0081, matching this table — Elixir cannot import this crate).
 //! Non-guarantees: caps on Presence wire; JWT `caps` claim; shared-sim / invite ACL;
 //! mid-session role change without re-bind (caps freeze at Intent bind).
 //!
-//! PROTOCOL_PIN is unchanged — this is not a protobuf schema change.
+//! PROTOCOL_PIN is unchanged by this module alone — wire JSON / PoP are x0081.
 
 use crate::input_buttons;
 use crate::InputEvent;

@@ -149,6 +149,7 @@ pub fn ensure_sealed_manifest(
             world_url,
             room_id,
             &creds.host_token,
+            &creds.pop_key,
             manifest.revision,
             &body_hex,
             &creds.host_attestation,

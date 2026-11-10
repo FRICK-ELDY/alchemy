@@ -1,10 +1,12 @@
-//! Client Intent session key (x0023 / x003e).
+//! Client Intent session key (x0023 / x003e / x0081).
 //!
 //! Guarantees: bind Intent carries Room Token until enough successful puts; steady
 //! Intents are Ed25519-signed thereafter. Room Token must be issued for this
-//! session_pub (`cnf.spk`, x003e).
+//! session_pub (`cnf.spk`, x003e). Inventory control (spawn/despawn) reuses the same
+//! key with a separate `control_seq` (x0081) — no Room Token on Zenoh.
 //! Non-guarantees: host acceptance ack (Zenoh put ≠ verify); key persistence across restart.
 
+use alchemy_protocol::control_plane::{self, ControlPose};
 use alchemy_protocol::wire_crypto::{generate_signing_key, sign_input, SigningKey};
 use alchemy_protocol::InputEvent;
 use base64::Engine;
@@ -32,8 +34,17 @@ pub struct IntentBody {
 pub struct IntentSession {
     key: SigningKey,
     seq: u64,
+    /// Inventory control-plane sequence (x0081); independent of Intent `intent_seq`.
+    control_seq: u64,
     /// Remaining successful puts that must carry `room_token`.
     bind_puts_remaining: u32,
+}
+
+/// Signed inventory control fields for Zenoh JSON (x0081).
+pub struct ControlSig {
+    pub session_pub_b64: String,
+    pub control_seq: u64,
+    pub control_sig_b64: String,
 }
 
 impl IntentSession {
@@ -41,6 +52,7 @@ impl IntentSession {
         Self {
             key: generate_signing_key(),
             seq: 0,
+            control_seq: 0,
             bind_puts_remaining: BIND_PUTS_REQUIRED,
         }
     }
@@ -95,6 +107,33 @@ impl IntentSession {
         };
         sign_input(&self.key, &mut event);
         event
+    }
+
+    /// Sign inventory spawn control (advances `control_seq`).
+    pub fn sign_control_spawn(
+        &mut self,
+        room_id: &str,
+        blake3_hex: &str,
+        pose: ControlPose,
+    ) -> ControlSig {
+        self.control_seq = self.control_seq.saturating_add(1);
+        let sig = control_plane::sign_spawn(&self.key, room_id, self.control_seq, blake3_hex, pose);
+        ControlSig {
+            session_pub_b64: self.session_pub_b64(),
+            control_seq: self.control_seq,
+            control_sig_b64: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig),
+        }
+    }
+
+    /// Sign inventory despawn control (advances `control_seq`).
+    pub fn sign_control_despawn(&mut self, room_id: &str, entity_id: u32) -> ControlSig {
+        self.control_seq = self.control_seq.saturating_add(1);
+        let sig = control_plane::sign_despawn(&self.key, room_id, self.control_seq, entity_id);
+        ControlSig {
+            session_pub_b64: self.session_pub_b64(),
+            control_seq: self.control_seq,
+            control_sig_b64: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig),
+        }
     }
 }
 

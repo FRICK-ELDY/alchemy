@@ -37,6 +37,8 @@ pub struct SessionBinding {
     pub sub: String,
     pub jti: String,
     pub last_seq: u64,
+    /// Inventory control-plane seq (x0081); independent of Intent `intent_seq`.
+    pub last_control_seq: u64,
     /// Intent-path capability bits from Room Token `role` at bind (x002a).
     pub caps: u32,
 }
@@ -183,10 +185,39 @@ impl SessionTable {
                 sub: pending.sub.clone(),
                 jti: pending.jti.clone(),
                 last_seq: event.intent_seq,
+                last_control_seq: 0,
                 caps: pending.caps,
             },
         );
         (pending.sub, pending.jti, pending.caps, removed)
+    }
+
+    /// Authorize inventory control (x0081): bind required, `sub` match, control_seq advance.
+    pub fn authorize_control(
+        &mut self,
+        session_pub: &[u8],
+        control_seq: u64,
+        expected_sub: &str,
+    ) -> Result<()> {
+        let Some(binding) = self.by_pub.get_mut(session_pub) else {
+            bail!("control plane with unknown session_pub (bind Intent first)");
+        };
+        if binding.sub != expected_sub {
+            bail!(
+                "control plane sub mismatch (session {}, host {})",
+                binding.sub,
+                expected_sub
+            );
+        }
+        if control_seq <= binding.last_control_seq {
+            bail!(
+                "control_seq {} not after last {}",
+                control_seq,
+                binding.last_control_seq
+            );
+        }
+        binding.last_control_seq = control_seq;
+        Ok(())
     }
 
     /// Advance `last_seq` after rate allow. Err if binding vanished (reclaim race).
@@ -350,6 +381,7 @@ mod tests {
                 sub: "u1".into(),
                 jti: "j1".into(),
                 last_seq: 0,
+                last_control_seq: 0,
                 caps: guest_caps(),
             },
         );
@@ -385,6 +417,7 @@ mod tests {
                 sub: "alice".into(),
                 jti: "j".into(),
                 last_seq: 2,
+                last_control_seq: 0,
                 caps: guest_caps(),
             },
         );
@@ -405,6 +438,7 @@ mod tests {
                 sub: "alice".into(),
                 jti: "jti-old".into(),
                 last_seq: 5,
+                last_control_seq: 0,
                 caps: guest_caps(),
             },
         );
@@ -441,6 +475,7 @@ mod tests {
                 sub: "alice".into(),
                 jti: "j-old".into(),
                 last_seq: 3,
+                last_control_seq: 0,
                 caps: guest_caps(),
             },
         );
@@ -468,6 +503,7 @@ mod tests {
                 sub: "u".into(),
                 jti: "j".into(),
                 last_seq: 0,
+                last_control_seq: 0,
                 caps: guest_caps(),
             },
         );
@@ -527,6 +563,7 @@ mod tests {
                 sub: "limited".into(),
                 jti: "j".into(),
                 last_seq: 0,
+                last_control_seq: 0,
                 caps: INTENT_MOVE,
             },
         );
@@ -561,6 +598,7 @@ mod tests {
                 sub: "victim".into(),
                 jti: "j".into(),
                 last_seq: 0,
+                last_control_seq: 0,
                 caps: guest_caps(),
             },
         );
@@ -587,6 +625,7 @@ mod tests {
                 sub: "u".into(),
                 jti: "j".into(),
                 last_seq: 0,
+                last_control_seq: 0,
                 caps: guest_caps(),
             },
         );

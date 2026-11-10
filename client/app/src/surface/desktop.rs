@@ -2388,7 +2388,6 @@ fn run_paced_inventory_take_out(
     session: &zenoh::Session,
     assets: &str,
     access: &str,
-    room_token: &str,
     room_id: &str,
     wire_cap: &str,
     room_key: &[u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
@@ -2436,13 +2435,26 @@ fn run_paced_inventory_take_out(
             // Default pose with slight X offset so children do not stack.
             (i as f64 * 0.35, 1.5, 2.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
         };
+        let control = {
+            let Ok(mut gate) = shared.intent_session.lock() else {
+                return format!("spawn put {spawned}/{total} then failed: intent_session lock");
+            };
+            let Some(intent) = gate.as_mut() else {
+                return format!("spawn put {spawned}/{total} then failed: no Intent session (bind first)");
+            };
+            intent.sign_control_spawn(
+                room_id,
+                &blob.blake3,
+                [x, y, z, qx, qy, qz, qw, sx, sy, sz],
+            )
+        };
         match crate::inventory::publish_inventory_spawn_pose(
             session,
             room_id,
             wire_cap,
             room_key,
             room_key_epoch,
-            room_token,
+            &control,
             &blob.blake3,
             x,
             y,
@@ -3259,26 +3271,38 @@ fn handle_ui_action(
                 return;
             }
             let assets = shared.get_assets_url();
-            let (access, room_token) = {
+            let (access, host_room_token) = {
                 let Ok(auth) = shared.auth.lock() else {
                     inventory_status_rebuild(ui, shared, "auth lock failed");
                     return;
                 };
                 (auth.access_token.clone(), auth.host_room_token.clone())
             };
-            if let Some(msg) = inventory_host_token_gate_status(&access, &room_token) {
+            if let Some(msg) = inventory_host_token_gate_status(&access, &host_room_token) {
                 inventory_status_rebuild(ui, shared, msg);
                 return;
             }
-            let (Some(access), Some(room_token)) = (access, room_token) else {
+            let (Some(access), Some(host_room_token)) = (access, host_room_token) else {
                 // Exhaustiveness: gate helper already covered None cases.
                 inventory_status_rebuild(ui, shared, "host inventory Token missing");
                 return;
             };
-            if crate::inventory::room_token_role_unverified(&room_token).as_deref() != Some("host")
+            if crate::inventory::room_token_role_unverified(&host_room_token).as_deref()
+                != Some("host")
             {
                 inventory_status_rebuild(ui, shared, "host role required for take-out");
                 return;
+            }
+            // x0081: spawn is session-signed; Intent must already be bound (same sub as host).
+            {
+                let Ok(sess) = shared.intent_session.lock() else {
+                    inventory_status_rebuild(ui, shared, "intent_session lock failed");
+                    return;
+                };
+                if sess.is_none() {
+                    inventory_status_rebuild(ui, shared, "Intent session required (join/bind first)");
+                    return;
+                }
             }
             let Some(session) = zenoh.as_ref().cloned() else {
                 inventory_status_rebuild(ui, shared, "zenoh not connected");
@@ -3308,7 +3332,6 @@ fn handle_ui_action(
                     &session,
                     &assets,
                     &access,
-                    &room_token,
                     &room_id,
                     &wire_cap,
                     room_key.as_ref(),
@@ -3479,22 +3502,23 @@ fn handle_ui_action(
                 );
                 return;
             };
-            let (access, room_token) = {
+            let (access, host_room_token) = {
                 let Ok(auth) = shared.auth.lock() else {
                     inventory_status_rebuild(ui, shared, "auth lock failed");
                     return;
                 };
                 (auth.access_token.clone(), auth.host_room_token.clone())
             };
-            if let Some(msg) = inventory_host_token_gate_status(&access, &room_token) {
+            if let Some(msg) = inventory_host_token_gate_status(&access, &host_room_token) {
                 inventory_status_rebuild(ui, shared, msg);
                 return;
             }
-            let Some(room_token) = room_token else {
+            let Some(host_room_token) = host_room_token else {
                 inventory_status_rebuild(ui, shared, "host inventory Token missing");
                 return;
             };
-            if crate::inventory::room_token_role_unverified(&room_token).as_deref() != Some("host")
+            if crate::inventory::room_token_role_unverified(&host_room_token).as_deref()
+                != Some("host")
             {
                 inventory_status_rebuild(ui, shared, "host role required for despawn");
                 return;
@@ -3511,13 +3535,29 @@ fn handle_ui_action(
                 inventory_status_rebuild(ui, shared, "room_key missing");
                 return;
             };
+            let room_id = shared.get_room_id();
+            let control = {
+                let Ok(mut gate) = shared.intent_session.lock() else {
+                    inventory_status_rebuild(ui, shared, "intent_session lock failed");
+                    return;
+                };
+                let Some(intent) = gate.as_mut() else {
+                    inventory_status_rebuild(
+                        ui,
+                        shared,
+                        "Intent session required (join/bind first)",
+                    );
+                    return;
+                };
+                intent.sign_control_despawn(room_id.as_ref(), entity_id)
+            };
             match crate::inventory::publish_inventory_despawn(
                 session,
-                shared.get_room_id().as_ref(),
+                room_id.as_ref(),
                 wire_cap.as_ref(),
                 room_key.as_ref(),
                 room_key_epoch,
-                &room_token,
+                &control,
                 entity_id,
             ) {
                 Ok(()) => {
