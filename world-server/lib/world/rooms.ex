@@ -27,9 +27,10 @@ defmodule World.Rooms do
   Token issuance never creates a room.
   x0027: DemoScene assigned at create and returned by `scene/1`.
 
-  Authorization: use `ensure_owner/2` (and `require_existing/1` for existence-only).
-  Do not infer auth from boolean helpers — those APIs are intentionally absent so
-  storage failures cannot collapse to `false` / `nil`.
+  Authorization: owner paths use `ensure_owner/2`; compute-host HTTP uses
+  `ensure_active_host/2` / `authorize_host_role` (x0080). `require_existing/1` is
+  existence-only. Do not infer auth from boolean helpers — those APIs are
+  intentionally absent so storage failures cannot collapse to `false` / `nil`.
 
   Errors: `:invalid_room_id` / `:already_exists` / `:not_found` / `:owner_room_cap_exceeded`
   are client-facing. `:storage_error` is infrastructure (SQLite busy, disk, Repo) → HTTP 5xx.

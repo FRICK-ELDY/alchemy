@@ -707,12 +707,20 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
-  x0027: return world-authored scene definition. Authorization must be a **host** Room Token.
+  x0027: return world-authored scene definition. Authorization must be a **host** Room Token
+  whose `sub` is the current ledger `active_host_sub` (x0080).
+
+  Read path checks the ledger only — it does **not** call `renew_host_lease/2`
+  (unlike scene write / host_keys / manifest_seal). Heartbeat remains those
+  mutating paths (and Token / attestation traffic), so GET-only hosts can still
+  hit lease TTL.
   """
   def show_scene(conn, %{"room_id" => room_id}) do
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
+         # Ledger gate only; intentionally no renew_host_lease on read.
+         :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
          {:ok, scene} <- Rooms.scene(room_id) do
       json(conn, Map.put(scene, "room_id", room_id))
     else
@@ -730,6 +738,11 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:forbidden)
         |> json(%{error: "room_id_mismatch"})
+
+      {:error, :forbidden_host} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "host_role_forbidden"})
 
       {:error, :not_found} ->
         conn
@@ -754,7 +767,7 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
-  x006d: append one mesh SceneEntry to the room scene (host Room Token).
+  x006d: append one mesh SceneEntry to the room scene (host Room Token + active ledger host).
 
   Body: `%{"blake3" => 64-hex, optional pose/color}`. Assigns `entity_id`,
   bumps revision. Returned scene is the new canonical seal input.
@@ -765,6 +778,8 @@ defmodule WorldWeb.RoomController do
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
+         :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
+         :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
          {:ok, scene} <- Rooms.append_scene_entry(room_id, entry) do
       json(conn, Map.put(scene, "room_id", room_id))
     else
@@ -782,6 +797,17 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:forbidden)
         |> json(%{error: "room_id_mismatch"})
+
+      {:error, :forbidden_host} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "host_role_forbidden"})
+
+      # Lease renew CAS lost (handover / takeover raced) — Token may still verify.
+      {:error, :conflict} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "host_lease_conflict"})
 
       {:error, :not_found} ->
         conn
@@ -816,7 +842,7 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
-  x007b: remove one mesh SceneEntry by entity_id (host Room Token).
+  x007b: remove one mesh SceneEntry by entity_id (host Room Token + active ledger host).
 
   Requires the entry to carry a 64-hex blake3. Returned scene is the new
   canonical seal input.
@@ -826,6 +852,8 @@ defmodule WorldWeb.RoomController do
          {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
+         :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
+         :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
          {:ok, scene} <- Rooms.delete_scene_entry(room_id, entity_id) do
       json(conn, Map.put(scene, "room_id", room_id))
     else
@@ -848,6 +876,17 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:forbidden)
         |> json(%{error: "room_id_mismatch"})
+
+      {:error, :forbidden_host} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "host_role_forbidden"})
+
+      # Lease renew CAS lost (handover / takeover raced) — Token may still verify.
+      {:error, :conflict} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "host_lease_conflict"})
 
       {:error, :not_found} ->
         conn

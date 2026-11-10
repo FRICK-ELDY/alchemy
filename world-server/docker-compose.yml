@@ -19,6 +19,8 @@ services:
       AUTH_JWKS_URL: http://host.docker.internal:4002/.well-known/jwks.json
       AUTH_INTERNAL_URL: http://host.docker.internal:4002
       AUTH_INTERNAL_TOKEN: dev-internal-token
+      # Container loopback is not the host zenohd (client/host use 127.0.0.1 on the host).
+      ZENOH_CONNECT: tcp/host.docker.internal:7447
       WORLD_DATABASE_PATH: /app/priv/data/world_dev.db
       # x0066 WAN: create priv/mtls then uncomment (container paths; not Windows D:\…).
       # Unset = csr_pem ignored, Token only — easy to miss if path is set but files absent.

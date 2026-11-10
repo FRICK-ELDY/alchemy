@@ -1327,6 +1327,77 @@ defmodule WorldWeb.RoomControllerTest do
              |> json_response(403)
   end
 
+  test "scene HTTP rejects stale host Token after handover (x0080 ledger)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "11111111-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    guest = "22222222-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    room = "scene-ho-stale"
+    blake3 = String.duplicate("ab", 32)
+
+    assert %{"room_id" => ^room} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: room, visibility: "public"})
+             |> json_response(201)
+
+    %{"token" => stale_host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post("/api/v1/rooms/#{room}/tokens", token_params(%{role: "host"}))
+      |> json_response(200)
+
+    assert %{"state" => "active", "active_host_sub" => ^guest} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms/#{room}/handover", %{target_sub: guest})
+             |> json_response(200)
+
+    assert %{"error" => "host_role_forbidden"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{stale_host_token}")
+             |> get("/api/v1/rooms/#{room}/scene")
+             |> json_response(403)
+
+    assert %{"error" => "host_role_forbidden"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{stale_host_token}")
+             |> post("/api/v1/rooms/#{room}/scene/entries", %{blake3: blake3})
+             |> json_response(403)
+
+    assert %{"error" => "host_role_forbidden"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{stale_host_token}")
+             |> delete("/api/v1/rooms/#{room}/scene/entries/1")
+             |> json_response(403)
+
+    # Nominated host with a fresh Host Token may read / write scene.
+    %{"token" => new_host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> post("/api/v1/rooms/#{room}/tokens", token_params(%{role: "host"}))
+      |> json_response(200)
+
+    scene =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{new_host_token}")
+      |> get("/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
+    assert scene["room_id"] == room
+    assert is_list(scene["entries"])
+
+    appended =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{new_host_token}")
+      |> post("/api/v1/rooms/#{room}/scene/entries", %{blake3: blake3})
+      |> json_response(200)
+
+    assert appended["room_id"] == room
+    assert Enum.any?(appended["entries"], fn e -> e["blake3"] == blake3 end)
+  end
+
   test "handover null dormants session and drops public catalog (x0080)", %{
     conn: conn,
     signer: signer
