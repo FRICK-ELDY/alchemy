@@ -79,7 +79,8 @@
 | `POST` | `/api/v1/auth/refresh` | なし | リフレッシュトークン → 新規アクセストークン |
 | `POST` | `/api/v1/auth/logout` | Bearer | ログアウト(リフレッシュトークンも失効可) |
 | `GET` | `/api/v1/auth/me` | Bearer | 認証済みユーザー情報 |
-| `GET` | `/health` | なし | ヘルスチェック |
+| `GET` | `/health` | なし | liveness（依存非検査） |
+| `GET` | `/ready` | なし | readiness（Repo + Token.Keys・x008b） |
 | `GET` | `/.well-known/jwks.json` | なし | JWT 検証用公開鍵 |
 
 ### リクエスト / レスポンス例
@@ -348,9 +349,10 @@ docker run --rm -p 4002:4002 \
 
 | Method | Path | 認証 | 説明 |
 |:---|:---|:---|:---|
-| `GET` | `/health` | なし | プロセス生存確認（liveness） |
+| `GET` | `/health` | なし | プロセス生存確認（liveness・依存非検査） |
+| `GET` | `/ready` | なし | 準備確認（Repo `SELECT 1` + Token.Keys JWKS・x008b） |
 
-**レスポンス（200 OK）**
+**`/health` レスポンス（200 OK）**
 
 ```json
 {
@@ -364,7 +366,7 @@ docker run --rm -p 4002:4002 \
 - `service`: サービス識別子
 - `version`: release / アプリバージョン（`mix.exs` の `version`）
 
-ロードバランサやオーケストレータの liveness probe に利用する。DB 到達性は別途監視する（本エンドポイントは DB 接続を検証しない）。
+ロードバランサやオーケストレータの **liveness** に `/health`、**readiness** に `/ready` を向ける。`/ready` 失敗時は 503 + `checks`（`repo` / `keys`）。未認証のため公網監視に晒す場合はレート制限や別経路を検討する。
 
 ## ポート方針
 

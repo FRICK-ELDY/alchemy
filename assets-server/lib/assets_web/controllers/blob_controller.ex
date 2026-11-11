@@ -35,13 +35,19 @@ defmodule AssetsWeb.BlobController do
 
     case Blobs.fetch(blake3, conn.assigns.auth_sub, opts) do
       {:ok, data, blob} ->
+        # x008b / P2-3: never echo CasObject.mime as Content-Type (first-writer
+        # squatting / XSS foothold). Display mime stays on Manifest / client.
         conn
-        |> put_resp_content_type(blob.mime)
+        |> put_resp_content_type("application/octet-stream", nil)
+        |> put_resp_header("x-content-type-options", "nosniff")
         |> put_resp_header("x-alchemy-blake3", blob.blake3)
         |> send_resp(200, data)
 
       {:redirect, url, blob} ->
+        # nosniff on the 302 itself does not constrain the S3 object Content-Type
+        # (non-guarantee / x008b). Harmless echo for intermediaries that copy headers.
         conn
+        |> put_resp_header("x-content-type-options", "nosniff")
         |> put_resp_header("x-alchemy-blake3", blob.blake3)
         |> redirect(external: url)
 

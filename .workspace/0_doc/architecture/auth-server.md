@@ -19,6 +19,7 @@
 | S2S `GET /internal/v1/access`（visibility 判定・x0034/x0035）。**公網 Tunnel では `/internal/*` を 404**（x0043・LAN S2S は対象外） | Room の `visibility` 永続（world） |
 | prod は `AUTH_INTERNAL_TOKEN` 必須（未設定は起動失敗） | 既定 `"dev-internal-token"` を prod に残すこと |
 | Social mutate は IP + user の rate limit（x0043・429） | アクション別細粒度バケット |
+| `GET /health` は liveness；`GET /ready` は Repo + Token.Keys（x008b・未認証）。e2e compose は auth のみ `/ready` healthcheck（world/assets の compose healthcheck は後回し） | メール送信経路・外部 IdP の疎通；`/ready` の公網レート制限 |
 
 
 ## 契約
@@ -56,6 +57,7 @@
 cd auth-server
 docker compose up -d
 # http://localhost:4002/health
+# http://localhost:4002/ready
 # http://localhost:4002/.well-known/jwks.json
 ```
 

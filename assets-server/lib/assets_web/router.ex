@@ -21,5 +21,6 @@ defmodule AssetsWeb.Router do
 
   scope "/", AssetsWeb do
     get "/health", HealthController, :index
+    get "/ready", HealthController, :ready
   end
 end

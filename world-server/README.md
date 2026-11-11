@@ -9,7 +9,8 @@ auth-server を先に上げてから:
 
 ```bash
 docker compose up -d
-# http://localhost:4003/health
+# http://localhost:4003/health   # liveness
+# http://localhost:4003/ready    # Repo + Keys + seal Port (x008b)
 # AUTH_JWKS_URL → host.docker.internal:4002
 ```
 

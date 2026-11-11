@@ -73,7 +73,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget -qO- http://127.0.0.1:4002/health >/dev/null || exit 1",
+          "wget -qO- http://127.0.0.1:4002/ready >/dev/null || exit 1",
         ]
       interval: 5s
       timeout: 5s
