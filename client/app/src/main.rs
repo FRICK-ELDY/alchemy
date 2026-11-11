@@ -22,6 +22,7 @@ mod asset_decode_budget;
 mod assets_fetch;
 mod auth;
 mod bus;
+mod epoch_mirror;
 mod epoch_view;
 mod host_supervisor;
 mod intent_session;

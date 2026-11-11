@@ -2,19 +2,23 @@
 //!
 //! Guarantees: GPU path is appearance-only (no readback); Hierarchy walks
 //! `euler_order` with O(1) collapse skips; X-Ray formats ReadinessMask / Prev /
-//! Curr / depth / Morton for the selected `row_id`.
-//! Non-guarantees: full Spatial Lens UI; production draw pipeline replacement.
-//! Rapier scene still owns live gameplay until migration.
+//! Curr / depth / Morton for the selected `row_id`; SceneGpu binds interpolate
+//! buffers from published faces (x0090).
+//! Non-guarantees: full Spatial Lens UI; `out` as SceneGpu vertex source.
+//! Wire draw still uses `EntityPose` until a later slice.
 
 use std::collections::{BTreeSet, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use alchemy_shared_sim::bridge::EpochSnapshotPair;
 use alchemy_shared_sim::spatial::{morton_code30, SceneBounds};
 use alchemy_shared_sim::tape::{EpochSheet, ReadinessMask, WorldTransformf64};
 use alchemy_shared_sim::topology::FlatTopology;
 use bytemuck::{Pod, Zeroable};
+
+use crate::epoch_mirror::EpochFrameMirror;
 
 /// GPU-side packed transform (f32) for storage-buffer interpolate — no CPU readback.
 #[repr(C)]
@@ -28,10 +32,6 @@ pub struct GpuEpochRow {
 }
 
 impl GpuEpochRow {
-    #[allow(
-        dead_code,
-        reason = "S-27 pack path; used by tests and when epoch draw mounts"
-    )]
     pub fn from_world(row_id: u32, xf: &WorldTransformf64) -> Self {
         Self {
             pos: [
@@ -48,11 +48,6 @@ impl GpuEpochRow {
 }
 
 /// WGSL: appearance-only Prev/Curr lerp. Never writes back to CPU.
-/// Kept as the Ring3 shader source; SceneGpu adopts buffers when epoch draw lands.
-#[allow(
-    dead_code,
-    reason = "S-27 API surface; bind when epoch draw path mounts"
-)]
 pub const INTERPOLATE_WGSL: &str = r#"
 struct EpochRow {
     pos: vec3<f32>,
@@ -102,6 +97,8 @@ pub struct EpochViewState {
     /// Selected row for X-Ray (`u32::MAX` = none).
     pub xray_row: AtomicU32,
     pub scene_bounds: Mutex<SceneBounds>,
+    /// Frame → tape kinematic mirror (x0090).
+    pub mirror: Mutex<EpochFrameMirror>,
 }
 
 impl EpochViewState {
@@ -114,7 +111,17 @@ impl EpochViewState {
             topology: Mutex::new(FlatTopology::default()),
             xray_row: AtomicU32::new(u32::MAX),
             scene_bounds: Mutex::new(SceneBounds::default()),
+            mirror: Mutex::new(EpochFrameMirror::default()),
         }
+    }
+
+    /// α for interpolate upload; `1.0` before first publish (wire 30Hz period).
+    ///
+    /// Clock comes from the same [`EpochFaces`] as Prev/Curr (`published_at_ns`).
+    pub fn interp_alpha_now(&self) -> f32 {
+        let ns = self.snapshots.load_pair().published_at_ns;
+        let at = crate::epoch_mirror::published_instant(ns);
+        crate::epoch_mirror::epoch_interp_alpha(at, Instant::now())
     }
 
     pub fn set_xray_row(&self, row: Option<u32>) {
@@ -138,10 +145,6 @@ impl Default for EpochViewState {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "S-27 pack helpers; exercised in unit tests until draw path mounts"
-)]
 fn row_is_live(sheet: &EpochSheet, row: u32) -> bool {
     let idx = row as usize;
     idx < sheet.readiness.len() && !sheet.readiness[idx].contains(ReadinessMask::TOMBSTONE)
@@ -151,10 +154,6 @@ fn row_is_live(sheet: &EpochSheet, row: u32) -> bool {
 ///
 /// `dirty_only`: union of both sheets' dirty bits (still one aligned id list).
 /// Tombstoned rows are dropped. Production interpolate must use this (or full active).
-#[allow(
-    dead_code,
-    reason = "S-27 API surface; used by tests and when epoch draw mounts"
-)]
 pub fn aligned_row_ids(prev: &EpochSheet, curr: &EpochSheet, dirty_only: bool) -> Vec<u32> {
     let mut ids = BTreeSet::new();
     if dirty_only {
@@ -177,10 +176,10 @@ pub fn aligned_row_ids(prev: &EpochSheet, curr: &EpochSheet, dirty_only: bool) -
 
 /// Pack Prev/Curr faces with identical `row_id` order (index-aligned for WGSL mix).
 /// Skips ids that are TOMBSTONE on Curr.
-#[allow(
-    dead_code,
-    reason = "S-27 API surface; used by tests and when epoch draw mounts"
-)]
+///
+/// ABA / freelist reuse: if Prev is missing, TOMBSTONE, or generation ≠ Curr,
+/// Prev sample is copied from Curr (no ghost→new entity lerp). Matches x008e
+/// Prev/Curr ABA contract.
 pub fn pack_aligned_gpu_faces(
     prev: &EpochSheet,
     curr: &EpochSheet,
@@ -192,14 +191,18 @@ pub fn pack_aligned_gpu_faces(
         if !row_is_live(curr, row) {
             continue;
         }
-        let pi = row as usize;
         let ci = row as usize;
-        let pxf = prev
-            .world_transforms
-            .get(pi)
-            .copied()
-            .unwrap_or_else(|| WorldTransformf64::identity_at([0.0, 0.0, 0.0]));
         let cxf = curr.world_transforms[ci];
+        let curr_gen = curr.generation(row);
+        let prev_usable = row_is_live(prev, row)
+            && prev.generation(row) == curr_gen
+            && (row as usize) < prev.world_transforms.len();
+        let pxf = if prev_usable {
+            prev.world_transforms[row as usize]
+        } else {
+            // Spawn / freelist reuse / tomb→live: hold at Curr (α-lerp no-op).
+            cxf
+        };
         prev_rows.push(GpuEpochRow::from_world(row, &pxf));
         curr_rows.push(GpuEpochRow::from_world(row, &cxf));
     }
@@ -207,9 +210,9 @@ pub fn pack_aligned_gpu_faces(
 }
 
 /// Single-sheet pack (debug / non-lerp). Prefer [`pack_aligned_gpu_faces`] for interpolate.
-#[allow(
-    dead_code,
-    reason = "S-27 API surface; used by tests and when epoch draw mounts"
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "unit-tested API; SceneGpu uses aligned faces")
 )]
 pub fn pack_gpu_rows(sheet: &EpochSheet, dirty_only: bool) -> Vec<GpuEpochRow> {
     let ids = aligned_row_ids(sheet, sheet, dirty_only);
@@ -218,10 +221,6 @@ pub fn pack_gpu_rows(sheet: &EpochSheet, dirty_only: bool) -> Vec<GpuEpochRow> {
 }
 
 /// Create / rewrite storage buffers for Prev/Curr/Out (appearance path only).
-#[allow(
-    dead_code,
-    reason = "S-27 API surface; bind when epoch draw path mounts"
-)]
 pub struct EpochGpuBuffers {
     pub prev: wgpu::Buffer,
     pub curr: wgpu::Buffer,
@@ -238,10 +237,6 @@ struct InterpParams {
     _pad: [f32; 2],
 }
 
-#[allow(
-    dead_code,
-    reason = "S-27 API surface; bind when epoch draw path mounts"
-)]
 impl EpochGpuBuffers {
     pub fn new(device: &wgpu::Device, capacity: u32) -> Self {
         let size = (capacity as u64) * std::mem::size_of::<GpuEpochRow>() as u64;
@@ -313,10 +308,6 @@ impl EpochGpuBuffers {
 }
 
 /// Build compute pipeline for [`INTERPOLATE_WGSL`].
-#[allow(
-    dead_code,
-    reason = "S-27 API surface; bind when epoch draw path mounts"
-)]
 pub fn create_interpolate_pipeline(
     device: &wgpu::Device,
 ) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
@@ -385,10 +376,6 @@ pub fn create_interpolate_pipeline(
     (pipeline, layout)
 }
 
-#[allow(
-    dead_code,
-    reason = "S-27 API surface; bind when epoch draw path mounts"
-)]
 pub fn make_interp_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -524,11 +511,16 @@ pub fn ensure_xray_row(state: &EpochViewState) -> Option<u32> {
 /// Snapshot helper used by dash / debug overlay (read-only; does not change selection).
 pub fn xray_text_from_state(state: &EpochViewState) -> Option<String> {
     let row = state.xray_row()?;
-    let prev = state.snapshots.load_prev();
-    let curr = state.snapshots.load_curr();
+    let faces = state.snapshots.load_pair();
     let topo = state.topology.lock().ok()?;
     let bounds = state.scene_bounds.lock().map(|g| *g).unwrap_or_default();
-    Some(format_xray_panel(row, &prev, &curr, &topo, bounds))
+    Some(format_xray_panel(
+        row,
+        &faces.prev,
+        &faces.curr,
+        &topo,
+        bounds,
+    ))
 }
 
 #[cfg(test)]
@@ -598,5 +590,27 @@ mod tests {
         assert!(INTERPOLATE_WGSL.contains("fn interpolate"));
         assert!(INTERPOLATE_WGSL.contains("dot(pr, c.rot)"));
         assert_eq!(std::mem::size_of::<GpuEpochRow>() % 16, 0);
+    }
+
+    #[test]
+    fn pack_aba_reuse_copies_curr_into_prev_face() {
+        // Prev: live ghost at row 0. Curr: tombstone then freelist-reuse same row_id.
+        let mut prev = EpochSheet::with_capacity(1);
+        let old = prev.alloc_row();
+        prev.set_transform(old.row_id, WorldTransformf64::identity_at([9.0, 0.0, 0.0]))
+            .unwrap();
+        let mut curr = prev.clone();
+        curr.tombstone(old).unwrap();
+        let neu = curr.alloc_row();
+        assert_eq!(neu.row_id, old.row_id, "freelist must reuse row_id");
+        assert_ne!(neu.generation, old.generation);
+        curr.set_transform(neu.row_id, WorldTransformf64::identity_at([1.0, 0.0, 0.0]))
+            .unwrap();
+        let ids = aligned_row_ids(&prev, &curr, false);
+        let (p, c) = pack_aligned_gpu_faces(&prev, &curr, &ids);
+        assert_eq!(p.len(), 1);
+        assert_eq!(c[0].pos[0], 1.0);
+        // Must not lerp from ghost 9.0 → 1.0.
+        assert_eq!(p[0].pos[0], 1.0);
     }
 }

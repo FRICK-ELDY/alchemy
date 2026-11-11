@@ -650,6 +650,18 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             scene.replace_world_mesh(&next);
         }
 
+        // Epoch interpolate once per XR frame (before per-eye draws; x0090).
+        {
+            let mut encoder =
+                bridge
+                    .device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("xr-epoch-sync"),
+                    });
+            scene.sync_epoch_gpu(&mut encoder);
+            bridge.queue().submit(Some(encoder.finish()));
+        }
+
         // Per-eye submit so SceneGpu / overlay UBOs are not overwritten mid-encoder.
         for eye in 0..VIEW_COUNT as usize {
             let view_stage = view_from_pose(views[eye].pose);
