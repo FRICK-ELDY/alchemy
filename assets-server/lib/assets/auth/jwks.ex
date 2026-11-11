@@ -1,8 +1,9 @@
 defmodule Assets.Auth.Jwks do
   @moduledoc """
-  Assets-named JWKS cache — facade over `AlchemyAuthClient.Jwks` (x002f / P3-4).
+  Assets-named JWKS cache — facade over `AlchemyAuthClient.Jwks` (x002f / P3-4 / x008c).
 
-  Guarantees: RS256 public keys from AUTH_JWKS_URL (or test install).
+  Guarantees: RS256 public keys from AUTH_JWKS_URL (or test install);
+  failure cooldown + async miss refresh (see `AlchemyAuthClient.Jwks`).
   Non-guarantees: revocation lists, user status DB lookups.
   """
 

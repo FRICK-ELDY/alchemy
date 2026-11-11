@@ -49,7 +49,7 @@
 | P2-2 | `/ready`（Repo・Keys・Port） | -1 | health と分離 — **[x008b](../../roadmap/slices/x008b-ready-and-blob-nosniff.md) done** |
 | P2-3 | mime を Ref 側 or octet-stream+nosniff | -1 | 型混同の足場を消す — **[x008b](../../roadmap/slices/x008b-ready-and-blob-nosniff.md) done** |
 | P2-4 | Origin Cert に tree/content hash | -1 | 連合前にペイロード形を固定 |
-| P2-5 | 共有 JWKS 失敗クールダウン | -1 | host/relay と同型 |
+| P2-5 | 共有 JWKS 失敗クールダウン | -1 | host/relay と同型 — **[x008c](../../roadmap/slices/x008c-shared-jwks-fail-cooldown.md) done** |
 | P2-6 | host `main` tick 切り出し + pose ダブルバッファ | -1 | |
 | P2-7 | take-out を guest+session / owner_sub 判定へ | -1 | P0-1 と一体 |
 | P2-8 | 腐った smoke 削除 or probe 吸収 | -1 | banner-grep 削除・e2e-probe へ吸収 — **[x0089](../../roadmap/slices/x0089-rotten-smoke-shared-ci.md) done** |
