@@ -13,9 +13,9 @@
 
 | 層 | 内容 |
 |:---|:---|
-| policy | [`launcher/src/restart.rs`](../../../launcher/src/restart.rs) — `decide_host_exit` / `backoff_for_attempt` |
-| GitHub | `.github/workflows/rust-ci.yml` `launcher-check`（x003c で追加済み・本帯で明示） |
-| ローカル | `make ci-launcher` / `.scripts/ci.sh launcher`（`make ci` の `all` にも含む） |
+| policy | 当時 `launcher/src/restart.rs` — `decide_host_exit` / `backoff_for_attempt`（`launcher/` はのち廃止・[launcher.md](../../0_doc/architecture/launcher.md)） |
+| GitHub | 当時 `.github/workflows/rust-ci.yml` `launcher-check`（x003c） |
+| ローカル | 当時 `make ci-launcher` / `ci.sh launcher`。**現行の `ci.sh` に `launcher` ターゲットは無い**（x0089 でヘッダからも削除） |
 
 ## 保証する / しない
 
@@ -23,13 +23,13 @@
 |:---|:---|
 | exit 0 → launcher 終了（再起動しない）の単体固定 | deep link / tray / handoff（→ P4-2） |
 | 非 0 crash は最大 3 回・1s/2s/4s backoff で再起動（`decide_host_exit`） | client の旧 IPC addr 更新 |
-| fmt / clippy `-D warnings` / build / test が CI・`make ci-launcher` で走る | Compose への launcher 組み込み |
+| fmt / clippy `-D warnings` / build / test が当時の CI・`make ci-launcher` で走る（現行入口は廃止） | Compose への launcher 組み込み |
 | | **respawn 後の ready 待ち失敗**を予算内で再試行すること（即 shutdown で確定） |
 
 ## 完了条件
 
 - `cargo test`（launcher）で再起動ポリシー緑
 - `cargo clippy -- -D warnings` 緑
-- `make ci-launcher`（または同等）緑
+- 当時: `make ci-launcher`（または同等）緑。現行: `alchemy-launcher` 廃止後は該当ターゲット無し
 
 ← [目次](../README.md)

@@ -96,12 +96,12 @@ Optional Profile（billing / market-server）はディレクトリ未設置の�
 | 18 | prod compose 0.0.0.0 公開 | closed | 3 ファイルとも `${PUBLISH_ADDR:-127.0.0.1}` |
 | 19 | relay-agent CI 外・テスト 0 | closed | 上記 #6 |
 | 20 | adversarial E2E が client discard / WAN を通らない | closed | 上記 #7 |
-| 21 | 旧 smoke が腐っている | open | `smoke-desktop-handthrough.sh` L151 ほか |
+| 21 | 旧 smoke が腐っている | closed | x0089: banner-grep smoke 削除・`ci-e2e` へ吸収 |
 | 22 | 相関 ID / auth・world メトリクスなし | closed | 上記 #9 |
 | 23 | relay-agent の `expect` / `unwrap` | partial | 本番経路は大半 `map_err`。`jwks_age()` の `expect` 残（L344-346） |
 | 24 | DemoScene 手動同期 | closed | `protocol/testdata/demo_scene_seal.json` + 両言語テスト |
 | 25 | README / client.md 古い | partial | 上記 #11 |
-| 26 | `make ci` が relay・shared・fuzz を覆わない | partial | relay は追加。shared 3 パッケージ・fuzz は未 |
+| 26 | `make ci` が relay・shared・fuzz を覆わない | partial | relay + shared（x0089）は追加。fuzz は未（`ci-fuzz` 別入口） |
 | 27 | cargo deny が client のみ | closed | launcher / relay-agent も deny（`rust-ci.yml` L120-123, L144-147） |
 | 28 | mTLS 鍵 temp 権限・掃除 | closed | `allocate.rs` L280-345（icacls / 0600 / sweep） |
 | 29 | 保証表が `wire_cap` 隔離を過大主張 | closed | trust-boundary.md L37、relay-server.md L14-17。`config.wan.json5` L4 のコメントだけ旧説明（docs 項に吸収） |

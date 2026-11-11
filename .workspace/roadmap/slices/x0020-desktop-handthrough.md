@@ -20,7 +20,7 @@
 |:---|:---|:---|
 | 0 | Slice 文書 + 目次 | done |
 | 1 | README 手通し手順 + `client/env.desktop.example` | done |
-| 2 | `smoke-desktop-handthrough.sh` + Makefile | done |
+| 2 | 機械検証（当時 `smoke-desktop-handthrough`；のち [x0089](x0089-rotten-smoke-shared-ci.md) で `ci-e2e` へ） | done |
 | 3 | 成功条件確認・後続リンク | done |
 
 ## 保証する / しない
@@ -54,12 +54,12 @@
 3. 別ターミナル: `ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=alice AUTH_PASSWORD=Password1 cargo run -p client` → ウィンドウが開き描画される  
    （UI login: `AUTH_USER` を省略し Home タブから login。release は password または `ALCHEMY_AUTH_TOKEN` 必須）
 4. （任意）e2e スタック向けは [`client/env.desktop.example`](../../../client/env.desktop.example) のコメント例を export
-5. 機械検証する場合は **手順 2 の host を止めてから** `make smoke-desktop-handthrough`（3a と 3b は排他）
+5. 機械検証は hermetic `COMPOSE_UP=1 make ci-e2e`（e2e-probe）。旧 `smoke-desktop-handthrough` は [x0089](x0089-rotten-smoke-shared-ci.md) で削除
 
 ## 起動メモ
 
 ```bash
-# 日常（正本）— 3a 手動 / 3b smoke は排他
+# 日常（正本）— GUI 手通し
 cd auth-server && docker compose up -d && cd ..
 cd world-server && docker compose up -d && cd ..
 cd assets-server && docker compose up -d && cd ..
@@ -70,8 +70,8 @@ cd client
 cargo run -p host-server
 AUTH_USER=alice AUTH_PASSWORD=Password1 ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 
-# 3b（host 停止後）
-make smoke-desktop-handthrough
+# 機械検証（hermetic :4102 系）
+COMPOSE_UP=1 make ci-e2e
 ```
 
 環境変数の一覧・e2e 併記: [`client/env.desktop.example`](../../../client/env.desktop.example)

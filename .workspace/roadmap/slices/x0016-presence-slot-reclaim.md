@@ -62,6 +62,6 @@ ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=bob cargo run -p client
 
 - host: `PresenceIntents::last_input` + `reclaim_stale`
 - sim: `release_slot(slot)` — Grab + spawn reset
-- smoke: `.scripts/smoke-presence-slots.sh`（pin / banner を x0016 へ）
+- 回帰: `cargo test -p host-server -- presence_reclaim_tests`（旧 `smoke-presence-slots.sh` は [x0089](x0089-rotten-smoke-shared-ci.md) で削除）
 
 ← [目次](../README.md)

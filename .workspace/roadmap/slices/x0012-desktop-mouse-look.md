@@ -73,6 +73,6 @@ ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 - `client/app/src/surface/desktop.rs` — grab / MouseMotion / yaw 相対 Intent
 - `client/app/src/scene.rs` — 既存 `CameraLook` + `desktop_view_proj`（pitch clamp 維持）
 - proto フィールド追加なし（コメントのみ Desktop look を反映可）
-- smoke: `bash .scripts/smoke-desktop-noclip.sh`（ホスト側回帰）＋任意で look ヘルパ単体テスト
+- 回帰: host Noclip は `cargo test -p host-server`；任意で look ヘルパ単体テスト（旧 `smoke-desktop-noclip.sh` は [x0089](x0089-rotten-smoke-shared-ci.md) で削除）
 
 ← [目次](../README.md)

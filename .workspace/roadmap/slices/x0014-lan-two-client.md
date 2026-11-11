@@ -83,6 +83,6 @@ Windows ホスト側ファイアウォールで **7447** と **4002–4004** を
 - `ZENOH_CONNECT`（既定 `tcp/127.0.0.1:7447`）— host / client
 - host: per-sub `PoseOverride` + `PhysicsWorld` user_root×2 + per-slot Grab（他 slot 保持中は無視）
 - client: `local_user_root_entity` + 他 root を box mesh で描画
-- smoke: `bash .scripts/smoke-lan-two-client.sh`
+- 回帰: `cargo test -p host-server`（two_slots / grab_no_steal）。旧 `smoke-lan-two-client.sh` は [x0089](x0089-rotten-smoke-shared-ci.md) で削除
 
 ← [目次](../README.md)
