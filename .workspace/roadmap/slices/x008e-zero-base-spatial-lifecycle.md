@@ -126,7 +126,7 @@
 
 ## やらない（本 Slice）／次
 
-- host 60Hz への `FrameBridge::tick` 本番配線
+- host 60Hz への `FrameBridge::tick` 本番配線 → **[x008f](x008f-host-frame-bridge.md)**
 - Rapier / 既存 `SlotGraph` の置換・削除
 - SceneGpu への補間コンピュート bind（シェーダ／バッファ API のみ先行）
 - Loro CRDT / Zenoh 揮発 Grab ストリーム
