@@ -2,6 +2,8 @@
 //!
 //! Guarantees:
 //! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
+//! - x008f: after each Rapier step, shadow `tick_mirror_publish` mirrors dirty poses
+//!   into kinematic EpochSheet rows (no XPBD/LBVH); wire Frame stays Rapier
 //! - Input: Ed25519 session bind (Token on bind only) + `is_finite` (x0023 / x0021)
 //! - SceneManifest from world DemoScene + attestation + seal; Frames / Presence signed (x0027)
 //! - x003d: credential / ManifestSeal HTTP on a background worker; physics evaluates
@@ -24,6 +26,7 @@
 //! - x0032: localhost IPC shutdown when `ALCHEMY_HOST_IPC_*` set (client HostSupervisor)
 //!
 //! Non-guarantees:
+//! - XPBD wire authority / Rapier replacement (x008f is shadow-only)
 //! - Steal / rotation follow / Formula / polished Walk / verifier
 //! - Authenticated remote (WAN) host shutdown
 //! - Full UGC scene editor (x006d only appends one mesh entry via world HTTP)
@@ -33,6 +36,7 @@
 //! - Host-wide bind JWT soft-global; new-source join while bind-source map is full and
 //!   every row stays hot via successful consumes within `BIND_SOURCE_IDLE`
 
+mod epoch_bridge;
 mod finite;
 mod host_control;
 mod host_ipc;
@@ -1107,13 +1111,15 @@ fn main() -> Result<()> {
 
     let mut physics = PhysicsWorld::from_entries(&room_scene.entries, loco_mode, move_speed);
     debug_assert_eq!(physics.user_root_slot_count(), user_root_slots);
+    let mut epoch_bridge = epoch_bridge::EpochBridgeHost::from_physics(&physics);
     let grabbable_n = physics.boxes.grabbable.iter().filter(|&&g| g).count();
     let last_root = USER_ROOT_ENTITY_FIRST + physics.user_root_slot_count() as u32 - 1;
     log::info!(
-        "Rapier world ready (mesh={:?} + user_roots {USER_ROOT_ENTITY_FIRST}..{last_root} + boxes={} grabbable={grabbable_n} mode={:?})",
+        "Rapier world ready (mesh={:?} + user_roots {USER_ROOT_ENTITY_FIRST}..{last_root} + boxes={} grabbable={grabbable_n} mode={:?}); epoch_bridge rows={}",
         physics.mesh_entity_id(),
         physics.boxes.len(),
-        physics.loco_mode()
+        physics.loco_mode(),
+        epoch_bridge.entity_count()
     );
 
     let physics_period = Duration::from_nanos(1_000_000_000 / PHYSICS_HZ);
@@ -1302,6 +1308,10 @@ fn main() -> Result<()> {
             );
         }
         physics.step();
+        // x008f: Rapier remains wire-authoritative; FrameBridge publishes kinematic mirrors.
+        if let Err(err) = epoch_bridge.tick_after_rapier(&physics, f64::from(dt)) {
+            log::warn!("epoch bridge tick failed: {err:?}");
+        }
         physics_steps = physics_steps.wrapping_add(1);
         physics_steps_logged += 1;
 
@@ -1389,7 +1399,10 @@ fn main() -> Result<()> {
             let (publishes, upsert_entities, empty_delta_frames, coalesce, net_tick) =
                 publish_stats.snapshot_and_reset();
             log::info!(
-                "physics: steps={physics_steps_logged} coin=({mx:.3},{my:.3},{mz:.3}) {roots}; delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} coalesce={coalesce} net_tick={net_tick}"
+                "physics: steps={physics_steps_logged} coin=({mx:.3},{my:.3},{mz:.3}) {roots}; epoch_bridge barriers={} mirror_pubs={} rows={}; delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} coalesce={coalesce} net_tick={net_tick}",
+                epoch_bridge.barrier_ticks,
+                epoch_bridge.publishes,
+                epoch_bridge.entity_count()
             );
             physics_steps_logged = 0;
             last_log = Instant::now();

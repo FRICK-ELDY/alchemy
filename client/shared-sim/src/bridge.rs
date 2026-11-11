@@ -76,13 +76,16 @@ impl FrameBridge {
 
     /// Frame barrier: apply patches → rebuild topology if needed → XPBD tick →
     /// publish (pre-commit Prev, post-step Curr) → commit Prev←Curr.
+    ///
+    /// Pass `bounds: None` to skip LBVH/contact rebuild (predict/solve only). Host
+    /// kinematic shadow should prefer [`Self::tick_mirror_publish`] instead.
     pub fn tick(
         &mut self,
         world: &mut XpbdWorld,
         topo: &mut FlatTopology,
         snapshots: &EpochSnapshotPair,
         grab_targets: &[(u32, [f64; 3])],
-        bounds: SceneBounds,
+        bounds: Option<SceneBounds>,
         dt: f64,
     ) -> Result<Vec<(usize, TapeError)>, BridgeError> {
         let patches = std::mem::take(&mut self.pending);
@@ -95,7 +98,7 @@ impl FrameBridge {
 
         xpbd::sync_prev_capacity(world);
         // Prev still holds start-of-tick; Curr is mutated in place.
-        xpbd::step(world, topo, &[], grab_targets, Some(bounds), dt);
+        xpbd::step(world, topo, &[], grab_targets, bounds, dt);
 
         // Ring3 lerp needs distinct faces — publish before velocity commit.
         // Dirty contract: consumers (`extract_dirty_deltas`, GPU dirty pack) must read the
@@ -105,6 +108,42 @@ impl FrameBridge {
         world.curr.clear_dirty();
         world.commit_prev_from_curr();
         Ok(errors)
+    }
+
+    /// Kinematic / Rapier-shadow barrier: apply patches → (optional reparent) →
+    /// publish Prev/Curr → commit. **No** XPBD step, LBVH, or contact collect.
+    ///
+    /// Skips publish+clone when there were no patches, no reparent, and
+    /// `force_publish` is false (faces unchanged). Pass `force_publish` after
+    /// direct tape membership edits (alloc/tombstone) that bypass the patch queue.
+    ///
+    /// Returns `(patch_errors, published)`.
+    pub fn tick_mirror_publish(
+        &mut self,
+        world: &mut XpbdWorld,
+        topo: &mut FlatTopology,
+        snapshots: &EpochSnapshotPair,
+        force_publish: bool,
+    ) -> Result<(Vec<(usize, TapeError)>, bool), BridgeError> {
+        let patches = std::mem::take(&mut self.pending);
+        let had_patches = !patches.is_empty();
+        let errors = world.curr.apply_patches(&patches);
+
+        let mut did_reparent = false;
+        if self.parents_dirty {
+            self.apply_reparent(topo)?;
+            self.parents_dirty = false;
+            did_reparent = true;
+        }
+
+        xpbd::sync_prev_capacity(world);
+        let published = had_patches || did_reparent || force_publish;
+        if published {
+            snapshots.publish(world.prev.clone(), world.curr.clone());
+            world.curr.clear_dirty();
+            world.commit_prev_from_curr();
+        }
+        Ok((errors, published))
     }
 
     /// Apply pending parents only if bake succeeds; on failure restore prior topology.
@@ -157,7 +196,7 @@ mod tests {
                 &mut topo,
                 &snaps,
                 &[],
-                SceneBounds::default(),
+                Some(SceneBounds::default()),
                 1.0 / 60.0,
             )
             .unwrap();
@@ -196,7 +235,7 @@ mod tests {
                 &mut topo,
                 &snaps,
                 &[],
-                SceneBounds::default(),
+                Some(SceneBounds::default()),
                 1.0 / 60.0,
             )
             .unwrap();
@@ -245,11 +284,88 @@ mod tests {
                 &mut topo,
                 &snaps,
                 &[],
-                SceneBounds::default(),
+                Some(SceneBounds::default()),
                 1.0 / 60.0,
             )
             .unwrap();
         assert_eq!(world.curr.iter_dirty_rows().count(), 0);
+    }
+
+    #[test]
+    fn tick_mirror_publish_skips_when_idle() {
+        let mut world = XpbdWorld::new(1);
+        let h = world.curr.alloc_row();
+        world
+            .curr
+            .set_transform(h.row_id, WorldTransformf64::identity_at([1.0, 2.0, 3.0]))
+            .unwrap();
+        xpbd::sync_prev_capacity(&mut world);
+        world.prev = world.curr.clone();
+        let snaps = EpochSnapshotPair::new(world.prev.clone(), world.curr.clone());
+        let published_ptr = snaps.load_curr().as_ref() as *const _;
+        let mut bridge = FrameBridge::default();
+        let mut topo = FlatTopology::default();
+        let (_errs, published) = bridge
+            .tick_mirror_publish(&mut world, &mut topo, &snaps, false)
+            .unwrap();
+        assert!(!published);
+        // No patches → no re-publish (Arc identity retained).
+        assert_eq!(snaps.load_curr().as_ref() as *const _, published_ptr);
+    }
+
+    #[test]
+    fn tick_mirror_publish_force_without_patches() {
+        let mut world = XpbdWorld::new(1);
+        let h = world.curr.alloc_row();
+        world
+            .curr
+            .set_transform(h.row_id, WorldTransformf64::identity_at([1.0, 0.0, 0.0]))
+            .unwrap();
+        xpbd::sync_prev_capacity(&mut world);
+        world.prev = world.curr.clone();
+        let snaps = EpochSnapshotPair::new(EpochSheet::default(), EpochSheet::default());
+        let mut bridge = FrameBridge::default();
+        let mut topo = FlatTopology::default();
+        let (_errs, published) = bridge
+            .tick_mirror_publish(&mut world, &mut topo, &snaps, true)
+            .unwrap();
+        assert!(published);
+        assert_eq!(
+            snaps.load_curr().world_transforms[h.row_id as usize].position,
+            [1.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn tick_mirror_publish_keeps_prev_curr_distinct() {
+        let mut world = XpbdWorld::new(1);
+        let h = world.curr.alloc_row();
+        world
+            .curr
+            .set_transform(h.row_id, WorldTransformf64::identity_at([0.0, 0.0, 0.0]))
+            .unwrap();
+        xpbd::sync_prev_capacity(&mut world);
+        world.prev = world.curr.clone();
+        let snaps = EpochSnapshotPair::new(world.prev.clone(), world.curr.clone());
+        let mut bridge = FrameBridge::default();
+        bridge.queue_patch(PendingPatch::SetTransform {
+            row_id: h.row_id,
+            transform: WorldTransformf64::identity_at([5.0, 0.0, 0.0]),
+            preserve_physics_coords: false,
+        });
+        let mut topo = FlatTopology::default();
+        let (_errs, published) = bridge
+            .tick_mirror_publish(&mut world, &mut topo, &snaps, false)
+            .unwrap();
+        assert!(published);
+        assert_eq!(
+            snaps.load_prev().world_transforms[h.row_id as usize].position,
+            [0.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            snaps.load_curr().world_transforms[h.row_id as usize].position,
+            [5.0, 0.0, 0.0]
+        );
     }
 
     #[test]

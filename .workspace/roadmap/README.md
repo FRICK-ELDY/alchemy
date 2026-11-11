@@ -193,11 +193,12 @@ depends_on: [x0006]
 | x008c | — | done | 共有 JWKS 失敗クールダウン + async miss refresh（P2-5） | [x008c-shared-jwks-fail-cooldown.md](slices/x008c-shared-jwks-fail-cooldown.md) |
 | x008d | — | done | BLAKE3 / seal Port プール（PartitionSupervisor · P2-1） | [x008d-blake3-seal-port-pool.md](slices/x008d-blake3-seal-port-pool.md) |
 | x008e | — | done | Zero-Base Spatial Lifecycle（Tape / LBVH / XPBD / Bridge + epoch_view） | [x008e-zero-base-spatial-lifecycle.md](slices/x008e-zero-base-spatial-lifecycle.md) |
+| x008f | — | done | host 60Hz FrameBridge 配線（Rapier 影並走 · P2-6 一部） | [x008f-host-frame-bridge.md](slices/x008f-host-frame-bridge.md) |
 
-**現在の次:** improvement P2 残 / Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。P2-1 は **[x008d](slices/x008d-blake3-seal-port-pool.md) done**。P2-5 は **[x008c](slices/x008c-shared-jwks-fail-cooldown.md) done**。P2-2 / P2-3 は **[x008b](slices/x008b-ready-and-blob-nosniff.md) done**。P2-8 / P2-9 は **[x0089](slices/x0089-rotten-smoke-shared-ci.md) done**。P2-10 は **[x008a](slices/x008a-docs-freshness.md) done**。Zero-Base 物理土台は **[x008e](slices/x008e-zero-base-spatial-lifecycle.md) done**（host 配線・Rapier 置換は次 Slice）。  
+**現在の次:** improvement P2 残（Origin Cert hash / Room 上限厳密化 等）/ Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。Zero-Base: **[x008e](slices/x008e-zero-base-spatial-lifecycle.md)** 土台 + **[x008f](slices/x008f-host-frame-bridge.md)** host 影並走 **done**（Rapier 置換・SceneGpu bind は次）。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x008f`**。
+次の空き番号は **`x0090`**。
 
 ## 関連
 
