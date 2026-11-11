@@ -90,9 +90,9 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 - client は pin 不一致・`host_sig` 失敗・**Manifest generation 不一致 / revision 後退**を拒否（x0025 / x003a）；自 `sub` で `entity_id` を解決。Presence 単独で generation を上げない
 - host 解放: **Leave** / **liveliness Delete（`sub`+`jti`）** + Intent TTL 3s
 
-## キー式ヘルパ（x0017 + x0022 liveliness + x0023 snapshot + x004e wire_cap）
+## キー式ヘルパ（x0017 + x0022 liveliness + x0023 snapshot + x004e wire_cap + x006d/x007b inventory）
 
-式: `alchemy/dev/room/{room_id}/{wire_cap}/{manifest|frame|input|presence|host_control|snapshot|alive/{sub}/{jti}}`。  
+式: `alchemy/dev/room/{room_id}/{wire_cap}/{manifest|frame|input|presence|host_control|snapshot|inventory/spawn|inventory/despawn|alive/{sub}/{jti}}`。  
 `*_KEY_LOCAL` は `room_id=local` + fixture `LOCAL_WIRE_CAP` の別名。host/client は `ROOM_ID` + Token の `wire_cap` を `validate_*` してから `*_key` で declare する。
 
 | 定数 / 関数 | 既定 |
@@ -103,6 +103,8 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 | `INPUT_KEY_LOCAL` / `input_key(room_id, wire_cap)` | `…/input` |
 | `PRESENCE_KEY_LOCAL` / `presence_key(room_id, wire_cap)` | `…/presence` |
 | `SNAPSHOT_KEY_LOCAL` / `snapshot_key(room_id, wire_cap)` | `…/snapshot` |
+| `INVENTORY_SPAWN_KEY_LOCAL` / `inventory_spawn_key` | `…/inventory/spawn`（x006d / x0081） |
+| `INVENTORY_DESPAWN_KEY_LOCAL` / `inventory_despawn_key` | `…/inventory/despawn`（x007b / x0081） |
 | `HOST_CONTROL_KEY_LOCAL` / `host_control_key(room_id, wire_cap)` | `…/host_control` |
 | `liveliness_key(room_id, wire_cap, sub, jti)` / `liveliness_wildcard` | `…/alive/{sub}/{jti}` / `…/alive/**` |
 | `liveliness_binding_from_key` | `(sub, jti)`。単セグメント旧キーは拒否 |

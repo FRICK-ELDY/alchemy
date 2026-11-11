@@ -82,7 +82,7 @@
 | world rate limit / Room 上限 | **partial→置換** — auth-JWT scope closed。host-token scope は新規 |
 | 相関 ID / metrics | **closed** — x007a |
 | launcher IPC stale | **closed** — discovery |
-| README / client.md / vision 鮮度 | **partial** — README 追従。client.md / vision / wan コメント残 |
+| README / client.md / vision 鮮度 | **closed** — README 追従。client / wan / world / vision は **x008a**（P2-10） |
 | 軽微群 | **partial** — x0074〜x0079 大半 closed。残りは P2 |
 
 **集計（まとめ 12 行）: closed 8 / partial 3 / open 0 / superseded→置換 1（wildcard→鍵 revoke）**

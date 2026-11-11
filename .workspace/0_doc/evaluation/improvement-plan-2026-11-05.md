@@ -54,7 +54,7 @@
 | P2-7 | take-out を guest+session / owner_sub 判定へ | -1 | P0-1 と一体 |
 | P2-8 | 腐った smoke 削除 or probe 吸収 | -1 | banner-grep 削除・e2e-probe へ吸収 — **[x0089](../../roadmap/slices/x0089-rotten-smoke-shared-ci.md) done** |
 | P2-9 | `ci.sh` に `shared/alchemy_*` | -1 | `ci.sh shared` / `all` — **[x0089](../../roadmap/slices/x0089-rotten-smoke-shared-ci.md) done** |
-| P2-10 | client.md / wan コメント / world 保証表 / vision | -1 | 書くか削除 |
+| P2-10 | client.md / wan コメント / world 保証表 / vision | -1 | 書くか削除 — **[x008a](../../roadmap/slices/x008a-docs-freshness.md) done** |
 | P2-11 | Room 上限の厳密化 | -1 | quota row / serializable |
 | P2-12 | XR loader tempfile 純粋化 | -1 | Windows flake 除去 |
 | P2-13 | USER_ROOT 帯を Manifest 配 | -1 | PROTOCOL_PIN 更新が必要なら別スライス |
@@ -88,7 +88,7 @@
 | P1-2 headless trust + WAN E2E | **方向完了** — 実 host 一往復は **x0087**（P1-4）done |
 | P1-3 world RL + Room 上限 | **部分完了** — auth scope done。host-token は今回 P1-1 |
 | P1-4 launcher discovery | **完了** |
-| P1-5 README 鮮度 | **部分完了** — README done。他 docs は P2-10 |
+| P1-5 README 鮮度 | **完了** — README done。他 docs は **x008a**（P2-10）done |
 | P2 x0074〜x0079 | **完了**（Port 直列・smoke 等は残） |
 
 ---
