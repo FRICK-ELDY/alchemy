@@ -1,6 +1,7 @@
 defmodule AssetsWeb.BlobControllerTest do
   use AssetsWeb.ConnCase, async: false, cas: true
 
+  alias Assets.Blake3.Worker, as: Blake3Worker
   alias Assets.Blobs
   alias Assets.Blobs.BlobGrant
   alias Assets.Blobs.CasObject
@@ -9,6 +10,7 @@ defmodule AssetsWeb.BlobControllerTest do
   alias Assets.Repo
   alias Assets.TestAuthHelpers
   alias Assets.TestPlaceReadHelpers
+  alias Ecto.Adapters.SQL.Sandbox
 
   @sub_a "22222222-2222-2222-2222-222222222222"
   @sub_b "33333333-3333-3333-3333-333333333333"
@@ -307,7 +309,7 @@ defmodule AssetsWeb.BlobControllerTest do
   end
 
   test "ready returns 503 when blake3 port worker is down", %{conn: conn} do
-    :ok = Supervisor.terminate_child(Assets.Supervisor, Assets.Blake3.Worker)
+    :ok = Supervisor.terminate_child(Assets.Supervisor, Blake3Worker)
 
     assert %{
              "status" => "not_ready",
@@ -318,7 +320,7 @@ defmodule AssetsWeb.BlobControllerTest do
   end
 
   test "ready returns 503 when repo is down", %{conn: conn} do
-    :ok = Supervisor.terminate_child(Assets.Supervisor, Assets.Repo)
+    :ok = Supervisor.terminate_child(Assets.Supervisor, Repo)
 
     assert %{
              "status" => "not_ready",
@@ -329,12 +331,12 @@ defmodule AssetsWeb.BlobControllerTest do
   end
 
   test "blake3 ready? stays true while GenServer is suspended" do
-    :sys.suspend(Assets.Blake3.Worker)
+    :sys.suspend(Blake3Worker)
 
     try do
-      assert Assets.Blake3.Worker.ready?()
+      assert Blake3Worker.ready?()
     after
-      :sys.resume(Assets.Blake3.Worker)
+      :sys.resume(Blake3Worker)
     end
   end
 
@@ -891,7 +893,7 @@ defmodule AssetsWeb.BlobControllerTest do
   end
 
   defp restart_blake3_worker! do
-    case Supervisor.restart_child(Assets.Supervisor, Assets.Blake3.Worker) do
+    case Supervisor.restart_child(Assets.Supervisor, Blake3Worker) do
       {:ok, _} -> :ok
       {:ok, _, _} -> :ok
       {:error, {:already_started, _}} -> :ok
@@ -901,7 +903,7 @@ defmodule AssetsWeb.BlobControllerTest do
   end
 
   defp restart_repo! do
-    case Supervisor.restart_child(Assets.Supervisor, Assets.Repo) do
+    case Supervisor.restart_child(Assets.Supervisor, Repo) do
       {:ok, _} -> :ok
       {:ok, _, _} -> :ok
       {:error, {:already_started, _}} -> :ok
@@ -909,7 +911,7 @@ defmodule AssetsWeb.BlobControllerTest do
       other -> flunk("failed to restart Assets.Repo: #{inspect(other)}")
     end
 
-    Ecto.Adapters.SQL.Sandbox.mode(Assets.Repo, :manual)
+    Sandbox.mode(Repo, :manual)
   end
 end
 

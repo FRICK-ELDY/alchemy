@@ -2,8 +2,10 @@ defmodule WorldWeb.RoomControllerTest do
   use WorldWeb.ConnCase, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias World.ManifestSealHash.Worker, as: SealHashWorker
   alias World.Rooms.Room
   alias World.TestAuthHelpers
+  alias World.Token.Keys, as: TokenKeys
 
   setup do
     %{signer: signer} = TestAuthHelpers.install_test_auth!()
@@ -559,7 +561,7 @@ defmodule WorldWeb.RoomControllerTest do
   end
 
   test "ready returns 503 when seal port worker is down", %{conn: conn} do
-    :ok = Supervisor.terminate_child(World.Supervisor, World.ManifestSealHash.Worker)
+    :ok = Supervisor.terminate_child(World.Supervisor, SealHashWorker)
 
     assert %{
              "status" => "not_ready",
@@ -570,7 +572,7 @@ defmodule WorldWeb.RoomControllerTest do
   end
 
   test "ready returns 503 when Keys is down", %{conn: conn} do
-    :ok = Supervisor.terminate_child(World.Supervisor, World.Token.Keys)
+    :ok = Supervisor.terminate_child(World.Supervisor, TokenKeys)
 
     assert %{
              "status" => "not_ready",
@@ -581,12 +583,12 @@ defmodule WorldWeb.RoomControllerTest do
   end
 
   test "seal port ready? stays true while GenServer is suspended" do
-    :sys.suspend(World.ManifestSealHash.Worker)
+    :sys.suspend(SealHashWorker)
 
     try do
-      assert World.ManifestSealHash.Worker.ready?()
+      assert SealHashWorker.ready?()
     after
-      :sys.resume(World.ManifestSealHash.Worker)
+      :sys.resume(SealHashWorker)
     end
   end
 
@@ -1292,7 +1294,7 @@ defmodule WorldWeb.RoomControllerTest do
   end
 
   defp restart_seal_port! do
-    case Supervisor.restart_child(World.Supervisor, World.ManifestSealHash.Worker) do
+    case Supervisor.restart_child(World.Supervisor, SealHashWorker) do
       {:ok, _} -> :ok
       {:ok, _, _} -> :ok
       {:error, {:already_started, _}} -> :ok
@@ -1302,7 +1304,7 @@ defmodule WorldWeb.RoomControllerTest do
   end
 
   defp restart_keys! do
-    case Supervisor.restart_child(World.Supervisor, World.Token.Keys) do
+    case Supervisor.restart_child(World.Supervisor, TokenKeys) do
       {:ok, _} -> :ok
       {:ok, _, _} -> :ok
       {:error, {:already_started, _}} -> :ok
