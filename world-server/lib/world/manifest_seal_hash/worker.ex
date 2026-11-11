@@ -21,6 +21,9 @@ defmodule World.ManifestSealHash.Worker do
 
   @receive_slack_ms 2_000
 
+  # Published for ready?/0 — must not GenServer.call (hash can block ~30s).
+  @pt_port {__MODULE__, :port}
+
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -35,6 +38,24 @@ defmodule World.ManifestSealHash.Worker do
 
     :exit, {:timeout, _} ->
       {:error, {:cli_failed, :timeout, "call timeout"}}
+  end
+
+  @doc """
+  True when the named worker is registered and its OS Port is still attached.
+
+  Reads `:persistent_term` + `Port.info/1` — **does not** `GenServer.call`, so a
+  long `{:hash, _}` (receive up to ~30s) cannot make `/ready` false-negative (x008b).
+  """
+  @spec ready?() :: boolean()
+  def ready? do
+    if is_pid(Process.whereis(__MODULE__)) do
+      case :persistent_term.get(@pt_port, nil) do
+        port when is_port(port) -> Port.info(port) != nil
+        _ -> false
+      end
+    else
+      false
+    end
   end
 
   @impl true
@@ -79,6 +100,7 @@ defmodule World.ManifestSealHash.Worker do
 
   def handle_info({:EXIT, parent, reason}, %{parent: parent} = state) when is_pid(parent) do
     close_port(state.port)
+    clear_published_port()
     {:stop, reason, %{state | port: nil}}
   end
 
@@ -91,6 +113,7 @@ defmodule World.ManifestSealHash.Worker do
   @impl true
   def terminate(_reason, state) do
     close_port(Map.get(state, :port))
+    clear_published_port()
     :ok
   end
 
@@ -107,6 +130,7 @@ defmodule World.ManifestSealHash.Worker do
 
       {:EXIT, ^parent, reason} when is_pid(parent) ->
         close_port(port)
+        clear_published_port()
 
         {:stop, reason, {:error, {:cli_failed, :shutdown, inspect(reason)}}, %{state | port: nil}}
     after
@@ -134,11 +158,19 @@ defmodule World.ManifestSealHash.Worker do
             ]
           )
 
+        publish_port(port)
         {:ok, %{port: port}}
     end
   rescue
     e in ErlangError ->
       {:error, {:cli_missing, Exception.message(e)}}
+  end
+
+  defp publish_port(port) when is_port(port), do: :persistent_term.put(@pt_port, port)
+
+  defp clear_published_port do
+    _ = :persistent_term.erase(@pt_port)
+    :ok
   end
 
   defp resolve_executable(path) when is_binary(path) do
@@ -153,6 +185,7 @@ defmodule World.ManifestSealHash.Worker do
 
   defp reopen!(%{port: port, parent: parent}) do
     close_port(port)
+    clear_published_port()
 
     case open_port() do
       {:ok, new_state} -> Map.put(new_state, :parent, parent)

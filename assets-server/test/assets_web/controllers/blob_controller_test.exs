@@ -296,6 +296,74 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"status" => "ok", "service" => "assets-server"} = json_response(conn, 200)
   end
 
+  test "ready checks repo and blake3 port", %{conn: conn} do
+    conn = get(conn, "/ready")
+
+    assert %{
+             "status" => "ok",
+             "service" => "assets-server",
+             "checks" => %{"repo" => "ok", "port" => "ok"}
+           } = json_response(conn, 200)
+  end
+
+  test "ready returns 503 when blake3 port worker is down", %{conn: conn} do
+    :ok = Supervisor.terminate_child(Assets.Supervisor, Assets.Blake3.Worker)
+
+    assert %{
+             "status" => "not_ready",
+             "checks" => %{"repo" => "ok", "port" => "error"}
+           } = json_response(get(conn, "/ready"), 503)
+  after
+    restart_blake3_worker!()
+  end
+
+  test "ready returns 503 when repo is down", %{conn: conn} do
+    :ok = Supervisor.terminate_child(Assets.Supervisor, Assets.Repo)
+
+    assert %{
+             "status" => "not_ready",
+             "checks" => %{"repo" => "error", "port" => "ok"}
+           } = json_response(get(conn, "/ready"), 503)
+  after
+    restart_repo!()
+  end
+
+  test "blake3 ready? stays true while GenServer is suspended" do
+    :sys.suspend(Assets.Blake3.Worker)
+
+    try do
+      assert Assets.Blake3.Worker.ready?()
+    after
+      :sys.resume(Assets.Blake3.Worker)
+    end
+  end
+
+  test "GET returns octet-stream + nosniff even when CasObject mime is text/html", %{
+    conn: conn,
+    signer: signer,
+    sub: sub
+  } do
+    body = "<html><script>alert(1)</script></html>"
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> put_req_header("content-type", "text/html")
+      |> post("/api/v1/blobs", body)
+
+    assert %{"blake3" => blake3, "mime" => "text/html", "status" => "created"} =
+             json_response(conn, 201)
+
+    conn =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> get("/api/v1/blobs/#{blake3}")
+
+    assert response(conn, 200) == body
+    assert get_resp_header(conn, "content-type") == ["application/octet-stream"]
+    assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+  end
+
   test "blake3 helper", %{sub: sub} do
     data = "x"
     assert {:ok, object, :created} = Blobs.upload(sub, data, "text/plain")
@@ -820,6 +888,28 @@ defmodule AssetsWeb.BlobControllerTest do
       |> get("/api/v1/blobs/#{blake3}")
 
     assert %{"error" => "forbidden"} = json_response(conn, 403)
+  end
+
+  defp restart_blake3_worker! do
+    case Supervisor.restart_child(Assets.Supervisor, Assets.Blake3.Worker) do
+      {:ok, _} -> :ok
+      {:ok, _, _} -> :ok
+      {:error, {:already_started, _}} -> :ok
+      {:error, :running} -> :ok
+      other -> flunk("failed to restart Blake3.Worker: #{inspect(other)}")
+    end
+  end
+
+  defp restart_repo! do
+    case Supervisor.restart_child(Assets.Supervisor, Assets.Repo) do
+      {:ok, _} -> :ok
+      {:ok, _, _} -> :ok
+      {:error, {:already_started, _}} -> :ok
+      {:error, :running} -> :ok
+      other -> flunk("failed to restart Assets.Repo: #{inspect(other)}")
+    end
+
+    Ecto.Adapters.SQL.Sandbox.mode(Assets.Repo, :manual)
   end
 end
 

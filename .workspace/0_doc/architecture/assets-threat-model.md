@@ -87,8 +87,8 @@
 
 | | 内容 |
 |:---|:---|
-| **現状の防御** | Drive UI / ユーザ生成コンテンツ配信は未実装。blob GET は API（Bearer）経由 |
-| **目標の防御** | **配信ドメインを API/Web と完全分離**。レスポンスに `Content-Security-Policy: sandbox`、`X-Content-Type-Options: nosniff`、`Content-Disposition: attachment`（または非実行 MIME）を強制 |
+| **現状の防御** | Drive UI / ユーザ生成コンテンツ配信は未実装。blob GET は API（Bearer）経由。local GET は `application/octet-stream` + `nosniff`（x008b；CasObject.mime を Content-Type に載せない） |
+| **目標の防御** | **配信ドメインを API/Web と完全分離**。レスポンスに `Content-Security-Policy: sandbox`、`Content-Disposition: attachment` を追加強制。S3 オブジェクト側 MIME も octet-stream 固定 |
 | **保証しない** | ユーザが別アプリでファイルを開いたときの OS 側挙動 |
 
 ### ⑤ 連合メタデータ取得を餌にした SSRF（自宅 LAN 侵入）

@@ -15,6 +15,8 @@ defmodule Assets do
   - TTL `quota_reservations` reaper + grace orphan CAS GC (x0074; GenServer, not Oban)
   - GET always BlobGrant or covering PlaceRead (x006c); CasObject is bytes meta
     only (no `access` column — x006f). Bearer alone is never a read capability
+  - Local blob GET is always `application/octet-stream` + `X-Content-Type-Options:
+    nosniff` (x008b); CasObject.mime is storage meta / upload echo only
   - PUT always issues `:owned` Grant; same blake3 may be claimed via `/blobs` and
     `/inventory/blobs` by different owners without access conflict (x006f)
   - HTTP inventory PUT (`POST /api/v1/inventory/blobs`) remains a path alias (x0054)

@@ -9,6 +9,7 @@ s3 時の GET は **短命署名 URL へ 302**（x001d）。BLAKE3 は常駐 `bl
 cd auth-server && docker compose up -d && cd ..
 cd assets-server && docker compose up -d
 # http://localhost:4004/health
+# http://localhost:4004/ready
 ```
 
 既定は `ASSETS_CAS_BACKEND=local`。R2: [manual/assets-cas-r2.md](../.workspace/0_doc/manual/assets-cas-r2.md) · [`.env.example`](.env.example)

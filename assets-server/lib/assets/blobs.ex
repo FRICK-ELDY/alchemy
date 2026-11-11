@@ -11,8 +11,10 @@ defmodule Assets.Blobs do
 
   GET (x006c / x006f): always gated by BlobGrant for auth_sub **or** a covering
   PlaceRead JWT (x006b). CasObject holds bytes meta only (no `access` column).
-  Inventory path (`POST /api/v1/inventory/blobs`) is an HTTP-boundary alias that
-  uses the same upload (x0054 / x006f).
+  HTTP local GET ignores CasObject.mime for Content-Type — always
+  `application/octet-stream` + nosniff (x008b). Inventory path
+  (`POST /api/v1/inventory/blobs`) is an HTTP-boundary alias that uses the same
+  upload (x0054 / x006f).
   """
 
   require Logger

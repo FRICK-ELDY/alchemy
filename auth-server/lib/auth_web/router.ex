@@ -60,6 +60,7 @@ defmodule AuthWeb.Router do
 
   scope "/", AuthWeb do
     get "/health", HealthController, :index
+    get "/ready", HealthController, :ready
     get "/.well-known/jwks.json", JwksController, :index
   end
 

@@ -537,6 +537,59 @@ defmodule WorldWeb.RoomControllerTest do
     assert %{"keys" => [%{"kty" => "RSA", "kid" => _kid}]} = json_response(conn, 200)
   end
 
+  test "ready checks repo keys and seal port", %{conn: conn} do
+    conn = get(conn, "/ready")
+
+    assert %{
+             "status" => "ok",
+             "service" => "world-server",
+             "checks" => %{"repo" => "ok", "keys" => "ok", "port" => "ok"}
+           } = json_response(conn, 200)
+  end
+
+  test "ready returns 503 when repo is down", %{conn: conn} do
+    stop_repo!()
+
+    assert %{
+             "status" => "not_ready",
+             "checks" => %{"repo" => "error", "keys" => "ok", "port" => "ok"}
+           } = json_response(get(conn, "/ready"), 503)
+  after
+    restart_repo!()
+  end
+
+  test "ready returns 503 when seal port worker is down", %{conn: conn} do
+    :ok = Supervisor.terminate_child(World.Supervisor, World.ManifestSealHash.Worker)
+
+    assert %{
+             "status" => "not_ready",
+             "checks" => %{"repo" => "ok", "keys" => "ok", "port" => "error"}
+           } = json_response(get(conn, "/ready"), 503)
+  after
+    restart_seal_port!()
+  end
+
+  test "ready returns 503 when Keys is down", %{conn: conn} do
+    :ok = Supervisor.terminate_child(World.Supervisor, World.Token.Keys)
+
+    assert %{
+             "status" => "not_ready",
+             "checks" => %{"repo" => "ok", "keys" => "error", "port" => "ok"}
+           } = json_response(get(conn, "/ready"), 503)
+  after
+    restart_keys!()
+  end
+
+  test "seal port ready? stays true while GenServer is suspended" do
+    :sys.suspend(World.ManifestSealHash.Worker)
+
+    try do
+      assert World.ManifestSealHash.Worker.ready?()
+    after
+      :sys.resume(World.ManifestSealHash.Worker)
+    end
+  end
+
   test "conflict on duplicate room", %{conn: conn, signer: signer} do
     conn = TestAuthHelpers.put_auth(conn, signer)
 
@@ -1236,6 +1289,26 @@ defmodule WorldWeb.RoomControllerTest do
 
     # x003b: Repo restart leaves Sandbox in auto; restore manual for later DataCase owners.
     Sandbox.mode(World.Repo, :manual)
+  end
+
+  defp restart_seal_port! do
+    case Supervisor.restart_child(World.Supervisor, World.ManifestSealHash.Worker) do
+      {:ok, _} -> :ok
+      {:ok, _, _} -> :ok
+      {:error, {:already_started, _}} -> :ok
+      {:error, :running} -> :ok
+      other -> flunk("failed to restart ManifestSealHash.Worker: #{inspect(other)}")
+    end
+  end
+
+  defp restart_keys! do
+    case Supervisor.restart_child(World.Supervisor, World.Token.Keys) do
+      {:ok, _} -> :ok
+      {:ok, _, _} -> :ok
+      {:error, {:already_started, _}} -> :ok
+      {:error, :running} -> :ok
+      other -> flunk("failed to restart World.Token.Keys: #{inspect(other)}")
+    end
   end
 
   defp issue_seal(host_token, priv, room_id) do
