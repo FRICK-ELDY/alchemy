@@ -3,10 +3,12 @@ name = "alchemy-shared-sim"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Shared EntityKind / ManifestIndex / SlotGraph (host + client; no Rapier)"
+description = "Shared EntityKind / ManifestIndex / SlotGraph + Zero-Base Tape/Topology/Spatial/XPBD (host + client)"
 
 [lints]
 workspace = true
 
 [dependencies]
 alchemy-protocol = { workspace = true }
+arc-swap = { workspace = true }
+bytemuck = { workspace = true }

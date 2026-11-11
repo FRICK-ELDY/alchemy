@@ -336,6 +336,8 @@ pub struct SharedState {
     pub host_supervisor: Arc<crate::host_supervisor::HostSupervisor>,
     /// Other Presence assignment `sub`s (x0080 handover candidate list; hint only).
     pub presence_peer_subs: Mutex<Vec<String>>,
+    /// Zero-Base Epoch Prev/Curr snapshots + Hierarchy / X-Ray (Ring 3 view).
+    pub epoch: crate::epoch_view::EpochViewState,
 }
 
 impl SharedState {

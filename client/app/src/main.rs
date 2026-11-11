@@ -22,6 +22,7 @@ mod asset_decode_budget;
 mod assets_fetch;
 mod auth;
 mod bus;
+mod epoch_view;
 mod host_supervisor;
 mod intent_session;
 mod inventory;
@@ -162,6 +163,7 @@ fn main() -> Result<()> {
         inventory_mirror: Mutex::new(crate::system_ui::InventoryMirror::default()),
         host_supervisor: Arc::new(crate::host_supervisor::HostSupervisor::default()),
         presence_peer_subs: Mutex::new(Vec::new()),
+        epoch: crate::epoch_view::EpochViewState::new(),
     });
     // Sync AUTH/WORLD/ASSETS/ZENOH into process env for supervised host spawn.
     // Same world_url as the JWKS fetch above → apply_endpoints skips a second refresh.

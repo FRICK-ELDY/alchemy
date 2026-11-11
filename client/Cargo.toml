@@ -29,6 +29,8 @@ zenoh = "1.10"
 anyhow = "1"
 serde_json = "1"
 bytemuck = { version = "1", features = ["derive"] }
+# Human-approved (2026-11-11): MIT OR Apache-2.0; Ring3 EpochSheet publish.
+arc-swap = "1"
 pollster = "0.4"
 winit = "0.30"
 wgpu = "24"

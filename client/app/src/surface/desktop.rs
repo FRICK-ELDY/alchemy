@@ -1592,6 +1592,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 self.ui.pull_dash_logic(&self.shared);
+                let _ = self.ui.pull_epoch_xray(&self.shared);
                 {
                     let tick = self
                         .shared
