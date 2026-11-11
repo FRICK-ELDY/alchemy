@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0089`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x008a`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -187,11 +187,12 @@ depends_on: [x0006]
 | x0086 | — | done | assets test hermetic（reaper/GC `start: false` + CAS `cas: true` / tmp_dir） | [x0086-assets-test-hermetic.md](slices/x0086-assets-test-hermetic.md) |
 | x0087 | — | done | 実 host WAN 一往復 E2E（CSR→credential worker→Frame→trust + 否定系） | [x0087-wan-host-e2e.md](slices/x0087-wan-host-e2e.md) |
 | x0088 | — | done | Allocation 主体別 throughput（sub/IP 短長窓 + 429 + metrics） | [x0088-allocation-subject-throughput.md](slices/x0088-allocation-subject-throughput.md) |
+| x0089 | — | done | 腐った smoke 削除 + `ci.sh` に `shared/alchemy_*`（P2-8 / P2-9） | [x0089-rotten-smoke-shared-ci.md](slices/x0089-rotten-smoke-shared-ci.md) |
 
-**現在の次:** improvement P2 帯 / Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。P1-5 Allocation throughput は **[x0088](slices/x0088-allocation-subject-throughput.md) done**。  
+**現在の次:** improvement P2 帯 / Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。P2-8 / P2-9 は **[x0089](slices/x0089-rotten-smoke-shared-ci.md) done**。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x0089`**。
+次の空き番号は **`x008a`**。
 
 ## 関連
 

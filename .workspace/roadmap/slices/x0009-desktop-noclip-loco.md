@@ -73,6 +73,6 @@ ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 - `client/host-server/src/sim.rs` — Coin 物理と user_root Noclip 分離
 - `client/app/src/surface/desktop.rs` — Intent サンプリング
 - entity: Coin=`1`、static marker=`2`、user_root=`3`
-- smoke: `bash .scripts/smoke-desktop-noclip.sh`
+- 回帰: `cargo test -p host-server -- sim::tests::noclip_passes_through_floor`（旧 `smoke-desktop-noclip.sh` は [x0089](x0089-rotten-smoke-shared-ci.md) で削除）
 
 ← [目次](../README.md)

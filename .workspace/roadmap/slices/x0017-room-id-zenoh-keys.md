@@ -66,6 +66,6 @@ ROOM_ID=beta ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=bob cargo run -p client
 
 - host/client: `validate_room_id` → `*_key(room_id)` で declare；起動ログに動的キー
 - client Dash Exit: `host_control_key(room_id)`（`SharedState.room_id`）
-- smoke: `.scripts/smoke-presence-slots.sh`（`local` + `alpha` banner / pin `0.8.0-x0017`）
+- 回帰: protocol `validate_room_id` / key helpers + host `cargo test`（旧 `smoke-presence-slots.sh` は [x0089](x0089-rotten-smoke-shared-ci.md) で削除）
 
 ← [目次](../README.md)

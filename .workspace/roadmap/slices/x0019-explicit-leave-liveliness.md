@@ -68,6 +68,6 @@ ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=alice cargo run -p client
 - protocol: `leave = 11`；`liveliness_key(room_id, sub)` / `liveliness_wildcard(room_id)`
 - host: `PresenceIntents::reclaim_sub` + `pending_removes`；liveliness sub on `alive/**`
 - client: `SharedState` に liveliness token；`leave_room` が Leave put → undeclare → local clear
-- smoke: `.scripts/smoke-leave-liveliness.sh`
+- 回帰: `cargo test -p host-server -- presence_reclaim_tests` + protocol Leave roundtrip。旧 `smoke-leave-liveliness.sh` は [x0089](x0089-rotten-smoke-shared-ci.md) で削除
 
 ← [目次](../README.md)

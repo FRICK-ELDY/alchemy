@@ -153,16 +153,14 @@
   > 改善方針: test では reaper / GC を `start: false`（明示起動テストだけ `start_supervised`）にし、CAS パスをテストごとの `tmp_dir`（ExUnit `@tag :tmp_dir`）にする。
   > 対象ファイル: `assets-server/lib/assets/application.ex`（L15-33）, `assets-server/config/test.exs`, `assets-server/test/**`
 
-- **旧 smoke スクリプトが現行ログ文言と乖離して腐っている（継続）** `-1`
-  > README が「機械検証は `make smoke-desktop-handthrough`」と案内する当のスクリプトが `auth JWT + host Room Token acquired and verified` を grep する（`smoke-desktop-handthrough.sh` L151）が、この文言は現行 `client/` に存在しない。`smoke-leave-liveliness.sh` は pin `0.9.0-x0022` と `wire_cap` 無しの liveliness キー（L37-38）、`smoke-desktop-noclip.sh` / `smoke-lan-two-client.sh` は `host-server x0009..x0015 starting`（現行は `x004e starting`・`main.rs` L837）を探す。改善計画 P2-10 は未着手。
-  > 改善方針: CI に入れない smoke は削除し、必要なものは `e2e-probe` / `trust-probe` のサブコマンドへ吸収する。
-  > 対象ファイル: `.scripts/smoke-desktop-handthrough.sh`（L151）, `.scripts/smoke-leave-liveliness.sh`（L36-58）, `.scripts/smoke-desktop-noclip.sh`, `.scripts/smoke-lan-two-client.sh`
+- ~~**旧 smoke スクリプトが現行ログ文言と乖離して腐っている（継続）** `-1`~~ **closed（x0089）**
+  > banner-grep smoke（handthrough / noclip / lan-two-client / leave-liveliness / presence-slots）を削除。機械検証は `make ci-e2e`。P2-10（client.md / wan コメント等）は別途 open。
 
 ### 開発者体験（DX）
 
 - **`make ci` が共有 Elixir パッケージ 3 つと fuzz を覆わない（継続・部分解消）** `-1`
-  > relay-agent は `ci.sh relay` と `all` に入った（closed）。しかし `shared/alchemy_auth_client` / `alchemy_client_ip` / `alchemy_rate_limit` は GitHub Actions の個別 workflow にしかなく、`ci.sh all`（L185-195）には無い。x0071 で world と auth の両方が `alchemy_rate_limit` に依存するようになり、共有パッケージの単体テストを手元で回さずに PR を出せる状態が重くなった。
-  > 対象ファイル: `.scripts/ci.sh`（L185-195）, `.github/workflows/alchemy-rate-limit-ci.yml`
+  > relay-agent は `ci.sh relay` / `all` に入った（closed）。`shared/alchemy_*` は **x0089** で `ci.sh shared` / `all` に追加（closed）。残りは fuzz（`make ci-fuzz` は別入口のまま）。
+  > 対象ファイル: `.scripts/ci.sh`, `.github/workflows/alchemy-rate-limit-ci.yml`
 
 ### プロジェクト全体設計
 

@@ -8,7 +8,7 @@
 
 ## 現状（〜x007a）
 
-手通し正本は **Desktop（x0020）**: 日常スタック（`:4002/:4003/:4004` + zenohd `:7447`）。手順は下記、env 例は [`client/env.desktop.example`](client/env.desktop.example)、機械検証は `make smoke-desktop-handthrough`。
+手通し正本は **Desktop（x0020）**: 日常スタック（`:4002/:4003/:4004` + zenohd `:7447`）。手順は下記、env 例は [`client/env.desktop.example`](client/env.desktop.example)。機械検証（login→Token→input→frame）は hermetic `make ci-e2e`（[x001f](.workspace/roadmap/slices/x001f-hermetic-compose-e2e.md) / [x0089](.workspace/roadmap/slices/x0089-rotten-smoke-shared-ci.md)）。
 
 `host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（Manifest user_root 本数・帯天井 4・`cnf.spk`）・**Presence / Leave / liveliness**・**30Hz 署名デルタ**・credential / Zenoh put worker。`client` は Home login・canonical **ManifestSeal**・**generation/revision** ゲート・decode 上限・Desktop/XR Grab。  
 **暗号・門番（〜x0045）:** 検証失敗は discard、Intent rate + JWKS hard stale、Grab hold 距離クランプ。  
@@ -99,9 +99,9 @@ AUTH_USER=alice AUTH_PASSWORD=Password1 ALCHEMY_FORCE_DESKTOP=1 cargo run -p cli
 #   ローカル煙: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\.scripts\pack-windows-zip.ps1
 #   手順: .workspace/0_doc/manual/windows-tester-zip.md
 
-# 3b) 機械検証（3a の代替。既存 host を止めてから。スタック未起動は赤）
-#    assert: host Token/Manifest/physics + client build/units（GUI・login→描画はしない）
-make smoke-desktop-handthrough
+# 3b) 機械検証は hermetic compose E2E（日常 :4002 手通しの代替ではない）
+#    COMPOSE_UP=1 make ci-e2e
+#    または: docker compose -f docker-compose.e2e.yml up -d --build && make ci-e2e
 ```
 
 Hermetic e2e（x001f）に Desktop を向ける場合は `env.desktop.example` のコメント（`:4102` 系 / Zenoh `:7547`）を export。GUI CI は必須化していない。
@@ -117,17 +117,13 @@ bash .scripts/smoke-manifest-delta.sh  # Manifest + デルタ（zenohd 必須）
 bash .scripts/smoke-rapier-host.sh     # Rapier 60Hz / net 30Hz（zenohd 必須）
 bash .scripts/smoke-system-ui.sh       # system_ui unit + host-server check
 bash .scripts/smoke-openxr.sh          # OpenXR モジュール unit + Desktop フォールバック compile
-bash .scripts/smoke-desktop-noclip.sh  # Manifest Noclip + user_root（zenohd + auth/world 必須）
-make smoke-desktop-handthrough         # x0020: auth/world/zenoh + host Token/Manifest/physics + client build
-bash .scripts/smoke-lan-two-client.sh   # legacy x0014 units (still useful)
-bash .scripts/smoke-presence-slots.sh   # Presence slots + ROOM_ID keys + pin banner
 bash .scripts/smoke-client-auth.sh      # x0018 Home units + login→logout HTTP
-bash .scripts/smoke-leave-liveliness.sh # x0019 Leave + liveliness units + host banner
 bash .scripts/smoke-https-edge.sh       # x001a Tunnel: AUTH/WORLD/ASSETS_URL 必須
 bash .scripts/smoke-zenoh-wan.sh        # x001b/x0022 WAN: ZENOH_CONNECT=tls/… 必須
 make ci-e2e                             # x001f hermetic: compose 縦 login→token→input→frame
 #   前提: docker compose -f docker-compose.e2e.yml up -d --build
 #   または COMPOSE_UP=1 make ci-e2e
+# Noclip / presence / Leave の単体は cargo test（旧 banner-grep smoke は x0089 で削除）
 # 3 client（同マシン）: AUTH_USER は login のみ → 各窓で MainHub。
 #   1人が Host a room（Create / Host this room）、他は Join a host（Join as guest）。同一 ROOM_ID。
 #   ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=alice cargo run -p client
@@ -198,14 +194,15 @@ make ci-protocol
 make ci-auth
 make ci-world
 make ci-assets
-make ci-e2e   # x001f（compose スタック起動後）
-make smoke-desktop-handthrough  # x0020（日常スタック起動後）
+make ci-shared   # x0089 shared/alchemy_*（Docker 既定）
+make ci-e2e      # x001f（compose スタック起動後、または COMPOSE_UP=1）
 ```
 
-ホストの `mix` で auth を回す場合のみ:
+ホストの `mix` で auth / shared を回す場合のみ:
 
 ```bash
 AUTH_CI_HOST=1 ./.scripts/ci.sh auth
+SHARED_CI_HOST=1 ./.scripts/ci.sh shared
 ```
 
 | Target | 内容 |
@@ -215,6 +212,8 @@ AUTH_CI_HOST=1 ./.scripts/ci.sh auth
 | `auth` | Docker で format / compile / credo / ecto / `mix test` |
 | `world` | Docker で format / compile / credo / `mix test` |
 | `assets` | Docker で format / compile / credo / ecto / `mix test` |
+| `shared` | Docker で `shared/alchemy_*` の format / compile / `mix test`（`deps`/`_build` は named volume・ホスト成果物と隔離） |
+
 ## ライセンス
 
 Alchemy は責務境界に沿った **4階層マルチライセンス**です。詳細は [`LICENSE`](LICENSE) と [`TRADEMARKS.md`](TRADEMARKS.md) を参照してください。

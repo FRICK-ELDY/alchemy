@@ -72,6 +72,6 @@ ALCHEMY_FORCE_DESKTOP=1 cargo run -p client
 - `client/app/src/world_hit.rs` — Ray / AABB / grabbable ヒット（XR laser からも利用）
 - `client/app/src/surface/desktop.rs` — RMB + look 前方レイ → Intent Grab
 - host / proto: 変更なし（x0011）
-- smoke: `bash .scripts/smoke-desktop-noclip.sh` · `bash .scripts/smoke-rapier-host.sh`
+- 回帰: `cargo test -p host-server` · `bash .scripts/smoke-rapier-host.sh`（旧 `smoke-desktop-noclip.sh` は [x0089](x0089-rotten-smoke-shared-ci.md) で削除）
 
 ← [目次](../README.md)

@@ -74,6 +74,6 @@ ALCHEMY_FORCE_DESKTOP=1 AUTH_USER=carol cargo run -p client
 
 - `USER_ROOT_SLOTS: 2 → 4`、`USER_SPAWN` 4 点（boxes `10..` と衝突しない）
 - client: `jwt_sub::sub_unverified` + Presence 購読；remote は box mesh の末尾 UBO を再利用
-- smoke: `bash .scripts/smoke-presence-slots.sh`
+- 回帰: `cargo test -p host-server`（slots / grab）+ protocol presence keys。旧 `smoke-presence-slots.sh` は [x0089](x0089-rotten-smoke-shared-ci.md) で削除
 
 ← [目次](../README.md)

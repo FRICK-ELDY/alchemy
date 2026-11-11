@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # GitHub Actions 相当のチェック（macOS / Linux / WSL / Git Bash）。
-# 使い方: ./.scripts/ci.sh [all|rust|launcher|relay|protocol|auth|world|assets|prod-compose]
+# 使い方: ./.scripts/ci.sh [all|rust|relay|protocol|auth|world|assets|shared|prod-compose]
 #
 # Elixir 系は既定で Docker（OS 差分・ネイティブ依存を避ける）。
 # ホストの mix で auth を回す場合: AUTH_CI_HOST=1 ./.scripts/ci.sh auth
+# ホストの mix で shared/alchemy_* を回す場合: SHARED_CI_HOST=1 ./.scripts/ci.sh shared
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -91,17 +92,17 @@ run_auth_host() {
   export MIX_ENV=test
   export PGPORT="${PGPORT:-5433}"
   export PGHOST="${PGHOST:-localhost}"
-  (
-    cd auth-server
-    step "mix deps.get" mix deps.get
-    step "mix hex.audit" mix hex.audit
-    step "mix format --check-formatted" mix format --check-formatted
-    step "mix compile --warnings-as-errors" mix compile --warnings-as-errors
-    step "mix credo --strict" mix credo --strict
-    step "mix ecto.create" mix ecto.create
-    step "mix ecto.migrate" mix ecto.migrate
-    step "mix test" mix test
-  )
+  # pushd（not subshell): step mutates FAILED in this shell.
+  pushd auth-server >/dev/null
+  step "mix deps.get" mix deps.get
+  step "mix hex.audit" mix hex.audit
+  step "mix format --check-formatted" mix format --check-formatted
+  step "mix compile --warnings-as-errors" mix compile --warnings-as-errors
+  step "mix credo --strict" mix credo --strict
+  step "mix ecto.create" mix ecto.create
+  step "mix ecto.migrate" mix ecto.migrate
+  step "mix test" mix test
+  popd >/dev/null
 }
 
 run_auth() {
@@ -140,6 +141,94 @@ run_prod_compose_config() {
   step "prod compose config (x003b)" bash .scripts/smoke-prod-compose.sh
 }
 
+# x0089 / P2-9: parity with .github/workflows/alchemy-{auth-client,client-ip,rate-limit}-ci.yml
+SHARED_PACKAGES=(alchemy_auth_client alchemy_client_ip alchemy_rate_limit)
+
+run_shared_pkg_host() {
+  local pkg="$1"
+  # pushd（not subshell): step mutates FAILED in this shell.
+  pushd "shared/${pkg}" >/dev/null
+  step "shared/${pkg} mix deps.get" mix deps.get
+  step "shared/${pkg} mix format --check-formatted" mix format --check-formatted
+  step "shared/${pkg} mix compile --warnings-as-errors" mix compile --warnings-as-errors
+  step "shared/${pkg} mix test" mix test
+  popd >/dev/null
+}
+
+run_shared_host() {
+  if ! command -v mix >/dev/null 2>&1; then
+    echo "[FAIL] mix not found (install Elixir 1.19 / OTP 28, or unset SHARED_CI_HOST)" >&2
+    FAILED+=("mix not found")
+    return
+  fi
+  export MIX_ENV=test
+  local pkg
+  for pkg in "${SHARED_PACKAGES[@]}"; do
+    run_shared_pkg_host "${pkg}"
+  done
+}
+
+run_shared_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "[FAIL] docker is required for shared CI (or set SHARED_CI_HOST=1 with local Elixir)" >&2
+    FAILED+=("docker required")
+    return
+  fi
+  local image="${ALCHEMY_ELIXIR_IMAGE:-elixir:1.19-otp-28-alpine}"
+  local host_shared="${ROOT}/shared"
+  local -a docker_prefix=()
+  local -a vol_args=()
+  local pkg
+  # Git Bash/MSYS rewrites bare /shared to %Git%/shared; disable conversion and pass a Windows host path.
+  case "$(uname -s 2>/dev/null || true)" in
+    MINGW*|MSYS*|CYGWIN*)
+      host_shared="$(cd "${host_shared}" && pwd -W | sed 's|\\|/|g')"
+      docker_prefix=(env MSYS_NO_PATHCONV=1)
+      ;;
+  esac
+  # Bind sources only; hide deps/_build with named volumes (same pattern as auth/world/assets
+  # compose) so host-built BEAM from SHARED_CI_HOST / IDE never shadow the Linux container.
+  vol_args+=(-v "${host_shared}:/shared")
+  for pkg in "${SHARED_PACKAGES[@]}"; do
+    vol_args+=(-v "alchemy-ci-shared-${pkg}-deps:/shared/${pkg}/deps")
+    vol_args+=(-v "alchemy-ci-shared-${pkg}-build:/shared/${pkg}/_build")
+  done
+  # Persist hex/rebar across runs; one container runs all packages (single apk + mix local).
+  # Package list is SHARED_PACKAGES only (passed via env — do not hardcode a second list).
+  vol_args+=(-v "alchemy-ci-shared-mix:/tmp/mix")
+  vol_args+=(-v "alchemy-ci-shared-hex:/tmp/hex")
+  step "shared/alchemy_* mix checks (Docker)" "${docker_prefix[@]}" docker run --rm \
+    "${vol_args[@]}" \
+    -w /shared \
+    -e MIX_ENV=test \
+    -e MIX_HOME=/tmp/mix \
+    -e HEX_HOME=/tmp/hex \
+    -e "ALCHEMY_SHARED_PACKAGES=${SHARED_PACKAGES[*]}" \
+    "${image}" \
+    sh -c 'set -eu
+apk add --no-cache build-base git >/dev/null
+mix local.hex --force >/dev/null
+mix local.rebar --force >/dev/null
+for pkg in $ALCHEMY_SHARED_PACKAGES; do
+  echo "=== shared/${pkg} ==="
+  cd "/shared/${pkg}"
+  mix deps.get
+  mix format --check-formatted
+  mix compile --warnings-as-errors
+  mix test
+  cd /shared
+done
+'
+}
+
+run_shared() {
+  if [[ "${SHARED_CI_HOST:-}" == "1" ]]; then
+    run_shared_host
+  else
+    run_shared_docker
+  fi
+}
+
 run_assets_docker() {
   local compose="assets-server/docker-compose.yml"
   if ! command -v docker >/dev/null 2>&1; then
@@ -165,6 +254,7 @@ case "$TARGET" in
   auth) run_auth ;;
   world) run_world_docker ;;
   assets) run_assets_docker ;;
+  shared) run_shared ;;
   prod-compose) run_prod_compose_config ;;
   all)
     run_rust
@@ -173,10 +263,11 @@ case "$TARGET" in
     run_auth
     run_world_docker
     run_assets_docker
+    run_shared
     run_prod_compose_config
     ;;
   *)
-    echo "usage: $0 [all|rust|relay|protocol|auth|world|assets|prod-compose]" >&2
+    echo "usage: $0 [all|rust|relay|protocol|auth|world|assets|shared|prod-compose]" >&2
     exit 2
     ;;
 esac

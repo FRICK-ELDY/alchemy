@@ -1,13 +1,13 @@
 # Entry points (macOS / Linux / WSL / Git Bash).
 # pack-windows / publish-windows: native Windows Git Bash or windows-latest only.
-.PHONY: ci ci-rust ci-relay ci-protocol ci-auth ci-world ci-assets ci-e2e ci-prod-compose \
+.PHONY: ci ci-rust ci-relay ci-protocol ci-auth ci-world ci-assets ci-shared ci-e2e ci-prod-compose \
 	ci-fuzz \
-	smoke-assets smoke-assets-r2 smoke-compose-e2e smoke-desktop-handthrough \
+	smoke-assets smoke-assets-r2 smoke-compose-e2e \
 	smoke-prod-compose pack-windows publish-windows help
 
 help:
 	@echo "Targets:"
-	@echo "  make ci            # rust + relay + protocol + auth + world + assets + prod-compose config"
+	@echo "  make ci            # rust + relay + protocol + auth + world + assets + shared + prod-compose config"
 	@echo "  make ci-rust"
 	@echo "  make ci-relay          # x0068 alchemy-relay-agent fmt/clippy/deny/build/test"
 	@echo "  make ci-protocol"
@@ -15,13 +15,13 @@ help:
 	@echo "  make ci-auth"
 	@echo "  make ci-world"
 	@echo "  make ci-assets"
+	@echo "  make ci-shared         # x0089 shared/alchemy_* format/compile/test (Docker default)"
 	@echo "  make ci-prod-compose   # x003b prod compose config (S2S env)"
 	@echo "  make ci-e2e            # x001f hermetic compose E2E (stack must be up, or COMPOSE_UP=1)"
 	@echo "  make smoke-assets      # local CAS API smoke (auth+assets up)"
 	@echo "  make smoke-assets-r2   # x001c/x001d R2 CAS + 302 presign smoke (BACKEND=s3)"
 	@echo "  make smoke-compose-e2e # alias of ci-e2e"
 	@echo "  make smoke-prod-compose # x003b config; SMOKE_PROD_UP=1 for auth/world /health"
-	@echo "  make smoke-desktop-handthrough  # x0020 host Token/Manifest/physics + client build (no GUI; stop other host first)"
 	@echo "  make pack-windows      # Windows x64 tester ZIP → dist/ (PowerShell; native Windows / CI)"
 	@echo "  make publish-windows   # tag + push; CI creates Pre-release (CREATE_TAG=1 PUSH_TAG=1)"
 	@echo ""
@@ -51,6 +51,9 @@ ci-world:
 ci-assets:
 	./.scripts/ci.sh assets
 
+ci-shared:
+	./.scripts/ci.sh shared
+
 ci-prod-compose:
 	./.scripts/ci.sh prod-compose
 
@@ -68,9 +71,6 @@ ci-e2e-wan smoke-compose-wan-e2e:
 
 smoke-prod-compose:
 	./.scripts/smoke-prod-compose.sh
-
-smoke-desktop-handthrough:
-	./.scripts/smoke-desktop-handthrough.sh
 
 # PowerShell is the pack/publish entry on Windows (no Python / make required).
 # VERSION=v0.0.0-dev.YYYYMMDDHHMM  or  make pack-windows ARGS='-SkipBuild'

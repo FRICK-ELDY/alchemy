@@ -52,8 +52,8 @@
 | P2-5 | 共有 JWKS 失敗クールダウン | -1 | host/relay と同型 |
 | P2-6 | host `main` tick 切り出し + pose ダブルバッファ | -1 | |
 | P2-7 | take-out を guest+session / owner_sub 判定へ | -1 | P0-1 と一体 |
-| P2-8 | 腐った smoke 削除 or probe 吸収 | -1 | |
-| P2-9 | `ci.sh` に `shared/alchemy_*` | -1 | |
+| P2-8 | 腐った smoke 削除 or probe 吸収 | -1 | banner-grep 削除・e2e-probe へ吸収 — **[x0089](../../roadmap/slices/x0089-rotten-smoke-shared-ci.md) done** |
+| P2-9 | `ci.sh` に `shared/alchemy_*` | -1 | `ci.sh shared` / `all` — **[x0089](../../roadmap/slices/x0089-rotten-smoke-shared-ci.md) done** |
 | P2-10 | client.md / wan コメント / world 保証表 / vision | -1 | 書くか削除 |
 | P2-11 | Room 上限の厳密化 | -1 | quota row / serializable |
 | P2-12 | XR loader tempfile 純粋化 | -1 | Windows flake 除去 |
