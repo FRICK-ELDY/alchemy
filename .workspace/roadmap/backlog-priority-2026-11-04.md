@@ -2,7 +2,7 @@
 
 正本の進捗目次は [README.md](README.md)。本ファイルは **未完了帯の優先度ビュー**。
 
-**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**、**x0070 trust WAN E2E**、**x0071 world RL / Room cap**、**x0072 launcher discovery**。**x0073** 軽量衛生 **done**。**x0074** reserved reaper / orphan CAS GC **done**。**x0075** BLAKE3 / seal-hash 常駐 Port **done**。**x0076**–**x0078**（保証単位分割 / bind 送信元 / mTLS temp）**done**。**x0079** DemoScene 共有テストベクタ **done**。**x007a** metrics+jti **done**。**x007b** scene despawn **done**。**x007c** Worlds カタログ / Join・Host **done**。**x007d** Live Manifest remount **done**。**x007e** Room key epoch **done**。**x007f** Prefab 多子 / XR Inventory **done**。**x0080** host handover / takeover + dormant **done**。**x0081** 制御面 PoP **done**。**x0082** Scene CAS **done**。**x0083** Agent CSR-only **done**。**x0084** host-token RL **done**。**x0085** GLB decode budget **done**。空き ID = `x0086`。
+**既に閉じた前提（このリストから除外）:** Desktop 手通し〜x006a、inventory Wave 0–4（x0054–x0065）、CAS access 共存 peel、`tos_agreed` UI、**x0053 hotswitch**、**x006b PlaceRead**、**x006c 案 B**、**x006d host take-out**、**x006e put-back UI**、**x006f access 列廃止**、**x0070 trust WAN E2E**、**x0071 world RL / Room cap**、**x0072 launcher discovery**。**x0073** 軽量衛生 **done**。**x0074** reserved reaper / orphan CAS GC **done**。**x0075** BLAKE3 / seal-hash 常駐 Port **done**。**x0076**–**x0078**（保証単位分割 / bind 送信元 / mTLS temp）**done**。**x0079** DemoScene 共有テストベクタ **done**。**x007a** metrics+jti **done**。**x007b** scene despawn **done**。**x007c** Worlds カタログ / Join・Host **done**。**x007d** Live Manifest remount **done**。**x007e** Room key epoch **done**。**x007f** Prefab 多子 / XR Inventory **done**。**x0080** host handover / takeover + dormant **done**。**x0081** 制御面 PoP **done**。**x0082** Scene CAS **done**。**x0083** Agent CSR-only **done**。**x0084** host-token RL **done**。**x0085** GLB decode budget **done**。**x0086**–**x008c** done（x008c = 共有 JWKS 失敗クールダウン）。空き ID = `x008d`。
 
 ---
 
@@ -113,6 +113,7 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 6. ~~assets test hermetic（P1-3）~~ **→ [x0086](slices/x0086-assets-test-hermetic.md) done**
 7. ~~実 host WAN 一往復 E2E（P1-4）~~ **→ [x0087](slices/x0087-wan-host-e2e.md) done**
 8. ~~Allocation throughput（P1-5）~~ **→ [x0088](slices/x0088-allocation-subject-throughput.md) done**
-9. verifier Spot-Check（保留）· Formula / market / 検疫（減点対象外）
+9. ~~[x008c](slices/x008c-shared-jwks-fail-cooldown.md) 共有 JWKS 失敗クールダウン（P2-5）~~ **done**
+10. verifier Spot-Check（保留）· Formula / market / 検疫（減点対象外）
 
 ← [Roadmap 目次](README.md)

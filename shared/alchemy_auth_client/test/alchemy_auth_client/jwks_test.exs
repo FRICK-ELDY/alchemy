@@ -42,16 +42,20 @@ defmodule AlchemyAuthClient.JwksTest do
     %{bypass: bypass, clock: clock}
   end
 
-  test "install_test_jwks! serves signer_for_kid", %{bypass: bypass} do
+  test "install_test_jwks! serves signer_for_kid", %{bypass: bypass, clock: clock} do
     Bypass.stub(bypass, "GET", "/.well-known/jwks.json", fn conn ->
       Plug.Conn.resp(conn, 500, "unused")
     end)
 
     {key, signer, kid} = rsa_jwks_entry()
 
+    Agent.update(clock, fn _ -> 1_000 end)
     assert :ok = Jwks.install_test_jwks!(@server, %{"keys" => [key]}, %{kid => signer})
     assert {:ok, ^signer} = Jwks.signer_for_kid(@server, kid)
+
+    # Within cooldown after install — miss must not kick HTTP (flake vs on_exit).
     assert {:error, :unknown_kid} = Jwks.signer_for_kid(@server, "missing")
+    assert :ok = Jwks.await_idle(@server)
   end
 
   test "unknown kid within cooldown does not re-fetch", %{bypass: bypass, clock: clock} do
@@ -76,6 +80,7 @@ defmodule AlchemyAuthClient.JwksTest do
     Agent.update(clock, fn _ -> 1_999 end)
     assert {:error, :unknown_kid} = Jwks.signer_for_kid(@server, "missing-a")
     assert {:error, :unknown_kid} = Jwks.signer_for_kid(@server, "missing-b")
+    assert :ok = Jwks.await_idle(@server)
     assert :counters.get(hits, 1) == 1
   end
 
@@ -99,11 +104,127 @@ defmodule AlchemyAuthClient.JwksTest do
 
     Agent.update(clock, fn _ -> 1_500 end)
     assert {:error, :unknown_kid} = Jwks.signer_for_kid(@server, "missing-early")
+    assert :ok = Jwks.await_idle(@server)
     assert :counters.get(hits, 1) == 1
 
     Agent.update(clock, fn _ -> 2_000 end)
     assert {:error, :unknown_kid} = Jwks.signer_for_kid(@server, "missing-late")
+    assert :ok = Jwks.await_idle(@server)
     assert :counters.get(hits, 1) == 2
+  end
+
+  test "async miss success is visible on the next signer_for_kid", %{
+    bypass: bypass,
+    clock: clock
+  } do
+    hits = :counters.new(1, [])
+    {key, _signer, kid} = rsa_jwks_entry()
+    body = Jason.encode!(%{"keys" => [key]})
+
+    Bypass.expect(bypass, "GET", "/.well-known/jwks.json", fn conn ->
+      :counters.add(hits, 1, 1)
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.resp(200, body)
+    end)
+
+    Agent.update(clock, fn _ -> 1_000 end)
+    assert {:error, :empty_jwks} = Jwks.signer_for_kid(@server, kid)
+    assert :ok = Jwks.await_idle(@server)
+    assert :counters.get(hits, 1) == 1
+
+    assert {:ok, _} = Jwks.signer_for_kid(@server, kid)
+    assert :counters.get(hits, 1) == 1
+  end
+
+  test "fetch failure stamps cooldown so miss storms do not re-HTTP", %{
+    bypass: bypass,
+    clock: clock
+  } do
+    hits = :counters.new(1, [])
+
+    Bypass.expect(bypass, "GET", "/.well-known/jwks.json", fn conn ->
+      :counters.add(hits, 1, 1)
+      Plug.Conn.resp(conn, 503, "down")
+    end)
+
+    Agent.update(clock, fn _ -> 1_000 end)
+    assert {:error, _} = Jwks.refresh(@server)
+    assert :counters.get(hits, 1) == 1
+
+    Agent.update(clock, fn _ -> 1_500 end)
+    assert {:error, :empty_jwks} = Jwks.signer_for_kid(@server, "any-kid")
+    assert {:error, :empty_jwks} = Jwks.signer_for_kid(@server, "other-kid")
+    assert :ok = Jwks.await_idle(@server)
+    assert :counters.get(hits, 1) == 1
+
+    Agent.update(clock, fn _ -> 2_000 end)
+    assert {:error, :empty_jwks} = Jwks.signer_for_kid(@server, "retry-kid")
+    assert :ok = Jwks.await_idle(@server)
+    assert :counters.get(hits, 1) == 2
+  end
+
+  test "signer_for_kid miss returns before slow HTTP completes", %{bypass: bypass, clock: clock} do
+    hits = :counters.new(1, [])
+    test_pid = self()
+
+    Bypass.expect(bypass, "GET", "/.well-known/jwks.json", fn conn ->
+      :counters.add(hits, 1, 1)
+      send(test_pid, {:fetch_started, self()})
+
+      receive do
+        :release -> :ok
+      after
+        5_000 -> flunk("fetch not released")
+      end
+
+      Plug.Conn.resp(conn, 503, "slow")
+    end)
+
+    Agent.update(clock, fn _ -> 1_000 end)
+
+    task =
+      Task.async(fn ->
+        Jwks.signer_for_kid(@server, "missing")
+      end)
+
+    assert_receive {:fetch_started, handler}, 1_000
+    # Call must have returned without waiting on the blocked Bypass handler.
+    assert {:error, :empty_jwks} = Task.await(task, 200)
+    assert :counters.get(hits, 1) == 1
+
+    send(handler, :release)
+    assert :ok = Jwks.await_idle(@server)
+  end
+
+  test "in-flight miss refresh coalesces", %{bypass: bypass, clock: clock} do
+    hits = :counters.new(1, [])
+    test_pid = self()
+
+    Bypass.expect(bypass, "GET", "/.well-known/jwks.json", fn conn ->
+      :counters.add(hits, 1, 1)
+      send(test_pid, {:fetch_started, self()})
+
+      receive do
+        :go -> :ok
+      after
+        5_000 -> flunk("fetch not released")
+      end
+
+      Plug.Conn.resp(conn, 503, "down")
+    end)
+
+    Agent.update(clock, fn _ -> 1_000 end)
+    assert {:error, :empty_jwks} = Jwks.signer_for_kid(@server, "a")
+    assert_receive {:fetch_started, handler}, 1_000
+
+    assert {:error, :empty_jwks} = Jwks.signer_for_kid(@server, "b")
+    assert {:error, :empty_jwks} = Jwks.signer_for_kid(@server, "c")
+
+    send(handler, :go)
+    assert :ok = Jwks.await_idle(@server)
+    assert :counters.get(hits, 1) == 1
   end
 
   defp rsa_jwks_entry do

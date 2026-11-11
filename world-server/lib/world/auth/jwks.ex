@@ -1,8 +1,9 @@
 defmodule World.Auth.Jwks do
   @moduledoc """
-  World-named JWKS cache — facade over `AlchemyAuthClient.Jwks` (x002f / P3-4).
+  World-named JWKS cache — facade over `AlchemyAuthClient.Jwks` (x002f / P3-4 / x008c).
 
-  Guarantees: RS256 public keys from AUTH_JWKS_URL (or test install).
+  Guarantees: RS256 public keys from AUTH_JWKS_URL (or test install);
+  failure cooldown + async miss refresh (see `AlchemyAuthClient.Jwks`).
   Non-guarantees: revocation lists, user status DB lookups.
   """
 

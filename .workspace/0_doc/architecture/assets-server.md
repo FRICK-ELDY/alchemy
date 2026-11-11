@@ -49,7 +49,7 @@
 
 | 検査 | 現行 | 備考 |
 |:---|:---|:---|
-| Bearer JWT（auth JWKS） | **必須** | `AuthenticateUser` → `auth_sub`。未認証は 401 |
+| Bearer JWT（auth JWKS） | **必須** | `AuthenticateUser` → `auth_sub`。未認証は 401。共有 JWKS は失敗クールダウン + async miss（x008c） |
 | blake3 が `cas_objects` に存在 | **必須** | なければ 404 |
 | `auth_sub` が当該 hash の `BlobGrant` を持つ **または** PlaceRead がカバー | **常時**（x006c） | どちらも無ければ 403 |
 | License / 購入証明 | **しない** | draft / market 後続 |

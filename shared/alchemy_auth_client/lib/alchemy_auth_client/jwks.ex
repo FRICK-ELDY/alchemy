@@ -4,6 +4,12 @@ defmodule AlchemyAuthClient.Jwks do
 
   Start with `otp_app:` and usually `name:` (e.g. `World.Auth.Jwks`).
   Reads `:auth_jwks_url` and `:auth_jwks_fetch_on_start` from that OTP app.
+
+  Guarantees (x008c): fetch **failures** stamp the same cooldown as successes;
+  `signer_for_kid` miss path replies from cache only (no GenServer-blocking HTTP);
+  in-flight refreshes coalesce. Non-guarantees: host-style soft/hard TTL schedule;
+  auth revocation lists; same HTTP request succeeding after a mid-request key rotate
+  (caller may retry on `:unknown_kid` / `:empty_jwks`).
   """
 
   use GenServer
@@ -12,7 +18,7 @@ defmodule AlchemyAuthClient.Jwks do
 
   @type server :: GenServer.server()
 
-  # Min interval between outbound JWKS fetches when cache miss storms (x001f / x002f).
+  # Min interval between outbound JWKS fetches (success or failure; x001f / x008c).
   @fetch_cooldown_ms 1_000
 
   @doc """
@@ -21,7 +27,7 @@ defmodule AlchemyAuthClient.Jwks do
   ## Options
   - `:otp_app` (required) — application holding `:auth_jwks_url`
   - `:name` — GenServer name (default `__MODULE__`)
-  - `:fetch_cooldown_ms` — unknown-kid storm guard (default #{@fetch_cooldown_ms})
+  - `:fetch_cooldown_ms` — storm / failure guard (default #{@fetch_cooldown_ms})
   - `:now_ms` — `(() -> integer)` monotonic clock for tests (default `System.monotonic_time/1`)
   """
   def start_link(opts) do
@@ -54,6 +60,15 @@ defmodule AlchemyAuthClient.Jwks do
     GenServer.call(server, {:install_test, jwks, signers_by_kid})
   end
 
+  # Test helper: wait until no **async** refresh job is in flight (not "fully idle";
+  # sync refresh may still run). Abandon-during-sync does not wake waiters early.
+  @doc false
+  @spec await_idle(server(), pos_integer()) :: :ok
+  def await_idle(server \\ __MODULE__, timeout_ms \\ 5_000)
+      when is_integer(timeout_ms) and timeout_ms > 0 do
+    GenServer.call(server, :await_idle, timeout_ms + 1_000)
+  end
+
   @spec fetch_cooldown_ms() :: pos_integer()
   def fetch_cooldown_ms, do: @fetch_cooldown_ms
 
@@ -66,10 +81,19 @@ defmodule AlchemyAuthClient.Jwks do
       jwks: %{"keys" => []},
       signers_by_kid: %{},
       fetched_at: nil,
-      last_fetch_ms: 0
+      # nil = never attempted (do not use 0; injected clocks often start at 0).
+      last_fetch_ms: nil,
+      refresh_job: nil,
+      idle_waiters: []
     }
 
     {:ok, state, {:continue, :initial_fetch}}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    _ = abandon_refresh_job(state)
+    :ok
   end
 
   @impl true
@@ -90,8 +114,8 @@ defmodule AlchemyAuthClient.Jwks do
 
         {:error, reason} ->
           Logger.warning("auth JWKS initial fetch failed: #{inspect(reason)}")
-          # Do not advance last_fetch_ms on failure so the next call can retry immediately.
-          {:noreply, state}
+          # Stamp failure so miss storms do not immediately re-HTTP (x008c).
+          {:noreply, %{state | last_fetch_ms: state.now_ms.()}}
       end
     else
       {:noreply, state}
@@ -106,87 +130,195 @@ defmodule AlchemyAuthClient.Jwks do
       {:ok, signer} ->
         {:reply, {:ok, signer}, state}
 
-      # Empty cache (e.g. auth was down at boot) or unknown kid: try a fetch.
       :error ->
-        refresh_and_lookup_kid(kid, state)
+        state = maybe_kick_refresh(state)
+        {:reply, lookup_kid(state.signers_by_kid, kid), state}
     end
   end
 
   def handle_call(:refresh, _from, state) do
+    # Explicit refresh stays synchronous (tests / ops). Drop in-flight job bookkeeping
+    # so a late async result cannot overwrite a newer sync outcome.
+    # Do not wake await_idle waiters here — sync HTTP is still about to run.
+    state = abandon_refresh_job(state)
+
     case do_fetch(state.otp_app) do
       {:ok, jwks, signers} ->
         now = state.now_ms.()
 
-        {:reply, :ok,
-         %{
-           state
-           | jwks: jwks,
-             signers_by_kid: signers,
-             fetched_at: div(now, 1000),
-             last_fetch_ms: now
-         }}
+        state = %{
+          state
+          | jwks: jwks,
+            signers_by_kid: signers,
+            fetched_at: div(now, 1000),
+            last_fetch_ms: now
+        }
+
+        {:reply, :ok, reply_idle_waiters(state)}
 
       {:error, reason} ->
+        now = state.now_ms.()
+        state = reply_idle_waiters(%{state | last_fetch_ms: now})
         {:reply, {:error, reason}, state}
     end
   end
 
   def handle_call({:install_test, jwks, signers}, _from, state) do
     now = state.now_ms.()
+    state = abandon_refresh_job(state)
 
-    {:reply, :ok,
-     %{
-       state
-       | jwks: jwks,
-         signers_by_kid: signers,
-         fetched_at: div(now, 1000),
-         last_fetch_ms: now
-     }}
+    state = %{
+      state
+      | jwks: jwks,
+        signers_by_kid: signers,
+        fetched_at: div(now, 1000),
+        last_fetch_ms: now
+    }
+
+    {:reply, :ok, reply_idle_waiters(state)}
   end
 
-  defp refresh_and_lookup_kid(kid, state) do
-    now = state.now_ms.()
-    # Cooldown only after a successful fetch (storm guard). Failures stay retryable.
-    has_keys = state.signers_by_kid != %{}
-
-    if has_keys and now - state.last_fetch_ms < state.fetch_cooldown_ms do
-      {:reply, lookup_kid(state.signers_by_kid, kid), state}
+  def handle_call(:await_idle, from, state) do
+    # Async-job idle only (see moduledoc on await_idle/2).
+    if state.refresh_job == nil do
+      {:reply, :ok, state}
     else
-      case do_fetch(state.otp_app) do
-        {:ok, jwks, signers} ->
-          state = %{
-            state
-            | jwks: jwks,
-              signers_by_kid: signers,
-              fetched_at: div(now, 1000),
-              last_fetch_ms: now
-          }
-
-          {:reply, lookup_kid(signers, kid), state}
-
-        {:error, _} when state.signers_by_kid == %{} ->
-          {:reply, {:error, :empty_jwks}, state}
-
-        {:error, _} ->
-          {:reply, {:error, :unknown_kid}, state}
-      end
+      {:noreply, %{state | idle_waiters: [from | state.idle_waiters]}}
     end
+  end
+
+  @impl true
+  def handle_info({:jwks_fetch_result, ref, result}, %{refresh_job: %{ref: ref}} = state) do
+    Process.demonitor(state.refresh_job.mon, [:flush])
+    state = apply_fetch_result(result, %{state | refresh_job: nil})
+    {:noreply, reply_idle_waiters(state)}
+  end
+
+  def handle_info({:jwks_fetch_result, _ref, _result}, state) do
+    # Late result after sync refresh / abandon.
+    {:noreply, state}
+  end
+
+  # send(result) then exit(:normal): same-process order puts result before DOWN.
+  # Result handler demonitor(:flush) drops the DOWN. Do **not** clear refresh_job or
+  # wake waiters here — that would idle without applying the fetch.
+  def handle_info({:DOWN, mon, :process, _pid, reason}, %{refresh_job: %{mon: mon}} = state)
+      when reason in [:normal, :shutdown] do
+    {:noreply, state}
+  end
+
+  def handle_info({:DOWN, mon, :process, _pid, reason}, %{refresh_job: %{mon: mon}} = state) do
+    Logger.warning("auth JWKS async fetch crashed: #{inspect(reason)}")
+    now = state.now_ms.()
+
+    state =
+      reply_idle_waiters(%{
+        state
+        | refresh_job: nil,
+          last_fetch_ms: now
+      })
+
+    {:noreply, state}
+  end
+
+  def handle_info({:DOWN, _mon, :process, _pid, _reason}, state), do: {:noreply, state}
+
+  defp maybe_kick_refresh(state) do
+    now = state.now_ms.()
+
+    cond do
+      state.refresh_job != nil ->
+        state
+
+      cooled?(state, now) ->
+        state
+
+      true ->
+        job = start_fetch_job(state.otp_app)
+        %{state | refresh_job: job}
+    end
+  end
+
+  defp cooled?(%{last_fetch_ms: nil}, _now), do: false
+
+  defp cooled?(state, now) do
+    now - state.last_fetch_ms < state.fetch_cooldown_ms
+  end
+
+  defp start_fetch_job(otp_app) do
+    parent = self()
+    ref = make_ref()
+
+    {pid, mon} =
+      spawn_monitor(fn -> send(parent, {:jwks_fetch_result, ref, do_fetch(otp_app)}) end)
+
+    %{ref: ref, pid: pid, mon: mon}
+  end
+
+  defp abandon_refresh_job(%{refresh_job: nil} = state), do: state
+
+  defp abandon_refresh_job(%{refresh_job: job} = state) do
+    Process.demonitor(job.mon, [:flush])
+    # Best-effort; result may still arrive and be ignored by ref mismatch.
+    Process.exit(job.pid, :kill)
+    # Keep idle_waiters: sync refresh/install will reply after it finishes.
+    %{state | refresh_job: nil}
+  end
+
+  defp apply_fetch_result({:ok, jwks, signers}, state) do
+    now = state.now_ms.()
+
+    %{
+      state
+      | jwks: jwks,
+        signers_by_kid: signers,
+        fetched_at: div(now, 1000),
+        last_fetch_ms: now
+    }
+  end
+
+  defp apply_fetch_result({:error, reason}, state) do
+    Logger.warning("auth JWKS fetch failed: #{inspect(reason)}")
+    %{state | last_fetch_ms: state.now_ms.()}
+  end
+
+  defp reply_idle_waiters(%{idle_waiters: []} = state), do: state
+
+  defp reply_idle_waiters(%{idle_waiters: waiters} = state) do
+    Enum.each(waiters, &GenServer.reply(&1, :ok))
+    %{state | idle_waiters: []}
   end
 
   defp lookup_kid(signers, kid) do
     case Map.fetch(signers, kid) do
-      {:ok, signer} -> {:ok, signer}
-      :error -> {:error, :unknown_kid}
+      {:ok, signer} ->
+        {:ok, signer}
+
+      :error when signers == %{} ->
+        {:error, :empty_jwks}
+
+      :error ->
+        {:error, :unknown_kid}
     end
   end
 
   defp do_fetch(otp_app) do
     url = Application.fetch_env!(otp_app, :auth_jwks_url)
 
-    # Never block the GenServer on Req's default retry backoff (breaks test setup).
-    case Req.get(url, receive_timeout: 2_000, retry: false) do
-      {:ok, %{status: 200, body: body}} when is_map(body) ->
-        {:ok, body, build_signers(body)}
+    # Never block with Req's default retry backoff (breaks test setup).
+    # Decode JSON ourselves so non-200 bodies (e.g. "down") are not Jason errors.
+    case Req.get(url, receive_timeout: 2_000, retry: false, decode_body: false) do
+      {:ok, %{status: 200, body: body}} when is_binary(body) ->
+        case Jason.decode(body) do
+          {:ok, map} when is_map(map) ->
+            {:ok, map, build_signers(map)}
+
+          {:ok, _} ->
+            {:error, :invalid_jwks}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
 
       {:ok, %{status: status}} ->
         {:error, {:http_status, status}}
