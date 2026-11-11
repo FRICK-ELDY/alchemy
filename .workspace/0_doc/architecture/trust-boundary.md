@@ -94,3 +94,4 @@ flowchart TB
 | x0069 | Room 鍵 AEAD（XChaCha20Poly1305）；部屋機密性の第2壁；`wire_cap` 秘匿は非保証 |
 | x0070 | headless trust consumer + WAN 否定系 E2E（偽 seal で watermark 不変；wildcard でも他室平文不可） |
 | x0087 | 実 host WAN 一往復（CSR→credential worker→sealed Frame Accept；no-cert / guest sim put 非配送 / 旧 epoch は local `process_manifest_bytes`） |
+| x0088 | Relay Agent allocate: 検証済み sub + peer IP 短長窓 throughput（429 + Retry-After；openssl 前） |

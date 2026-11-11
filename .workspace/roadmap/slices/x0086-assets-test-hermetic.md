@@ -52,7 +52,7 @@
 ## やらない（本 Slice）
 
 - ~~WAN host E2E（P1-4）~~ → [x0087](x0087-wan-host-e2e.md)
-- Allocation throughput（P1-5）
+- ~~Allocation throughput（P1-5）~~ → [x0088](x0088-allocation-subject-throughput.md)
 - assets 全体の async: true 化
 - GPU / client 変更
 

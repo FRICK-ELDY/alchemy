@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0088`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0089`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -185,12 +185,13 @@ depends_on: [x0006]
 | x0084 | — | done | host-token 操作別 rate limit（seal / scene / PlaceRead · IP + `room_id\|jti`） | [x0084-host-token-rate-limit.md](slices/x0084-host-token-rate-limit.md) |
 | x0085 | — | done | GLB decode budget（入力/展開 bytes・頂点・index・pixels · 超過は Err/placeholder） | [x0085-glb-decode-budget.md](slices/x0085-glb-decode-budget.md) |
 | x0086 | — | done | assets test hermetic（reaper/GC `start: false` + CAS `cas: true` / tmp_dir） | [x0086-assets-test-hermetic.md](slices/x0086-assets-test-hermetic.md) |
-| x0087 | — | in_progress | 実 host WAN 一往復 E2E（CSR→credential worker→Frame→trust + 否定系） | [x0087-wan-host-e2e.md](slices/x0087-wan-host-e2e.md) |
+| x0087 | — | done | 実 host WAN 一往復 E2E（CSR→credential worker→Frame→trust + 否定系） | [x0087-wan-host-e2e.md](slices/x0087-wan-host-e2e.md) |
+| x0088 | — | done | Allocation 主体別 throughput（sub/IP 短長窓 + 429 + metrics） | [x0088-allocation-subject-throughput.md](slices/x0088-allocation-subject-throughput.md) |
 
-**現在の次:** [x0087](slices/x0087-wan-host-e2e.md) 実 host WAN 一往復 E2E（improvement P1-4 · CI 緑で done）。その後 Allocation throughput（P1-5 · [backlog](backlog-priority-2026-11-04.md)）。  
+**現在の次:** improvement P2 帯 / Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。P1-5 Allocation throughput は **[x0088](slices/x0088-allocation-subject-throughput.md) done**。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x0088`**。
+次の空き番号は **`x0089`**。
 
 ## 関連
 
