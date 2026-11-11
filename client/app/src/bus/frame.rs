@@ -137,6 +137,35 @@ fn apply_frame(
         &frame.removes,
         replace_entities,
     );
+    // TRS-only copy under world lock; mirror after drop (avoid world ↔ epoch lock order).
+    let poses_for_epoch = if outcome == ApplyFrameOutcome::Applied {
+        Some(
+            world
+                .entities
+                .iter()
+                .map(|(&id, p)| {
+                    (
+                        id,
+                        crate::epoch_mirror::KinematicPose {
+                            x: p.x,
+                            y: p.y,
+                            z: p.z,
+                            qx: p.qx,
+                            qy: p.qy,
+                            qz: p.qz,
+                            qw: p.qw,
+                            sx: p.sx,
+                            sy: p.sy,
+                            sz: p.sz,
+                        },
+                    )
+                })
+                .collect::<std::collections::HashMap<_, _>>(),
+        )
+    } else {
+        None
+    };
+    drop(world);
     match outcome {
         ApplyFrameOutcome::Dropped
             if !replace_entities && prev_tick.is_some_and(|p| frame.tick < p) =>
@@ -159,6 +188,9 @@ fn apply_frame(
         ApplyFrameOutcome::Applied => {
             shared.metrics.note_frame_accepted();
             shared.note_host_alive();
+            if let Some(poses) = poses_for_epoch {
+                crate::epoch_mirror::ingest_applied_world(&shared.epoch, &poses);
+            }
         }
         _ => {}
     }

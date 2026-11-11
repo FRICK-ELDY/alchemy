@@ -22,7 +22,7 @@ pub mod tape;
 pub mod topology;
 pub mod xpbd;
 
-pub use bridge::{EpochSnapshotPair, FrameBridge};
+pub use bridge::{EpochFaces, EpochSnapshotPair, FrameBridge};
 pub use tape::{
     ColliderShape, EpochSheet, NodeHandle, PendingPatch, ReadinessMask, WorldTransformf64,
     XpbdConstraintRow,

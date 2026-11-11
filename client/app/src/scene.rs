@@ -9,9 +9,10 @@
 //! asset for all blake3 until multi-GLB; first [`MESH_DRAW_SLOTS`] poses only);
 //! [`SharedState::asset_status`] sticky Home overlay for auth asset failure (x0048);
 //! empty shell (`index_count==0`) skips floor+world mesh (MainHub; x007d);
-//! [`SceneGpu::replace_world_mesh`] + [`SharedState::pending_world_mesh`] for Manifest remount.
+//! [`SceneGpu::replace_world_mesh`] + [`SharedState::pending_world_mesh`] for Manifest remount;
+//! Epoch Prev/Curr GPU interpolate dispatch before the world pass (x0090; `out` not drawn yet).
 //! Non-guarantees: per-blake3 multi-GLB download; mesh draw beyond [`MESH_DRAW_SLOTS`];
-//! XR swapchain ownership, system_ui layout, avatar GLB.
+//! Epoch `out` as vertex source; XR swapchain ownership, system_ui layout, avatar GLB.
 //! Grab hits use OBB in `world_hit` (x002b; draw TRS aligned).
 //! Leave / liveliness token ownership lives here; put/undeclare is `room::leave_room` (re-exported as `crate::leave_room`).
 
@@ -1365,6 +1366,10 @@ pub struct SceneGpu {
     mesh_radius: f32,
     shared: Arc<SharedState>,
     last_pose_log: Instant,
+    /// Prev/Curr/Out storage + params for appearance-only interpolate (x0090).
+    epoch_buffers: crate::epoch_view::EpochGpuBuffers,
+    epoch_interp_pipeline: wgpu::ComputePipeline,
+    epoch_interp_bg: wgpu::BindGroup,
 }
 
 impl SceneGpu {
@@ -1537,6 +1542,14 @@ impl SceneGpu {
             }],
         });
 
+        const EPOCH_GPU_INITIAL_CAPACITY: u32 = 64;
+        let (epoch_interp_pipeline, epoch_interp_bgl) =
+            crate::epoch_view::create_interpolate_pipeline(&device);
+        let epoch_buffers =
+            crate::epoch_view::EpochGpuBuffers::new(&device, EPOCH_GPU_INITIAL_CAPACITY);
+        let epoch_interp_bg =
+            crate::epoch_view::make_interp_bind_group(&device, &epoch_interp_bgl, &epoch_buffers);
+
         Ok(Self {
             device,
             queue,
@@ -1560,6 +1573,9 @@ impl SceneGpu {
             mesh_radius: mesh.radius,
             shared,
             last_pose_log: Instant::now(),
+            epoch_buffers,
+            epoch_interp_pipeline,
+            epoch_interp_bg,
         })
     }
 
@@ -1649,6 +1665,49 @@ impl SceneGpu {
         let view = Mat4::look_at_rh(eye_pos, eye_pos + forward, Vec3::Y);
         let proj = Mat4::perspective_rh(70.0_f32.to_radians(), aspect, 0.05, 200.0);
         (view, proj)
+    }
+
+    /// Upload Prev/Curr epoch faces and dispatch interpolate (appearance path; `out` unused by draw).
+    ///
+    /// Call **once per displayed frame** (Desktop once; XR once before the eye loop) —
+    /// not inside per-eye [`Self::draw_world`].
+    pub fn sync_epoch_gpu(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let faces = self.shared.epoch.snapshots.load_pair();
+        // Dirty-only while `out` is not a draw source. Mirror currently dirties ≈ all
+        // upserted rows each ingest, so savings are limited until TRS-diff gating.
+        // Vertex bind (next slice): full active face or persistent GPU slot strategy.
+        let ids = crate::epoch_view::aligned_row_ids(&faces.prev, &faces.curr, true);
+        let n = ids.len() as u32;
+        if n > self.epoch_buffers.capacity {
+            let new_cap = n.next_power_of_two().max(64);
+            self.epoch_buffers = crate::epoch_view::EpochGpuBuffers::new(&self.device, new_cap);
+            let layout = self.epoch_interp_pipeline.get_bind_group_layout(0);
+            self.epoch_interp_bg = crate::epoch_view::make_interp_bind_group(
+                &self.device,
+                &layout,
+                &self.epoch_buffers,
+            );
+        }
+        let (prev_rows, curr_rows) =
+            crate::epoch_view::pack_aligned_gpu_faces(&faces.prev, &faces.curr, &ids);
+        let alpha = crate::epoch_mirror::epoch_interp_alpha(
+            crate::epoch_mirror::published_instant(faces.published_at_ns),
+            std::time::Instant::now(),
+        );
+        self.epoch_buffers
+            .upload_faces(&self.queue, &prev_rows, &curr_rows, alpha);
+        if n == 0 {
+            return;
+        }
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("epoch-interpolate"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.epoch_interp_pipeline);
+            cpass.set_bind_group(0, &self.epoch_interp_bg, &[]);
+            cpass.dispatch_workgroups(n.div_ceil(64), 1, 1);
+        }
     }
 
     #[allow(clippy::too_many_arguments)] // render pass bundling; highlight is Desktop-only pad

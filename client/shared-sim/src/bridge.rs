@@ -21,32 +21,61 @@ use crate::tape::{EpochSheet, PendingPatch, TapeError};
 use crate::topology::{FlatTopology, TopologyError};
 use crate::xpbd::{self, XpbdWorld};
 
+/// Immutable Prev/Curr pair published atomically (one ArcSwap store).
+///
+/// `published_at_ns` is an optional publisher clock (0 = unset). Client mirror
+/// sets process-monotonic ns so α and faces stay same-generation; host may leave 0.
+#[derive(Clone, Debug)]
+pub struct EpochFaces {
+    pub prev: Arc<EpochSheet>,
+    pub curr: Arc<EpochSheet>,
+    pub published_at_ns: u64,
+}
+
 /// Shared Prev/Curr faces for lock-free render readers.
+///
+/// Guarantees: [`Self::publish`] / [`Self::publish_arcs`] replace both faces (and
+/// optional clock) in **one** store so readers never observe a torn generation.
 #[derive(Debug)]
 pub struct EpochSnapshotPair {
-    pub prev: ArcSwap<EpochSheet>,
-    pub curr: ArcSwap<EpochSheet>,
+    faces: ArcSwap<EpochFaces>,
 }
 
 impl EpochSnapshotPair {
     pub fn new(prev: EpochSheet, curr: EpochSheet) -> Self {
         Self {
-            prev: ArcSwap::from_pointee(prev),
-            curr: ArcSwap::from_pointee(curr),
+            faces: ArcSwap::from_pointee(EpochFaces {
+                prev: Arc::new(prev),
+                curr: Arc::new(curr),
+                published_at_ns: 0,
+            }),
         }
     }
 
     pub fn publish(&self, prev: EpochSheet, curr: EpochSheet) {
-        self.prev.store(Arc::new(prev));
-        self.curr.store(Arc::new(curr));
+        self.publish_arcs(Arc::new(prev), Arc::new(curr), 0);
+    }
+
+    /// Publish existing Arcs (pointer share; callers own clone policy).
+    pub fn publish_arcs(&self, prev: Arc<EpochSheet>, curr: Arc<EpochSheet>, published_at_ns: u64) {
+        self.faces.store(Arc::new(EpochFaces {
+            prev,
+            curr,
+            published_at_ns,
+        }));
+    }
+
+    /// Load Prev and Curr from the same published generation.
+    pub fn load_pair(&self) -> Arc<EpochFaces> {
+        self.faces.load_full()
     }
 
     pub fn load_curr(&self) -> Arc<EpochSheet> {
-        self.curr.load_full()
+        Arc::clone(&self.load_pair().curr)
     }
 
     pub fn load_prev(&self) -> Arc<EpochSheet> {
-        self.prev.load_full()
+        Arc::clone(&self.load_pair().prev)
     }
 }
 

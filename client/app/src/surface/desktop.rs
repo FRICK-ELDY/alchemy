@@ -110,6 +110,8 @@ impl DesktopGpu {
                     label: Some("desktop-encoder"),
                 });
 
+        // Once per frame (not inside draw_world — XR shares that path per-eye).
+        self.scene.sync_epoch_gpu(&mut encoder);
         self.scene.draw_world(
             &mut encoder,
             &frame_view,

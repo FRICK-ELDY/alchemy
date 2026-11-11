@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x008f`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0091`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -194,11 +194,12 @@ depends_on: [x0006]
 | x008d | — | done | BLAKE3 / seal Port プール（PartitionSupervisor · P2-1） | [x008d-blake3-seal-port-pool.md](slices/x008d-blake3-seal-port-pool.md) |
 | x008e | — | done | Zero-Base Spatial Lifecycle（Tape / LBVH / XPBD / Bridge + epoch_view） | [x008e-zero-base-spatial-lifecycle.md](slices/x008e-zero-base-spatial-lifecycle.md) |
 | x008f | — | done | host 60Hz FrameBridge 配線（Rapier 影並走 · P2-6 一部） | [x008f-host-frame-bridge.md](slices/x008f-host-frame-bridge.md) |
+| x0090 | — | done | client Epoch 購読 + SceneGpu 最小 bind（Frame→local pair · compute） | [x0090-client-epoch-scenegpu-bind.md](slices/x0090-client-epoch-scenegpu-bind.md) |
 
-**現在の次:** improvement P2 残（Origin Cert hash / Room 上限厳密化 等）/ Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。Zero-Base: **[x008e](slices/x008e-zero-base-spatial-lifecycle.md)** 土台 + **[x008f](slices/x008f-host-frame-bridge.md)** host 影並走 **done**（Rapier 置換・SceneGpu bind は次）。  
+**現在の次:** Zero-Base 次は **`out`→SceneGpu vertex/UBO 接続**（x0091 候補）または improvement P2 残（Origin Cert hash / Room 上限厳密化 等）/ Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。x008e–x0090 **done**（描画権威はまだ EntityPose）。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x0090`**。
+次の空き番号は **`x0091`**。
 
 ## 関連
 
