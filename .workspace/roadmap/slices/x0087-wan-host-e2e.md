@@ -1,6 +1,6 @@
 # x0087 — 実 host WAN 一往復 E2E
 
-> **ID:** `x0087` · **slug:** `wan-host-e2e` · **status:** `in_progress` · **area:** `[client, ci, zenoh, docs]` · **depends_on:** `[x0070, x0066, x0069, x003d]`  
+> **ID:** `x0087` · **slug:** `wan-host-e2e` · **status:** `done` · **area:** `[client, ci, zenoh, docs]` · **depends_on:** `[x0070, x0066, x0069, x003d]`  
 > **優先度:** 評価 P1-4（credential worker〜署名 Frame まで WAN で固定）
 
 目標: WAN Compose 上で **実 host-server** が world CSR → credential worker → mTLS Zenoh → sealed Manifest/Frame を出し、headless trust consumer が Accept する一往復を CI 固定する。否定系は no-cert / guest sim put の peer 非配送 / 旧 epoch AEAD Discard。
@@ -54,7 +54,7 @@
 
 ## やらない（本 Slice）
 
-- Allocation 主体別 throughput（P1-5）
+- ~~Allocation 主体別 throughput（P1-5）~~ → [x0088](x0088-allocation-subject-throughput.md)
 - hermetic の偽 seal 行列を WAN ACL 上で再実施（guest put 不可）
 - 旧 epoch を host B セッション経由で wire に載せて Discard する経路（trust gate は local で十分）
 - Spot-Check / market

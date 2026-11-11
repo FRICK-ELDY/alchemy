@@ -1,4 +1,4 @@
-# alchemy-relay-agent（x004e / x0068 / P0-4）
+# alchemy-relay-agent（x004e / x0068 / x0088 / P0-4 / P1-5）
 
 軽量 Relay Agent: **Allocation Token + client CSR → 短命 mTLS client 証明書（鍵は返さない）**。
 
@@ -18,6 +18,9 @@ WAN 推奨経路は world 発行 mTLS（[x0066](../.workspace/roadmap/slices/x00
 | 応答に **秘密鍵無し**（`key_pem` 廃止）。`expires_in=300` と **NotAfter ≈ 300s** | マルチリレー発見 |
 | 非 loopback cleartext bind は **起動拒否**（`127.0.0.1` / `localhost` / `::1` のみ） | TLS 終端付き非 loopback 待受 |
 | Body ≤ 16 KiB、allocate 同時 ≤ 8（health 除外）、接続 ≤ 32、`jti` は issue 前に reserve（失敗時 release）、**per-kid** unknown-kid cooldown（上限 256・満杯時 FIFO 追い出し） | プロセス全体 cooldown |
+| JWT 成功後・openssl 前に **sub + peer IP** の epoch 固定窓（`unix_ms/period_ms`、Elixir `AlchemyRateLimit` 同型。既定 10s: sub≤3 / IP≤8、60s: sub≤10 / IP≤30）。超過は **429** + `Retry-After`（[x0088](../.workspace/roadmap/slices/x0088-allocation-subject-throughput.md)） | 分散共有カウンタ；token-bucket；`X-Forwarded-For` |
+| loopback / SSH tunnel 配備では peer がほぼ `127.0.0.1` のため **IP 軸は事実上プロセス全体上限**（sub 軸が主体別の本命） | 実クライアント IP の推定 |
+| 任意 loopback `GET /metrics`（`throttled_total{axis}`；429 は `errors_total` にも加算） | `sub` / IP を metrics label 値に載せること |
 | `GET /health`；`make ci-relay` / GitHub Actions | |
 
 ## 環境変数
@@ -30,6 +33,13 @@ WAN 推奨経路は world 発行 mTLS（[x0066](../.workspace/roadmap/slices/x00
 | `RELAY_TLS_DIR` | `/etc/alchemy/tls` | `client-ca-cert.pem` / `client-ca-key.pem` |
 | `RELAY_AGENT_WORK_DIR` | `/tmp/alchemy-relay-agent` | 一時 CSR / 署名作業 |
 | `OPENSSL_BIN` | `openssl` | openssl パス（OpenSSL 3+ / `-not_after`） |
+| `RELAY_ALLOCATE_SHORT_WINDOW_SECS` | `10` | sub/IP 短窓 |
+| `RELAY_ALLOCATE_LONG_WINDOW_SECS` | `60` | sub/IP 長窓 |
+| `RELAY_ALLOCATE_SUB_SHORT_LIMIT` | `3` | 短窓あたり sub 上限 |
+| `RELAY_ALLOCATE_SUB_LONG_LIMIT` | `10` | 長窓あたり sub 上限 |
+| `RELAY_ALLOCATE_IP_SHORT_LIMIT` | `8` | 短窓あたり IP 上限 |
+| `RELAY_ALLOCATE_IP_LONG_LIMIT` | `30` | 長窓あたり IP 上限 |
+| `RELAY_AGENT_METRICS_ADDR` / `RELAY_AGENT_METRICS=1` | off / `127.0.0.1:9106` | loopback Prometheus |
 
 ## 起動
 

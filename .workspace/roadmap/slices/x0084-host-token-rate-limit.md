@@ -60,7 +60,7 @@
 
 - GLB decode budget（P1-2）
 - assets test hermetic（P1-3）
-- Allocation 主体別 throughput（P1-5）
+- ~~Allocation 主体別 throughput（P1-5）~~ → [x0088](x0088-allocation-subject-throughput.md)
 - seal Port の PartitionSupervisor プール（P2-1）
 
 ## 関連

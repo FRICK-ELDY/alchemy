@@ -1,8 +1,9 @@
-//! Minimal localhost Prometheus text metrics (x007a / P2-12).
+//! Minimal localhost Prometheus text metrics (x007a / x0088 / P2-12 / P1-5).
 //!
 //! Guarantees: optional `RELAY_AGENT_METRICS_ADDR` or `RELAY_AGENT_METRICS=1`
 //! (default `127.0.0.1:9106`) serves `GET /metrics` on loopback only.
-//! Non-guarantees: OTLP; public scrape; `jti`/`sub`/`room_id` labels.
+//! Throttle axis labels are only `sub`|`ip` (x0088).
+//! Non-guarantees: OTLP; public scrape; `jti`/`sub`/`room_id` as label values.
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
@@ -11,6 +12,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use crate::throughput::ThroughputAxis;
+
 const DEFAULT_ADDR: &str = "127.0.0.1:9106";
 
 /// Process-wide allocate counters.
@@ -18,6 +21,8 @@ const DEFAULT_ADDR: &str = "127.0.0.1:9106";
 pub struct RelayMetrics {
     allocate_total: AtomicU64,
     allocate_errors_total: AtomicU64,
+    allocate_throttled_sub: AtomicU64,
+    allocate_throttled_ip: AtomicU64,
 }
 
 impl RelayMetrics {
@@ -29,8 +34,19 @@ impl RelayMetrics {
         self.allocate_errors_total.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn inc_allocate_throttled(&self, axis: ThroughputAxis) {
+        match axis {
+            ThroughputAxis::Sub => {
+                self.allocate_throttled_sub.fetch_add(1, Ordering::Relaxed);
+            }
+            ThroughputAxis::Ip => {
+                self.allocate_throttled_ip.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
     pub fn render_prometheus(&self) -> String {
-        let mut out = String::with_capacity(256);
+        let mut out = String::with_capacity(512);
         out.push_str("# HELP alchemy_relay_allocate_total Allocate successes\n");
         out.push_str("# TYPE alchemy_relay_allocate_total counter\n");
         out.push_str(&format!(
@@ -38,12 +54,24 @@ impl RelayMetrics {
             self.allocate_total.load(Ordering::Relaxed)
         ));
         out.push_str(
-            "# HELP alchemy_relay_allocate_errors_total Allocate semantic failures (excludes transport size 413)\n",
+            "# HELP alchemy_relay_allocate_errors_total Allocate semantic failures (excludes transport size 413; includes throttled)\n",
         );
         out.push_str("# TYPE alchemy_relay_allocate_errors_total counter\n");
         out.push_str(&format!(
             "alchemy_relay_allocate_errors_total {}\n",
             self.allocate_errors_total.load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP alchemy_relay_allocate_throttled_total Allocate rejected by subject/IP throughput (x0088; also counted in errors_total)\n",
+        );
+        out.push_str("# TYPE alchemy_relay_allocate_throttled_total counter\n");
+        out.push_str(&format!(
+            "alchemy_relay_allocate_throttled_total{{axis=\"sub\"}} {}\n",
+            self.allocate_throttled_sub.load(Ordering::Relaxed)
+        ));
+        out.push_str(&format!(
+            "alchemy_relay_allocate_throttled_total{{axis=\"ip\"}} {}\n",
+            self.allocate_throttled_ip.load(Ordering::Relaxed)
         ));
         out
     }
@@ -166,9 +194,13 @@ mod tests {
         let m = RelayMetrics::default();
         m.inc_allocate_ok();
         m.inc_allocate_err();
+        m.inc_allocate_throttled(ThroughputAxis::Sub);
+        m.inc_allocate_throttled(ThroughputAxis::Ip);
         let text = m.render_prometheus();
         assert!(text.contains("alchemy_relay_allocate_total 1"));
         assert!(text.contains("alchemy_relay_allocate_errors_total 1"));
+        assert!(text.contains("alchemy_relay_allocate_throttled_total{axis=\"sub\"} 1"));
+        assert!(text.contains("alchemy_relay_allocate_throttled_total{axis=\"ip\"} 1"));
     }
 
     #[test]

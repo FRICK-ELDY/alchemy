@@ -1,15 +1,19 @@
-//! Alchemy Relay Agent (x004e / x0068 / x007a / P0-4).
+//! Alchemy Relay Agent (x004e / x0068 / x007a / x0088 / P0-4 / P1-5).
 //!
 //! Guarantees: `POST /v1/allocate` verifies Allocation Token (`aud=alchemy-relay`) via world JWKS
 //! (soft refresh + hard TTL), then **signs a client-supplied CSR** with forced CN
 //! `alchemy-host` / `alchemy-guest` whose **NotAfter ≈ `expires_in` (300s)**. Response has
 //! **no private key** (`key_pem` removed). Non-loopback cleartext bind is refused at startup.
-//! Body size, in-flight concurrency, and `jti` reuse are bounded. Optional loopback `/metrics`
-//! + `room_jti` log correlation (x007a).
+//! Body size, in-flight concurrency, and `jti` reuse are bounded. After JWT verify, **sub + peer
+//! IP** epoch short/long throughput (x0088; AlchemyRateLimit-shaped) rejects before OpenSSL.
+//! Under loopback/tunnel, peer IP is often `127.0.0.1` so the IP axis is process-wide. Optional
+//! loopback `/metrics` + `room_jti` log correlation (x007a).
 //!
-//! Non-guarantees: CCU/QoS, multi-relay discovery, L7 Zenoh proxy, TLS-terminated non-loopback.
+//! Non-guarantees: CCU/QoS, multi-relay discovery, L7 Zenoh proxy, TLS-terminated non-loopback,
+//! distributed rate counters, `X-Forwarded-For`.
 
 mod metrics;
+mod throughput;
 
 use anyhow::{anyhow, Context, Result};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
@@ -18,12 +22,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use throughput::{SubjectThroughput, ThroughputError};
 
 fn relay_metrics() -> &'static Arc<RelayMetrics> {
     static M: OnceLock<Arc<RelayMetrics>> = OnceLock::new();
@@ -157,6 +162,8 @@ pub struct AgentState {
     jti_seen: Mutex<JtiDedupe>,
     /// Per-kid cooldown after unknown kid (avoids process-wide allocate DoS).
     unknown_kid_until: Mutex<HashMap<String, Instant>>,
+    /// Verified sub + peer IP short/long windows (x0088 / P1-5).
+    throughput: Mutex<SubjectThroughput>,
 }
 
 struct CounterGuard {
@@ -294,6 +301,7 @@ pub fn run() -> Result<()> {
         connections: Arc::new(Mutex::new(0)),
         jti_seen: Mutex::new(JtiDedupe::new()),
         unknown_kid_until: Mutex::new(HashMap::new()),
+        throughput: Mutex::new(SubjectThroughput::from_env()),
     });
 
     if !state.client_ca_cert.is_file() || !state.client_ca_key.is_file() {
@@ -311,7 +319,7 @@ pub fn run() -> Result<()> {
     ensure_bound_loopback(&listener)?;
     let bound = listener.local_addr().context("local_addr after bind")?;
     log::info!(
-        "relay-agent x0083 (CSR-only) listening on http://{bound} (listen={listen}) relay_id={} jwks={} cert_ttl_secs={CERT_TTL_SECS} max_body={MAX_BODY_BYTES} max_in_flight={MAX_IN_FLIGHT} max_connections={MAX_CONNECTIONS}",
+        "relay-agent x0083/x0088 (CSR-only + subject throughput) listening on http://{bound} (listen={listen}) relay_id={} jwks={} cert_ttl_secs={CERT_TTL_SECS} max_body={MAX_BODY_BYTES} max_in_flight={MAX_IN_FLIGHT} max_connections={MAX_CONNECTIONS}",
         state.relay_id,
         state.jwks_url
     );
@@ -514,6 +522,24 @@ impl AgentState {
         }
     }
 
+    /// Consume one allocate hit on verified `sub` + peer IP short/long windows (x0088).
+    pub fn hit_throughput(&self, sub: &str, peer_ip: IpAddr) -> Result<(), ThroughputError> {
+        let mut guard = self
+            .throughput
+            .lock()
+            .map_err(|_| ThroughputError::LockPoisoned)?;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        guard
+            .hit(sub, peer_ip, now_ms)
+            .map_err(|(axis, retry_after_secs)| ThroughputError::Limited {
+                axis,
+                retry_after_secs,
+            })
+    }
+
     /// Sign `csr_pem` for an authorized role. CSR Subject is ignored (`-subj` forces CN).
     /// Returns `(cert_pem, ca_pem)` — never a client private key (P0-4).
     pub fn sign_csr(&self, csr_pem: &str, role: &str) -> Result<(String, String)> {
@@ -706,6 +732,41 @@ pub fn handle_client(mut stream: TcpStream, state: &AgentState) -> Result<()> {
         }
     };
 
+    // x0088: verified sub + peer IP short/long windows — before openssl / jti burn.
+    // No X-Forwarded-For: under loopback/SSH tunnel peer is usually 127.0.0.1 (IP ≈ process-wide).
+    let peer_ip = match stream.peer_addr() {
+        Ok(a) => a.ip(),
+        Err(e) => {
+            log::warn!("allocate deny: peer_addr unavailable: {e}");
+            return allocate_deny(&mut stream, 503, "{\"error\":\"peer_unavailable\"}");
+        }
+    };
+    match state.hit_throughput(&claims.sub, peer_ip) {
+        Ok(()) => {}
+        Err(ThroughputError::Limited {
+            axis,
+            retry_after_secs,
+        }) => {
+            // throttled_total is the specific series; errors_total also increments (same as other denies).
+            relay_metrics().inc_allocate_throttled(axis);
+            log::warn!(
+                "allocate throttle axis={} sub_len={} retry_after={retry_after_secs}",
+                axis.as_str(),
+                claims.sub.len()
+            );
+            return allocate_deny_retry_after(
+                &mut stream,
+                429,
+                "{\"error\":\"rate_limited\"}",
+                retry_after_secs,
+            );
+        }
+        Err(ThroughputError::LockPoisoned) => {
+            log::error!("allocate deny: throughput lock poisoned");
+            return allocate_deny(&mut stream, 503, "{\"error\":\"internal_error\"}");
+        }
+    }
+
     // Reserve jti before openssl so parallel same-jti cannot both issue; release on fail.
     if let Err(e) = state.try_reserve_jti(&claims.jti) {
         log::warn!("allocate deny: {e:#}");
@@ -769,18 +830,43 @@ fn allocate_deny(stream: &mut TcpStream, status: u16, body: &str) -> Result<()> 
     write_http(stream, status, body)
 }
 
+fn allocate_deny_retry_after(
+    stream: &mut TcpStream,
+    status: u16,
+    body: &str,
+    retry_after_secs: u64,
+) -> Result<()> {
+    relay_metrics().inc_allocate_err();
+    write_http_retry_after(stream, status, body, retry_after_secs)
+}
+
 pub fn write_http(stream: &mut TcpStream, status: u16, body: &str) -> Result<()> {
+    write_http_retry_after(stream, status, body, 0)
+}
+
+pub fn write_http_retry_after(
+    stream: &mut TcpStream,
+    status: u16,
+    body: &str,
+    retry_after_secs: u64,
+) -> Result<()> {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
         413 => "Payload Too Large",
+        429 => "Too Many Requests",
         503 => "Service Unavailable",
         _ => "Error",
     };
+    let retry = if retry_after_secs > 0 {
+        format!("Retry-After: {retry_after_secs}\r\n")
+    } else {
+        String::new()
+    };
     let header = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{retry}Connection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(header.as_bytes())?;
@@ -792,6 +878,7 @@ pub fn write_http(stream: &mut TcpStream, status: u16, body: &str) -> Result<()>
 mod tests {
     use super::*;
     use std::process::Command;
+    use throughput::ThroughputLimits;
 
     fn openssl_bin() -> PathBuf {
         if let Ok(p) = std::env::var("OPENSSL_BIN") {
@@ -877,6 +964,7 @@ mod tests {
             connections: Arc::new(Mutex::new(0)),
             jti_seen: Mutex::new(JtiDedupe::new()),
             unknown_kid_until: Mutex::new(HashMap::new()),
+            throughput: Mutex::new(SubjectThroughput::new(ThroughputLimits::default())),
         };
         // Minimal unsigned JWT header.kid present — verify fails on hard stale before decode.
         let token = "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3QifQ.e30.e30";
@@ -954,6 +1042,7 @@ mod tests {
             connections: Arc::new(Mutex::new(0)),
             jti_seen: Mutex::new(JtiDedupe::new()),
             unknown_kid_until: Mutex::new(HashMap::new()),
+            throughput: Mutex::new(SubjectThroughput::new(ThroughputLimits::default())),
         }
     }
 
@@ -1267,6 +1356,191 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
+    fn throughput_http_fixture(
+        limits: ThroughputLimits,
+    ) -> (AgentState, jsonwebtoken::EncodingKey, PathBuf) {
+        use jsonwebtoken::{DecodingKey, EncodingKey};
+
+        let openssl = openssl_bin();
+        let work = std::env::temp_dir().join(format!(
+            "alchemy-relay-throughput-http-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&work).unwrap();
+        let priv_pem = work.join("jwt.key.pem");
+        let pub_pem = work.join("jwt.pub.pem");
+        run_openssl(
+            &openssl,
+            &["genrsa", "-out", priv_pem.to_str().unwrap(), "2048"],
+        )
+        .unwrap();
+        run_openssl(
+            &openssl,
+            &[
+                "rsa",
+                "-in",
+                priv_pem.to_str().unwrap(),
+                "-pubout",
+                "-out",
+                pub_pem.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+
+        let mut state = test_state_minimal();
+        state.openssl = openssl;
+        *state.throughput.lock().unwrap() = SubjectThroughput::new(limits);
+        let decoding =
+            DecodingKey::from_rsa_pem(&fs::read(&pub_pem).unwrap()).expect("DecodingKey");
+        let mut keys = HashMap::new();
+        keys.insert("test-kid".into(), decoding);
+        state.install_jwks_for_test(keys, Instant::now());
+        let encoding =
+            EncodingKey::from_rsa_pem(&fs::read(&priv_pem).unwrap()).expect("EncodingKey");
+        (state, encoding, work)
+    }
+
+    fn encode_throughput_claims(
+        encoding: &jsonwebtoken::EncodingKey,
+        sub: &str,
+        jti: &str,
+    ) -> String {
+        use jsonwebtoken::{encode, Algorithm, Header};
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct Claims<'a> {
+            sub: &'a str,
+            room_id: &'a str,
+            role: &'a str,
+            wire_cap: &'a str,
+            relay_id: &'a str,
+            jti: &'a str,
+            room_jti: &'a str,
+            exp: i64,
+            iss: &'a str,
+            aud: &'a str,
+        }
+
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("test-kid".into());
+        let exp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 600;
+        encode(
+            &header,
+            &Claims {
+                sub,
+                room_id: "r1",
+                role: "guest",
+                wire_cap: "wire-a",
+                relay_id: "alchemy-official",
+                jti,
+                room_jti: "room-jti-1",
+                exp,
+                iss: ISSUER,
+                aud: AUDIENCE,
+            },
+            encoding,
+        )
+        .unwrap()
+    }
+
+    fn post_allocate_with_state(state: AgentState, body: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let st = Arc::new(state);
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let _ = handle_client(stream, &st);
+        });
+        let mut client = TcpStream::connect(addr).unwrap();
+        let req = format!(
+            "POST /v1/allocate HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        client.write_all(req.as_bytes()).unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).unwrap();
+        resp
+    }
+
+    fn stub_csr_allocate_body(token: &str) -> String {
+        serde_json::json!({
+            "allocation_token": token,
+            "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----\nMIIB\n-----END CERTIFICATE REQUEST-----\n"
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn http_allocate_429_when_sub_throughput_exceeded() {
+        let (state, encoding, work) = throughput_http_fixture(ThroughputLimits {
+            short_window: Duration::from_secs(10),
+            long_window: Duration::from_secs(60),
+            sub_short: 1,
+            sub_long: 100,
+            ip_short: 100,
+            ip_long: 100,
+        });
+        state
+            .hit_throughput("u1", IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+            .unwrap();
+        let token = encode_throughput_claims(&encoding, "u1", "throughput-1");
+        let resp = post_allocate_with_state(state, &stub_csr_allocate_body(&token));
+        assert!(resp.starts_with("HTTP/1.1 429"), "{resp}");
+        assert!(resp.contains("rate_limited"), "{resp}");
+        assert!(resp.to_ascii_lowercase().contains("retry-after:"), "{resp}");
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn http_allocate_other_sub_not_blocked_by_peer_sub_limit() {
+        let (state, encoding, work) = throughput_http_fixture(ThroughputLimits {
+            short_window: Duration::from_secs(10),
+            long_window: Duration::from_secs(60),
+            sub_short: 1,
+            sub_long: 100,
+            ip_short: 100,
+            ip_long: 100,
+        });
+        state
+            .hit_throughput("u1", IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+            .unwrap();
+        let token = encode_throughput_claims(&encoding, "u2", "throughput-other");
+        let resp = post_allocate_with_state(state, &stub_csr_allocate_body(&token));
+        // Wired path must not 429 for a different sub (openssl may still fail on stub CSR).
+        assert!(!resp.starts_with("HTTP/1.1 429"), "{resp}");
+        assert!(!resp.contains("rate_limited"), "{resp}");
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn http_allocate_429_when_ip_throughput_exceeded() {
+        let (state, encoding, work) = throughput_http_fixture(ThroughputLimits {
+            short_window: Duration::from_secs(10),
+            long_window: Duration::from_secs(60),
+            sub_short: 100,
+            sub_long: 100,
+            ip_short: 1,
+            ip_long: 100,
+        });
+        // Fill loopback IP bucket; HTTP peer is also 127.0.0.1.
+        state
+            .hit_throughput("seed", IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+            .unwrap();
+        let token = encode_throughput_claims(&encoding, "other-sub", "throughput-ip");
+        let resp = post_allocate_with_state(state, &stub_csr_allocate_body(&token));
+        assert!(resp.starts_with("HTTP/1.1 429"), "{resp}");
+        assert!(resp.contains("rate_limited"), "{resp}");
+        let _ = fs::remove_dir_all(&work);
+    }
+
     fn post_allocate_body(body: &[u8]) -> String {
         let state = test_state_minimal();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1394,6 +1668,7 @@ mod tests {
             connections: Arc::new(Mutex::new(0)),
             jti_seen: Mutex::new(JtiDedupe::new()),
             unknown_kid_until: Mutex::new(HashMap::new()),
+            throughput: Mutex::new(SubjectThroughput::new(ThroughputLimits::default())),
         };
         fs::create_dir_all(&state.work_dir).unwrap();
 
