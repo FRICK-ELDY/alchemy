@@ -24,7 +24,7 @@
 | Room API は auth-server Bearer JWT 必須（`sub` を Room Token に転写） | 匿名 Token（既定 OFF。`WORLD_ALLOW_ANON_TOKENS=true` のみ） |
 | auth JWKS（`AUTH_JWKS_URL`）によるユーザー JWT 検証。共有キャッシュは失敗時もクールダウン + miss は非同期再取得（x008c；GenServer が HTTP で直列待ちしない） | auth の revocation 再確認；host 級 soft/hard TTL |
 | HostAttestation JWT（`typ=host_attestation` + **`host_generation`**）を host Room Token のみ発行（x0025 / **x003a**）。同一 `host_pub` は generation 維持、鍵変更で bump。発行失敗は 5xx（token 検証失敗は 401） | UGC scene 編集；完全な handoff UX |
-| ManifestSeal JWT（`typ=manifest_seal` / `aud=alchemy-manifest-seal` + **`host_generation`**）を host Room Token のみ発行（x0026 / **x0039** / **x003a**）。**DB scene + HostAttestation から canonical blake3 を再計算**し、host 提出 hash と不一致なら 422（署名 oracle 廃止）。`manifest-seal-hash --serve` 常駐 Port 必須（x0075）。`GET /ready` が Repo + Keys + Port を検査（`/health` は liveness のみ・x008b） | UGC scene 編集；host ローカル改変 body への seal；`/ready` の並行ハッシュ健全性 |
+| ManifestSeal JWT（`typ=manifest_seal` / `aud=alchemy-manifest-seal` + **`host_generation`**）を host Room Token のみ発行（x0026 / **x0039** / **x003a**）。**DB scene + HostAttestation から canonical blake3 を再計算**し、host 提出 hash と不一致なら 422（署名 oracle 廃止）。`manifest-seal-hash --serve` 常駐 Port プール必須（x0075 / **x008d**；`PartitionSupervisor`；既定は **起動ホスト** `schedulers_online` / `MANIFEST_SEAL_HASH_PARTITIONS`）。`GET /ready` が Repo + Keys + 全 Port を検査（`/health` は liveness のみ・x008b） | UGC scene 編集；host ローカル改変 body への seal；パーティション数超の並列；open 失敗時の `/ready` ゼロ失敗；release ビルドホスト CPU 焼き付き |
 | DemoScene（entries + loco + **初期 quat/scale**）を Room 作成時に紐付け。`GET …/scene` は **host** Room Token のみ（x0027 / x002c）。**x006d / x0082**: `POST …/scene/entries` で mesh 1 件追記（**`expected_revision` CAS**・revision bump・canonical seal 入力）。**x007b / x0082**: `DELETE …/scene/entries/:entity_id` で mesh 削除（64-hex blake3 必須・**`expected_revision` CAS**）。競合は **409** `scene_revision_conflict`（host が GET 後に有限再試行） | guest への scene 配布・フル UGC エディタ・collider scale；user_root / cuboid 削除；Room 単位グローバル直列化 alone；無限再試行 |
 | PlaceRead JWT（`typ=place_read` / `aud=alchemy-assets-place-read`）を Room Token + 検証済み `world_seal` で発行（x006b）。scene blake3 は **ManifestSeal 時**固定。PlaceRead `exp` = **seal 絶対 unix `exp`**＋`touch_until`。期限切れ seal → `seal_expired`。再起動後 re-seal。`extra_blake3` 無効 | JWT 内全 hash 列挙；durable 永続／canonical 再 hydrate；PlaceRead が seal より長生き；退出即時 revoke；client 自動取得 |
 | HTTP rate limit（x0071 / **x0084**）: auth-JWT scope は IP+user；host-token scope（`host_seal`=`host_keys`+`manifest_seal` / `host_scene` / `place_read`）は操作別 IP + **claims** `room_id\|jti` で 429。`place_read` 発行と hashes の jti は別 Bearer のため非連動（共有床は IP） | 分散ノード横断カウンタ；発行↔PlaceRead の jti 相関；JWT 署名検証前の jti 真正性 |
@@ -63,7 +63,7 @@ Token **応答 JSON**（JWT 外・同梱）: `wire_cap`（ルーティング）�
 | Method | Path | Auth | 内容 |
 |:---|:---|:---|:---|
 | GET | `/health` | 不要 | 生存確認（liveness・依存非検査） |
-| GET | `/ready` | 不要 | 準備確認（Repo + Token.Keys + seal Port・x008b） |
+| GET | `/ready` | 不要 | 準備確認（Repo + Token.Keys + seal Port プール・x008b / x008d） |
 | GET | `/.well-known/jwks.json` | 不要 | Room Token 検証用公開鍵 |
 | GET | `/api/v1/rooms` | Bearer（auth JWT） | 見える Room カタログ（`?mine=1` で自分の部屋のみ・x007c；Public は active のみ・x0080） |
 | GET | `/api/v1/rooms/:room_id` | Bearer（auth JWT） | 単室セッション要約（`state` / `active_host_sub`・秘密なし・x0080） |

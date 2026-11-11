@@ -32,7 +32,9 @@ config :assets,
   world_jwks_url: "http://127.0.0.1:9/.well-known/jwks.json",
   world_jwks_fetch_on_start: false,
   world_base_url: nil,
-  max_upload_bytes: 10_000
+  max_upload_bytes: 10_000,
+  # x008d: small pool so ExUnit exercises multi-Port without spawning many OS procs
+  blake3_hash_partitions: 2
 
 config :logger, level: :warning
 config :phoenix, :plug_init_mode, :runtime

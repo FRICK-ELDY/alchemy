@@ -1,68 +1,96 @@
 defmodule Assets.Blake3.Worker do
   @moduledoc """
-  Permanent Port to `blake3-hash --serve` (x0075).
+  Permanent Port to `blake3-hash --serve` (x0075), pooled under
+  `PartitionSupervisor` (x008d / P2-1).
 
   Nearly the same shape as `World.ManifestSealHash.Worker` (framing / receive /
-  reopen). Kept per-app on purpose — no new `shared/` package in x0075; diverge
-  only if assets vs world contracts need it.
+  reopen). Kept per-app on purpose — no new `shared/` package; diverge only if
+  assets vs world contracts need it.
 
-  Guarantees: one OS process reused for hex digests; `{:packet, 4}` framing.
-  Non-guarantees: parallel hash throughput; zero-fail during Port restart.
+  Guarantees: N OS processes reused for hex digests (`:blake3_hash_partitions`,
+  boot-time `System.schedulers_online/0` via runtime.exs / env); `{:packet, 4}`
+  framing; up to N concurrent hashes.
+  Non-guarantees: more-than-N parallelism; streaming hash API; `/ready` during
+  open failure, terminate, or external Port close before handle_info/reopen
+  finishes (happy-path reopen publishes the replacement Port first).
 
-  Error surface: `hash_hex/1` **raises** (historical `Assets.Blake3` contract →
-  upload path). World seal returns `{:error, _}` for HTTP mapping — intentional
-  asymmetry, not a Port-layer difference.
+  Error surface: `hash_hex/1` **raises** on soft error, timeout, and `:noproc`
+  (partition restart / pool down) — upload path fail-closed contract. World seal
+  returns `{:error, _}` for HTTP mapping — intentional asymmetry.
   """
 
   use GenServer
 
   require Logger
 
+  @partitioner Assets.Blake3.Partitioner
+
   # Receive waits shorter than GenServer.call so shutdown / caller timeout can win.
   @receive_slack_ms 2_000
 
-  # Published for ready?/0 — must not GenServer.call (hash can block ~30s).
-  @pt_port {__MODULE__, :port}
+  @doc false
+  def partitioner_name, do: @partitioner
 
-  def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  @doc false
+  def via(key), do: {:via, PartitionSupervisor, {@partitioner, key}}
+
+  def start_link(opts \\ []) when is_list(opts) do
+    GenServer.start_link(__MODULE__, opts)
   end
 
   @spec hash_hex(binary()) :: String.t()
   def hash_hex(data) when is_binary(data) do
     timeout = call_timeout_ms()
+    # Integer key → rem(abs(key), partitions): unique_integer ≈ round-robin (x008d).
+    key = :erlang.unique_integer([:positive])
 
-    case GenServer.call(__MODULE__, {:hash, data}, timeout) do
+    case GenServer.call(via(key), {:hash, data}, timeout) do
       {:ok, hex} -> hex
       {:error, reason} -> raise "blake3-hash failed: #{inspect(reason)}"
     end
+  catch
+    # Upload contract: raise (not {:error,_}). Pool partial restart → :noproc is
+    # more likely than single-Port days; still fail-closed for the PUT in flight.
+    :exit, {:noproc, _} ->
+      raise "blake3-hash failed: :noproc (partition/pool unavailable)"
+
+    :exit, {:timeout, _} ->
+      raise "blake3-hash failed: :timeout"
   end
 
   @doc """
-  True when the named worker is registered and its OS Port is still attached.
+  True when the partitioner is up and **every** partition has an attached OS Port.
 
   Reads `:persistent_term` + `Port.info/1` — **does not** `GenServer.call`, so a
   long `{:hash, _}` (receive up to ~30s) cannot make `/ready` false-negative (x008b).
   """
   @spec ready?() :: boolean()
   def ready? do
-    if is_pid(Process.whereis(__MODULE__)) do
-      case :persistent_term.get(@pt_port, nil) do
-        port when is_port(port) -> Port.info(port) != nil
-        _ -> false
-      end
-    else
-      false
+    case Process.whereis(@partitioner) do
+      pid when is_pid(pid) ->
+        partitions = PartitionSupervisor.partitions(@partitioner)
+        partitions > 0 and Enum.all?(0..(partitions - 1), &partition_port_ready?/1)
+
+      nil ->
+        false
+    end
+  end
+
+  defp partition_port_ready?(partition) do
+    case :persistent_term.get(pt_port_key(partition), nil) do
+      port when is_port(port) -> Port.info(port) != nil
+      _ -> false
     end
   end
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
     Process.flag(:trap_exit, true)
+    partition = Keyword.fetch!(opts, :partition)
 
     case ancestor_parent() do
       parent when is_pid(parent) ->
-        {:ok, Map.put(open_port(), :parent, parent)}
+        {:ok, Map.put(open_port(partition), :parent, parent)}
 
       _ ->
         Logger.error("Assets.Blake3.Worker: no supervisor parent in $ancestors; refusing start")
@@ -92,7 +120,7 @@ defmodule Assets.Blake3.Worker do
 
   def handle_info({:EXIT, parent, reason}, %{parent: parent} = state) when is_pid(parent) do
     close_port(state.port)
-    clear_published_port()
+    clear_published_port(state.partition)
     {:stop, reason, %{state | port: nil}}
   end
 
@@ -104,12 +132,29 @@ defmodule Assets.Blake3.Worker do
 
   @impl true
   def terminate(_reason, state) do
-    close_port(Map.get(state, :port))
-    clear_published_port()
+    # Mid-reopen :kill can leave GenServer state on the old Port while PT already
+    # holds the replacement — close both so the new OS process is not orphaned.
+    state_port = Map.get(state, :port)
+
+    case Map.get(state, :partition) do
+      partition when is_integer(partition) ->
+        published = :persistent_term.get(pt_port_key(partition), nil)
+        close_port(state_port)
+
+        if is_port(published) and published != state_port do
+          close_port(published)
+        end
+
+        clear_published_port(partition)
+
+      _ ->
+        close_port(state_port)
+    end
+
     :ok
   end
 
-  defp receive_reply(%{port: port, parent: parent} = state, timeout) do
+  defp receive_reply(%{port: port, parent: parent, partition: partition} = state, timeout) do
     receive do
       {^port, {:data, resp}} ->
         {:reply, decode_reply(resp), state}
@@ -123,7 +168,7 @@ defmodule Assets.Blake3.Worker do
       # Parent shutdown while blocked in receive: reply then stop.
       {:EXIT, ^parent, reason} when is_pid(parent) ->
         close_port(port)
-        clear_published_port()
+        clear_published_port(partition)
         {:stop, reason, {:error, {:shutdown, reason}}, %{state | port: nil}}
     after
       timeout ->
@@ -131,7 +176,7 @@ defmodule Assets.Blake3.Worker do
     end
   end
 
-  defp open_port do
+  defp open_port(partition) when is_integer(partition) do
     path = resolve_executable!(binary_path())
     max_len = Application.fetch_env!(:assets, :max_upload_bytes)
 
@@ -152,20 +197,26 @@ defmodule Assets.Blake3.Worker do
         ]
       )
 
-    publish_port(port)
-    %{port: port}
+    publish_port(partition, port)
+    %{port: port, partition: partition}
   end
 
-  defp reopen(%{port: port, parent: parent}) do
-    close_port(port)
-    clear_published_port()
-    Map.put(open_port(), :parent, parent)
+  defp reopen(%{port: old_port, parent: parent, partition: partition}) do
+    # Publish the replacement Port first so ready?/0 does not see a nil slot
+    # (pool-wide 503) between clear and open. Then close the old OS process.
+    new_state = open_port(partition)
+    close_port(old_port)
+    Map.put(new_state, :parent, parent)
   end
 
-  defp publish_port(port) when is_port(port), do: :persistent_term.put(@pt_port, port)
+  defp pt_port_key(partition), do: {__MODULE__, :port, partition}
 
-  defp clear_published_port do
-    _ = :persistent_term.erase(@pt_port)
+  defp publish_port(partition, port) when is_integer(partition) and is_port(port) do
+    :persistent_term.put(pt_port_key(partition), port)
+  end
+
+  defp clear_published_port(partition) when is_integer(partition) do
+    _ = :persistent_term.erase(pt_port_key(partition))
     :ok
   end
 
@@ -232,10 +283,12 @@ defmodule Assets.Blake3.Worker do
         _ -> nil
       end
 
+    # Prefer in-tree / CARGO_TARGET_DIR over PATH so a stale `cargo install`
+    # (pre-x0075, no `--serve`) cannot shadow the protocol build (x008d).
     configured ||
       System.get_env("BLAKE3_HASH_BIN") ||
-      System.find_executable("blake3-hash") ||
       protocol_debug_bin() ||
+      System.find_executable("blake3-hash") ||
       raise "blake3-hash binary not configured (set :blake3_hash_bin or BLAKE3_HASH_BIN)"
   end
 

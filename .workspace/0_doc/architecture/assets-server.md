@@ -1,7 +1,7 @@
 # assets-server
 
 > **正本コード**: [`assets-server/`](../../../assets-server/)  
-> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳）+ **x0054**（inventory PUT 経路）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）+ **x006e**（Drive HTTP put_back）+ **x006f**（CasObject.access 列廃止）+ **x0074**（reserved reaper / orphan CAS GC）+ **x0075**（BLAKE3 常駐 Port）+ **x007f**（prefab take_out 多子展開）+ **x0086**（test hermetic: reaper/GC off + CAS tmp_dir）+ **x008b**（`/ready` + GET octet-stream/nosniff）  
+> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳）+ **x0054**（inventory PUT 経路）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）+ **x006e**（Drive HTTP put_back）+ **x006f**（CasObject.access 列廃止）+ **x0074**（reserved reaper / orphan CAS GC）+ **x0075**（BLAKE3 常駐 Port）+ **x008d**（BLAKE3 Port プール）+ **x007f**（prefab take_out 多子展開）+ **x0086**（test hermetic: reaper/GC off + CAS tmp_dir）+ **x008b**（`/ready` + GET octet-stream/nosniff）  
 
 > **目標たたき台**: [assets-server-draft.md](assets-server-draft.md)（5 層全体）  
 > **脅威（手口×対策）**: [assets-threat-model.md](assets-threat-model.md)
@@ -22,7 +22,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | メタ（CasObject / BlobRef / BlobGrant / QuotaLedger）を SQLite に置く | GLB/KTX2 本体を DB に置く |
-| 不変バイナリを CAS（BLAKE3 キー）に置く。ダイジェストは常駐 `blake3-hash --serve` Port（x0075；リクエスト毎 CLI なし） | Folder / Commit（Spatial VCS）・Group Vault；並行ハッシュスループット |
+| 不変バイナリを CAS（BLAKE3 キー）に置く。ダイジェストは常駐 `blake3-hash --serve` Port プール（x0075 / **x008d**；`PartitionSupervisor`；既定は **起動ホスト** `schedulers_online` / `BLAKE3_HASH_PARTITIONS`；リクエスト毎 CLI なし） | Folder / Commit（Spatial VCS）・Group Vault；パーティション数超の並列・ストリーミング NIF；release ビルドホスト CPU 数の焼き付き |
 | `Assets.Vault.personal/1` が Quota と一致する used/reserved/limit を返す（vault_id=`owner_sub` 暫定・x0058） | UUID vault_id 移行・`:read_only`・課金プラン連動 |
 | `CasObject`（物理・所有者なし・size/mime のみ）と `BlobRef`（owner×blake3）を分離（x003f / x006f） | StorageVault / `:purchased` / `:mail_temp` |
 | PUT finalize で uploader に `:owned` `BlobGrant`（x004f） | room スコープ grant・Manifest 連動付与以外の Grant 種別 |
@@ -76,7 +76,7 @@ PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。`x-alchemy-b
 | Method | Path | Auth | 内容 |
 |:---|:---|:---|:---|
 | GET | `/health` | 不要 | 生存確認（liveness・依存非検査） |
-| GET | `/ready` | 不要 | 準備確認（Repo + BLAKE3 Port・x008b） |
+| GET | `/ready` | 不要 | 準備確認（Repo + BLAKE3 Port プール・x008b / x008d） |
 | POST | `/api/v1/blobs` | Bearer | raw body アップロード。owned Grant 付与 |
 | POST | `/api/v1/inventory/blobs` | Bearer | インベントリ用パス（x0054）。中身は通常 PUT と同じ（x006f） |
 | GET | `/api/v1/blobs/:blake3` | Bearer（任意 `x-alchemy-place-read`） | 常時 Grant **または** PlaceRead カバー（x006c）。local: 200 `application/octet-stream` + `nosniff`（CasObject.mime は Content-Type に使わない・x008b）/ s3: 302 |

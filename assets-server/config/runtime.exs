@@ -119,6 +119,29 @@ if bin = System.get_env("BLAKE3_HASH_BIN") do
   config :assets, blake3_hash_bin: bin
 end
 
+# x008d: partition count at **boot host** (not mix release build host).
+# test では env を無視（CI/シェル残留で test.exs の 2 を壊さない）。
+if config_env() != :test do
+  case System.get_env("BLAKE3_HASH_PARTITIONS") do
+    nil ->
+      config :assets, blake3_hash_partitions: System.schedulers_online()
+
+    raw ->
+      trimmed = String.trim(raw)
+
+      count =
+        case Integer.parse(trimmed) do
+          {n, ""} when n >= 1 ->
+            n
+
+          _ ->
+            raise "BLAKE3_HASH_PARTITIONS must be an integer >= 1 (got: #{inspect(raw)})"
+        end
+
+      config :assets, blake3_hash_partitions: count
+  end
+end
+
 if config_env() == :prod do
   secret_key_base =
     System.get_env("SECRET_KEY_BASE") ||

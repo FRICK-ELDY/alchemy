@@ -23,8 +23,15 @@ defmodule World.Application do
         World.Rooms.RoomKeyRotator,
         # x0080: active → dormant when host lease expires
         World.Rooms.HostLeaseSweeper,
-        # x0075: permanent manifest-seal-hash Port (replaces per-request CLI)
-        World.ManifestSealHash.Worker,
+        # x0075 / x008d: manifest-seal-hash Port pool (PartitionSupervisor; no poolboy).
+        # Partitions from runtime.exs / test.exs; fallback only if key unset.
+        {PartitionSupervisor,
+         child_spec: {World.ManifestSealHash.Worker, []},
+         name: World.ManifestSealHash.Partitioner,
+         partitions: hash_partitions(:world, :manifest_seal_hash_partitions),
+         with_arguments: fn [opts], partition ->
+           [Keyword.put(opts, :partition, partition)]
+         end},
         # x007a: dedicated loopback Bandit — never on Endpoint
         World.Metrics.Server,
         WorldWeb.Endpoint
@@ -45,6 +52,13 @@ defmodule World.Application do
       other ->
         raise ArgumentError,
               "unsupported :world :zenoh_adapter #{inspect(other)}; expected ZenohexAdapter or LocalStubAdapter"
+    end
+  end
+
+  defp hash_partitions(app, key) do
+    case Application.get_env(app, key) do
+      n when is_integer(n) and n >= 1 -> n
+      _ -> System.schedulers_online()
     end
   end
 

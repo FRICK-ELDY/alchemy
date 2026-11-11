@@ -28,7 +28,9 @@ config :world,
   # No NIF session / zenohd in ExUnit — in-memory adapter only.
   zenoh_adapter: World.Network.Zenoh.LocalStubAdapter,
   # High enough that multi-room tests do not hit the structural cap.
-  max_rooms_per_owner: 10_000
+  max_rooms_per_owner: 10_000,
+  # x008d: small pool so ExUnit exercises multi-Port without spawning many OS procs
+  manifest_seal_hash_partitions: 2
 
 config :world, World.RateLimit,
   limits: %{
