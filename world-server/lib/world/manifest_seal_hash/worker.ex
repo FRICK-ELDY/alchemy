@@ -1,12 +1,17 @@
 defmodule World.ManifestSealHash.Worker do
   @moduledoc """
-  Permanent Port to `manifest-seal-hash --serve` (x0075).
+  Permanent Port to `manifest-seal-hash --serve` (x0075), pooled under
+  `PartitionSupervisor` (x008d / P2-1).
 
   Nearly the same shape as `Assets.Blake3.Worker` (framing / receive / reopen).
-  Kept per-app on purpose — no new `shared/` package in x0075.
+  Kept per-app on purpose — no new `shared/` package.
 
-  Guarantees: one OS process reused; same encode path as one-shot CLI; `{:packet, 4}`.
-  Non-guarantees: parallel hash throughput; zero-fail during Port restart.
+  Guarantees: N OS processes reused (`:manifest_seal_hash_partitions`, boot-time
+  `System.schedulers_online/0` via runtime.exs / env); same encode path as
+  one-shot CLI; `{:packet, 4}`; up to N concurrent seals.
+  Non-guarantees: more-than-N parallelism; `/ready` during open failure,
+  terminate, or external Port close before handle_info/reopen finishes
+  (happy-path reopen publishes the replacement Port first).
 
   Error surface: returns `{:ok, hex} | {:error, _}` for HTTP mapping in
   `RoomController`. Assets `hash_hex/1` raises instead — intentional facade
@@ -17,54 +22,68 @@ defmodule World.ManifestSealHash.Worker do
 
   require Logger
 
+  @partitioner World.ManifestSealHash.Partitioner
+
   @type hash_result :: {:ok, String.t()} | {:error, term()}
 
   @receive_slack_ms 2_000
 
-  # Published for ready?/0 — must not GenServer.call (hash can block ~30s).
-  @pt_port {__MODULE__, :port}
+  @doc false
+  def partitioner_name, do: @partitioner
 
-  def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  @doc false
+  def via(key), do: {:via, PartitionSupervisor, {@partitioner, key}}
+
+  def start_link(opts \\ []) when is_list(opts) do
+    GenServer.start_link(__MODULE__, opts)
   end
 
   @spec blake3_hex(binary()) :: hash_result()
   def blake3_hex(json) when is_binary(json) do
     timeout = call_timeout_ms()
-    GenServer.call(__MODULE__, {:hash, json}, timeout)
+    key = :erlang.unique_integer([:positive])
+    GenServer.call(via(key), {:hash, json}, timeout)
   catch
     :exit, {:noproc, _} ->
-      {:error, {:cli_missing, "ManifestSealHash.Worker not started"}}
+      {:error, {:cli_missing, "ManifestSealHash.Worker pool not started"}}
 
     :exit, {:timeout, _} ->
       {:error, {:cli_failed, :timeout, "call timeout"}}
   end
 
   @doc """
-  True when the named worker is registered and its OS Port is still attached.
+  True when the partitioner is up and **every** partition has an attached OS Port.
 
   Reads `:persistent_term` + `Port.info/1` — **does not** `GenServer.call`, so a
   long `{:hash, _}` (receive up to ~30s) cannot make `/ready` false-negative (x008b).
   """
   @spec ready?() :: boolean()
   def ready? do
-    if is_pid(Process.whereis(__MODULE__)) do
-      case :persistent_term.get(@pt_port, nil) do
-        port when is_port(port) -> Port.info(port) != nil
-        _ -> false
-      end
-    else
-      false
+    case Process.whereis(@partitioner) do
+      pid when is_pid(pid) ->
+        partitions = PartitionSupervisor.partitions(@partitioner)
+        partitions > 0 and Enum.all?(0..(partitions - 1), &partition_port_ready?/1)
+
+      nil ->
+        false
+    end
+  end
+
+  defp partition_port_ready?(partition) do
+    case :persistent_term.get(pt_port_key(partition), nil) do
+      port when is_port(port) -> Port.info(port) != nil
+      _ -> false
     end
   end
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
     Process.flag(:trap_exit, true)
+    partition = Keyword.fetch!(opts, :partition)
 
     case ancestor_parent() do
       parent when is_pid(parent) ->
-        case open_port() do
+        case open_port(partition) do
           {:ok, state} -> {:ok, Map.put(state, :parent, parent)}
           {:error, reason} -> {:stop, reason}
         end
@@ -100,7 +119,7 @@ defmodule World.ManifestSealHash.Worker do
 
   def handle_info({:EXIT, parent, reason}, %{parent: parent} = state) when is_pid(parent) do
     close_port(state.port)
-    clear_published_port()
+    clear_published_port(state.partition)
     {:stop, reason, %{state | port: nil}}
   end
 
@@ -112,12 +131,29 @@ defmodule World.ManifestSealHash.Worker do
 
   @impl true
   def terminate(_reason, state) do
-    close_port(Map.get(state, :port))
-    clear_published_port()
+    # Mid-reopen :kill can leave GenServer state on the old Port while PT already
+    # holds the replacement — close both so the new OS process is not orphaned.
+    state_port = Map.get(state, :port)
+
+    case Map.get(state, :partition) do
+      partition when is_integer(partition) ->
+        published = :persistent_term.get(pt_port_key(partition), nil)
+        close_port(state_port)
+
+        if is_port(published) and published != state_port do
+          close_port(published)
+        end
+
+        clear_published_port(partition)
+
+      _ ->
+        close_port(state_port)
+    end
+
     :ok
   end
 
-  defp receive_reply(%{port: port, parent: parent} = state, timeout) do
+  defp receive_reply(%{port: port, parent: parent, partition: partition} = state, timeout) do
     receive do
       {^port, {:data, resp}} ->
         {:reply, decode_reply(resp), state}
@@ -130,7 +166,7 @@ defmodule World.ManifestSealHash.Worker do
 
       {:EXIT, ^parent, reason} when is_pid(parent) ->
         close_port(port)
-        clear_published_port()
+        clear_published_port(partition)
 
         {:stop, reason, {:error, {:cli_failed, :shutdown, inspect(reason)}}, %{state | port: nil}}
     after
@@ -139,7 +175,7 @@ defmodule World.ManifestSealHash.Worker do
     end
   end
 
-  defp open_port do
+  defp open_port(partition) when is_integer(partition) do
     case resolve_executable(binary_path()) do
       nil ->
         {:error, {:cli_missing, binary_path()}}
@@ -158,18 +194,22 @@ defmodule World.ManifestSealHash.Worker do
             ]
           )
 
-        publish_port(port)
-        {:ok, %{port: port}}
+        publish_port(partition, port)
+        {:ok, %{port: port, partition: partition}}
     end
   rescue
     e in ErlangError ->
       {:error, {:cli_missing, Exception.message(e)}}
   end
 
-  defp publish_port(port) when is_port(port), do: :persistent_term.put(@pt_port, port)
+  defp pt_port_key(partition), do: {__MODULE__, :port, partition}
 
-  defp clear_published_port do
-    _ = :persistent_term.erase(@pt_port)
+  defp publish_port(partition, port) when is_integer(partition) and is_port(port) do
+    :persistent_term.put(pt_port_key(partition), port)
+  end
+
+  defp clear_published_port(partition) when is_integer(partition) do
+    _ = :persistent_term.erase(pt_port_key(partition))
     :ok
   end
 
@@ -183,13 +223,18 @@ defmodule World.ManifestSealHash.Worker do
 
   defp resolve_executable(_), do: nil
 
-  defp reopen!(%{port: port, parent: parent}) do
-    close_port(port)
-    clear_published_port()
+  defp reopen!(%{port: old_port, parent: parent, partition: partition}) do
+    # Publish replacement first so ready?/0 does not see a nil slot mid-reopen.
+    case open_port(partition) do
+      {:ok, new_state} ->
+        close_port(old_port)
+        Map.put(new_state, :parent, parent)
 
-    case open_port() do
-      {:ok, new_state} -> Map.put(new_state, :parent, parent)
-      {:error, reason} -> raise "manifest-seal-hash Port reopen failed: #{inspect(reason)}"
+      {:error, reason} ->
+        # Keep publishing whatever still works; clear only if open failed hard.
+        close_port(old_port)
+        clear_published_port(partition)
+        raise "manifest-seal-hash Port reopen failed: #{inspect(reason)}"
     end
   end
 
@@ -246,10 +291,12 @@ defmodule World.ManifestSealHash.Worker do
         _ -> nil
       end
 
+    # Prefer in-tree / CARGO_TARGET_DIR over PATH so a stale `cargo install`
+    # (pre-x0075, no `--serve`) cannot shadow the protocol build (x008d).
     configured ||
       System.get_env("MANIFEST_SEAL_HASH_BIN") ||
-      System.find_executable("manifest-seal-hash") ||
       protocol_debug_bin() ||
+      System.find_executable("manifest-seal-hash") ||
       "manifest-seal-hash"
   end
 

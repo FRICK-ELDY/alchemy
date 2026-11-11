@@ -2,9 +2,9 @@ defmodule Assets.Ready do
   @moduledoc """
   Readiness probes for `GET /ready` (x008b / P2-2).
 
-  Guarantees: Repo can answer `SELECT 1`; BLAKE3 Port worker reports attached
-  Port via non-blocking `ready?/0` (no GenServer mailbox wait).
-  Non-guarantees: CAS backend reachability; Port hash throughput; auth JWKS
+  Guarantees: Repo can answer `SELECT 1`; BLAKE3 Port **pool** reports every
+  partition Port attached via non-blocking `ready?/0` (no GenServer mailbox wait).
+  Non-guarantees: CAS backend reachability; more-than-N hash throughput; auth JWKS
   (assets verifies via shared client, not a local Keys process).
   """
 

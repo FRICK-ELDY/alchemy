@@ -3,8 +3,8 @@ defmodule World.Ready do
   Readiness probes for `GET /ready` (x008b / P2-2).
 
   Guarantees: Repo can answer `SELECT 1`; Token.Keys serves JWKS; seal-hash
-  Port worker reports attached Port via non-blocking `ready?/0`.
-  Non-guarantees: JWKS freshness vs auth; Port hash throughput; that a
+  Port **pool** reports every partition Port attached via non-blocking `ready?/0`.
+  Non-guarantees: JWKS freshness vs auth; more-than-N hash throughput; that a
   concurrent reopen will succeed.
 
   Keys failure surface: `World.Token.Keys.jwks/0` uses `GenServer.call` and

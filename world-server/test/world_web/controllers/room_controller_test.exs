@@ -3,6 +3,8 @@ defmodule WorldWeb.RoomControllerTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias World.ManifestSealHash.Worker, as: SealHashWorker
+
+  @seal_partitioner World.ManifestSealHash.Partitioner
   alias World.Rooms.Room
   alias World.TestAuthHelpers
   alias World.Token.Keys, as: TokenKeys
@@ -560,8 +562,8 @@ defmodule WorldWeb.RoomControllerTest do
     restart_repo!()
   end
 
-  test "ready returns 503 when seal port worker is down", %{conn: conn} do
-    :ok = Supervisor.terminate_child(World.Supervisor, SealHashWorker)
+  test "ready returns 503 when seal port pool is down", %{conn: conn} do
+    :ok = Supervisor.terminate_child(World.Supervisor, @seal_partitioner)
 
     assert %{
              "status" => "not_ready",
@@ -582,13 +584,14 @@ defmodule WorldWeb.RoomControllerTest do
     restart_keys!()
   end
 
-  test "seal port ready? stays true while GenServer is suspended" do
-    :sys.suspend(SealHashWorker)
+  test "seal port ready? stays true while one partition GenServer is suspended" do
+    pid = GenServer.whereis(SealHashWorker.via(0))
+    :sys.suspend(pid)
 
     try do
       assert SealHashWorker.ready?()
     after
-      :sys.resume(SealHashWorker)
+      :sys.resume(pid)
     end
   end
 
@@ -1294,12 +1297,12 @@ defmodule WorldWeb.RoomControllerTest do
   end
 
   defp restart_seal_port! do
-    case Supervisor.restart_child(World.Supervisor, SealHashWorker) do
+    case Supervisor.restart_child(World.Supervisor, @seal_partitioner) do
       {:ok, _} -> :ok
       {:ok, _, _} -> :ok
       {:error, {:already_started, _}} -> :ok
       {:error, :running} -> :ok
-      other -> flunk("failed to restart ManifestSealHash.Worker: #{inspect(other)}")
+      other -> flunk("failed to restart ManifestSealHash.Partitioner: #{inspect(other)}")
     end
   end
 

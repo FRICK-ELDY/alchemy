@@ -1,9 +1,11 @@
 defmodule World.ManifestSealHash do
   @moduledoc """
   BLAKE3 of canonical SceneManifest protobuf via permanent `manifest-seal-hash --serve`
-  Port (x0039 / x0075).
+  Port pool (x0039 / x0075 / x008d).
 
   Shares the Rust `alchemy-protocol` encode path with host/client without Rustler NIF.
+  Up to `:manifest_seal_hash_partitions` concurrent hashes (boot-time
+  `System.schedulers_online/0` via runtime.exs / env).
   """
 
   @doc """

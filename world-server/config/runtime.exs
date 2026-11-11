@@ -87,6 +87,29 @@ if bin = System.get_env("MANIFEST_SEAL_HASH_BIN") do
   config :world, manifest_seal_hash_bin: bin
 end
 
+# x008d: partition count at **boot host** (not mix release build host).
+# test では env を無視（CI/シェル残留で test.exs の 2 を壊さない）。
+if config_env() != :test do
+  case System.get_env("MANIFEST_SEAL_HASH_PARTITIONS") do
+    nil ->
+      config :world, manifest_seal_hash_partitions: System.schedulers_online()
+
+    raw ->
+      trimmed = String.trim(raw)
+
+      count =
+        case Integer.parse(trimmed) do
+          {n, ""} when n >= 1 ->
+            n
+
+          _ ->
+            raise "MANIFEST_SEAL_HASH_PARTITIONS must be an integer >= 1 (got: #{inspect(raw)})"
+        end
+
+      config :world, manifest_seal_hash_partitions: count
+  end
+end
+
 if System.get_env("BIND_ALL") in ~w(true 1) do
   config :world, WorldWeb.Endpoint,
     http: [ip: {0, 0, 0, 0}, port: port],

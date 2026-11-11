@@ -2,6 +2,8 @@ defmodule AssetsWeb.BlobControllerTest do
   use AssetsWeb.ConnCase, async: false, cas: true
 
   alias Assets.Blake3.Worker, as: Blake3Worker
+
+  @blake3_partitioner Assets.Blake3.Partitioner
   alias Assets.Blobs
   alias Assets.Blobs.BlobGrant
   alias Assets.Blobs.CasObject
@@ -308,15 +310,15 @@ defmodule AssetsWeb.BlobControllerTest do
            } = json_response(conn, 200)
   end
 
-  test "ready returns 503 when blake3 port worker is down", %{conn: conn} do
-    :ok = Supervisor.terminate_child(Assets.Supervisor, Blake3Worker)
+  test "ready returns 503 when blake3 port pool is down", %{conn: conn} do
+    :ok = Supervisor.terminate_child(Assets.Supervisor, @blake3_partitioner)
 
     assert %{
              "status" => "not_ready",
              "checks" => %{"repo" => "ok", "port" => "error"}
            } = json_response(get(conn, "/ready"), 503)
   after
-    restart_blake3_worker!()
+    restart_blake3_pool!()
   end
 
   test "ready returns 503 when repo is down", %{conn: conn} do
@@ -330,13 +332,14 @@ defmodule AssetsWeb.BlobControllerTest do
     restart_repo!()
   end
 
-  test "blake3 ready? stays true while GenServer is suspended" do
-    :sys.suspend(Blake3Worker)
+  test "blake3 ready? stays true while one partition GenServer is suspended" do
+    pid = GenServer.whereis(Blake3Worker.via(0))
+    :sys.suspend(pid)
 
     try do
       assert Blake3Worker.ready?()
     after
-      :sys.resume(Blake3Worker)
+      :sys.resume(pid)
     end
   end
 
@@ -892,13 +895,13 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"error" => "forbidden"} = json_response(conn, 403)
   end
 
-  defp restart_blake3_worker! do
-    case Supervisor.restart_child(Assets.Supervisor, Blake3Worker) do
+  defp restart_blake3_pool! do
+    case Supervisor.restart_child(Assets.Supervisor, @blake3_partitioner) do
       {:ok, _} -> :ok
       {:ok, _, _} -> :ok
       {:error, {:already_started, _}} -> :ok
       {:error, :running} -> :ok
-      other -> flunk("failed to restart Blake3.Worker: #{inspect(other)}")
+      other -> flunk("failed to restart Blake3.Partitioner: #{inspect(other)}")
     end
   end
 

@@ -40,7 +40,9 @@ config :assets,
   place_read_verify_ttl_ms: 5_000,
   place_read_verify_cache_max: 4_096,
   max_upload_bytes: 100_000_000,
-  # x0075: permanent blake3-hash Port (nil = PATH / BLAKE3_HASH_BIN / test_helper)
+  # x0075 / x008d: blake3-hash Port pool (nil bin = PATH / BLAKE3_HASH_BIN / test_helper).
+  # Partitions: NOT set here — mix release would bake build-host schedulers_online.
+  # Resolved at boot in runtime.exs (or test.exs); Application falls back if unset.
   blake3_hash_bin: nil,
   blake3_hash_call_timeout_ms: 30_000,
   # OSS default: header-only quarantine. Proprietary pgvector workers inject here.
