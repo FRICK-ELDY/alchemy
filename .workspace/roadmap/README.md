@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x008e`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x008f`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -192,11 +192,12 @@ depends_on: [x0006]
 | x008b | — | done | `/ready`（Repo・Keys・Port）+ blob GET octet-stream/nosniff（P2-2 / P2-3） | [x008b-ready-and-blob-nosniff.md](slices/x008b-ready-and-blob-nosniff.md) |
 | x008c | — | done | 共有 JWKS 失敗クールダウン + async miss refresh（P2-5） | [x008c-shared-jwks-fail-cooldown.md](slices/x008c-shared-jwks-fail-cooldown.md) |
 | x008d | — | done | BLAKE3 / seal Port プール（PartitionSupervisor · P2-1） | [x008d-blake3-seal-port-pool.md](slices/x008d-blake3-seal-port-pool.md) |
+| x008e | — | done | Zero-Base Spatial Lifecycle（Tape / LBVH / XPBD / Bridge + epoch_view） | [x008e-zero-base-spatial-lifecycle.md](slices/x008e-zero-base-spatial-lifecycle.md) |
 
-**現在の次:** improvement P2 残 / Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。P2-1 は **[x008d](slices/x008d-blake3-seal-port-pool.md) done**。P2-5 は **[x008c](slices/x008c-shared-jwks-fail-cooldown.md) done**。P2-2 / P2-3 は **[x008b](slices/x008b-ready-and-blob-nosniff.md) done**。P2-8 / P2-9 は **[x0089](slices/x0089-rotten-smoke-shared-ci.md) done**。P2-10 は **[x008a](slices/x008a-docs-freshness.md) done**。  
+**現在の次:** improvement P2 残 / Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。P2-1 は **[x008d](slices/x008d-blake3-seal-port-pool.md) done**。P2-5 は **[x008c](slices/x008c-shared-jwks-fail-cooldown.md) done**。P2-2 / P2-3 は **[x008b](slices/x008b-ready-and-blob-nosniff.md) done**。P2-8 / P2-9 は **[x0089](slices/x0089-rotten-smoke-shared-ci.md) done**。P2-10 は **[x008a](slices/x008a-docs-freshness.md) done**。Zero-Base 物理土台は **[x008e](slices/x008e-zero-base-spatial-lifecycle.md) done**（host 配線・Rapier 置換は次 Slice）。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x008e`**。
+次の空き番号は **`x008f`**。
 
 ## 関連
 

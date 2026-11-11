@@ -296,6 +296,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
 
         hotswitch.tick(&shared.presentation, Instant::now());
         ui.pull_dash_logic(&shared);
+        let _ = ui.pull_epoch_xray(&shared);
         let mut inventory_ui_dirty = ui.pull_inventory_mirror(&shared);
         if ui.state.tab == crate::system_ui::DashTab::Inventory {
             inventory_ui_dirty |= ui.sync_inventory_scene_meshes(&shared);

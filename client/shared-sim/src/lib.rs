@@ -3,18 +3,31 @@
 //! Guarantees: [`EntityKind`] + [`classify_scene_entry`] priority matches x0027;
 //! [`ManifestIndex`] one-pass mesh / box / grabbable maps; shared interaction +
 //! demo id constants; [`scene_entry_color_rgba`]; runtime held slots via
-//! [`slot_graph::SlotGraph`] (x0056).
+//! [`slot_graph::SlotGraph`] (x0056); Zero-Base spatial lifecycle primitives in
+//! [`tape`] / [`topology`] / [`spatial`] / [`xpbd`] / [`bridge`].
 //! Non-guarantees: Rapier / Formula / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
-//! Slot graphs (→ x0059).
+//! Slot graphs (→ x0059); CRDT / Zenoh / GPU wiring (client `epoch_view`).
 
 use std::collections::{HashMap, HashSet};
 
 use alchemy_protocol::{scene_entry_grabbable, scene_entry_is_user_root, SceneEntry};
 
+pub mod bridge;
 pub mod demo;
 pub mod slot_graph;
 pub mod slot_undo;
+pub mod spatial;
+pub mod tape;
+pub mod topology;
+pub mod xpbd;
+
+pub use bridge::{EpochSnapshotPair, FrameBridge};
+pub use tape::{
+    ColliderShape, EpochSheet, NodeHandle, PendingPatch, ReadinessMask, WorldTransformf64,
+    XpbdConstraintRow,
+};
+pub use topology::FlatTopology;
 
 pub use slot_graph::{ReparentError, SlotGraph};
 pub use slot_undo::{SlotTransition, SlotUndoStack};

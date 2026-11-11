@@ -207,6 +207,8 @@ pub struct DashState {
     pub session_enter_last_detail_at: Option<std::time::Instant>,
     /// Settings body scroll offset (px); content above bottom tabs is clipped.
     pub settings_scroll: f32,
+    /// Tape / Bitmask X-Ray panel text (local; not mirrored Desktop↔XR).
+    pub epoch_xray_text: String,
 }
 
 impl Default for DashState {
@@ -286,6 +288,7 @@ impl Default for DashState {
             session_enter_seen_manifest: false,
             session_enter_last_detail_at: None,
             settings_scroll: 0.0,
+            epoch_xray_text: String::new(),
         }
     }
 }
@@ -1140,8 +1143,13 @@ fn settings_content_height(state: &DashState) -> f32 {
         so + 124.0
     };
     let btn = adv + 108.0;
-    // join/start row + status label + bottom pad
-    btn + 48.0 + 18.0 + 12.0
+    let xray = if state.epoch_xray_text.is_empty() {
+        0.0
+    } else {
+        120.0
+    };
+    // join/start row + status label + optional X-Ray + bottom pad
+    btn + 48.0 + 18.0 + xray + 12.0
 }
 
 /// In-room session shell only (x007c). Catalog lives on MainHub — no Worlds tab body.
@@ -2915,6 +2923,22 @@ fn rebuild_settings(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32,
             1.1,
         );
         adv_y = so_y + 152.0;
+    }
+
+    if !state.epoch_xray_text.is_empty() {
+        tree.push_label(
+            Rect::new(cx + 24.0, adv_y, cw - 48.0, 22.0),
+            "Tape X-Ray",
+            TEXT,
+            1.8,
+        );
+        tree.push_label(
+            Rect::new(cx + 24.0, adv_y + 26.0, cw - 48.0, 88.0),
+            &state.epoch_xray_text,
+            MUTED,
+            0.95,
+        );
+        adv_y += 120.0;
     }
 
     // Advanced: fixed ROOM_ID Join/Start (prefer Worlds for normal use · x007c Phase 4).

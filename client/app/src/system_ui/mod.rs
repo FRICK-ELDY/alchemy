@@ -78,6 +78,17 @@ impl SystemUi {
         }
     }
 
+    /// Pull Bitmask / Tape X-Ray text from shared Epoch snapshots (Settings panel).
+    pub fn pull_epoch_xray(&mut self, shared: &SharedState) -> bool {
+        let _ = crate::epoch_view::ensure_xray_row(&shared.epoch);
+        let next = crate::epoch_view::xray_text_from_state(&shared.epoch).unwrap_or_default();
+        if self.state.epoch_xray_text == next {
+            return false;
+        }
+        self.state.epoch_xray_text = next;
+        true
+    }
+
     /// XR: adopt Desktop Drive list + inventory status when mirror advances.
     pub fn pull_inventory_mirror(&mut self, shared: &SharedState) -> bool {
         let Ok(m) = shared.inventory_mirror.lock() else {
