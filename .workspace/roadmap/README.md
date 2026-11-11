@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x008a`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x008b`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -124,7 +124,7 @@ depends_on: [x0006]
 | x0047 | — | done | launcher CI + 再起動ポリシー単体テスト（P3-2） | [x0047-launcher-ci-restart-policy.md](slices/x0047-launcher-ci-restart-policy.md) |
 | x0048 | — | done | asset error placeholder + HTTP timeout（P3-3） | [x0048-asset-placeholder-http-timeout.md](slices/x0048-asset-placeholder-http-timeout.md) |
 | x0049 | — | done | metrics 最小（localhost Prometheus text・P3-4） | [x0049-minimal-metrics.md](slices/x0049-minimal-metrics.md) |
-| x004a | — | done | README / roadmap 鮮度（P3-5・vision 本文は未） | [x004a-docs-freshness.md](slices/x004a-docs-freshness.md) |
+| x004a | — | done | README / roadmap 鮮度（P3-5・vision 本文は x008a） | [x004a-docs-freshness.md](slices/x004a-docs-freshness.md) |
 | x004b | — | done | ClientIp 共有化 + HTTP inspect 除去（P3-6） | [x004b-client-ip-shared-inspect.md](slices/x004b-client-ip-shared-inspect.md) |
 | x004c | — | done | cargo-fuzz protobuf / JWT（P3-9） | [x004c-cargo-fuzz-protobuf-jwt.md](slices/x004c-cargo-fuzz-protobuf-jwt.md) |
 | x004d | — | done | USER_ROOT_SLOTS → Manifest（P3-10・帯は protocol） | [x004d-user-root-slots-manifest.md](slices/x004d-user-root-slots-manifest.md) |
@@ -188,11 +188,12 @@ depends_on: [x0006]
 | x0087 | — | done | 実 host WAN 一往復 E2E（CSR→credential worker→Frame→trust + 否定系） | [x0087-wan-host-e2e.md](slices/x0087-wan-host-e2e.md) |
 | x0088 | — | done | Allocation 主体別 throughput（sub/IP 短長窓 + 429 + metrics） | [x0088-allocation-subject-throughput.md](slices/x0088-allocation-subject-throughput.md) |
 | x0089 | — | done | 腐った smoke 削除 + `ci.sh` に `shared/alchemy_*`（P2-8 / P2-9） | [x0089-rotten-smoke-shared-ci.md](slices/x0089-rotten-smoke-shared-ci.md) |
+| x008a | — | done | docs 鮮度（client / wan / world 保証表 / vision · P2-10） | [x008a-docs-freshness.md](slices/x008a-docs-freshness.md) |
 
-**現在の次:** improvement P2 帯 / Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。P2-8 / P2-9 は **[x0089](slices/x0089-rotten-smoke-shared-ci.md) done**。  
+**現在の次:** improvement P2 帯 / Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。P2-8 / P2-9 は **[x0089](slices/x0089-rotten-smoke-shared-ci.md) done**。P2-10 は **[x008a](slices/x008a-docs-freshness.md) done**。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x008a`**。
+次の空き番号は **`x008b`**。
 
 ## 関連
 

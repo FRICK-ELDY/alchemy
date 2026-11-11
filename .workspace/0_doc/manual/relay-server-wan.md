@@ -187,7 +187,7 @@ sudo ufw status numbered
 
 ベンダーのセキュリティグループも **7447/tcp をクライアントから到達できる**ようにする。SSH は送信元を絞ったままにする。平文の publish ポートは増やさない。
 
-**任意の追加硬化**: 運用上、接続元グローバル IP が固定で分かる場合だけ、7447 を送信元制限してもよい。これは保証ではない。公網で開くと第1壁の **guest 購読面**（`frame` / `manifest` 等の subscribe）にも到達しうるので、部屋隔離は第2壁（`wire_cap`）とアプリ署名に依存する。
+**任意の追加硬化**: 運用上、接続元グローバル IP が固定で分かる場合だけ、7447 を送信元制限してもよい。これは保証ではない。公網で開くと第1壁の **guest 購読面**（`frame` / `manifest` 等の subscribe）にも到達しうるので、部屋の**機密性**は第2壁（Room 鍵 AEAD・x0069）とアプリ署名に依存する。`wire_cap` はルーティング用であり秘匿しない。
 
 到達確認:
 
@@ -277,7 +277,7 @@ bash .scripts/smoke-zenoh-wan.sh
 | connection refused | zenohd / `ss -lntp \| grep 7447`。ufw とセキュリティグループが 7447/tcp を許可しているか。平文 `tcp/` で繋いでいないか |
 | 特定の回線だけ届かない | 送信元 IP 限定の 7447 ルールが残っていないか（推奨は `allow 7447/tcp`） |
 | mTLS は通るが Manifest が届かない | (1) Guest sim の `put` **egress**（`guest-egress-sim`）(2) Host の `declare_subscriber` **egress**（`host-egress-declare`；**388b768 は put egress ありでもここ欠落で沈黙**）(3) `shared_memory: false`、host 起動維持。Intent がすぐ `reason=ttl` なら `guest-egress-interest` 欠落も疑う。切り分け: `RUST_LOG=zenoh::net::routing::interceptor=trace`（[x0067](../../roadmap/slices/x0067-zenohd-acl-put-family-host-guest.md)） |
-| HTTPS は通るが空間が空 | `ZENOH_CONNECT` / `ROOM_ID` の一致。第2壁は Token の `room_key`（AEAD）+ `wire_cap` キー式 |
+| HTTPS は通るが空間が空 | `ZENOH_CONNECT` / `ROOM_ID` の一致。機密性は Token の `room_key`（AEAD・第2壁）、到達は同じ `wire_cap` キー式 |
 
 ---
 

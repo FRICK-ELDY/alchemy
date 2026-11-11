@@ -67,10 +67,10 @@ Optional Profile（billing / market-server）はディレクトリ未設置の�
 | 8 | world rate limit / Room 上限なし（-2） | **closed** | `router.ex` L12-22 + `plugs/rate_limit.ex`、`rooms.ex` L579-604（既定 32）。Room Token 系ルートの無制限は新規 -1 |
 | 9 | 相関 ID / auth・world・relay メトリクス不足（-1） | **closed** | x007a：world `[:request_id, :jti]`、auth `[:request_id, :access_jti]`、relay / host の `room_jti` ログ、6 プロセスの loopback metrics |
 | 10 | launcher host restart 後の IPC stale（-1） | **closed** | `launcher/src/discovery.rs`、`launcher.md` L16-27 |
-| 11 | README / client.md / vision 鮮度（-1） | **partial** | README は 〜x007a 追従。`client.md` L50-56 のキー表と `vision.md` は未更新 |
-| 12 | 軽微群（-3） | **partial** | closed: auth Keys PT・seal CLI・reserved 回収・room_token 分割・client main 分割・tos UI・DemoScene ベクタ・prod 0.0.0.0・cargo deny 範囲・mTLS temp。open: host `main()`・USER_ROOT 天井・腐った smoke。partial: BLAKE3（Port 化したが直列） |
+| 11 | README / client.md / vision 鮮度（-1） | **closed** | README 追従。`client.md` / wan / world / vision は **x008a** |
+| 12 | 軽微群（-3） | **partial** | closed: auth Keys PT・seal CLI・reserved 回収・room_token 分割・client main 分割・tos UI・DemoScene ベクタ・prod 0.0.0.0・cargo deny 範囲・mTLS temp・腐った smoke（x0089）。open: host `main()`・USER_ROOT 天井。partial: BLAKE3（Port 化したが直列） |
 
-**集計（まとめ 12 行）: closed 9 / partial 3 / open 0 / superseded 0**
+**集計（まとめ 12 行）: closed 10 / partial 2 / open 0 / superseded 0**
 
 ### 自系統 2026-10-30 のマイナス（30 件）
 
@@ -100,14 +100,14 @@ Optional Profile（billing / market-server）はディレクトリ未設置の�
 | 22 | 相関 ID / auth・world メトリクスなし | closed | 上記 #9 |
 | 23 | relay-agent の `expect` / `unwrap` | partial | 本番経路は大半 `map_err`。`jwks_age()` の `expect` 残（L344-346） |
 | 24 | DemoScene 手動同期 | closed | `protocol/testdata/demo_scene_seal.json` + 両言語テスト |
-| 25 | README / client.md 古い | partial | 上記 #11 |
+| 25 | README / client.md 古い | closed | 上記 #11（**x008a**） |
 | 26 | `make ci` が relay・shared・fuzz を覆わない | partial | relay + shared（x0089）は追加。fuzz は未（`ci-fuzz` 別入口） |
 | 27 | cargo deny が client のみ | closed | launcher / relay-agent も deny（`rust-ci.yml` L120-123, L144-147） |
 | 28 | mTLS 鍵 temp 権限・掃除 | closed | `allocate.rs` L280-345（icacls / 0600 / sweep） |
-| 29 | 保証表が `wire_cap` 隔離を過大主張 | closed | trust-boundary.md L37、relay-server.md L14-17。`config.wan.json5` L4 のコメントだけ旧説明（docs 項に吸収） |
-| 30 | `vision.md` 見出しのみ | open | 変化なし |
+| 29 | 保証表が `wire_cap` 隔離を過大主張 | closed | trust-boundary / relay-server.md / `config.wan.json5` / `relay-server-wan.md` を Room 鍵 AEAD（x0069）へ。過大主張は **x008a** で閉じた |
+| 30 | `vision.md` 見出しのみ | closed | **x008a** で最終目標の短文 |
 
-**集計（自系統 30 件）: closed 17 / partial 7 / open 6 / superseded 0**
+**集計（自系統 30 件）: closed 20 / partial 6 / open 4 / superseded 0**
 
 ### improvement-plan で done とされた x0074〜x0079 のコード確認
 

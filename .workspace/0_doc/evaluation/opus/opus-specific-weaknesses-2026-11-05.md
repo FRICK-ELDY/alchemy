@@ -154,7 +154,7 @@
   > 対象ファイル: `assets-server/lib/assets/application.ex`（L15-33）, `assets-server/config/test.exs`, `assets-server/test/**`
 
 - ~~**旧 smoke スクリプトが現行ログ文言と乖離して腐っている（継続）** `-1`~~ **closed（x0089）**
-  > banner-grep smoke（handthrough / noclip / lan-two-client / leave-liveliness / presence-slots）を削除。機械検証は `make ci-e2e`。P2-10（client.md / wan コメント等）は別途 open。
+  > banner-grep smoke（handthrough / noclip / lan-two-client / leave-liveliness / presence-slots）を削除。機械検証は `make ci-e2e`。P2-10（client.md / wan コメント等）は **x008a** で closed。
 
 ### 開発者体験（DX）
 
@@ -164,10 +164,8 @@
 
 ### プロジェクト全体設計
 
-- **保証表・設定コメントの鮮度に穴がある（継続・部分解消）** `-1`
-  > README は「〜x007a」まで追従し、trust-boundary.md / relay-server.md は「`wire_cap` は秘匿を保証しない・機密性は Room 鍵 AEAD」に正しく直った（前回の過大主張は closed）。残り: (1) `client.md` のチャネル表（L50-56）は `alchemy/dev/room/{ROOM_ID}/manifest` のままで `{wire_cap}` が無い、(2) `relay-server/config.wan.json5` の冒頭コメント L4 は「Room isolation: application `wire_cap` key segment (x004e 第2壁)」と旧説明のまま、(3) `world-server.md` の保証表に x0066（mTLS 署名）と x0069（`room_key` 発行）が載っていない。
-  > 対象ファイル: `.workspace/0_doc/architecture/client.md`（L50-56）, `relay-server/config.wan.json5`（L4）, `.workspace/0_doc/architecture/world-server.md`
+- ~~**保証表・設定コメントの鮮度に穴がある（継続・部分解消）** `-1`~~ **closed（x008a）**
+  > `client.md` に `{wire_cap}`、`config.wan.json5` / `relay-server-wan.md` の第2壁を Room 鍵 AEAD、`world-server.md` に x0066 / x0069、`protocol.md` / `relay-server.md` キー式に inventory を追記。
 
-- **`vision.md` が見出しのみ（継続）** `-1`
-  > 4 回連続で `# Vision` の 1 行のまま。overview.md が実質のビジョンを担うなら削除して誘導する方が誠実。
-  > 対象ファイル: `.workspace/vision.md`
+- ~~**`vision.md` が見出しのみ（継続）** `-1`~~ **closed（x008a）**
+  > 最終目標の短文を記載。overview / README / roadmap へ誘導。

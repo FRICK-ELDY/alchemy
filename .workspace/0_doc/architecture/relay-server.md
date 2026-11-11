@@ -35,6 +35,8 @@ DNS / Let's Encrypt（追加）: [`manual/relay-server-dns.md`](../manual/relay-
 | SceneManifest | `alchemy/dev/room/{room_id}/{wire_cap}/manifest` |
 | PresenceState | `alchemy/dev/room/{room_id}/{wire_cap}/presence` |
 | Snapshot | `alchemy/dev/room/{room_id}/{wire_cap}/snapshot` |
+| Inventory spawn | `alchemy/dev/room/{room_id}/{wire_cap}/inventory/spawn`（x006d / x0081） |
+| Inventory despawn | `alchemy/dev/room/{room_id}/{wire_cap}/inventory/despawn`（x007b / x0081） |
 | Liveliness | `alchemy/dev/room/{room_id}/{wire_cap}/alive/{sub}/{jti}` |
 | Host control | `alchemy/dev/room/{room_id}/{wire_cap}/host_control`（**既定オフ**・x001e） |
 

@@ -47,17 +47,21 @@
 | OpenXR ランタイムあり → XR session **+ Desktop companion**（[x0053](../roadmap/slices/x0053-xr-desktop-hotswitch.md)）。なし／`ALCHEMY_FORCE_DESKTOP` → Desktop のみ。**READY 前は Desktop が Intent 所有**（SteamVR 待ちのデッドゾーンなし）。READY 後 F8 / Settings / presence で切替。`ALCHEMY_HOTSWITCH=0` で auto 初期 OFF。**init 失敗は Desktop Solo 相当継続**。Zenoh 正本は Desktop のみ。XR スレッド panic でも `xr_session_live` をクリア | WSL2 実 HMD；Quest/WebXR 同等 UX；Virtual Desktop presence 完全一致；壊れた近接センサの万能救済（auto 抑止＋F8）；companion 窓の VR 中ミラー描画コスト；Zenoh 無し時の Leave/host shutdown put |
 | OpenXR: XR Vulkan を wgpu-hal で採用し SceneGpu dual-eye＋UI／レーザー／コントローラ overlay（x0052 既定）。ash は enable／interop のみ。Desktop 非 active 時は empty layers で session 維持 | multiview；CompositionLayerQuad；Bevy；単一 GPU での窓+swapchain 共有 |
 
-## チャネル分離（C-C + E + x0009）
+## チャネル分離（C-C + E + x0009 / x004e）
+
+式: `alchemy/dev/room/{ROOM_ID}/{wire_cap}/…`（`wire_cap` は Token 応答のルーティング用・秘匿は非保証。平文の機密性は Room 鍵 AEAD・x0069）。
 
 | キー | 頻度 | 用途 |
 |:---|:---|:---|
-| `alchemy/dev/room/{ROOM_ID}/manifest` | 低（host は 5s 再送で late joiner 補助） | `entity_id → blake3` + `locomotion` |
-| `alchemy/dev/room/{ROOM_ID}/presence` | 低（割当・解放変更 + 5s 再送） | `sub → user_root entity`（x0015 / 解放 x0016+x0019） |
-| `alchemy/dev/room/{ROOM_ID}/alive/{sub}/{jti}` | liveliness | client token；host は検証済み jti 一致時のみ reclaim（x0022） |
-| `alchemy/dev/room/{ROOM_ID}/frame` | 高（動いたものだけ）・**latest デルタ** | 署名付き pose upserts / removes。tick 欠落時は適用せず snapshot（x0023 / x0024） |
-| `alchemy/dev/room/{ROOM_ID}/snapshot` | queryable | late join / 再同期用フル pose（`RenderFrame`・x0023 / x0024） |
-| `alchemy/dev/room/{ROOM_ID}/input` | 入力 | session 署名 Intent（Token は bind / refresh 時のみ・x0023） |
-| `alchemy/dev/room/{ROOM_ID}/host_control` | 低（既定オフ） | host 側 opt-in 購読のみ（x001e）。client Exit は `HostSupervisor` localhost IPC（supervised のみ） |
+| `…/{wire_cap}/manifest` | 低（host は 5s 再送で late joiner 補助） | `entity_id → blake3` + `locomotion` |
+| `…/{wire_cap}/presence` | 低（割当・解放変更 + 5s 再送） | `sub → user_root entity`（x0015 / 解放 x0016+x0019） |
+| `…/{wire_cap}/alive/{sub}/{jti}` | liveliness | client token；host は検証済み jti 一致時のみ reclaim（x0022） |
+| `…/{wire_cap}/frame` | 高（動いたものだけ）・**latest デルタ** | 署名付き pose upserts / removes。tick 欠落時は適用せず snapshot（x0023 / x0024） |
+| `…/{wire_cap}/snapshot` | queryable | late join / 再同期用フル pose（`RenderFrame`・x0023 / x0024） |
+| `…/{wire_cap}/input` | 入力 | session 署名 Intent（Token は bind / refresh 時のみ・x0023） |
+| `…/{wire_cap}/inventory/spawn` | 低 | take-out spawn（Room AEAD + session 署名・x006d / x0081） |
+| `…/{wire_cap}/inventory/despawn` | 低 | scene despawn（同型・x007b / x0081） |
+| `…/{wire_cap}/host_control` | 低（既定オフ） | host 側 opt-in 購読のみ（x001e）。client Exit は `HostSupervisor` localhost IPC（supervised のみ） |
 
 ## Desktop バインド（x0009）
 
