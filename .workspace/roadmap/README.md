@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0095`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0096`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -199,11 +199,12 @@ depends_on: [x0006]
 | x0092 | — | done | camera / loco eye → display TRS（FPS アンカー；TPS/Live は別） | [x0092-eye-display-trs.md](slices/x0092-eye-display-trs.md) |
 | x0093 | — | done | XPBD wire 権威へ収束（Rapier 影並走廃止） | [x0093-xpbd-wire-authority.md](slices/x0093-xpbd-wire-authority.md) |
 | x0094 | — | done | Hierarchy 仮想 Lens 最小（euler_order → Settings） | [x0094-hierarchy-virtual-lens.md](slices/x0094-hierarchy-virtual-lens.md) |
+| x0095 | — | done | wire pose ダブルバッファ置換（P2-6 残り） | [x0095-wire-pose-double-buffer.md](slices/x0095-wire-pose-double-buffer.md) |
 
-**現在の次:** x0094 **done**（Settings Hierarchy）。後続候補は Inspector / Uber-SDF Lens · host↔client 親子同期 · TPS・Live · wire pose ダブルバッファ · Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。方針正本: [x0094](slices/x0094-hierarchy-virtual-lens.md) · Lens アーキ。  
+**現在の次:** 空間本線は一時停止。衛生帯は [x0095](slices/x0095-wire-pose-double-buffer.md) **done**（P2-6 pose DB）。improvement 残（Origin Cert hash / take-out session / Room 上限厳密化 等）· Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md) · [improvement-plan](../0_doc/evaluation/improvement-plan-2026-11-05.md)）。Inspector / Uber-SDF / 親子同期は再開時に再掲。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x0095`**。
+次の空き番号は **`x0096`**。
 
 ## 関連
 

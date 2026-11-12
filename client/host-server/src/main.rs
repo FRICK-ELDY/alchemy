@@ -454,16 +454,39 @@ fn pose_trs_finite(pose: &Pose) -> bool {
         && pose.sz.is_finite()
 }
 
-fn mesh_poses_from_sim(world: &PhysicsWorld) -> Vec<(u32, Pose)> {
-    world
-        .mesh_entity_ids()
-        .filter_map(|id| {
-            let (t, q) = world.mesh_pose_for(id)?;
-            let pose = pose_with_trs(t, q, world.scale_for(id), world.color_for(id));
-            // Non-finite upserts make the client drop the whole Frame (loco freezes).
-            pose_trs_finite(&pose).then_some((id, pose))
-        })
-        .collect()
+/// Append finite mesh poses (caller owns `clear`; prefer [`fill_wire_poses_from_sim`]).
+fn append_mesh_poses_from_sim(world: &PhysicsWorld, out: &mut Vec<(u32, Pose)>) {
+    for id in world.mesh_entity_ids() {
+        let Some((t, q)) = world.mesh_pose_for(id) else {
+            continue;
+        };
+        let pose = pose_with_trs(t, q, world.scale_for(id), world.color_for(id));
+        // Non-finite upserts make the client drop the whole Frame (loco freezes).
+        if pose_trs_finite(&pose) {
+            out.push((id, pose));
+        }
+    }
+}
+
+fn fill_wire_poses_from_sim(
+    world: &PhysicsWorld,
+    occupied: &[Option<String>],
+    slot_count: usize,
+    out: &mut Vec<(u32, Pose)>,
+) {
+    out.clear();
+    append_mesh_poses_from_sim(world, out);
+    for (slot, occupied_sub) in occupied.iter().enumerate().take(slot_count) {
+        if occupied_sub.is_some() {
+            out.push((
+                PhysicsWorld::user_root_entity_id(slot),
+                user_root_pose_from_sim(world, slot),
+            ));
+        }
+    }
+    for i in 0..world.boxes.len() {
+        out.push((world.boxes.entity_ids[i], box_pose_from_sim(world, i)));
+    }
 }
 
 fn user_root_pose_from_sim(world: &PhysicsWorld, slot: usize) -> Pose {
@@ -1346,22 +1369,9 @@ fn main() -> Result<()> {
         }
 
         // Pose sample only on net ticks (delta/encode/put live on zenoh-publish).
-        let mesh_poses = mesh_poses_from_sim(&physics);
-        let mut all_poses: Vec<(u32, Pose)> = Vec::with_capacity(
-            mesh_poses.len() + physics.user_root_slot_count() + physics.boxes.len(),
-        );
-        all_poses.extend(mesh_poses);
-        for (slot, occupied_sub) in occupied.iter().enumerate().take(slot_count) {
-            if occupied_sub.is_some() {
-                all_poses.push((
-                    PhysicsWorld::user_root_entity_id(slot),
-                    user_root_pose_from_sim(&physics, slot),
-                ));
-            }
-        }
-        for i in 0..physics.boxes.len() {
-            all_poses.push((physics.boxes.entity_ids[i], box_pose_from_sim(&physics, i)));
-        }
+        // x0095: recycled scratch — worker / coalesce returns the Vec to the pool.
+        let mut all_poses = outbound.acquire_poses();
+        fill_wire_poses_from_sim(&physics, &occupied, slot_count, &mut all_poses);
 
         if outbound.submit_frame(FrameSample {
             poses: all_poses,

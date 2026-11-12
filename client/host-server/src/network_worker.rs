@@ -1,4 +1,4 @@
-//! Zenoh publish worker (x0042 / P1-3 remainder).
+//! Zenoh publish worker (x0042 / P1-3 remainder · x0095 pose scratch).
 //!
 //! Guarantees: Frame / Manifest / Presence `put().wait()` run only on `zenoh-publish`;
 //! Frame channel payload is wire-agnostic poses (+ removes / gate flags); encode+sign
@@ -6,12 +6,15 @@
 //! but **unions `removes`** and **sticky-OR `resume_catchup`** (mid-net removes and
 //! gate catch-up are not dropped); gated samples **defer** coalesced removes /
 //! sticky catch-up until the next allowed Frame (does not rely on physics alone);
-//! empty-hold / catch-up / 30Hz tick match pre-x0042.
+//! empty-hold / catch-up / 30Hz tick match pre-x0042;
+//! net-tick pose `Vec`s recycle via [`PoseScratchPool`] (acquire → submit → coalesce/worker
+//! release) so the steady path does not `Vec::with_capacity` each net tick.
 //! `put` failure is fail-closed via `process::exit(78)` (same severity as former
 //! main-loop `?`, without returning to physics).
 //! Non-guarantees: rkyv/bytemuck wire; Prometheus; backpressure that stalls physics;
 //! draining pending jobs / joining the worker on `stop()` (process exit may drop
-//! in-flight puts); Manifest logical (non-bytes) jobs — sealed bytes pass through.
+//! in-flight puts); Manifest logical (non-bytes) jobs — sealed bytes pass through;
+//! zero-alloc encode/AEAD/Zenoh; pooling of `removes` / upsert `Entity` vecs.
 
 use alchemy_protocol::wire_aead::AeadKind;
 use alchemy_protocol::wire_crypto::{sign_frame, sign_presence, SigningKey};
@@ -68,9 +71,12 @@ pub struct PresenceJob {
 }
 
 /// Wire-agnostic Frame sample produced by physics.
-#[derive(Clone, Debug)]
+///
+/// Not `Clone`: `poses` may be a pooled scratch (x0095). Cloning would bypass the
+/// recycle contract and allocate a duplicate `Vec`.
+#[derive(Debug)]
 pub struct FrameSample {
-    /// Full live pose set (empty for mid-net remove-only flush).
+    /// Full live pose set (empty for mid-net remove-only flush; not pooled).
     pub poses: Vec<(u32, Pose)>,
     pub removes: Vec<u32>,
     pub resume_catchup: bool,
@@ -80,25 +86,82 @@ pub struct FrameSample {
     pub host_time_ms: u64,
 }
 
-/// Merge two pending Frame samples (x0042 coalesce contract).
+/// In-flight pose scratches: physics fill + hub pending + worker handle_frame.
+const POSE_SCRATCH_POOLED: usize = 3;
+/// Pre-size for mesh + user_root band + grabbable boxes (grows if scene is larger).
+const POSE_SCRATCH_CAPACITY: usize = 64;
+
+/// Recycled pose buffers for physics → network (x0095).
+///
+/// Guarantees: at most [`POSE_SCRATCH_POOLED`] buffers stay in the free list; acquire never
+/// blocks (allocates on miss using the pool's configured capacity). With 3 pooled
+/// scratches, the steady path covering fill+pending+worker does not call
+/// `Vec::with_capacity`. Non-guarantees: capacity shrink; pooling empty `vec![]`;
+/// pathological backlog beyond 3 still allocates then drops on release.
+pub struct PoseScratchPool {
+    free: Mutex<Vec<Vec<(u32, Pose)>>>,
+    /// Capacity used for startup buffers and acquire-on-miss.
+    buf_capacity: usize,
+}
+
+impl PoseScratchPool {
+    pub fn new(capacity: usize) -> Self {
+        let mut free = Vec::with_capacity(POSE_SCRATCH_POOLED);
+        for _ in 0..POSE_SCRATCH_POOLED {
+            free.push(Vec::with_capacity(capacity));
+        }
+        Self {
+            free: Mutex::new(free),
+            buf_capacity: capacity,
+        }
+    }
+
+    pub fn acquire(&self) -> Vec<(u32, Pose)> {
+        let mut g = self.free.lock().unwrap_or_else(|p| p.into_inner());
+        g.pop()
+            .unwrap_or_else(|| Vec::with_capacity(self.buf_capacity))
+    }
+
+    pub fn release(&self, mut buf: Vec<(u32, Pose)>) {
+        buf.clear();
+        // Mid-net `poses: vec![]` must not occupy a pooled slot.
+        if buf.capacity() == 0 {
+            return;
+        }
+        let mut g = self.free.lock().unwrap_or_else(|p| p.into_inner());
+        if g.len() < POSE_SCRATCH_POOLED {
+            g.push(buf);
+        }
+    }
+
+    #[cfg(test)]
+    fn free_len(&self) -> usize {
+        self.free.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+}
+
+/// Merge two pending Frame samples (x0042 coalesce contract · x0095 recycle).
 ///
 /// - **poses / host_time / publish_allowed**: latest (`next`) wins, except a
 ///   `removes_only` next must not wipe a prior net-tick pose set.
 /// - **removes**: sorted unique union (mid-net reclaim must survive net-tick coalesce).
 /// - **resume_catchup**: sticky OR (gate catch-up must not be cleared by a later tick).
 /// - **removes_only**: true only if **both** sides are remove-only (else net path).
-pub fn coalesce_frame(prev: FrameSample, next: FrameSample) -> FrameSample {
+/// - Discarded pose buffers are returned to `pool`.
+pub fn coalesce_frame(prev: FrameSample, next: FrameSample, pool: &PoseScratchPool) -> FrameSample {
     let removes = union_sorted_ids(prev.removes, next.removes);
     let resume_catchup = prev.resume_catchup || next.resume_catchup;
     let removes_only = prev.removes_only && next.removes_only;
     let (poses, host_time_ms, publish_allowed) = if next.removes_only && next.poses.is_empty() {
         // Keep prior net-tick poses when only flushing more removes.
+        pool.release(next.poses);
         (
             prev.poses,
             prev.host_time_ms.max(next.host_time_ms),
             prev.publish_allowed || next.publish_allowed,
         )
     } else {
+        pool.release(prev.poses);
         (next.poses, next.host_time_ms, next.publish_allowed)
     };
     FrameSample {
@@ -162,6 +225,7 @@ pub struct OutboundHub {
     wake: Condvar,
     /// Set by physics on shutdown so the worker can exit.
     stop: AtomicBool,
+    pose_pool: PoseScratchPool,
 }
 
 impl OutboundHub {
@@ -170,6 +234,7 @@ impl OutboundHub {
             pending: Mutex::new(Pending::default()),
             wake: Condvar::new(),
             stop: AtomicBool::new(false),
+            pose_pool: PoseScratchPool::new(POSE_SCRATCH_CAPACITY),
         }
     }
 
@@ -178,11 +243,22 @@ impl OutboundHub {
         self.wake.notify_one();
     }
 
+    /// Take a recycled pose scratch (x0095).
+    /// Empty when returned from the pool (`release` clears); capacity preserved when pooled.
+    pub fn acquire_poses(&self) -> Vec<(u32, Pose)> {
+        self.pose_pool.acquire()
+    }
+
+    /// Return a pose scratch after encode (or coalesce drop).
+    pub fn release_poses(&self, buf: Vec<(u32, Pose)>) {
+        self.pose_pool.release(buf);
+    }
+
     pub fn submit_frame(&self, sample: FrameSample) -> bool {
         let mut g = self.pending.lock().unwrap_or_else(|p| p.into_inner());
         let coalesced = g.frame.is_some();
         g.frame = Some(match g.frame.take() {
-            Some(prev) => coalesce_frame(prev, sample),
+            Some(prev) => coalesce_frame(prev, sample, &self.pose_pool),
             None => sample,
         });
         self.wake.notify_one();
@@ -487,6 +563,7 @@ impl WorkerState {
         cache: &Mutex<RenderFrame>,
         stats: &PublishStats,
         sample: FrameSample,
+        hub: &OutboundHub,
     ) {
         let FrameSample {
             poses,
@@ -496,6 +573,9 @@ impl WorkerState {
             removes_only,
             host_time_ms,
         } = sample;
+        // Drop returns the scratch even on early return (x0095).
+        let pose_return = PoseScratchReturn { hub, poses };
+        let poses = pose_return.as_slice();
 
         if removes_only {
             if removes.is_empty() {
@@ -542,7 +622,7 @@ impl WorkerState {
             // (Physics also sets was_publishing=false; worker defer is the hard guarantee.)
             self.defer_until_allowed(removes, resume_catchup);
             if let Some(tick) = wire_tick::snapshot_tick_on_empty_hold(self.last_published_tick) {
-                Self::refresh_snapshot_cache(cache, tick, host_time_ms, &poses);
+                Self::refresh_snapshot_cache(cache, tick, host_time_ms, poses);
             } else {
                 // No published tick yet — warm poses only; leave tick untouched.
                 let mut c = cache.lock().unwrap_or_else(|p| p.into_inner());
@@ -562,9 +642,9 @@ impl WorkerState {
         let mut upserts = Vec::new();
         if resume_catchup {
             log::info!("publish resumed; synthesizing catch-up upserts+removes");
-            upserts = catchup_after_publish_gate(&mut self.last_sent, &poses, &mut removes);
+            upserts = catchup_after_publish_gate(&mut self.last_sent, poses, &mut removes);
         } else {
-            for &(id, next_pose) in &poses {
+            for &(id, next_pose) in poses {
                 let should_send = match self.last_sent.get(&id) {
                     None => true,
                     Some(prev) => pose_changed(*prev, next_pose),
@@ -579,12 +659,12 @@ impl WorkerState {
         if upserts.is_empty() && removes.is_empty() {
             stats.empty_delta_frames.fetch_add(1, Ordering::Relaxed);
             if let Some(tick) = wire_tick::snapshot_tick_on_empty_hold(self.last_published_tick) {
-                Self::refresh_snapshot_cache(cache, tick, host_time_ms, &poses);
+                Self::refresh_snapshot_cache(cache, tick, host_time_ms, poses);
             }
             return;
         }
 
-        Self::refresh_snapshot_cache(cache, self.net_tick, host_time_ms, &poses);
+        Self::refresh_snapshot_cache(cache, self.net_tick, host_time_ms, poses);
         let remove_ids = removes.clone();
         self.put_signed_frame(
             frame_pub,
@@ -601,6 +681,24 @@ impl WorkerState {
                 self.last_sent.remove(id);
             }
         }
+    }
+}
+
+/// Returns pose scratch to the pool when `handle_frame` exits (any path).
+struct PoseScratchReturn<'a> {
+    hub: &'a OutboundHub,
+    poses: Vec<(u32, Pose)>,
+}
+
+impl PoseScratchReturn<'_> {
+    fn as_slice(&self) -> &[(u32, Pose)] {
+        &self.poses
+    }
+}
+
+impl Drop for PoseScratchReturn<'_> {
+    fn drop(&mut self) {
+        self.hub.release_poses(std::mem::take(&mut self.poses));
     }
 }
 
@@ -648,6 +746,7 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
                         &snapshot_cache,
                         &stats_w,
                         sample,
+                        &hub_w,
                     );
                 }
             }
@@ -690,34 +789,49 @@ mod tests {
     #[test]
     fn submit_frame_coalesces_latest_poses() {
         let hub = OutboundHub::new();
-        let a = FrameSample {
-            poses: vec![(1, Pose::default())],
-            removes: vec![],
-            resume_catchup: false,
-            publish_allowed: true,
-            removes_only: false,
-            host_time_ms: 1,
-        };
-        let mut b = a.clone();
-        b.host_time_ms = 2;
-        b.poses = vec![(
+        let mut a_poses = hub.acquire_poses();
+        a_poses.push((1, Pose::default()));
+        let mut b_poses = hub.acquire_poses();
+        b_poses.push((
             1,
             Pose {
                 x: 9.0,
                 ..Pose::default()
             },
-        )];
-        assert!(!hub.submit_frame(a));
-        assert!(hub.submit_frame(b));
+        ));
+        assert!(!hub.submit_frame(FrameSample {
+            poses: a_poses,
+            removes: vec![],
+            resume_catchup: false,
+            publish_allowed: true,
+            removes_only: false,
+            host_time_ms: 1,
+        }));
+        assert!(hub.submit_frame(FrameSample {
+            poses: b_poses,
+            removes: vec![],
+            resume_catchup: false,
+            publish_allowed: true,
+            removes_only: false,
+            host_time_ms: 2,
+        }));
         let mut g = hub.pending.lock().unwrap();
-        let f = g.frame.as_ref().unwrap();
+        let f = g.frame.take().unwrap();
         assert_eq!(f.host_time_ms, 2);
         assert!((f.poses[0].1.x - 9.0).abs() < f64::EPSILON);
-        g.frame = None;
+        drop(g);
+        hub.release_poses(f.poses);
+    }
+
+    fn scratch_one(pool: &PoseScratchPool, id: u32, pose: Pose) -> Vec<(u32, Pose)> {
+        let mut poses = pool.acquire();
+        poses.push((id, pose));
+        poses
     }
 
     #[test]
     fn coalesce_unions_removes_across_mid_net_and_net_tick() {
+        let pool = PoseScratchPool::new(8);
         let mid = FrameSample {
             poses: vec![],
             removes: vec![3, 5],
@@ -727,36 +841,40 @@ mod tests {
             host_time_ms: 1,
         };
         let net = FrameSample {
-            poses: vec![(
+            poses: scratch_one(
+                &pool,
                 10,
                 Pose {
                     qw: 1.0,
                     ..Pose::default()
                 },
-            )],
+            ),
             removes: vec![5, 7],
             resume_catchup: false,
             publish_allowed: true,
             removes_only: false,
             host_time_ms: 2,
         };
-        let m = coalesce_frame(mid, net);
+        let m = coalesce_frame(mid, net, &pool);
         assert_eq!(m.removes, vec![3, 5, 7]);
         assert!(!m.removes_only);
         assert_eq!(m.poses.len(), 1);
         assert_eq!(m.host_time_ms, 2);
+        pool.release(m.poses);
     }
 
     #[test]
     fn coalesce_net_then_removes_only_keeps_poses_and_unions_removes() {
+        let pool = PoseScratchPool::new(8);
         let net = FrameSample {
-            poses: vec![(
+            poses: scratch_one(
+                &pool,
                 10,
                 Pose {
                     qw: 1.0,
                     ..Pose::default()
                 },
-            )],
+            ),
             removes: vec![1],
             resume_catchup: false,
             publish_allowed: true,
@@ -771,12 +889,13 @@ mod tests {
             removes_only: true,
             host_time_ms: 2,
         };
-        let m = coalesce_frame(net, mid);
+        let m = coalesce_frame(net, mid, &pool);
         assert!(!m.removes_only);
         assert_eq!(m.removes, vec![1, 2]);
         assert_eq!(m.poses.len(), 1);
         assert_eq!(m.poses[0].0, 10);
         assert_eq!(m.host_time_ms, 2);
+        pool.release(m.poses);
     }
 
     #[test]
@@ -823,6 +942,7 @@ mod tests {
 
     #[test]
     fn coalesce_two_removes_only_keeps_union() {
+        let pool = PoseScratchPool::new(8);
         let a = FrameSample {
             poses: vec![],
             removes: vec![1],
@@ -839,21 +959,25 @@ mod tests {
             removes_only: true,
             host_time_ms: 2,
         };
-        let m = coalesce_frame(a, b);
+        let m = coalesce_frame(a, b, &pool);
         assert!(m.removes_only);
         assert_eq!(m.removes, vec![1, 2]);
+        assert!(m.poses.is_empty());
+        pool.release(m.poses);
     }
 
     #[test]
     fn coalesce_keeps_resume_catchup_sticky() {
+        let pool = PoseScratchPool::new(8);
         let catchup = FrameSample {
-            poses: vec![(
+            poses: scratch_one(
+                &pool,
                 10,
                 Pose {
                     qw: 1.0,
                     ..Pose::default()
                 },
-            )],
+            ),
             removes: vec![],
             resume_catchup: true,
             publish_allowed: true,
@@ -861,26 +985,149 @@ mod tests {
             host_time_ms: 1,
         };
         let later = FrameSample {
-            poses: vec![(
+            poses: scratch_one(
+                &pool,
                 10,
                 Pose {
                     x: 1.0,
                     qw: 1.0,
                     ..Pose::default()
                 },
-            )],
+            ),
             removes: vec![],
             resume_catchup: false,
             publish_allowed: true,
             removes_only: false,
             host_time_ms: 2,
         };
-        let m = coalesce_frame(catchup, later);
+        let m = coalesce_frame(catchup, later, &pool);
         assert!(
             m.resume_catchup,
             "gate catch-up must survive later net tick"
         );
         assert!((m.poses[0].1.x - 1.0).abs() < f64::EPSILON);
+        pool.release(m.poses);
+    }
+
+    #[test]
+    fn submit_frame_coalesce_recycles_discarded_pose_scratch() {
+        let hub = OutboundHub::new();
+        assert_eq!(hub.pose_pool.free_len(), POSE_SCRATCH_POOLED);
+        let mut a_poses = hub.acquire_poses();
+        assert_eq!(hub.pose_pool.free_len(), POSE_SCRATCH_POOLED - 1);
+        let a_cap = a_poses.capacity();
+        assert!(a_cap >= POSE_SCRATCH_CAPACITY);
+        a_poses.push((1, Pose::default()));
+        assert!(!hub.submit_frame(FrameSample {
+            poses: a_poses,
+            removes: vec![],
+            resume_catchup: false,
+            publish_allowed: true,
+            removes_only: false,
+            host_time_ms: 1,
+        }));
+        // One scratch still pending; free list keeps the other startup scratches (POOLED-1).
+        assert_eq!(hub.pose_pool.free_len(), POSE_SCRATCH_POOLED - 1);
+
+        let mut b_poses = hub.acquire_poses();
+        b_poses.push((
+            1,
+            Pose {
+                x: 9.0,
+                ..Pose::default()
+            },
+        ));
+        assert!(hub.submit_frame(FrameSample {
+            poses: b_poses,
+            removes: vec![],
+            resume_catchup: false,
+            publish_allowed: true,
+            removes_only: false,
+            host_time_ms: 2,
+        }));
+        // Coalesce released `a` into free; pending still holds `b` → free_len == POOLED-1.
+        assert_eq!(hub.pose_pool.free_len(), POSE_SCRATCH_POOLED - 1);
+
+        let recycled = hub.acquire_poses();
+        assert_eq!(
+            recycled.capacity(),
+            a_cap,
+            "coalesce must return the discarded scratch with capacity"
+        );
+        assert!(recycled.is_empty());
+        hub.release_poses(recycled);
+
+        let mut g = hub.pending.lock().unwrap();
+        let f = g.frame.take().unwrap();
+        assert!((f.poses[0].1.x - 9.0).abs() < f64::EPSILON);
+        let pending_cap = f.poses.capacity();
+        drop(g);
+        hub.release_poses(f.poses);
+        assert_eq!(hub.pose_pool.free_len(), POSE_SCRATCH_POOLED);
+        let again = hub.acquire_poses();
+        assert_eq!(again.capacity(), pending_cap);
+        hub.release_poses(again);
+    }
+
+    #[test]
+    fn pose_scratch_release_preserves_capacity_roundtrip() {
+        let pool = PoseScratchPool::new(POSE_SCRATCH_CAPACITY);
+        let mut buf = pool.acquire();
+        let cap = buf.capacity();
+        buf.push((7, Pose::default()));
+        pool.release(buf);
+        let again = pool.acquire();
+        assert!(again.is_empty());
+        assert_eq!(again.capacity(), cap);
+        pool.release(again);
+    }
+
+    #[test]
+    fn pose_scratch_ignores_empty_literal_on_release() {
+        let pool = PoseScratchPool::new(8);
+        assert_eq!(pool.free_len(), POSE_SCRATCH_POOLED);
+        pool.release(Vec::new());
+        assert_eq!(pool.free_len(), POSE_SCRATCH_POOLED);
+    }
+
+    #[test]
+    fn pose_scratch_miss_uses_configured_capacity() {
+        let pool = PoseScratchPool::new(8);
+        let mut held = Vec::new();
+        for _ in 0..POSE_SCRATCH_POOLED {
+            held.push(pool.acquire());
+        }
+        assert_eq!(pool.free_len(), 0);
+        let miss = pool.acquire();
+        assert_eq!(miss.capacity(), 8);
+        pool.release(miss);
+        for buf in held {
+            pool.release(buf);
+        }
+    }
+
+    #[test]
+    fn mid_net_removes_only_does_not_touch_pose_pool() {
+        let hub = OutboundHub::new();
+        let before = hub.pose_pool.free_len();
+        assert!(!hub.submit_frame(FrameSample {
+            poses: vec![],
+            removes: vec![3],
+            resume_catchup: false,
+            publish_allowed: true,
+            removes_only: true,
+            host_time_ms: 1,
+        }));
+        assert_eq!(hub.pose_pool.free_len(), before);
+        let mut g = hub.pending.lock().unwrap();
+        let f = g.frame.take().unwrap();
+        assert!(f.removes_only);
+        assert!(f.poses.is_empty());
+        assert_eq!(f.poses.capacity(), 0);
+        drop(g);
+        // Empty literal must still not enter the free list.
+        hub.release_poses(f.poses);
+        assert_eq!(hub.pose_pool.free_len(), before);
     }
 
     #[test]
@@ -894,14 +1141,16 @@ mod tests {
             removes_only: true,
             host_time_ms: 1,
         }));
+        let mut poses = hub.acquire_poses();
+        poses.push((
+            10,
+            Pose {
+                qw: 1.0,
+                ..Pose::default()
+            },
+        ));
         assert!(hub.submit_frame(FrameSample {
-            poses: vec![(
-                10,
-                Pose {
-                    qw: 1.0,
-                    ..Pose::default()
-                }
-            )],
+            poses,
             removes: vec![],
             resume_catchup: true,
             publish_allowed: true,
@@ -913,6 +1162,8 @@ mod tests {
         assert_eq!(f.removes, vec![3]);
         assert!(f.resume_catchup);
         assert!(!f.removes_only);
+        drop(g);
+        hub.release_poses(f.poses);
     }
 
     #[test]

@@ -19,7 +19,7 @@
 | user_root 影 collider = Rapier と同型 `SPHERE r=0.3` | 将来カプセル歩行の先行導入 |
 | `entity_id → NodeHandle` の reconcile（mesh / box / user_root；spawn・despawn 追随） | floor 等 Manifest 外静的体の tape 化 |
 | 単体テスト: 移動体 Prev≠Curr；spawn/despawn が **published Curr** に反映；idle は publish スキップ | SceneGpu 補間 bind・client `epoch_view` 本番購読 |
-| host `main` から tick 本体を `epoch_bridge` に閉じる（P2-6 の一部） | pose ダブルバッファの wire 経路置換（現行 network_worker 維持） |
+| host `main` から tick 本体を `epoch_bridge` に閉じる（P2-6 の一部） | pose ダブルバッファの wire 経路置換 → **[x0095](x0095-wire-pose-double-buffer.md)**（本 Slice 時点では未） |
 
 ---
 
