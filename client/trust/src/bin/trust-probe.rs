@@ -218,11 +218,7 @@ impl Drop for TempPemPair {
     }
 }
 
-fn seal_aead_manifest(
-    room_id: &str,
-    room_key: &[u8],
-    manifest: &SceneManifest,
-) -> Result<Vec<u8>> {
+fn seal_aead_manifest(room_id: &str, room_key: &[u8], manifest: &SceneManifest) -> Result<Vec<u8>> {
     let plain = manifest.encode_to_vec();
     wire_aead::seal(room_key, room_id, 0, AeadKind::Manifest, &plain)
         .map_err(|e| anyhow!("seal fake manifest: {e}"))
@@ -928,12 +924,7 @@ fn run_wan() -> Result<()> {
         let mut samples: u32 = 0;
         let mut room_b_samples: u32 = 0;
         while Instant::now() < deadline {
-            put_aead_manifest_pub(
-                &host_pub,
-                &room_b,
-                &bundle_b.room_key,
-                &other_manifest,
-            )?;
+            put_aead_manifest_pub(&host_pub, &room_b, &bundle_b.room_key, &other_manifest)?;
             puts = puts.wrapping_add(1);
             if puts == 1 || puts.is_multiple_of(5) {
                 log::info!("host B put AEAD Manifest on {other_key} (n={puts})");
