@@ -195,11 +195,12 @@ depends_on: [x0006]
 | x008e | — | done | Zero-Base Spatial Lifecycle（Tape / LBVH / XPBD / Bridge + epoch_view） | [x008e-zero-base-spatial-lifecycle.md](slices/x008e-zero-base-spatial-lifecycle.md) |
 | x008f | — | done | host 60Hz FrameBridge 配線（Rapier 影並走 · P2-6 一部） | [x008f-host-frame-bridge.md](slices/x008f-host-frame-bridge.md) |
 | x0090 | — | done | client Epoch 購読 + SceneGpu 最小 bind（Frame→local pair · compute） | [x0090-client-epoch-scenegpu-bind.md](slices/x0090-client-epoch-scenegpu-bind.md) |
+| x0091 | — | done | Epoch `out` → SceneGpu draw（storage TRS · フル active pack） | [x0091-epoch-out-scenegpu-draw.md](slices/x0091-epoch-out-scenegpu-draw.md) |
 
-**現在の次:** Zero-Base 次は **`out`→SceneGpu vertex/UBO 接続**（x0091 候補）または improvement P2 残（Origin Cert hash / Room 上限厳密化 等）/ Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。x008e–x0090 **done**（描画権威はまだ EntityPose）。  
+**現在の次:** Zero-Base 本線は x0091 **done**（display TRS＝`epoch_out` + Grab CPU 双子；Curr 単独権威は撤廃）。次候補は **eye の display 化（残レガシー撤廃）** / XPBD/Rapier 影の収束・Hierarchy/Lens・improvement P2 残 / Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。方針正本: [x0091](slices/x0091-epoch-out-scenegpu-draw.md)。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x0091`**。
+次の空き番号は **`x0092`**。
 
 ## 関連
 

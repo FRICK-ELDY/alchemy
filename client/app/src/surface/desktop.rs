@@ -1235,21 +1235,8 @@ impl App {
         Vec<(u32, EntityPose)>,
         std::sync::Arc<crate::scene::BoxDefs>,
     ) {
-        let defs = self.shared.box_defs_snapshot();
-        let boxes = self
-            .shared
-            .world
-            .lock()
-            .ok()
-            .map(|w| {
-                w.entities
-                    .iter()
-                    .filter(|(id, _)| defs.grabbable.contains(*id))
-                    .map(|(id, p)| (*id, *p))
-                    .collect()
-            })
-            .unwrap_or_default();
-        (boxes, defs)
+        // Display TRS (epoch α twin) so OBB matches mesh/box draw (x0091).
+        self.shared.grabbable_display_poses()
     }
 
     /// Update held Grab from LMB/RMB/E + look-forward pick (x0013).
@@ -1590,6 +1577,8 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+                // Mid-frame Grab: `ensure_display_frame` reuses last Redraw freeze
+                // (what is still on screen) until the next `begin_display_frame`.
                 self.rebuild_intent();
             }
             WindowEvent::RedrawRequested => {
@@ -1731,6 +1720,8 @@ impl ApplicationHandler for App {
                 self.poll_auth_job();
                 self.drain_inventory_peer_actions(event_loop);
                 self.poll_mtls_reopen();
+                // Freeze display α/PrevCurr before Grab + GPU sync (x0091 同一 α).
+                self.shared.begin_display_frame();
                 if self.owns_input() {
                     self.maintain_look_capture();
                     self.rebuild_intent();

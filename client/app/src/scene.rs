@@ -4,16 +4,21 @@
 //! `CameraLook` is Desktop-local (x0012); not published on Zenoh.
 //!
 //! Guarantees: draw with caller-supplied view/proj; grabbable boxes from Manifest (x0027);
-//! remote roots 3..6 (x0015); Frame TRS on draw (x0029);
+//! remote roots 3..6 (x0015);
 //! remounted world GLB instanced at each Manifest mesh entry pose (take-out visible; same GPU
 //! asset for all blake3 until multi-GLB; first [`MESH_DRAW_SLOTS`] poses only);
 //! [`SharedState::asset_status`] sticky Home overlay for auth asset failure (x0048);
 //! empty shell (`index_count==0`) skips floor+world mesh (MainHub; x007d);
 //! [`SceneGpu::replace_world_mesh`] + [`SharedState::pending_world_mesh`] for Manifest remount;
-//! Epoch Prev/Curr GPU interpolate dispatch before the world pass (x0090; `out` not drawn yet).
+//! Epoch Prev/Curr GPU interpolate before the world pass (x0090); mesh/box **display TRS** from
+//! `epoch_out` (x0091; full active pack; no readback);
+//! [`SharedState::begin_display_frame`] freezes α/PrevCurr/pose cache once per frame; Grab /
+//! coin Y / GPU upload all read that snap (x002b / x0091 同一 α).
 //! Non-guarantees: per-blake3 multi-GLB download; mesh draw beyond [`MESH_DRAW_SLOTS`];
-//! Epoch `out` as vertex source; XR swapchain ownership, system_ui layout, avatar GLB.
-//! Grab hits use OBB in `world_hit` (x002b; draw TRS aligned).
+//! color on tape (height gradient uses display Y when mirrored); camera / loco **eye** still
+//! WorldView Curr (`EntityPose`) — **remaining legacy to abolish** (must move to display TRS;
+//! see x0091 policy); XR swapchain ownership, system_ui layout, avatar GLB.
+//! Abolished: Curr-only `EntityPose` as authority for on-screen draw/Grab TRS.
 //! Leave / liveliness token ownership lives here; put/undeclare is `room::leave_room` (re-exported as `crate::leave_room`).
 
 use std::collections::{HashMap, HashSet};
@@ -209,11 +214,52 @@ struct MeshVertex {
     position: [f32; 3],
 }
 
+/// World-pass uniforms (x0091). `pack_index == PACK_INDEX_MODEL_OVERRIDE` → `model_override`.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct Uniforms {
-    pub mvp: [[f32; 4]; 4],
+    pub view_proj: [[f32; 4]; 4],
     pub color: [f32; 4],
+    pub scale_mul: [f32; 3],
+    pub pack_index: u32,
+    pub extra_rot: [f32; 4],
+    pub model_override: [[f32; 4]; 4],
+}
+
+impl Uniforms {
+    fn identity_rot() -> [f32; 4] {
+        [0.0, 0.0, 0.0, 1.0]
+    }
+
+    /// Floor / CPU-TRS fallback: full model in `model_override`.
+    fn with_model(view_proj: Mat4, model: Mat4, color: [f32; 4]) -> Self {
+        Self {
+            view_proj: view_proj.to_cols_array_2d(),
+            color,
+            scale_mul: [1.0, 1.0, 1.0],
+            pack_index: crate::epoch_view::PACK_INDEX_MODEL_OVERRIDE,
+            extra_rot: Self::identity_rot(),
+            model_override: model.to_cols_array_2d(),
+        }
+    }
+
+    /// Epoch `out[pack_index]` TRS × `scale_mul` × `extra_rot`.
+    fn with_epoch(
+        view_proj: Mat4,
+        pack_index: u32,
+        scale_mul: Vec3,
+        extra_rot: glam::Quat,
+        color: [f32; 4],
+    ) -> Self {
+        Self {
+            view_proj: view_proj.to_cols_array_2d(),
+            color,
+            scale_mul: scale_mul.to_array(),
+            pack_index,
+            extra_rot: [extra_rot.x, extra_rot.y, extra_rot.z, extra_rot.w],
+            model_override: Mat4::IDENTITY.to_cols_array_2d(),
+        }
+    }
 }
 
 /// Pose table + tick gate under one lock (x0023: snapshot/delta race-free).
@@ -613,6 +659,55 @@ impl SharedState {
             .ok()
             .map(|d| Arc::clone(&d))
             .unwrap_or_else(|| Arc::new(BoxDefs::default()))
+    }
+
+    /// Freeze display faces/α/pose cache for this client frame (once; before Grab).
+    pub fn begin_display_frame(&self) {
+        self.epoch.begin_display_frame(std::time::Instant::now());
+    }
+
+    /// Display TRS from the **frozen** display frame (same α / faces as GPU; x0091).
+    ///
+    /// Color channels stay from `wire`. Missing cache row → `wire` unchanged.
+    /// Call [`Self::begin_display_frame`] (or ensure via sync) before Grab/draw.
+    pub fn display_pose_for(&self, entity_id: u32, wire: EntityPose) -> EntityPose {
+        self.epoch
+            .with_display_frame(std::time::Instant::now(), |frame| {
+                frame
+                    .poses
+                    .get(&entity_id)
+                    .map(|out| entity_pose_from_gpu_row(out, wire))
+                    .unwrap_or(wire)
+            })
+            .unwrap_or(wire)
+    }
+
+    /// Grabbable boxes with frozen display TRS (hit aligned to draw).
+    pub fn grabbable_display_poses(&self) -> (Vec<(u32, EntityPose)>, Arc<BoxDefs>) {
+        let defs = self.box_defs_snapshot();
+        let Some(frame) = self.epoch.display_frame_snapshot() else {
+            return (Vec::new(), defs);
+        };
+        let boxes = self
+            .world
+            .lock()
+            .ok()
+            .map(|w| {
+                w.entities
+                    .iter()
+                    .filter(|(id, _)| defs.grabbable.contains(*id))
+                    .map(|(&id, &wire)| {
+                        let pose = frame
+                            .poses
+                            .get(&id)
+                            .map(|out| entity_pose_from_gpu_row(out, wire))
+                            .unwrap_or(wire);
+                        (id, pose)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        (boxes, defs)
     }
 
     pub fn mesh_entity_id(&self) -> u32 {
@@ -1366,10 +1461,14 @@ pub struct SceneGpu {
     mesh_radius: f32,
     shared: Arc<SharedState>,
     last_pose_log: Instant,
-    /// Prev/Curr/Out storage + params for appearance-only interpolate (x0090).
+    /// Prev/Curr/Out storage + params for appearance-only interpolate (x0090/x0091).
     epoch_buffers: crate::epoch_view::EpochGpuBuffers,
     epoch_interp_pipeline: wgpu::ComputePipeline,
     epoch_interp_bg: wgpu::BindGroup,
+    /// Render bind layout (uniform + epoch_out storage).
+    draw_bgl: wgpu::BindGroupLayout,
+    /// `entity_id` → index in last `epoch_out` pack (full active; x0091).
+    epoch_entity_pack: HashMap<u32, u32>,
 }
 
 impl SceneGpu {
@@ -1386,17 +1485,29 @@ impl SceneGpu {
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("uniform-bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            label: Some("uniform-epoch-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1480,6 +1591,14 @@ impl SceneGpu {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        const EPOCH_GPU_INITIAL_CAPACITY: u32 = 64;
+        let (epoch_interp_pipeline, epoch_interp_bgl) =
+            crate::epoch_view::create_interpolate_pipeline(&device);
+        let epoch_buffers =
+            crate::epoch_view::EpochGpuBuffers::new(&device, EPOCH_GPU_INITIAL_CAPACITY);
+        let epoch_interp_bg =
+            crate::epoch_view::make_interp_bind_group(&device, &epoch_interp_bgl, &epoch_buffers);
+
         let mut mesh_uniform_buffers = Vec::with_capacity(MESH_DRAW_SLOTS);
         let mut mesh_bind_groups = Vec::with_capacity(MESH_DRAW_SLOTS);
         for i in 0..MESH_DRAW_SLOTS {
@@ -1489,14 +1608,13 @@ impl SceneGpu {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(&format!("mesh-bg-{i}")),
-                layout: &bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buf.as_entire_binding(),
-                }],
-            });
+            let bg = make_draw_bind_group(
+                &device,
+                &bind_group_layout,
+                &buf,
+                &epoch_buffers.out,
+                &format!("mesh-bg-{i}"),
+            );
             mesh_uniform_buffers.push(buf);
             mesh_bind_groups.push(bg);
         }
@@ -1521,34 +1639,24 @@ impl SceneGpu {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(&format!("box-bg-{i}")),
-                layout: &bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buf.as_entire_binding(),
-                }],
-            });
+            let bg = make_draw_bind_group(
+                &device,
+                &bind_group_layout,
+                &buf,
+                &epoch_buffers.out,
+                &format!("box-bg-{i}"),
+            );
             box_uniform_buffers.push(buf);
             box_bind_groups.push(bg);
         }
 
-        let floor_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("floor-bg"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: floor_uniform_buffer.as_entire_binding(),
-            }],
-        });
-
-        const EPOCH_GPU_INITIAL_CAPACITY: u32 = 64;
-        let (epoch_interp_pipeline, epoch_interp_bgl) =
-            crate::epoch_view::create_interpolate_pipeline(&device);
-        let epoch_buffers =
-            crate::epoch_view::EpochGpuBuffers::new(&device, EPOCH_GPU_INITIAL_CAPACITY);
-        let epoch_interp_bg =
-            crate::epoch_view::make_interp_bind_group(&device, &epoch_interp_bgl, &epoch_buffers);
+        let floor_bind_group = make_draw_bind_group(
+            &device,
+            &bind_group_layout,
+            &floor_uniform_buffer,
+            &epoch_buffers.out,
+            "floor-bg",
+        );
 
         Ok(Self {
             device,
@@ -1576,6 +1684,8 @@ impl SceneGpu {
             epoch_buffers,
             epoch_interp_pipeline,
             epoch_interp_bg,
+            draw_bgl: bind_group_layout,
+            epoch_entity_pack: HashMap::new(),
         })
     }
 
@@ -1667,17 +1777,19 @@ impl SceneGpu {
         (view, proj)
     }
 
-    /// Upload Prev/Curr epoch faces and dispatch interpolate (appearance path; `out` unused by draw).
+    /// Upload Prev/Curr (full active), dispatch interpolate, refresh entity→pack map.
     ///
     /// Call **once per displayed frame** (Desktop once; XR once before the eye loop) —
-    /// not inside per-eye [`Self::draw_world`].
+    /// not inside per-eye [`Self::draw_world`]. Draw reads `epoch_out` (x0091).
+    ///
+    /// CPU pose cache (Grab/color) and GPU compute both apply the same frozen α —
+    /// intentional dual path (no readback). Future MDI / CPU-only draw may drop compute.
     pub fn sync_epoch_gpu(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        let faces = self.shared.epoch.snapshots.load_pair();
-        // Dirty-only while `out` is not a draw source. Mirror currently dirties ≈ all
-        // upserted rows each ingest, so savings are limited until TRS-diff gating.
-        // Vertex bind (next slice): full active face or persistent GPU slot strategy.
-        let ids = crate::epoch_view::aligned_row_ids(&faces.prev, &faces.curr, true);
-        let n = ids.len() as u32;
+        // Reuse frame-start freeze (Grab/color); only begin here if nothing froze yet.
+        let Some(frame) = self.shared.epoch.display_frame_snapshot() else {
+            return;
+        };
+        let n = frame.curr_rows.len() as u32;
         if n > self.epoch_buffers.capacity {
             let new_cap = n.next_power_of_two().max(64);
             self.epoch_buffers = crate::epoch_view::EpochGpuBuffers::new(&self.device, new_cap);
@@ -1687,15 +1799,19 @@ impl SceneGpu {
                 &layout,
                 &self.epoch_buffers,
             );
+            self.rebuild_draw_bind_groups();
         }
-        let (prev_rows, curr_rows) =
-            crate::epoch_view::pack_aligned_gpu_faces(&faces.prev, &faces.curr, &ids);
-        let alpha = crate::epoch_mirror::epoch_interp_alpha(
-            crate::epoch_mirror::published_instant(faces.published_at_ns),
-            std::time::Instant::now(),
+        crate::epoch_view::fill_entity_pack_index(
+            &mut self.epoch_entity_pack,
+            &frame.faces.curr,
+            &frame.curr_rows,
         );
-        self.epoch_buffers
-            .upload_faces(&self.queue, &prev_rows, &curr_rows, alpha);
+        self.epoch_buffers.upload_faces(
+            &self.queue,
+            &frame.prev_rows,
+            &frame.curr_rows,
+            frame.alpha,
+        );
         if n == 0 {
             return;
         }
@@ -1707,6 +1823,56 @@ impl SceneGpu {
             cpass.set_pipeline(&self.epoch_interp_pipeline);
             cpass.set_bind_group(0, &self.epoch_interp_bg, &[]);
             cpass.dispatch_workgroups(n.div_ceil(64), 1, 1);
+        }
+    }
+
+    fn rebuild_draw_bind_groups(&mut self) {
+        self.floor_bind_group = make_draw_bind_group(
+            &self.device,
+            &self.draw_bgl,
+            &self.floor_uniform_buffer,
+            &self.epoch_buffers.out,
+            "floor-bg",
+        );
+        for (i, buf) in self.mesh_uniform_buffers.iter().enumerate() {
+            self.mesh_bind_groups[i] = make_draw_bind_group(
+                &self.device,
+                &self.draw_bgl,
+                buf,
+                &self.epoch_buffers.out,
+                &format!("mesh-bg-{i}"),
+            );
+        }
+        for (i, buf) in self.box_uniform_buffers.iter().enumerate() {
+            self.box_bind_groups[i] = make_draw_bind_group(
+                &self.device,
+                &self.draw_bgl,
+                buf,
+                &self.epoch_buffers.out,
+                &format!("box-bg-{i}"),
+            );
+        }
+    }
+
+    /// Resolve draw uniforms: epoch pack when mirrored, else CPU `EntityPose` model.
+    fn draw_uniforms_for(
+        &self,
+        view_proj: Mat4,
+        entity_id: u32,
+        pose: EntityPose,
+        scale_mul: Vec3,
+        extra_rot: glam::Quat,
+        color: [f32; 4],
+    ) -> Uniforms {
+        if let Some(&pack) = self.epoch_entity_pack.get(&entity_id) {
+            Uniforms::with_epoch(view_proj, pack, scale_mul, extra_rot, color)
+        } else {
+            let model = Mat4::from_scale_rotation_translation(
+                pose.scale() * scale_mul,
+                pose.rotation() * extra_rot,
+                pose.position(),
+            );
+            Uniforms::with_model(view_proj, model, color)
         }
     }
 
@@ -1746,12 +1912,12 @@ impl SceneGpu {
             });
             pass.set_pipeline(&self.pipeline);
 
+            let view_proj = proj * view;
+
             // MainHub / Leave empty shell: clear color only (no floor / world mesh; x007d).
             if self.index_count > 0 {
-                let floor_uniforms = Uniforms {
-                    mvp: (proj * view).to_cols_array_2d(),
-                    color: [0.22, 0.24, 0.28, 1.0],
-                };
+                let floor_uniforms =
+                    Uniforms::with_model(view_proj, Mat4::IDENTITY, [0.22, 0.24, 0.28, 1.0]);
                 self.queue.write_buffer(
                     &self.floor_uniform_buffer,
                     0,
@@ -1797,26 +1963,28 @@ impl SceneGpu {
                 let visual_scale = (alchemy_shared_sim::PHYS_BALL_RADIUS * 0.95
                     / self.mesh_radius.max(1e-3))
                 .clamp(0.02, 4.0);
+                let mesh_tilt = glam::Quat::from_rotation_x(0.25);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                for (slot, (_id, pose)) in poses.into_iter().enumerate().take(MESH_DRAW_SLOTS) {
-                    // Mesh asset tilt (0.25 rad X) stays client-local; Frame TRS is sim authority.
-                    let model = Mat4::from_scale_rotation_translation(
-                        pose.scale() * visual_scale,
-                        pose.rotation() * glam::Quat::from_rotation_x(0.25),
-                        pose.position(),
-                    );
-                    let height_t = (pose.y / 5.0).clamp(0.0, 1.0);
+                for (slot, (id, wire)) in poses.into_iter().enumerate().take(MESH_DRAW_SLOTS) {
+                    // Mesh asset tilt stays client-local; display TRS is epoch_out (x0091).
+                    // Height gradient uses display Y so color tracks the interpolated pose.
+                    let display = self.shared.display_pose_for(id, wire);
+                    let height_t = (display.y / 5.0).clamp(0.0, 1.0);
                     let coin_color = [
                         0.95 * height_t + 0.15,
                         0.75 * (1.0 - height_t) + 0.25,
                         0.2,
                         1.0,
                     ];
-                    let mesh_uniforms = Uniforms {
-                        mvp: (proj * view * model).to_cols_array_2d(),
-                        color: coin_color,
-                    };
+                    let mesh_uniforms = self.draw_uniforms_for(
+                        view_proj,
+                        id,
+                        wire,
+                        Vec3::splat(visual_scale),
+                        mesh_tilt,
+                        coin_color,
+                    );
                     self.queue.write_buffer(
                         &self.mesh_uniform_buffers[slot],
                         0,
@@ -1862,6 +2030,7 @@ impl SceneGpu {
             // Reserve UBO slots for remote roots (protocol band ceiling; local excluded).
             let remote_reserve = alchemy_protocol::USER_ROOT_SLOTS_MAX.min(BOX_DRAW_SLOTS);
             let box_slots = BOX_DRAW_SLOTS.saturating_sub(remote_reserve);
+            let identity_rot = glam::Quat::IDENTITY;
             for (draw_i, (id, pose)) in boxes.into_iter().enumerate() {
                 if draw_i >= box_slots {
                     break;
@@ -1872,11 +2041,6 @@ impl SceneGpu {
                     .get(&id)
                     .copied()
                     .unwrap_or(BOX_HALF_EXTENT);
-                let model = Mat4::from_scale_rotation_translation(
-                    pose.scale() * (he * 2.0),
-                    pose.rotation(),
-                    pose.position(),
-                );
                 let mut color = pose.color();
                 if highlight_entity == Some(id) {
                     // Brighten so look-aim / Grab target is obvious without a crosshair.
@@ -1887,10 +2051,14 @@ impl SceneGpu {
                         1.0,
                     ];
                 }
-                let box_uniforms = Uniforms {
-                    mvp: (proj * view * model).to_cols_array_2d(),
+                let box_uniforms = self.draw_uniforms_for(
+                    view_proj,
+                    id,
+                    pose,
+                    Vec3::splat(he * 2.0),
+                    identity_rot,
                     color,
-                };
+                );
                 self.queue.write_buffer(
                     &self.box_uniform_buffers[slot],
                     0,
@@ -1900,20 +2068,19 @@ impl SceneGpu {
                 pass.draw_indexed(0..self.box_index_count, 0, 0..1);
             }
             // Remote players: reuse box mesh + last UBO slots.
-            for (i, (_id, pose)) in remotes.iter().enumerate() {
+            for (i, (id, pose)) in remotes.iter().enumerate() {
                 if i >= remote_reserve || BOX_DRAW_SLOTS <= i {
                     break;
                 }
                 let slot = BOX_DRAW_SLOTS - 1 - i;
-                let model = Mat4::from_scale_rotation_translation(
-                    pose.scale() * (REMOTE_ROOT_HALF_EXTENT * 2.0),
-                    pose.rotation(),
-                    pose.position(),
+                let box_uniforms = self.draw_uniforms_for(
+                    view_proj,
+                    *id,
+                    *pose,
+                    Vec3::splat(REMOTE_ROOT_HALF_EXTENT * 2.0),
+                    identity_rot,
+                    pose.color(),
                 );
-                let box_uniforms = Uniforms {
-                    mvp: (proj * view * model).to_cols_array_2d(),
-                    color: pose.color(),
-                };
                 self.queue.write_buffer(
                     &self.box_uniform_buffers[slot],
                     0,
@@ -1924,6 +2091,49 @@ impl SceneGpu {
             }
         }
     }
+}
+
+/// Display TRS from frozen GPU row + wire color channels (x0091).
+fn entity_pose_from_gpu_row(out: &crate::epoch_view::GpuEpochRow, wire: EntityPose) -> EntityPose {
+    EntityPose {
+        x: out.pos[0],
+        y: out.pos[1],
+        z: out.pos[2],
+        qx: out.rot[0],
+        qy: out.rot[1],
+        qz: out.rot[2],
+        qw: out.rot[3],
+        sx: out.scale[0],
+        sy: out.scale[1],
+        sz: out.scale[2],
+        r: wire.r,
+        g: wire.g,
+        b: wire.b,
+        a: wire.a,
+    }
+}
+
+fn make_draw_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform: &wgpu::Buffer,
+    epoch_out: &wgpu::Buffer,
+    label: &str,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: epoch_out.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 /// Axis-aligned unit cube centered at origin (half-extent 0.5 → scale by 2*half).
@@ -2031,6 +2241,18 @@ pub async fn create_wgpu_for_window(
     };
     surface.configure(&device, &config);
     Ok((instance, surface, adapter, device, queue, config, format))
+}
+
+#[cfg(test)]
+mod uniforms_layout_tests {
+    use super::Uniforms;
+
+    #[test]
+    fn uniforms_match_wgsl_uniform_stride() {
+        // view_proj(64)+color(16)+scale_mul+pack(16)+extra_rot(16)+model(64)
+        assert_eq!(std::mem::size_of::<Uniforms>(), 176);
+        assert_eq!(std::mem::align_of::<Uniforms>(), 4);
+    }
 }
 
 #[cfg(test)]

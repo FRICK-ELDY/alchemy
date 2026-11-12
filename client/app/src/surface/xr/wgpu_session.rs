@@ -431,40 +431,39 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         );
 
         let box_defs = shared.box_defs_snapshot();
-        type PoseList = Vec<(u32, EntityPose)>;
-        let (draw_boxes, grabbable_boxes) = shared
+        // Freeze display α/PrevCurr before Grab + later sync_epoch_gpu (x0091 同一 α).
+        shared.begin_display_frame();
+        let (grabbable_boxes, _) = shared.grabbable_display_poses();
+        let draw_box_count = shared
             .world
             .lock()
             .ok()
             .map(|w| {
-                let mut draw = PoseList::new();
-                let mut grab = PoseList::new();
-                for (id, p) in w.entities.iter() {
-                    if box_defs.half_extents.contains_key(id) {
-                        draw.push((*id, *p));
-                    }
-                    if box_defs.grabbable.contains(id) {
-                        grab.push((*id, *p));
-                    }
-                }
-                (draw, grab)
+                w.entities
+                    .keys()
+                    .filter(|id| box_defs.half_extents.contains_key(id))
+                    .count()
             })
-            .unwrap_or_else(|| (PoseList::new(), PoseList::new()));
-        if logged_box_count != Some(draw_boxes.len()) {
-            if draw_boxes.is_empty() {
+            .unwrap_or(0);
+        if logged_box_count != Some(draw_box_count) {
+            if draw_box_count == 0 {
                 log::warn!("XR: no Manifest boxes in entity map yet (waiting for host frame)");
-            } else {
-                let p0 = draw_boxes[0].1;
+            } else if let Some((_, p0)) = grabbable_boxes.first() {
                 log::info!(
                     "XR boxes ready: draw={} grab={} first=({:.2},{:.2},{:.2})",
-                    draw_boxes.len(),
+                    draw_box_count,
                     grabbable_boxes.len(),
                     p0.x,
                     p0.y,
                     p0.z
                 );
+            } else {
+                log::info!(
+                    "XR boxes ready: draw={} grab=0 (non-grabbable cuboids only)",
+                    draw_box_count
+                );
             }
-            logged_box_count = Some(draw_boxes.len());
+            logged_box_count = Some(draw_box_count);
         }
 
         let menu_down = menu_action.state(&session, xr::Path::NULL)?.current_state;
