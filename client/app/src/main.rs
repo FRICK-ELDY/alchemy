@@ -165,6 +165,7 @@ fn main() -> Result<()> {
         host_supervisor: Arc::new(crate::host_supervisor::HostSupervisor::default()),
         presence_peer_subs: Mutex::new(Vec::new()),
         epoch: crate::epoch_view::EpochViewState::new(),
+        eye_pose_cache: Mutex::new(None),
     });
     // Sync AUTH/WORLD/ASSETS/ZENOH into process env for supervised host spawn.
     // Same world_url as the JWKS fetch above → apply_endpoints skips a second refresh.

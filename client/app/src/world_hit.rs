@@ -9,7 +9,7 @@
 //! Non-guarantees: mesh triangles, Slot hierarchy, XR dash quad (stays in surface/xr);
 //! Grab aim rotation follow on host (translation only); host Rapier / grab-distance use
 //! `half_extent` only (client OBB may disagree when Frame scale ≠ 1 — x002c);
-//! camera / loco eye display TRS (remaining legacy — not this module's job).
+//! eye origin (callers supply display eye via x0092 `user_root_pose`).
 
 use std::collections::HashMap;
 

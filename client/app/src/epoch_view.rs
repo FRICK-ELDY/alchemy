@@ -6,8 +6,8 @@
 //! buffers from published faces (x0090) and draws mesh/box TRS from `out`
 //! storage (x0091; full active pack).
 //! Display α / PrevCurr / CPU pose cache are frozen once per display frame
-//! ([`EpochViewState::begin_display_frame`]); Grab/GPU/color share that snap.
-//! Non-guarantees: full Spatial Lens UI; color on tape; topology-driven draw.
+//! ([`EpochViewState::begin_display_frame`]); Grab/GPU/color/eye share that snap (x0092).
+//! Non-guarantees: full Spatial Lens UI; color on tape; topology-driven draw; TPS/Live camera.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
