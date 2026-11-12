@@ -767,7 +767,7 @@ impl PhysicsWorld {
             if !fixed.rotation.iter().all(|v| v.is_finite()) {
                 fixed.rotation = [0.0, 0.0, 0.0, 1.0];
             }
-            if !fixed.scale.iter().all(|v| v.is_finite()) || fixed.scale.iter().any(|v| *v == 0.0) {
+            if !fixed.scale.iter().all(|v| v.is_finite()) || fixed.scale.contains(&0.0) {
                 fixed.scale = [1.0, 1.0, 1.0];
             }
             let _ = self.world.curr.set_transform(row, fixed);
