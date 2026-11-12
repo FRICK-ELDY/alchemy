@@ -3,10 +3,11 @@ defmodule World.Rooms do
   Room ledger facade (x0028).
 
   Guarantees: create / owner / scene / visibility backed by Ash + SQLite (survives restart).
-  x006d / x0082 / **x009d**: `append_scene_entry/3` / `delete_scene_entry/3` are **ledger CAS
-  only** (`expected_revision` + revision bump). **Canonical writer authorization is the
-  caller's responsibility** — HTTP uses `ensure_active_host/2` **and** `ensure_scene_writer/2`
-  (owner ∪ `editor_subs`); do not call these mutators from an unauthenticated path.
+  x006d / x0082 / **x009d** / **x009e**: `append_scene_entry/4` / `delete_scene_entry/4` are
+  **atomic packed CAS** (`expected_canonical` + `expected_overlay` + revision bump).
+  **Canonical writer authorization is the caller's responsibility** — HTTP uses
+  `ensure_active_host/2` **and** `ensure_scene_writer/2` (owner ∪ `editor_subs`); do not call
+  these mutators from an unauthenticated path.
   x0071 / **x0097**: create rejects when owner already holds `max_rooms_per_owner` rooms;
   quota row conditional UPDATE + same-TX insert — concurrent create cannot overshoot.
   x007c: `list_visible_summaries/3` returns catalog rows (no room_key / wire_cap / scene).
@@ -17,7 +18,10 @@ defmodule World.Rooms do
   x0080: `active_host_sub` / `state` / host lease separate compute host from `owner_sub`;
   Public catalog (`mine_only: false`) is `state = active` with unexpired lease only;
   `mine=1` may include dormant definitions. Handover / takeover / lease sweep are world-authoritative.
+  **x009e**: `session_overlay` holds active-host temporary entries (dormant clears);
+  `composed_scene/1` merges canonical ∥ overlay; takeover requires owner ∪ `eligible_host_subs`.
   Non-guarantees: full UGC editor; multi-node replication; Postgres (swap path documented);
+  overlay→canonical Save/merge; signed HostDelegation JWT;
   friendship-change alone does not rotate (use narrow visibility / owner rotate);
   grace durability across world restart; Room physical DELETE (and quota decrement);
   user_root / cuboid (empty blake3) despawn;
@@ -239,6 +243,79 @@ defmodule World.Rooms do
 
   def set_editor_subs(_, _, _), do: {:error, :invalid_editors}
 
+  @doc """
+  x009e: owner replaces `eligible_host_subs` (takeover allow-list). Empty = owner-only.
+  """
+  @spec set_eligible_host_subs(room_id(), owner_sub(), [owner_sub()]) ::
+          {:ok, [owner_sub()]}
+          | {:error,
+             :not_found
+             | :forbidden_host
+             | :invalid_room_id
+             | :invalid_eligible
+             | storage_error()}
+  def set_eligible_host_subs(room_id, owner_sub, subs)
+      when is_binary(room_id) and is_binary(owner_sub) and is_list(subs) do
+    with :ok <- validate_room_id(room_id),
+         :ok <- ensure_owner(room_id, owner_sub),
+         {:ok, json} <- encode_eligible_subs(subs) do
+      sql = """
+      UPDATE rooms
+      SET eligible_host_subs = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE room_id = ? AND owner_sub = ?
+      """
+
+      case World.Repo.query(sql, [json, room_id, owner_sub]) do
+        {:ok, %{num_rows: 1}} -> read_eligible_host_subs(room_id)
+        {:ok, %{num_rows: 0}} -> {:error, :not_found}
+        {:error, error} -> storage_error(error, :set_eligible_host_subs)
+      end
+    end
+  end
+
+  def set_eligible_host_subs(_, _, _), do: {:error, :invalid_eligible}
+
+  defp read_eligible_host_subs(room_id) do
+    case get(room_id) do
+      {:ok, room} -> {:ok, decode_editor_subs(room.eligible_host_subs)}
+      {:error, _} = err -> err
+    end
+  end
+
+  @revision_stride 1_000_000
+
+  @doc """
+  x009e: pack canonical + overlay revisions for host-facing scene JSON.
+
+  Each component must be `< 1_000_000` (stride). Clear/bump never decreases packed
+  revision so client GenRev watermarks stay monotonic within a `host_generation`.
+  """
+  @spec pack_revision(non_neg_integer(), non_neg_integer()) ::
+          {:ok, non_neg_integer()} | {:error, :invalid_revision}
+  def pack_revision(canonical, overlay)
+      when is_integer(canonical) and canonical >= 0 and canonical < @revision_stride and
+             is_integer(overlay) and overlay >= 0 and overlay < @revision_stride do
+    {:ok, canonical * @revision_stride + overlay}
+  end
+
+  def pack_revision(_, _), do: {:error, :invalid_revision}
+
+  @doc "x009e: unpack host `expected_revision` into `{canonical, overlay}`."
+  @spec unpack_revision(non_neg_integer()) ::
+          {:ok, non_neg_integer(), non_neg_integer()} | {:error, :invalid_revision}
+  def unpack_revision(packed) when is_integer(packed) and packed >= 0 do
+    canonical = div(packed, @revision_stride)
+    overlay = rem(packed, @revision_stride)
+
+    if canonical < @revision_stride do
+      {:ok, canonical, overlay}
+    else
+      {:error, :invalid_revision}
+    end
+  end
+
+  def unpack_revision(_), do: {:error, :invalid_revision}
+
   @doc "Return the scene definition for an existing room (x0027)."
   @spec scene(room_id()) ::
           {:ok, map()} | {:error, :invalid_room_id | :not_found | storage_error()}
@@ -255,18 +332,50 @@ defmodule World.Rooms do
   def scene(_), do: {:error, :invalid_room_id}
 
   @doc """
-  Append one mesh SceneEntry for inventory take-out (x006d / x0082).
+  x009e: canonical scene ⊕ session_overlay for GET / ManifestSeal.
 
-  **Auth:** not checked here (x009d). Callers must have already authorized a canonical
-  scene writer (HTTP: `ensure_active_host` + `ensure_scene_writer`).
-
-  Assigns the next free content `entity_id` (max non-user_root id + 1, floor 100;
-  if the candidate lands in the Presence user_root band, jumps to
-  `World.Protocol.user_root_entity_after_band/0` — x009b).
-  Requires `expected_revision` matching the current scene revision (optimistic CAS).
-  Bumps `revision` to `expected_revision + 1`. Returns the updated scene map.
+  Returns a DemoScene-shaped map with packed `revision` and merged `entries`.
   """
-  @spec append_scene_entry(room_id(), map(), non_neg_integer()) ::
+  @spec composed_scene(room_id()) ::
+          {:ok, map()}
+          | {:error, :invalid_room_id | :not_found | :invalid_revision | storage_error()}
+  def composed_scene(room_id) when is_binary(room_id) do
+    with :ok <- validate_room_id(room_id),
+         {:ok, %Room{} = room} <- fetch_room(room_id) do
+      compose_room_scene(room)
+    end
+  end
+
+  def composed_scene(_), do: {:error, :invalid_room_id}
+
+  @doc false
+  @spec compose_room_scene(Room.t()) :: {:ok, map()} | {:error, :invalid_revision}
+  def compose_room_scene(%Room{} = room) do
+    scene = if is_map(room.scene), do: room.scene, else: %{}
+
+    with {:ok, overlay} <- require_overlay(room.session_overlay),
+         {:ok, canon_rev} <- scene_revision(scene),
+         {:ok, overlay_rev} <- scene_revision(overlay),
+         {:ok, packed} <- pack_revision(canon_rev, overlay_rev) do
+      {:ok,
+       %{
+         "revision" => packed,
+         "locomotion" => Map.get(scene, "locomotion") || Map.get(scene, :locomotion),
+         "entries" => scene_entries(scene) ++ scene_entries(overlay)
+       }}
+    else
+      {:error, :invalid_scene_revision} -> {:error, :invalid_revision}
+      {:error, :invalid_revision} = err -> err
+    end
+  end
+
+  @doc """
+  x009e: append one mesh entry to `session_overlay` (active host temporary).
+
+  Allocates `entity_id` against composed entries (no collision with canonical).
+  Atomic packed CAS: SQL requires both canonical and overlay revisions.
+  """
+  @spec append_overlay_entry(room_id(), map(), non_neg_integer(), non_neg_integer()) ::
           {:ok, map()}
           | {:error,
              :invalid_room_id
@@ -275,35 +384,45 @@ defmodule World.Rooms do
              | :duplicate_blake3
              | :scene_revision_conflict
              | :invalid_scene_revision
+             | :invalid_revision
              | storage_error()}
-  def append_scene_entry(room_id, entry, expected_revision)
-      when is_binary(room_id) and is_map(entry) and is_integer(expected_revision) and
-             expected_revision >= 0 do
+  def append_overlay_entry(room_id, entry, expected_canonical_revision, expected_overlay_revision)
+      when is_binary(room_id) and is_map(entry) and is_integer(expected_canonical_revision) and
+             expected_canonical_revision >= 0 and is_integer(expected_overlay_revision) and
+             expected_overlay_revision >= 0 do
     with :ok <- validate_room_id(room_id),
          {:ok, %Room{} = room} <- fetch_room(room_id),
-         {:ok, current_rev} <- scene_revision(room.scene),
-         :ok <- match_expected_revision(current_rev, expected_revision),
-         {:ok, normalized} <- normalize_mesh_entry(entry),
-         {:ok, next_scene} <- build_appended_scene(room.scene, normalized, expected_revision),
-         :ok <- cas_set_scene(room_id, expected_revision, next_scene) do
-      {:ok, next_scene}
+         {:ok, overlay} <- require_overlay(room.session_overlay) do
+      composed_entries = scene_entries(room.scene) ++ scene_entries(overlay)
+
+      with {:ok, current_overlay} <- scene_revision(overlay),
+           {:ok, current_canon} <- scene_revision(room.scene),
+           :ok <- match_expected_revision(current_overlay, expected_overlay_revision),
+           :ok <- match_expected_revision(current_canon, expected_canonical_revision),
+           :ok <- ensure_revision_headroom(expected_overlay_revision),
+           {:ok, normalized} <- normalize_mesh_entry(entry),
+           :ok <- reject_duplicate_blake3(composed_entries, normalized["blake3"]),
+           {:ok, next_overlay} <-
+             put_overlay_entry(overlay, composed_entries, normalized, expected_overlay_revision),
+           :ok <-
+             cas_set_overlay(
+               room_id,
+               expected_canonical_revision,
+               expected_overlay_revision,
+               next_overlay
+             ),
+           {:ok, fresh} <- fetch_room(room_id) do
+        compose_room_scene(fresh)
+      end
     end
   end
 
-  def append_scene_entry(_, _, _), do: {:error, :invalid_room_id}
+  def append_overlay_entry(_, _, _, _), do: {:error, :invalid_room_id}
 
   @doc """
-  Remove one mesh SceneEntry by `entity_id` for inventory despawn (x007b / x0082).
-
-  **Auth:** not checked here (x009d). Callers must have already authorized a canonical
-  scene writer (HTTP: `ensure_active_host` + `ensure_scene_writer`).
-
-  Requires the entry to carry a 64-hex `blake3` (same selection as put-back).
-  Rejects missing entity, empty/invalid blake3, and non-list scenes.
-  Requires `expected_revision` matching the current scene revision (optimistic CAS).
-  Bumps `revision` to `expected_revision + 1`. Returns the updated scene map.
+  x009e: delete one mesh entry from `session_overlay` by entity_id.
   """
-  @spec delete_scene_entry(room_id(), non_neg_integer(), non_neg_integer()) ::
+  @spec delete_overlay_entry(room_id(), non_neg_integer(), non_neg_integer(), non_neg_integer()) ::
           {:ok, map()}
           | {:error,
              :invalid_room_id
@@ -313,21 +432,147 @@ defmodule World.Rooms do
              | :ambiguous_entity_id
              | :scene_revision_conflict
              | :invalid_scene_revision
+             | :invalid_revision
              | storage_error()}
-  def delete_scene_entry(room_id, entity_id, expected_revision)
+  def delete_overlay_entry(
+        room_id,
+        entity_id,
+        expected_canonical_revision,
+        expected_overlay_revision
+      )
       when is_binary(room_id) and is_integer(entity_id) and entity_id >= 0 and
-             is_integer(expected_revision) and expected_revision >= 0 do
+             is_integer(expected_canonical_revision) and expected_canonical_revision >= 0 and
+             is_integer(expected_overlay_revision) and expected_overlay_revision >= 0 do
     with :ok <- validate_room_id(room_id),
          {:ok, %Room{} = room} <- fetch_room(room_id),
-         {:ok, current_rev} <- scene_revision(room.scene),
-         :ok <- match_expected_revision(current_rev, expected_revision),
-         {:ok, next_scene} <- build_deleted_scene(room.scene, entity_id, expected_revision),
-         :ok <- cas_set_scene(room_id, expected_revision, next_scene) do
+         {:ok, overlay} <- require_overlay(room.session_overlay) do
+      with {:ok, current_overlay} <- scene_revision(overlay),
+           {:ok, current_canon} <- scene_revision(room.scene),
+           :ok <- match_expected_revision(current_overlay, expected_overlay_revision),
+           :ok <- match_expected_revision(current_canon, expected_canonical_revision),
+           :ok <- ensure_revision_headroom(expected_overlay_revision),
+           {:ok, next_overlay} <-
+             build_deleted_scene(overlay, entity_id, expected_overlay_revision),
+           :ok <-
+             cas_set_overlay(
+               room_id,
+               expected_canonical_revision,
+               expected_overlay_revision,
+               next_overlay
+             ),
+           {:ok, fresh} <- fetch_room(room_id) do
+        compose_room_scene(fresh)
+      end
+    end
+  end
+
+  def delete_overlay_entry(_, _, _, _), do: {:error, :invalid_room_id}
+
+  @doc """
+  Append one mesh SceneEntry (x006d / x0082 / x009e).
+
+  **Auth:** not checked here (x009d). Callers must have already authorized a canonical
+  scene writer (HTTP: `ensure_active_host` + `ensure_scene_writer`).
+
+  Assigns the next free content `entity_id` (max non-user_root id + 1, floor 100;
+  if the candidate lands in the Presence user_root band, jumps to
+  `World.Protocol.user_root_entity_after_band/0` — x009b).
+  Atomic packed CAS on canonical + overlay revisions. Returns the updated **canonical**
+  scene map (HTTP composes separately).
+  """
+  @spec append_scene_entry(room_id(), map(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, map()}
+          | {:error,
+             :invalid_room_id
+             | :not_found
+             | :invalid_entry
+             | :duplicate_blake3
+             | :scene_revision_conflict
+             | :invalid_scene_revision
+             | :invalid_revision
+             | storage_error()}
+  def append_scene_entry(room_id, entry, expected_canonical_revision, expected_overlay_revision)
+      when is_binary(room_id) and is_map(entry) and is_integer(expected_canonical_revision) and
+             expected_canonical_revision >= 0 and is_integer(expected_overlay_revision) and
+             expected_overlay_revision >= 0 do
+    with :ok <- validate_room_id(room_id),
+         {:ok, %Room{} = room} <- fetch_room(room_id),
+         {:ok, overlay} <- require_overlay(room.session_overlay),
+         {:ok, current_canon} <- scene_revision(room.scene),
+         {:ok, current_overlay} <- scene_revision(overlay),
+         :ok <- match_expected_revision(current_canon, expected_canonical_revision),
+         :ok <- match_expected_revision(current_overlay, expected_overlay_revision),
+         :ok <- ensure_revision_headroom(expected_canonical_revision),
+         {:ok, normalized} <- normalize_mesh_entry(entry),
+         {:ok, next_scene} <-
+           build_appended_scene(room.scene, normalized, expected_canonical_revision),
+         :ok <-
+           cas_set_scene(
+             room_id,
+             expected_canonical_revision,
+             expected_overlay_revision,
+             next_scene
+           ) do
       {:ok, next_scene}
     end
   end
 
-  def delete_scene_entry(_, _, _), do: {:error, :invalid_room_id}
+  def append_scene_entry(_, _, _, _), do: {:error, :invalid_room_id}
+
+  @doc """
+  Remove one mesh SceneEntry by `entity_id` (x007b / x0082 / x009e).
+
+  **Auth:** not checked here (x009d). Callers must have already authorized a canonical
+  scene writer (HTTP: `ensure_active_host` + `ensure_scene_writer`).
+
+  Requires the entry to carry a 64-hex `blake3` (same selection as put-back).
+  Rejects missing entity, empty/invalid blake3, and non-list scenes.
+  Atomic packed CAS on canonical + overlay revisions. Returns the updated **canonical**
+  scene map.
+  """
+  @spec delete_scene_entry(room_id(), non_neg_integer(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, map()}
+          | {:error,
+             :invalid_room_id
+             | :not_found
+             | :entry_not_found
+             | :not_mesh_entry
+             | :ambiguous_entity_id
+             | :scene_revision_conflict
+             | :invalid_scene_revision
+             | :invalid_revision
+             | storage_error()}
+  def delete_scene_entry(
+        room_id,
+        entity_id,
+        expected_canonical_revision,
+        expected_overlay_revision
+      )
+      when is_binary(room_id) and is_integer(entity_id) and entity_id >= 0 and
+             is_integer(expected_canonical_revision) and expected_canonical_revision >= 0 and
+             is_integer(expected_overlay_revision) and expected_overlay_revision >= 0 do
+    with :ok <- validate_room_id(room_id),
+         {:ok, %Room{} = room} <- fetch_room(room_id),
+         {:ok, overlay} <- require_overlay(room.session_overlay),
+         {:ok, current_canon} <- scene_revision(room.scene),
+         {:ok, current_overlay} <- scene_revision(overlay),
+         :ok <- match_expected_revision(current_canon, expected_canonical_revision),
+         :ok <- match_expected_revision(current_overlay, expected_overlay_revision),
+         :ok <- ensure_revision_headroom(expected_canonical_revision),
+         {:ok, next_scene} <-
+           build_deleted_scene(room.scene, entity_id, expected_canonical_revision),
+         :ok <-
+           cas_set_scene(
+             room_id,
+             expected_canonical_revision,
+             expected_overlay_revision,
+             next_scene
+           ) do
+      {:ok, next_scene}
+    end
+  end
+
+  def delete_scene_entry(_, _, _, _), do: {:error, :invalid_room_id}
 
   defp scene_revision(scene) when is_map(scene) do
     case Map.get(scene, "revision") || Map.get(scene, :revision) do
@@ -341,9 +586,16 @@ defmodule World.Rooms do
   defp match_expected_revision(current, expected) when current == expected, do: :ok
   defp match_expected_revision(_, _), do: {:error, :scene_revision_conflict}
 
-  # Optimistic CAS on JSON `scene.revision` (no separate column — x0082).
-  defp cas_set_scene(room_id, expected_revision, next_scene)
-       when is_binary(room_id) and is_integer(expected_revision) and is_map(next_scene) do
+  defp ensure_revision_headroom(expected)
+       when is_integer(expected) and expected >= 0 and expected + 1 < @revision_stride,
+       do: :ok
+
+  defp ensure_revision_headroom(_), do: {:error, :invalid_revision}
+
+  # Optimistic packed CAS: both canonical and overlay revisions must match (x009e).
+  defp cas_set_scene(room_id, expected_canon, expected_overlay, next_scene)
+       when is_binary(room_id) and is_integer(expected_canon) and is_integer(expected_overlay) and
+              is_map(next_scene) do
     encoded = Jason.encode!(next_scene)
 
     sql = """
@@ -352,9 +604,10 @@ defmodule World.Rooms do
         updated_at = CURRENT_TIMESTAMP
     WHERE room_id = ?
       AND CAST(json_extract(scene, '$.revision') AS INTEGER) = ?
+      AND CAST(json_extract(session_overlay, '$.revision') AS INTEGER) = ?
     """
 
-    case World.Repo.query(sql, [encoded, room_id, expected_revision]) do
+    case World.Repo.query(sql, [encoded, room_id, expected_canon, expected_overlay]) do
       {:ok, %{num_rows: 1}} ->
         :ok
 
@@ -372,6 +625,152 @@ defmodule World.Rooms do
       {:error, error} ->
         storage_error(error, :cas_set_scene)
     end
+  end
+
+  defp cas_set_overlay(room_id, expected_canon, expected_overlay, next_overlay)
+       when is_binary(room_id) and is_integer(expected_canon) and is_integer(expected_overlay) and
+              is_map(next_overlay) do
+    encoded = Jason.encode!(next_overlay)
+
+    sql = """
+    UPDATE rooms
+    SET session_overlay = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE room_id = ?
+      AND CAST(json_extract(scene, '$.revision') AS INTEGER) = ?
+      AND CAST(json_extract(session_overlay, '$.revision') AS INTEGER) = ?
+    """
+
+    case World.Repo.query(sql, [encoded, room_id, expected_canon, expected_overlay]) do
+      {:ok, %{num_rows: 1}} ->
+        :ok
+
+      {:ok, %{num_rows: 0}} ->
+        case fetch_room(room_id) do
+          {:ok, _} -> {:error, :scene_revision_conflict}
+          {:error, _} = err -> err
+        end
+
+      {:error, error} ->
+        storage_error(error, :cas_set_overlay)
+    end
+  end
+
+  defp empty_overlay, do: %{"revision" => 0, "entries" => []}
+
+  # Bump overlay revision and drop entries so packed GenRev never regresses (x009e).
+  # Call sites MUST also AND `overlay_clear_headroom_sql/0` so stride overflow fail-closes
+  # (UPDATE num_rows=0) instead of writing revision >= 1_000_000.
+  defp cleared_overlay_sql do
+    """
+    json_object(
+      'revision', COALESCE(CAST(json_extract(session_overlay, '$.revision') AS INTEGER), 0) + 1,
+      'entries', json_array()
+    )
+    """
+  end
+
+  defp overlay_clear_headroom_sql do
+    "COALESCE(CAST(json_extract(session_overlay, '$.revision') AS INTEGER), 0) + 1 < #{@revision_stride}"
+  end
+
+  # Shared by compose + mutation: never coerce corrupt revision / undecodable blob to 0.
+  # `nil` only (fresh row) → empty overlay. Bad JSON / non-integer revision → `:invalid_revision`.
+  defp require_overlay(nil), do: {:ok, empty_overlay()}
+
+  defp require_overlay(overlay) when is_map(overlay) do
+    case scene_revision(overlay) do
+      {:ok, rev} ->
+        {:ok, %{"revision" => rev, "entries" => scene_entries(overlay)}}
+
+      {:error, :invalid_scene_revision} ->
+        {:error, :invalid_revision}
+    end
+  end
+
+  defp require_overlay(bin) when is_binary(bin) do
+    case Jason.decode(bin) do
+      {:ok, map} when is_map(map) -> require_overlay(map)
+      _ -> {:error, :invalid_revision}
+    end
+  end
+
+  defp require_overlay(_), do: {:error, :invalid_revision}
+
+  # Mirror SQL headroom predicate (`CAST(... AS INTEGER)` + `COALESCE(..., 0)`).
+  # Do not use `require_overlay/1` here — corrupt revision must not force
+  # `:invalid_revision` when the real miss was a state/CAS race.
+  defp overlay_lacks_clear_headroom?(%Room{} = room) do
+    overlay_sql_style_revision(room.session_overlay) + 1 >= @revision_stride
+  end
+
+  defp overlay_sql_style_revision(overlay) when is_map(overlay) do
+    case Map.get(overlay, "revision") || Map.get(overlay, :revision) do
+      rev when is_integer(rev) ->
+        rev
+
+      rev when is_binary(rev) ->
+        case Integer.parse(String.trim(rev)) do
+          {n, ""} -> n
+          _ -> 0
+        end
+
+      _ ->
+        0
+    end
+  end
+
+  defp overlay_sql_style_revision(bin) when is_binary(bin) do
+    case Jason.decode(bin) do
+      {:ok, map} when is_map(map) -> overlay_sql_style_revision(map)
+      _ -> 0
+    end
+  end
+
+  defp overlay_sql_style_revision(_), do: 0
+
+  # Clear CAS missed: stride ceiling → :invalid_revision; otherwise CAS/state race → :conflict.
+  defp miss_after_overlay_clear(room_id) do
+    case get(room_id) do
+      {:ok, room} ->
+        if overlay_lacks_clear_headroom?(room) do
+          {:error, :invalid_revision}
+        else
+          {:error, :conflict}
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp scene_entries(scene) when is_map(scene) do
+    case Map.get(scene, "entries") || Map.get(scene, :entries) do
+      list when is_list(list) -> list
+      _ -> []
+    end
+  end
+
+  defp scene_entries(_), do: []
+
+  defp reject_duplicate_blake3(entries, blake3) do
+    if Enum.any?(entries, fn e -> entry_string(e, "blake3") == blake3 end) do
+      {:error, :duplicate_blake3}
+    else
+      :ok
+    end
+  end
+
+  defp put_overlay_entry(overlay, composed_entries, normalized, expected_revision) do
+    next_id = next_entity_id(composed_entries)
+    entry = Map.put(normalized, "entity_id", next_id)
+    overlay_entries = scene_entries(overlay)
+
+    {:ok,
+     %{
+       "revision" => expected_revision + 1,
+       "entries" => overlay_entries ++ [entry]
+     }}
   end
 
   defp fetch_room(room_id) do
@@ -907,7 +1306,12 @@ defmodule World.Rooms do
   @spec activate_as_host(room_id(), owner_sub()) ::
           {:ok, Room.t()}
           | {:error,
-             :invalid_room_id | :not_found | :forbidden_host | :conflict | storage_error()}
+             :invalid_room_id
+             | :not_found
+             | :forbidden_host
+             | :conflict
+             | :invalid_revision
+             | storage_error()}
   def activate_as_host(room_id, sub) when is_binary(room_id) and is_binary(sub) and sub != "" do
     with :ok <- validate_room_id(room_id),
          {:ok, %Room{} = room} <- get(room_id),
@@ -921,7 +1325,8 @@ defmodule World.Rooms do
   @doc false
   @spec activate_as_host_cas(room_id(), owner_sub()) ::
           {:ok, Room.t()}
-          | {:error, :invalid_room_id | :not_found | :conflict | storage_error()}
+          | {:error,
+             :invalid_room_id | :not_found | :conflict | :invalid_revision | storage_error()}
   def activate_as_host_cas(room_id, sub)
       when is_binary(room_id) and is_binary(sub) and sub != "" do
     with :ok <- validate_room_id(room_id) do
@@ -986,6 +1391,7 @@ defmodule World.Rooms do
              | :forbidden_host
              | :invalid_target
              | :conflict
+             | :invalid_revision
              | storage_error()}
   def handover(room_id, caller_sub, target_sub)
 
@@ -1005,27 +1411,34 @@ defmodule World.Rooms do
   def handover(_, _, _), do: {:error, :invalid_target}
 
   @doc """
-  x0080: Manual Takeover CAS — succeeds only when dormant or lease-expired active.
+  x0080 / x009e: Manual Takeover CAS — dormant or lease-expired, and caller is
+  `owner_sub` or listed in `eligible_host_subs`.
   """
   @spec takeover(room_id(), owner_sub()) ::
           {:ok, Room.t()}
           | {:error,
              :invalid_room_id
              | :not_found
+             | :forbidden_host
              | :conflict
+             | :invalid_revision
              | storage_error()}
   def takeover(room_id, caller_sub)
       when is_binary(room_id) and is_binary(caller_sub) and caller_sub != "" do
     with :ok <- validate_room_id(room_id),
-         {:ok, %Room{}} <- get(room_id) do
+         {:ok, %Room{} = room} <- get(room_id),
+         :ok <- authorize_takeover_caller(room, caller_sub) do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
       expires = DateTime.add(now, host_lease_ttl_seconds(), :second)
 
+      # Host identity change: clear overlay (bump revision) so prior host inventory
+      # cannot leak into the new host's composed scene — even if sweeper has not run.
       sql = """
       UPDATE rooms
       SET active_host_sub = ?,
           state = 'active',
           host_lease_expires_at = ?,
+          session_overlay = #{cleared_overlay_sql()},
           updated_at = CURRENT_TIMESTAMP
       WHERE room_id = ?
         AND (
@@ -1033,11 +1446,12 @@ defmodule World.Rooms do
           OR host_lease_expires_at IS NULL
           OR host_lease_expires_at <= ?
         )
+        AND #{overlay_clear_headroom_sql()}
       """
 
       case World.Repo.query(sql, [caller_sub, expires, room_id, now]) do
         {:ok, %{num_rows: 1}} -> get(room_id)
-        {:ok, %{num_rows: 0}} -> {:error, :conflict}
+        {:ok, %{num_rows: 0}} -> miss_after_overlay_clear(room_id)
         {:error, error} -> storage_error(error, :takeover)
       end
     end
@@ -1045,8 +1459,20 @@ defmodule World.Rooms do
 
   def takeover(_, _), do: {:error, :invalid_room_id}
 
+  defp authorize_takeover_caller(%Room{} = room, sub) do
+    cond do
+      room.owner_sub == sub -> :ok
+      sub in decode_editor_subs(room.eligible_host_subs) -> :ok
+      true -> {:error, :forbidden_host}
+    end
+  end
+
   @doc """
-  x0080: sweep lease-expired active sessions to dormant. Returns `{ok_count, err_count}`.
+  x0080 / x009e: sweep lease-expired active sessions to dormant.
+
+  Returns `{ok_count, err_count}`. `err_count` includes stride-ceiling skips
+  (due but cannot clear overlay without GenRev regression) so zombies are visible
+  in sweeper metrics.
   """
   @spec expire_due_host_leases() :: {non_neg_integer(), non_neg_integer()}
   def expire_due_host_leases do
@@ -1057,21 +1483,46 @@ defmodule World.Rooms do
     SET active_host_sub = NULL,
         state = 'dormant',
         host_lease_expires_at = NULL,
+        session_overlay = #{cleared_overlay_sql()},
         updated_at = CURRENT_TIMESTAMP
     WHERE state = 'active'
       AND (host_lease_expires_at IS NULL OR host_lease_expires_at <= ?)
+      AND #{overlay_clear_headroom_sql()}
     """
 
     case World.Repo.query(sql, [now]) do
       {:ok, %{num_rows: n}} when is_integer(n) ->
-        {n, 0}
+        blocked = count_due_overlay_stride_blocked(now)
+
+        if blocked > 0 do
+          Logger.warning(
+            "host lease sweep: #{blocked} due room(s) blocked by overlay stride ceiling"
+          )
+        end
+
+        {n, blocked}
 
       {:ok, _} ->
-        {0, 0}
+        {0, count_due_overlay_stride_blocked(now)}
 
       {:error, error} ->
         _ = storage_error(error, :expire_due_host_leases)
         {0, 1}
+    end
+  end
+
+  defp count_due_overlay_stride_blocked(now) do
+    sql = """
+    SELECT COUNT(*) AS c
+    FROM rooms
+    WHERE state = 'active'
+      AND (host_lease_expires_at IS NULL OR host_lease_expires_at <= ?)
+      AND NOT (#{overlay_clear_headroom_sql()})
+    """
+
+    case World.Repo.query(sql, [now]) do
+      {:ok, %{rows: [[c]]}} when is_integer(c) -> c
+      _ -> 0
     end
   end
 
@@ -1095,7 +1546,40 @@ defmodule World.Rooms do
   end
 
   # Host Token path: renew self OR claim from dormant/expired only (never steal live host).
+  # Valid-lease self-renew keeps overlay; dormant/expired claim clears+bumps (x009e).
   defp cas_activate_host_token(room_id, sub) do
+    case cas_renew_active_host_while_lease_valid(room_id, sub) do
+      {:ok, _} = ok -> ok
+      {:error, :conflict} -> cas_claim_host_clearing_overlay(room_id, sub)
+      {:error, _} = err -> err
+    end
+  end
+
+  # Unlike heartbeat `cas_renew_active_host/2`, refuse expired leases so activate
+  # falls through to clear-overlay claim (session effectively ended).
+  defp cas_renew_active_host_while_lease_valid(room_id, sub) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    expires = DateTime.add(now, host_lease_ttl_seconds(), :second)
+
+    sql = """
+    UPDATE rooms
+    SET host_lease_expires_at = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE room_id = ?
+      AND state = 'active'
+      AND active_host_sub = ?
+      AND host_lease_expires_at IS NOT NULL
+      AND host_lease_expires_at > ?
+    """
+
+    case World.Repo.query(sql, [expires, room_id, sub, now]) do
+      {:ok, %{num_rows: 1}} -> get(room_id)
+      {:ok, %{num_rows: 0}} -> {:error, :conflict}
+      {:error, error} -> storage_error(error, :activate_as_host)
+    end
+  end
+
+  defp cas_claim_host_clearing_overlay(room_id, sub) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     expires = DateTime.add(now, host_lease_ttl_seconds(), :second)
 
@@ -1104,19 +1588,20 @@ defmodule World.Rooms do
     SET active_host_sub = ?,
         state = 'active',
         host_lease_expires_at = ?,
+        session_overlay = #{cleared_overlay_sql()},
         updated_at = CURRENT_TIMESTAMP
     WHERE room_id = ?
       AND (
-        (state = 'active' AND active_host_sub = ?)
-        OR state = 'dormant'
+        state = 'dormant'
         OR host_lease_expires_at IS NULL
         OR host_lease_expires_at <= ?
       )
+      AND #{overlay_clear_headroom_sql()}
     """
 
-    case World.Repo.query(sql, [sub, expires, room_id, sub, now]) do
+    case World.Repo.query(sql, [sub, expires, room_id, now]) do
       {:ok, %{num_rows: 1}} -> get(room_id)
-      {:ok, %{num_rows: 0}} -> {:error, :conflict}
+      {:ok, %{num_rows: 0}} -> miss_after_overlay_clear(room_id)
       {:error, error} -> storage_error(error, :activate_as_host)
     end
   end
@@ -1141,6 +1626,7 @@ defmodule World.Rooms do
     end
   end
 
+  # Nominate continues the session on a new host; clear overlay so inventory does not transfer.
   defp cas_handover_nominate(room_id, caller_sub, target_sub) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     expires = DateTime.add(now, host_lease_ttl_seconds(), :second)
@@ -1150,17 +1636,19 @@ defmodule World.Rooms do
     SET active_host_sub = ?,
         state = 'active',
         host_lease_expires_at = ?,
+        session_overlay = #{cleared_overlay_sql()},
         updated_at = CURRENT_TIMESTAMP
     WHERE room_id = ?
       AND (
         (state = 'active' AND active_host_sub = ?)
         OR owner_sub = ?
       )
+      AND #{overlay_clear_headroom_sql()}
     """
 
     case World.Repo.query(sql, [target_sub, expires, room_id, caller_sub, caller_sub]) do
       {:ok, %{num_rows: 1}} -> get(room_id)
-      {:ok, %{num_rows: 0}} -> {:error, :conflict}
+      {:ok, %{num_rows: 0}} -> miss_after_overlay_clear(room_id)
       {:error, error} -> storage_error(error, :handover)
     end
   end
@@ -1171,17 +1659,19 @@ defmodule World.Rooms do
     SET active_host_sub = NULL,
         state = 'dormant',
         host_lease_expires_at = NULL,
+        session_overlay = #{cleared_overlay_sql()},
         updated_at = CURRENT_TIMESTAMP
     WHERE room_id = ?
       AND (
         (state = 'active' AND active_host_sub = ?)
         OR owner_sub = ?
       )
+      AND #{overlay_clear_headroom_sql()}
     """
 
     case World.Repo.query(sql, [room_id, caller_sub, caller_sub]) do
       {:ok, %{num_rows: 1}} -> get(room_id)
-      {:ok, %{num_rows: 0}} -> {:error, :conflict}
+      {:ok, %{num_rows: 0}} -> miss_after_overlay_clear(room_id)
       {:error, error} -> storage_error(error, :handover)
     end
   end
@@ -1468,7 +1958,9 @@ defmodule World.Rooms do
       room_key: generate_room_key_hex(),
       room_key_epoch: 0,
       room_key_rotated_at: now,
-      editor_subs: "[]"
+      editor_subs: "[]",
+      session_overlay: empty_overlay(),
+      eligible_host_subs: "[]"
     }
   end
 
@@ -1505,6 +1997,13 @@ defmodule World.Rooms do
 
       true ->
         {:error, :invalid_editors}
+    end
+  end
+
+  defp encode_eligible_subs(subs) when is_list(subs) do
+    case encode_editor_subs(subs) do
+      {:ok, _} = ok -> ok
+      {:error, :invalid_editors} -> {:error, :invalid_eligible}
     end
   end
 

@@ -23,14 +23,14 @@ defmodule World.SceneRevisionCasTest do
     {room_id, seed_id, base_rev} = seeded_room!("cas-append-first")
 
     assert {:ok, after_append} =
-             Rooms.append_scene_entry(room_id, %{"blake3" => @append_blake3}, base_rev)
+             Rooms.append_scene_entry(room_id, %{"blake3" => @append_blake3}, base_rev, 0)
 
     assert after_append["revision"] == base_rev + 1
 
     assert {:error, :scene_revision_conflict} =
-             Rooms.delete_scene_entry(room_id, seed_id, base_rev)
+             Rooms.delete_scene_entry(room_id, seed_id, base_rev, 0)
 
-    assert {:ok, final} = Rooms.delete_scene_entry(room_id, seed_id, after_append["revision"])
+    assert {:ok, final} = Rooms.delete_scene_entry(room_id, seed_id, after_append["revision"], 0)
 
     assert final["revision"] == base_rev + 2
     refute Enum.any?(final["entries"], fn e -> e["blake3"] == @seed_blake3 end)
@@ -40,18 +40,19 @@ defmodule World.SceneRevisionCasTest do
   test "delete then append retry: both mutations land" do
     {room_id, seed_id, base_rev} = seeded_room!("cas-delete-first")
 
-    assert {:ok, after_delete} = Rooms.delete_scene_entry(room_id, seed_id, base_rev)
+    assert {:ok, after_delete} = Rooms.delete_scene_entry(room_id, seed_id, base_rev, 0)
     assert after_delete["revision"] == base_rev + 1
     refute Enum.any?(after_delete["entries"], fn e -> e["blake3"] == @seed_blake3 end)
 
     assert {:error, :scene_revision_conflict} =
-             Rooms.append_scene_entry(room_id, %{"blake3" => @append_blake3}, base_rev)
+             Rooms.append_scene_entry(room_id, %{"blake3" => @append_blake3}, base_rev, 0)
 
     assert {:ok, final} =
              Rooms.append_scene_entry(
                room_id,
                %{"blake3" => @append_blake3},
-               after_delete["revision"]
+               after_delete["revision"],
+               0
              )
 
     assert final["revision"] == base_rev + 2
@@ -62,10 +63,10 @@ defmodule World.SceneRevisionCasTest do
   test "same expected_revision: second writer gets scene_revision_conflict" do
     {room_id, seed_id, rev} = seeded_room!("cas-one-loses")
 
-    assert {:ok, _} = Rooms.append_scene_entry(room_id, %{"blake3" => @append_blake3}, rev)
+    assert {:ok, _} = Rooms.append_scene_entry(room_id, %{"blake3" => @append_blake3}, rev, 0)
 
     assert {:error, :scene_revision_conflict} =
-             Rooms.delete_scene_entry(room_id, seed_id, rev)
+             Rooms.delete_scene_entry(room_id, seed_id, rev, 0)
 
     assert {:ok, final} = Rooms.scene(room_id)
     assert final["revision"] == rev + 1
@@ -78,7 +79,7 @@ defmodule World.SceneRevisionCasTest do
     assert {:ok, scene0} = Rooms.scene(room_id)
 
     assert {:ok, scene1} =
-             Rooms.append_scene_entry(room_id, %{"blake3" => @seed_blake3}, scene0["revision"])
+             Rooms.append_scene_entry(room_id, %{"blake3" => @seed_blake3}, scene0["revision"], 0)
 
     seed_id = List.last(scene1["entries"])["entity_id"]
     {room_id, seed_id, scene1["revision"]}

@@ -4,9 +4,11 @@ defmodule World.Rooms.Room do
 
   Guarantees: `room_id` + `owner_sub` + DemoScene `scene` + `visibility` + `wire_cap` (x004e) +
   `room_key` (x0069) + `room_key_epoch` (x007e) + host session (`active_host_sub` / `state` /
-  `host_lease_expires_at` · x0080) + `editor_subs` (x009d canonical scene writers) survive restart.
+  `host_lease_expires_at` · x0080) + `editor_subs` (x009d) + `session_overlay` /
+  `eligible_host_subs` (x009e) survive restart.
   Non-guarantees: Presence / physics pose; UGC edit history; previous-epoch key durability
-  (grace is memory-only via `RoomKeyGrace`); seamless sim handoff of poses; Dash Permissions UI.
+  (grace is memory-only via `RoomKeyGrace`); seamless sim handoff of poses; Dash Permissions UI;
+  overlay→canonical Save/merge.
   """
 
   use Ash.Resource,
@@ -112,6 +114,20 @@ defmodule World.Rooms.Room do
       default "[]"
     end
 
+    # x009e: temporary session entries (dormant clears). Map or JSON text from SQLite.
+    attribute :session_overlay, :map do
+      allow_nil? false
+      public? true
+      default %{"revision" => 0, "entries" => []}
+    end
+
+    # x009e: takeover allow-list (owner always allowed). Empty = owner-only.
+    attribute :eligible_host_subs, :string do
+      allow_nil? false
+      public? true
+      default "[]"
+    end
+
     create_timestamp :inserted_at
     update_timestamp :updated_at
   end
@@ -133,7 +149,9 @@ defmodule World.Rooms.Room do
         :room_key,
         :room_key_epoch,
         :room_key_rotated_at,
-        :editor_subs
+        :editor_subs,
+        :session_overlay,
+        :eligible_host_subs
       ]
     end
 

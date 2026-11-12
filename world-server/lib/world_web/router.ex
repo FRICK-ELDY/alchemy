@@ -21,6 +21,7 @@ defmodule WorldWeb.Router do
     post "/rooms", RoomController, :create
     post "/rooms/:room_id/tokens", RoomController, :create_token
     put "/rooms/:room_id/visibility", RoomController, :update_visibility
+    put "/rooms/:room_id/eligible_hosts", RoomController, :update_eligible_hosts
     post "/rooms/:room_id/handover", RoomController, :handover
     post "/rooms/:room_id/takeover", RoomController, :takeover
   end
@@ -33,10 +34,13 @@ defmodule WorldWeb.Router do
     post "/rooms/:room_id/host_keys", RoomController, :create_host_key
     post "/rooms/:room_id/manifest_seal", RoomController, :create_manifest_seal
     get "/rooms/:room_id/scene", RoomController, :show_scene
-    # x006d: host take-out appends mesh entry (canonical scene for re-seal).
+    # x006d: owner/editor persist mesh to canonical scene.
     post "/rooms/:room_id/scene/entries", RoomController, :create_scene_entry
-    # x007b: host despawn removes mesh entry (canonical scene for re-seal).
+    # x007b: owner/editor remove canonical mesh.
     delete "/rooms/:room_id/scene/entries/:entity_id", RoomController, :delete_scene_entry
+    # x009e: active-host temporary overlay (inventory / session props).
+    post "/rooms/:room_id/overlay/entries", RoomController, :create_overlay_entry
+    delete "/rooms/:room_id/overlay/entries/:entity_id", RoomController, :delete_overlay_entry
     # x006b: PlaceRead — any valid Room Token for the room + verified world_seal.
     post "/rooms/:room_id/place_read", RoomController, :create_place_read
     get "/rooms/:room_id/place_hashes", RoomController, :show_place_hashes

@@ -335,7 +335,8 @@ fn append_room_scene_entry_once(
     sz: f64,
 ) -> std::result::Result<(RoomScene, alchemy_protocol::SceneEntry), CasAttempt> {
     let base = world_url.trim_end_matches('/');
-    let url = format!("{base}/api/v1/rooms/{room_id}/scene/entries");
+    // x009e: inventory take-out writes session_overlay (not canonical scene).
+    let url = format!("{base}/api/v1/rooms/{room_id}/overlay/entries");
     let path = request_path(&url);
     let authz = format!("Bearer {host_room_token}");
     let raw = serde_json::to_vec(&serde_json::json!({
@@ -352,7 +353,7 @@ fn append_room_scene_entry_once(
         "sy": sy,
         "sz": sz,
     }))
-    .map_err(|e| CasAttempt::Other(anyhow!("encode scene append body: {e:#}")))?;
+    .map_err(|e| CasAttempt::Other(anyhow!("encode overlay append body: {e:#}")))?;
     let req = with_pop(
         credential_agent()
             .post(&url)
@@ -367,7 +368,7 @@ fn append_room_scene_entry_once(
         Ok(resp) => {
             let parsed: SceneResponseJson = resp
                 .into_json()
-                .map_err(|e| CasAttempt::Other(anyhow!("parse scene append: {e:#}")))?;
+                .map_err(|e| CasAttempt::Other(anyhow!("parse overlay append: {e:#}")))?;
             // x0098: only GET scene is the owner_sub source; ignore mutation body fields.
             let mut scene = scene_from_response(parsed);
             scene.owner_sub = None;
@@ -378,7 +379,7 @@ fn append_room_scene_entry_once(
                 .find(|e| e.blake3.eq_ignore_ascii_case(blake3))
                 .cloned()
                 .ok_or_else(|| {
-                    CasAttempt::Other(anyhow!("appended blake3 missing from scene response"))
+                    CasAttempt::Other(anyhow!("appended blake3 missing from overlay response"))
                 })?;
             Ok((scene, entry))
         }
@@ -388,12 +389,12 @@ fn append_room_scene_entry_once(
                 Err(CasAttempt::Conflict)
             } else {
                 Err(CasAttempt::Other(anyhow!(
-                    "scene append failed status={code} body={body}"
+                    "overlay append failed status={code} body={body}"
                 )))
             }
         }
         Err(err) => Err(CasAttempt::Other(anyhow!(
-            "scene append request failed: {err:#}"
+            "overlay append request failed: {err:#}"
         ))),
     }
 }
@@ -449,13 +450,14 @@ fn delete_room_scene_entry_once(
     entity_id: u32,
 ) -> std::result::Result<RoomScene, CasAttempt> {
     let base = world_url.trim_end_matches('/');
-    let url = format!("{base}/api/v1/rooms/{room_id}/scene/entries/{entity_id}");
+    // x009e: inventory despawn removes from session_overlay.
+    let url = format!("{base}/api/v1/rooms/{room_id}/overlay/entries/{entity_id}");
     let path = request_path(&url);
     let authz = format!("Bearer {host_room_token}");
     let raw = serde_json::to_vec(&serde_json::json!({
         "expected_revision": expected_revision,
     }))
-    .map_err(|e| CasAttempt::Other(anyhow!("encode scene delete body: {e:#}")))?;
+    .map_err(|e| CasAttempt::Other(anyhow!("encode overlay delete body: {e:#}")))?;
     let req = with_pop(
         credential_agent()
             .delete(&url)

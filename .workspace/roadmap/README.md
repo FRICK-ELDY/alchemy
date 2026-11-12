@@ -207,12 +207,13 @@ depends_on: [x0006]
 | x009a | — | done | XR loader tempfile 純粋化（P2-12） | [x009a-xr-loader-tempfile-pure.md](slices/x009a-xr-loader-tempfile-pure.md) |
 | x009b | — | done | USER_ROOT 帯を Manifest 配（P2-13） | [x009b-user-root-band-manifest.md](slices/x009b-user-root-band-manifest.md) |
 | x009c | — | done | bind 全体上限 + session_pub 起点（成功 JWT 返却 · P2-14） | [x009c-bind-global-session-pub.md](slices/x009c-bind-global-session-pub.md) |
-| x009d | — | active | canonical scene owner/editor 門番（P0-1 前半 · Phase 0–2） | [x009d-host-delegation-scene-overlay.md](slices/x009d-host-delegation-scene-overlay.md) |
+| x009d | — | done | canonical scene owner/editor 門番（P0-1 前半 · Phase 0–2） | [x009d-host-delegation-scene-overlay.md](slices/x009d-host-delegation-scene-overlay.md) |
+| x009e | — | active | session_overlay + eligible_host（P0-1 後半） | [x009e-session-overlay-eligible-host.md](slices/x009e-session-overlay-eligible-host.md) |
 
-**現在の次:** [x009d](slices/x009d-host-delegation-scene-overlay.md) **active**（[P0-1](../0_doc/evaluation/improvement-plan-2026-11-12.md) 前半）。Phase 3 overlay / Phase 4 HostDelegation は **後続 PR**。空間本線は一時停止 · Spot-Check 保留。  
+**現在の次:** [x009e](slices/x009e-session-overlay-eligible-host.md) **active**（[P0-1](../0_doc/evaluation/improvement-plan-2026-11-12.md) 後半）。空間本線は一時停止 · Spot-Check 保留。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 
-次の空き番号は **`x009e`**。
+次の空き番号は **`x009f`**。
 
 ## 関連
 

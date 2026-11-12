@@ -1,8 +1,8 @@
 # x009d — canonical scene owner/editor 門番（P0-1 前半）
 
-> **ID:** `x009d` · **slug:** `host-delegation-scene-overlay` · **status:** `active` · **area:** `[world, docs]` · **depends_on:** `[x0080, x0081, x0082, x0098]`  
+> **ID:** `x009d` · **slug:** `host-delegation-scene-overlay` · **status:** `done` · **area:** `[world, docs]` · **depends_on:** `[x0080, x0081, x0082, x0098]`  
 > **優先度:** improvement-plan P0-1（定義書き込み権の分離）  
-> **着地範囲:** Phase 0–2 のみ。Phase 3（`session_overlay`）/ Phase 4（HostDelegation）は **後続 PR**（同 ID 継続または `x009e`+）。
+> **着地範囲:** Phase 0–2。Phase 3–4 は [x009e](x009e-session-overlay-eligible-host.md)。
 
 目標（本 PR）: **canonical scene の append/delete を `owner_sub` ∪ `editor_subs` に限定**し、非 writer の takeover host を 403 にする。入室権（visibility）と計算ホスト権（active_host）と定義書き込み権をコード上で分離する。
 
