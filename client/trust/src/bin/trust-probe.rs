@@ -218,6 +218,16 @@ impl Drop for TempPemPair {
     }
 }
 
+fn seal_aead_manifest(
+    room_id: &str,
+    room_key: &[u8],
+    manifest: &SceneManifest,
+) -> Result<Vec<u8>> {
+    let plain = manifest.encode_to_vec();
+    wire_aead::seal(room_key, room_id, 0, AeadKind::Manifest, &plain)
+        .map_err(|e| anyhow!("seal fake manifest: {e}"))
+}
+
 fn put_aead_manifest(
     session: &zenoh::Session,
     key: &str,
@@ -225,13 +235,25 @@ fn put_aead_manifest(
     room_key: &[u8],
     manifest: &SceneManifest,
 ) -> Result<()> {
-    let plain = manifest.encode_to_vec();
-    let env = wire_aead::seal(room_key, room_id, 0, AeadKind::Manifest, &plain)
-        .map_err(|e| anyhow!("seal fake manifest: {e}"))?;
+    let env = seal_aead_manifest(room_id, room_key, manifest)?;
     session
         .put(key, env)
         .wait()
         .map_err(|e| anyhow!("put fake manifest: {e}"))?;
+    Ok(())
+}
+
+fn put_aead_manifest_pub(
+    publisher: &zenoh::pubsub::Publisher<'_>,
+    room_id: &str,
+    room_key: &[u8],
+    manifest: &SceneManifest,
+) -> Result<()> {
+    let env = seal_aead_manifest(room_id, room_key, manifest)?;
+    publisher
+        .put(env)
+        .wait()
+        .map_err(|e| anyhow!("publisher put fake manifest: {e}"))?;
     Ok(())
 }
 
@@ -670,6 +692,11 @@ fn run_wan() -> Result<()> {
     if !saw_frame {
         bail!("timeout waiting for Frame from real host-server");
     }
+    // Real host keeps putting Frame/Manifest after Accept. Leaving these declared but
+    // unread saturates the session RX path and can starve a later wildcard subscriber
+    // (seen after x0093 finite-pose Frame publish resumed). drop undeclares them.
+    drop(frame_sub);
+    drop(manifest_sub);
 
     // 4) Guest sim put ingress must not reach peer guests (x0067 / P1-4).
     // Zenoh put.wait() often returns Ok even when ACL drops ingress — assert non-delivery.
@@ -842,16 +869,8 @@ fn run_wan() -> Result<()> {
     }
 
     // 6) Wildcard other-room ciphertext unreadable with room A key (x0070).
-    // Zenoh puts are not retained: if interest is not yet matched, a one-shot put is lost.
-    // Settle after subscribe, then re-put until observed (CI router can lag after compose).
-    let wild = "alchemy/dev/room/*/*/manifest";
-    let wild_sub = session
-        .declare_subscriber(wild)
-        .wait()
-        .map_err(|e| anyhow!("wildcard subscribe: {e}"))?;
-    log::info!("subscribed {wild}");
-    thread::sleep(Duration::from_millis(500));
-
+    // Zenoh puts are not retained: declare publisher + subscriber interest before put,
+    // then re-put until observed (CI router can lag after compose).
     let key_b = generate_signing_key();
     let eph_host = zenoh_connect::EphemeralMtlsIdentity::generate().context("CSR host B")?;
     let access_host = login(&auth_url, &user, &password)?;
@@ -880,7 +899,7 @@ fn run_wan() -> Result<()> {
         world_seal: "other-room-seal".into(),
         host_generation: 1,
     };
-    let saw_unreadable = {
+    let (saw_unreadable, puts, samples, room_b_samples) = {
         // Keep host B session open across re-puts; close before TempPemPair drop (Windows).
         let host_session = zenoh_connect::open_client_mtls(
             &zenoh_connect,
@@ -888,13 +907,29 @@ fn run_wan() -> Result<()> {
             host_pems.key.to_str().context("host key path utf8")?,
         )
         .context("open host B mTLS")?;
-        let deadline = Instant::now() + Duration::from_secs(15);
+        // Match real host-server: interest attaches to a declared publisher (ACL egress).
+        let host_pub = host_session
+            .declare_publisher(other_key.clone())
+            .wait()
+            .map_err(|e| anyhow!("host B declare_publisher: {e}"))?;
+        let wild = "alchemy/dev/room/*/*/manifest";
+        let wild_sub = session
+            .declare_subscriber(wild)
+            .wait()
+            .map_err(|e| anyhow!("wildcard subscribe: {e}"))?;
+        log::info!("subscribed {wild}; host B publisher on {other_key}");
+        thread::sleep(Duration::from_millis(500));
+
+        // Same budget family as guest-sim observe / Accept (E2E_TIMEOUT_SECS).
+        let wild_secs = timeout_secs.clamp(3, 15);
+        let deadline = Instant::now() + Duration::from_secs(wild_secs);
         let mut saw = false;
         let mut puts: u32 = 0;
+        let mut samples: u32 = 0;
+        let mut room_b_samples: u32 = 0;
         while Instant::now() < deadline {
-            put_aead_manifest(
-                &host_session,
-                &other_key,
+            put_aead_manifest_pub(
+                &host_pub,
                 &room_b,
                 &bundle_b.room_key,
                 &other_manifest,
@@ -907,8 +942,14 @@ fn run_wan() -> Result<()> {
             while Instant::now() < burst_deadline {
                 match wild_sub.try_recv() {
                     Ok(Some(sample)) => {
+                        samples = samples.wrapping_add(1);
                         let key = sample.key_expr().as_str().to_string();
                         let bytes: ZBytes = sample.payload().clone();
+                        // Exact key (not substring): room ids like wan/wana would false-match.
+                        let is_room_b = key == other_key;
+                        if is_room_b {
+                            room_b_samples = room_b_samples.wrapping_add(1);
+                        }
                         match wire_aead::open(
                             &bundle_a.room_key,
                             &room_a,
@@ -916,14 +957,14 @@ fn run_wan() -> Result<()> {
                             AeadKind::Manifest,
                             bytes.to_bytes().as_ref(),
                         ) {
+                            Err(_) if is_room_b => {
+                                log::info!(
+                                    "wildcard sample on {key} unreadable with room A key (ok; puts={puts} samples={samples})"
+                                );
+                                saw = true;
+                                break;
+                            }
                             Err(_) => {
-                                if key.contains(&room_b) || key.contains(&bundle_b.wire_cap) {
-                                    log::info!(
-                                        "wildcard sample on {key} unreadable with room A key (ok; puts={puts})"
-                                    );
-                                    saw = true;
-                                    break;
-                                }
                                 log::debug!("AEAD fail on {key} (keep waiting for room B)");
                             }
                             Ok(_) => {
@@ -939,11 +980,12 @@ fn run_wan() -> Result<()> {
                 break;
             }
         }
-        saw
+        (saw, puts, samples, room_b_samples)
     };
     if !saw_unreadable {
         bail!(
-            "WAN wildcard: did not observe other-room ciphertext that fails open with room A key"
+            "WAN wildcard: did not observe other-room ciphertext that fails open with room A key \
+             (puts={puts} wild_samples={samples} room_b_samples={room_b_samples})"
         );
     }
 
