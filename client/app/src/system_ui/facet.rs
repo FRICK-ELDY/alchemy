@@ -85,7 +85,18 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::SettingsRoomId
         | WidgetId::SettingsJoinRoom
         | WidgetId::SettingsStartSession
-        | WidgetId::SettingsPlaceholder => FacetId::Settings,
+        | WidgetId::SettingsPlaceholder
+        | WidgetId::HierarchyScrollUp
+        | WidgetId::HierarchyScrollDown
+        | WidgetId::HierarchyCollapse
+        | WidgetId::HierarchyRow0
+        | WidgetId::HierarchyRow1
+        | WidgetId::HierarchyRow2
+        | WidgetId::HierarchyRow3
+        | WidgetId::HierarchyRow4
+        | WidgetId::HierarchyRow5
+        | WidgetId::HierarchyRow6
+        | WidgetId::HierarchyRow7 => FacetId::Settings,
         WidgetId::TabInventory
         | WidgetId::InventoryRefresh
         | WidgetId::InventoryTakeOut

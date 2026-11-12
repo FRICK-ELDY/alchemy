@@ -88,6 +88,18 @@ pub enum WidgetId {
     SettingsRoomId,
     SettingsJoinRoom,
     SettingsStartSession,
+    /// Hierarchy virtual lens (x0094).
+    HierarchyScrollUp,
+    HierarchyScrollDown,
+    HierarchyCollapse,
+    HierarchyRow0,
+    HierarchyRow1,
+    HierarchyRow2,
+    HierarchyRow3,
+    HierarchyRow4,
+    HierarchyRow5,
+    HierarchyRow6,
+    HierarchyRow7,
     /// Onboarding Step1 (operator select).
     OperatorOfficial,
     OperatorFederation,

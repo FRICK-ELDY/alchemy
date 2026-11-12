@@ -209,6 +209,14 @@ pub struct DashState {
     pub settings_scroll: f32,
     /// Tape / Bitmask X-Ray panel text (local; not mirrored Desktop↔XR).
     pub epoch_xray_text: String,
+    /// Last X-Ray structure key used for Layout dirty (pose excluded).
+    pub epoch_xray_structure: crate::epoch_view::XrayStructureKey,
+    /// Hierarchy virtual lens rows (x0094; local; not mirrored Desktop↔XR).
+    pub hierarchy_rows: Vec<crate::epoch_view::HierarchyRowView>,
+    /// Window start into the virtual Hierarchy list.
+    pub hierarchy_scroll: usize,
+    /// Selected Hierarchy `row_id` (drives X-Ray). Collapse set lives on EpochViewState.
+    pub hierarchy_selected: Option<u32>,
 }
 
 impl Default for DashState {
@@ -289,6 +297,10 @@ impl Default for DashState {
             session_enter_last_detail_at: None,
             settings_scroll: 0.0,
             epoch_xray_text: String::new(),
+            epoch_xray_structure: crate::epoch_view::XrayStructureKey::default(),
+            hierarchy_rows: Vec::new(),
+            hierarchy_scroll: 0,
+            hierarchy_selected: None,
         }
     }
 }
@@ -1143,14 +1155,31 @@ fn settings_content_height(state: &DashState) -> f32 {
         so + 124.0
     };
     let btn = adv + 108.0;
+    let hier_rows = if state.hierarchy_rows.is_empty() {
+        1.0
+    } else {
+        state.hierarchy_rows.len().min(8) as f32
+    };
+    let hierarchy = 36.0 + 32.0 + (hier_rows * 29.0) + 8.0;
     let xray = if state.epoch_xray_text.is_empty() {
         0.0
     } else {
         120.0
     };
-    // join/start row + status label + optional X-Ray + bottom pad
-    btn + 48.0 + 18.0 + xray + 12.0
+    // join/start row + status + Hierarchy + optional X-Ray + bottom pad
+    btn + 48.0 + 18.0 + hierarchy + xray + 12.0
 }
+
+const HIERARCHY_ROW_IDS: [WidgetId; 8] = [
+    WidgetId::HierarchyRow0,
+    WidgetId::HierarchyRow1,
+    WidgetId::HierarchyRow2,
+    WidgetId::HierarchyRow3,
+    WidgetId::HierarchyRow4,
+    WidgetId::HierarchyRow5,
+    WidgetId::HierarchyRow6,
+    WidgetId::HierarchyRow7,
+];
 
 /// In-room session shell only (x007c). Catalog lives on MainHub — no Worlds tab body.
 fn rebuild_session_shell(
@@ -2924,6 +2953,93 @@ fn rebuild_settings(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32,
         );
         adv_y = so_y + 152.0;
     }
+
+    // Hierarchy virtual lens (x0094) — euler_order window; select → X-Ray.
+    tree.push_label(
+        Rect::new(cx + 24.0, adv_y, cw - 48.0, 22.0),
+        "Hierarchy (Epoch)",
+        TEXT,
+        1.8,
+    );
+    let hier_up = Rect::new(cx + 24.0, adv_y + 26.0, 72.0, 28.0);
+    tree.push_rect(hier_up, state.interact(WidgetId::HierarchyScrollUp, BTN));
+    tree.push_label(
+        Rect::new(hier_up.x + 12.0, hier_up.y + 6.0, 48.0, 16.0),
+        "Up",
+        TEXT,
+        1.2,
+    );
+    tree.register_hit(WidgetId::HierarchyScrollUp, hier_up);
+    let hier_dn = Rect::new(cx + 104.0, adv_y + 26.0, 72.0, 28.0);
+    tree.push_rect(hier_dn, state.interact(WidgetId::HierarchyScrollDown, BTN));
+    tree.push_label(
+        Rect::new(hier_dn.x + 8.0, hier_dn.y + 6.0, 56.0, 16.0),
+        "Down",
+        TEXT,
+        1.2,
+    );
+    tree.register_hit(WidgetId::HierarchyScrollDown, hier_dn);
+    let collapse_armed = state
+        .hierarchy_selected
+        .and_then(|id| {
+            state
+                .hierarchy_rows
+                .iter()
+                .find(|r| r.row_id == id)
+                .map(|r| r.has_children)
+        })
+        .unwrap_or(false);
+    let hier_col = Rect::new(cx + 184.0, adv_y + 26.0, 110.0, 28.0);
+    if collapse_armed {
+        tree.push_rect(hier_col, state.interact(WidgetId::HierarchyCollapse, BTN));
+        tree.push_label(
+            Rect::new(hier_col.x + 8.0, hier_col.y + 6.0, 94.0, 16.0),
+            "Collapse",
+            TEXT,
+            1.2,
+        );
+        tree.register_hit(WidgetId::HierarchyCollapse, hier_col);
+    } else {
+        tree.push_rect(hier_col, BTN);
+        tree.push_label(
+            Rect::new(hier_col.x + 8.0, hier_col.y + 6.0, 94.0, 16.0),
+            "Collapse",
+            MUTED,
+            1.2,
+        );
+    }
+    let mut hier_y = adv_y + 60.0;
+    let hier_row_h = 26.0;
+    if state.hierarchy_rows.is_empty() {
+        tree.push_label(
+            Rect::new(cx + 24.0, hier_y, cw - 48.0, 18.0),
+            "No Epoch rows yet (join a Live room).",
+            MUTED,
+            1.0,
+        );
+        hier_y += 28.0;
+    } else {
+        for (i, row) in state.hierarchy_rows.iter().take(8).enumerate() {
+            let id = HIERARCHY_ROW_IDS[i];
+            let row_r = Rect::new(cx + 24.0, hier_y, cw - 48.0, hier_row_h);
+            let selected = state.hierarchy_selected == Some(row.row_id);
+            let base = if selected {
+                Color::rgba(0.22, 0.36, 0.30, 1.0)
+            } else {
+                BTN
+            };
+            tree.push_rect(row_r, state.interact(id, base));
+            tree.push_label(
+                Rect::new(cx + 36.0, hier_y + 4.0, cw - 72.0, 18.0),
+                row.label(),
+                TEXT,
+                0.95,
+            );
+            tree.register_hit(id, row_r);
+            hier_y += hier_row_h + 3.0;
+        }
+    }
+    adv_y = hier_y + 8.0;
 
     if !state.epoch_xray_text.is_empty() {
         tree.push_label(

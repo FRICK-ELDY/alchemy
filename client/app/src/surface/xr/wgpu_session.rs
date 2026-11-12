@@ -293,8 +293,9 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
 
         hotswitch.tick(&shared.presentation, Instant::now());
         ui.pull_dash_logic(&shared);
-        let _ = ui.pull_epoch_xray(&shared);
-        let mut inventory_ui_dirty = ui.pull_inventory_mirror(&shared);
+        let hier = ui.pull_hierarchy(&shared);
+        let xray = ui.pull_epoch_xray(&shared, false);
+        let mut inventory_ui_dirty = ui.pull_inventory_mirror(&shared) || hier || xray;
         if ui.state.tab == crate::system_ui::DashTab::Inventory {
             inventory_ui_dirty |= ui.sync_inventory_scene_meshes(&shared);
         }
@@ -842,6 +843,12 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                             let mut prefs = crate::operator_prefs::load();
                             prefs.server_operator = ui.state.server_operator;
                             crate::operator_prefs::save(&prefs);
+                        }
+                        UiAction::HierarchyCollapseToggle(row) => {
+                            ui.apply_hierarchy_collapse_toggle(&shared, row);
+                        }
+                        UiAction::HierarchyRelayout => {
+                            ui.apply_hierarchy_relayout(&shared);
                         }
                         UiAction::None => {}
                     }
