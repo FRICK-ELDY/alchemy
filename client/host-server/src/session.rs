@@ -78,6 +78,11 @@ impl SessionTable {
         self.by_pub.get(session_pub)
     }
 
+    /// True if `session_pub` already has a Session binding (successful prior bind).
+    pub fn is_bound(&self, session_pub: &[u8]) -> bool {
+        self.by_pub.contains_key(session_pub)
+    }
+
     /// Remove all bindings for `sub`. Returns removed `session_pub` keys (for rate cleanup).
     pub fn remove_by_sub(&mut self, sub: &str) -> Vec<Vec<u8>> {
         let mut removed = Vec::new();
@@ -488,6 +493,47 @@ mod tests {
         );
         table.remove_by_sub("alice");
         assert!(table.by_pub.is_empty());
+    }
+
+    #[test]
+    fn bind_jwt_fail_forget_uses_is_bound_at_cleanup() {
+        // Gate contract (x009c): forget only when SessionTable has no binding.
+        // Mirrors main.rs Err path: re-check is_bound → after_bind_jwt_fail.
+        let mut table = SessionTable::default();
+        let mut rates = IntentRateLimiter::new();
+        let t0 = Instant::now();
+        let key = generate_signing_key();
+        let pub_bytes = public_key_bytes(&key);
+
+        assert!(rates.allow_bind(&pub_bytes, t0));
+        assert!(!table.is_bound(&pub_bytes));
+        rates.after_bind_jwt_fail(&pub_bytes, table.is_bound(&pub_bytes));
+        assert!(
+            !rates.test_has_bind_pub(&pub_bytes),
+            "unbound JWT fail must forget"
+        );
+
+        assert!(rates.allow_bind(&pub_bytes, t0));
+        table.by_pub.insert(
+            pub_bytes.clone(),
+            SessionBinding {
+                sub: "alice".into(),
+                jti: "j1".into(),
+                last_seq: 1,
+                last_control_seq: 0,
+                caps: guest_caps(),
+                role: "guest".into(),
+            },
+        );
+        // Concurrent-commit race: evaluate saw unbound, cleanup sees bound.
+        assert!(table.is_bound(&pub_bytes));
+        let tokens_before = rates.test_bind_pub_tokens(&pub_bytes, t0);
+        rates.after_bind_jwt_fail(&pub_bytes, table.is_bound(&pub_bytes));
+        assert!(
+            rates.test_has_bind_pub(&pub_bytes),
+            "bound (incl. concurrent commit) must keep per-pub"
+        );
+        assert!((rates.test_bind_pub_tokens(&pub_bytes, t0) - tokens_before).abs() < f64::EPSILON);
     }
 
     #[test]

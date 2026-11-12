@@ -1,25 +1,26 @@
-//! Per-session Intent token buckets (x0040 / P1-5; bind source split x0077 / P2-5).
+//! Per-session Intent token buckets (x0040 / P1-5; bind source split x0077;
+//! session_pub-keyed global + refund x009c / P2-14).
 //!
 //! Guarantees:
 //! - Steady: rate after Ed25519 success and seq check, **before** `last_seq` commit
 //!   (forged sig cannot drain another sub's bucket). Leave (wire) does not consume.
-//! - Bind: per-ZenohId source + per-`session_pub` **after** Ed25519, **before** JWT;
-//!   both buckets must have a token or **neither** is consumed; source / per-pub rows
-//!   are inserted only on successful consume (deny must not grow the maps).
-//!   Leave does **not** exempt bind (no JWT bypass via `leave=1`+token). Failed
-//!   bind forgets unbound per-pub entries. Successful bind must not forget the
-//!   newly bound pub's bucket. One source's bind spend does not reduce another
-//!   source's budget.
-//! - `by_bind_source.len() ≤ MAX_BIND_SOURCES`. Inserting a fresh source at capacity
-//!   first GC's rows idle since **last successful consume** (`BIND_SOURCE_IDLE`);
-//!   deny-only traffic (refill / `has_token`) does **not** refresh idle. If still
-//!   full after GC, deny without insert (forged ID rotate cannot unbounded-grow RAM).
+//! - Bind: host soft-global + per-`session_pub` **after** Ed25519, **before** JWT
+//!   (Leave **not** exempt). Both buckets must have a token or **neither** is consumed;
+//!   per-pub rows insert only on successful consume. Failed JWT forgets per-pub
+//!   **only if SessionTable has no binding at cleanup** (nested `sessions→rates`
+//!   critical section: `is_bound` + `after_bind_jwt_fail`); already-bound /
+//!   concurrent-commit keep the spent per-pub bucket. Successful JWT **refunds**
+//!   one global token (legitimate joins do not permanently starve others; failed
+//!   JWT keeps the global spend → JWT CPU ceiling).
+//! - Key is Ed25519-verified `session_pub` (not self-declared ZenohId).
+//! - `by_session_pub.len() ≤ MAX_BIND_PUBS`. Fresh pub at capacity GC's rows idle
+//!   since last **successful** consume (`BIND_PUB_IDLE`); deny-only traffic does
+//!   **not** refresh idle. If still full after GC, deny without insert.
 //!
 //! Non-guarantees: temporary ban / strike; Zenoh ACL; unlimited Ed25519 on unknown
-//! `session_pub` steady floods (evaluate fails without a sub bucket); host-wide JWT
-//! soft-global (removed on purpose); JWT CPU / join denial while ≤ `MAX_BIND_SOURCES`
-//! sources keep **successful** consumes within `BIND_SOURCE_IDLE` (map full + all hot);
-//! fairness among timestamp-less (`unknown`) peers; mTLS cert–keyed split (not on Sample).
+//! `session_pub` steady floods (evaluate fails without a sub bucket); join denial
+//! while global is drained by failed-JWT flood; fairness among rotating keys that
+//! all fail JWT; PoW on first `session_pub` appearance; mTLS cert–keyed split.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -32,24 +33,16 @@ pub const STEADY_REFILL_PER_SEC: f64 = 30.0;
 pub const BIND_CAPACITY: f64 = 5.0;
 pub const BIND_REFILL_PER_SEC: f64 = 2.0;
 
-/// Per bind-source (Zenoh timestamp ID) JWT-attempt budget before verify.
-pub const BIND_SOURCE_CAPACITY: f64 = 20.0;
-pub const BIND_SOURCE_REFILL_PER_SEC: f64 = 10.0;
+/// Host-wide JWT-attempt budget before verify (x0040 / x009c).
+pub const BIND_GLOBAL_CAPACITY: f64 = 20.0;
+pub const BIND_GLOBAL_REFILL_PER_SEC: f64 = 10.0;
 
-/// Zenoh / uhlc clock ID width (`ID::MAX_SIZE` / `to_le_bytes`).
-pub const BIND_SOURCE_KEY_LEN: usize = 16;
+/// Hard cap on distinct bind-pub rows (memory bound under key rotate).
+pub const MAX_BIND_PUBS: usize = 256;
 
-/// Hard cap on distinct bind-source rows (memory bound under forged ID rotate).
-pub const MAX_BIND_SOURCES: usize = 256;
-
-/// Idle source rows may be GC'd when inserting at [`MAX_BIND_SOURCES`].
+/// Idle pub rows may be GC'd when inserting at [`MAX_BIND_PUBS`].
 /// Measured from last **successful** bind consume, not refill/`has_token`.
-pub const BIND_SOURCE_IDLE: Duration = Duration::from_secs(60);
-
-/// Shared key when Sample has no timestamp (uhlc rejects all-zero IDs).
-pub const BIND_SOURCE_UNKNOWN: [u8; BIND_SOURCE_KEY_LEN] = [0u8; BIND_SOURCE_KEY_LEN];
-
-pub type BindSourceKey = [u8; BIND_SOURCE_KEY_LEN];
+pub const BIND_PUB_IDLE: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 struct TokenBucket {
@@ -87,6 +80,11 @@ impl TokenBucket {
         self.tokens -= 1.0;
     }
 
+    fn refund_one(&mut self, now: Instant) {
+        self.refill(now);
+        self.tokens = (self.tokens + 1.0).min(self.capacity);
+    }
+
     fn try_take(&mut self, now: Instant) -> bool {
         if self.has_token(now) {
             self.consume_one();
@@ -97,11 +95,11 @@ impl TokenBucket {
     }
 }
 
-/// Bind-source row: refill clock ≠ idle clock (deny must not pin the slot).
+/// Per-pub row: refill clock ≠ idle clock (deny must not pin the slot).
 #[derive(Debug, Clone)]
-struct BindSourceEntry {
+struct BindPubEntry {
     bucket: TokenBucket,
-    /// Last successful `allow_bind` consume for this source (idle GC).
+    /// Last successful `allow_bind` consume for this pub (idle GC).
     last_consume: Instant,
 }
 
@@ -109,8 +107,8 @@ struct BindSourceEntry {
 #[derive(Debug)]
 pub struct IntentRateLimiter {
     by_sub: HashMap<String, TokenBucket>,
-    by_session_pub: HashMap<Vec<u8>, TokenBucket>,
-    by_bind_source: HashMap<BindSourceKey, BindSourceEntry>,
+    by_session_pub: HashMap<Vec<u8>, BindPubEntry>,
+    bind_global: Option<TokenBucket>,
 }
 
 impl Default for IntentRateLimiter {
@@ -124,79 +122,85 @@ impl IntentRateLimiter {
         Self {
             by_sub: HashMap::new(),
             by_session_pub: HashMap::new(),
-            by_bind_source: HashMap::new(),
+            bind_global: None,
         }
     }
 
-    /// After Ed25519, before JWT. **Not** Leave-exempt. Source + per-pub atomic.
+    /// After Ed25519, before JWT. **Not** Leave-exempt. Global + per-pub atomic.
     /// Map entries are inserted only when both buckets actually consume
-    /// (deny on a fresh key must not grow the maps). Fresh sources at
-    /// [`MAX_BIND_SOURCES`] GC idle rows first, then deny if still full.
-    pub fn allow_bind(&mut self, source: &BindSourceKey, session_pub: &[u8], now: Instant) -> bool {
-        if !self.by_bind_source.contains_key(source) && !self.ensure_bind_source_slot(now) {
+    /// (deny on a fresh key must not grow the map). Fresh pubs at
+    /// [`MAX_BIND_PUBS`] GC idle rows first, then deny if still full.
+    pub fn allow_bind(&mut self, session_pub: &[u8], now: Instant) -> bool {
+        if !self.by_session_pub.contains_key(session_pub) && !self.ensure_bind_pub_slot(now) {
             return false;
         }
 
-        let source_ok = match self.by_bind_source.get_mut(source) {
-            Some(entry) => entry.bucket.has_token(now),
-            None => true, // fresh source would start at BIND_SOURCE_CAPACITY
+        let global_ok = match self.bind_global.as_mut() {
+            Some(bucket) => bucket.has_token(now),
+            None => true, // fresh global would start at BIND_GLOBAL_CAPACITY
         };
-        if !source_ok {
+        if !global_ok {
             return false;
         }
 
         let pub_ok = match self.by_session_pub.get_mut(session_pub) {
-            Some(bucket) => bucket.has_token(now),
+            Some(entry) => entry.bucket.has_token(now),
             None => true, // fresh pub would start at BIND_CAPACITY
         };
         if !pub_ok {
             return false;
         }
 
-        match self.by_bind_source.get_mut(source) {
+        match self.bind_global.as_mut() {
+            Some(bucket) => bucket.consume_one(),
+            None => {
+                let mut bucket =
+                    TokenBucket::new(BIND_GLOBAL_CAPACITY, BIND_GLOBAL_REFILL_PER_SEC, now);
+                bucket.consume_one();
+                self.bind_global = Some(bucket);
+            }
+        }
+        match self.by_session_pub.get_mut(session_pub) {
             Some(entry) => {
                 entry.bucket.consume_one();
                 entry.last_consume = now;
             }
             None => {
-                // `ensure_bind_source_slot` only checked capacity (+ idle GC); insert
-                // happens here after both buckets accepted the consume.
-                let mut bucket =
-                    TokenBucket::new(BIND_SOURCE_CAPACITY, BIND_SOURCE_REFILL_PER_SEC, now);
+                let mut bucket = TokenBucket::new(BIND_CAPACITY, BIND_REFILL_PER_SEC, now);
                 bucket.consume_one();
-                self.by_bind_source.insert(
-                    *source,
-                    BindSourceEntry {
+                self.by_session_pub.insert(
+                    session_pub.to_vec(),
+                    BindPubEntry {
                         bucket,
                         last_consume: now,
                     },
                 );
             }
         }
-        match self.by_session_pub.get_mut(session_pub) {
-            Some(bucket) => bucket.consume_one(),
-            None => {
-                let mut bucket = TokenBucket::new(BIND_CAPACITY, BIND_REFILL_PER_SEC, now);
-                bucket.consume_one();
-                self.by_session_pub.insert(session_pub.to_vec(), bucket);
-            }
-        }
         true
     }
 
-    /// True if a fresh source may be inserted (`len < MAX` after idle GC).
-    fn ensure_bind_source_slot(&mut self, now: Instant) -> bool {
-        if self.by_bind_source.len() < MAX_BIND_SOURCES {
-            return true;
+    /// After successful JWT bind: return one soft-global token (capped).
+    /// Failed JWT must **not** call this — attacker keeps the spend.
+    /// No-op if `allow_bind` never created the global bucket (mis-ordered call).
+    pub fn refund_bind_global(&mut self, now: Instant) {
+        if let Some(bucket) = self.bind_global.as_mut() {
+            bucket.refund_one(now);
         }
-        self.gc_idle_bind_sources(now);
-        self.by_bind_source.len() < MAX_BIND_SOURCES
     }
 
-    fn gc_idle_bind_sources(&mut self, now: Instant) {
-        self.by_bind_source.retain(|_, entry| {
-            now.saturating_duration_since(entry.last_consume) < BIND_SOURCE_IDLE
-        });
+    /// True if a fresh pub may be inserted (`len < MAX` after idle GC).
+    fn ensure_bind_pub_slot(&mut self, now: Instant) -> bool {
+        if self.by_session_pub.len() < MAX_BIND_PUBS {
+            return true;
+        }
+        self.gc_idle_bind_pubs(now);
+        self.by_session_pub.len() < MAX_BIND_PUBS
+    }
+
+    fn gc_idle_bind_pubs(&mut self, now: Instant) {
+        self.by_session_pub
+            .retain(|_, entry| now.saturating_duration_since(entry.last_consume) < BIND_PUB_IDLE);
     }
 
     /// After Ed25519 + steady evaluate (seq ok), before `last_seq` commit. Leave exempt.
@@ -227,9 +231,24 @@ impl IntentRateLimiter {
         }
     }
 
-    /// Drop per-pub bind bucket after failed JWT / bind evaluate (avoid map growth).
+    /// Drop per-pub bind bucket. Prefer [`after_bind_jwt_fail`] so bound pubs
+    /// keep their spent budget.
     pub fn forget_session_pub(&mut self, session_pub: &[u8]) {
         self.by_session_pub.remove(session_pub);
+    }
+
+    /// x009c policy: forget unbound map rows after JWT fail; keep spent per-pub
+    /// when `session_pub` is already Session-bound (rebind fail / concurrent commit).
+    #[inline]
+    pub fn should_forget_after_bind_fail(is_bound: bool) -> bool {
+        !is_bound
+    }
+
+    /// After failed JWT: forget per-pub only when unbound (`is_bound == false`).
+    pub fn after_bind_jwt_fail(&mut self, session_pub: &[u8], is_bound: bool) {
+        if Self::should_forget_after_bind_fail(is_bound) {
+            self.forget_session_pub(session_pub);
+        }
     }
 
     /// Test helper: remaining steady tokens (approx after refill at `now`).
@@ -245,35 +264,45 @@ impl IntentRateLimiter {
     }
 
     #[cfg(test)]
-    fn bind_source_tokens(&mut self, source: &BindSourceKey, now: Instant) -> f64 {
-        match self.by_bind_source.get_mut(source) {
-            Some(e) => {
-                e.bucket.refill(now);
-                e.bucket.tokens
+    fn bind_global_tokens(&mut self, now: Instant) -> f64 {
+        match self.bind_global.as_mut() {
+            Some(b) => {
+                b.refill(now);
+                b.tokens
             }
-            None => BIND_SOURCE_CAPACITY,
+            None => BIND_GLOBAL_CAPACITY,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_has_bind_pub(&self, session_pub: &[u8]) -> bool {
+        self.by_session_pub.contains_key(session_pub)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_bind_pub_tokens(&mut self, session_pub: &[u8], now: Instant) -> f64 {
+        self.bind_pub_tokens(session_pub, now)
     }
 
     #[cfg(test)]
     fn bind_pub_tokens(&mut self, session_pub: &[u8], now: Instant) -> f64 {
         match self.by_session_pub.get_mut(session_pub) {
-            Some(b) => {
-                b.refill(now);
-                b.tokens
+            Some(e) => {
+                e.bucket.refill(now);
+                e.bucket.tokens
             }
             None => BIND_CAPACITY,
         }
     }
 
     #[cfg(test)]
-    fn bind_source_last_consume(&self, source: &BindSourceKey) -> Option<Instant> {
-        self.by_bind_source.get(source).map(|e| e.last_consume)
+    fn bind_pub_last_consume(&self, session_pub: &[u8]) -> Option<Instant> {
+        self.by_session_pub.get(session_pub).map(|e| e.last_consume)
     }
 
     #[cfg(test)]
-    fn bind_source_refill_last(&self, source: &BindSourceKey) -> Option<Instant> {
-        self.by_bind_source.get(source).map(|e| e.bucket.last)
+    fn bind_pub_refill_last(&self, session_pub: &[u8]) -> Option<Instant> {
+        self.by_session_pub.get(session_pub).map(|e| e.bucket.last)
     }
 }
 
@@ -281,22 +310,16 @@ impl IntentRateLimiter {
 mod tests {
     use super::*;
 
-    fn source_n(n: u8) -> BindSourceKey {
-        let mut key = [0u8; BIND_SOURCE_KEY_LEN];
-        key[0] = n;
-        // Non-zero so it never collides with UNKNOWN.
-        if n == 0 {
-            key[1] = 1;
-        }
-        key
+    fn pub_n(n: u8) -> Vec<u8> {
+        vec![n; 32]
     }
 
-    fn source_i(i: usize, tag: u8) -> BindSourceKey {
-        let mut key = [0u8; BIND_SOURCE_KEY_LEN];
-        key[0] = (i & 0xff) as u8;
-        key[1] = ((i >> 8) & 0xff) as u8;
-        key[2] = tag; // non-zero vs UNKNOWN
-        key
+    fn pub_i(i: usize, tag: u8) -> Vec<u8> {
+        let mut bytes = [0u8; 32];
+        bytes[0] = (i & 0xff) as u8;
+        bytes[1] = ((i >> 8) & 0xff) as u8;
+        bytes[2] = tag;
+        bytes.to_vec()
     }
 
     #[test]
@@ -332,111 +355,98 @@ mod tests {
     }
 
     #[test]
-    fn bind_source_limits_unique_pubs() {
+    fn bind_global_limits_unique_pubs() {
         let mut lim = IntentRateLimiter::new();
         let t0 = Instant::now();
-        let source = source_n(1);
         let mut ok = 0u32;
         for i in 0..40u8 {
-            let pub_bytes = vec![i; 32];
-            if lim.allow_bind(&source, &pub_bytes, t0) {
+            if lim.allow_bind(&pub_n(i), t0) {
                 ok += 1;
             }
         }
-        assert_eq!(ok, BIND_SOURCE_CAPACITY as u32);
+        assert_eq!(ok, BIND_GLOBAL_CAPACITY as u32);
     }
 
     #[test]
-    fn bind_other_source_unaffected_when_one_exhausted() {
+    fn successful_bind_refund_frees_global_for_other_pub() {
         let mut lim = IntentRateLimiter::new();
         let t0 = Instant::now();
-        let attacker = source_n(2);
-        let victim = source_n(3);
-        for i in 0..(BIND_SOURCE_CAPACITY as u8) {
-            assert!(lim.allow_bind(&attacker, &[i; 32], t0));
+        for i in 0..(BIND_GLOBAL_CAPACITY as u8) {
+            assert!(lim.allow_bind(&pub_n(i), t0));
+            lim.refund_bind_global(t0);
         }
-        assert!(!lim.allow_bind(&attacker, &[200u8; 32], t0));
+        // Net-zero global after refunds: a fresh pub still gets through.
         assert!(
-            lim.allow_bind(&victim, &[1u8; 32], t0),
-            "exhausted attacker source must not block another source"
+            lim.allow_bind(&pub_n(200), t0),
+            "refunded successful binds must not permanently drain global"
         );
     }
 
     #[test]
-    fn bind_per_pub_exhaust_does_not_drain_source() {
+    fn jwt_fail_keeps_global_spent() {
         let mut lim = IntentRateLimiter::new();
         let t0 = Instant::now();
-        let source = source_n(4);
-        let pub_bytes = vec![7u8; 32];
+        let before = lim.bind_global_tokens(t0);
+        assert!(lim.allow_bind(&pub_n(1), t0));
+        lim.forget_session_pub(&pub_n(1));
+        assert!(
+            (lim.bind_global_tokens(t0) - (before - 1.0)).abs() < f64::EPSILON,
+            "JWT-fail forget drops per-pub but global stay consumed"
+        );
+    }
+
+    #[test]
+    fn bind_per_pub_exhaust_does_not_drain_global() {
+        let mut lim = IntentRateLimiter::new();
+        let t0 = Instant::now();
+        let pub_bytes = pub_n(7);
         for _ in 0..(BIND_CAPACITY as u32) {
-            assert!(lim.allow_bind(&source, &pub_bytes, t0));
+            assert!(lim.allow_bind(&pub_bytes, t0));
+            lim.refund_bind_global(t0); // simulate success so global stays full
         }
-        let source_before = lim.bind_source_tokens(&source, t0);
-        assert!(!lim.allow_bind(&source, &pub_bytes, t0));
+        let global_before = lim.bind_global_tokens(t0);
+        assert!(!lim.allow_bind(&pub_bytes, t0));
         assert!(
-            (lim.bind_source_tokens(&source, t0) - source_before).abs() < f64::EPSILON,
-            "per-pub deny must not consume source"
+            (lim.bind_global_tokens(t0) - global_before).abs() < f64::EPSILON,
+            "per-pub deny must not consume global"
         );
     }
 
     #[test]
-    fn fresh_source_with_exhausted_pub_does_not_grow_source_map() {
+    fn fresh_pub_with_exhausted_global_does_not_grow_pub_map() {
         let mut lim = IntentRateLimiter::new();
         let t0 = Instant::now();
-        let first = source_n(5);
-        let pub_bytes = vec![7u8; 32];
-        for _ in 0..(BIND_CAPACITY as u32) {
-            assert!(lim.allow_bind(&first, &pub_bytes, t0));
+        for i in 0..(BIND_GLOBAL_CAPACITY as u8) {
+            assert!(lim.allow_bind(&pub_n(i), t0));
+            // no refund → global empty
         }
-        let source_len = lim.by_bind_source.len();
-        assert_eq!(source_len, 1);
-        let fresh = source_n(6);
-        assert!(!lim.allow_bind(&fresh, &pub_bytes, t0));
-        assert!(
-            !lim.by_bind_source.contains_key(&fresh),
-            "pub deny must not insert a fresh source row"
-        );
-        assert_eq!(lim.by_bind_source.len(), source_len);
-    }
-
-    #[test]
-    fn source_deny_on_fresh_pub_does_not_grow_maps() {
-        let mut lim = IntentRateLimiter::new();
-        let t0 = Instant::now();
-        let source = source_n(7);
-        for i in 0..(BIND_SOURCE_CAPACITY as u8) {
-            assert!(lim.allow_bind(&source, &[i; 32], t0));
-        }
-        let source_len = lim.by_bind_source.len();
         let pub_len = lim.by_session_pub.len();
-        assert_eq!(source_len, 1);
-        assert_eq!(pub_len, BIND_SOURCE_CAPACITY as usize);
-        for i in 0..50u8 {
-            let pub_bytes = vec![200u8.wrapping_add(i); 32];
-            assert!(!lim.allow_bind(&source, &pub_bytes, t0));
-            assert!(
-                !lim.by_session_pub.contains_key(&pub_bytes),
-                "source deny must not insert fresh pub"
-            );
-        }
-        assert_eq!(lim.by_bind_source.len(), source_len);
+        assert_eq!(pub_len, BIND_GLOBAL_CAPACITY as usize);
+        let fresh = pub_n(200);
+        assert!(!lim.allow_bind(&fresh, t0));
+        assert!(
+            !lim.by_session_pub.contains_key(&fresh),
+            "global deny must not insert a fresh pub row"
+        );
         assert_eq!(lim.by_session_pub.len(), pub_len);
     }
 
     #[test]
-    fn allow_bind_then_jwt_fail_forget_keeps_source_spent() {
+    fn pub_deny_on_fresh_does_not_grow_maps_when_global_ok() {
         let mut lim = IntentRateLimiter::new();
         let t0 = Instant::now();
-        let source = source_n(8);
-        let pub_bytes = vec![9u8; 32];
-        let source_before = lim.bind_source_tokens(&source, t0);
-        assert!(lim.allow_bind(&source, &pub_bytes, t0));
-        assert!(lim.by_session_pub.contains_key(&pub_bytes));
-        lim.forget_session_pub(&pub_bytes);
-        assert!(!lim.by_session_pub.contains_key(&pub_bytes));
+        let pub_bytes = pub_n(7);
+        for _ in 0..(BIND_CAPACITY as u32) {
+            assert!(lim.allow_bind(&pub_bytes, t0));
+            lim.refund_bind_global(t0);
+        }
+        let pub_len = lim.by_session_pub.len();
+        let global_before = lim.bind_global_tokens(t0);
+        assert!(!lim.allow_bind(&pub_bytes, t0));
+        assert_eq!(lim.by_session_pub.len(), pub_len);
         assert!(
-            (lim.bind_source_tokens(&source, t0) - (source_before - 1.0)).abs() < f64::EPSILON,
-            "JWT-fail forget drops per-pub but source stay consumed"
+            (lim.bind_global_tokens(t0) - global_before).abs() < f64::EPSILON,
+            "pub deny must not consume global"
         );
     }
 
@@ -444,108 +454,151 @@ mod tests {
     fn successful_rebind_keeps_same_pub_bucket_when_not_forgotten() {
         let mut lim = IntentRateLimiter::new();
         let t0 = Instant::now();
-        let source = source_n(9);
-        let pub_bytes = vec![3u8; 32];
-        assert!(lim.allow_bind(&source, &pub_bytes, t0));
+        let pub_bytes = pub_n(3);
+        assert!(lim.allow_bind(&pub_bytes, t0));
+        lim.refund_bind_global(t0);
         let after_one = lim.bind_pub_tokens(&pub_bytes, t0);
-        // Simulate commit_bind GC that excludes the current pub.
-        lim.forget_session_pubs(&[vec![99u8; 32]]);
+        lim.forget_session_pubs(&[pub_n(99)]);
         assert!(lim.by_session_pub.contains_key(&pub_bytes));
         assert!((lim.bind_pub_tokens(&pub_bytes, t0) - after_one).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn unknown_source_key_is_shared() {
+    fn bind_pub_map_capped_without_idle_gc() {
         let mut lim = IntentRateLimiter::new();
         let t0 = Instant::now();
-        for i in 0..(BIND_SOURCE_CAPACITY as u8) {
-            assert!(lim.allow_bind(&BIND_SOURCE_UNKNOWN, &[i; 32], t0));
+        for i in 0..MAX_BIND_PUBS {
+            let key = pub_i(i, 1);
+            assert!(lim.allow_bind(&key, t0), "fill slot {i}");
+            lim.refund_bind_global(t0); // keep global from blocking the fill
         }
-        assert!(!lim.allow_bind(&BIND_SOURCE_UNKNOWN, &[255u8; 32], t0));
+        assert_eq!(lim.by_session_pub.len(), MAX_BIND_PUBS);
+        let overflow = pub_n(42);
+        assert!(!lim.allow_bind(&overflow, t0));
+        assert!(!lim.by_session_pub.contains_key(&overflow));
+        assert_eq!(lim.by_session_pub.len(), MAX_BIND_PUBS);
     }
 
     #[test]
-    fn bind_source_map_capped_without_idle_gc() {
+    fn idle_bind_pubs_gc_before_insert_at_cap() {
         let mut lim = IntentRateLimiter::new();
         let t0 = Instant::now();
-        for i in 0..MAX_BIND_SOURCES {
-            let key = source_i(i, 1);
-            assert!(
-                lim.allow_bind(&key, &[(i % 250) as u8 + 1; 32], t0),
-                "fill slot {i}"
-            );
+        for i in 0..MAX_BIND_PUBS {
+            let key = pub_i(i, 2);
+            assert!(lim.allow_bind(&key, t0));
+            lim.refund_bind_global(t0);
         }
-        assert_eq!(lim.by_bind_source.len(), MAX_BIND_SOURCES);
-        let overflow = source_n(200);
-        assert!(!lim.allow_bind(&overflow, &[42u8; 32], t0));
-        assert!(!lim.by_bind_source.contains_key(&overflow));
-        assert_eq!(lim.by_bind_source.len(), MAX_BIND_SOURCES);
-    }
-
-    #[test]
-    fn idle_bind_sources_gc_before_insert_at_cap() {
-        let mut lim = IntentRateLimiter::new();
-        let t0 = Instant::now();
-        for i in 0..MAX_BIND_SOURCES {
-            let key = source_i(i, 2);
-            assert!(lim.allow_bind(&key, &[(i % 250) as u8 + 1; 32], t0));
-        }
-        assert_eq!(lim.by_bind_source.len(), MAX_BIND_SOURCES);
-        let t1 = t0 + BIND_SOURCE_IDLE + Duration::from_millis(1);
-        let fresh = source_n(201);
+        assert_eq!(lim.by_session_pub.len(), MAX_BIND_PUBS);
+        let t1 = t0 + BIND_PUB_IDLE + Duration::from_millis(1);
+        let fresh = pub_n(99);
         assert!(
-            lim.allow_bind(&fresh, &[99u8; 32], t1),
-            "idle GC must free a slot for a new source"
+            lim.allow_bind(&fresh, t1),
+            "idle GC must free a slot for a new pub"
         );
-        assert!(lim.by_bind_source.contains_key(&fresh));
-        assert!(lim.by_bind_source.len() <= MAX_BIND_SOURCES);
+        assert!(lim.by_session_pub.contains_key(&fresh));
+        assert!(lim.by_session_pub.len() <= MAX_BIND_PUBS);
     }
 
     #[test]
-    fn deny_path_does_not_refresh_bind_source_idle() {
+    fn deny_path_does_not_refresh_bind_pub_idle() {
         let mut lim = IntentRateLimiter::new();
         let t0 = Instant::now();
-        // Unique pub per source; exhaust per-pub while source still has tokens.
-        for i in 0..MAX_BIND_SOURCES {
-            let key = source_i(i, 3);
-            let mut pub_bytes = [0u8; 32];
-            pub_bytes[0] = key[0];
-            pub_bytes[1] = key[1];
-            pub_bytes[2] = 3;
+        // Fill map with unique pubs; exhaust per-pub while refunding global.
+        let mut keys = Vec::with_capacity(MAX_BIND_PUBS);
+        for i in 0..MAX_BIND_PUBS {
+            let key = pub_i(i, 3);
             for _ in 0..(BIND_CAPACITY as u32) {
-                assert!(lim.allow_bind(&key, &pub_bytes, t0));
+                assert!(lim.allow_bind(&key, t0));
+                lim.refund_bind_global(t0);
             }
-            assert_eq!(lim.bind_source_last_consume(&key), Some(t0));
+            assert_eq!(lim.bind_pub_last_consume(&key), Some(t0));
+            keys.push(key);
         }
-        assert_eq!(lim.by_bind_source.len(), MAX_BIND_SOURCES);
+        assert_eq!(lim.by_session_pub.len(), MAX_BIND_PUBS);
 
-        // Short dt: pub still empty (< 1 refilled token) but source.has_token refills.
+        // Short dt: pub still empty (< 1 refilled token) but global.has_token refills.
         let t_mid = t0 + Duration::from_millis(10);
-        for i in 0..MAX_BIND_SOURCES {
-            let key = source_i(i, 3);
-            let mut pub_bytes = [0u8; 32];
-            pub_bytes[0] = key[0];
-            pub_bytes[1] = key[1];
-            pub_bytes[2] = 3;
-            assert!(!lim.allow_bind(&key, &pub_bytes, t_mid));
+        for key in &keys {
+            assert!(!lim.allow_bind(key, t_mid));
             assert_eq!(
-                lim.bind_source_last_consume(&key),
+                lim.bind_pub_last_consume(key),
                 Some(t0),
                 "pub deny must not move last_consume"
             );
-            let refill_last = lim.bind_source_refill_last(&key).expect("source row");
+            let refill_last = lim.bind_pub_refill_last(key).expect("pub row");
             assert!(
                 refill_last > t0,
                 "deny still refills the token clock (separate from idle)"
             );
         }
 
-        let t_idle = t0 + BIND_SOURCE_IDLE + Duration::from_millis(1);
-        let fresh = source_n(202);
+        let t_idle = t0 + BIND_PUB_IDLE + Duration::from_millis(1);
+        let fresh = pub_n(77);
         assert!(
-            lim.allow_bind(&fresh, &[77u8; 32], t_idle),
-            "deny-only traffic must not prevent idle GC after BIND_SOURCE_IDLE from last consume"
+            lim.allow_bind(&fresh, t_idle),
+            "deny-only traffic must not prevent idle GC after BIND_PUB_IDLE from last consume"
         );
-        assert!(lim.by_bind_source.contains_key(&fresh));
+        assert!(lim.by_session_pub.contains_key(&fresh));
+    }
+
+    #[test]
+    fn refund_bind_global_noop_when_never_consumed() {
+        let mut lim = IntentRateLimiter::new();
+        let t0 = Instant::now();
+        lim.refund_bind_global(t0);
+        assert!(
+            lim.bind_global.is_none(),
+            "mis-ordered refund must not mint a full global bucket"
+        );
+        assert!((lim.bind_global_tokens(t0) - BIND_GLOBAL_CAPACITY).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn allow_bind_takes_only_session_pub_no_zenoh_source() {
+        // P2-14: bind budget is keyed solely by session_pub; there is no Sample-ID
+        // parameter that a publisher could rotate to reset the bucket.
+        let mut lim = IntentRateLimiter::new();
+        let t0 = Instant::now();
+        let pub_bytes = pub_n(9);
+        for _ in 0..(BIND_CAPACITY as u32) {
+            assert!(lim.allow_bind(&pub_bytes, t0));
+            lim.refund_bind_global(t0);
+        }
+        assert!(
+            !lim.allow_bind(&pub_bytes, t0),
+            "same session_pub must share one per-pub budget across attempts"
+        );
+    }
+
+    #[test]
+    fn should_forget_after_bind_fail_only_when_unbound() {
+        assert!(IntentRateLimiter::should_forget_after_bind_fail(false));
+        assert!(!IntentRateLimiter::should_forget_after_bind_fail(true));
+    }
+
+    #[test]
+    fn after_bind_jwt_fail_forgets_unbound_keeps_bound() {
+        let mut lim = IntentRateLimiter::new();
+        let t0 = Instant::now();
+        let unbound = pub_n(11);
+        let bound = pub_n(12);
+        assert!(lim.allow_bind(&unbound, t0));
+        assert!(lim.allow_bind(&bound, t0));
+        let bound_tokens = lim.bind_pub_tokens(&bound, t0);
+
+        lim.after_bind_jwt_fail(&bound, true);
+        assert!(
+            lim.by_session_pub.contains_key(&bound),
+            "already-bound JWT fail must keep per-pub row"
+        );
+        assert!((lim.bind_pub_tokens(&bound, t0) - bound_tokens).abs() < f64::EPSILON);
+
+        lim.after_bind_jwt_fail(&unbound, false);
+        assert!(
+            !lim.by_session_pub.contains_key(&unbound),
+            "unbound JWT fail must forget per-pub row"
+        );
+        // Global spend from both allow_bind calls remains (no refund on fail path).
+        assert!((lim.bind_global_tokens(t0) - (BIND_GLOBAL_CAPACITY - 2.0)).abs() < f64::EPSILON);
     }
 }

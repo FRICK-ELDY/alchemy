@@ -206,11 +206,12 @@ depends_on: [x0006]
 | x0099 | — | done | HostLoop::tick 切り出し（P2-6 残り） | [x0099-host-loop-tick.md](slices/x0099-host-loop-tick.md) |
 | x009a | — | done | XR loader tempfile 純粋化（P2-12） | [x009a-xr-loader-tempfile-pure.md](slices/x009a-xr-loader-tempfile-pure.md) |
 | x009b | — | done | USER_ROOT 帯を Manifest 配（P2-13） | [x009b-user-root-band-manifest.md](slices/x009b-user-root-band-manifest.md) |
+| x009c | — | done | bind 全体上限 + session_pub 起点（成功 JWT 返却 · P2-14） | [x009c-bind-global-session-pub.md](slices/x009c-bind-global-session-pub.md) |
 
-**現在の次:** [x009b](slices/x009b-user-root-band-manifest.md) **done**（P2-13）。空間本線は一時停止。improvement 残（bind 上限 P2-14）· Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md) · [improvement-plan](../0_doc/evaluation/improvement-plan-2026-11-05.md)）。Inspector / Uber-SDF / 親子同期は再開時に再掲。  
+**現在の次:** [x009c](slices/x009c-bind-global-session-pub.md) **done**（P2-14）。空間本線は一時停止。improvement P2 は閉じた · Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md) · [improvement-plan](../0_doc/evaluation/improvement-plan-2026-11-05.md)）。Inspector / Uber-SDF / 親子同期は再開時に再掲。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-11-05.md)）。
 
-次の空き番号は **`x009c`**。
+次の空き番号は **`x009d`**。
 
 ## 関連
 

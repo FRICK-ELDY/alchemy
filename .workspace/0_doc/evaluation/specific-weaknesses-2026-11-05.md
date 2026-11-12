@@ -70,7 +70,7 @@
 ## P2 — 品質・DX・残債
 
 - **軽微群** `-1` 帯（採用合計 **-6**）
-  > BLAKE3 / seal Port 直列、mime 先着、Origin Cert が内容ハッシュを署名しない、`/health` が Port 非反映、共有 JWKS 失敗クールダウン無し、~~`USER_ROOT_SLOTS_MAX=4`~~（x009b closed）、host `main()` 肥大、配信 tick `Vec`、bind 自己申告キー、take-out UI と guest Token の不整合、dash/desktop 一枚岩、腐った smoke、`ci.sh` が shared 未収録、client.md / wan コメント / world 保証表鮮度、`vision.md` 空、Room 上限の並行 overshoot、Windows XR loader flake。
+  > BLAKE3 / seal Port 直列、mime 先着、Origin Cert が内容ハッシュを署名しない、`/health` が Port 非反映、共有 JWKS 失敗クールダウン無し、~~`USER_ROOT_SLOTS_MAX=4`~~（x009b closed）、host `main()` 肥大、配信 tick `Vec`、~~bind 自己申告キー~~（x009c closed）、take-out UI と guest Token の不整合、dash/desktop 一枚岩、腐った smoke、`ci.sh` が shared 未収録、client.md / wan コメント / world 保証表鮮度、`vision.md` 空、Room 上限の並行 overshoot、Windows XR loader flake。
   > 採用: まとめて **-6**
 
 ---

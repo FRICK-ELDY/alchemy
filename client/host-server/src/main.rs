@@ -15,11 +15,12 @@
 //! - Empty deltas: **no publish and no `net_tick` advance**; snapshot tick = last published (x0024)
 //! - Per-`sub` Intent/Grab → Manifest user_root slots (≤ `USER_ROOT_SLOTS_MAX` DoS; x004d / x009b);
 //!   Presence Leave / liveliness jti grace (x0022)
-//! - x0040 / x0077: Intent rate after Ed25519 (steady: after seq eval, before `last_seq`
-//!   commit, Leave-exempt; bind: atomic per-ZenohId source 20/10s + per-pub 5/2s before
-//!   JWT, Leave **not** exempt; `by_bind_source` ≤ `MAX_BIND_SOURCES` with idle GC on
-//!   last **successful** consume; failed bind drops unbound per-pub; rebind GC skips
-//!   the new pub). JWKS hard stale on Room Token verify
+//! - x0040 / x0077 / x009c: Intent rate after Ed25519 (steady: after seq eval, before
+//!   `last_seq` commit, Leave-exempt; bind: soft-global 20/10s + per-`session_pub` 5/2s
+//!   before JWT, Leave **not** exempt; successful JWT **refunds** global; key is
+//!   Ed25519 `session_pub` not ZenohId; `by_session_pub` ≤ `MAX_BIND_PUBS` with idle GC
+//!   on last **successful** consume; failed JWT drops per-pub **only if unbound**;
+//!   rebind GC skips the new pub). JWKS hard stale on Room Token verify
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
 //! - Slice E / x001e: Zenoh `host_control` off by default; `ALCHEMY_HOST_CONTROL=1` to enable
 //! - x0032: localhost IPC shutdown when `ALCHEMY_HOST_IPC_*` set (client HostSupervisor)
@@ -32,8 +33,8 @@
 //! - rkyv / bytemuck wire (encode is protobuf inside network worker today)
 //! - Intent temporary ban / Zenoh peer ACL
 //! - Unlimited Ed25519 cost on unbound steady floods (no sub bucket until bind)
-//! - Host-wide bind JWT soft-global; new-source join while bind-source map is full and
-//!   every row stays hot via successful consumes within `BIND_SOURCE_IDLE`
+//! - Join denial while soft-global is drained by failed-JWT flood; new-pub join while
+//!   bind-pub map is full and every row stays hot within `BIND_PUB_IDLE`
 
 mod finite;
 mod host_control;
@@ -162,7 +163,8 @@ fn spawn_input_gate(
                         let now = Instant::now();
                         let is_bind = !event.room_token.is_empty();
                         // x0040: Ed25519 first; rate never runs on forged sig.
-                        // Bind: rates alone → JWT/sessions → rates again for forget.
+                        // Bind: rates alone → JWT/sessions → rates (ok: refund);
+                        //   fail: nested sessions→rates for is_bound+forget (x009c).
                         // Steady: sessions (evaluate) → rates → sessions (commit).
                         // Leave/reclaim later: sessions then rates (never rates→sessions).
                         if let Err(err) = SessionTable::verify_intent_sig(&event) {
@@ -171,14 +173,10 @@ fn spawn_input_gate(
                             break 'sample;
                         }
                         let auth = if is_bind {
-                            // rates-only: atomic per-source+per-pub (Leave NOT exempt).
-                            let bind_source = sample
-                                .timestamp()
-                                .map(|ts| ts.get_id().to_le_bytes())
-                                .unwrap_or(intent_rate::BIND_SOURCE_UNKNOWN);
+                            // rates-only: atomic soft-global + per-session_pub (Leave NOT exempt).
                             {
                                 let mut rates = lock_or_fatal(&rate_limiter, "intent_rate");
-                                if !rates.allow_bind(&bind_source, &event.session_pub, now) {
+                                if !rates.allow_bind(&event.session_pub, now) {
                                     dropped_rate += 1;
                                     break 'sample;
                                 }
@@ -196,14 +194,26 @@ fn spawn_input_gate(
                                     };
                                     // x007a: Room Token jti correlation (same key as world/relay).
                                     log::info!("bind ok: sub={sub} room_jti={jti}");
-                                    // sessions then rates (GC other pubs only).
+                                    // sessions then rates: refund global + GC other pubs.
                                     let mut rates = lock_or_fatal(&rate_limiter, "intent_rate");
+                                    rates.refund_bind_global(now);
                                     rates.forget_session_pubs(&removed);
                                     Ok((sub, jti, caps))
                                 }
                                 Err(err) => {
-                                    let mut rates = lock_or_fatal(&rate_limiter, "intent_rate");
-                                    rates.forget_session_pub(&event.session_pub);
+                                    // Nested lock order: sessions → rates. Hold sessions
+                                    // across is_bound + after_bind_jwt_fail so a concurrent
+                                    // commit_bind cannot race the forget (x009c).
+                                    {
+                                        let table = lock_or_fatal(&sessions, "sessions");
+                                        let is_bound = table.is_bound(&event.session_pub);
+                                        let mut rates =
+                                            lock_or_fatal(&rate_limiter, "intent_rate");
+                                        rates.after_bind_jwt_fail(
+                                            &event.session_pub,
+                                            is_bound,
+                                        );
+                                    }
                                     Err(err)
                                 }
                             }

@@ -62,7 +62,7 @@ HostLoop::tick(now)
 
 ## やらない（本 Slice）／次
 
-- bind 全体上限（P2-14）· USER_ROOT 帯 Manifest（P2-13）；XR loader tempfile は [x009a](x009a-xr-loader-tempfile-pure.md)
+- bind 全体上限（P2-14）は [x009c](x009c-bind-global-session-pub.md)· USER_ROOT 帯 Manifest（P2-13）；XR loader tempfile は [x009a](x009a-xr-loader-tempfile-pure.md)
 - Inspector / Uber-SDF / 親子同期（空間本線）
 
 ## 関連

@@ -30,7 +30,7 @@
 |:---|:---|
 | mTLS temp・DemoScene ベクタ・metrics+jti | 別 Slice |
 | 成功 JWT でのバケット返却 | 採用しない（A のみ） |
-| host 全体 soft-global の再導入 | 採用しない（送信元分割の効果を殺す） |
+| host 全体 soft-global の再導入 | 採用しない（送信元分割の効果を殺す）→ 後続 **[x009c](x009c-bind-global-session-pub.md)** で session_pub 起点 + 成功返却として復帰 |
 
 ## 完了条件
 

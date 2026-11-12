@@ -58,7 +58,7 @@
 | P2-11 | Room 上限の厳密化 | -1 | quota row / serializable — **[x0097](../../roadmap/slices/x0097-room-owner-cap-strict.md) done** |
 | P2-12 | XR loader tempfile 純粋化 | -1 | Windows flake 除去 — **[x009a](../../roadmap/slices/x009a-xr-loader-tempfile-pure.md) done** |
 | P2-13 | USER_ROOT 帯を Manifest 配 | -1 | 帯を `0x1000_0000..` + DoS 天井 32・幅は Manifest — **[x009b](../../roadmap/slices/x009b-user-root-band-manifest.md) done** |
-| P2-14 | bind 全体上限 + session_pub 起点 | -1 | 自己申告 ID 緩和 |
+| P2-14 | bind 全体上限 + session_pub 起点 | -1 | 自己申告 ID 緩和 — **[x009c](../../roadmap/slices/x009c-bind-global-session-pub.md) done** |
 
 ---
 

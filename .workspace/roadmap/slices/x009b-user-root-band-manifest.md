@@ -58,7 +58,7 @@ client draw: remote_reserve = remotes.len() (not MAX)
 
 ## やらない（本 Slice）／次
 
-- bind 全体上限（P2-14）
+- bind 全体上限（P2-14）は [x009c](x009c-bind-global-session-pub.md)
 - DemoScene を本番 5+ 人に増やす（テストで十分）
 - host `[T; MAX]` → `Vec` 化
 

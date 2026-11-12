@@ -3,7 +3,8 @@
 //! Guarantees:
 //! - Publishes at `INPUT_HZ` using the Ed25519 Intent session; Room Token only on bind (x003e)
 //! - Payload sealed with AEAD (`AeadKind::Input`); seal failure → skip tick
-//! - Each put carries `session.new_timestamp()` (x0077 host bind source key)
+//! - Each put carries `session.new_timestamp()` (Zenoh causality; bind rate is
+//!   `session_pub`-keyed since x009c, not Sample ID)
 //! - Bind put failure keeps `bind_pending` so the next Intent still carries the Room Token
 //! - Liveliness rebind after Room Token refresh only after a bind Intent put succeeds
 //!
