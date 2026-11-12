@@ -5,7 +5,7 @@
 //! x007b spawn/despawn race) and is owned by the **physics apply** path; append/delete send
 //! `expected_revision` (seeded from shared) and retry on `scene_revision_conflict` only (x0082)
 //! **without** writing shared on success or conflict refetch (so apply's strictly-newer gate
-//! still runs Rapier / `force_reseal`).
+//! still runs XPBD/sim insert + `force_reseal`).
 //! Non-guarantees: scene persistence, Manifest sealing; infinite CAS retries.
 
 use super::http::{credential_agent, is_blake3_hex};
@@ -204,7 +204,7 @@ fn shared_revision(shared: &Arc<RwLock<RoomScene>>) -> Result<u64> {
 }
 
 /// Re-read world revision for CAS retry. Does **not** install into `shared_scene` —
-/// physics apply owns shared updates (strictly-newer + Rapier / reseal).
+/// physics apply owns shared updates (strictly-newer + XPBD/sim / reseal).
 fn fetch_expected_revision(
     world_url: &str,
     room_id: &str,

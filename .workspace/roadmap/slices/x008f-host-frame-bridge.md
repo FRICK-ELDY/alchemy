@@ -68,7 +68,7 @@ EpochBridgeHost::tick_after_rapier
 
 ## やらない（本 Slice）／次
 
-- XPBD を wire 権威にする / Rapier 削除
+- XPBD を wire 権威にする / Rapier 削除 → **[x0093](x0093-xpbd-wire-authority.md)**
 - SceneGpu 補間コンピュート bind → **[x0090](x0090-client-epoch-scenegpu-bind.md)**
 - client が EpochSnapshotPair を消費する経路 → **[x0090](x0090-client-epoch-scenegpu-bind.md)**（wire Frame からローカル再建）
 - Loro CRDT / Zenoh Grab ストリーム

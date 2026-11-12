@@ -1,33 +1,35 @@
-//! Rapier world driven by SceneManifest entries (x0027 / x002c / x0030 / x0041 / x004d / x0057).
+//! Epoch/XPBD world driven by SceneManifest entries (x0093; was Rapier through x008f).
 //!
-//! Guarantees: floor (host-local) + mesh ball + boxes + user_roots from Manifest;
-//! Manifest initial **rotation** → Rapier spawn; Manifest **scale** → Frame Pose seed
-//! (`scales` map; collider stays `half_extent`); per-slot Grab; no Steal;
+//! Guarantees: ground plane (y=0) + mesh ball + boxes + user_roots from Manifest;
+//! Manifest initial **rotation** / **scale** seed Frame Pose; per-slot Grab; no Steal;
 //! hold aim / offset capped by [`alchemy_shared_sim::MAX_GRAB_HIT_DISTANCE`] (x0041);
 //! Grab on/off syncs [`alchemy_shared_sim::SlotGraph`] held parent (x0057);
 //! `release_slot` resets translation+rotation to Manifest spawn;
-//! Presence capacity = contiguous Manifest user_root entries (x004d).
+//! Presence capacity = contiguous Manifest user_root entries (x004d);
+//! wire TRS authority is Epoch Curr after [`Self::step`] (x0093).
 //! Classification via `alchemy-shared-sim` [`EntityKind`] (x0030).
 //! Non-guarantees: Grab aim **rotation** follow (translation only); throw impulse;
-//! non-uniform collider scale (client OBB uses Frame scale,
-//! host physics / grab distance use `half_extent` only — x002c). Frame emits Rapier
-//! rotation + Manifest scale (x0029 / x002c). Frame parent fields / pass-place.
+//! Rapier bit-exact parity; capsule Walk extrude; LBVH body-body contacts on host;
+//! non-uniform collider scale; Frame parent fields / pass-place Intent wiring.
+
+use std::collections::{HashMap, HashSet};
 
 use alchemy_protocol::{
     scene_entry_grabbable, scene_entry_quat_xyzw, scene_entry_scale, user_root_slots_from_entries,
     LocomotionMode, SceneEntry, DEFAULT_MOVE_SPEED,
 };
+use alchemy_shared_sim::xpbd::{self, XpbdWorld};
 use alchemy_shared_sim::{
-    classify_scene_entry, scene_entry_color_rgba, EntityKind, SlotGraph, PHYS_BALL_RADIUS,
+    classify_scene_entry, scene_entry_color_rgba, ColliderShape, EntityKind, EpochSnapshotPair,
+    FlatTopology, NodeHandle, ReadinessMask, SlotGraph, WorldTransformf64, PHYS_BALL_RADIUS,
 };
-use rapier3d::na::{Isometry3, Quaternion, Translation3, UnitQuaternion};
-use rapier3d::prelude::*;
-use std::collections::HashMap;
 
 pub use alchemy_protocol::{USER_ROOT_ENTITY_FIRST, USER_ROOT_SLOTS_MAX};
 
-const FLOOR_HALF_H: f32 = 0.5;
-const DEMO_GRAVITY_Y: f32 = -2.2;
+const USER_ROOT_SENSOR_RADIUS: f32 = 0.3;
+const DEMO_GRAVITY_Y: f64 = -2.2;
+const DEFAULT_DT: f64 = 1.0 / 60.0;
+const GROUND_Y: f64 = 0.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LocoMode {
@@ -47,9 +49,7 @@ impl LocoMode {
 }
 
 /// Cuboids from Manifest (`half_extent > 0`). Grab is per-entry via `grabbable`.
-/// Non-Grab → Fixed (static scenery); Grab → Dynamic (x0027).
 pub struct CuboidBoxes {
-    pub handles: Vec<RigidBodyHandle>,
     pub entity_ids: Vec<u32>,
     pub grabbable: Vec<bool>,
     pub half_extents: Vec<f32>,
@@ -58,7 +58,6 @@ pub struct CuboidBoxes {
 impl CuboidBoxes {
     fn empty() -> Self {
         Self {
-            handles: Vec::new(),
             entity_ids: Vec::new(),
             grabbable: Vec::new(),
             half_extents: Vec::new(),
@@ -66,57 +65,48 @@ impl CuboidBoxes {
     }
 
     pub fn len(&self) -> usize {
-        self.handles.len()
+        self.entity_ids.len()
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 struct ActiveGrab {
     index: usize,
-    offset: Vector<Real>,
+    offset: [f32; 3],
 }
 
+/// Authoritative host sim: EpochSheet + XPBD (x0093).
 pub struct PhysicsWorld {
-    gravity: Vector<Real>,
-    integration_parameters: IntegrationParameters,
-    physics_pipeline: PhysicsPipeline,
-    island_manager: IslandManager,
-    broad_phase: DefaultBroadPhase,
-    narrow_phase: NarrowPhase,
-    rigid_body_set: RigidBodySet,
-    collider_set: ColliderSet,
-    impulse_joint_set: ImpulseJointSet,
-    multibody_joint_set: MultibodyJointSet,
-    ccd_solver: CCDSolver,
-    /// Mesh entities (dynamic balls). Index 0 is the primary coin when present (x006d+).
-    meshes: Vec<(u32, RigidBodyHandle)>,
-    /// Live indices are `0..slot_count` (Manifest-derived; x004d). Rest stay `None`.
-    user_roots: [Option<RigidBodyHandle>; USER_ROOT_SLOTS_MAX],
+    world: XpbdWorld,
+    topo: FlatTopology,
+    snapshots: EpochSnapshotPair,
+    entity_rows: HashMap<u32, NodeHandle>,
+    meshes: Vec<u32>,
+    user_root_rows: [Option<NodeHandle>; USER_ROOT_SLOTS_MAX],
     user_root_spawns: [(f32, f32, f32); USER_ROOT_SLOTS_MAX],
     user_root_quats: [[f32; 4]; USER_ROOT_SLOTS_MAX],
-    /// Manifest-derived Presence / user_root capacity (`1..=USER_ROOT_SLOTS_MAX`).
     slot_count: usize,
-    /// Manifest initial scale (Frame seed; not a Rapier collider size; x002c).
     scales: HashMap<u32, [f32; 3]>,
     pub boxes: CuboidBoxes,
     colors: HashMap<u32, (f32, f32, f32, f32)>,
     loco_mode: LocoMode,
     move_speed: f32,
     grabs: [Option<ActiveGrab>; USER_ROOT_SLOTS_MAX],
-    /// Logical held parents (`user_root → held`). Rapier follow stays kinematic.
+    /// Last aim used while holding (world space); drives grab_targets each tick.
+    grab_aims: [[f32; 3]; USER_ROOT_SLOTS_MAX],
     slots: SlotGraph,
+    /// Curr mutated outside `step_dt` (Intent move / release / spawn…) — force snapshot publish.
+    publish_dirty: bool,
+    /// Reused by [`Self::resolve_ground_plane`] (avoid per-tick HashSet/Vec alloc).
+    ground_scratch: HashSet<u32>,
+    active_row_scratch: Vec<u32>,
+    pub barrier_ticks: u64,
+    pub publishes: u64,
 }
 
-fn entry_unit_quat(entry: &SceneEntry) -> UnitQuaternion<f32> {
+fn entry_quat_xyzw(entry: &SceneEntry) -> [f32; 4] {
     let [qx, qy, qz, qw] = scene_entry_quat_xyzw(entry);
-    UnitQuaternion::from_quaternion(Quaternion::new(qw as f32, qx as f32, qy as f32, qz as f32))
-}
-
-fn entry_isometry(entry: &SceneEntry) -> Isometry3<f32> {
-    Isometry3::from_parts(
-        Translation3::new(entry.x as f32, entry.y as f32, entry.z as f32),
-        entry_unit_quat(entry),
-    )
+    [qx as f32, qy as f32, qz as f32, qw as f32]
 }
 
 fn entry_scale_f32(entry: &SceneEntry) -> [f32; 3] {
@@ -124,48 +114,60 @@ fn entry_scale_f32(entry: &SceneEntry) -> [f32; 3] {
     [sx as f32, sy as f32, sz as f32]
 }
 
+fn xf_at(pos: [f64; 3], rot: [f32; 4], scale: [f32; 3], inv_mass: f64) -> WorldTransformf64 {
+    WorldTransformf64 {
+        position: pos,
+        inv_mass,
+        rotation: rot,
+        scale,
+        frame_delta_xyz: [0.0, 0.0, 0.0],
+        flags: 0,
+        _pad0: 0,
+        _pad1: [0; 4],
+    }
+}
+
+fn support_half_y(shape: &ColliderShape) -> f64 {
+    match shape.shape_type {
+        ColliderShape::SPHERE => shape.extents[0] as f64,
+        ColliderShape::CAPSULE => (shape.extents[0] + shape.extents[1]) as f64,
+        ColliderShape::BOX => shape.extents[1] as f64,
+        _ => shape.extents[0] as f64,
+    }
+}
+
 impl PhysicsWorld {
-    /// Build physics from world-authored Manifest entries (x0027 / x004d).
-    ///
-    /// Panics if user_root entries are missing / non-contiguous / beyond
-    /// [`USER_ROOT_SLOTS_MAX`] (host validates via [`user_root_slots_from_entries`] at boot).
+    /// Build physics from world-authored Manifest entries (x0027 / x004d / x0093).
     pub fn from_entries(entries: &[SceneEntry], loco_mode: LocoMode, move_speed: f32) -> Self {
         let slots = user_root_slots_from_entries(entries)
             .unwrap_or_else(|e| panic!("invalid Manifest user_roots: {e}"));
-        let mut rigid_body_set = RigidBodySet::new();
-        let mut collider_set = ColliderSet::new();
+
         let mut colors = HashMap::new();
-
-        let floor = RigidBodyBuilder::fixed()
-            .translation(vector![0.0, -FLOOR_HALF_H, 0.0])
-            .build();
-        let floor_handle = rigid_body_set.insert(floor);
-        collider_set.insert_with_parent(
-            ColliderBuilder::cuboid(20.0, FLOOR_HALF_H, 20.0).build(),
-            floor_handle,
-            &mut rigid_body_set,
-        );
-
-        let mut meshes: Vec<(u32, RigidBodyHandle)> = Vec::new();
+        let mut scales: HashMap<u32, [f32; 3]> = HashMap::new();
         let mut boxes = CuboidBoxes::empty();
+        let mut meshes: Vec<u32> = Vec::new();
         let mut user_root_spawns = [(0.0_f32, 1.6_f32, 6.0_f32); USER_ROOT_SLOTS_MAX];
         let mut user_root_quats = [[0.0_f32, 0.0, 0.0, 1.0]; USER_ROOT_SLOTS_MAX];
-        let mut scales: HashMap<u32, [f32; 3]> = HashMap::new();
         let mut roots_seen = [false; USER_ROOT_SLOTS_MAX];
 
+        let mut world = XpbdWorld::new(entries.len() + 8);
+        world.gravity = [0.0, DEMO_GRAVITY_Y, 0.0];
+        world.substeps = 4;
+        let mut entity_rows = HashMap::new();
+
         for entry in entries {
-            let color = scene_entry_color_rgba(entry);
-            colors.insert(entry.entity_id, color);
+            colors.insert(entry.entity_id, scene_entry_color_rgba(entry));
             scales.insert(entry.entity_id, entry_scale_f32(entry));
-            let pose = entry_isometry(entry);
+            let rot = entry_quat_xyzw(entry);
+            let scale = entry_scale_f32(entry);
+            let pos = [entry.x, entry.y, entry.z];
 
             match classify_scene_entry(entry) {
                 EntityKind::UserRoot => {
                     let slot = (entry.entity_id - USER_ROOT_ENTITY_FIRST) as usize;
                     if slot < slots {
                         user_root_spawns[slot] = (entry.x as f32, entry.y as f32, entry.z as f32);
-                        let [qx, qy, qz, qw] = scene_entry_quat_xyzw(entry);
-                        user_root_quats[slot] = [qx as f32, qy as f32, qz as f32, qw as f32];
+                        user_root_quats[slot] = rot;
                         roots_seen[slot] = true;
                     }
                 }
@@ -176,47 +178,47 @@ impl PhysicsWorld {
                             entry.entity_id
                         );
                     }
-                    if meshes.iter().any(|(id, _)| *id == entry.entity_id) {
+                    if meshes.contains(&entry.entity_id) {
                         log::warn!(
                             "duplicate mesh entity_id {}; skipping collider",
                             entry.entity_id
                         );
-                    } else {
-                        let ball = RigidBodyBuilder::dynamic()
-                            .position(pose)
-                            .linvel(vector![0.1, 0.0, 0.05])
-                            .build();
-                        let handle = rigid_body_set.insert(ball);
-                        collider_set.insert_with_parent(
-                            ColliderBuilder::ball(PHYS_BALL_RADIUS)
-                                .restitution(0.15)
-                                .build(),
-                            handle,
-                            &mut rigid_body_set,
-                        );
-                        meshes.push((entry.entity_id, handle));
+                        continue;
                     }
+                    let handle = alloc_dynamic_sphere(
+                        &mut world,
+                        pos,
+                        rot,
+                        scale,
+                        entry.entity_id,
+                        PHYS_BALL_RADIUS,
+                        true,
+                    );
+                    entity_rows.insert(entry.entity_id, handle);
+                    meshes.push(entry.entity_id);
                 }
                 EntityKind::Box => {
                     let he = entry.half_extent;
                     let can_grab = scene_entry_grabbable(entry.flags);
-                    let body = if can_grab {
-                        RigidBodyBuilder::dynamic().position(pose).build()
-                    } else {
-                        // Static scenery: Fixed so knocks / mesh ball do not displace it.
-                        RigidBodyBuilder::fixed().position(pose).build()
+                    let handle = world.curr.alloc_row();
+                    let inv_mass = if can_grab { 1.0 } else { 0.0 };
+                    let xf = xf_at(pos, rot, scale, inv_mass);
+                    let _ = world.curr.set_transform(handle.row_id, xf);
+                    world.curr.colliders[handle.row_id as usize] = ColliderShape {
+                        shape_type: ColliderShape::BOX,
+                        extents: [he, he, he],
                     };
-                    let handle = rigid_body_set.insert(body);
-                    // Cuboid uses Manifest half_extent only. Frame/client OBB may be larger
-                    // when Manifest sx..sz != 1 (x002c non-guarantee: draw vs physics size).
-                    collider_set.insert_with_parent(
-                        ColliderBuilder::cuboid(he, he, he)
-                            .restitution(0.05)
-                            .build(),
-                        handle,
-                        &mut rigid_body_set,
+                    let mut mask = ReadinessMask(
+                        ReadinessMask::ALLOCATED
+                            | ReadinessMask::TRANSFORM
+                            | ReadinessMask::COLLIDER,
                     );
-                    boxes.handles.push(handle);
+                    if can_grab {
+                        mask = mask.with_bits(ReadinessMask::DYNAMIC);
+                    }
+                    world.curr.readiness[handle.row_id as usize] = mask;
+                    world.curr.owner_scope[handle.row_id as usize] = entry.entity_id;
+                    entity_rows.insert(entry.entity_id, handle);
                     boxes.entity_ids.push(entry.entity_id);
                     boxes.grabbable.push(can_grab);
                     boxes.half_extents.push(he);
@@ -225,23 +227,40 @@ impl PhysicsWorld {
             }
         }
 
-        let mut user_roots = [None; USER_ROOT_SLOTS_MAX];
+        let mut user_root_rows = [None; USER_ROOT_SLOTS_MAX];
         for slot in 0..slots {
             let (ux, uy, uz) = user_root_spawns[slot];
-            let [qx, qy, qz, qw] = user_root_quats[slot];
-            let rot = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
-            let user = RigidBodyBuilder::kinematic_position_based()
-                .position(Isometry3::from_parts(Translation3::new(ux, uy, uz), rot))
-                .build();
-            let handle = rigid_body_set.insert(user);
-            collider_set.insert_with_parent(
-                ColliderBuilder::ball(0.3).sensor(true).build(),
-                handle,
-                &mut rigid_body_set,
+            let rot = user_root_quats[slot];
+            let id = USER_ROOT_ENTITY_FIRST + slot as u32;
+            let handle = world.curr.alloc_row();
+            let scale = scales.get(&id).copied().unwrap_or([1.0, 1.0, 1.0]);
+            let xf = xf_at([ux as f64, uy as f64, uz as f64], rot, scale, 0.0);
+            let _ = world.curr.set_transform(handle.row_id, xf);
+            world.curr.colliders[handle.row_id as usize] = ColliderShape {
+                shape_type: ColliderShape::SPHERE,
+                extents: [USER_ROOT_SENSOR_RADIUS, 0.0, 0.0],
+            };
+            world.curr.readiness[handle.row_id as usize] = ReadinessMask(
+                ReadinessMask::ALLOCATED | ReadinessMask::TRANSFORM | ReadinessMask::COLLIDER,
             );
-            user_roots[slot] = Some(handle);
+            world.curr.owner_scope[handle.row_id as usize] = id;
+            entity_rows.insert(id, handle);
+            user_root_rows[slot] = Some(handle);
+            scales.entry(id).or_insert([1.0, 1.0, 1.0]);
             if !roots_seen[slot] {
-                colors.insert(USER_ROOT_ENTITY_FIRST + slot as u32, user_root_color(slot));
+                colors.insert(id, user_root_color(slot));
+            }
+        }
+
+        xpbd::sync_prev_capacity(&mut world);
+        world.prev = world.curr.clone();
+        // Initial horizontal kick via frame_delta (survives commit; x0093 Verlet handoff).
+        for &id in &meshes {
+            if let Some(h) = entity_rows.get(&id) {
+                let i = h.row_id as usize;
+                world.curr.world_transforms[i].frame_delta_xyz = [0.1 * DEFAULT_DT as f32, 0.0, 0.05 * DEFAULT_DT as f32];
+                world.prev.world_transforms[i].frame_delta_xyz =
+                    world.curr.world_transforms[i].frame_delta_xyz;
             }
         }
 
@@ -250,22 +269,15 @@ impl PhysicsWorld {
         } else {
             DEFAULT_MOVE_SPEED
         };
-        let _ = loco_mode;
 
-        Self {
-            gravity: vector![0.0, DEMO_GRAVITY_Y, 0.0],
-            integration_parameters: IntegrationParameters::default(),
-            physics_pipeline: PhysicsPipeline::new(),
-            island_manager: IslandManager::new(),
-            broad_phase: DefaultBroadPhase::new(),
-            narrow_phase: NarrowPhase::new(),
-            rigid_body_set,
-            collider_set,
-            impulse_joint_set: ImpulseJointSet::new(),
-            multibody_joint_set: MultibodyJointSet::new(),
-            ccd_solver: CCDSolver::new(),
+        let snapshots = EpochSnapshotPair::new(world.prev.clone(), world.curr.clone());
+        let mut host = Self {
+            world,
+            topo: FlatTopology::default(),
+            snapshots,
+            entity_rows,
             meshes,
-            user_roots,
+            user_root_rows,
             user_root_spawns,
             user_root_quats,
             slot_count: slots,
@@ -275,19 +287,40 @@ impl PhysicsWorld {
             loco_mode,
             move_speed: speed,
             grabs: [None; USER_ROOT_SLOTS_MAX],
+            grab_aims: [[0.0; 3]; USER_ROOT_SLOTS_MAX],
             slots: SlotGraph::new(),
-        }
+            publish_dirty: true,
+            ground_scratch: HashSet::new(),
+            active_row_scratch: Vec::new(),
+            barrier_ticks: 0,
+            publishes: 0,
+        };
+        host.snapshots
+            .publish(host.world.prev.clone(), host.world.curr.clone());
+        host.publishes = 1;
+        host.barrier_ticks = 1;
+        host
     }
 
-    /// Logical held SlotGraph (x0056 / x0057 / x0059). World-rooted when not held.
-    /// Intent/UI wiring is deferred (x005a/x005b); kept for unit tests + future host entry.
     #[allow(dead_code)]
     pub fn slot_graph(&self) -> &SlotGraph {
         &self.slots
     }
 
-    /// Pass held entity from `from_slot` to `to_slot` held (x005a). No Steal.
-    /// Intent/UI wiring deferred — exercised by unit tests until wired.
+    #[allow(dead_code)]
+    pub fn snapshots(&self) -> &EpochSnapshotPair {
+        &self.snapshots
+    }
+
+    #[allow(dead_code)]
+    pub fn entity_row(&self, entity_id: u32) -> Option<NodeHandle> {
+        self.entity_rows.get(&entity_id).copied()
+    }
+
+    pub fn entity_count(&self) -> usize {
+        self.entity_rows.len()
+    }
+
     #[allow(dead_code)]
     pub fn pass_held(&mut self, from_slot: usize, to_slot: usize) -> bool {
         if from_slot >= self.slot_count || to_slot >= self.slot_count || from_slot == to_slot {
@@ -306,33 +339,23 @@ impl PhysicsWorld {
         }
         let held_id = self.boxes.entity_ids[g.index];
         let holder_to = Self::user_root_entity_id(to_slot);
-        let aim = vector![tx, ty, tz];
-        let handle = self.boxes.handles[g.index];
-        let Some(body) = self.rigid_body_set.get(handle) else {
-            return false;
-        };
-        let t = *body.translation();
-        let raw = t - aim;
-        let (ox, oy, oz) = crate::finite::clamp_hold_offset(raw.x, raw.y, raw.z);
-        let offset = vector![ox, oy, oz];
+        let (bx, by, bz) = self.box_pose(g.index).0;
+        let raw = [bx - tx, by - ty, bz - tz];
+        let (ox, oy, oz) = crate::finite::clamp_hold_offset(raw[0], raw[1], raw[2]);
         let new_g = ActiveGrab {
             index: g.index,
-            offset,
+            offset: [ox, oy, oz],
         };
-        // Intentionally bypass `release_grab`: that path clears Slot + sets Dynamic.
-        // Pass keeps Kinematic hold and only reparents held → `to_slot` user_root.
         if self.slots.attach_held(holder_to, held_id).is_err() {
-            // Corrupt / over-deep SlotGraph — leave grabs unchanged.
             return false;
         }
         self.grabs[from_slot] = None;
+        self.grab_aims[to_slot] = [tx, ty, tz];
         self.grabs[to_slot] = Some(new_g);
-        self.follow_grab(new_g, aim);
+        self.set_grabbed_bit(held_id, true);
         true
     }
 
-    /// Place: release held to world (parent None + Dynamic). Alias of grab off (x005a).
-    /// Intent/UI wiring deferred — exercised by unit tests until wired.
     #[allow(dead_code)]
     pub fn place_held(&mut self, slot: usize) -> bool {
         if slot >= self.slot_count || self.grabs[slot].is_none() {
@@ -342,83 +365,82 @@ impl PhysicsWorld {
         true
     }
 
-    /// Manifest-derived Presence / user_root capacity (x004d).
     pub fn user_root_slot_count(&self) -> usize {
         self.slot_count
     }
 
     pub fn mesh_entity_id(&self) -> Option<u32> {
-        self.meshes.first().map(|(id, _)| *id)
+        self.meshes.first().copied()
     }
 
-    /// All mesh entity ids currently in the Rapier world (x006d).
     pub fn mesh_entity_ids(&self) -> impl Iterator<Item = u32> + '_ {
-        self.meshes.iter().map(|(id, _)| *id)
+        self.meshes.iter().copied()
     }
 
-    /// Remove one mesh by entity id (x007b despawn).
-    ///
-    /// Returns `false` when the id is not a live mesh (no partial mutation).
     pub fn despawn_mesh_entity(&mut self, entity_id: u32) -> bool {
-        let Some(pos) = self.meshes.iter().position(|(id, _)| *id == entity_id) else {
+        let Some(pos) = self.meshes.iter().position(|&id| id == entity_id) else {
             return false;
         };
-        let (_, handle) = self.meshes.remove(pos);
-        let _ = self.rigid_body_set.remove(
-            handle,
-            &mut self.island_manager,
-            &mut self.collider_set,
-            &mut self.impulse_joint_set,
-            &mut self.multibody_joint_set,
-            /*remove_attached_colliders=*/ true,
-        );
+        let Some(handle) = self.entity_rows.remove(&entity_id) else {
+            self.meshes.remove(pos);
+            self.colors.remove(&entity_id);
+            self.scales.remove(&entity_id);
+            return false;
+        };
+        if self.world.curr.tombstone(handle).is_err() {
+            self.entity_rows.insert(entity_id, handle);
+            return false;
+        }
+        self.meshes.remove(pos);
         self.colors.remove(&entity_id);
         self.scales.remove(&entity_id);
+        xpbd::sync_prev_capacity(&mut self.world);
+        self.publish_dirty = true;
         true
     }
 
-    /// Spawn one additional mesh from a sealed SceneEntry (x006d take-out).
-    ///
-    /// Fails (returns `false`, no partial insert) when `entity_id` is already used
-    /// or the entry is not classified as Mesh.
     pub fn spawn_mesh_entry(&mut self, entry: &SceneEntry) -> bool {
         if classify_scene_entry(entry) != EntityKind::Mesh {
             return false;
         }
-        if self.meshes.iter().any(|(id, _)| *id == entry.entity_id)
+        if self.meshes.contains(&entry.entity_id)
             || self.boxes.entity_ids.contains(&entry.entity_id)
-            || self.colors.contains_key(&entry.entity_id)
+            || self.entity_rows.contains_key(&entry.entity_id)
         {
             return false;
         }
-        let color = scene_entry_color_rgba(entry);
-        let pose = entry_isometry(entry);
-        let ball = RigidBodyBuilder::dynamic()
-            .position(pose)
-            .linvel(vector![0.05, 0.0, 0.02])
-            .build();
-        let handle = self.rigid_body_set.insert(ball);
-        self.collider_set.insert_with_parent(
-            ColliderBuilder::ball(PHYS_BALL_RADIUS)
-                .restitution(0.15)
-                .build(),
-            handle,
-            &mut self.rigid_body_set,
+        let handle = alloc_dynamic_sphere(
+            &mut self.world,
+            [entry.x, entry.y, entry.z],
+            entry_quat_xyzw(entry),
+            entry_scale_f32(entry),
+            entry.entity_id,
+            PHYS_BALL_RADIUS,
+            true,
         );
-        self.colors.insert(entry.entity_id, color);
-        self.scales.insert(entry.entity_id, entry_scale_f32(entry));
-        self.meshes.push((entry.entity_id, handle));
+        xpbd::sync_prev_capacity(&mut self.world);
+        let i = handle.row_id as usize;
+        if i < self.world.prev.len() {
+            self.world.prev.world_transforms[i] = self.world.curr.world_transforms[i];
+        }
+        self.world.curr.world_transforms[i].frame_delta_xyz =
+            [0.05 * DEFAULT_DT as f32, 0.0, 0.02 * DEFAULT_DT as f32];
+        self.colors
+            .insert(entry.entity_id, scene_entry_color_rgba(entry));
+        self.scales
+            .insert(entry.entity_id, entry_scale_f32(entry));
+        self.entity_rows.insert(entry.entity_id, handle);
+        self.meshes.push(entry.entity_id);
+        self.publish_dirty = true;
         true
     }
 
-    /// Pose for a mesh by entity id (x006d multi-mesh).
     pub fn mesh_pose_for(&self, entity_id: u32) -> Option<((f32, f32, f32), [f32; 4])> {
-        let handle = self
-            .meshes
-            .iter()
-            .find(|(id, _)| *id == entity_id)
-            .map(|(_, h)| *h)?;
-        self.rigid_body_set.get(handle).map(body_translation_quat)
+        if !self.meshes.contains(&entity_id) {
+            return None;
+        }
+        let handle = self.entity_rows.get(&entity_id)?;
+        Some(self.pose_from_row(handle.row_id))
     }
 
     pub fn color_for(&self, entity_id: u32) -> (f32, f32, f32, f32) {
@@ -428,7 +450,6 @@ impl PhysicsWorld {
             .unwrap_or((1.0, 1.0, 1.0, 1.0))
     }
 
-    /// Manifest initial Frame scale (identity when unset; x002c).
     pub fn scale_for(&self, entity_id: u32) -> [f32; 3] {
         self.scales
             .get(&entity_id)
@@ -471,9 +492,8 @@ impl PhysicsWorld {
         }
         let (ux, uy, uz) = self.user_root_translation(slot);
         let (ax, ay, az) = crate::finite::clamp_hold_aim((ux, uy, uz), aim);
-        let aim_v = vector![ax, ay, az];
-        if let Some(g) = self.grabs[slot] {
-            self.follow_grab(g, aim_v);
+        self.grab_aims[slot] = [ax, ay, az];
+        if self.grabs[slot].is_some() {
             return;
         }
         let Some(index) = self.entity_index(entity_id) else {
@@ -482,39 +502,36 @@ impl PhysicsWorld {
         if self.box_held_by_other(slot, index) {
             return;
         }
-        let handle = self.boxes.handles[index];
-        let Some(body) = self.rigid_body_set.get_mut(handle) else {
-            return;
-        };
-        let t = *body.translation();
-        if !crate::finite::within_grab_start_distance((ux, uy, uz), (t.x, t.y, t.z)) {
+        let (tx, ty, tz) = self.box_pose(index).0;
+        if !crate::finite::within_grab_start_distance((ux, uy, uz), (tx, ty, tz)) {
             return;
         }
-        let raw = t - aim_v;
-        let (ox, oy, oz) = crate::finite::clamp_hold_offset(raw.x, raw.y, raw.z);
-        let offset = vector![ox, oy, oz];
-        body.set_body_type(RigidBodyType::KinematicPositionBased, true);
-        body.set_linvel(vector![0.0, 0.0, 0.0], true);
-        body.set_angvel(vector![0.0, 0.0, 0.0], true);
-        body.set_next_kinematic_translation(t);
+        let raw = [tx - ax, ty - ay, tz - az];
+        let (ox, oy, oz) = crate::finite::clamp_hold_offset(raw[0], raw[1], raw[2]);
         let held_id = self.boxes.entity_ids[index];
         let holder = Self::user_root_entity_id(slot);
         if self.slots.attach_held(holder, held_id).is_err() {
-            // DepthExceeded / Cycle on corrupt graph — do not leave a grab without Slot.
-            body.set_body_type(RigidBodyType::Dynamic, true);
             return;
         }
-        let g = ActiveGrab { index, offset };
-        self.grabs[slot] = Some(g);
-        self.follow_grab(g, aim_v);
+        self.grabs[slot] = Some(ActiveGrab {
+            index,
+            offset: [ox, oy, oz],
+        });
+        self.set_grabbed_bit(held_id, true);
     }
 
-    fn follow_grab(&mut self, g: ActiveGrab, aim: Vector<Real>) {
-        let handle = self.boxes.handles[g.index];
-        let Some(body) = self.rigid_body_set.get_mut(handle) else {
+    fn set_grabbed_bit(&mut self, held_id: u32, grabbed: bool) {
+        let Some(handle) = self.entity_rows.get(&held_id).copied() else {
             return;
         };
-        body.set_next_kinematic_translation(aim + g.offset);
+        let idx = handle.row_id as usize;
+        let mask = self.world.curr.readiness[idx];
+        self.world.curr.readiness[idx] = if grabbed {
+            mask.with_bits(ReadinessMask::GRABBED)
+                .without_bits(ReadinessMask::SLEEPING)
+        } else {
+            mask.without_bits(ReadinessMask::GRABBED)
+        };
     }
 
     fn release_grab(&mut self, slot: usize) {
@@ -523,16 +540,14 @@ impl PhysicsWorld {
         };
         let held_id = self.boxes.entity_ids[g.index];
         self.slots.clear_held(held_id);
-        let handle = self.boxes.handles[g.index];
-        let Some(body) = self.rigid_body_set.get_mut(handle) else {
-            return;
-        };
-        let pos = *body.position();
-        body.set_body_type(RigidBodyType::Dynamic, true);
-        body.set_position(pos, true);
-        body.set_linvel(vector![0.0, 0.0, 0.0], true);
-        body.set_angvel(vector![0.0, 0.0, 0.0], true);
-        body.wake_up(true);
+        self.set_grabbed_bit(held_id, false);
+        if let Some(handle) = self.entity_rows.get(&held_id).copied() {
+            let idx = handle.row_id as usize;
+            // Drop from rest (no throw impulse — non-guarantee).
+            self.world.curr.world_transforms[idx].frame_delta_xyz = [0.0, 0.0, 0.0];
+        }
+        // Align with Intent/spawn/`release_slot`: mask/delta change is outside XPBD displace.
+        self.publish_dirty = true;
     }
 
     pub fn release_slot(&mut self, slot: usize) {
@@ -541,18 +556,18 @@ impl PhysicsWorld {
         }
         self.release_grab(slot);
         let (sx, sy, sz) = self.user_root_spawns[slot];
-        let [qx, qy, qz, qw] = self.user_root_quats[slot];
-        let rot = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
-        let Some(handle) = self.user_roots[slot] else {
+        let rot = self.user_root_quats[slot];
+        let Some(handle) = self.user_root_rows[slot] else {
             return;
         };
-        let Some(body) = self.rigid_body_set.get_mut(handle) else {
-            return;
-        };
-        body.set_next_kinematic_translation(vector![sx, sy, sz]);
-        body.set_translation(vector![sx, sy, sz], true);
-        body.set_next_kinematic_rotation(rot);
-        body.set_rotation(rot, true);
+        let scale = self.scale_for(Self::user_root_entity_id(slot));
+        let xf = xf_at([sx as f64, sy as f64, sz as f64], rot, scale, 0.0);
+        let _ = self.world.curr.set_transform(handle.row_id, xf);
+        let idx = handle.row_id as usize;
+        if idx < self.world.prev.len() {
+            self.world.prev.world_transforms[idx] = xf;
+        }
+        self.publish_dirty = true;
     }
 
     pub fn grab_entity_id(&self, slot: usize) -> Option<u32> {
@@ -566,22 +581,167 @@ impl PhysicsWorld {
         self.loco_mode
     }
 
+    /// One fixed 60Hz XPBD tick + Prev/Curr publish (unit tests; production uses [`Self::step_dt`]).
+    #[cfg(test)]
     pub fn step(&mut self) {
-        self.physics_pipeline.step(
-            &self.gravity,
-            &self.integration_parameters,
-            &mut self.island_manager,
-            &mut self.broad_phase,
-            &mut self.narrow_phase,
-            &mut self.rigid_body_set,
-            &mut self.collider_set,
-            &mut self.impulse_joint_set,
-            &mut self.multibody_joint_set,
-            &mut self.ccd_solver,
+        self.step_dt(DEFAULT_DT as f32);
+    }
+
+    pub fn step_dt(&mut self, dt: f32) {
+        let dt = if dt.is_finite() && dt > 0.0 {
+            f64::from(dt)
+        } else {
+            DEFAULT_DT
+        };
+
+        let grab_targets = self.collect_grab_targets();
+        xpbd::sync_prev_capacity(&mut self.world);
+        // Host barrier (not FrameBridge::tick): ground plane + frame_delta handoff live here.
+        // Restore Verlet prev from frame_delta so commit_prev does not kill velocity.
+        self.apply_frame_delta_to_prev();
+        let start = self.world.curr.clone();
+        // Body-body LBVH contacts intentionally off (x0093); ground plane only.
+        xpbd::step(
+            &mut self.world,
+            &mut self.topo,
+            &[],
+            &grab_targets,
             None,
-            &(),
-            &(),
+            dt,
         );
+        self.resolve_ground_plane();
+        // Re-run sleep against tick-start pose (step's update_sleeping saw Verlet prev).
+        self.copy_positions_into_prev(&start);
+        xpbd::update_sleeping(&mut self.world);
+        self.write_frame_deltas_from(&start);
+        // Include `publish_dirty`: Intent/kinematic edits happen before `step_dt`, so
+        // start==curr would otherwise skip and leave snapshot consumers on a stale face.
+        let moved = self.publish_dirty
+            || self.poses_differ(&start)
+            || !self.ground_scratch.is_empty()
+            || self.has_active_grab();
+        if moved {
+            self.snapshots
+                .publish(start, self.world.curr.clone());
+            self.publishes = self.publishes.wrapping_add(1);
+            self.publish_dirty = false;
+        }
+        self.world.curr.clear_dirty();
+        self.world.commit_prev_from_curr();
+        self.barrier_ticks = self.barrier_ticks.wrapping_add(1);
+    }
+
+    fn apply_frame_delta_to_prev(&mut self) {
+        let n = self.world.curr.len().min(self.world.prev.len());
+        for i in 0..n {
+            let d = self.world.curr.world_transforms[i].frame_delta_xyz;
+            let c = self.world.curr.world_transforms[i].position;
+            self.world.prev.world_transforms[i].position =
+                [c[0] - d[0] as f64, c[1] - d[1] as f64, c[2] - d[2] as f64];
+        }
+    }
+
+    fn copy_positions_into_prev(&mut self, src: &alchemy_shared_sim::EpochSheet) {
+        let n = self.world.prev.len().min(src.len());
+        for i in 0..n {
+            self.world.prev.world_transforms[i].position = src.world_transforms[i].position;
+        }
+    }
+
+    fn has_active_grab(&self) -> bool {
+        self.grabs[..self.slot_count].iter().any(|g| g.is_some())
+    }
+
+    fn poses_differ(&self, start: &alchemy_shared_sim::EpochSheet) -> bool {
+        let n = self.world.curr.len().min(start.len());
+        for i in 0..n {
+            let a = &start.world_transforms[i].position;
+            let b = &self.world.curr.world_transforms[i].position;
+            let dx = a[0] - b[0];
+            let dy = a[1] - b[1];
+            let dz = a[2] - b[2];
+            if dx * dx + dy * dy + dz * dz > 1e-20 {
+                return true;
+            }
+            if start.world_transforms[i].rotation != self.world.curr.world_transforms[i].rotation {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Write Verlet handoff deltas. Grounded rows get **vertical delta = 0** (instant kill).
+    fn write_frame_deltas_from(&mut self, start: &alchemy_shared_sim::EpochSheet) {
+        let n = self.world.curr.len().min(start.len());
+        for i in 0..n {
+            let mask = self.world.curr.readiness[i];
+            if mask.contains(ReadinessMask::TOMBSTONE)
+                || !mask.is_ready(ReadinessMask::DYNAMIC)
+                || mask.contains(ReadinessMask::GRABBED)
+                || self.world.curr.world_transforms[i].inv_mass == 0.0
+            {
+                self.world.curr.world_transforms[i].frame_delta_xyz = [0.0, 0.0, 0.0];
+                continue;
+            }
+            let s = start.world_transforms[i].position;
+            let e = self.world.curr.world_transforms[i].position;
+            let mut dy = (e[1] - s[1]) as f32;
+            if self.ground_scratch.contains(&(i as u32)) {
+                dy = 0.0;
+            }
+            self.world.curr.world_transforms[i].frame_delta_xyz =
+                [(e[0] - s[0]) as f32, dy, (e[2] - s[2]) as f32];
+        }
+    }
+
+    fn collect_grab_targets(&self) -> Vec<(u32, [f64; 3])> {
+        let mut out = Vec::new();
+        for slot in 0..self.slot_count {
+            let Some(g) = self.grabs[slot] else {
+                continue;
+            };
+            let held_id = self.boxes.entity_ids[g.index];
+            let Some(handle) = self.entity_rows.get(&held_id) else {
+                continue;
+            };
+            let aim = self.grab_aims[slot];
+            out.push((
+                handle.row_id,
+                [
+                    (aim[0] + g.offset[0]) as f64,
+                    (aim[1] + g.offset[1]) as f64,
+                    (aim[2] + g.offset[2]) as f64,
+                ],
+            ));
+        }
+        out
+    }
+
+    /// Fills [`Self::ground_scratch`] with rows that contacted the ground this tick
+    /// (vertical `frame_delta` → 0 in [`Self::write_frame_deltas_from`]).
+    fn resolve_ground_plane(&mut self) {
+        self.ground_scratch.clear();
+        self.active_row_scratch.clear();
+        self.active_row_scratch
+            .extend(self.world.curr.iter_active_rows());
+        for &row in &self.active_row_scratch {
+            let idx = row as usize;
+            let mask = self.world.curr.readiness[idx];
+            if !mask.is_ready(ReadinessMask::DYNAMIC) || mask.contains(ReadinessMask::GRABBED) {
+                continue;
+            }
+            if self.world.curr.world_transforms[idx].inv_mass == 0.0 {
+                continue;
+            }
+            let support = support_half_y(&self.world.curr.colliders[idx]);
+            let min_y = GROUND_Y + support;
+            let y = self.world.curr.world_transforms[idx].position[1];
+            if y < min_y {
+                self.world.curr.world_transforms[idx].position[1] = min_y;
+                self.ground_scratch.insert(row);
+                self.world.curr.mark_dirty(row);
+            }
+        }
     }
 
     pub fn apply_user_intent(&mut self, slot: usize, mx: f32, my: f32, mz: f32, dt: f32) {
@@ -590,36 +750,63 @@ impl PhysicsWorld {
         }
         let (mx, my, mz) = crate::finite::clamp_move_vector(mx, my, mz);
         let speed = self.move_speed;
-        let Some(handle) = self.user_roots[slot] else {
+        let Some(handle) = self.user_root_rows[slot] else {
             return;
         };
-        let Some(body) = self.rigid_body_set.get_mut(handle) else {
-            return;
-        };
-        let t = *body.translation();
+        let idx = handle.row_id as usize;
+        let mut xf = self.world.curr.world_transforms[idx];
+        let t = xf.position;
         match self.loco_mode {
             LocoMode::Noclip | LocoMode::Fly => {
-                let dx = mx * speed * dt;
-                let dy = my * speed * dt;
-                let dz = mz * speed * dt;
-                body.set_next_kinematic_translation(vector![t.x + dx, t.y + dy, t.z + dz]);
+                xf.position = [
+                    t[0] + (mx * speed * dt) as f64,
+                    t[1] + (my * speed * dt) as f64,
+                    t[2] + (mz * speed * dt) as f64,
+                ];
             }
             LocoMode::Walk => {
-                let dx = mx * speed * dt;
-                let dz = mz * speed * dt;
-                body.set_next_kinematic_translation(vector![t.x + dx, t.y, t.z + dz]);
+                xf.position = [
+                    t[0] + (mx * speed * dt) as f64,
+                    t[1],
+                    t[2] + (mz * speed * dt) as f64,
+                ];
             }
+        }
+        // Neutral stick (`overlay.active` stays true) must not defeat idle publish skip.
+        let moved = xf.position != t;
+        if moved && xf.is_finite() {
+            let _ = self.world.curr.set_transform(handle.row_id, xf);
+            if idx < self.world.prev.len() {
+                self.world.prev.world_transforms[idx] = xf;
+            }
+            self.publish_dirty = true;
         }
     }
 
-    /// Translation + unit quaternion (xyzw) for a rigid body (x0029).
+    /// Test helper: teleport a user_root without Intent (pass_held distance setup).
+    #[cfg(test)]
+    pub fn teleport_user_root(&mut self, slot: usize, t: (f32, f32, f32)) {
+        if slot >= self.slot_count {
+            return;
+        }
+        let Some(handle) = self.user_root_rows[slot] else {
+            return;
+        };
+        let idx = handle.row_id as usize;
+        let mut xf = self.world.curr.world_transforms[idx];
+        xf.position = [t.0 as f64, t.1 as f64, t.2 as f64];
+        let _ = self.world.curr.set_transform(handle.row_id, xf);
+        if idx < self.world.prev.len() {
+            self.world.prev.world_transforms[idx] = xf;
+        }
+        self.publish_dirty = true;
+    }
+
     pub fn moving_pose(&self) -> ((f32, f32, f32), [f32; 4]) {
-        let Some((_, handle)) = self.meshes.first() else {
+        let Some(id) = self.meshes.first().copied() else {
             return ((0.0, 5.0, 0.0), [0.0, 0.0, 0.0, 1.0]);
         };
-        self.rigid_body_set
-            .get(*handle)
-            .map(body_translation_quat)
+        self.mesh_pose_for(id)
             .unwrap_or(((0.0, 5.0, 0.0), [0.0, 0.0, 0.0, 1.0]))
     }
 
@@ -635,20 +822,33 @@ impl PhysicsWorld {
         if slot >= self.slot_count {
             return fallback;
         }
-        self.user_roots[slot]
-            .and_then(|h| self.rigid_body_set.get(h))
-            .map(body_translation_quat)
+        self.user_root_rows[slot]
+            .map(|h| self.pose_from_row(h.row_id))
             .unwrap_or(fallback)
     }
 
     pub fn box_pose(&self, index: usize) -> ((f32, f32, f32), [f32; 4]) {
         let he = self.boxes.half_extents.get(index).copied().unwrap_or(0.25);
-        self.boxes
-            .handles
-            .get(index)
-            .and_then(|h| self.rigid_body_set.get(*h))
-            .map(body_translation_quat)
+        let Some(&id) = self.boxes.entity_ids.get(index) else {
+            return ((0.0, he, 0.0), [0.0, 0.0, 0.0, 1.0]);
+        };
+        self.entity_rows
+            .get(&id)
+            .map(|h| self.pose_from_row(h.row_id))
             .unwrap_or(((0.0, he, 0.0), [0.0, 0.0, 0.0, 1.0]))
+    }
+
+    fn pose_from_row(&self, row_id: u32) -> ((f32, f32, f32), [f32; 4]) {
+        let idx = row_id as usize;
+        let xf = &self.world.curr.world_transforms[idx];
+        (
+            (
+                xf.position[0] as f32,
+                xf.position[1] as f32,
+                xf.position[2] as f32,
+            ),
+            xf.rotation,
+        )
     }
 
     pub fn moving_translation(&self) -> (f32, f32, f32) {
@@ -660,10 +860,34 @@ impl PhysicsWorld {
     }
 }
 
-fn body_translation_quat(body: &RigidBody) -> ((f32, f32, f32), [f32; 4]) {
-    let t = body.translation();
-    let q = body.rotation();
-    ((t.x, t.y, t.z), [q.i, q.j, q.k, q.w])
+fn alloc_dynamic_sphere(
+    world: &mut XpbdWorld,
+    pos: [f64; 3],
+    rot: [f32; 4],
+    scale: [f32; 3],
+    entity_id: u32,
+    radius: f32,
+    mesh: bool,
+) -> NodeHandle {
+    let handle = world.curr.alloc_row();
+    let xf = xf_at(pos, rot, scale, 1.0);
+    let _ = world.curr.set_transform(handle.row_id, xf);
+    world.curr.colliders[handle.row_id as usize] = ColliderShape {
+        shape_type: ColliderShape::SPHERE,
+        extents: [radius, 0.0, 0.0],
+    };
+    let mut mask = ReadinessMask(
+        ReadinessMask::ALLOCATED
+            | ReadinessMask::TRANSFORM
+            | ReadinessMask::COLLIDER
+            | ReadinessMask::DYNAMIC,
+    );
+    if mesh {
+        mask = mask.with_bits(ReadinessMask::MESH);
+    }
+    world.curr.readiness[handle.row_id as usize] = mask;
+    world.curr.owner_scope[handle.row_id as usize] = entity_id;
+    handle
 }
 
 /// Distinct tint per user_root slot when Manifest omits color.
@@ -679,9 +903,6 @@ pub fn user_root_color(slot: usize) -> (f32, f32, f32, f32) {
 }
 
 /// Unit-test fixture mirroring `World.DemoScene` layout (x0079 shared vector).
-///
-/// Production SSoT is Elixir `DemoScene`; Rust mirror lives in
-/// `alchemy_shared_sim::demo::demo_scene_entries`.
 #[cfg(test)]
 pub fn demo_entries_for_test() -> Vec<SceneEntry> {
     alchemy_shared_sim::demo::demo_scene_entries()
@@ -714,6 +935,105 @@ mod tests {
         }
         let (_, y, _) = world.moving_translation();
         assert!(y > 0.1 && y < 1.0, "expected resting on floor, got y={y}");
+    }
+
+    #[test]
+    fn ground_contact_tick_zeros_vertical_frame_delta() {
+        let mut world = PhysicsWorld::from_entries(
+            &demo_entries_for_test(),
+            LocoMode::Walk,
+            DEFAULT_MOVE_SPEED,
+        );
+        let mesh_id = world.mesh_entity_id().unwrap();
+        let row = world.entity_row(mesh_id).unwrap().row_id as usize;
+        let min_y = GROUND_Y + PHYS_BALL_RADIUS as f64;
+        // Place just above floor with strong downward Verlet so the next tick clamps.
+        {
+            let xf = &mut world.world.curr.world_transforms[row];
+            xf.position = [0.0, min_y + 0.02, 0.0];
+            xf.frame_delta_xyz = [0.0, -1.0, 0.0];
+            let mask = world.world.curr.readiness[row];
+            world.world.curr.readiness[row] = mask.without_bits(ReadinessMask::SLEEPING);
+        }
+        let y_before = world.world.curr.world_transforms[row].position[1];
+        assert!(y_before > min_y, "fixture must start above ground");
+        world.step();
+        let y_after = world.world.curr.world_transforms[row].position[1];
+        let dy = world.world.curr.world_transforms[row].frame_delta_xyz[1];
+        assert!(
+            (y_after - min_y).abs() < 1e-9,
+            "contact tick must clamp to ground, y_after={y_after} min_y={min_y}"
+        );
+        assert!(
+            world.ground_scratch.contains(&(row as u32)),
+            "contact tick must mark row grounded"
+        );
+        assert!(
+            dy.abs() <= 1e-6,
+            "contact tick vertical frame_delta must be 0 (±eps), got {dy}"
+        );
+    }
+
+    #[test]
+    fn intent_forces_snapshot_publish_when_poses_unchanged_by_xpbd() {
+        let mut world =
+            PhysicsWorld::from_entries(&demo_entries_for_test(), LocoMode::Noclip, 10.0);
+        // Settle so idle ticks would skip publish.
+        for _ in 0..30 {
+            world.step();
+        }
+        let pubs = world.publishes;
+        world.publish_dirty = false;
+        world.apply_user_intent(0, 1.0, 0.0, 0.0, 1.0 / 60.0);
+        world.step();
+        assert!(
+            world.publishes > pubs,
+            "Intent kinematic move must publish snapshots for consumers"
+        );
+        let snap = world.snapshots().load_curr();
+        let id = PhysicsWorld::user_root_entity_id(0);
+        let row = world.entity_row(id).unwrap().row_id as usize;
+        let live = world.world.curr.world_transforms[row].position;
+        let published = snap.world_transforms[row].position;
+        assert_eq!(live, published, "snapshot Curr must match live after Intent");
+    }
+
+    #[test]
+    fn neutral_intent_does_not_set_publish_dirty() {
+        let mut world =
+            PhysicsWorld::from_entries(&demo_entries_for_test(), LocoMode::Noclip, 10.0);
+        for _ in 0..10 {
+            world.step();
+        }
+        world.publish_dirty = false;
+        world.apply_user_intent(0, 0.0, 0.0, 0.0, 1.0 / 60.0);
+        assert!(
+            !world.publish_dirty,
+            "zero-displacement Intent must leave idle publish skip intact"
+        );
+    }
+
+    #[test]
+    fn release_grab_and_place_held_set_publish_dirty() {
+        let mut world = test_world();
+        for _ in 0..60 {
+            world.step();
+        }
+        let id = 14u32;
+        let (bx, by, bz) = world.box_pose(4).0;
+        world.apply_grab(0, true, id, (bx, by, bz));
+        assert_eq!(world.grab_entity_id(0), Some(id));
+        world.publish_dirty = false;
+        world.apply_grab(0, false, 0, (bx, by, bz));
+        assert!(world.publish_dirty, "release_grab must set publish_dirty");
+
+        world.apply_grab(0, true, id, (bx, by, bz));
+        world.publish_dirty = false;
+        assert!(world.place_held(0));
+        assert!(
+            world.publish_dirty,
+            "place_held → release_grab must set publish_dirty"
+        );
     }
 
     #[test]
@@ -809,18 +1129,15 @@ mod tests {
         assert!((scale[1] - 1.0).abs() < 1e-5);
         assert!((scale[2] - 1.0).abs() < 1e-5);
         let (_, q) = world.box_pose(4);
-        // 45 deg yaw ~= (0, 0.3827, 0, 0.9239)
         assert!((q[0]).abs() < 1e-4);
         assert!((q[1] - 0.38268343).abs() < 1e-4);
         assert!((q[2]).abs() < 1e-4);
         assert!((q[3] - 0.9238795).abs() < 1e-4);
-        // half_extent stays definition size (scale is Frame-only).
         assert!((world.boxes.half_extents[4] - 0.25).abs() < 1e-6);
     }
 
     #[test]
     fn non_grabbable_box_is_fixed() {
-        // x004d: from_entries requires ≥1 contiguous user_root in the protocol band.
         let entries = vec![
             SceneEntry {
                 entity_id: USER_ROOT_ENTITY_FIRST,
@@ -923,14 +1240,8 @@ mod tests {
         }
         let id = 14u32;
         let (bx, by, bz) = world.box_pose(4).0;
-        // Move slot 1 near slot 0 so pass distance gate passes.
         let (x0, y0, z0) = world.user_root_translation(0);
-        if let Some(handle) = world.user_roots[1] {
-            if let Some(body) = world.rigid_body_set.get_mut(handle) {
-                body.set_next_kinematic_translation(vector![x0 + 0.5, y0, z0]);
-                body.set_translation(vector![x0 + 0.5, y0, z0], true);
-            }
-        }
+        world.teleport_user_root(1, (x0 + 0.5, y0, z0));
         world.apply_grab(0, true, id, (bx, by, bz));
         assert_eq!(world.grab_entity_id(0), Some(id));
         assert!(world.pass_held(0, 1));
@@ -1039,7 +1350,6 @@ mod tests {
         assert!(world.spawn_mesh_entry(&entry));
         assert_eq!(world.mesh_entity_ids().count(), before + 1);
         assert!(world.mesh_pose_for(100).is_some());
-        // Duplicate entity_id must not partially insert.
         assert!(!world.spawn_mesh_entry(&entry));
         assert_eq!(world.mesh_entity_ids().count(), before + 1);
         assert!(world.despawn_mesh_entity(100));
@@ -1057,7 +1367,6 @@ mod tests {
         let id = 14u32;
         let (bx, by, bz) = world.box_pose(4).0;
         let (ux0, uy0, uz0) = world.user_root_translation(0);
-        // offset≈0 path: aim at box, then yank +X
         world.apply_grab(0, true, id, (bx, by, bz));
         assert_eq!(world.grab_entity_id(0), Some(id));
         let far = (ux0 + 1e6, uy0, uz0);
@@ -1083,8 +1392,6 @@ mod tests {
         );
     }
 
-    /// Start aim on the sphere opposite the box (raw |offset| > MAX), then hold-yank
-    /// toward the box so aim球+offset が同符号で積む。`clamp_hold_offset` 欠落なら >2·MAX。
     #[test]
     fn grab_hold_opposite_aim_offset_clamp_keeps_two_max_budget() {
         let mut world = test_world();
@@ -1104,7 +1411,6 @@ mod tests {
         );
         let max = crate::finite::MAX_GRAB_START_DISTANCE;
         let inv = max / vlen;
-        // Sphere point opposite the box (root-centered).
         let aim0 = (ux - vx * inv, uy - vy * inv, uz - vz * inv);
         let raw_ox = bx - aim0.0;
         let raw_oy = by - aim0.1;
@@ -1116,7 +1422,6 @@ mod tests {
         );
         world.apply_grab(0, true, id, aim0);
         assert_eq!(world.grab_entity_id(0), Some(id));
-        // Far aim along box/offset direction so clamped aim and offset stack.
         let far = (ux + vx * 1e6, uy + vy * 1e6, uz + vz * 1e6);
         for _ in 0..10 {
             world.apply_grab(0, true, id, far);
@@ -1133,7 +1438,6 @@ mod tests {
             dist <= 2.0 * max + 0.05,
             "offset clamp regression? dist={dist} (>2·MAX) pos=({x},{y},{z}) root=({ux1},{uy1},{uz1})"
         );
-        // Stacked path should sit near the outer budget (not the offset≈0 case).
         assert!(
             dist > max,
             "expected stacked aim+offset near outer shell, dist={dist}"
@@ -1155,5 +1459,28 @@ mod tests {
             dx < DEFAULT_MOVE_SPEED * dt * 1.1,
             "expected clamped step, dx={dx} from ({x0},{y0},{z0}) to ({x1},{y1},{z1})"
         );
+    }
+
+    #[test]
+    fn xpbd_rows_are_dynamic_for_mesh() {
+        let world = test_world();
+        let mesh_id = world.mesh_entity_id().unwrap();
+        let row = world.entity_row(mesh_id).unwrap().row_id as usize;
+        let sheet = world.snapshots().load_curr();
+        assert!(sheet.readiness[row].contains(ReadinessMask::DYNAMIC));
+        assert!(sheet.world_transforms[row].inv_mass > 0.0);
+    }
+
+    #[test]
+    fn tick_keeps_prev_curr_distinct_while_falling() {
+        let mut world = test_world();
+        let mesh_id = world.mesh_entity_id().unwrap();
+        let row = world.entity_row(mesh_id).unwrap().row_id as usize;
+        for _ in 0..30 {
+            world.step();
+        }
+        let prev = world.snapshots().load_prev().world_transforms[row].position;
+        let curr = world.snapshots().load_curr().world_transforms[row].position;
+        assert_ne!(prev, curr, "falling mesh should publish distinct Prev/Curr");
     }
 }

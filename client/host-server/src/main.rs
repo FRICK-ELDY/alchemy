@@ -1,9 +1,8 @@
 //! Local host-server — x0025 host_pub attestation + x0024 wire-tick + x0023 session.
 //!
 //! Guarantees:
-//! - Internal Rapier tick at 60Hz; network delta publish at 30Hz
-//! - x008f: after each Rapier step, shadow `tick_mirror_publish` mirrors dirty poses
-//!   into kinematic EpochSheet rows (no XPBD/LBVH); wire Frame stays Rapier
+//! - Internal XPBD tick at 60Hz (x0093); network delta publish at 30Hz
+//! - Wire Frame TRS sampled from Epoch Curr (Rapier removed; no kinematic mirror)
 //! - Input: Ed25519 session bind (Token on bind only) + `is_finite` (x0023 / x0021)
 //! - SceneManifest from world DemoScene + attestation + seal; Frames / Presence signed (x0027)
 //! - x003d: credential / ManifestSeal HTTP on a background worker; physics evaluates
@@ -26,8 +25,8 @@
 //! - x0032: localhost IPC shutdown when `ALCHEMY_HOST_IPC_*` set (client HostSupervisor)
 //!
 //! Non-guarantees:
-//! - XPBD wire authority / Rapier replacement (x008f is shadow-only)
 //! - Steal / rotation follow / Formula / polished Walk / verifier
+//! - Rapier bit-exact parity; LBVH body-body contacts; capsule Walk extrude
 //! - Authenticated remote (WAN) host shutdown
 //! - Full UGC scene editor (x006d only appends one mesh entry via world HTTP)
 //! - rkyv / bytemuck wire (encode is protobuf inside network worker today)
@@ -36,7 +35,6 @@
 //! - Host-wide bind JWT soft-global; new-source join while bind-source map is full and
 //!   every row stays hot via successful consumes within `BIND_SOURCE_IDLE`
 
-mod epoch_bridge;
 mod finite;
 mod host_control;
 mod host_ipc;
@@ -1111,15 +1109,14 @@ fn main() -> Result<()> {
 
     let mut physics = PhysicsWorld::from_entries(&room_scene.entries, loco_mode, move_speed);
     debug_assert_eq!(physics.user_root_slot_count(), user_root_slots);
-    let mut epoch_bridge = epoch_bridge::EpochBridgeHost::from_physics(&physics);
     let grabbable_n = physics.boxes.grabbable.iter().filter(|&&g| g).count();
     let last_root = USER_ROOT_ENTITY_FIRST + physics.user_root_slot_count() as u32 - 1;
     log::info!(
-        "Rapier world ready (mesh={:?} + user_roots {USER_ROOT_ENTITY_FIRST}..{last_root} + boxes={} grabbable={grabbable_n} mode={:?}); epoch_bridge rows={}",
+        "XPBD world ready (mesh={:?} + user_roots {USER_ROOT_ENTITY_FIRST}..{last_root} + boxes={} grabbable={grabbable_n} mode={:?}); rows={}",
         physics.mesh_entity_id(),
         physics.boxes.len(),
         physics.loco_mode(),
-        epoch_bridge.entity_count()
+        physics.entity_count()
     );
 
     let physics_period = Duration::from_nanos(1_000_000_000 / PHYSICS_HZ);
@@ -1155,13 +1152,13 @@ fn main() -> Result<()> {
                 &force_reseal,
                 |entry| physics.spawn_mesh_entry(entry),
             ) {
-                Ok(out) if out.scene_applied && out.rapier_ok => log::info!(
-                    "inventory spawn applied entity_id={} blake3={} (rapier+scene+reseal)",
+                Ok(out) if out.scene_applied && out.physics_ok => log::info!(
+                    "inventory spawn applied entity_id={} blake3={} (xpbd+scene+reseal)",
                     out.entity_id,
                     &blake3[..8.min(blake3.len())]
                 ),
                 Ok(out) if out.scene_applied => log::warn!(
-                    "inventory spawn scene+reseal only entity_id={} blake3={} (rapier refused; physics may need host restart)",
+                    "inventory spawn scene+reseal only entity_id={} blake3={} (xpbd refused; physics may need host restart)",
                     out.entity_id,
                     &blake3[..8.min(blake3.len())]
                 ),
@@ -1183,12 +1180,12 @@ fn main() -> Result<()> {
                 &force_reseal,
                 |id| physics.despawn_mesh_entity(id),
             ) {
-                Ok(out) if out.scene_applied && out.rapier_ok => log::info!(
-                    "inventory despawn applied entity_id={} (rapier+scene+reseal)",
+                Ok(out) if out.scene_applied && out.physics_ok => log::info!(
+                    "inventory despawn applied entity_id={} (xpbd+scene+reseal)",
                     out.entity_id
                 ),
                 Ok(out) if out.scene_applied => log::warn!(
-                    "inventory despawn scene+reseal only entity_id={} (rapier miss; physics may need host restart)",
+                    "inventory despawn scene+reseal only entity_id={} (xpbd miss; physics may need host restart)",
                     out.entity_id
                 ),
                 Ok(out) => log::warn!(
@@ -1307,11 +1304,8 @@ fn main() -> Result<()> {
                 (overlay.aim_x, overlay.aim_y, overlay.aim_z),
             );
         }
-        physics.step();
-        // x008f: Rapier remains wire-authoritative; FrameBridge publishes kinematic mirrors.
-        if let Err(err) = epoch_bridge.tick_after_rapier(&physics, f64::from(dt)) {
-            log::warn!("epoch bridge tick failed: {err:?}");
-        }
+        // x0093: XPBD is wire-authoritative (Epoch Curr → Frame sample).
+        physics.step_dt(dt);
         physics_steps = physics_steps.wrapping_add(1);
         physics_steps_logged += 1;
 
@@ -1399,10 +1393,10 @@ fn main() -> Result<()> {
             let (publishes, upsert_entities, empty_delta_frames, coalesce, net_tick) =
                 publish_stats.snapshot_and_reset();
             log::info!(
-                "physics: steps={physics_steps_logged} coin=({mx:.3},{my:.3},{mz:.3}) {roots}; epoch_bridge barriers={} mirror_pubs={} rows={}; delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} coalesce={coalesce} net_tick={net_tick}",
-                epoch_bridge.barrier_ticks,
-                epoch_bridge.publishes,
-                epoch_bridge.entity_count()
+                "physics: steps={physics_steps_logged} coin=({mx:.3},{my:.3},{mz:.3}) {roots}; xpbd barriers={} pubs={} rows={}; delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} coalesce={coalesce} net_tick={net_tick}",
+                physics.barrier_ticks,
+                physics.publishes,
+                physics.entity_count()
             );
             physics_steps_logged = 0;
             last_log = Instant::now();

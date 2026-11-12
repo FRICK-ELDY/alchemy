@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0093`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x0094`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -197,11 +197,12 @@ depends_on: [x0006]
 | x0090 | — | done | client Epoch 購読 + SceneGpu 最小 bind（Frame→local pair · compute） | [x0090-client-epoch-scenegpu-bind.md](slices/x0090-client-epoch-scenegpu-bind.md) |
 | x0091 | — | done | Epoch `out` → SceneGpu draw（storage TRS · フル active pack） | [x0091-epoch-out-scenegpu-draw.md](slices/x0091-epoch-out-scenegpu-draw.md) |
 | x0092 | — | done | camera / loco eye → display TRS（FPS アンカー；TPS/Live は別） | [x0092-eye-display-trs.md](slices/x0092-eye-display-trs.md) |
+| x0093 | — | done | XPBD wire 権威へ収束（Rapier 影並走廃止） | [x0093-xpbd-wire-authority.md](slices/x0093-xpbd-wire-authority.md) |
 
-**現在の次:** Zero-Base 本線は x0092 **done**（eye／floor 基準も display snap；Curr 単独権威の知覚面残債を撤廃）。次候補は **XPBD/Rapier 影の収束** / Hierarchy/Lens / TPS・Live カメラ（別保証） / improvement P2 残 / Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。方針正本: [x0092](slices/x0092-eye-display-trs.md)。  
+**現在の次:** Zero-Base 本線は x0093 **done**（host wire = Epoch/XPBD；Rapier 除去）。次候補は Hierarchy/Lens / TPS・Live / improvement P2 残（wire pose ダブルバッファ） / Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md)）。方針正本: [x0093](slices/x0093-xpbd-wire-authority.md)。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x0093`**。
+次の空き番号は **`x0094`**。
 
 ## 関連
 

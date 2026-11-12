@@ -2,7 +2,7 @@
 //!
 //! Guarantees: Room Token verify path ([`room_token::RoomTokenVerifier`]) is reachable
 //! without the physics binary entrypoint.
-//! Non-guarantees: Zenoh / Rapier loop; fuzz corpus completeness.
+//! Non-guarantees: Zenoh / XPBD loop; fuzz corpus completeness.
 //!
 //! `intent_rate` / `metrics` / `session` are `pub` only because `room_token` and its
 //! unit tests share this crate root; a thinner `alchemy-room-token` extract is a
