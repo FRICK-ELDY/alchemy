@@ -3,10 +3,10 @@ defmodule World.Rooms do
   Room ledger facade (x0028).
 
   Guarantees: create / owner / scene / visibility backed by Ash + SQLite (survives restart).
-  x006d / x0082: host may append a single mesh SceneEntry via
-  `append_scene_entry/3` (`expected_revision` CAS + revision bump).
-  x007b / x0082: host may remove a mesh SceneEntry via `delete_scene_entry/3`
-  (64-hex blake3 required; `expected_revision` CAS + revision bump).
+  x006d / x0082 / **x009d**: `append_scene_entry/3` / `delete_scene_entry/3` are **ledger CAS
+  only** (`expected_revision` + revision bump). **Canonical writer authorization is the
+  caller's responsibility** — HTTP uses `ensure_active_host/2` **and** `ensure_scene_writer/2`
+  (owner ∪ `editor_subs`); do not call these mutators from an unauthenticated path.
   x0071 / **x0097**: create rejects when owner already holds `max_rooms_per_owner` rooms;
   quota row conditional UPDATE + same-TX insert — concurrent create cannot overshoot.
   x007c: `list_visible_summaries/3` returns catalog rows (no room_key / wire_cap / scene).
@@ -31,7 +31,8 @@ defmodule World.Rooms do
   x0027: DemoScene assigned at create and returned by `scene/1`.
 
   Authorization: owner paths use `ensure_owner/2`; compute-host HTTP uses
-  `ensure_active_host/2` / `authorize_host_role` (x0080). `require_existing/1` is
+  `ensure_active_host/2` / `authorize_host_role` (x0080); canonical scene mutate uses
+  `ensure_scene_writer/2` (owner ∪ `editor_subs` · x009d). `require_existing/1` is
   existence-only. Do not infer auth from boolean helpers — those APIs are
   intentionally absent so storage failures cannot collapse to `false` / `nil`.
 
@@ -170,6 +171,74 @@ defmodule World.Rooms do
 
   def ensure_owner(_, _), do: {:error, :invalid_room_id}
 
+  @doc """
+  x009d: `sub` may mutate canonical scene (append/delete) when they are `owner_sub`
+  or listed in `editor_subs` (Builder). Distinct from `ensure_active_host/2` (compute).
+  """
+  @spec ensure_scene_writer(room_id(), owner_sub()) ::
+          :ok
+          | {:error, :not_found | :forbidden_scene_writer | :invalid_room_id | storage_error()}
+  def ensure_scene_writer(room_id, sub)
+      when is_binary(room_id) and is_binary(sub) and sub != "" do
+    with :ok <- validate_room_id(room_id) do
+      case Room.get_by_room_id(room_id) do
+        {:ok, %Room{owner_sub: ^sub}} ->
+          :ok
+
+        {:ok, %Room{} = room} ->
+          authorize_editor_sub(room, sub)
+
+        {:ok, nil} ->
+          {:error, :not_found}
+
+        {:error, error} ->
+          map_read_error(error, :ensure_scene_writer)
+      end
+    end
+  end
+
+  def ensure_scene_writer(_, _), do: {:error, :invalid_room_id}
+
+  defp authorize_editor_sub(%Room{} = room, sub) do
+    if sub in decode_editor_subs(room.editor_subs) do
+      :ok
+    else
+      {:error, :forbidden_scene_writer}
+    end
+  end
+
+  @doc """
+  x009d Phase 2: owner replaces `editor_subs` (Builder list). Empty list = owner-only writers.
+  """
+  @spec set_editor_subs(room_id(), owner_sub(), [owner_sub()]) ::
+          :ok
+          | {:error,
+             :not_found
+             | :forbidden_host
+             | :invalid_room_id
+             | :invalid_editors
+             | storage_error()}
+  def set_editor_subs(room_id, owner_sub, editors)
+      when is_binary(room_id) and is_binary(owner_sub) and is_list(editors) do
+    with :ok <- validate_room_id(room_id),
+         :ok <- ensure_owner(room_id, owner_sub),
+         {:ok, json} <- encode_editor_subs(editors) do
+      sql = """
+      UPDATE rooms
+      SET editor_subs = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE room_id = ? AND owner_sub = ?
+      """
+
+      case World.Repo.query(sql, [json, room_id, owner_sub]) do
+        {:ok, %{num_rows: 1}} -> :ok
+        {:ok, %{num_rows: 0}} -> {:error, :not_found}
+        {:error, error} -> storage_error(error, :set_editor_subs)
+      end
+    end
+  end
+
+  def set_editor_subs(_, _, _), do: {:error, :invalid_editors}
+
   @doc "Return the scene definition for an existing room (x0027)."
   @spec scene(room_id()) ::
           {:ok, map()} | {:error, :invalid_room_id | :not_found | storage_error()}
@@ -187,6 +256,9 @@ defmodule World.Rooms do
 
   @doc """
   Append one mesh SceneEntry for inventory take-out (x006d / x0082).
+
+  **Auth:** not checked here (x009d). Callers must have already authorized a canonical
+  scene writer (HTTP: `ensure_active_host` + `ensure_scene_writer`).
 
   Assigns the next free content `entity_id` (max non-user_root id + 1, floor 100;
   if the candidate lands in the Presence user_root band, jumps to
@@ -222,6 +294,9 @@ defmodule World.Rooms do
 
   @doc """
   Remove one mesh SceneEntry by `entity_id` for inventory despawn (x007b / x0082).
+
+  **Auth:** not checked here (x009d). Callers must have already authorized a canonical
+  scene writer (HTTP: `ensure_active_host` + `ensure_scene_writer`).
 
   Requires the entry to carry a 64-hex `blake3` (same selection as put-back).
   Rejects missing entity, empty/invalid blake3, and non-list scenes.
@@ -1392,12 +1467,45 @@ defmodule World.Rooms do
       wire_cap: generate_wire_cap(),
       room_key: generate_room_key_hex(),
       room_key_epoch: 0,
-      room_key_rotated_at: now
+      room_key_rotated_at: now,
+      editor_subs: "[]"
     }
   end
 
   defp insert_room(attrs) when is_map(attrs) do
     Room.create(attrs)
+  end
+
+  # x009d: `editor_subs` column is JSON text `["sub", …]`.
+  defp decode_editor_subs(nil), do: []
+
+  defp decode_editor_subs(bin) when is_binary(bin) do
+    case Jason.decode(bin) do
+      {:ok, list} when is_list(list) ->
+        Enum.filter(list, &(is_binary(&1) and &1 != ""))
+
+      _ ->
+        []
+    end
+  end
+
+  defp decode_editor_subs(_), do: []
+
+  @editor_subs_max 64
+
+  defp encode_editor_subs(editors) when is_list(editors) do
+    unique = Enum.uniq(editors)
+
+    cond do
+      length(unique) > @editor_subs_max ->
+        {:error, :invalid_editors}
+
+      Enum.all?(unique, &(is_binary(&1) and &1 != "")) ->
+        {:ok, Jason.encode!(unique)}
+
+      true ->
+        {:error, :invalid_editors}
+    end
   end
 
   defp cas_visibility_narrow_rotate(_room, _vis, 0) do

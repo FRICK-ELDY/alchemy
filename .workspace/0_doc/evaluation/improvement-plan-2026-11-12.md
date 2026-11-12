@@ -22,7 +22,7 @@
 
 | ID | 項目 | 根拠 | 作業イメージ | 完了条件 |
 |:---|:---|:---|:---|:---|
-| P0-1 | HostDelegation + canonical scene を owner/editor 限定 | -4 | takeover は capability または `eligible_host_subs` + candidate opt-in。`create/delete_scene_entry` は owner/editor のみ。active host は `session_overlay`（dormant 破棄） | 非オーナー takeover → scene append/delete が 403 の否定系。保証表に権限表を明記 |
+| P0-1 | HostDelegation + canonical scene を owner/editor 限定 | -4 | **前半（x009d Phase 0–2）:** `create/delete_scene_entry` は owner/editor のみ + 否定系 + 権限表。**後半（後続）:** `session_overlay`（Phase 3）+ takeover の capability / `eligible_host_subs`（Phase 4） | 前半: 非オーナー takeover → scene 403。後半: overlay 破棄 + eligible takeover |
 | P0-2 | 親 client 資格情報 broker | -3 | HostSupervisor が refresh を子に渡さず、loopback IPC で更新済み access JWT を push。hard expiry 前に必ず再供給 | GUI ログイン host が 30 分超えても Room Token 再発行できる統合テスト |
 
 ---

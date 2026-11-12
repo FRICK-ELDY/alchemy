@@ -1,15 +1,17 @@
-//! Inventory scene despawn control plane (x007b / x0081 / x0082 / x0098).
+//! Inventory scene despawn control plane (x007b / x0081 / x0082 / x0098 / x009d).
 //!
 //! Guarantees: Zenoh `…/inventory/despawn` is **Room AEAD**; session Ed25519 + SessionTable
 //! Dual auth (**`role=host` ∧ `sub` == host Token sub** **or** **`sub` == `owner_sub`**);
-//! world HTTP delete uses host Token, PoP, and **scene revision CAS**; physics applies shared
-//! scene / re-seal and best-effort XPBD mesh remove. Order: evaluate → rate → commit seq → HTTP
-//! (unbound / non-owner guest cannot burn shared rate).
+//! world HTTP delete uses host Token, PoP, **scene revision CAS**, and **x009d canonical scene
+//! writer** (`owner_sub` ∪ `editor_subs` — active_host alone is not enough); physics applies
+//! shared scene / re-seal and best-effort XPBD mesh remove. Order: evaluate → rate → commit seq
+//! → HTTP (unbound / non-owner guest cannot burn shared rate).
 //!
 //! Non-guarantees: Invite / arbitrary-guest ACL; put-back coupling; Intent path;
 //! **HTTP failure after `control_seq` commit** (seq stays advanced); evaluate→rate→commit
 //! のあいだの host→guest 降格で rate のみ消費（Intent と同様・許容）；`owner_sub` 未取得時の
-//! owner 経路.
+//! owner 経路; **non-writer compute host**（takeover guest 等）→ world
+//! `403 scene_writer_forbidden` で despawn 失敗（session_overlay は x009d Phase 3 後続）。
 
 use alchemy_protocol::control_plane;
 use alchemy_protocol::inventory_despawn_key;

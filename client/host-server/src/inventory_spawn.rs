@@ -1,16 +1,19 @@
-//! Inventory take-out spawn control plane (x006d / x0081 / x0082 / x0098).
+//! Inventory take-out spawn control plane (x006d / x0081 / x0082 / x0098 / x009d).
 //!
 //! Guarantees: Zenoh `…/inventory/spawn` is **Room AEAD** (`AeadKind::InventorySpawn`);
 //! after open, session Ed25519 + SessionTable Dual auth (**`role=host` ∧ `sub` == host Token
 //! sub** **or** **`sub` == `owner_sub`** from shared scene); world HTTP append uses **host**
-//! Token, PoP, and **scene revision CAS** (client JWT never on the bus); physics only applies
-//! a ready `SceneEntry` (and shared scene / re-seal flag). Order mirrors Intent: evaluate
-//! (no seq) → rate → commit seq → HTTP (unbound / non-owner guest cannot burn shared rate).
+//! Token, PoP, **scene revision CAS**, and **x009d canonical scene writer** (`owner_sub` ∪
+//! `editor_subs` — active_host alone is not enough). Client JWT never on the bus; physics
+//! only applies a ready `SceneEntry` (and shared scene / re-seal flag). Order mirrors Intent:
+//! evaluate (no seq) → rate → commit seq → HTTP (unbound / non-owner guest cannot burn shared rate).
 //!
 //! Non-guarantees: Invite / arbitrary-guest ACL; put-back; Intent path;
 //! distributed TX / **HTTP failure after `control_seq` commit** (seq stays advanced);
 //! evaluate→rate→commit のあいだに host→guest 降格が挟まると **rate だけ消費して commit 失敗**
-//! しうる（Intent と同じく許容・窓は狭い）；`owner_sub` 未取得時の owner 経路.
+//! しうる（Intent と同じく許容・窓は狭い）；`owner_sub` 未取得時の owner 経路;
+//! **non-writer compute host**（takeover guest 等）→ world `403 scene_writer_forbidden` で
+//! take-out/despawn 失敗（session_overlay は x009d Phase 3 後続）。
 
 use alchemy_protocol::control_plane::{self, ControlPose};
 use alchemy_protocol::wire_aead::{self, AeadKind};
