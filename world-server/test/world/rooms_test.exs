@@ -3,6 +3,7 @@ defmodule World.RoomsTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias World.Rooms
+  alias World.Rooms.OwnerQuota
   alias World.Rooms.Room
 
   @owner "22222222-2222-2222-2222-222222222222"
@@ -113,7 +114,7 @@ defmodule World.RoomsTest do
     assert {:error, :missing_owner} = Rooms.create("ok-id", "")
   end
 
-  test "create rejects when owner room cap is exceeded (x0071)" do
+  test "create rejects when owner room cap is exceeded (x0071 / x0097)" do
     previous = Application.get_env(:world, :max_rooms_per_owner)
     Application.put_env(:world, :max_rooms_per_owner, 1)
 
@@ -126,6 +127,96 @@ defmodule World.RoomsTest do
 
     assert {:ok, "cap-1", _, _} = Rooms.create("cap-1", @owner)
     assert {:error, :owner_room_cap_exceeded} = Rooms.create("cap-2", @owner)
+
+    assert %OwnerQuota{room_count: 1} =
+             Repo.get(OwnerQuota, @owner)
+  end
+
+  test "conditional quota: dual create callers yield exactly one success (x0097)" do
+    # Shared sandbox (`async: false`) serializes Tasks onto one connection —
+    # asserts the API contract (exactly one success under cap=1), not a true
+    # multi-connection race. Atomic UPDATE is covered by the bump-at-cap test.
+    previous = Application.get_env(:world, :max_rooms_per_owner)
+    Application.put_env(:world, :max_rooms_per_owner, 1)
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:world, :max_rooms_per_owner)
+        value -> Application.put_env(:world, :max_rooms_per_owner, value)
+      end
+    end)
+
+    owner = "33333333-3333-3333-3333-333333333333"
+
+    results =
+      1..2
+      |> Enum.map(fn i ->
+        Task.async(fn -> Rooms.create("race-cap-#{i}", owner) end)
+      end)
+      |> Enum.map(&Task.await(&1, 10_000))
+
+    oks = Enum.count(results, &match?({:ok, _, _, _}, &1))
+    errs = Enum.count(results, &match?({:error, :owner_room_cap_exceeded}, &1))
+    assert oks == 1
+    assert errs == 1
+
+    assert %OwnerQuota{room_count: 1} =
+             Repo.get(OwnerQuota, owner)
+
+    {:ok, %{rows: [[count]]}} =
+      Repo.query("SELECT COUNT(*) FROM rooms WHERE owner_sub = ?", [owner])
+
+    assert count == 1
+  end
+
+  test "conditional UPDATE refuses second bump at cap (x0097)" do
+    # Direct ledger probe: the overshoot gate is `room_count < cap`, independent
+    # of sandbox Task serialization around Rooms.create/3.
+    owner = "55555555-5555-5555-5555-555555555555"
+    cap = 1
+
+    assert {:ok, _} =
+             %OwnerQuota{}
+             |> OwnerQuota.changeset(%{owner_sub: owner, room_count: 0})
+             |> Repo.insert()
+
+    {1, _} =
+      from(q in OwnerQuota,
+        where: q.owner_sub == ^owner and q.room_count < ^cap
+      )
+      |> Repo.update_all(inc: [room_count: 1])
+
+    {0, _} =
+      from(q in OwnerQuota,
+        where: q.owner_sub == ^owner and q.room_count < ^cap
+      )
+      |> Repo.update_all(inc: [room_count: 1])
+
+    assert %OwnerQuota{room_count: 1} =
+             Repo.get(OwnerQuota, owner)
+  end
+
+  test "duplicate create rolls back quota bump (x0097)" do
+    previous = Application.get_env(:world, :max_rooms_per_owner)
+    Application.put_env(:world, :max_rooms_per_owner, 2)
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:world, :max_rooms_per_owner)
+        value -> Application.put_env(:world, :max_rooms_per_owner, value)
+      end
+    end)
+
+    owner = "44444444-4444-4444-4444-444444444444"
+
+    assert {:ok, "dup-quota", _, _} = Rooms.create("dup-quota", owner)
+    assert {:error, :already_exists} = Rooms.create("dup-quota", owner)
+
+    assert %OwnerQuota{room_count: 1} =
+             Repo.get(OwnerQuota, owner)
+
+    assert {:ok, "dup-quota-2", _, _} = Rooms.create("dup-quota-2", owner)
+    assert {:error, :owner_room_cap_exceeded} = Rooms.create("dup-quota-3", owner)
   end
 
   test "create returns storage_error when max_rooms_per_owner is invalid (x0071)" do

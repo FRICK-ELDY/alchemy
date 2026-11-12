@@ -28,6 +28,7 @@
 | DemoScene（entries + loco + **初期 quat/scale**）を Room 作成時に紐付け。`GET …/scene` は **host** Room Token のみ（x0027 / x002c）。**x006d / x0082**: `POST …/scene/entries` で mesh 1 件追記（**`expected_revision` CAS**・revision bump・canonical seal 入力）。**x007b / x0082**: `DELETE …/scene/entries/:entity_id` で mesh 削除（64-hex blake3 必須・**`expected_revision` CAS**）。競合は **409** `scene_revision_conflict`（host が GET 後に有限再試行） | guest への scene 配布・フル UGC エディタ・collider scale；user_root / cuboid 削除；Room 単位グローバル直列化 alone；無限再試行 |
 | PlaceRead JWT（`typ=place_read` / `aud=alchemy-assets-place-read`）を Room Token + 検証済み `world_seal` で発行（x006b）。scene blake3 は **ManifestSeal 時**固定。PlaceRead `exp` = **seal 絶対 unix `exp`**＋`touch_until`。期限切れ seal → `seal_expired`。再起動後 re-seal。`extra_blake3` 無効 | JWT 内全 hash 列挙；durable 永続／canonical 再 hydrate；PlaceRead が seal より長生き；退出即時 revoke；client 自動取得 |
 | HTTP rate limit（x0071 / **x0084**）: auth-JWT scope は IP+user；host-token scope（`host_seal`=`host_keys`+`manifest_seal` / `host_scene` / `place_read`）は操作別 IP + **claims** `room_id\|jti` で 429。`place_read` 発行と hashes の jti は別 Bearer のため非連動（共有床は IP） | 分散ノード横断カウンタ；発行↔PlaceRead の jti 相関；JWT 署名検証前の jti 真正性 |
+| Room per-owner 上限（x0071 / **x0097**）: `max_rooms_per_owner`（既定 32 / `WORLD_MAX_ROOMS_PER_OWNER`）。`room_owner_quotas` 条件付き UPDATE と `rooms` insert を同一 TX — 並行 create でも保有数 ≤ cap。超過は 403 `room_cap_exceeded` | world 全体 Room 総数 / CCU；Room 物理 DELETE（未実装・将来は quota 減算と一体）；pre-x0097 overshoot の自動刈り込み |
 
 ## 契約（Room Token）
 
@@ -88,7 +89,7 @@ host-token / PlaceRead 系は x0084 で操作別 rate limit（超過は **429** 
 |:---|:---|
 | 既定 | AshSqlite。DB ファイルは `priv/data/world_dev.db`（test は `world_test.db`） |
 | 上書き | env `WORLD_DATABASE_PATH`（**`MIX_ENV=test` では無視**・x003b；assets CAS 隔離と同型） |
-| スキーマ | `rooms(room_id PK, owner_sub, scene JSON, visibility, active_host_sub, state, host_lease_expires_at, timestamps)` |
+| スキーマ | `rooms(room_id PK, owner_sub, scene JSON, visibility, active_host_sub, state, host_lease_expires_at, timestamps)`；`room_owner_quotas(owner_sub PK, room_count, timestamps)`（x0097） |
 | Postgres 切替 | 属性は Postgres 互換のみ。運営規模拡大時は `ash_postgres` + `AshPostgres.DataLayer` / `AshPostgres.Repo` に差し替え、`mix ash.codegen` で再生成。API facade（`World.Rooms`）は変えない |
 | 障害 | SQLite / Ash 失敗は `:storage_error` → HTTP 503 `storage_unavailable`（404/422 に潰さない） |
 | prod volume | `world_prod_keys` に JWT PEM と SQLite を同居（`/var/lib/world`）。`-v` で両方消える |

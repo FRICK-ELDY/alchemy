@@ -201,11 +201,12 @@ depends_on: [x0006]
 | x0094 | — | done | Hierarchy 仮想 Lens 最小（euler_order → Settings） | [x0094-hierarchy-virtual-lens.md](slices/x0094-hierarchy-virtual-lens.md) |
 | x0095 | — | done | wire pose ダブルバッファ置換（P2-6 残り） | [x0095-wire-pose-double-buffer.md](slices/x0095-wire-pose-double-buffer.md) |
 | x0096 | — | done | Origin Cert tree/content hash v1（P2-4） | [x0096-origin-cert-content-hash.md](slices/x0096-origin-cert-content-hash.md) |
+| x0097 | — | done | Room per-owner 上限厳密化（quota row · P2-11） | [x0097-room-owner-cap-strict.md](slices/x0097-room-owner-cap-strict.md) |
 
-**現在の次:** 空間本線は一時停止。衛生帯は [x0096](slices/x0096-origin-cert-content-hash.md) **done**（P2-4 Origin Cert hash）。improvement 残（take-out session / Room 上限厳密化 等）· Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md) · [improvement-plan](../0_doc/evaluation/improvement-plan-2026-11-05.md)）。Inspector / Uber-SDF / 親子同期は再開時に再掲。  
-**P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
+**現在の次:** 空間本線は一時停止。衛生帯は [x0097](slices/x0097-room-owner-cap-strict.md) **done**（P2-11 Room 上限厳密化）。improvement 残（take-out session / XR loader tempfile 等）· Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md) · [improvement-plan](../0_doc/evaluation/improvement-plan-2026-11-05.md)）。Inspector / Uber-SDF / 親子同期は再開時に再掲。  
+**P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-11-05.md)）。
 
-次の空き番号は **`x0097`**。
+次の空き番号は **`x0098`**。
 
 ## 関連
 

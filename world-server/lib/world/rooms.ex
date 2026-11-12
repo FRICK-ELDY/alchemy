@@ -7,8 +7,8 @@ defmodule World.Rooms do
   `append_scene_entry/3` (`expected_revision` CAS + revision bump).
   x007b / x0082: host may remove a mesh SceneEntry via `delete_scene_entry/3`
   (64-hex blake3 required; `expected_revision` CAS + revision bump).
-  x0071: create rejects when owner already holds `max_rooms_per_owner` rooms (best-effort;
-  concurrent races may overshoot slightly — no DB trigger).
+  x0071 / **x0097**: create rejects when owner already holds `max_rooms_per_owner` rooms;
+  quota row conditional UPDATE + same-TX insert — concurrent create cannot overshoot.
   x007c: `list_visible_summaries/3` returns catalog rows (no room_key / wire_cap / scene).
   x007e: visibility **narrow** and owner `rotate_room_key/2` bump `room_key_epoch` + new
   `room_key` via **epoch CAS** (lost concurrent rotate retries); previous key retained in
@@ -19,11 +19,12 @@ defmodule World.Rooms do
   `mine=1` may include dormant definitions. Handover / takeover / lease sweep are world-authoritative.
   Non-guarantees: full UGC editor; multi-node replication; Postgres (swap path documented);
   friendship-change alone does not rotate (use narrow visibility / owner rotate);
-  grace durability across world restart; strict serialization of per-owner room counts
-  under concurrent create; user_root / cuboid (empty blake3) despawn;
+  grace durability across world restart; Room physical DELETE (and quota decrement);
+  user_root / cuboid (empty blake3) despawn;
   catalog Frame reachability; seamless pose / grab inheritance across hosts;
   paginated periodic rotate (due rooms loaded in one tick);
-  room-wide scene serialization alone (x0082 is optimistic CAS + host retry).
+  room-wide scene serialization alone (x0082 is optimistic CAS + host retry);
+  world-wide Room total / CCU caps; auto-heal of pre-x0097 overshoot beyond migration backfill.
 
   x0021: `owner_sub` set only via `create/3` (`{:ok, room_id, visibility, wire_cap}` · x004e).
   Token issuance never creates a room.
@@ -40,7 +41,11 @@ defmodule World.Rooms do
 
   require Logger
 
+  import Ecto.Query, only: [from: 2]
+
   alias World.DemoScene
+  alias World.Repo
+  alias World.Rooms.OwnerQuota
   alias World.Rooms.Room
   alias World.Rooms.RoomKeyGrace
   alias World.Visibility
@@ -75,9 +80,8 @@ defmodule World.Rooms do
       when is_binary(room_id) and is_binary(owner_sub) and is_binary(visibility) do
     with :ok <- validate_room_id(room_id),
          {:ok, vis} <- World.Visibility.parse(visibility),
-         :ok <- ensure_under_owner_cap(owner_sub),
          {:ok, %Room{room_id: id, visibility: stored, wire_cap: wire_cap}} <-
-           insert_room(room_id, owner_sub, vis) do
+           create_with_owner_quota(room_id, owner_sub, vis) do
       {:ok, id, stored, wire_cap}
     else
       {:error, :invalid_room_id} = err -> err
@@ -1251,24 +1255,114 @@ defmodule World.Rooms do
   defp owner_matches(%Room{owner_sub: owner}, sub) when owner == sub, do: :ok
   defp owner_matches(%Room{}, _), do: {:error, :forbidden_host}
 
-  defp ensure_under_owner_cap(owner_sub) do
+  # x0097: quota bump + room insert in one TX (assets QuotaLedger pattern).
+  # Cheap best-effort hint skips DemoScene/key build on obvious cap reject;
+  # conditional UPDATE inside the TX remains the authority. Scene/key material
+  # is still built *outside* the write TX so the single-writer lock covers DB
+  # only. Mode `:immediate` matches AshSqlite mutate (BEGIN IMMEDIATE).
+  defp create_with_owner_quota(room_id, owner_sub, visibility) do
     case max_rooms_per_owner() do
       {:ok, cap} ->
-        case count_by_owner(owner_sub) do
-          {:ok, count} when is_integer(count) and count >= cap ->
-            {:error, :owner_room_cap_exceeded}
-
-          {:ok, _count} ->
-            :ok
-
-          {:error, :storage_error} = err ->
-            err
+        if owner_cap_hint_exceeded?(owner_sub, cap) do
+          {:error, :owner_room_cap_exceeded}
+        else
+          attrs = new_room_attrs(room_id, owner_sub, visibility)
+          commit_create_with_owner_quota(attrs, cap)
         end
 
       {:error, :invalid_cap} ->
         Logger.error("World.Rooms.create invalid :max_rooms_per_owner (must be pos_integer)")
         {:error, :storage_error}
     end
+  rescue
+    # Repo stopped / not registered (tests simulate outage before insert).
+    e in [RuntimeError, ArgumentError] ->
+      storage_error(e, :create)
+  end
+
+  defp commit_create_with_owner_quota(attrs, cap) do
+    case Repo.transaction(fn -> create_with_owner_quota!(attrs, cap) end, mode: :immediate) do
+      {:ok, %Room{} = room} ->
+        {:ok, room}
+
+      {:error, :owner_room_cap_exceeded} ->
+        {:error, :owner_room_cap_exceeded}
+
+      {:error, :already_exists} ->
+        {:error, :already_exists}
+
+      {:error, :storage_error} ->
+        {:error, :storage_error}
+
+      # Ash create failures inside this TX call DataLayer.rollback/2 before
+      # returning {:error, _} to the caller — so unique/storage reasons land
+      # here as the rollback term (changeset / error class), not via the
+      # defensive arm in create_with_owner_quota!/2.
+      {:error, error} ->
+        map_create_error(error)
+    end
+  end
+
+  defp create_with_owner_quota!(attrs, cap) do
+    owner_sub = attrs.owner_sub
+    ensure_owner_quota!(owner_sub)
+
+    case bump_owner_quota(owner_sub, cap) do
+      :ok -> :ok
+      :cap_exceeded -> Repo.rollback(:owner_room_cap_exceeded)
+    end
+
+    case insert_room(attrs) do
+      {:ok, %Room{} = room} ->
+        room
+
+      # Defensive only: when Ash is already in this TX, create failures abort via
+      # Ash.DataLayer.rollback/2 and never return {:error, _} here. Kept so a
+      # future non-Ash insert still maps cleanly.
+      {:error, error} ->
+        if unique_violation?(error) do
+          Repo.rollback(:already_exists)
+        else
+          Logger.error("World.Rooms.create storage failure: #{Exception.message(error)}")
+          Repo.rollback(:storage_error)
+        end
+    end
+  end
+
+  defp ensure_owner_quota!(owner_sub) do
+    changeset = OwnerQuota.changeset(%OwnerQuota{}, %{owner_sub: owner_sub, room_count: 0})
+
+    case Repo.insert(changeset, on_conflict: :nothing, conflict_target: :owner_sub) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("World.Rooms.create quota ledger insert failed: #{inspect(reason)}")
+        Repo.rollback(:storage_error)
+    end
+  end
+
+  # Best-effort only: skip expensive attrs when ledger already shows at/over cap.
+  # Absent row or under-cap → proceed; TX bump is the real gate.
+  defp owner_cap_hint_exceeded?(owner_sub, cap) do
+    case Repo.get(OwnerQuota, owner_sub) do
+      %OwnerQuota{room_count: count} when is_integer(count) and count >= cap -> true
+      _ -> false
+    end
+  end
+
+  # ensure_owner_quota!/1 just ran in this TX, so n == 0 means at/over cap
+  # (missing row would be a bug in ensure — still surfaced as cap_exceeded).
+  defp bump_owner_quota(owner_sub, cap) when is_integer(cap) and cap > 0 do
+    now = DateTime.utc_now()
+
+    {n, _} =
+      from(q in OwnerQuota,
+        where: q.owner_sub == ^owner_sub and q.room_count < ^cap
+      )
+      |> Repo.update_all(inc: [room_count: 1], set: [updated_at: now])
+
+    if n == 1, do: :ok, else: :cap_exceeded
   end
 
   defp max_rooms_per_owner do
@@ -1278,27 +1372,10 @@ defmodule World.Rooms do
     end
   end
 
-  defp count_by_owner(owner_sub) do
-    case World.Repo.query("SELECT COUNT(*) FROM rooms WHERE owner_sub = ?", [owner_sub]) do
-      {:ok, %{rows: [[count]]}} when is_integer(count) ->
-        {:ok, count}
-
-      {:ok, %{rows: [[count]]}} when is_binary(count) ->
-        {:ok, String.to_integer(count)}
-
-      {:error, error} ->
-        storage_error(error, :count_by_owner)
-    end
-  rescue
-    # Repo stopped / not registered (tests simulate outage before insert).
-    e in [RuntimeError, ArgumentError] ->
-      storage_error(e, :count_by_owner)
-  end
-
-  defp insert_room(room_id, owner_sub, visibility) do
+  defp new_room_attrs(room_id, owner_sub, visibility) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-    Room.create(%{
+    %{
       room_id: room_id,
       owner_sub: owner_sub,
       scene: DemoScene.build(),
@@ -1307,7 +1384,11 @@ defmodule World.Rooms do
       room_key: generate_room_key_hex(),
       room_key_epoch: 0,
       room_key_rotated_at: now
-    })
+    }
+  end
+
+  defp insert_room(attrs) when is_map(attrs) do
+    Room.create(attrs)
   end
 
   defp cas_visibility_narrow_rotate(_room, _vis, 0) do

@@ -74,6 +74,7 @@ improvement-plan P2 帯。本線を止めないが放置すると DX/運用が�
 - prod compose publish 既定 loopback（**done: x0073**）、cargo deny launcher/relay（**done: x0073 / x0068**）
 - mTLS 鍵 temp の権限・掃除（**done: x0078**）、腐った smoke（`smoke-host-token` **done: x0073**）
 - DemoScene 共有テストベクタ（**done: x0079**）、auth/world/relay metrics + `jti` 相関（**done: x007a**）
+- Room per-owner 上限の厳密化（並行 overshoot 封じ · improvement P2-11）— **done: [x0097](slices/x0097-room-owner-cap-strict.md)**
 
 ---
 
@@ -114,6 +115,8 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 7. ~~実 host WAN 一往復 E2E（P1-4）~~ **→ [x0087](slices/x0087-wan-host-e2e.md) done**
 8. ~~Allocation throughput（P1-5）~~ **→ [x0088](slices/x0088-allocation-subject-throughput.md) done**
 9. ~~[x008c](slices/x008c-shared-jwks-fail-cooldown.md) 共有 JWKS 失敗クールダウン（P2-5）~~ **done**
-10. verifier Spot-Check（保留）· Formula / market / 検疫（減点対象外）
+10. ~~[x0096](slices/x0096-origin-cert-content-hash.md) Origin Cert content hash（P2-4）~~ **done**
+11. ~~[x0097](slices/x0097-room-owner-cap-strict.md) Room per-owner 上限厳密化（P2-11）~~ **done**
+12. verifier Spot-Check（保留）· Formula / market / 検疫（減点対象外）
 
 ← [Roadmap 目次](README.md)
