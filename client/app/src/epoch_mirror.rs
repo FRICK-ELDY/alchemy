@@ -5,7 +5,8 @@
 //! full entity map; freelist row reuse is safe for GPU pack via generation/ABA gate
 //! in [`crate::epoch_view::pack_aligned_gpu_faces`].
 //! Non-guarantees: topology / hierarchy; color on tape; host ArcSwap sharing;
-//! XPBD; draw authority (stays on `EntityPose`).
+//! XPBD. Draw/Grab display TRS is Epoch freeze (`begin_display_frame` / `out`; x0091);
+//! color channels + camera eye remain WorldView (eye = remaining legacy).
 
 use std::collections::HashMap;
 use std::sync::Arc;

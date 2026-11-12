@@ -72,7 +72,7 @@ verify_frame + tick gate
 
 ## やらない（本 Slice）／次
 
-- `out` バッファを SceneGpu vertex / UBO に接続（接続時は **フル active pack** か **永続 GPU スロット**；現行 `dirty_only` は out 未使用前提で効き目も薄い）
+- `out` バッファを SceneGpu vertex / UBO に接続 → **[x0091](x0091-epoch-out-scenegpu-draw.md)** **done**（フル active pack；display TRS SSoT・Curr 単独権威は撤廃）
 - XPBD を wire 権威にする / Rapier 削除
 - Loro CRDT / Zenoh Grab ストリーム
 - UI Lens 本仕様

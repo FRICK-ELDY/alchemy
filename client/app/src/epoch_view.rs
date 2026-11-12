@@ -3,16 +3,18 @@
 //! Guarantees: GPU path is appearance-only (no readback); Hierarchy walks
 //! `euler_order` with O(1) collapse skips; X-Ray formats ReadinessMask / Prev /
 //! Curr / depth / Morton for the selected `row_id`; SceneGpu binds interpolate
-//! buffers from published faces (x0090).
-//! Non-guarantees: full Spatial Lens UI; `out` as SceneGpu vertex source.
-//! Wire draw still uses `EntityPose` until a later slice.
+//! buffers from published faces (x0090) and draws mesh/box TRS from `out`
+//! storage (x0091; full active pack).
+//! Display α / PrevCurr / CPU pose cache are frozen once per display frame
+//! ([`EpochViewState::begin_display_frame`]); Grab/GPU/color share that snap.
+//! Non-guarantees: full Spatial Lens UI; color on tape; topology-driven draw.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use alchemy_shared_sim::bridge::EpochSnapshotPair;
+use alchemy_shared_sim::bridge::{EpochFaces, EpochSnapshotPair};
 use alchemy_shared_sim::spatial::{morton_code30, SceneBounds};
 use alchemy_shared_sim::tape::{EpochSheet, ReadinessMask, WorldTransformf64};
 use alchemy_shared_sim::topology::FlatTopology;
@@ -83,12 +85,55 @@ fn interpolate(@builtin(global_invocation_id) gid: vec3<u32>) {
         pr = -pr;
     }
     o.rot = normalize(mix(pr, c.rot, a));
-    o.scale = mix(p.scale, c.scale, a);
+    // Match CPU twin [`lerp_gpu_rows`]: near-zero scale → identity before consumers.
+    var sc = mix(p.scale, c.scale, a);
+    if (dot(sc, sc) < 1e-12) {
+        sc = vec3<f32>(1.0, 1.0, 1.0);
+    }
+    o.scale = sc;
     o.row_id = c.row_id;
     o._pad0 = 0.0;
     out_rows[i] = o;
 }
 "#;
+
+/// One display-frame freeze: same faces + α + packed rows + entity pose cache.
+///
+/// Grab / GPU upload / coin color must all read this — not a fresh `Instant::now()`.
+/// Shared as [`Arc`] so readers (per-mesh coin color, Grab list, sync) cheaply clone the pointer.
+#[derive(Debug)]
+pub struct DisplayFrame {
+    pub faces: Arc<EpochFaces>,
+    pub alpha: f32,
+    pub prev_rows: Vec<GpuEpochRow>,
+    pub curr_rows: Vec<GpuEpochRow>,
+    /// `entity_id` → lerped row (full active pack).
+    pub poses: HashMap<u32, GpuEpochRow>,
+}
+
+/// Build a display-frame snap from one `load_pair` + one `now` (testable pure helper).
+pub fn build_display_frame(faces: Arc<EpochFaces>, now: Instant) -> Arc<DisplayFrame> {
+    let alpha = crate::epoch_mirror::epoch_interp_alpha(
+        crate::epoch_mirror::published_instant(faces.published_at_ns),
+        now,
+    );
+    let ids = aligned_row_ids(&faces.prev, &faces.curr, false);
+    let (prev_rows, curr_rows) = pack_aligned_gpu_faces(&faces.prev, &faces.curr, &ids);
+    let mut poses = HashMap::with_capacity(curr_rows.len());
+    for (p, c) in prev_rows.iter().zip(curr_rows.iter()) {
+        let out = lerp_gpu_rows(p, c, alpha);
+        if let Some(&eid) = faces.curr.owner_scope.get(out.row_id as usize) {
+            poses.insert(eid, out);
+        }
+    }
+    Arc::new(DisplayFrame {
+        faces,
+        alpha,
+        prev_rows,
+        curr_rows,
+        poses,
+    })
+}
 
 /// Owns lock-free snapshots + topology for Hierarchy / X-Ray.
 pub struct EpochViewState {
@@ -99,6 +144,8 @@ pub struct EpochViewState {
     pub scene_bounds: Mutex<SceneBounds>,
     /// Frame → tape kinematic mirror (x0090).
     pub mirror: Mutex<EpochFrameMirror>,
+    /// Frozen display faces/α/poses for the current client frame (x0091).
+    display_frame: Mutex<Option<Arc<DisplayFrame>>>,
 }
 
 impl EpochViewState {
@@ -112,16 +159,49 @@ impl EpochViewState {
             xray_row: AtomicU32::new(u32::MAX),
             scene_bounds: Mutex::new(SceneBounds::default()),
             mirror: Mutex::new(EpochFrameMirror::default()),
+            display_frame: Mutex::new(None),
         }
     }
 
-    /// α for interpolate upload; `1.0` before first publish (wire 30Hz period).
+    /// Freeze Prev/Curr + α + pose cache for this display frame (call once at frame start).
+    pub fn begin_display_frame(&self, now: Instant) {
+        let faces = self.snapshots.load_pair();
+        let frame = build_display_frame(faces, now);
+        if let Ok(mut slot) = self.display_frame.lock() {
+            *slot = Some(frame);
+        }
+    }
+
+    /// Keep existing freeze; if none, begin with `now` (sync / mid-frame Grab fallback).
     ///
-    /// Clock comes from the same [`EpochFaces`] as Prev/Curr (`published_at_ns`).
-    pub fn interp_alpha_now(&self) -> f32 {
-        let ns = self.snapshots.load_pair().published_at_ns;
-        let at = crate::epoch_mirror::published_instant(ns);
-        crate::epoch_mirror::epoch_interp_alpha(at, Instant::now())
+    /// Non-Redraw input that calls Grab reuses the **last painted** freeze — aligned to
+    /// what the user still sees until the next `begin_display_frame` on Redraw/XR frame.
+    pub fn ensure_display_frame(&self, now: Instant) {
+        let _ = self.with_display_frame(now, |_| ());
+    }
+
+    /// Ensure freeze, then run `f` under a single Mutex hold.
+    pub fn with_display_frame<R>(
+        &self,
+        now: Instant,
+        f: impl FnOnce(&DisplayFrame) -> R,
+    ) -> Option<R> {
+        let mut slot = self.display_frame.lock().ok()?;
+        if slot.is_none() {
+            let faces = self.snapshots.load_pair();
+            *slot = Some(build_display_frame(faces, now));
+        }
+        Some(f(slot.as_ref()?))
+    }
+
+    /// Cheap [`Arc`] clone of the frozen frame (ensure + clone under one lock).
+    pub fn display_frame_snapshot(&self) -> Option<Arc<DisplayFrame>> {
+        let mut slot = self.display_frame.lock().ok()?;
+        if slot.is_none() {
+            let faces = self.snapshots.load_pair();
+            *slot = Some(build_display_frame(faces, Instant::now()));
+        }
+        slot.as_ref().map(Arc::clone)
     }
 
     pub fn set_xray_row(&self, row: Option<u32>) {
@@ -150,10 +230,13 @@ fn row_is_live(sheet: &EpochSheet, row: u32) -> bool {
     idx < sheet.readiness.len() && !sheet.readiness[idx].contains(ReadinessMask::TOMBSTONE)
 }
 
+/// Sentinel pack index: vertex shader uses `model_override` instead of `epoch_out`.
+pub const PACK_INDEX_MODEL_OVERRIDE: u32 = u32::MAX;
+
 /// Sorted `row_id` list shared by Prev/Curr packs so GPU index `i` is the same entity.
 ///
 /// `dirty_only`: union of both sheets' dirty bits (still one aligned id list).
-/// Tombstoned rows are dropped. Production interpolate must use this (or full active).
+/// Tombstoned rows are dropped. **Draw path (x0091) uses full active** (`dirty_only=false`).
 pub fn aligned_row_ids(prev: &EpochSheet, curr: &EpochSheet, dirty_only: bool) -> Vec<u32> {
     let mut ids = BTreeSet::new();
     if dirty_only {
@@ -220,6 +303,66 @@ pub fn pack_gpu_rows(sheet: &EpochSheet, dirty_only: bool) -> Vec<GpuEpochRow> {
     rows
 }
 
+/// Fill `out` in place (reuse allocation) from **packed** Curr face + `owner_scope`.
+///
+/// Pass rows from [`pack_aligned_gpu_faces`] only — raw `row_ids` that still contain
+/// non-live entries would desync indices if enumerated directly.
+pub fn fill_entity_pack_index(
+    out: &mut HashMap<u32, u32>,
+    curr: &EpochSheet,
+    packed: &[GpuEpochRow],
+) {
+    out.clear();
+    for (i, row) in packed.iter().enumerate() {
+        let idx = row.row_id as usize;
+        if let Some(&entity_id) = curr.owner_scope.get(idx) {
+            out.insert(entity_id, i as u32);
+        }
+    }
+}
+
+/// CPU twin of [`INTERPOLATE_WGSL`] (hemisphere-aware nlerp). No GPU readback.
+pub fn lerp_gpu_rows(prev: &GpuEpochRow, curr: &GpuEpochRow, alpha: f32) -> GpuEpochRow {
+    let a = alpha.clamp(0.0, 1.0);
+    let mut pr = prev.rot;
+    let cr = curr.rot;
+    let dot = pr[0] * cr[0] + pr[1] * cr[1] + pr[2] * cr[2] + pr[3] * cr[3];
+    if dot < 0.0 {
+        pr = [-pr[0], -pr[1], -pr[2], -pr[3]];
+    }
+    let mut rot = [
+        pr[0] + (cr[0] - pr[0]) * a,
+        pr[1] + (cr[1] - pr[1]) * a,
+        pr[2] + (cr[2] - pr[2]) * a,
+        pr[3] + (cr[3] - pr[3]) * a,
+    ];
+    let len = (rot[0] * rot[0] + rot[1] * rot[1] + rot[2] * rot[2] + rot[3] * rot[3]).sqrt();
+    if len > 1e-12 {
+        rot = [rot[0] / len, rot[1] / len, rot[2] / len, rot[3] / len];
+    } else {
+        rot = [0.0, 0.0, 0.0, 1.0];
+    }
+    let mut scale = [
+        prev.scale[0] + (curr.scale[0] - prev.scale[0]) * a,
+        prev.scale[1] + (curr.scale[1] - prev.scale[1]) * a,
+        prev.scale[2] + (curr.scale[2] - prev.scale[2]) * a,
+    ];
+    if scale[0] * scale[0] + scale[1] * scale[1] + scale[2] * scale[2] < 1e-12 {
+        scale = [1.0, 1.0, 1.0];
+    }
+    GpuEpochRow {
+        pos: [
+            prev.pos[0] + (curr.pos[0] - prev.pos[0]) * a,
+            prev.pos[1] + (curr.pos[1] - prev.pos[1]) * a,
+            prev.pos[2] + (curr.pos[2] - prev.pos[2]) * a,
+        ],
+        _pad0: 0.0,
+        rot,
+        scale,
+        row_id: curr.row_id,
+    }
+}
+
 /// Create / rewrite storage buffers for Prev/Curr/Out (appearance path only).
 pub struct EpochGpuBuffers {
     pub prev: wgpu::Buffer,
@@ -257,6 +400,7 @@ impl EpochGpuBuffers {
                 "epoch_curr",
                 wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             ),
+            // STORAGE: compute write + vertex read (x0091). VERTEX kept for future MDI.
             out: storage(
                 "epoch_out",
                 wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
@@ -590,6 +734,113 @@ mod tests {
         assert!(INTERPOLATE_WGSL.contains("fn interpolate"));
         assert!(INTERPOLATE_WGSL.contains("dot(pr, c.rot)"));
         assert_eq!(std::mem::size_of::<GpuEpochRow>() % 16, 0);
+    }
+
+    #[test]
+    fn pack_index_override_sentinel_is_max() {
+        assert_eq!(PACK_INDEX_MODEL_OVERRIDE, u32::MAX);
+    }
+
+    #[test]
+    fn fill_entity_pack_index_maps_owner_scope() {
+        let mut sheet = EpochSheet::with_capacity(2);
+        let a = sheet.alloc_row();
+        let b = sheet.alloc_row();
+        sheet.owner_scope[a.row_id as usize] = 10;
+        sheet.owner_scope[b.row_id as usize] = 20;
+        let ids = vec![a.row_id, b.row_id];
+        let (_p, c) = pack_aligned_gpu_faces(&sheet, &sheet, &ids);
+        let mut map = HashMap::new();
+        fill_entity_pack_index(&mut map, &sheet, &c);
+        assert_eq!(map.get(&10), Some(&0));
+        assert_eq!(map.get(&20), Some(&1));
+    }
+
+    #[test]
+    fn fill_entity_pack_index_ignores_non_live_skipped_by_pack() {
+        let mut sheet = EpochSheet::with_capacity(2);
+        let a = sheet.alloc_row();
+        let b = sheet.alloc_row();
+        sheet.owner_scope[a.row_id as usize] = 10;
+        sheet.owner_scope[b.row_id as usize] = 20;
+        sheet.tombstone(b).unwrap();
+        // Caller mistakenly passes tombstoned id; pack skips it — map must not shift.
+        let ids = vec![a.row_id, b.row_id];
+        let (_p, c) = pack_aligned_gpu_faces(&sheet, &sheet, &ids);
+        assert_eq!(c.len(), 1);
+        let mut map = HashMap::new();
+        fill_entity_pack_index(&mut map, &sheet, &c);
+        assert_eq!(map.get(&10), Some(&0));
+        assert!(!map.contains_key(&20));
+    }
+
+    #[test]
+    fn lerp_gpu_rows_matches_midpoint_translation() {
+        let prev = GpuEpochRow {
+            pos: [0.0, 0.0, 0.0],
+            rot: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+            row_id: 1,
+            ..Default::default()
+        };
+        let curr = GpuEpochRow {
+            pos: [2.0, 4.0, 6.0],
+            rot: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+            row_id: 1,
+            ..Default::default()
+        };
+        let mid = lerp_gpu_rows(&prev, &curr, 0.5);
+        assert!((mid.pos[0] - 1.0).abs() < 1e-5);
+        assert!((mid.pos[1] - 2.0).abs() < 1e-5);
+        assert!((mid.pos[2] - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn lerp_gpu_rows_hemisphere_flip_takes_short_arc() {
+        // 180° apart on w axis with opposite signs → without flip, mix goes through zero.
+        let prev = GpuEpochRow {
+            rot: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+            row_id: 1,
+            ..Default::default()
+        };
+        let curr = GpuEpochRow {
+            rot: [0.0, 0.0, 0.0, -1.0],
+            scale: [1.0, 1.0, 1.0],
+            row_id: 1,
+            ..Default::default()
+        };
+        let mid = lerp_gpu_rows(&prev, &curr, 0.5);
+        let len = (mid.rot[0] * mid.rot[0]
+            + mid.rot[1] * mid.rot[1]
+            + mid.rot[2] * mid.rot[2]
+            + mid.rot[3] * mid.rot[3])
+            .sqrt();
+        assert!((len - 1.0).abs() < 1e-4, "len={len}");
+        // After flip, curr ≈ +identity → mid stays near identity (not zero quat).
+        assert!(mid.rot[3].abs() > 0.9, "rot={:?}", mid.rot);
+    }
+
+    #[test]
+    fn build_display_frame_uses_faces_published_at_for_alpha() {
+        let mut curr = EpochSheet::with_capacity(1);
+        let h = curr.alloc_row();
+        curr.owner_scope[h.row_id as usize] = 42;
+        curr.set_transform(h.row_id, WorldTransformf64::identity_at([1.0, 0.0, 0.0]))
+            .unwrap();
+        let prev = curr.clone();
+        let start = Instant::now();
+        let faces = Arc::new(EpochFaces {
+            prev: Arc::new(prev),
+            curr: Arc::new(curr),
+            published_at_ns: 1, // published_instant(1) ≈ process_start + 1ns
+        });
+        let frame = build_display_frame(faces, start);
+        assert!(frame.poses.contains_key(&42));
+        assert_eq!(frame.prev_rows.len(), frame.curr_rows.len());
+        // α from faces.published_at_ns, not a second load_pair.
+        assert!((0.0..=1.0).contains(&frame.alpha));
     }
 
     #[test]

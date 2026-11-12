@@ -128,7 +128,7 @@
 
 - host 60Hz への `FrameBridge::tick` 本番配線 → **[x008f](x008f-host-frame-bridge.md)** **done**
 - Rapier / 既存 `SlotGraph` の置換・削除
-- SceneGpu への補間コンピュート bind → **[x0090](x0090-client-epoch-scenegpu-bind.md)**（`out`→vertex はさらに次）
+- SceneGpu への補間コンピュート bind → **[x0090](x0090-client-epoch-scenegpu-bind.md)** **done**；`out`→draw → **[x0091](x0091-epoch-out-scenegpu-draw.md)**
 - Loro CRDT / Zenoh 揮発 Grab ストリーム
 - Formula VM・全身 IK・StaticSDF asset-compiler
 - UI Lens 本仕様 → [alchemy_zero_base_spatial_ui_lens_uix_architecture.md](../alchemy_zero_base_spatial_ui_lens_uix_architecture.md)

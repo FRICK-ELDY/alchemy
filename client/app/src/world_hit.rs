@@ -1,11 +1,15 @@
 //! World-space ray hits against grabbable box OBBs (Desktop + XR, x002b).
 //!
 //! Guarantees: nearest OBB among caller-supplied grabbable poses within [`MAX_HIT_DISTANCE`].
-//! Local half-extents = Manifest `half_extent` × Frame `scale` (per-axis); orientation from
-//! `pose.rotation()` — matches Desktop/XR draw TRS (x0029 / x002c).
+//! Local half-extents = Manifest `half_extent` × pose `scale` (per-axis); orientation from
+//! `pose.rotation()`. Callers must pass **display TRS** (same α / ABA as SceneGpu
+//! `epoch_out` — [`crate::scene::SharedState::display_pose_for`] / `grabbable_display_poses`)
+//! so hit matches draw (x0091). Wire Curr-only poses are **abolished** for this path
+//! (break alignment while α∈(0,1); see x0091「レガシー撤廃」).
 //! Non-guarantees: mesh triangles, Slot hierarchy, XR dash quad (stays in surface/xr);
 //! Grab aim rotation follow on host (translation only); host Rapier / grab-distance use
-//! `half_extent` only (client OBB may disagree when Frame scale ≠ 1 — x002c).
+//! `half_extent` only (client OBB may disagree when Frame scale ≠ 1 — x002c);
+//! camera / loco eye display TRS (remaining legacy — not this module's job).
 
 use std::collections::HashMap;
 
