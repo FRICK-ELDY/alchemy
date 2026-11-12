@@ -1,14 +1,15 @@
-//! Inventory scene despawn control plane (x007b / x0081 / x0082).
+//! Inventory scene despawn control plane (x007b / x0081 / x0082 / x0098).
 //!
 //! Guarantees: Zenoh `…/inventory/despawn` is **Room AEAD**; session Ed25519 + SessionTable
-//! (**`role=host` bind** and `sub` == host Token sub); world HTTP delete uses host Token,
-//! PoP, and **scene revision CAS**; physics applies shared scene / re-seal and best-effort
-//! XPBD mesh remove. Order: evaluate → rate → commit seq → HTTP (unbound/guest cannot burn
-//! shared rate).
+//! Dual auth (**`role=host` ∧ `sub` == host Token sub** **or** **`sub` == `owner_sub`**);
+//! world HTTP delete uses host Token, PoP, and **scene revision CAS**; physics applies shared
+//! scene / re-seal and best-effort XPBD mesh remove. Order: evaluate → rate → commit seq → HTTP
+//! (unbound / non-owner guest cannot burn shared rate).
 //!
-//! Non-guarantees: guest despawn for non-host sub; put-back coupling; Intent path;
+//! Non-guarantees: Invite / arbitrary-guest ACL; put-back coupling; Intent path;
 //! **HTTP failure after `control_seq` commit** (seq stays advanced); evaluate→rate→commit
-//! のあいだの host→guest 降格で rate のみ消費（Intent と同様・許容）。
+//! のあいだの host→guest 降格で rate のみ消費（Intent と同様・許容）；`owner_sub` 未取得時の
+//! owner 経路.
 
 use alchemy_protocol::control_plane;
 use alchemy_protocol::inventory_despawn_key;
@@ -189,11 +190,21 @@ fn process_sample(
     .map_err(|e| anyhow!("control sig: {e}"))?;
 
     let auth = http_auth.snapshot()?;
+    let owner_sub = shared_scene
+        .read()
+        .map_err(|_| anyhow!("shared scene RwLock poisoned"))?
+        .owner_sub
+        .clone();
     {
         let table = sessions
             .lock()
             .map_err(|_| anyhow!("SessionTable poisoned"))?;
-        table.evaluate_control(&session_pub, parsed.control_seq, &auth.sub)?;
+        table.evaluate_control(
+            &session_pub,
+            parsed.control_seq,
+            &auth.sub,
+            owner_sub.as_deref(),
+        )?;
     }
     if !rate.allow() {
         return Err(anyhow!("rate limited"));
@@ -202,7 +213,12 @@ fn process_sample(
         let mut table = sessions
             .lock()
             .map_err(|_| anyhow!("SessionTable poisoned"))?;
-        table.commit_control(&session_pub, parsed.control_seq, &auth.sub)?;
+        table.commit_control(
+            &session_pub,
+            parsed.control_seq,
+            &auth.sub,
+            owner_sub.as_deref(),
+        )?;
     }
 
     let scene = delete_room_scene_entry(
@@ -263,6 +279,7 @@ mod tests {
             revision,
             entries: vec![],
             locomotion: None,
+            owner_sub: None,
         }
     }
 

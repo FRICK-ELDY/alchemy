@@ -1,16 +1,16 @@
-//! Inventory take-out spawn control plane (x006d / x0081 / x0082).
+//! Inventory take-out spawn control plane (x006d / x0081 / x0082 / x0098).
 //!
 //! Guarantees: Zenoh `…/inventory/spawn` is **Room AEAD** (`AeadKind::InventorySpawn`);
-//! after open, session Ed25519 + SessionTable (**`role=host` bind** and `sub` == host Token
-//! sub); world HTTP append uses **host** Token, PoP, and **scene revision CAS** (client JWT
-//! never on the bus); physics only applies a ready `SceneEntry` (and shared scene / re-seal
-//! flag). Order mirrors Intent: evaluate (no seq) → rate → commit seq → HTTP
-//! (unbound/guest cannot burn shared rate).
+//! after open, session Ed25519 + SessionTable Dual auth (**`role=host` ∧ `sub` == host Token
+//! sub** **or** **`sub` == `owner_sub`** from shared scene); world HTTP append uses **host**
+//! Token, PoP, and **scene revision CAS** (client JWT never on the bus); physics only applies
+//! a ready `SceneEntry` (and shared scene / re-seal flag). Order mirrors Intent: evaluate
+//! (no seq) → rate → commit seq → HTTP (unbound / non-owner guest cannot burn shared rate).
 //!
-//! Non-guarantees: guest take-out for non-host sub; put-back; Intent path;
+//! Non-guarantees: Invite / arbitrary-guest ACL; put-back; Intent path;
 //! distributed TX / **HTTP failure after `control_seq` commit** (seq stays advanced);
 //! evaluate→rate→commit のあいだに host→guest 降格が挟まると **rate だけ消費して commit 失敗**
-//! しうる（Intent と同じく許容・窓は狭い）。
+//! しうる（Intent と同じく許容・窓は狭い）；`owner_sub` 未取得時の owner 経路.
 
 use alchemy_protocol::control_plane::{self, ControlPose};
 use alchemy_protocol::wire_aead::{self, AeadKind};
@@ -246,12 +246,22 @@ fn process_sample(
     .map_err(|e| anyhow!("control sig: {e}"))?;
 
     let auth = http_auth.snapshot()?;
+    let owner_sub = shared_scene
+        .read()
+        .map_err(|_| anyhow!("shared scene RwLock poisoned"))?
+        .owner_sub
+        .clone();
     {
         let table = sessions
             .lock()
             .map_err(|_| anyhow!("SessionTable poisoned"))?;
-        // Bind+role+sub+seq check first — unbound/guest must not reach shared rate.
-        table.evaluate_control(&session_pub, parsed.control_seq, &auth.sub)?;
+        // Dual auth + seq first — unbound / non-owner guest must not reach shared rate.
+        table.evaluate_control(
+            &session_pub,
+            parsed.control_seq,
+            &auth.sub,
+            owner_sub.as_deref(),
+        )?;
     }
     if !rate.allow() {
         return Err(anyhow!("rate limited"));
@@ -260,7 +270,12 @@ fn process_sample(
         let mut table = sessions
             .lock()
             .map_err(|_| anyhow!("SessionTable poisoned"))?;
-        table.commit_control(&session_pub, parsed.control_seq, &auth.sub)?;
+        table.commit_control(
+            &session_pub,
+            parsed.control_seq,
+            &auth.sub,
+            owner_sub.as_deref(),
+        )?;
     }
 
     let (scene, entry) = append_room_scene_entry(
@@ -331,6 +346,7 @@ mod tests {
             revision,
             entries: vec![],
             locomotion: None,
+            owner_sub: None,
         }
     }
 

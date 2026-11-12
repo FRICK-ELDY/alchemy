@@ -14,7 +14,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | Zenoh `inventory/spawn\|despawn` 平文に `room_token` が無い。`session_pub` + `control_seq` + `control_sig`（Ed25519） | Intent 本体の protobuf 変更；Frame / Presence の Token 排除の再設計 |
-| host は SessionTable に **`role=host` で bind 済み**の session のみ受理。`sub` は **現計算ホスト**（host Token `sub`）と一致必須。同一アカウントの guest 再 bind では制御面を拒否 | 任意 guest の take-out（非ホスト端末からの遠隔 spawn）；Invite ACL；evaluate→rate→commit 間の降格で rate のみ消費；HTTP 失敗後の `control_seq` 巻き戻し |
+| host は SessionTable に **`role=host` で bind 済み**の session のみ受理。`sub` は **現計算ホスト**（host Token `sub`）と一致必須。同一アカウントの guest 再 bind では制御面を拒否 | ~~任意 guest の take-out（非ホスト端末からの遠隔 spawn）~~ → owner 経路は [x0098](x0098-take-out-owner-session.md)；Invite ACL；evaluate→rate→commit 間の降格で rate のみ消費；HTTP 失敗後の `control_seq` 巻き戻し |
 | world scene append/delete は **host 自前 Token + PoP**（クライアント JWT を転用しない） | Scene revision CAS（P0-3・別 Slice） |
 | `host_keys` / `manifest_seal` / `GET\|POST\|DELETE …/scene*` は `cnf.spk` に対する PoP（`alchemy/pop/v1\|METHOD\|path\|ts\|raw_body`）必須。欠落・不一致・skew 超過は **401** | PlaceRead / tokens / handover 等の auth-JWT 経路への PoP；RFC 9449 完全互換；**nonce / skew 内リプレイ防止** |
 | 盗んだ host Room Token のみで `host_keys` を叩いても 401（秘密鍵無し） | 端末から session 秘密鍵まで盗まれた場合の防御 |
@@ -79,6 +79,7 @@ skew 既定 ±60s。`cnf.spk` は Token 発行時の session_pub（host Credenti
 - Scene revision CAS（P0-3）→ [x0082](x0082-scene-revision-cas.md)
 - ~~relay-agent CSR-only（P0-4）~~ → [x0083](x0083-relay-agent-csr-only.md)
 - ~~host-token 操作別 rate limit（P1）~~ → [x0084](x0084-host-token-rate-limit.md)
+- ~~owner guest+session take-out~~ → [x0098](x0098-take-out-owner-session.md)
 - 任意 guest take-out の本格 ACL
 - PoP nonce / 厳密単回使用
 

@@ -4,12 +4,14 @@
 //! bind requires JWT + matching Ed25519 sig + `cnf.spk` == `session_pub`;
 //! bind stores Intent caps **and JWT `role`** from `role` (frozen until re-bind —
 //! mid-session role change is non-goal). Stolen JWT cannot bind with a different
-//! session key. Inventory control (x0081) requires bind with **`role=host`** plus
-//! `sub ==` current host Token sub (guest re-bind of the same account is rejected).
+//! session key. Inventory control Dual (x0081 / x0098): **`(role=host ∧ sub ==`
+//! current host Token sub)** **or** **`sub == room.owner_sub`** (guest bind OK for
+//! owner; `owner_sub` missing → fail-closed host-role path only).
 //! x0040: [`SessionTable::evaluate_*`] does not mutate; callers rate-limit then
 //! [`commit_*`] so forged sigs cannot drain buckets and rate drops do not advance seq.
 //! Non-guarantees: Zenoh ACL; client private-key theft; same-key last-wins rebind;
-//! HTTP caps (world-server enforces `role == "host"`; table in `sim_capability`).
+//! Invite / arbitrary-guest ACL; HTTP caps (world-server enforces `role == "host"`;
+//! table in `sim_capability`).
 
 use std::collections::HashMap;
 
@@ -43,7 +45,7 @@ pub struct SessionBinding {
     pub last_control_seq: u64,
     /// Intent-path capability bits from Room Token `role` at bind (x002a).
     pub caps: u32,
-    /// Room Token `role` at bind (`host` / `guest`); control plane requires `host` (x0081).
+    /// Room Token `role` at bind (`host` / `guest`); host-role path of control Dual (x0081 / x0098).
     pub role: String,
 }
 
@@ -206,30 +208,22 @@ impl SessionTable {
         (pending.sub, pending.jti, pending.caps, removed)
     }
 
-    /// Control-plane checks without mutating `last_control_seq` (x0081).
+    /// Control-plane checks without mutating `last_control_seq` (x0081 / x0098).
     /// Callers rate-limit then [`commit_control`] so forged/unbound traffic cannot burn rate.
+    ///
+    /// Accepts host-role bind whose `sub` matches `expected_host_sub`, **or** any bound
+    /// session whose `sub` matches `owner_sub` (when known). Missing/empty `owner_sub`
+    /// fails closed to the host-role path only.
     pub fn evaluate_control(
         &self,
         session_pub: &[u8],
         control_seq: u64,
-        expected_sub: &str,
+        expected_host_sub: &str,
+        owner_sub: Option<&str>,
     ) -> Result<()> {
         let Some(binding) = self.by_pub.get(session_pub) else {
             bail!("control plane with unknown session_pub (bind Intent first)");
         };
-        if binding.role != "host" {
-            bail!(
-                "control plane requires host-role Intent bind (got role={})",
-                binding.role
-            );
-        }
-        if binding.sub != expected_sub {
-            bail!(
-                "control plane sub mismatch (session {}, host {})",
-                binding.sub,
-                expected_sub
-            );
-        }
         if control_seq <= binding.last_control_seq {
             bail!(
                 "control_seq {} not after last {}",
@@ -237,7 +231,27 @@ impl SessionTable {
                 binding.last_control_seq
             );
         }
-        Ok(())
+        let host_ok = binding.role == "host" && binding.sub == expected_host_sub;
+        let owner_ok = owner_sub
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_some_and(|owner| binding.sub == owner);
+        if host_ok || owner_ok {
+            return Ok(());
+        }
+        if binding.role != "host" {
+            bail!(
+                "control plane requires host-role Intent bind or owner_sub match (got role={}, sub={})",
+                binding.role,
+                binding.sub
+            );
+        }
+        bail!(
+            "control plane sub mismatch (session {}, host {}, owner_sub={:?})",
+            binding.sub,
+            expected_host_sub,
+            owner_sub
+        );
     }
 
     /// Advance `last_control_seq` after rate allow (re-checks binding).
@@ -245,9 +259,10 @@ impl SessionTable {
         &mut self,
         session_pub: &[u8],
         control_seq: u64,
-        expected_sub: &str,
+        expected_host_sub: &str,
+        owner_sub: Option<&str>,
     ) -> Result<()> {
-        self.evaluate_control(session_pub, control_seq, expected_sub)?;
+        self.evaluate_control(session_pub, control_seq, expected_host_sub, owner_sub)?;
         let binding = self.by_pub.get_mut(session_pub).ok_or_else(|| {
             anyhow!("commit_control: session_pub unbound between evaluate and commit")
         })?;
@@ -261,10 +276,11 @@ impl SessionTable {
         &mut self,
         session_pub: &[u8],
         control_seq: u64,
-        expected_sub: &str,
+        expected_host_sub: &str,
+        owner_sub: Option<&str>,
     ) -> Result<()> {
-        self.evaluate_control(session_pub, control_seq, expected_sub)?;
-        self.commit_control(session_pub, control_seq, expected_sub)
+        self.evaluate_control(session_pub, control_seq, expected_host_sub, owner_sub)?;
+        self.commit_control(session_pub, control_seq, expected_host_sub, owner_sub)
     }
 
     /// Advance `last_seq` after rate allow. Err if binding vanished (reclaim race).
@@ -701,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn authorize_control_requires_host_role_bind() {
+    fn authorize_control_requires_host_role_without_owner_sub() {
         let mut table = SessionTable::default();
         let pub_bytes = public_key_bytes(&generate_signing_key());
         table.by_pub.insert(
@@ -716,20 +732,92 @@ mod tests {
             },
         );
         let err = table
-            .authorize_control(&pub_bytes, 1, "owner")
-            .expect_err("guest bind must not control");
+            .authorize_control(&pub_bytes, 1, "owner", None)
+            .expect_err("guest bind must not control without owner_sub");
         assert!(
-            err.to_string().contains("host-role"),
-            "expected host-role reject, got: {err:#}"
+            err.to_string().contains("host-role") || err.to_string().contains("owner_sub"),
+            "expected host-role/owner reject, got: {err:#}"
         );
         assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 0);
+    }
+
+    #[test]
+    fn authorize_control_blank_owner_sub_fails_closed_to_host_role() {
+        let mut table = SessionTable::default();
+        let pub_bytes = public_key_bytes(&generate_signing_key());
+        table.by_pub.insert(
+            pub_bytes.clone(),
+            SessionBinding {
+                sub: "owner".into(),
+                jti: "j".into(),
+                last_seq: 1,
+                last_control_seq: 0,
+                caps: guest_caps(),
+                role: "guest".into(),
+            },
+        );
+        assert!(
+            table
+                .authorize_control(&pub_bytes, 1, "compute-host", Some(""))
+                .is_err(),
+            "empty owner_sub must not open owner path"
+        );
+        assert!(
+            table
+                .authorize_control(&pub_bytes, 1, "compute-host", Some("   "))
+                .is_err(),
+            "whitespace owner_sub must not open owner path"
+        );
+        assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 0);
+    }
+
+    #[test]
+    fn authorize_control_accepts_guest_when_sub_matches_owner_sub() {
+        let mut table = SessionTable::default();
+        let pub_bytes = public_key_bytes(&generate_signing_key());
+        table.by_pub.insert(
+            pub_bytes.clone(),
+            SessionBinding {
+                sub: "owner".into(),
+                jti: "j".into(),
+                last_seq: 1,
+                last_control_seq: 0,
+                caps: guest_caps(),
+                role: "guest".into(),
+            },
+        );
+        table
+            .authorize_control(&pub_bytes, 1, "compute-host", Some("owner"))
+            .expect("owner guest control");
+        assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 1);
+
+        let other = public_key_bytes(&generate_signing_key());
+        table.by_pub.insert(
+            other.clone(),
+            SessionBinding {
+                sub: "stranger".into(),
+                jti: "j2".into(),
+                last_seq: 1,
+                last_control_seq: 0,
+                caps: guest_caps(),
+                role: "guest".into(),
+            },
+        );
+        assert!(
+            table
+                .authorize_control(&other, 1, "compute-host", Some("owner"))
+                .is_err(),
+            "non-owner guest must reject"
+        );
     }
 
     #[test]
     fn authorize_control_rejects_unbound_sub_mismatch_and_stale_seq() {
         let mut table = SessionTable::default();
         let pub_bytes = public_key_bytes(&generate_signing_key());
-        assert!(table.authorize_control(&pub_bytes, 1, "owner").is_err());
+        assert!(table
+            .authorize_control(&pub_bytes, 1, "owner", None)
+            .is_err());
 
         table.by_pub.insert(
             pub_bytes.clone(),
@@ -743,21 +831,42 @@ mod tests {
             },
         );
         let err = table
-            .authorize_control(&pub_bytes, 4, "other")
+            .authorize_control(&pub_bytes, 4, "other", None)
             .expect_err("sub mismatch");
         assert!(err.to_string().contains("sub mismatch"));
         assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 3);
 
         let err = table
-            .authorize_control(&pub_bytes, 3, "owner")
+            .authorize_control(&pub_bytes, 3, "owner", None)
             .expect_err("stale seq");
         assert!(err.to_string().contains("control_seq"));
         assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 3);
 
         table
-            .authorize_control(&pub_bytes, 4, "owner")
+            .authorize_control(&pub_bytes, 4, "owner", None)
             .expect("host control");
         assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 4);
+    }
+
+    #[test]
+    fn authorize_control_accepts_host_role_when_not_owner() {
+        let mut table = SessionTable::default();
+        let pub_bytes = public_key_bytes(&generate_signing_key());
+        table.by_pub.insert(
+            pub_bytes.clone(),
+            SessionBinding {
+                sub: "compute-host".into(),
+                jti: "j".into(),
+                last_seq: 1,
+                last_control_seq: 0,
+                caps: guest_caps(),
+                role: "host".into(),
+            },
+        );
+        table
+            .authorize_control(&pub_bytes, 1, "compute-host", Some("room-owner"))
+            .expect("takeover host control");
+        assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 1);
     }
 
     #[test]
@@ -790,11 +899,11 @@ mod tests {
             },
         );
         table
-            .evaluate_control(&pub_bytes, 3, "owner")
+            .evaluate_control(&pub_bytes, 3, "owner", None)
             .expect("evaluate");
         assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 2);
         table
-            .commit_control(&pub_bytes, 3, "owner")
+            .commit_control(&pub_bytes, 3, "owner", None)
             .expect("commit");
         assert_eq!(table.get(&pub_bytes).unwrap().last_control_seq, 3);
     }
@@ -811,8 +920,8 @@ mod tests {
         sign_input(&key, &mut event);
         table.authorize(&event, &jwt.verifier).expect("guest bind");
         table
-            .authorize_control(&pub_bytes, 1, "owner")
-            .expect_err("guest cannot control");
+            .authorize_control(&pub_bytes, 1, "owner", None)
+            .expect_err("guest cannot control without owner_sub meta");
 
         // Simulate prior host control seq then upgrade role via same-pub rebind.
         table.by_pub.get_mut(&pub_bytes).unwrap().last_control_seq = 7;

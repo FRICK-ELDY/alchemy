@@ -1,11 +1,12 @@
-//! World-authored room scene: JSON DTOs, fetch, append, and delete (x0027 / x006d / x007b / x0082).
+//! World-authored room scene: JSON DTOs, fetch, append, and delete (x0027 / x006d / x007b / x0082 / x0098).
 //!
 //! Guarantees: host Room Token Bearer + `cnf.spk` PoP on every request (x0081); scene entries
 //! TRS-normalized on parse; shared-scene install is **revision-monotonic** (strictly newer only;
 //! x007b spawn/despawn race) and is owned by the **physics apply** path; append/delete send
 //! `expected_revision` (seeded from shared) and retry on `scene_revision_conflict` only (x0082)
 //! **without** writing shared on success or conflict refetch (so apply's strictly-newer gate
-//! still runs XPBD/sim insert + `force_reseal`).
+//! still runs XPBD/sim insert + `force_reseal`). GET scene carries `owner_sub` (x0098); install
+//! **preserves** a prior `owner_sub` when an append/delete response omits it.
 //! Non-guarantees: scene persistence, Manifest sealing; infinite CAS retries.
 
 use super::http::{credential_agent, is_blake3_hex};
@@ -15,13 +16,15 @@ use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::sync::{Arc, RwLock};
 
-/// World-authored scene definition for a room (x0027).
+/// World-authored scene definition for a room (x0027 / x0098).
 /// Built from JSON DTOs — prost types are not serde-deserializable.
 #[derive(Debug, Clone)]
 pub struct RoomScene {
     pub revision: u64,
     pub entries: Vec<alchemy_protocol::SceneEntry>,
     pub locomotion: Option<alchemy_protocol::LocomotionConfig>,
+    /// Room ledger owner (`GET …/scene`); used by inventory control Dual auth (x0098).
+    pub owner_sub: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,6 +79,9 @@ struct SceneResponseJson {
     revision: u64,
     entries: Vec<SceneEntryJson>,
     locomotion: Option<LocomotionJson>,
+    /// Present on GET scene (x0098); append/delete responses may omit.
+    #[serde(default)]
+    owner_sub: Option<String>,
 }
 
 fn loco_mode_from_str(mode: &str) -> alchemy_protocol::LocomotionMode {
@@ -125,10 +131,15 @@ fn scene_from_response(parsed: SceneResponseJson) -> RoomScene {
             mode: loco_mode_from_str(&l.mode).into(),
             move_speed: l.move_speed,
         });
+    let owner_sub = parsed
+        .owner_sub
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     RoomScene {
         revision: parsed.revision,
         entries,
         locomotion,
+        owner_sub,
     }
 }
 
@@ -136,6 +147,11 @@ fn scene_from_response(parsed: SceneResponseJson) -> RoomScene {
 ///
 /// Spawn / despawn workers complete HTTP out of order; physics must not let an older
 /// revision overwrite a newer shared scene (x007b). Equal revision is a no-op.
+/// x0098: **never trust** `incoming.owner_sub` when shared already has one (append/delete
+/// or polluted scene JSON must not diverge from the ledger value seeded by GET).
+/// Only adopt incoming when shared has no owner yet (blank ignored).
+/// Non-goal here: mid-lifetime ownership transfer without host restart — a later GET would
+/// also be ignored once set; that needs an explicit GET-only refresh path.
 pub fn install_shared_scene_if_newer(
     shared: &Arc<RwLock<RoomScene>>,
     incoming: RoomScene,
@@ -144,7 +160,18 @@ pub fn install_shared_scene_if_newer(
         .write()
         .map_err(|_| anyhow!("shared scene RwLock poisoned"))?;
     if incoming.revision > guard.revision {
-        *guard = incoming;
+        let owner_sub = guard.owner_sub.clone().or_else(|| {
+            incoming
+                .owner_sub
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        });
+        *guard = RoomScene {
+            owner_sub,
+            ..incoming
+        };
         Ok(true)
     } else {
         Ok(false)
@@ -341,7 +368,9 @@ fn append_room_scene_entry_once(
             let parsed: SceneResponseJson = resp
                 .into_json()
                 .map_err(|e| CasAttempt::Other(anyhow!("parse scene append: {e:#}")))?;
-            let scene = scene_from_response(parsed);
+            // x0098: only GET scene is the owner_sub source; ignore mutation body fields.
+            let mut scene = scene_from_response(parsed);
+            scene.owner_sub = None;
             let entry = scene
                 .entries
                 .iter()
@@ -442,7 +471,9 @@ fn delete_room_scene_entry_once(
             let parsed: SceneResponseJson = resp
                 .into_json()
                 .map_err(|e| CasAttempt::Other(anyhow!("parse scene delete: {e:#}")))?;
-            let scene = scene_from_response(parsed);
+            // x0098: only GET scene is the owner_sub source; ignore mutation body fields.
+            let mut scene = scene_from_response(parsed);
+            scene.owner_sub = None;
             if scene.entries.iter().any(|e| e.entity_id == entity_id) {
                 return Err(CasAttempt::Other(anyhow!(
                     "deleted entity_id still present in scene response"
@@ -469,4 +500,65 @@ fn delete_room_scene_entry_once(
 enum CasAttempt {
     Conflict,
     Other(anyhow::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scene(revision: u64, owner_sub: Option<&str>) -> RoomScene {
+        RoomScene {
+            revision,
+            entries: vec![],
+            locomotion: None,
+            owner_sub: owner_sub.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn install_preserves_owner_sub_when_incoming_omits() {
+        let shared = Arc::new(RwLock::new(scene(1, Some("owner-a"))));
+        assert!(install_shared_scene_if_newer(&shared, scene(2, None)).unwrap());
+        assert_eq!(shared.read().unwrap().owner_sub.as_deref(), Some("owner-a"));
+    }
+
+    #[test]
+    fn install_rejects_blank_owner_sub_overwrite() {
+        let shared = Arc::new(RwLock::new(scene(1, Some("owner-a"))));
+        assert!(install_shared_scene_if_newer(&shared, scene(2, Some("  "))).unwrap());
+        assert_eq!(
+            shared.read().unwrap().owner_sub.as_deref(),
+            Some("owner-a"),
+            "blank owner_sub must not wipe prior value"
+        );
+        assert!(install_shared_scene_if_newer(&shared, scene(3, Some(""))).unwrap());
+        assert_eq!(shared.read().unwrap().owner_sub.as_deref(), Some("owner-a"));
+    }
+
+    #[test]
+    fn install_keeps_prior_owner_sub_even_if_incoming_differs() {
+        let shared = Arc::new(RwLock::new(scene(1, Some("owner-a"))));
+        assert!(install_shared_scene_if_newer(&shared, scene(2, Some("polluted"))).unwrap());
+        assert_eq!(
+            shared.read().unwrap().owner_sub.as_deref(),
+            Some("owner-a"),
+            "mutation / polluted owner_sub must not overwrite GET-seeded value"
+        );
+    }
+
+    #[test]
+    fn install_adopts_incoming_owner_only_when_shared_empty() {
+        let shared = Arc::new(RwLock::new(scene(1, None)));
+        assert!(install_shared_scene_if_newer(&shared, scene(2, Some("owner-a"))).unwrap());
+        assert_eq!(shared.read().unwrap().owner_sub.as_deref(), Some("owner-a"));
+    }
+
+    #[test]
+    fn install_ignores_stale_revision() {
+        let shared = Arc::new(RwLock::new(scene(5, Some("owner-a"))));
+        assert!(!install_shared_scene_if_newer(&shared, scene(5, Some("owner-b"))).unwrap());
+        assert!(!install_shared_scene_if_newer(&shared, scene(4, Some("owner-b"))).unwrap());
+        assert_eq!(shared.read().unwrap().owner_sub.as_deref(), Some("owner-a"));
+        assert_eq!(shared.read().unwrap().revision, 5);
+    }
 }

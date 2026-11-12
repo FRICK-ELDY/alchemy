@@ -35,8 +35,10 @@ pub struct AuthGate {
     pub refresh_token: Option<String>,
     pub username: Option<String>,
     pub room_token: Option<String>,
-    /// Owner Host path only: JWT `role=host` for Inventory take-out / despawn (x006d / x007f).
-    /// Live Intent / Presence / mTLS stay on [`Self::room_token`] (`guest` CN — WAN ACL).
+    /// Compute-host path: JWT `role=host` for Intent re-bind (non-owner takeover · x0081).
+    /// Owner take-out uses guest+session / `owner_sub` on the host (x0098) and does not
+    /// require this slot. Live Intent / Presence / mTLS stay on [`Self::room_token`]
+    /// (`guest` CN — WAN ACL).
     pub host_room_token: Option<String>,
     pub local_sub: Option<String>,
     /// When `Instant::now() >= deadline`, refresh access (None = do not auto-refresh).

@@ -51,7 +51,7 @@
 | P2-4 | Origin Cert に tree/content hash | -1 | 連合前にペイロード形を固定 — **[x0096](../../roadmap/slices/x0096-origin-cert-content-hash.md) done** |
 | P2-5 | 共有 JWKS 失敗クールダウン | -1 | host/relay と同型 — **[x008c](../../roadmap/slices/x008c-shared-jwks-fail-cooldown.md) done** |
 | P2-6 | host `main` tick 切り出し + pose ダブルバッファ | -1 | FrameBridge 影並走は **[x008f](../../roadmap/slices/x008f-host-frame-bridge.md) done**；XPBD wire 権威は **[x0093](../../roadmap/slices/x0093-xpbd-wire-authority.md) done**；wire pose ダブルバッファは **[x0095](../../roadmap/slices/x0095-wire-pose-double-buffer.md) done**（`HostLoop::tick` 切り出し全体は未） |
-| P2-7 | take-out を guest+session / owner_sub 判定へ | -1 | P0-1 と一体 |
+| P2-7 | take-out を guest+session / owner_sub 判定へ | -1 | P0-1 と一体 — **[x0098](../../roadmap/slices/x0098-take-out-owner-session.md) done** |
 | P2-8 | 腐った smoke 削除 or probe 吸収 | -1 | banner-grep 削除・e2e-probe へ吸収 — **[x0089](../../roadmap/slices/x0089-rotten-smoke-shared-ci.md) done** |
 | P2-9 | `ci.sh` に `shared/alchemy_*` | -1 | `ci.sh shared` / `all` — **[x0089](../../roadmap/slices/x0089-rotten-smoke-shared-ci.md) done** |
 | P2-10 | client.md / wan コメント / world 保証表 / vision | -1 | 書くか削除 — **[x008a](../../roadmap/slices/x008a-docs-freshness.md) done** |
@@ -95,7 +95,7 @@
 
 ## 推奨スライス順
 
-1. **制御面 + PoP**（P0-1 + P2-7）— Token をバスから外す
+1. ~~**制御面 + PoP**（P0-1 + P2-7）— Token をバスから外す~~ **done**（x0081 + x0098）
 2. **Room key epoch**（P0-2）— 保証表更新を同 PR に含める
 3. **Scene CAS**（P0-3）— inventory 同時更新の否定系
 4. ~~**Agent CSR-only**（P0-4）~~ **done**（x0083）

@@ -1,9 +1,10 @@
-//! Inventory take-out / put-back / despawn client helpers (x006d / x006e / x007b / x007f / x0081).
+//! Inventory take-out / put-back / despawn client helpers (x006d / x006e / x007b / x007f / x0081 / x0098).
 //!
 //! Guarantees: Drive list / take_out / put_back over assets HTTP; spawn/despawn put on
 //! Zenoh `inventory/spawn|despawn` sealed with Room AEAD and **session-signed** (no Room
-//! Token on the bus · x0081); no Drive node_id on the wire to host. Put-back is
-//! Bearer→assets only (no Zenoh); Despawn removes the room entity via host.
+//! Token on the bus · x0081); no Drive node_id on the wire to host. Owner may use guest
+//! Room Token + Intent bind; host Dual-auth accepts `owner_sub` or host-role (x0098).
+//! Put-back is Bearer→assets only (no Zenoh); Despawn removes the room entity via host.
 //! Prefab take_out expands children (x007f); client `session.put`s each blake3
 //! sequentially (same style as room Intent puts; declare_publisher not required).
 //! Desktop paces puts under host `SpawnRate(8/10s)` on an auth/inventory worker

@@ -1856,11 +1856,11 @@ fn complete_pending_room_bind(
                     format!("Hosting: {name} — waiting for first frame ({wanted})")
                 };
                 // Soft-fail Host/Start only: install_host_inventory_token failed after join.
-                // Guest Join (even as owner) must not look like a Token error.
+                // Owner take-out still works via guest+session / owner_sub (x0098); host Token
+                // is only needed so a non-owner compute host can re-bind as role=host.
                 if !shared_has_host_inventory_token(shared) {
-                    status.push_str("; inventory host Token missing");
-                    ui.state.inventory_status =
-                        "host inventory Token missing — Take-out/Despawn gated (re-Host)".into();
+                    status.push_str("; host Token missing (role=host Intent upgrade)");
+                    ui.state.inventory_status = "host Token missing — owner take-out OK (guest session); non-owner host edit needs re-Host".into();
                     publish_inventory_mirror_from_ui(ui, shared);
                 }
                 ui.state.home_status = status.clone();
@@ -2343,26 +2343,54 @@ fn shared_has_host_inventory_token(shared: &SharedState) -> bool {
         .is_some_and(|g| g.host_room_token.is_some())
 }
 
-/// Gate copy when Take-out/Despawn lacks host Token or host-role Intent re-bind.
+/// Soft UI gate for Take-out/Despawn (x0098). Final auth is always on the compute host.
 ///
-/// `intent_bind_pending`: `None` = no Intent session / lock failed; `Some(true)` = re-bind
-/// still in progress; `Some(false)` = bind puts finished (host JWT should be on the table).
-fn inventory_host_token_gate_status(
+/// Allows when Intent is live and either:
+/// - `host_room_token` looks like `role=host` (compute-host Dual path), or
+/// - catalog `owner_sub` for the current room matches `local_sub` (owner Dual path), or
+/// - catalog has **no** owner row (`catalog_owner_sub == None`) — **intentionally does not
+///   early-reject** (Advanced fixed `ROOM_ID`, catalog not loaded, or row missing). Host Dual
+///   remains the authority; non-owner may still reach Drive/Zenoh until host rejects.
+///
+/// Rejects early only when catalog **positively** says another owner and there is no host
+/// Token, so known non-owner guests do not burn Drive take_out + Zenoh puts first.
+///
+/// `intent_bind_pending`: `None` = no Intent session / lock failed; `Some(true)` = bind
+/// still in progress; `Some(false)` = session present and not pending.
+fn inventory_control_gate_status(
     access: &Option<String>,
-    host_room_token: &Option<String>,
     intent_bind_pending: Option<bool>,
+    host_room_token: &Option<String>,
+    local_sub: Option<&str>,
+    catalog_owner_sub: Option<&str>,
 ) -> Option<&'static str> {
-    match (
-        access.as_ref(),
-        host_room_token.as_ref(),
-        intent_bind_pending,
-    ) {
-        (None, _, _) => Some("sign in required"),
-        (Some(_), None, _) => Some("host inventory Token missing — re-Host / Start as owner"),
-        (Some(_), Some(_), None) => Some("Intent session required"),
-        (Some(_), Some(_), Some(true)) => Some("host Intent re-bind in progress — wait a moment"),
-        _ => None,
+    match (access.as_ref(), intent_bind_pending) {
+        (None, _) => return Some("sign in required"),
+        (Some(_), None) => return Some("Intent session required (join/bind first)"),
+        (Some(_), Some(true)) => return Some("Intent bind in progress — wait a moment"),
+        _ => {}
     }
+    let host_role = host_room_token.as_deref().is_some_and(|t| {
+        crate::inventory::room_token_role_unverified(t).as_deref() == Some("host")
+    });
+    if host_role {
+        return None;
+    }
+    match (local_sub, catalog_owner_sub) {
+        (Some(local), Some(owner)) if local == owner => None,
+        // Catalog miss / Advanced ROOM_ID: do not early-reject (host Dual decides).
+        (_, None) => None,
+        _ => Some("owner or host role required for take-out/despawn"),
+    }
+}
+
+fn catalog_owner_sub_for_room(ui: &SystemUi, room_id: &str) -> Option<String> {
+    ui.state
+        .worlds_rooms
+        .iter()
+        .find(|(id, ..)| id == room_id)
+        .map(|(_, _, _, owner)| owner.clone())
+        .filter(|s| !s.is_empty())
 }
 
 /// Host `SpawnRate(8/10s)` — client spaces puts so host does not silently reject.
@@ -3259,50 +3287,39 @@ fn handle_ui_action(
                 return;
             }
             let assets = shared.get_assets_url();
-            let (access, host_room_token) = {
+            let room_id_for_gate = shared.get_room_id();
+            let catalog_owner = catalog_owner_sub_for_room(ui, room_id_for_gate.as_ref());
+            let (access, host_room_token, local_sub) = {
                 let Ok(auth) = shared.auth.lock() else {
                     inventory_status_rebuild(ui, shared, "auth lock failed");
                     return;
                 };
-                (auth.access_token.clone(), auth.host_room_token.clone())
+                (
+                    auth.access_token.clone(),
+                    auth.host_room_token.clone(),
+                    auth.local_sub.clone(),
+                )
             };
             let intent_bind_pending = shared
                 .intent_session
                 .lock()
                 .ok()
                 .and_then(|slot| slot.as_ref().map(|s| s.bind_pending()));
-            if let Some(msg) =
-                inventory_host_token_gate_status(&access, &host_room_token, intent_bind_pending)
-            {
+            if let Some(msg) = inventory_control_gate_status(
+                &access,
+                intent_bind_pending,
+                &host_room_token,
+                local_sub.as_deref(),
+                catalog_owner.as_deref(),
+            ) {
                 inventory_status_rebuild(ui, shared, msg);
                 return;
             }
-            let (Some(access), Some(host_room_token)) = (access, host_room_token) else {
-                // Exhaustiveness: gate helper already covered None cases.
-                inventory_status_rebuild(ui, shared, "host inventory Token missing");
+            let Some(access) = access else {
+                inventory_status_rebuild(ui, shared, "sign in required");
                 return;
             };
-            if crate::inventory::room_token_role_unverified(&host_room_token).as_deref()
-                != Some("host")
-            {
-                inventory_status_rebuild(ui, shared, "host role required for take-out");
-                return;
-            }
-            // x0081: spawn is session-signed; Intent must already be bound (same sub as host).
-            {
-                let Ok(sess) = shared.intent_session.lock() else {
-                    inventory_status_rebuild(ui, shared, "intent_session lock failed");
-                    return;
-                };
-                if sess.is_none() {
-                    inventory_status_rebuild(
-                        ui,
-                        shared,
-                        "Intent session required (join/bind first)",
-                    );
-                    return;
-                }
-            }
+            // x0098: session-signed; host accepts owner_sub or host-role bind.
             let Some(session) = zenoh.as_ref().cloned() else {
                 inventory_status_rebuild(ui, shared, "zenoh not connected");
                 return;
@@ -3501,32 +3518,32 @@ fn handle_ui_action(
                 );
                 return;
             };
-            let (access, host_room_token) = {
+            let room_id_for_gate = shared.get_room_id();
+            let catalog_owner = catalog_owner_sub_for_room(ui, room_id_for_gate.as_ref());
+            let (access, host_room_token, local_sub) = {
                 let Ok(auth) = shared.auth.lock() else {
                     inventory_status_rebuild(ui, shared, "auth lock failed");
                     return;
                 };
-                (auth.access_token.clone(), auth.host_room_token.clone())
+                (
+                    auth.access_token.clone(),
+                    auth.host_room_token.clone(),
+                    auth.local_sub.clone(),
+                )
             };
             let intent_bind_pending = shared
                 .intent_session
                 .lock()
                 .ok()
                 .and_then(|slot| slot.as_ref().map(|s| s.bind_pending()));
-            if let Some(msg) =
-                inventory_host_token_gate_status(&access, &host_room_token, intent_bind_pending)
-            {
+            if let Some(msg) = inventory_control_gate_status(
+                &access,
+                intent_bind_pending,
+                &host_room_token,
+                local_sub.as_deref(),
+                catalog_owner.as_deref(),
+            ) {
                 inventory_status_rebuild(ui, shared, msg);
-                return;
-            }
-            let Some(host_room_token) = host_room_token else {
-                inventory_status_rebuild(ui, shared, "host inventory Token missing");
-                return;
-            };
-            if crate::inventory::room_token_role_unverified(&host_room_token).as_deref()
-                != Some("host")
-            {
-                inventory_status_rebuild(ui, shared, "host role required for despawn");
                 return;
             }
             let Some(session) = zenoh.as_ref() else {
@@ -3701,6 +3718,18 @@ pub fn run(
 mod tests {
     use super::*;
 
+    fn access() -> Option<String> {
+        Some("access".into())
+    }
+
+    /// Minimal JWT-shaped token whose unverified payload has `role`.
+    fn role_token(role: &str) -> String {
+        use base64::Engine;
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(format!(r#"{{"role":"{role}"}}"#));
+        format!("hdr.{payload}.sig")
+    }
+
     #[test]
     fn mouse_look_yaw_pitch_and_clamp() {
         let look = CameraLook {
@@ -3723,5 +3752,54 @@ mod tests {
             PITCH_LIMIT,
         );
         assert!((high.pitch - PITCH_LIMIT).abs() < 1e-5);
+    }
+
+    #[test]
+    fn inventory_gate_allows_host_role_token() {
+        let host = Some(role_token("host"));
+        assert!(inventory_control_gate_status(
+            &access(),
+            Some(false),
+            &host,
+            Some("guest-sub"),
+            Some("other-owner"),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn inventory_gate_allows_catalog_owner_match() {
+        assert!(inventory_control_gate_status(
+            &access(),
+            Some(false),
+            &None,
+            Some("owner-a"),
+            Some("owner-a"),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn inventory_gate_rejects_other_catalog_owner_without_host_token() {
+        let msg = inventory_control_gate_status(
+            &access(),
+            Some(false),
+            &None,
+            Some("guest-sub"),
+            Some("owner-a"),
+        );
+        assert_eq!(
+            msg,
+            Some("owner or host role required for take-out/despawn")
+        );
+    }
+
+    #[test]
+    fn inventory_gate_unknown_catalog_passes_to_host() {
+        // Advanced ROOM_ID / catalog miss: early gate must not false-negative.
+        assert!(
+            inventory_control_gate_status(&access(), Some(false), &None, Some("anyone"), None,)
+                .is_none()
+        );
     }
 }

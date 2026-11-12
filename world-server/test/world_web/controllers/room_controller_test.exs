@@ -910,6 +910,7 @@ defmodule WorldWeb.RoomControllerTest do
       |> json_response(200)
 
     assert body["room_id"] == "scene-room"
+    assert body["owner_sub"] == sub
     assert body["revision"] == 1
     assert is_list(body["entries"])
     assert length(body["entries"]) == 14
