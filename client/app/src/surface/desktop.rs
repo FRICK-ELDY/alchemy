@@ -1565,7 +1565,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 self.ui.pull_dash_logic(&self.shared);
-                let _ = self.ui.pull_epoch_xray(&self.shared);
+                let hier = self.ui.pull_hierarchy(&self.shared);
+                let xray = self.ui.pull_epoch_xray(&self.shared, false);
+                if hier || xray {
+                    self.ui.rebuild();
+                }
                 {
                     let tick = self
                         .shared
@@ -3576,6 +3580,12 @@ fn handle_ui_action(
             }
             publish_inventory_mirror_from_ui(ui, shared);
             ui.rebuild();
+        }
+        UiAction::HierarchyCollapseToggle(row) => {
+            ui.apply_hierarchy_collapse_toggle(shared, row);
+        }
+        UiAction::HierarchyRelayout => {
+            ui.apply_hierarchy_relayout(shared);
         }
         UiAction::None => {}
     }

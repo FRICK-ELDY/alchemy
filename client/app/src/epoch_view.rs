@@ -1,7 +1,7 @@
 //! Ring 3 epoch view — GPU interpolate, Hierarchy virtual scroll, Tape X-Ray.
 //!
 //! Guarantees: GPU path is appearance-only (no readback); Hierarchy walks
-//! `euler_order` with O(1) collapse skips; X-Ray formats ReadinessMask / Prev /
+//! `euler_order` with O(1) collapse skips (x0094 Settings mount); X-Ray formats ReadinessMask / Prev /
 //! Curr / depth / Morton for the selected `row_id`; SceneGpu binds interpolate
 //! buffers from published faces (x0090) and draws mesh/box TRS from `out`
 //! storage (x0091; full active pack).
@@ -146,6 +146,9 @@ pub struct EpochViewState {
     pub mirror: Mutex<EpochFrameMirror>,
     /// Frozen display faces/α/poses for the current client frame (x0091).
     display_frame: Mutex<Option<Arc<DisplayFrame>>>,
+    /// Hierarchy collapse set. Ingest clears tombstoned + freshly allocated row ids
+    /// (freelist reuse); [`scrub_hierarchy_collapsed`] also drops non-live ids.
+    pub hierarchy_collapsed: Mutex<HashSet<u32>>,
 }
 
 impl EpochViewState {
@@ -160,6 +163,7 @@ impl EpochViewState {
             scene_bounds: Mutex::new(SceneBounds::default()),
             mirror: Mutex::new(EpochFrameMirror::default()),
             display_frame: Mutex::new(None),
+            hierarchy_collapsed: Mutex::new(HashSet::new()),
         }
     }
 
@@ -549,16 +553,108 @@ pub fn make_interp_bind_group(
     })
 }
 
+/// One Hierarchy panel row for System UI (x0094).
+///
+/// Equality is **structure-only** (layout dirty). Live world pose belongs in
+/// Tape X-Ray, not in this row — embedding `{:.2}` coords made `pull_hierarchy`
+/// dirty every frame and forced LayoutTree rebuilds on the hot path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HierarchyRowView {
+    pub row_id: u32,
+    pub depth: u32,
+    pub entity_id: u32,
+    pub collapsed: bool,
+    pub has_children: bool,
+}
+
+impl HierarchyRowView {
+    /// Stable label for LayoutTree (no per-frame pose).
+    pub fn label(&self) -> String {
+        let mark = if self.has_children {
+            if self.collapsed {
+                "[+]"
+            } else {
+                "[-]"
+            }
+        } else {
+            " · "
+        };
+        let indent = "  ".repeat(self.depth as usize);
+        format!("{indent}{mark} row {} eid {}", self.row_id, self.entity_id)
+    }
+}
+
+/// Rebuild client topology as flat roots matching Curr sheet length (x0094).
+/// No-op when length is unchanged (flat parents are the only shape this Slice writes).
+pub fn sync_topology_flat_roots(state: &EpochViewState) {
+    let n = state.snapshots.load_curr().len();
+    let Ok(mut topo) = state.topology.lock() else {
+        return;
+    };
+    if topo.parent_of.len() == n {
+        return;
+    }
+    *topo = FlatTopology::flat_roots(n);
+}
+
+/// Drop collapsed ids that are no longer live.
+///
+/// Freelist reuse is handled separately: ingest clears row ids at **tombstone**
+/// and at **alloc** time via [`clear_hierarchy_collapsed_rows`] so a revived
+/// `row_id` cannot keep a stale collapse bit.
+pub fn scrub_hierarchy_collapsed(state: &EpochViewState) {
+    let curr = state.snapshots.load_curr();
+    if let Ok(mut collapsed) = state.hierarchy_collapsed.lock() {
+        collapsed.retain(|&row| row_is_live(&curr, row));
+    }
+}
+
+/// Remove specific row ids from the collapse set (tombstone / freelist alloc).
+pub fn clear_hierarchy_collapsed_rows(state: &EpochViewState, rows: &[u32]) {
+    if rows.is_empty() {
+        return;
+    }
+    if let Ok(mut collapsed) = state.hierarchy_collapsed.lock() {
+        for &row in rows {
+            collapsed.remove(&row);
+        }
+    }
+}
+
+/// Clear X-Ray selection when the row is no longer live.
+pub fn scrub_xray_row(state: &EpochViewState) {
+    let Some(row) = state.xray_row() else {
+        return;
+    };
+    if !row_is_live(&state.snapshots.load_curr(), row) {
+        state.set_xray_row(None);
+    }
+}
+
 /// Virtual-scroll Hierarchy: emit only the window slice (O(window + skipped), not full list).
-#[allow(
-    dead_code,
-    reason = "S-28 API surface; used by tests until Hierarchy UI mounts"
+///
+/// Production UI uses [`hierarchy_panel_rows`] → [`hierarchy_visible_rows_filtered`];
+/// this unfiltered entry stays as the Slice / unit-test contract surface.
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "x0094 public walk API; UI uses _filtered")
 )]
 pub fn hierarchy_visible_rows(
     topo: &FlatTopology,
     collapsed: &HashSet<u32>,
     window_start: usize,
     window_len: usize,
+) -> Vec<u32> {
+    hierarchy_visible_rows_filtered(topo, collapsed, window_start, window_len, |_| true)
+}
+
+/// Same walk as [`hierarchy_visible_rows`], with an include predicate (e.g. skip tombstones).
+pub fn hierarchy_visible_rows_filtered(
+    topo: &FlatTopology,
+    collapsed: &HashSet<u32>,
+    window_start: usize,
+    window_len: usize,
+    mut include: impl FnMut(u32) -> bool,
 ) -> Vec<u32> {
     if window_len == 0 {
         return Vec::new();
@@ -569,6 +665,10 @@ pub fn hierarchy_visible_rows(
     let order = &topo.euler_order;
     while i < order.len() && out.len() < window_len {
         let row = order[i];
+        if !include(row) {
+            i += 1;
+            continue;
+        }
         if visible_idx >= window_start {
             out.push(row);
         }
@@ -586,7 +686,81 @@ pub fn hierarchy_visible_rows(
     out
 }
 
-/// Format Bitmask / Tape X-Ray panel text for System UI.
+fn row_has_children(topo: &FlatTopology, row: u32) -> bool {
+    let idx = row as usize;
+    let Some(&tin) = topo.euler_tin.get(idx) else {
+        return false;
+    };
+    let Some(&tout) = topo.euler_tout.get(idx) else {
+        return false;
+    };
+    tout > tin
+}
+
+/// Active-only Hierarchy window for Settings (skips tombstones via shared walk).
+///
+/// Locks `hierarchy_collapsed` then `topology` briefly — no HashSet clone.
+pub fn hierarchy_panel_rows(
+    state: &EpochViewState,
+    window_start: usize,
+    window_len: usize,
+) -> Vec<HierarchyRowView> {
+    let faces = state.snapshots.load_pair();
+    let Ok(collapsed) = state.hierarchy_collapsed.lock() else {
+        return Vec::new();
+    };
+    let Ok(topo) = state.topology.lock() else {
+        return Vec::new();
+    };
+    let ids = hierarchy_visible_rows_filtered(&topo, &collapsed, window_start, window_len, |row| {
+        row_is_live(&faces.curr, row)
+    });
+    ids.into_iter()
+        .map(|row| {
+            let depth = depth_via_parents(&topo, row);
+            let entity_id = faces
+                .curr
+                .owner_scope
+                .get(row as usize)
+                .copied()
+                .unwrap_or(0);
+            HierarchyRowView {
+                row_id: row,
+                depth,
+                entity_id,
+                collapsed: collapsed.contains(&row),
+                has_children: row_has_children(&topo, row),
+            }
+        })
+        .collect()
+}
+
+/// Layout-dirty key for X-Ray (row / mask / depth only — no pose, no morton).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct XrayStructureKey {
+    pub row_id: u32,
+    pub mask: u64,
+    pub depth: u32,
+    pub valid: bool,
+}
+
+pub fn xray_structure_key(row_id: u32, curr: &EpochSheet, topo: &FlatTopology) -> XrayStructureKey {
+    let idx = row_id as usize;
+    if idx >= curr.readiness.len() {
+        return XrayStructureKey {
+            row_id,
+            ..XrayStructureKey::default()
+        };
+    }
+    XrayStructureKey {
+        row_id,
+        mask: curr.readiness[idx].0,
+        depth: depth_via_parents(topo, row_id),
+        valid: true,
+    }
+}
+
+/// Format Bitmask / Tape X-Ray panel text for System UI (includes live pose + morton).
 pub fn format_xray_panel(
     row_id: u32,
     prev: &EpochSheet,
@@ -594,15 +768,17 @@ pub fn format_xray_panel(
     topo: &FlatTopology,
     bounds: SceneBounds,
 ) -> String {
-    let idx = row_id as usize;
-    if idx >= curr.readiness.len() || idx >= curr.world_transforms.len() {
+    let key = xray_structure_key(row_id, curr, topo);
+    if !key.valid {
         return format!("row {row_id}: out of range");
     }
-    let mask = curr.readiness[idx].0;
-    let bits = format!("{mask:064b}");
+    let idx = row_id as usize;
     let curr_xf = &curr.world_transforms[idx];
-    let prev_xf = prev.world_transforms.get(idx).copied().unwrap_or_default();
-    let depth = depth_via_parents(topo, row_id);
+    let prev_xf = prev
+        .world_transforms
+        .get(idx)
+        .copied()
+        .unwrap_or_else(|| WorldTransformf64::identity_at([0.0, 0.0, 0.0]));
     let center = [
         curr_xf.position[0] as f32,
         curr_xf.position[1] as f32,
@@ -610,11 +786,14 @@ pub fn format_xray_panel(
     ];
     let morton = morton_code30(center, bounds);
     format!(
-        "X-Ray row {row_id}\n\
-         mask {bits}\n\
-         depth {depth}  morton 0x{morton:08x}\n\
+        "X-Ray row {}\n\
+         mask {:064b}\n\
+         depth {}  morton 0x{morton:08x}\n\
          prev ({:.3},{:.3},{:.3})\n\
          curr ({:.3},{:.3},{:.3})",
+        key.row_id,
+        key.mask,
+        key.depth,
         prev_xf.position[0],
         prev_xf.position[1],
         prev_xf.position[2],
@@ -642,8 +821,9 @@ fn depth_via_parents(topo: &FlatTopology, row_id: u32) -> u32 {
     depth
 }
 
-/// If no X-Ray row is selected, pick the first active Curr row (explicit ensure).
+/// If no X-Ray row is selected (or selection is dead), pick the first active Curr row.
 pub fn ensure_xray_row(state: &EpochViewState) -> Option<u32> {
+    scrub_xray_row(state);
     if let Some(r) = state.xray_row() {
         return Some(r);
     }
@@ -652,7 +832,7 @@ pub fn ensure_xray_row(state: &EpochViewState) -> Option<u32> {
     Some(first)
 }
 
-/// Snapshot helper used by dash / debug overlay (read-only; does not change selection).
+/// Full X-Ray panel text (structure + pose). Prefer [`xray_structure_key_from_state`] for dirty.
 pub fn xray_text_from_state(state: &EpochViewState) -> Option<String> {
     let row = state.xray_row()?;
     let faces = state.snapshots.load_pair();
@@ -665,6 +845,14 @@ pub fn xray_text_from_state(state: &EpochViewState) -> Option<String> {
         &topo,
         bounds,
     ))
+}
+
+/// Structure-only X-Ray key for Layout dirty (excludes live pose / morton).
+pub fn xray_structure_key_from_state(state: &EpochViewState) -> Option<XrayStructureKey> {
+    let row = state.xray_row()?;
+    let faces = state.snapshots.load_pair();
+    let topo = state.topology.lock().ok()?;
+    Some(xray_structure_key(row, &faces.curr, &topo))
 }
 
 #[cfg(test)]
@@ -681,6 +869,128 @@ mod tests {
         let vis = hierarchy_visible_rows(&topo, &collapsed, 0, 16);
         // 0, then 1 (collapsed → skip 2), then 3
         assert_eq!(vis, vec![0, 1, 3]);
+    }
+
+    #[test]
+    fn sync_topology_flat_roots_matches_sheet_len() {
+        let state = EpochViewState::new();
+        {
+            let mut mirror = state.mirror.lock().unwrap();
+            let mut entities = HashMap::new();
+            entities.insert(10, crate::epoch_mirror::KinematicPose::default());
+            entities.insert(11, crate::epoch_mirror::KinematicPose::default());
+            mirror.ingest_world(&state.snapshots, &entities);
+        }
+        sync_topology_flat_roots(&state);
+        let topo = state.topology.lock().unwrap();
+        let curr = state.snapshots.load_curr();
+        assert_eq!(topo.parent_of.len(), curr.len());
+        assert!(topo.parent_of.iter().all(|&p| p == u32::MAX));
+        assert_eq!(topo.euler_order.len(), curr.len());
+    }
+
+    #[test]
+    fn hierarchy_panel_skips_tombstone_and_formats() {
+        let state = EpochViewState::new();
+        {
+            let mut live = EpochSheet::with_capacity(2);
+            let a = live.alloc_row();
+            let b = live.alloc_row();
+            live.owner_scope[a.row_id as usize] = 42;
+            live.set_transform(a.row_id, WorldTransformf64::identity_at([1.0, 2.0, 3.0]))
+                .unwrap();
+            live.tombstone(b).unwrap();
+            state
+                .snapshots
+                .publish_arcs(Arc::new(live.clone()), Arc::new(live), 1);
+        }
+        sync_topology_flat_roots(&state);
+        let rows = hierarchy_panel_rows(&state, 0, 8);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].row_id, 0);
+        assert_eq!(rows[0].entity_id, 42);
+        let label = rows[0].label();
+        assert!(label.contains("eid 42"));
+        assert!(
+            !label.contains("1.00"),
+            "pose must stay out of hierarchy label"
+        );
+    }
+
+    #[test]
+    fn hierarchy_row_eq_is_structure_fields_only() {
+        let a = HierarchyRowView {
+            row_id: 1,
+            depth: 0,
+            entity_id: 9,
+            collapsed: false,
+            has_children: false,
+        };
+        let mut b = a.clone();
+        assert_eq!(a, b);
+        b.collapsed = true;
+        assert_ne!(a, b);
+        b.collapsed = false;
+        b.entity_id = 10;
+        assert_ne!(a, b);
+        // label() is derived — not a stored field that could sneak into Eq
+        assert!(!a.label().contains('('));
+    }
+
+    #[test]
+    fn scrub_hierarchy_collapsed_drops_tombstoned_rows() {
+        let state = EpochViewState::new();
+        {
+            let mut live = EpochSheet::with_capacity(2);
+            let a = live.alloc_row();
+            let b = live.alloc_row();
+            live.tombstone(b).unwrap();
+            state
+                .snapshots
+                .publish_arcs(Arc::new(live.clone()), Arc::new(live), 1);
+            let _ = a;
+        }
+        {
+            let mut c = state.hierarchy_collapsed.lock().unwrap();
+            c.insert(0);
+            c.insert(1);
+        }
+        scrub_hierarchy_collapsed(&state);
+        let c = state.hierarchy_collapsed.lock().unwrap();
+        assert!(c.contains(&0));
+        assert!(!c.contains(&1));
+    }
+
+    #[test]
+    fn clear_hierarchy_collapsed_on_freelist_reuse_path() {
+        let state = EpochViewState::new();
+        state.hierarchy_collapsed.lock().unwrap().insert(0);
+        // Simulate tombstone then alloc reuse of row 0.
+        clear_hierarchy_collapsed_rows(&state, &[0]);
+        assert!(state.hierarchy_collapsed.lock().unwrap().is_empty());
+        state.hierarchy_collapsed.lock().unwrap().insert(0);
+        // Fresh alloc of same id must also clear.
+        clear_hierarchy_collapsed_rows(&state, &[0]);
+        assert!(
+            !state.hierarchy_collapsed.lock().unwrap().contains(&0),
+            "freelist reuse must not revive stale collapse"
+        );
+    }
+
+    #[test]
+    fn xray_structure_key_ignores_pose_motion() {
+        let mut curr = EpochSheet::with_capacity(1);
+        let h = curr.alloc_row();
+        curr.set_transform(h.row_id, WorldTransformf64::identity_at([1.0, 2.0, 3.0]))
+            .unwrap();
+        curr.readiness[0] = ReadinessMask(ReadinessMask::ALLOCATED | ReadinessMask::COLLIDER);
+        let topo = FlatTopology::from_parents(vec![u32::MAX]).unwrap();
+        let key_a = xray_structure_key(0, &curr, &topo);
+        curr.set_transform(h.row_id, WorldTransformf64::identity_at([9.0, 8.0, 7.0]))
+            .unwrap();
+        let key_b = xray_structure_key(0, &curr, &topo);
+        assert_eq!(key_a, key_b);
+        assert!(key_a.valid);
     }
 
     #[test]

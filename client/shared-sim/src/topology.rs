@@ -44,6 +44,24 @@ impl FlatTopology {
         Ok(topo)
     }
 
+    /// All rows are world roots (`parent_of = MAX`). Used by client Hierarchy until
+    /// held / Prefab parents are mirrored (x0094).
+    ///
+    /// All-`MAX` parents cannot cycle; bake failure is treated as a logic bug and
+    /// returns empty (caller should see `parent_of.len() != sheet.len()`).
+    pub fn flat_roots(len: usize) -> Self {
+        if len == 0 {
+            return Self::default();
+        }
+        match Self::from_parents(vec![u32::MAX; len]) {
+            Ok(topo) => topo,
+            Err(err) => {
+                debug_assert!(false, "flat_roots bake failed for len={len}: {err:?}");
+                Self::default()
+            }
+        }
+    }
+
     pub fn rebuild(&mut self) -> Result<(), TopologyError> {
         let n = self.parent_of.len();
         if n == 0 {
@@ -291,6 +309,14 @@ mod tests {
             FlatTopology::from_parents(vec![1, 0]).unwrap_err(),
             TopologyError::Cycle
         );
+    }
+
+    #[test]
+    fn flat_roots_all_max_parents() {
+        let topo = FlatTopology::flat_roots(3);
+        assert_eq!(topo.parent_of, vec![u32::MAX, u32::MAX, u32::MAX]);
+        assert_eq!(topo.euler_order, vec![0, 1, 2]);
+        assert!(FlatTopology::flat_roots(0).euler_order.is_empty());
     }
 
     #[test]

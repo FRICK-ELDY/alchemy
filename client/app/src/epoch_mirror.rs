@@ -4,7 +4,9 @@
 //! Curr reflects kinematic TRS (`inv_mass=0`, no `DYNAMIC`); membership follows the
 //! full entity map; freelist row reuse is safe for GPU pack via generation/ABA gate
 //! in [`crate::epoch_view::pack_aligned_gpu_faces`].
-//! Non-guarantees: topology / hierarchy; color on tape; host ArcSwap sharing;
+//! After ingest, [`crate::epoch_view::sync_topology_flat_roots`] refreshes Hierarchy
+//! topology (x0094; flat parents only).
+//! Non-guarantees: held/Prefab parent sync; color on tape; host ArcSwap sharing;
 //! XPBD. Draw/Grab/eye display TRS is Epoch freeze (`begin_display_frame` / `out`; x0091/x0092);
 //! color channels remain WorldView.
 
@@ -86,12 +88,16 @@ impl EpochFrameMirror {
         self.entity_rows.get(&entity_id).copied()
     }
 
-    /// Reconcile `entities` (full WorldView table after apply) into live Curr and publish.
+    /// Reconcile `entities` into live Curr and publish.
+    ///
+    /// Returns row ids that were tombstoned or freshly allocated this ingest
+    /// (callers clear Hierarchy collapse bits for both — freelist reuse safe).
     pub fn ingest_world(
         &mut self,
         snapshots: &alchemy_shared_sim::EpochSnapshotPair,
         entities: &HashMap<u32, KinematicPose>,
-    ) {
+    ) -> Vec<u32> {
+        let mut collapse_clear = Vec::new();
         let prev = Arc::clone(&self.live);
         {
             let sheet = Arc::make_mut(&mut self.live);
@@ -104,6 +110,7 @@ impl EpochFrameMirror {
                 .collect();
             for id in stale {
                 if let Some(handle) = self.entity_rows.remove(&id) {
+                    collapse_clear.push(handle.row_id);
                     let _ = sheet.tombstone(handle);
                 }
             }
@@ -113,6 +120,8 @@ impl EpochFrameMirror {
                     Some(h) => h,
                     None => {
                         let h = sheet.alloc_row();
+                        // Freelist reuse: never inherit a prior collapse bit.
+                        collapse_clear.push(h.row_id);
                         let idx = h.row_id as usize;
                         sheet.readiness[idx] =
                             ReadinessMask(ReadinessMask::ALLOCATED | ReadinessMask::TRANSFORM);
@@ -135,6 +144,7 @@ impl EpochFrameMirror {
         // CoW again if faces still share `live` — clear only the working copy.
         Arc::make_mut(&mut self.live).clear_dirty();
         self.publishes = self.publishes.wrapping_add(1);
+        collapse_clear
     }
 }
 
@@ -202,7 +212,12 @@ pub fn ingest_applied_world(epoch: &EpochViewState, entities: &HashMap<u32, Kine
         log::warn!("epoch mirror lock poisoned; skip ingest");
         return;
     };
-    mirror.ingest_world(&epoch.snapshots, entities);
+    let collapse_clear = mirror.ingest_world(&epoch.snapshots, entities);
+    drop(mirror);
+    crate::epoch_view::clear_hierarchy_collapsed_rows(epoch, &collapse_clear);
+    crate::epoch_view::sync_topology_flat_roots(epoch);
+    crate::epoch_view::scrub_hierarchy_collapsed(epoch);
+    crate::epoch_view::scrub_xray_row(epoch);
 }
 
 #[cfg(test)]
@@ -271,6 +286,34 @@ mod tests {
         assert!(epoch.mirror.lock().unwrap().row_for(7).is_none());
         assert!(curr.readiness[row as usize].contains(ReadinessMask::TOMBSTONE));
         assert_eq!(curr.iter_active_rows().count(), 0);
+    }
+
+    #[test]
+    fn ingest_clears_hierarchy_collapse_on_tombstone_and_freelist_alloc() {
+        let epoch = EpochViewState::new();
+        let mut map = HashMap::new();
+        map.insert(1, pose_at(1.0));
+        ingest_applied_world(&epoch, &map);
+        let row = epoch.mirror.lock().unwrap().row_for(1).unwrap().row_id;
+        epoch.hierarchy_collapsed.lock().unwrap().insert(row);
+
+        map.clear();
+        ingest_applied_world(&epoch, &map);
+        assert!(
+            !epoch.hierarchy_collapsed.lock().unwrap().contains(&row),
+            "tombstone ingest must clear collapse via ingest_applied_world wiring"
+        );
+
+        // Stale bit left on the freelist id (would be wrong if only live-scrub ran after reuse).
+        epoch.hierarchy_collapsed.lock().unwrap().insert(row);
+        map.insert(2, pose_at(2.0));
+        ingest_applied_world(&epoch, &map);
+        let row2 = epoch.mirror.lock().unwrap().row_for(2).unwrap().row_id;
+        assert_eq!(row2, row, "expect freelist reuse of row_id");
+        assert!(
+            !epoch.hierarchy_collapsed.lock().unwrap().contains(&row2),
+            "freelist alloc ingest must clear collapse on the reused row_id"
+        );
     }
 
     #[test]

@@ -8,9 +8,10 @@
 //! x0053: logical [`SharedDashLogic`] is SharedState-owned; LayoutTree / UiGpu /
 //! hover / password stay per-surface. Chrome/form push are field-split with
 //! chrome CAS; `PresentationGate` is SoT for hotswitch auto/suppressed.
+//! Hierarchy virtual lens (x0094) mounts in Settings from Epoch `euler_order`.
 //! Non-guarantees: OpenXR types inside this module, user Facet rearrange, Vault layout
 //! persist, WorldRoot, XR virtual keyboard, auth/world HTTP (surface modules), final UI art,
-//! Federation directory / friends active-session list (future).
+//! Uber-SDF Spatial Lens panels, Federation directory / friends active-session list (future).
 
 mod dash;
 pub mod facet;
@@ -78,15 +79,84 @@ impl SystemUi {
         }
     }
 
-    /// Pull Bitmask / Tape X-Ray text from shared Epoch snapshots (Settings panel).
-    pub fn pull_epoch_xray(&mut self, shared: &SharedState) -> bool {
-        let _ = crate::epoch_view::ensure_xray_row(&shared.epoch);
-        let next = crate::epoch_view::xray_text_from_state(&shared.epoch).unwrap_or_default();
-        if self.state.epoch_xray_text == next {
+    /// Pull Bitmask / Tape X-Ray from shared Epoch snapshots (Settings panel).
+    ///
+    /// Layout dirty is **structure-only** (row/mask/depth). Pose text is formatted
+    /// only when `refresh_text` is true (HierarchyRelayout) or structure changed —
+    /// Redraw paths pass `false` to avoid per-frame string alloc while Settings is open.
+    ///
+    /// Note: Settings-open Redraw still computes [`XrayStructureKey`] (cheap; may take
+    /// topology lock). Pose formatting is the expensive path and stays gated.
+    pub fn pull_epoch_xray(&mut self, shared: &SharedState, refresh_text: bool) -> bool {
+        if !self.state.open || self.state.tab != DashTab::Settings {
             return false;
         }
-        self.state.epoch_xray_text = next;
+        let _ = crate::epoch_view::ensure_xray_row(&shared.epoch);
+        let structure =
+            crate::epoch_view::xray_structure_key_from_state(&shared.epoch).unwrap_or_default();
+        let structure_dirty = self.state.epoch_xray_structure != structure;
+        if structure_dirty || refresh_text {
+            self.state.epoch_xray_text =
+                crate::epoch_view::xray_text_from_state(&shared.epoch).unwrap_or_default();
+        }
+        if !structure_dirty {
+            return false;
+        }
+        self.state.epoch_xray_structure = structure;
         true
+    }
+
+    /// Pull Hierarchy virtual window from Epoch topology (Settings · x0094).
+    ///
+    /// Layout dirty is structure-only (`HierarchyRowView` Eq). Pose stays in X-Ray.
+    /// When Settings is closed, skip the walk so Redraw does not touch hierarchy.
+    pub fn pull_hierarchy(&mut self, shared: &SharedState) -> bool {
+        if !self.state.open || self.state.tab != DashTab::Settings {
+            return false;
+        }
+        // Collapse scrub runs on ingest (`clear` + `scrub`); no per-pull scrub.
+        if let Some(row) = self.state.hierarchy_selected {
+            let curr = shared.epoch.snapshots.load_curr();
+            let live = curr
+                .readiness
+                .get(row as usize)
+                .is_some_and(|m| !m.contains(alchemy_shared_sim::ReadinessMask::TOMBSTONE));
+            if live {
+                shared.epoch.set_xray_row(Some(row));
+            } else {
+                self.state.hierarchy_selected = None;
+            }
+        }
+        let mut scroll = self.state.hierarchy_scroll;
+        let mut next = crate::epoch_view::hierarchy_panel_rows(&shared.epoch, scroll, 8);
+        while next.is_empty() && scroll > 0 {
+            scroll -= 1;
+            next = crate::epoch_view::hierarchy_panel_rows(&shared.epoch, scroll, 8);
+        }
+        self.state.hierarchy_scroll = scroll;
+        if self.state.hierarchy_rows == next {
+            return false;
+        }
+        self.state.hierarchy_rows = next;
+        true
+    }
+
+    /// Shared Desktop / XR path for Hierarchy scroll / select / collapse (x0094).
+    pub fn apply_hierarchy_relayout(&mut self, shared: &SharedState) {
+        let _ = self.pull_hierarchy(shared);
+        let _ = self.pull_epoch_xray(shared, true);
+        self.rebuild();
+    }
+
+    pub fn apply_hierarchy_collapse_toggle(&mut self, shared: &SharedState, row: u32) {
+        if let Ok(mut collapsed) = shared.epoch.hierarchy_collapsed.lock() {
+            if collapsed.contains(&row) {
+                collapsed.remove(&row);
+            } else {
+                collapsed.insert(row);
+            }
+        }
+        self.apply_hierarchy_relayout(shared);
     }
 
     /// XR: adopt Desktop Drive list + inventory status when mirror advances.
@@ -1036,6 +1106,56 @@ impl SystemUi {
                 self.rebuild();
                 UiAction::None
             }
+            WidgetId::HierarchyScrollUp => {
+                self.state.hierarchy_scroll = self.state.hierarchy_scroll.saturating_sub(1);
+                // Surface: pull_hierarchy + pull_epoch_xray → rebuild.
+                UiAction::HierarchyRelayout
+            }
+            WidgetId::HierarchyScrollDown => {
+                self.state.hierarchy_scroll = self.state.hierarchy_scroll.saturating_add(1);
+                UiAction::HierarchyRelayout
+            }
+            WidgetId::HierarchyCollapse => {
+                let Some(row) = self.state.hierarchy_selected else {
+                    return UiAction::None;
+                };
+                let has_children = self
+                    .state
+                    .hierarchy_rows
+                    .iter()
+                    .find(|r| r.row_id == row)
+                    .is_some_and(|r| r.has_children);
+                if !has_children {
+                    return UiAction::None;
+                }
+                UiAction::HierarchyCollapseToggle(row)
+            }
+            WidgetId::HierarchyRow0
+            | WidgetId::HierarchyRow1
+            | WidgetId::HierarchyRow2
+            | WidgetId::HierarchyRow3
+            | WidgetId::HierarchyRow4
+            | WidgetId::HierarchyRow5
+            | WidgetId::HierarchyRow6
+            | WidgetId::HierarchyRow7 => {
+                let idx = match hit {
+                    WidgetId::HierarchyRow0 => 0,
+                    WidgetId::HierarchyRow1 => 1,
+                    WidgetId::HierarchyRow2 => 2,
+                    WidgetId::HierarchyRow3 => 3,
+                    WidgetId::HierarchyRow4 => 4,
+                    WidgetId::HierarchyRow5 => 5,
+                    WidgetId::HierarchyRow6 => 6,
+                    WidgetId::HierarchyRow7 => 7,
+                    _ => 0,
+                };
+                if let Some(row) = self.state.hierarchy_rows.get(idx) {
+                    self.state.hierarchy_selected = Some(row.row_id);
+                    UiAction::HierarchyRelayout
+                } else {
+                    UiAction::None
+                }
+            }
             // Access-level widgets handled above via `access_level_from_widget`.
             WidgetId::HomeAccessPrivate
             | WidgetId::HomeAccessLan
@@ -1313,6 +1433,10 @@ pub enum UiAction {
     WorldsLeave,
     /// Worlds: KeyStale Rejoin (Leave → Join same room · x007e).
     WorldsRejoin,
+    /// Hierarchy scroll / row select: surface pull_hierarchy + pull_epoch_xray → rebuild.
+    HierarchyRelayout,
+    /// Toggle collapse for `row_id` on EpochViewState, then same as HierarchyRelayout.
+    HierarchyCollapseToggle(u32),
 }
 
 fn chrono_lite_now() -> String {
