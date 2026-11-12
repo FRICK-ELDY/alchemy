@@ -195,25 +195,11 @@ fn read_reg_string(hive: winreg::HKEY, subkey: &str, value: &str) -> Option<Path
 }
 
 /// Minimal parse of Steam `libraryfolders.vdf` for `"path" "D:\\SteamLibrary"` lines.
+///
+/// Reads the file, parses path strings (pure), then keeps only existing directories.
 fn parse_library_folders(vdf: &Path) -> Option<Vec<PathBuf>> {
     let text = fs::read_to_string(vdf).ok()?;
-    let mut paths = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if !line.contains("\"path\"") {
-            continue;
-        }
-        let mut parts = line.split('"').filter(|s| !s.trim().is_empty());
-        let key = parts.next()?;
-        if key != "path" {
-            continue;
-        }
-        let path = parts.next()?;
-        let p = PathBuf::from(path.replace("\\\\", "\\"));
-        if p.is_dir() {
-            paths.push(p);
-        }
-    }
+    let paths = filter_existing_dirs(parse_library_folder_paths(&text));
     if paths.is_empty() {
         None
     } else {
@@ -221,22 +207,100 @@ fn parse_library_folders(vdf: &Path) -> Option<Vec<PathBuf>> {
     }
 }
 
+/// Extract library roots from VDF text. Does not touch the filesystem.
+fn parse_library_folder_paths(text: &str) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if !line.contains("\"path\"") {
+            continue;
+        }
+        let mut parts = line.split('"').filter(|s| !s.trim().is_empty());
+        let Some(key) = parts.next() else {
+            continue;
+        };
+        if key != "path" {
+            continue;
+        }
+        let Some(path) = parts.next() else {
+            continue;
+        };
+        paths.push(PathBuf::from(path.replace("\\\\", "\\")));
+    }
+    paths
+}
+
+fn filter_existing_dirs(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    paths.into_iter().filter(|p| p.is_dir()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Unique under `temp_dir` without fixed names (avoids parallel / leftover collisions).
+    fn unique_temp_subdir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "alchemy_xr_loader_{label}_{}_{nanos}",
+            std::process::id()
+        ))
+    }
 
     #[test]
-    fn parse_library_folders_extracts_path() {
-        let dir = std::env::temp_dir().join("alchemy_steam_vdf_test");
-        let _ = fs::create_dir_all(&dir);
+    fn parse_library_folder_paths_extracts_escaped_path() {
+        let body =
+            "\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"D:\\\\SteamLibrary\"\n\t}\n}\n";
+        let libs = parse_library_folder_paths(body);
+        assert_eq!(libs, vec![PathBuf::from(r"D:\SteamLibrary")]);
+    }
+
+    #[test]
+    fn parse_library_folder_paths_skips_non_path_keys() {
+        let body = "\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"label\"\t\t\"Games\"\n\t\t\"path\"\t\t\"E:\\\\Lib\"\n\t}\n}\n";
+        let libs = parse_library_folder_paths(body);
+        assert_eq!(libs, vec![PathBuf::from(r"E:\Lib")]);
+    }
+
+    #[test]
+    fn parse_library_folder_paths_skips_malformed_path_line() {
+        // `"path"` present but no value token → skip that line, keep later valid paths.
+        let body = "\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\n\t\t\"path\"\t\t\"F:\\\\Ok\"\n\t}\n}\n";
+        let libs = parse_library_folder_paths(body);
+        assert_eq!(libs, vec![PathBuf::from(r"F:\Ok")]);
+    }
+
+    #[test]
+    fn filter_existing_dirs_keeps_only_directories() {
+        let existing = std::env::temp_dir();
+        assert!(
+            existing.is_dir(),
+            "std::env::temp_dir must exist for this filter test"
+        );
+        let missing = unique_temp_subdir("missing");
+        assert!(!missing.exists(), "unique missing path must not exist yet");
+        let filtered = filter_existing_dirs([existing.clone(), missing]);
+        assert_eq!(filtered, vec![existing]);
+    }
+
+    #[test]
+    fn parse_library_folders_read_parse_filter() {
+        let dir = unique_temp_subdir("vdf");
+        fs::create_dir_all(&dir).expect("create unique temp dir");
         let vdf = dir.join("libraryfolders.vdf");
         let escaped = dir.display().to_string().replace('\\', "\\\\");
+        let missing = unique_temp_subdir("absent_lib");
+        let missing_escaped = missing.display().to_string().replace('\\', "\\\\");
         let body = format!(
-            "\"libraryfolders\"\n{{\n\t\"0\"\n\t{{\n\t\t\"path\"\t\t\"{escaped}\"\n\t}}\n}}\n"
+            "\"libraryfolders\"\n{{\n\t\"0\"\n\t{{\n\t\t\"path\"\t\t\"{escaped}\"\n\t}}\n\t\"1\"\n\t{{\n\t\t\"path\"\t\t\"{missing_escaped}\"\n\t}}\n}}\n"
         );
-        fs::write(&vdf, body).unwrap();
-        let libs = parse_library_folders(&vdf).expect("parse");
-        assert!(libs.iter().any(|p| p == &dir));
+        fs::write(&vdf, body).expect("write vdf");
+        let libs = parse_library_folders(&vdf).expect("parse_library_folders");
+        assert_eq!(libs, vec![dir.clone()]);
         let _ = fs::remove_dir_all(&dir);
     }
 

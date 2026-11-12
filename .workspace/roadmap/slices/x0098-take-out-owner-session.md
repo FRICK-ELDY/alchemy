@@ -86,7 +86,7 @@ World HTTP append/delete は引き続き計算ホストの host Token + PoP + `e
 - Invite / 任意 guest 編集 ACL
 - `host_room_token` 機構の完全削除
 - 稼働中 host の `owner_sub` 再同期（ownership 移転なし再起動）
-- XR loader tempfile（P2-12）· bind 全体上限（P2-14）
+- bind 全体上限（P2-14）；XR loader tempfile は [x009a](x009a-xr-loader-tempfile-pure.md)
 
 ## 関連
 

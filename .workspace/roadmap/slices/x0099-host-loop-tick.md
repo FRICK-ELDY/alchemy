@@ -14,7 +14,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | 1 physics tick の副作用一式は `HostLoop::tick`（spawn/despawn → gate/manifest → reclaim/Presence → intent → `step_dt` → mid-net/net submit → 1Hz log） | boot / Zenoh / credential worker / input gate / liveliness 購読の `main` 残置を変えない |
-| sleep・`next_physics`・tick lateness は `main` | PROTOCOL_PIN・空間 UI・XR loader tempfile・bind 上限 |
+| sleep・`next_physics`・tick lateness は `main` | PROTOCOL_PIN・空間 UI・bind 上限（XR loader tempfile は [x009a](x009a-xr-loader-tempfile-pure.md)） |
 | mid-net `removes_only` / resume catch-up latch / net-tick acquire→fill→submit は単体で回帰可能 | pose プール再設計（x0095 契約維持） |
 | `PresenceIntents` は `presence` モジュール（入力と tick の共有型） | input gate 本体の大規模再配置 |
 
@@ -62,7 +62,7 @@ HostLoop::tick(now)
 
 ## やらない（本 Slice）／次
 
-- XR loader tempfile（P2-12）· bind 全体上限（P2-14）· USER_ROOT 帯 Manifest（P2-13）
+- bind 全体上限（P2-14）· USER_ROOT 帯 Manifest（P2-13）；XR loader tempfile は [x009a](x009a-xr-loader-tempfile-pure.md)
 - Inspector / Uber-SDF / 親子同期（空間本線）
 
 ## 関連

@@ -204,11 +204,12 @@ depends_on: [x0006]
 | x0097 | — | done | Room per-owner 上限厳密化（quota row · P2-11） | [x0097-room-owner-cap-strict.md](slices/x0097-room-owner-cap-strict.md) |
 | x0098 | — | done | take-out guest+session / owner_sub（遠隔 owner · P2-7） | [x0098-take-out-owner-session.md](slices/x0098-take-out-owner-session.md) |
 | x0099 | — | done | HostLoop::tick 切り出し（P2-6 残り） | [x0099-host-loop-tick.md](slices/x0099-host-loop-tick.md) |
+| x009a | — | done | XR loader tempfile 純粋化（P2-12） | [x009a-xr-loader-tempfile-pure.md](slices/x009a-xr-loader-tempfile-pure.md) |
 
-**現在の次:** [x0099](slices/x0099-host-loop-tick.md) **done**（P2-6 `HostLoop::tick`）。空間本線は一時停止。improvement 残（XR loader tempfile · USER_ROOT 帯 · bind 上限）· Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md) · [improvement-plan](../0_doc/evaluation/improvement-plan-2026-11-05.md)）。Inspector / Uber-SDF / 親子同期は再開時に再掲。  
+**現在の次:** [x009a](slices/x009a-xr-loader-tempfile-pure.md) **done**（P2-12）。空間本線は一時停止。improvement 残（USER_ROOT 帯 · bind 上限）· Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md) · [improvement-plan](../0_doc/evaluation/improvement-plan-2026-11-05.md)）。Inspector / Uber-SDF / 親子同期は再開時に再掲。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-11-05.md)）。
 
-次の空き番号は **`x009a`**。
+次の空き番号は **`x009b`**。
 
 ## 関連
 
