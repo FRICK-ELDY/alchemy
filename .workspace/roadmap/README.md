@@ -200,11 +200,12 @@ depends_on: [x0006]
 | x0093 | — | done | XPBD wire 権威へ収束（Rapier 影並走廃止） | [x0093-xpbd-wire-authority.md](slices/x0093-xpbd-wire-authority.md) |
 | x0094 | — | done | Hierarchy 仮想 Lens 最小（euler_order → Settings） | [x0094-hierarchy-virtual-lens.md](slices/x0094-hierarchy-virtual-lens.md) |
 | x0095 | — | done | wire pose ダブルバッファ置換（P2-6 残り） | [x0095-wire-pose-double-buffer.md](slices/x0095-wire-pose-double-buffer.md) |
+| x0096 | — | done | Origin Cert tree/content hash v1（P2-4） | [x0096-origin-cert-content-hash.md](slices/x0096-origin-cert-content-hash.md) |
 
-**現在の次:** 空間本線は一時停止。衛生帯は [x0095](slices/x0095-wire-pose-double-buffer.md) **done**（P2-6 pose DB）。improvement 残（Origin Cert hash / take-out session / Room 上限厳密化 等）· Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md) · [improvement-plan](../0_doc/evaluation/improvement-plan-2026-11-05.md)）。Inspector / Uber-SDF / 親子同期は再開時に再掲。  
+**現在の次:** 空間本線は一時停止。衛生帯は [x0096](slices/x0096-origin-cert-content-hash.md) **done**（P2-4 Origin Cert hash）。improvement 残（take-out session / Room 上限厳密化 等）· Spot-Check 保留（[backlog](backlog-priority-2026-11-04.md) · [improvement-plan](../0_doc/evaluation/improvement-plan-2026-11-05.md)）。Inspector / Uber-SDF / 親子同期は再開時に再掲。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限は x0071 で切り離し（[improvement-plan](../0_doc/evaluation/improvement-plan-2026-10-30.md)）。
 
-次の空き番号は **`x0096`**。
+次の空き番号は **`x0097`**。
 
 ## 関連
 

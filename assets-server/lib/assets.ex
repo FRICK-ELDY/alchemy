@@ -37,8 +37,9 @@ defmodule Assets do
     owner / BlobGrant checked; invalid rev → :not_found (x0063)
   - Vcs.create_branch/3, create_tag/3, advance_branch/3: Ref CRUD; tags immutable (frozen);
     advance_branch checks fast-forward reachability (x0064)
-  - Vcs.issue_cert/3 / verify_cert/1: Ed25519 Origin Cert over canonical message;
-    private key never logged or returned; tampered cert → :tampered (x0065)
+  - Vcs.issue_cert/3 / verify_cert/1: Ed25519 Origin Cert v1
+    (`v1|kind|id|sub|tree_blake3|parent`); private key never logged or returned;
+    tampered cert / Commit tree → :tampered (x0065 / x0096)
 
   ## Non-guarantees
 

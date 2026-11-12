@@ -1,6 +1,7 @@
 defmodule Assets.VcsTest do
   @moduledoc """
-  Tests for x0062 (promote_prefab), x0063 (ItemRef repo@rev), x0064 (Branch/Tag), x0065 (Cert).
+  Tests for x0062 (promote_prefab), x0063 (ItemRef repo@rev), x0064 (Branch/Tag),
+  x0065 / x0096 (Origin Cert v1 content-bound).
   """
   use Assets.DataCase, async: false, cas: true
 
@@ -285,7 +286,7 @@ defmodule Assets.VcsTest do
   end
 
   # ---------------------------------------------------------------------------
-  # x0065 — Origin Cert
+  # x0065 / x0096 — Origin Cert (v1 content-bound)
   # ---------------------------------------------------------------------------
 
   test "issue_cert creates cert for a commit" do
@@ -301,6 +302,11 @@ defmodule Assets.VcsTest do
     assert byte_size(cert.signature) > 0
     # Private key must NOT appear in the cert struct
     refute Map.has_key?(cert, :private_key)
+
+    tree_blake3 = Cert.tree_blake3(commit)
+    message = Cert.canonical_message("commit", commit.commit_id, @sub_a, tree_blake3, "")
+    assert String.starts_with?(message, "v1|")
+    assert cert.target_hash == Assets.Blake3.hash_hex(message)
   end
 
   test "verify_cert returns :ok for a valid cert" do
@@ -343,7 +349,7 @@ defmodule Assets.VcsTest do
     {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
     {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", commit.commit_id)
 
-    # Corrupt the target_hash in-db (simulates Commit tampering)
+    # Corrupt the cert-row message hash anchor (not the Commit body)
     Assets.Repo.update_all(
       from(c in Cert, where: c.cert_id == ^cert.cert_id),
       set: [target_hash: String.duplicate("0", 64)]
@@ -352,17 +358,163 @@ defmodule Assets.VcsTest do
     assert {:error, :tampered} = Vcs.verify_cert(cert.cert_id)
   end
 
+  test "verify_cert returns :tampered when Commit tree_json changes after issue" do
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", commit.commit_id)
+
+    Assets.Repo.update_all(
+      from(c in Commit, where: c.commit_id == ^commit.commit_id),
+      set: [tree_json: ~s({"schema_version":1,"children":[]})]
+    )
+
+    assert {:error, :tampered} = Vcs.verify_cert(cert.cert_id)
+  end
+
+  test "verify_cert returns :tampered when parent_commit_id changes after issue" do
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    c2_id = Vcs.generate_id_for_test()
+
+    {:ok, c2} =
+      Assets.Repo.insert(
+        Commit.changeset(%Commit{}, %{
+          commit_id: c2_id,
+          repo_id: repo.repo_id,
+          parent_commit_id: c1.commit_id,
+          author_sub: @sub_a,
+          tree_json: c1.tree_json
+        })
+      )
+
+    {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", c2.commit_id)
+
+    Assets.Repo.update_all(
+      from(c in Commit, where: c.commit_id == ^c2.commit_id),
+      set: [parent_commit_id: nil]
+    )
+
+    assert {:error, :tampered} = Vcs.verify_cert(cert.cert_id)
+  end
+
+  test "verify_cert returns :tampered when Commit is deleted after issue" do
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", commit.commit_id)
+
+    Assets.Repo.delete_all(from(c in Commit, where: c.commit_id == ^commit.commit_id))
+
+    assert {:error, :tampered} = Vcs.verify_cert(cert.cert_id)
+  end
+
+  test "canonical_message v1 binds tree_blake3 and parent_commit_id" do
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    c2_id = Vcs.generate_id_for_test()
+
+    {:ok, c2} =
+      Assets.Repo.insert(
+        Commit.changeset(%Commit{}, %{
+          commit_id: c2_id,
+          repo_id: repo.repo_id,
+          parent_commit_id: c1.commit_id,
+          author_sub: @sub_a,
+          tree_json: c1.tree_json
+        })
+      )
+
+    {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", c2.commit_id)
+    tree_blake3 = Cert.tree_blake3(c2)
+
+    message =
+      Cert.canonical_message(
+        "commit",
+        c2.commit_id,
+        @sub_a,
+        tree_blake3,
+        c1.commit_id
+      )
+
+    assert message ==
+             "v1|commit|#{c2.commit_id}|#{@sub_a}|#{tree_blake3}|#{c1.commit_id}"
+
+    assert cert.target_hash == Assets.Blake3.hash_hex(message)
+    assert :ok = Vcs.verify_cert(cert.cert_id)
+  end
+
   test "verify_cert returns :not_found for unknown cert_id" do
     assert {:error, :not_found} = Vcs.verify_cert("00000000-0000-0000-0000-000000000001")
   end
 
-  test "issue_cert for tag kind" do
+  test "issue_cert for tag kind binds tagged commit tree" do
     {node, _} = build_prefab_node(@sub_a)
     {:ok, %{repo: repo, commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
     {:ok, tag} = Vcs.create_tag(repo.repo_id, "v1.0", commit.commit_id)
 
     assert {:ok, cert} = Vcs.issue_cert(@sub_a, "tag", tag.ref_id)
     assert :ok = Vcs.verify_cert(cert.cert_id)
+
+    tree_blake3 = Cert.tree_blake3(commit)
+
+    message =
+      Cert.canonical_message("tag", tag.ref_id, @sub_a, tree_blake3, "")
+
+    assert cert.target_hash == Assets.Blake3.hash_hex(message)
+  end
+
+  test "issue_cert returns :not_found for unknown commit" do
+    assert {:error, :not_found} =
+             Vcs.issue_cert(@sub_a, "commit", "00000000-0000-0000-0000-000000000001")
+  end
+
+  test "issue_cert returns :not_found for unknown tag" do
+    assert {:error, :not_found} =
+             Vcs.issue_cert(@sub_a, "tag", "00000000-0000-0000-0000-000000000001")
+  end
+
+  test "issue_cert returns :not_found when tag points at missing commit" do
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{repo: repo, commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    {:ok, tag} = Vcs.create_tag(repo.repo_id, "dangling", commit.commit_id)
+
+    Assets.Repo.delete_all(from(c in Commit, where: c.commit_id == ^commit.commit_id))
+
+    assert {:error, :not_found} = Vcs.issue_cert(@sub_a, "tag", tag.ref_id)
+  end
+
+  test "verify_cert returns :tampered when tag points at missing commit" do
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{repo: repo, commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    {:ok, tag} = Vcs.create_tag(repo.repo_id, "later-dangling", commit.commit_id)
+    {:ok, cert} = Vcs.issue_cert(@sub_a, "tag", tag.ref_id)
+
+    Assets.Repo.delete_all(from(c in Commit, where: c.commit_id == ^commit.commit_id))
+
+    assert {:error, :tampered} = Vcs.verify_cert(cert.cert_id)
+  end
+
+  test "issue_cert rejects subject_sub containing pipe" do
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    assert {:error, :invalid_subject_sub} =
+             Vcs.issue_cert("evil|sub", "commit", commit.commit_id)
+  end
+
+  test "issue_cert rejects non-binary subject_sub" do
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    assert {:error, :invalid_subject_sub} =
+             Vcs.issue_cert(nil, "commit", commit.commit_id)
+  end
+
+  test "canonical_message raises when subject_sub contains pipe" do
+    assert_raise ArgumentError, fn ->
+      Cert.canonical_message("commit", "id", "evil|sub", String.duplicate("a", 64), "")
+    end
   end
 
   test "issue_cert rejects unknown target_kind" do
