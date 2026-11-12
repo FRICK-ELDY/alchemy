@@ -258,7 +258,8 @@ impl PhysicsWorld {
         for &id in &meshes {
             if let Some(h) = entity_rows.get(&id) {
                 let i = h.row_id as usize;
-                world.curr.world_transforms[i].frame_delta_xyz = [0.1 * DEFAULT_DT as f32, 0.0, 0.05 * DEFAULT_DT as f32];
+                world.curr.world_transforms[i].frame_delta_xyz =
+                    [0.1 * DEFAULT_DT as f32, 0.0, 0.05 * DEFAULT_DT as f32];
                 world.prev.world_transforms[i].frame_delta_xyz =
                     world.curr.world_transforms[i].frame_delta_xyz;
             }
@@ -427,8 +428,7 @@ impl PhysicsWorld {
             [0.05 * DEFAULT_DT as f32, 0.0, 0.02 * DEFAULT_DT as f32];
         self.colors
             .insert(entry.entity_id, scene_entry_color_rgba(entry));
-        self.scales
-            .insert(entry.entity_id, entry_scale_f32(entry));
+        self.scales.insert(entry.entity_id, entry_scale_f32(entry));
         self.entity_rows.insert(entry.entity_id, handle);
         self.meshes.push(entry.entity_id);
         self.publish_dirty = true;
@@ -621,8 +621,7 @@ impl PhysicsWorld {
             || !self.ground_scratch.is_empty()
             || self.has_active_grab();
         if moved {
-            self.snapshots
-                .publish(start, self.world.curr.clone());
+            self.snapshots.publish(start, self.world.curr.clone());
             self.publishes = self.publishes.wrapping_add(1);
             self.publish_dirty = false;
         }
@@ -995,7 +994,10 @@ mod tests {
         let row = world.entity_row(id).unwrap().row_id as usize;
         let live = world.world.curr.world_transforms[row].position;
         let published = snap.world_transforms[row].position;
-        assert_eq!(live, published, "snapshot Curr must match live after Intent");
+        assert_eq!(
+            live, published,
+            "snapshot Curr must match live after Intent"
+        );
     }
 
     #[test]
