@@ -61,7 +61,7 @@ physics net tick
 
 - Inspector / Uber-SDF / host↔client 親子 / TPS・Live（空間本線は一時停止）
 - `HostLoop::tick` 切り出し全体
-- improvement P2 の他残件（take-out session 等）。Origin Cert hash は [x0096](x0096-origin-cert-content-hash.md)
+- improvement P2 の他残件（XR loader tempfile 等）。take-out session は [x0098](x0098-take-out-owner-session.md)；Origin Cert hash は [x0096](x0096-origin-cert-content-hash.md)
 
 ## 関連
 

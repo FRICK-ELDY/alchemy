@@ -715,6 +715,9 @@ defmodule WorldWeb.RoomController do
   x0027: return world-authored scene definition. Authorization must be a **host** Room Token
   whose `sub` is the current ledger `active_host_sub` (x0080).
 
+  x0098: response includes `owner_sub` (Room row) so the compute host can authorize
+  inventory control from a guest+session whose `sub` matches the owner.
+
   Read path checks the ledger only — it does **not** call `renew_host_lease/2`
   (unlike scene write / host_keys / manifest_seal). Heartbeat remains those
   mutating paths (and Token / attestation traffic), so GET-only hosts can still
@@ -727,8 +730,19 @@ defmodule WorldWeb.RoomController do
          :ok <- require_http_pop(conn, claims),
          # Ledger gate only; intentionally no renew_host_lease on read.
          :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
-         {:ok, scene} <- Rooms.scene(room_id) do
-      json(conn, Map.put(scene, "room_id", room_id))
+         {:ok, room} <- Rooms.get(room_id) do
+      # x0098: prefer Rooms.get so `owner_sub` is always available. Non-map / corrupt
+      # `scene` JSON falls back to `%{}` (still returns owner_sub) instead of 404 —
+      # intentional: host Dual auth needs owner_sub even when scene body is unusable;
+      # create path always writes a map DemoScene, so this branch is defensive only.
+      scene = if is_map(room.scene), do: room.scene, else: %{}
+
+      json(
+        conn,
+        scene
+        |> Map.put("room_id", room_id)
+        |> Map.put("owner_sub", room.owner_sub)
+      )
     else
       {:error, :missing_bearer} ->
         conn

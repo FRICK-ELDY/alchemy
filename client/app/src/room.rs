@@ -209,8 +209,9 @@ pub(crate) fn open_zenoh_for(shared: &SharedState) -> Result<zenoh::Session> {
 ///
 /// Always joins as **guest** Room Token + guest mTLS CN (`alchemy-guest`). WAN ACL
 /// only allows guest CN to put Intent / inventory keys; host CN is the host-server
-/// process. Owner Inventory take-out uses a separate host JWT via
-/// [`install_host_inventory_token`] (x006d / x007f / x0067).
+/// process. Owner Inventory take-out uses guest+session; host accepts `sub ==
+/// owner_sub` (x0098). [`install_host_inventory_token`] remains for compute-host
+/// Intent `role=host` re-bind (non-owner takeover path).
 ///
 /// `work_epoch` must match [`SharedState::auth_work_epoch`] at commit time so a
 /// discarded Logout/Leave worker cannot install room state onto a newer session.
@@ -316,10 +317,11 @@ pub fn join_room_with_access(
     Ok(())
 }
 
-/// Fetch owner `role=host` JWT into [`crate::auth::AuthGate::host_room_token`].
+/// Fetch compute-host `role=host` JWT into [`crate::auth::AuthGate::host_room_token`].
 ///
-/// Does **not** change live guest Token / mTLS (no CSR). Failures clear the slot so
-/// Take-out stays gated. Call after a successful Host / Start / Rescue join.
+/// Does **not** change live guest Token / mTLS (no CSR). Used so Intent can re-bind
+/// as `role=host` for non-owner compute hosts (x0081 Dual path). Owner take-out no
+/// longer requires this slot (x0098). Call after a successful Host / Start / Rescue join.
 pub fn install_host_inventory_token(shared: &SharedState, access_token: &str) -> Result<()> {
     let session_pub_b64 = {
         let Ok(slot) = shared.intent_session.lock() else {

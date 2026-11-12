@@ -117,6 +117,7 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 9. ~~[x008c](slices/x008c-shared-jwks-fail-cooldown.md) 共有 JWKS 失敗クールダウン（P2-5）~~ **done**
 10. ~~[x0096](slices/x0096-origin-cert-content-hash.md) Origin Cert content hash（P2-4）~~ **done**
 11. ~~[x0097](slices/x0097-room-owner-cap-strict.md) Room per-owner 上限厳密化（P2-11）~~ **done**
-12. verifier Spot-Check（保留）· Formula / market / 検疫（減点対象外）
+12. ~~[x0098](slices/x0098-take-out-owner-session.md) take-out guest+session / owner_sub（improvement P2-7）~~ **done**
+13. verifier Spot-Check（保留）· Formula / market / 検疫（減点対象外）
 
 ← [Roadmap 目次](README.md)
