@@ -85,7 +85,7 @@ Optional Profile（billing / market-server）はディレクトリ未設置の�
 | 7 | `USER_ROOT_SLOTS_MAX = 4` | **closed**（x009b） | 帯 `0x1000_0000..` · DoS 天井 32 · 幅は Manifest |
 | 8 | host `main()` 一枚岩 | open | `main.rs` L790〜（約 640 行に拡大） |
 | 9 | `room_token.rs` 2000 行超 | closed | `room_token/` 7 ファイル分割（x0076） |
-| 10 | bind 全体バケット枯渇 | partial | 送信元分割（x0077）。キーが自己申告 timestamp ID で -1 |
+| 10 | bind 全体バケット枯渇 | closed | x0077 分割 → **x009c** session_pub 起点 + soft-global 返却 |
 | 11 | 配信 tick ごとの `Vec` 確保 | open | `main.rs` L1286-1301 |
 | 12 | `tos_agreed: true` 固定 | closed | `auth.rs` L140-155、`desktop.rs` L1288-1289 |
 | 13 | client `main.rs` 1899 行 | closed | 274 行。代わりに `dash.rs` / `desktop.rs` が肥大（新規 -1） |
@@ -116,7 +116,7 @@ Optional Profile（billing / market-server）はディレクトリ未設置の�
 | x0074 reserved reaper + orphan CAS GC | done | **確認**。reaper と GC が別 GenServer、GC は quarantine → 再確認 → discard/restore（`orphan_gc.ex` L1-10） |
 | x0075 BLAKE3 / seal-hash 常駐 Port | done | **確認**。ただし両方とも単一 GenServer 直列（-1 残置） |
 | x0076 host room_token / client main 分割 | done | **確認**（スコープ内）。host `main()` 自体は対象外で肥大継続 |
-| x0077 bind 送信元分割 | done | **確認**。キーが自己申告である点を partial として記録 |
+| x0077 bind 送信元分割 | done | **確認**。自己申告キー残は **x009c** で closed |
 | x0078 mTLS 鍵 temp ACL / 掃除 | done | **確認**。Windows DACL を実検証するテストあり |
 | x0079 DemoScene 共有テストベクタ | done | **確認**。Elixir / Rust が同じ JSON を照合 |
 

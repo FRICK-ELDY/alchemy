@@ -162,7 +162,7 @@
 - **Zenoh put を network worker に分離し、物理はジョブ投入のみ（継続）** `+3`
 - **bind で `cnf.spk == session_pub` を照合（継続）** `+3`
 - **Intent rate limit の「どこで数えるか」の設計（継続・x0077 で送信元分割）** `+3`
-  > 「両方のバケットにトークンがあるときだけ両方消費」「deny ではマップを増やさない」「idle は成功消費基準」と、偽 ID ローテーションに対する RAM 上限まで moduledoc で保証している（`intent_rate.rs` L1-22）。キーが自己申告である点はマイナス側。
+  > 「両方のバケットにトークンがあるときだけ両方消費」「deny ではマップを増やさない」「idle は成功消費基準」と、偽 ID ローテーションに対する RAM 上限まで moduledoc で保証している。自己申告 ZenohId キーの残は **x009c** で `session_pub` 起点 + soft-global 返却へ閉じた。
 - **Intent セッション表（継続）** `+3`
 - **world 定義の Scene から Rapier を構築（継続）** `+3`
 - **Presence 解放の三重化と、liveliness を検証済み jti に紐付け（継続）** `+3`

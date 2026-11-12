@@ -110,10 +110,8 @@
   > `mesh_poses_from_sim(&physics)` と `Vec::with_capacity(...)` の `all_poses`（`main.rs` L1286-1301）を 30Hz で毎回作り、`FrameSample` として worker に move する。実装ルールの「フレーム間でアロケーションを回さない」に反する。worker からの返却チャネルでダブルバッファにすれば確保は起動時だけになる。
   > 対象ファイル: `client/host-server/src/main.rs`（L1286-1310）
 
-- **bind の送信元分割キーが送信者の自己申告（Sample timestamp の uhlc ID）で、JWT 検証予算が最大 256 倍に広がった（部分解消）** `-1`
-  > x0077 で「1 つの送信元が全体バケットを枯らして全員の入室を止める」は解消した（`intent_rate.rs` L6-12）。ただし source キーは `sample.timestamp()` 由来（`main.rs` L551-557）で、ID は publisher が自由に変えられる。`MAX_BIND_SOURCES = 256` と idle GC で RAM は有界だが、(a) 256 個の偽 ID を「成功消費」で温め続ければ新規送信元の bind を拒否できる（moduledoc L20-21 が自認）、(b) 旧来の host 全体 10/s が消えたので、JWT 検証 CPU の上限は 256 × 10/s に広がった。x0069 以後は Intent も AEAD なので攻撃者は「その部屋の鍵保持者」に限られ、実害は縮小している。
-  > 改善方針: bind 前に AEAD 開封済み・Ed25519 検証済みである点を生かし、`session_pub` の初回出現に小さな PoW / 共有全体上限（成功 bind で返却）を併用する。
-  > 対象ファイル: `client/host-server/src/intent_rate.rs`（L1-50）, `client/host-server/src/main.rs`（L545-560）
+- ~~**bind の送信元分割キーが送信者の自己申告（Sample timestamp の uhlc ID）で、JWT 検証予算が最大 256 倍に広がった（部分解消）**~~ `-1` → **closed (x009c)**
+  > x009c: キーを Ed25519 検証済み `session_pub` に移し、soft-global（成功 JWT で返却）を復帰。PoW は未採用。
 
 ### client/app
 

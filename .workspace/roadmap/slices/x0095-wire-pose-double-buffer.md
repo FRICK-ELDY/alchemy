@@ -61,7 +61,7 @@ physics net tick
 
 - Inspector / Uber-SDF / host↔client 親子 / TPS・Live（空間本線は一時停止）
 - `HostLoop::tick` 切り出し全体 → **[x0099](x0099-host-loop-tick.md) done**
-- improvement P2 の他残件（USER_ROOT 帯 · bind 上限等）。XR loader tempfile は [x009a](x009a-xr-loader-tempfile-pure.md)；take-out session は [x0098](x0098-take-out-owner-session.md)；Origin Cert hash は [x0096](x0096-origin-cert-content-hash.md)
+- improvement P2 の他残件は閉じた（USER_ROOT 帯 [x009b](x009b-user-root-band-manifest.md) · bind 上限 [x009c](x009c-bind-global-session-pub.md)）。XR loader tempfile は [x009a](x009a-xr-loader-tempfile-pure.md)；take-out session は [x0098](x0098-take-out-owner-session.md)；Origin Cert hash は [x0096](x0096-origin-cert-content-hash.md)
 
 ## 関連
 

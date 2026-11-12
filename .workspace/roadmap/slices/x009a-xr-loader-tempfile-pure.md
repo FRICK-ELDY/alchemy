@@ -58,7 +58,7 @@ filter_existing_dirs(...)         → Vec<PathBuf>   // is_dir only
 
 ## やらない（本 Slice）／次
 
-- USER_ROOT 帯 Manifest（P2-13）は [x009b](x009b-user-root-band-manifest.md)；bind 全体上限（P2-14）
+- USER_ROOT 帯 Manifest（P2-13）は [x009b](x009b-user-root-band-manifest.md)；bind 全体上限（P2-14）は [x009c](x009c-bind-global-session-pub.md)
 - OpenXR loader 探索ロジック自体の拡張
 
 ## 関連
