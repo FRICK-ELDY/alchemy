@@ -911,7 +911,10 @@ defmodule WorldWeb.RoomControllerTest do
 
     assert body["room_id"] == "scene-room"
     assert body["owner_sub"] == sub
-    assert body["revision"] == 1
+    # x009e: host token activate bumps overlay once (dormant claim); packed stays monotonic.
+    assert {:ok, canon, overlay} = World.Rooms.unpack_revision(body["revision"])
+    assert canon == 1
+    assert overlay >= 0
     assert is_list(body["entries"])
     assert length(body["entries"]) == 14
     assert body["locomotion"]["mode"] == "noclip"
@@ -1005,8 +1008,15 @@ defmodule WorldWeb.RoomControllerTest do
 
     attestation = issue_attestation(host_token, priv, "seal", host_pub_b64())
 
+    scene =
+      build_conn()
+      |> TestAuthHelpers.get_host(host_token, priv, "/api/v1/rooms/seal/scene")
+      |> json_response(200)
+
     assert {:ok, revision, host_generation, blake3} =
              World.CanonicalManifest.canonical_blake3("seal", attestation)
+
+    assert scene["revision"] == revision
 
     body =
       build_conn()
@@ -1015,9 +1025,9 @@ defmodule WorldWeb.RoomControllerTest do
         priv,
         "/api/v1/rooms/seal/manifest_seal",
         %{
-          revision: revision,
-          manifest_blake3: blake3,
-          host_attestation: attestation
+          "revision" => revision,
+          "manifest_blake3" => blake3,
+          "host_attestation" => attestation
         }
       )
       |> json_response(200)
@@ -1052,6 +1062,11 @@ defmodule WorldWeb.RoomControllerTest do
 
     attestation = issue_attestation(host_token, priv, "seal-oracle", host_pub_b64())
 
+    %{"revision" => packed} =
+      build_conn()
+      |> TestAuthHelpers.get_host(host_token, priv, "/api/v1/rooms/seal-oracle/scene")
+      |> json_response(200)
+
     assert %{"error" => "manifest_blake3_mismatch"} =
              build_conn()
              |> TestAuthHelpers.post_host_json(
@@ -1059,7 +1074,7 @@ defmodule WorldWeb.RoomControllerTest do
                priv,
                "/api/v1/rooms/seal-oracle/manifest_seal",
                %{
-                 revision: 1,
+                 revision: packed,
                  manifest_blake3: oracle,
                  host_attestation: attestation
                }
@@ -1330,9 +1345,9 @@ defmodule WorldWeb.RoomControllerTest do
         priv,
         "/api/v1/rooms/#{room_id}/manifest_seal",
         %{
-          revision: revision,
-          manifest_blake3: blake3,
-          host_attestation: attestation
+          "revision" => revision,
+          "manifest_blake3" => blake3,
+          "host_attestation" => attestation
         }
       )
       |> json_response(200)
@@ -1649,13 +1664,15 @@ defmodule WorldWeb.RoomControllerTest do
     corrupt = Map.put(room_row.scene, "revision", "not-an-int")
     assert {:ok, _} = Room.set_scene(room_row, %{scene: corrupt})
 
+    assert {:ok, packed} = World.Rooms.pack_revision(1, 0)
+
     assert %{"error" => "invalid_scene_revision"} =
              build_conn()
              |> TestAuthHelpers.post_host_json(
                host_token,
                priv,
                "/api/v1/rooms/#{room}/scene/entries",
-               %{blake3: blake3, expected_revision: 1}
+               %{blake3: blake3, expected_revision: packed}
              )
              |> json_response(500)
 
@@ -1665,7 +1682,7 @@ defmodule WorldWeb.RoomControllerTest do
                host_token,
                priv,
                "/api/v1/rooms/#{room}/scene/entries/100",
-               %{expected_revision: 1}
+               %{expected_revision: packed}
              )
              |> json_response(500)
   end
@@ -1811,6 +1828,7 @@ defmodule WorldWeb.RoomControllerTest do
              |> json_response(201)
 
     assert :ok = World.Rooms.set_editor_subs(room, owner, [editor])
+    assert {:ok, _} = World.Rooms.set_eligible_host_subs(room, owner, [editor])
 
     assert %{"state" => "active", "active_host_sub" => ^editor} =
              build_conn()
@@ -1913,6 +1931,8 @@ defmodule WorldWeb.RoomControllerTest do
              |> post("/api/v1/rooms/#{room}/handover", %{target_sub: nil})
              |> json_response(200)
 
+    assert {:ok, _} = World.Rooms.set_eligible_host_subs(room, owner, [guest])
+
     assert %{"state" => "active", "active_host_sub" => ^guest} =
              build_conn()
              |> TestAuthHelpers.put_auth(signer, guest)
@@ -1942,6 +1962,20 @@ defmodule WorldWeb.RoomControllerTest do
                %{blake3: String.duplicate("ab", 32), expected_revision: scene["revision"]}
              )
              |> json_response(403)
+
+    overlay_blake3 = String.duplicate("cd", 32)
+
+    overlaid =
+      build_conn()
+      |> TestAuthHelpers.post_host_json(
+        host_token,
+        guest_priv,
+        "/api/v1/rooms/#{room}/overlay/entries",
+        %{blake3: overlay_blake3, expected_revision: scene["revision"]}
+      )
+      |> json_response(200)
+
+    assert Enum.any?(overlaid["entries"], fn e -> e["blake3"] == overlay_blake3 end)
 
     assert %{"error" => "scene_writer_forbidden"} =
              build_conn()
@@ -1996,7 +2030,10 @@ defmodule WorldWeb.RoomControllerTest do
     assert mine["state"] == "dormant"
   end
 
-  test "takeover CAS succeeds once from dormant (x0080)", %{conn: conn, signer: signer} do
+  test "takeover CAS succeeds once from dormant (x0080 / x009e eligible)", %{
+    conn: conn,
+    signer: signer
+  } do
     owner = "50505050-5050-5050-5050-505050505050"
     guest_a = "60606060-6060-6060-6060-606060606060"
     guest_b = "70707070-7070-7070-7070-707070707070"
@@ -2006,6 +2043,18 @@ defmodule WorldWeb.RoomControllerTest do
              |> TestAuthHelpers.put_auth(signer, owner)
              |> post("/api/v1/rooms", %{room_id: "to-1", visibility: "public"})
              |> json_response(201)
+
+    assert %{"error" => "takeover_forbidden"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, guest_a)
+             |> post("/api/v1/rooms/to-1/takeover", %{})
+             |> json_response(403)
+
+    assert %{"eligible_host_subs" => [^guest_a, ^guest_b]} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> put("/api/v1/rooms/to-1/eligible_hosts", %{subs: [guest_a, guest_b]})
+             |> json_response(200)
 
     assert %{"state" => "active", "active_host_sub" => ^guest_a} =
              build_conn()
@@ -2018,5 +2067,40 @@ defmodule WorldWeb.RoomControllerTest do
              |> TestAuthHelpers.put_auth(signer, guest_b)
              |> post("/api/v1/rooms/to-1/takeover", %{})
              |> json_response(409)
+  end
+
+  test "eligible_hosts rejects non-owner and invalid body", %{conn: conn, signer: signer} do
+    owner = "81818181-8181-8181-8181-818181818181"
+    guest = "91919191-9191-9191-9191-919191919191"
+
+    assert %{"room_id" => "elig-http"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "elig-http", visibility: "public"})
+             |> json_response(201)
+
+    assert %{"error" => "owner_only"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, guest)
+             |> put("/api/v1/rooms/elig-http/eligible_hosts", %{subs: [guest]})
+             |> json_response(403)
+
+    assert %{"error" => "invalid_eligible"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> put("/api/v1/rooms/elig-http/eligible_hosts", %{subs: [""]})
+             |> json_response(422)
+
+    assert %{"error" => "room_not_found"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> put("/api/v1/rooms/missing-elig/eligible_hosts", %{subs: []})
+             |> json_response(404)
+
+    assert %{"eligible_host_subs" => []} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> put("/api/v1/rooms/elig-http/eligible_hosts", %{subs: []})
+             |> json_response(200)
   end
 end

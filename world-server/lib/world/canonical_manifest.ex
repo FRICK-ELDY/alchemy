@@ -1,8 +1,9 @@
 defmodule World.CanonicalManifest do
   @moduledoc """
-  Builds the canonical ManifestSeal hash input from DB scene + HostAttestation (x0039).
+  Builds the ManifestSeal hash input from composed scene (canonical ⊕ overlay · x009e)
+  + HostAttestation (x0039).
 
-  Guarantees: seal hash is derived from world-owned scene + verified attestation.
+  Guarantees: seal hash is derived from world-owned composed scene + verified attestation.
   Non-guarantees: host may still assemble the wire Manifest; mismatch → seal denied.
   """
 
@@ -11,9 +12,10 @@ defmodule World.CanonicalManifest do
   alias World.Rooms
 
   @doc """
-  Verify attestation for `room_id`, load scene, compute canonical blake3.
+  Verify attestation for `room_id`, load composed scene, compute blake3.
 
   Returns `{:ok, revision, host_generation, blake3}` or an error atom/tuple for the controller.
+  `revision` is the packed host-facing revision (x009e).
   """
   @spec canonical_blake3(String.t(), String.t()) ::
           {:ok, non_neg_integer(), pos_integer(), String.t()} | {:error, term()}
@@ -22,7 +24,7 @@ defmodule World.CanonicalManifest do
     with {:ok, host_pub, host_generation, _claims} <-
            HostAttestation.verify(host_attestation, room_id),
          :ok <- Rooms.match_claimed_host(room_id, host_pub, host_generation),
-         {:ok, scene} <- Rooms.scene(room_id),
+         {:ok, scene} <- Rooms.composed_scene(room_id),
          {:ok, revision} <- scene_revision(scene),
          payload <-
            build_payload(room_id, revision, host_generation, scene, host_pub, host_attestation),

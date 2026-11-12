@@ -200,6 +200,51 @@ defmodule WorldWeb.RoomController do
     end
   end
 
+  @doc """
+  x009e: owner replaces `eligible_host_subs` (takeover allow-list). Body `%{"subs" => [sub…]}`.
+  Empty list = owner-only takeover.
+  """
+  def update_eligible_hosts(conn, %{"room_id" => room_id} = params) do
+    subs = Map.get(params, "subs", [])
+
+    case resolve_sub(conn, params) do
+      {:ok, sub} ->
+        room_id
+        |> Rooms.set_eligible_host_subs(sub, subs)
+        |> render_eligible_hosts_update(conn, room_id)
+
+      {:error, :anon_disabled} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "anon_tokens_disabled"})
+    end
+  end
+
+  defp render_eligible_hosts_update({:ok, stored_subs}, conn, room_id)
+       when is_list(stored_subs) do
+    json(conn, %{room_id: room_id, eligible_host_subs: stored_subs})
+  end
+
+  defp render_eligible_hosts_update({:error, :not_found}, conn, _room_id) do
+    conn |> put_status(:not_found) |> json(%{error: "room_not_found"})
+  end
+
+  defp render_eligible_hosts_update({:error, :forbidden_host}, conn, _room_id) do
+    conn |> put_status(:forbidden) |> json(%{error: "owner_only"})
+  end
+
+  defp render_eligible_hosts_update({:error, :invalid_eligible}, conn, _room_id) do
+    conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_eligible"})
+  end
+
+  defp render_eligible_hosts_update({:error, :invalid_room_id}, conn, _room_id) do
+    conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_room_id"})
+  end
+
+  defp render_eligible_hosts_update({:error, :storage_error}, conn, _room_id) do
+    storage_unavailable(conn)
+  end
+
   defp render_visibility_update({:ok, stored_visibility}, conn, room_id) do
     json(conn, %{room_id: room_id, visibility: stored_visibility})
   end
@@ -409,6 +454,12 @@ defmodule WorldWeb.RoomController do
     |> json(%{error: "host_claim_conflict"})
   end
 
+  defp issue_token_error(conn, {:error, :invalid_revision}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "invalid_revision"})
+  end
+
   defp issue_token_error(conn, {:error, :forbidden_visibility}) do
     conn
     |> put_status(:forbidden)
@@ -577,6 +628,12 @@ defmodule WorldWeb.RoomController do
           {:error, :conflict} ->
             conn |> put_status(:conflict) |> json(%{error: "takeover_conflict"})
 
+          {:error, :invalid_revision} ->
+            conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_revision"})
+
+          {:error, :forbidden_host} ->
+            conn |> put_status(:forbidden) |> json(%{error: "takeover_forbidden"})
+
           {:error, :not_found} ->
             conn |> put_status(:not_found) |> json(%{error: "room_not_found"})
 
@@ -611,6 +668,10 @@ defmodule WorldWeb.RoomController do
 
   defp render_host_session({:error, :conflict}, conn, _caller_sub) do
     conn |> put_status(:conflict) |> json(%{error: "handover_conflict"})
+  end
+
+  defp render_host_session({:error, :invalid_revision}, conn, _caller_sub) do
+    conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_revision"})
   end
 
   defp render_host_session({:error, :invalid_room_id}, conn, _caller_sub) do
@@ -730,13 +791,9 @@ defmodule WorldWeb.RoomController do
          :ok <- require_http_pop(conn, claims),
          # Ledger gate only; intentionally no renew_host_lease on read.
          :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
-         {:ok, room} <- Rooms.get(room_id) do
-      # x0098: prefer Rooms.get so `owner_sub` is always available. Non-map / corrupt
-      # `scene` JSON falls back to `%{}` (still returns owner_sub) instead of 404 —
-      # intentional: host Dual auth needs owner_sub even when scene body is unusable;
-      # create path always writes a map DemoScene, so this branch is defensive only.
-      scene = if is_map(room.scene), do: room.scene, else: %{}
-
+         {:ok, room} <- Rooms.get(room_id),
+         {:ok, scene} <- Rooms.compose_room_scene(room) do
+      # x0098 / x009e: composed scene (canonical ⊕ overlay) + owner_sub for Dual auth.
       json(
         conn,
         scene
@@ -777,6 +834,11 @@ defmodule WorldWeb.RoomController do
         |> put_status(:unprocessable_entity)
         |> json(%{error: "invalid_room_id"})
 
+      {:error, :invalid_revision} ->
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{error: "invalid_revision"})
+
       {:error, :storage_error} ->
         storage_unavailable(conn)
 
@@ -790,11 +852,11 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
-  x006d / x0082 / x009d: append one mesh SceneEntry (host Room Token + active ledger host +
-  owner/editor scene writer).
+  x006d / x0082 / x009d / x009e: append one mesh SceneEntry (host Room Token + active ledger
+  host + owner/editor scene writer).
 
-  Body: `%{"blake3" => 64-hex, "expected_revision" => int, optional pose/color}`.
-  Assigns `entity_id`, CAS-bumps revision. Returned scene is the new canonical seal input.
+  Body: `%{"blake3" => 64-hex, "expected_revision" => packed int, optional pose/color}`.
+  Assigns `entity_id`, atomic packed CAS. Returned scene is **composed** (seal input).
   """
   def create_scene_entry(conn, %{"room_id" => room_id} = params) do
     entry =
@@ -808,9 +870,10 @@ defmodule WorldWeb.RoomController do
          :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
          :ok <- Rooms.ensure_scene_writer(room_id, claims["sub"]),
          :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
-         {:ok, expected_revision} <-
-           ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
-         {:ok, scene} <- Rooms.append_scene_entry(room_id, entry, expected_revision) do
+         {:ok, packed} <- ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
+         {:ok, canon_exp, overlay_exp} <- Rooms.unpack_revision(packed),
+         {:ok, _raw} <- Rooms.append_scene_entry(room_id, entry, canon_exp, overlay_exp),
+         {:ok, scene} <- Rooms.composed_scene(room_id) do
       json(conn, Map.put(scene, "room_id", room_id))
     else
       {:error, :missing_bearer} ->
@@ -910,9 +973,10 @@ defmodule WorldWeb.RoomController do
          :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
          :ok <- Rooms.ensure_scene_writer(room_id, claims["sub"]),
          :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
-         {:ok, expected_revision} <-
-           ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
-         {:ok, scene} <- Rooms.delete_scene_entry(room_id, entity_id, expected_revision) do
+         {:ok, packed} <- ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
+         {:ok, canon_exp, overlay_exp} <- Rooms.unpack_revision(packed),
+         {:ok, _raw} <- Rooms.delete_scene_entry(room_id, entity_id, canon_exp, overlay_exp),
+         {:ok, scene} <- Rooms.composed_scene(room_id) do
       json(conn, Map.put(scene, "room_id", room_id))
     else
       {:error, :invalid_entity_id} ->
@@ -1003,6 +1067,145 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:unauthorized)
         |> json(%{error: "invalid_room_token"})
+    end
+  end
+
+  @doc """
+  x009e: append one mesh entry to session_overlay (active host; no scene writer required).
+  Atomic packed CAS on canonical + overlay revisions.
+  """
+  def create_overlay_entry(conn, %{"room_id" => room_id} = params) do
+    entry =
+      (Map.get(params, "entry") || Map.drop(params, ["room_id"]))
+      |> Map.drop(["expected_revision", :expected_revision])
+
+    with {:ok, bearer} <- fetch_bearer(conn),
+         {:ok, claims} <- Token.verify(bearer),
+         :ok <- require_host_token(claims, room_id),
+         :ok <- require_http_pop(conn, claims),
+         :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
+         :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
+         {:ok, packed} <- ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
+         {:ok, canon_exp, overlay_exp} <- Rooms.unpack_revision(packed),
+         {:ok, scene} <- Rooms.append_overlay_entry(room_id, entry, canon_exp, overlay_exp) do
+      json(conn, Map.put(scene, "room_id", room_id))
+    else
+      {:error, :missing_bearer} ->
+        conn |> put_status(:unauthorized) |> json(%{error: "missing_room_token"})
+
+      {:error, :pop_required} ->
+        pop_unauthorized(conn)
+
+      {:error, :not_host_token} ->
+        conn |> put_status(:forbidden) |> json(%{error: "host_role_required"})
+
+      {:error, :room_mismatch} ->
+        conn |> put_status(:forbidden) |> json(%{error: "room_id_mismatch"})
+
+      {:error, :forbidden_host} ->
+        conn |> put_status(:forbidden) |> json(%{error: "host_role_forbidden"})
+
+      {:error, :conflict} ->
+        conn |> put_status(:conflict) |> json(%{error: "host_lease_conflict"})
+
+      {:error, :invalid_revision} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_revision"})
+
+      {:error, :scene_revision_conflict} ->
+        conn |> put_status(:conflict) |> json(%{error: "scene_revision_conflict"})
+
+      {:error, :invalid_scene_revision} ->
+        conn |> put_status(:internal_server_error) |> json(%{error: "invalid_scene_revision"})
+
+      {:error, :not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "room_not_found"})
+
+      {:error, :invalid_entry} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_entry"})
+
+      {:error, :duplicate_blake3} ->
+        conn |> put_status(:conflict) |> json(%{error: "duplicate_blake3"})
+
+      {:error, :invalid_room_id} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_room_id"})
+
+      {:error, :storage_error} ->
+        storage_unavailable(conn)
+
+      {:error, reason} ->
+        Logger.warning("invalid Room Token (overlay entry path): #{inspect(reason)}")
+        conn |> put_status(:unauthorized) |> json(%{error: "invalid_room_token"})
+    end
+  end
+
+  @doc """
+  x009e: delete one mesh entry from session_overlay by entity_id.
+  """
+  def delete_overlay_entry(conn, %{"room_id" => room_id, "entity_id" => entity_id_param} = params) do
+    with {:ok, entity_id} <- parse_entity_id(entity_id_param),
+         {:ok, bearer} <- fetch_bearer(conn),
+         {:ok, claims} <- Token.verify(bearer),
+         :ok <- require_host_token(claims, room_id),
+         :ok <- require_http_pop(conn, claims),
+         :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
+         :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
+         {:ok, packed} <- ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
+         {:ok, canon_exp, overlay_exp} <- Rooms.unpack_revision(packed),
+         {:ok, scene} <-
+           Rooms.delete_overlay_entry(room_id, entity_id, canon_exp, overlay_exp) do
+      json(conn, Map.put(scene, "room_id", room_id))
+    else
+      {:error, :invalid_entity_id} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_entity_id"})
+
+      {:error, :missing_bearer} ->
+        conn |> put_status(:unauthorized) |> json(%{error: "missing_room_token"})
+
+      {:error, :pop_required} ->
+        pop_unauthorized(conn)
+
+      {:error, :not_host_token} ->
+        conn |> put_status(:forbidden) |> json(%{error: "host_role_required"})
+
+      {:error, :room_mismatch} ->
+        conn |> put_status(:forbidden) |> json(%{error: "room_id_mismatch"})
+
+      {:error, :forbidden_host} ->
+        conn |> put_status(:forbidden) |> json(%{error: "host_role_forbidden"})
+
+      {:error, :conflict} ->
+        conn |> put_status(:conflict) |> json(%{error: "host_lease_conflict"})
+
+      {:error, :invalid_revision} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_revision"})
+
+      {:error, :scene_revision_conflict} ->
+        conn |> put_status(:conflict) |> json(%{error: "scene_revision_conflict"})
+
+      {:error, :invalid_scene_revision} ->
+        conn |> put_status(:internal_server_error) |> json(%{error: "invalid_scene_revision"})
+
+      {:error, :not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "room_not_found"})
+
+      {:error, :entry_not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "entry_not_found"})
+
+      {:error, :not_mesh_entry} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "not_mesh_entry"})
+
+      {:error, :ambiguous_entity_id} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "ambiguous_entity_id"})
+
+      {:error, :invalid_room_id} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_room_id"})
+
+      {:error, :storage_error} ->
+        storage_unavailable(conn)
+
+      {:error, reason} ->
+        Logger.warning("invalid Room Token (overlay delete path): #{inspect(reason)}")
+        conn |> put_status(:unauthorized) |> json(%{error: "invalid_room_token"})
     end
   end
 

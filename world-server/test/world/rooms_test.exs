@@ -340,6 +340,7 @@ defmodule World.RoomsTest do
 
     assert {:error, :conflict} = Rooms.takeover("ht-1", @owner)
     assert {:ok, _} = Rooms.handover("ht-1", guest, nil)
+    assert {:ok, _} = Rooms.set_eligible_host_subs("ht-1", @owner, [guest])
     assert {:ok, %Room{active_host_sub: ^guest, state: "active"}} = Rooms.takeover("ht-1", guest)
   end
 
@@ -347,6 +348,7 @@ defmodule World.RoomsTest do
     guest = "98989898-9898-9898-9898-989898989898"
     assert {:ok, "race-1", _, _} = Rooms.create("race-1", @owner)
     assert {:ok, %Room{state: "dormant"}} = Rooms.get("race-1")
+    assert {:ok, _} = Rooms.set_eligible_host_subs("race-1", @owner, [guest])
     assert {:ok, _} = Rooms.takeover("race-1", guest)
     # Full path: authorize fails once takeover committed.
     assert {:error, :forbidden_host} = Rooms.activate_as_host("race-1", @owner)

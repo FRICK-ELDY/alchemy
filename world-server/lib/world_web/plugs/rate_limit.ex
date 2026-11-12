@@ -64,6 +64,13 @@ defmodule WorldWeb.Plugs.RateLimit do
   defp action_for(%{method: "PUT", path_info: ["api", "v1", "rooms", _room_id, "visibility"]}),
     do: :room_visibility
 
+  # x009e: owner allow-list for takeover — same budget as visibility.
+  defp action_for(%{
+         method: "PUT",
+         path_info: ["api", "v1", "rooms", _room_id, "eligible_hosts"]
+       }),
+       do: :room_visibility
+
   # x0080: reuse visibility budget for host transfer endpoints.
   defp action_for(%{method: "POST", path_info: ["api", "v1", "rooms", _room_id, "handover"]}),
     do: :room_visibility
@@ -93,6 +100,18 @@ defmodule WorldWeb.Plugs.RateLimit do
   defp action_for(%{
          method: "DELETE",
          path_info: ["api", "v1", "rooms", _room_id, "scene", "entries", _entity_id]
+       }),
+       do: :host_scene
+
+  defp action_for(%{
+         method: "POST",
+         path_info: ["api", "v1", "rooms", _room_id, "overlay", "entries"]
+       }),
+       do: :host_scene
+
+  defp action_for(%{
+         method: "DELETE",
+         path_info: ["api", "v1", "rooms", _room_id, "overlay", "entries", _entity_id]
        }),
        do: :host_scene
 

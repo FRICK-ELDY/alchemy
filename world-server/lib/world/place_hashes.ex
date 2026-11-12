@@ -44,12 +44,12 @@ defmodule World.PlaceHashes do
 
   def from_scene(_), do: []
 
-  @doc "Load room scene, require matching revision, return blake3 list."
+  @doc "Load composed scene (x009e), require matching packed revision, return blake3 list."
   @spec scene_blake3s(String.t(), non_neg_integer()) ::
           {:ok, [String.t()]} | {:error, atom()}
   def scene_blake3s(room_id, revision)
       when is_binary(room_id) and is_integer(revision) and revision >= 0 do
-    with {:ok, scene} <- Rooms.scene(room_id),
+    with {:ok, scene} <- Rooms.composed_scene(room_id),
          {:ok, scene_rev} <- scene_revision(scene),
          :ok <- match_revision(scene_rev, revision) do
       {:ok, from_scene(scene)}
@@ -59,9 +59,9 @@ defmodule World.PlaceHashes do
   def scene_blake3s(_, _), do: {:error, :invalid_args}
 
   @doc """
-  Capture scene blake3s for a just-issued ManifestSeal identity.
+  Capture composed-scene blake3s for a just-issued ManifestSeal identity (x009e).
 
-  Call only from the seal path (canonical scene at seal time).
+  Call only from the seal path.
   """
   @spec put_for_seal(String.t(), non_neg_integer(), String.t()) ::
           {:ok, [String.t()]} | {:error, atom()}

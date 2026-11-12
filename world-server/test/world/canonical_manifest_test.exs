@@ -15,8 +15,15 @@ defmodule World.CanonicalManifestTest do
     assert {:ok, attestation, _ttl} =
              HostAttestation.generate("canon", @host_pub, @sub, gen)
 
-    assert {:ok, 1, ^gen, blake3_a} = CanonicalManifest.canonical_blake3("canon", attestation)
-    assert {:ok, 1, ^gen, blake3_b} = CanonicalManifest.canonical_blake3("canon", attestation)
+    # x009e: host-facing revision is pack(canonical=1, overlay=0).
+    assert {:ok, packed} = Rooms.pack_revision(1, 0)
+
+    assert {:ok, ^packed, ^gen, blake3_a} =
+             CanonicalManifest.canonical_blake3("canon", attestation)
+
+    assert {:ok, ^packed, ^gen, blake3_b} =
+             CanonicalManifest.canonical_blake3("canon", attestation)
+
     assert blake3_a == blake3_b
     assert byte_size(blake3_a) == 64
   end

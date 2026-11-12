@@ -24,7 +24,8 @@ defmodule World.SceneAppendTest do
                  "y" => 2.0,
                  "z" => 3.0
                },
-               rev0
+               rev0,
+               0
              )
 
     assert scene1["revision"] == rev0 + 1
@@ -74,7 +75,7 @@ defmodule World.SceneAppendTest do
     assert {:ok, scene0} = Rooms.scene(room_id)
 
     assert {:ok, scene1} =
-             Rooms.append_scene_entry(room_id, %{"blake3" => @blake3}, scene0["revision"])
+             Rooms.append_scene_entry(room_id, %{"blake3" => @blake3}, scene0["revision"], 0)
 
     last = List.last(scene1["entries"])
     assert last["blake3"] == @blake3
@@ -87,7 +88,7 @@ defmodule World.SceneAppendTest do
     assert {:ok, scene0} = Rooms.scene(room_id)
 
     assert {:error, :scene_revision_conflict} =
-             Rooms.append_scene_entry(room_id, %{"blake3" => @blake3}, scene0["revision"] + 1)
+             Rooms.append_scene_entry(room_id, %{"blake3" => @blake3}, scene0["revision"] + 1, 0)
   end
 
   test "append_scene_entry rejects corrupt scene revision as invalid_scene_revision" do
@@ -98,7 +99,7 @@ defmodule World.SceneAppendTest do
     assert {:ok, _} = Room.set_scene(room, %{scene: corrupt})
 
     assert {:error, :invalid_scene_revision} =
-             Rooms.append_scene_entry(room_id, %{"blake3" => @blake3}, 1)
+             Rooms.append_scene_entry(room_id, %{"blake3" => @blake3}, 1, 0)
   end
 
   test "append_scene_entry rejects duplicate blake3" do
@@ -106,10 +107,10 @@ defmodule World.SceneAppendTest do
     assert {:ok, scene0} = Rooms.scene(room_id)
 
     assert {:ok, scene1} =
-             Rooms.append_scene_entry(room_id, %{"blake3" => @blake3}, scene0["revision"])
+             Rooms.append_scene_entry(room_id, %{"blake3" => @blake3}, scene0["revision"], 0)
 
     assert {:error, :duplicate_blake3} =
-             Rooms.append_scene_entry(room_id, %{"blake3" => @blake3}, scene1["revision"])
+             Rooms.append_scene_entry(room_id, %{"blake3" => @blake3}, scene1["revision"], 0)
   end
 
   test "append_scene_entry rejects invalid blake3" do
@@ -117,6 +118,6 @@ defmodule World.SceneAppendTest do
     assert {:ok, scene0} = Rooms.scene(room_id)
 
     assert {:error, :invalid_entry} =
-             Rooms.append_scene_entry(room_id, %{"blake3" => "short"}, scene0["revision"])
+             Rooms.append_scene_entry(room_id, %{"blake3" => "short"}, scene0["revision"], 0)
   end
 end
