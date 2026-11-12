@@ -265,6 +265,13 @@ impl OutboundHub {
         coalesced
     }
 
+    /// Test helper: take the coalesced pending frame without running the worker (x0099).
+    #[cfg(test)]
+    pub fn take_pending_frame_for_test(&self) -> Option<FrameSample> {
+        let mut g = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+        g.frame.take()
+    }
+
     pub fn submit_presence(&self, job: PresenceJob) -> bool {
         let mut g = self.pending.lock().unwrap_or_else(|p| p.into_inner());
         let coalesced = g.presence.is_some();

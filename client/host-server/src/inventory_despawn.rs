@@ -54,6 +54,13 @@ impl DespawnInbox {
     pub fn try_recv(&self) -> Option<ReadyDespawn> {
         self.rx.lock().ok()?.try_recv().ok()
     }
+
+    /// Closed inbox for HostLoop unit tests (x0099); `try_recv` always returns `None`.
+    #[cfg(test)]
+    pub fn empty_for_test() -> Self {
+        let (_tx, rx) = mpsc::channel();
+        Self { rx: Mutex::new(rx) }
+    }
 }
 
 fn parse_payload(bytes: &[u8]) -> Result<DespawnPayloadJson> {

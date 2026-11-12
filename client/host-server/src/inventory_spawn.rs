@@ -88,6 +88,13 @@ impl SpawnInbox {
     pub fn try_recv(&self) -> Option<ReadySpawn> {
         self.rx.lock().ok()?.try_recv().ok()
     }
+
+    /// Closed inbox for HostLoop unit tests (x0099); `try_recv` always returns `None`.
+    #[cfg(test)]
+    pub fn empty_for_test() -> Self {
+        let (_tx, rx) = mpsc::channel();
+        Self { rx: Mutex::new(rx) }
+    }
 }
 
 fn is_blake3_hex(s: &str) -> bool {
