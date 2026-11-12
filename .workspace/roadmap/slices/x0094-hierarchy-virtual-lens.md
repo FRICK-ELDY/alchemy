@@ -70,10 +70,10 @@ SystemUi::pull_hierarchy / pull_epoch_xray(refresh_text)（Settings 開時のみ
 
 ## やらない（本 Slice）／次
 
-- Uber-SDF / `GpuUiPrim` / CJK アトラス（Lens Step 1 / 4）
-- Inspector 数値 Zero-String・NodeGraph
-- host→client 親子（SlotGraph / Prefab）同期
-- wire pose ダブルバッファ（improvement P2-6 残り）
+- Uber-SDF / `GpuUiPrim` / CJK アトラス（Lens Step 1 / 4）— 空間本線一時停止
+- Inspector 数値 Zero-String・NodeGraph — 同上
+- host→client 親子（SlotGraph / Prefab）同期 — 同上
+- wire pose ダブルバッファ → **[x0095](x0095-wire-pose-double-buffer.md)** **done**
 - TPS / Live カメラ
 
 ## 関連

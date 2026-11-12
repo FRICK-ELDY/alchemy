@@ -63,9 +63,9 @@ wire sample from tape Curr
 
 ## やらない（本 Slice）／次
 
-- wire pose ダブルバッファ置換（improvement P2-6 残り）
+- wire pose ダブルバッファ置換 → **[x0095](x0095-wire-pose-double-buffer.md)** **done**
 - Walk カプセル押し出し本番・StaticSDF
-- Hierarchy UI / Spatial Lens → **[x0094](x0094-hierarchy-virtual-lens.md)** **done**（Settings 最小；Uber-SDF / 親子同期は後続）
+- Hierarchy UI / Spatial Lens → **[x0094](x0094-hierarchy-virtual-lens.md)** **done**（Settings 最小；Uber-SDF / 親子同期は後続・空間本線一時停止）
 - TPS / Live カメラ
 
 ## 関連
