@@ -73,6 +73,7 @@ verify_frame + tick gate
 ## やらない（本 Slice）／次
 
 - `out` バッファを SceneGpu vertex / UBO に接続 → **[x0091](x0091-epoch-out-scenegpu-draw.md)** **done**（フル active pack；display TRS SSoT・Curr 単独権威は撤廃）
+- カメラ／loco eye の display 化 → **[x0092](x0092-eye-display-trs.md)** **done**
 - XPBD を wire 権威にする / Rapier 削除
 - Loro CRDT / Zenoh Grab ストリーム
 - UI Lens 本仕様
