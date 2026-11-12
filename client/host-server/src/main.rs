@@ -441,15 +441,27 @@ fn pose_with_trs(
     }
 }
 
+fn pose_trs_finite(pose: &Pose) -> bool {
+    pose.x.is_finite()
+        && pose.y.is_finite()
+        && pose.z.is_finite()
+        && pose.qx.is_finite()
+        && pose.qy.is_finite()
+        && pose.qz.is_finite()
+        && pose.qw.is_finite()
+        && pose.sx.is_finite()
+        && pose.sy.is_finite()
+        && pose.sz.is_finite()
+}
+
 fn mesh_poses_from_sim(world: &PhysicsWorld) -> Vec<(u32, Pose)> {
     world
         .mesh_entity_ids()
         .filter_map(|id| {
             let (t, q) = world.mesh_pose_for(id)?;
-            Some((
-                id,
-                pose_with_trs(t, q, world.scale_for(id), world.color_for(id)),
-            ))
+            let pose = pose_with_trs(t, q, world.scale_for(id), world.color_for(id));
+            // Non-finite upserts make the client drop the whole Frame (loco freezes).
+            pose_trs_finite(&pose).then_some((id, pose))
         })
         .collect()
 }

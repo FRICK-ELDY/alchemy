@@ -99,6 +99,8 @@ pub struct PhysicsWorld {
     publish_dirty: bool,
     /// Reused by [`Self::resolve_ground_plane`] (avoid per-tick HashSet/Vec alloc).
     ground_scratch: HashSet<u32>,
+    /// Rows reset by [`Self::sanitize_non_finite_dynamics`] this tick (force delta = 0).
+    sanitize_scratch: HashSet<u32>,
     active_row_scratch: Vec<u32>,
     pub barrier_ticks: u64,
     pub publishes: u64,
@@ -292,6 +294,7 @@ impl PhysicsWorld {
             slots: SlotGraph::new(),
             publish_dirty: true,
             ground_scratch: HashSet::new(),
+            sanitize_scratch: HashSet::new(),
             active_row_scratch: Vec::new(),
             barrier_ticks: 0,
             publishes: 0,
@@ -610,6 +613,7 @@ impl PhysicsWorld {
             dt,
         );
         self.resolve_ground_plane();
+        self.sanitize_non_finite_dynamics();
         // Re-run sleep against tick-start pose (step's update_sleeping saw Verlet prev).
         self.copy_positions_into_prev(&start);
         xpbd::update_sleeping(&mut self.world);
@@ -619,6 +623,7 @@ impl PhysicsWorld {
         let moved = self.publish_dirty
             || self.poses_differ(&start)
             || !self.ground_scratch.is_empty()
+            || !self.sanitize_scratch.is_empty()
             || self.has_active_grab();
         if moved {
             self.snapshots.publish(start, self.world.curr.clone());
@@ -630,13 +635,25 @@ impl PhysicsWorld {
         self.barrier_ticks = self.barrier_ticks.wrapping_add(1);
     }
 
+    /// Restore Verlet `prev` from last tick's **frame** displacement.
+    ///
+    /// `xpbd::step` runs `substeps` Verlet iterations; each uses `(curr - sub_prev)` as the
+    /// *substep* step. `frame_delta_xyz` is the full-frame displacement (`end - start`), so we
+    /// seed `prev = curr - delta / substeps`. Seeding `curr - delta` makes every substep re-add
+    /// the full frame step → exact `× substeps` velocity blow-up per tick (coin → Inf, Frames
+    /// dropped, loco appears frozen).
     fn apply_frame_delta_to_prev(&mut self) {
         let n = self.world.curr.len().min(self.world.prev.len());
+        let sub = self.world.substeps.max(1) as f32;
+        let inv_sub = 1.0 / sub;
         for i in 0..n {
             let d = self.world.curr.world_transforms[i].frame_delta_xyz;
             let c = self.world.curr.world_transforms[i].position;
-            self.world.prev.world_transforms[i].position =
-                [c[0] - d[0] as f64, c[1] - d[1] as f64, c[2] - d[2] as f64];
+            self.world.prev.world_transforms[i].position = [
+                c[0] - (d[0] * inv_sub) as f64,
+                c[1] - (d[1] * inv_sub) as f64,
+                c[2] - (d[2] * inv_sub) as f64,
+            ];
         }
     }
 
@@ -670,6 +687,7 @@ impl PhysicsWorld {
     }
 
     /// Write Verlet handoff deltas. Grounded rows get **vertical delta = 0** (instant kill).
+    /// Sanitized rows get **full delta = 0** (must not use `end(origin) - start(pre-explode)`).
     fn write_frame_deltas_from(&mut self, start: &alchemy_shared_sim::EpochSheet) {
         let n = self.world.curr.len().min(start.len());
         for i in 0..n {
@@ -678,6 +696,7 @@ impl PhysicsWorld {
                 || !mask.is_ready(ReadinessMask::DYNAMIC)
                 || mask.contains(ReadinessMask::GRABBED)
                 || self.world.curr.world_transforms[i].inv_mass == 0.0
+                || self.sanitize_scratch.contains(&(i as u32))
             {
                 self.world.curr.world_transforms[i].frame_delta_xyz = [0.0, 0.0, 0.0];
                 continue;
@@ -714,6 +733,47 @@ impl PhysicsWorld {
             ));
         }
         out
+    }
+
+    /// Freeze non-finite DYNAMIC rows at ground support.
+    ///
+    /// Marks [`Self::sanitize_scratch`] so [`Self::write_frame_deltas_from`] keeps delta at 0
+    /// (otherwise `end(origin) - start(pre-explode)` re-fuels the next tick).
+    fn sanitize_non_finite_dynamics(&mut self) {
+        self.sanitize_scratch.clear();
+        self.active_row_scratch.clear();
+        self.active_row_scratch
+            .extend(self.world.curr.iter_active_rows());
+        for &row in &self.active_row_scratch {
+            let idx = row as usize;
+            let mask = self.world.curr.readiness[idx];
+            if !mask.is_ready(ReadinessMask::DYNAMIC) || mask.contains(ReadinessMask::GRABBED) {
+                continue;
+            }
+            let xf = &self.world.curr.world_transforms[idx];
+            if xf.is_finite() {
+                continue;
+            }
+            let entity_id = self.world.curr.owner_scope[idx];
+            log::warn!(
+                "sanitize non-finite DYNAMIC row={row} entity_id={entity_id} pos={:?} delta={:?}",
+                xf.position,
+                xf.frame_delta_xyz
+            );
+            let support = support_half_y(&self.world.curr.colliders[idx]);
+            let mut fixed = *xf;
+            fixed.position = [0.0, GROUND_Y + support, 0.0];
+            fixed.frame_delta_xyz = [0.0, 0.0, 0.0];
+            if !fixed.rotation.iter().all(|v| v.is_finite()) {
+                fixed.rotation = [0.0, 0.0, 0.0, 1.0];
+            }
+            if !fixed.scale.iter().all(|v| v.is_finite()) || fixed.scale.iter().any(|v| *v == 0.0) {
+                fixed.scale = [1.0, 1.0, 1.0];
+            }
+            let _ = self.world.curr.set_transform(row, fixed);
+            self.sanitize_scratch.insert(row);
+            self.publish_dirty = true;
+        }
     }
 
     /// Fills [`Self::ground_scratch`] with rows that contacted the ground this tick
@@ -927,13 +987,21 @@ mod tests {
             LocoMode::Walk,
             DEFAULT_MOVE_SPEED,
         );
-        let (_, y0, _) = world.moving_translation();
+        let (x0, y0, z0) = world.moving_translation();
         assert!(y0 > 4.5, "spawn above floor");
         for _ in 0..600 {
             world.step();
         }
-        let (_, y, _) = world.moving_translation();
+        let (x, y, z) = world.moving_translation();
+        assert!(
+            x.is_finite() && y.is_finite() && z.is_finite(),
+            "mesh must stay finite, got ({x},{y},{z}) from ({x0},{y0},{z0})"
+        );
         assert!(y > 0.1 && y < 1.0, "expected resting on floor, got y={y}");
+        assert!(
+            x.abs() < 50.0 && z.abs() < 50.0,
+            "horizontal must not explode, got ({x},{z})"
+        );
     }
 
     #[test]
@@ -1484,5 +1552,119 @@ mod tests {
         let prev = world.snapshots().load_prev().world_transforms[row].position;
         let curr = world.snapshots().load_curr().world_transforms[row].position;
         assert_ne!(prev, curr, "falling mesh should publish distinct Prev/Curr");
+    }
+
+    #[test]
+    fn mesh_stays_finite_under_intent_pressure() {
+        let mut world =
+            PhysicsWorld::from_entries(&demo_entries_for_test(), LocoMode::Noclip, 10.0);
+        let mesh_id = world.mesh_entity_id().unwrap();
+        let row = world.entity_row(mesh_id).unwrap().row_id as usize;
+        let dt = 1.0 / 60.0;
+        for i in 0..3600 {
+            world.apply_user_intent(0, 1.0, 0.5, -0.25, dt);
+            world.step();
+            let p = world.world.curr.world_transforms[row].position;
+            let d = world.world.curr.world_transforms[row].frame_delta_xyz;
+            assert!(
+                p.iter().all(|v| v.is_finite()) && d.iter().all(|v| v.is_finite()),
+                "mesh non-finite at step {i}: pos={p:?} delta={d:?}"
+            );
+        }
+        let (ux, uy, uz) = world.user_root_translation(0);
+        assert!(ux.is_finite() && uy.is_finite() && uz.is_finite());
+        assert!(
+            ux.abs() > 1.0,
+            "Intent must actually translate user_root, got ({ux},{uy},{uz})"
+        );
+    }
+
+    #[test]
+    fn mesh_stays_finite_idle_long_run() {
+        for substeps in [1u32, 4, 8] {
+            let mut world = test_world();
+            world.world.substeps = substeps;
+            let mesh_id = world.mesh_entity_id().unwrap();
+            let row = world.entity_row(mesh_id).unwrap().row_id as usize;
+            let mut prev_dx = world.world.curr.world_transforms[row].frame_delta_xyz[0];
+            for i in 0..600 {
+                world.step();
+                let p = world.world.curr.world_transforms[row].position;
+                let d = world.world.curr.world_transforms[row].frame_delta_xyz;
+                assert!(
+                    p.iter().all(|v| v.is_finite()) && d.iter().all(|v| v.is_finite()),
+                    "mesh non-finite at idle step {i} substeps={substeps}: pos={p:?} delta={d:?}"
+                );
+                // Any |dx| growth toward ×substeps is the handoff bug; allow mild noise only.
+                if prev_dx.abs() > 1e-6 && d[0].abs() > 1e-6 {
+                    let ratio = (d[0] / prev_dx).abs();
+                    assert!(
+                        ratio < 1.5,
+                        "frame_delta amplified at step {i} substeps={substeps}: ratio={ratio} prev={prev_dx} next={}",
+                        d[0]
+                    );
+                }
+                assert!(
+                    p[0].abs() < 50.0 && p[2].abs() < 50.0,
+                    "horizontal explode step {i} substeps={substeps}: pos={p:?}"
+                );
+                prev_dx = d[0];
+            }
+        }
+    }
+
+    #[test]
+    fn sanitize_non_finite_zeros_frame_delta_not_origin_minus_start() {
+        let mut world = test_world();
+        let mesh_id = world.mesh_entity_id().unwrap();
+        let row = world.entity_row(mesh_id).unwrap().row_id as usize;
+        // Pre-explode start pose far from origin; Inf end must not become delta≈-start.
+        {
+            let xf = &mut world.world.curr.world_transforms[row];
+            xf.position = [12.0, 3.0, -8.0];
+            xf.frame_delta_xyz = [0.5, 0.0, -0.25];
+            let mask = world.world.curr.readiness[row];
+            world.world.curr.readiness[row] = mask.without_bits(ReadinessMask::SLEEPING);
+        }
+        world.world.prev.world_transforms[row] = world.world.curr.world_transforms[row];
+        world.world.curr.world_transforms[row].position = [f64::INFINITY, 0.25, f64::INFINITY];
+        world.step();
+        let xf = &world.world.curr.world_transforms[row];
+        assert!(
+            xf.is_finite(),
+            "sanitize must restore finite pose, got pos={:?} delta={:?}",
+            xf.position,
+            xf.frame_delta_xyz
+        );
+        assert_eq!(
+            xf.frame_delta_xyz,
+            [0.0, 0.0, 0.0],
+            "sanitized row must keep delta 0 (not origin - start)"
+        );
+        assert!(
+            world.sanitize_scratch.contains(&(row as u32)),
+            "sanitize_scratch must record the row for write_frame_deltas"
+        );
+        let support = PHYS_BALL_RADIUS as f64;
+        assert!(
+            (xf.position[0] - 0.0).abs() < 1e-9
+                && (xf.position[1] - support).abs() < 1e-9
+                && (xf.position[2] - 0.0).abs() < 1e-9,
+            "expected ground support at origin, got {:?}",
+            xf.position
+        );
+        // Next tick must not re-launch from a huge handoff delta.
+        world.step();
+        let xf2 = &world.world.curr.world_transforms[row];
+        assert!(
+            xf2.is_finite(),
+            "post-sanitize tick must stay finite: {:?}",
+            xf2.position
+        );
+        assert!(
+            xf2.position[0].abs() < 1.0 && xf2.position[2].abs() < 1.0,
+            "post-sanitize must not fly away, got {:?}",
+            xf2.position
+        );
     }
 }
