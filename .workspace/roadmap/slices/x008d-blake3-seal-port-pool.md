@@ -59,7 +59,7 @@ Application
 
 - poolboy / 新 Hex
 - BLAKE3 ストリーミング NIF
-- Origin Cert content hash（P2-4）
+- Origin Cert content hash（P2-4）→ [x0096](x0096-origin-cert-content-hash.md)
 
 ## 関連
 

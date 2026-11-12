@@ -61,7 +61,7 @@ fetch 完了（成功|失敗）→ last_fetch_ms = now
 
 - soft/hard TTL の host 完全移植
 - `Assets.World.Jwks` の同型化（別 Slice）
-- Port プール（P2-1） / Origin Cert hash（P2-4）
+- Port プール（P2-1） / Origin Cert hash（P2-4）→ [x0096](x0096-origin-cert-content-hash.md)
 
 ## 関連
 

@@ -1,10 +1,11 @@
 defmodule Assets.Vcs do
   @moduledoc """
-  Vcs facade — Wave 4 thin peels (x0062–x0065).
+  Vcs facade — Wave 4 thin peels (x0062–x0065) + Origin Cert v1 (x0096).
 
   x0062: promote_prefab/2 — Prefab DriveNode → VcsRepo + initial Commit (same TX).
   x0064: create_branch/3, create_tag/3, advance_branch/3 — minimal Ref management.
-  x0065: issue_cert/3, verify_cert/1 — Origin Cert over Commit / Tag.
+  x0065 / x0096: issue_cert/3, verify_cert/1 — Origin Cert v1 over Commit / Tag
+    (tree_blake3 + parent_commit_id in signed message).
 
   See Assets.ItemRef for repo@rev resolution (x0063).
 
@@ -12,10 +13,13 @@ defmodule Assets.Vcs do
   - promote_prefab: same-owner TX; DriveNode kind→vcs_repo + vcs_repo_id set; initial Commit
     tree_json == Prefab payload; existing blake3 path still readable.
   - Tag is immutable (advance_branch refused for frozen refs).
-  - Cert: tampered Commit/Tag signature fails verify_cert.
+  - Cert v1: signed message binds tree_blake3(tree_json) + parent; tampered Commit/Tag
+    content or signature, or missing target after issue, fails verify_cert with :tampered
+    (fail-closed; cert row absent alone is :not_found — see Assets.Vcs.Cert).
   - Private signing key never logged or returned.
 
-  Non-guarantees: non-FF merge, fork, transfer, room-scoped grants, CRDT.
+  Non-guarantees: non-FF merge, fork, transfer, room-scoped grants, CRDT,
+    CA chain, License Token, offline export schema.
   """
 
   alias Assets.Drive.Node
@@ -108,12 +112,12 @@ defmodule Assets.Vcs do
   # x0065 — Origin Cert
   # ---------------------------------------------------------------------------
 
-  @doc "Issue an Origin Cert for a commit or tag (x0065)."
+  @doc "Issue an Origin Cert for a commit or tag (x0065 / x0096 v1 content-bound)."
   @spec issue_cert(String.t(), String.t(), String.t()) ::
           {:ok, Cert.t()} | {:error, term()}
   defdelegate issue_cert(subject_sub, target_kind, target_id), to: Cert, as: :issue
 
-  @doc "Verify a stored Origin Cert by cert_id (x0065). Returns :ok or {:error, :tampered}."
+  @doc "Verify a stored Origin Cert by cert_id (x0065 / x0096). Returns :ok or {:error, :tampered}."
   @spec verify_cert(String.t()) :: :ok | {:error, :tampered | :not_found | term()}
   defdelegate verify_cert(cert_id), to: Cert, as: :verify
 
