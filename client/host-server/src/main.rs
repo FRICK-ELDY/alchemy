@@ -13,7 +13,7 @@
 //!   submits wire-agnostic pose samples / jobs (encode+sign stay in the worker)
 //! - `…/snapshot` queryable for late join (refused while gated); pure pose deltas
 //! - Empty deltas: **no publish and no `net_tick` advance**; snapshot tick = last published (x0024)
-//! - Per-`sub` Intent/Grab → Manifest user_root slots (≤ `USER_ROOT_SLOTS_MAX`; x004d);
+//! - Per-`sub` Intent/Grab → Manifest user_root slots (≤ `USER_ROOT_SLOTS_MAX` DoS; x004d / x009b);
 //!   Presence Leave / liveliness jti grace (x0022)
 //! - x0040 / x0077: Intent rate after Ed25519 (steady: after seq eval, before `last_seq`
 //!   commit, Leave-exempt; bind: atomic per-ZenohId source 20/10s + per-pub 5/2s before

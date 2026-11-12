@@ -188,8 +188,9 @@ defmodule World.Rooms do
   @doc """
   Append one mesh SceneEntry for inventory take-out (x006d / x0082).
 
-  Assigns the next free `entity_id` (max existing + 1, skipping nothing —
-  caller must not collide with reserved bands by sending entity_id).
+  Assigns the next free content `entity_id` (max non-user_root id + 1, floor 100;
+  if the candidate lands in the Presence user_root band, jumps to
+  `World.Protocol.user_root_entity_after_band/0` — x009b).
   Requires `expected_revision` matching the current scene revision (optimistic CAS).
   Bumps `revision` to `expected_revision + 1`. Returns the updated scene map.
   """
@@ -416,13 +417,21 @@ defmodule World.Rooms do
   defp mesh_blake3?(_), do: false
 
   defp next_entity_id(entries) do
-    max_id =
+    max_content_id =
       entries
       |> Enum.map(&entry_entity_id/1)
+      |> Enum.reject(&World.Protocol.user_root_band?/1)
       |> Enum.max(fn -> 0 end)
 
-    # Prefer ids above demo boxes (10–18) and user_roots; never reuse.
-    max(max_id + 1, 100)
+    # Prefer ids above demo boxes (10–18); never reuse.
+    # If the candidate lands in the Presence user_root band, jump past it (x009b).
+    candidate = max(max_content_id + 1, 100)
+
+    if World.Protocol.user_root_band?(candidate) do
+      World.Protocol.user_root_entity_after_band()
+    else
+      candidate
+    end
   end
 
   defp entry_entity_id(e) do

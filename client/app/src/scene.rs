@@ -4,7 +4,7 @@
 //! `CameraLook` is Desktop-local (x0012); not published on Zenoh.
 //!
 //! Guarantees: draw with caller-supplied view/proj; grabbable boxes from Manifest (x0027);
-//! remote roots 3..6 (x0015);
+//! remote roots in the protocol user_root band (x0015 / x009b);
 //! remounted world GLB instanced at each Manifest mesh entry pose (take-out visible; same GPU
 //! asset for all blake3 until multi-GLB; first [`MESH_DRAW_SLOTS`] poses only);
 //! [`SharedState::asset_status`] sticky Home overlay for auth asset failure (x0048);
@@ -2064,8 +2064,8 @@ impl SceneGpu {
                 .unwrap_or_default();
             pass.set_vertex_buffer(0, self.box_vertex_buffer.slice(..));
             pass.set_index_buffer(self.box_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            // Reserve UBO slots for remote roots (protocol band ceiling; local excluded).
-            let remote_reserve = alchemy_protocol::USER_ROOT_SLOTS_MAX.min(BOX_DRAW_SLOTS);
+            // Reserve UBO slots for remotes drawn this frame (wire entity count; local excluded).
+            let remote_reserve = remotes.len().min(BOX_DRAW_SLOTS);
             let box_slots = BOX_DRAW_SLOTS.saturating_sub(remote_reserve);
             let identity_rot = glam::Quat::IDENTITY;
             for (draw_i, (id, pose)) in boxes.into_iter().enumerate() {

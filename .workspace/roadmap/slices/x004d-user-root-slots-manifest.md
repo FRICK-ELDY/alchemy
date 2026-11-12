@@ -11,7 +11,7 @@
 
 | 保証する | 保証しない |
 |:---|:---|
-| protocol: `USER_ROOT_ENTITY_FIRST` + `USER_ROOT_SLOTS_MAX`（帯）+ `user_root_slots_from_entries` | 5 人超の動的スケール / 帯拡大の本番チューニング |
+| protocol: `USER_ROOT_ENTITY_FIRST` + `USER_ROOT_SLOTS_MAX`（帯）+ `user_root_slots_from_entries` | 5 人超の動的スケール / 帯拡大の本番チューニング（→ 帯位置・DoS 天井の見直しは [x009b](x009b-user-root-band-manifest.md)） |
 | 部屋の Presence 容量 = Manifest の連続 user_root entries（`FIRST..FIRST+n-1`、`1..=MAX`） | UGC で slots を実行時変更（boot 時 scene のみ） |
 | host: Rapier / Presence は `[T; MAX]` + `slot_count=n`（`by_slot` は Copy スナップショット） | client UBO 予約を部屋ごとに動的再割当（天井 `MAX` で可） |
 | DemoScene の `@user_spawns` 本数 = デモ部屋の容量（現状 4） | Room DB 列としての独立 `max_players` フィールド |

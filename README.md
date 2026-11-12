@@ -10,7 +10,7 @@
 
 手通し正本は **Desktop（x0020）**: 日常スタック（`:4002/:4003/:4004` + zenohd `:7447`）。手順は下記、env 例は [`client/env.desktop.example`](client/env.desktop.example)。機械検証（login→Token→input→frame）は hermetic `make ci-e2e`（[x001f](.workspace/roadmap/slices/x001f-hermetic-compose-e2e.md) / [x0089](.workspace/roadmap/slices/x0089-rotten-smoke-shared-ci.md)）。
 
-`host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（Manifest user_root 本数・帯天井 4・`cnf.spk`）・**Presence / Leave / liveliness**・**30Hz 署名デルタ**・credential / Zenoh put worker。`client` は Home login・canonical **ManifestSeal**・**generation/revision** ゲート・decode 上限・Desktop/XR Grab。  
+`host-server` は **Rapier 60Hz**・Room Token **`sub` 別** Intent/Grab（Manifest user_root 本数・帯 DoS 天井 32・`cnf.spk`）・**Presence / Leave / liveliness**・**30Hz 署名デルタ**・credential / Zenoh put worker。`client` は Home login・canonical **ManifestSeal**・**generation/revision** ゲート・decode 上限・Desktop/XR Grab。  
 **暗号・門番（〜x0045）:** 検証失敗は discard、Intent rate + JWKS hard stale、Grab hold 距離クランプ。  
 **運用・品質（x0046–x004d）:** adversarial E2E、launcher CI、asset placeholder + HTTP timeout、**localhost `/metrics`**、ClientIp 共有、**cargo-fuzz**、**Presence 容量 = Manifest entries**。  
 **LAN / HTTPS / WAN:** zenohd + `ZENOH_CONNECT`；Tunnel（[`edge/cloudflared/`](edge/cloudflared/)）；WAN は **TLS + 短命 mTLS**（x0022 / [x0066](.workspace/roadmap/slices/x0066-ephemeral-mtls-world-issue.md) · [手順書](.workspace/0_doc/manual/relay-server-wan.md)）。world が CSR を署名し、zenohd は role CN ACL（[x0067](.workspace/roadmap/slices/x0067-zenohd-acl-put-family-host-guest.md)）。Relay Agent は互換フォールバック。  

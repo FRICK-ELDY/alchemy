@@ -27,8 +27,8 @@
 //! - Manifest scale resizing Rapier colliders (half_extent stays definition size).
 //! - Locomotion module list UI / suppress sources.
 //! - Tenant namespace `alchemy/tenant/...` (dev keys: `alchemy/dev/room/{room_id}/{wire_cap}/…` · x004e).
-//! - Room capacity beyond [`USER_ROOT_SLOTS_MAX`] / non-contiguous user_root ids (x004d).
-//! - 5+ concurrent guests / WAN liveliness ACL beyond Relay Agent MVP (x004e).
+//! - Room capacity beyond [`USER_ROOT_SLOTS_MAX`] (DoS ceiling) / non-contiguous user_root ids (x004d / x009b).
+//! - WAN liveliness ACL beyond Relay Agent MVP (x004e).
 //! - Full host handoff UX / Wake-on-Join (generation advance is the contract only).
 //! - Router max-payload / per-peer QoS (app-level decode limits only; x003b).
 //! - Long-running fuzz campaigns (x004c ships short CI smoke + seed corpus only).
@@ -54,7 +54,8 @@ pub mod wire_crypto;
 ///
 /// x0069: Zenoh payloads are Room-key AEAD envelopes (incompatible with x004e plain protobuf peers).
 /// x0081: inventory control JSON drops `room_token` (session sig); host HTTP adds PoP headers.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.20.0-x0081";
+/// x009b: user_root entity band moves to high ids (`USER_ROOT_ENTITY_FIRST`); peers must agree.
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.21.0-x009b";
 
 /// Identity orientation on the wire (`Entity.qx..qw`, xyzw).
 pub const ENTITY_QUAT_IDENTITY: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -69,14 +70,18 @@ pub const SCENE_FLAG_GRABBABLE: u32 = 1;
 /// Shared by host Noclip and client Settings display (x000a).
 pub const DEFAULT_MOVE_SPEED: f32 = 4.0;
 
-/// First entity id reserved for Presence user_roots (protocol band rule; x004d).
-pub const USER_ROOT_ENTITY_FIRST: u32 = 3;
+/// First entity id reserved for Presence user_roots (protocol band rule; x004d / x009b).
+///
+/// High range so Manifest-driven width (5+) cannot collide with low demo content ids
+/// (coin=`1`, boxes=`10..`).
+pub const USER_ROOT_ENTITY_FIRST: u32 = 0x1000_0000;
 
-/// Protocol ceiling on concurrent user_roots (id band width).
+/// Implementation / DoS ceiling on concurrent user_roots (id band width).
 ///
 /// Room Presence capacity is **not** this constant — it comes from contiguous
-/// Manifest `user_root` entries via [`user_root_slots_from_entries`] (x004d).
-pub const USER_ROOT_SLOTS_MAX: usize = 4;
+/// Manifest `user_root` entries via [`user_root_slots_from_entries`] (x004d / x009b).
+/// Raising room size within this ceiling does **not** require another pin bump.
+pub const USER_ROOT_SLOTS_MAX: usize = 32;
 
 /// Inclusive last entity id of the user_root band ([`USER_ROOT_ENTITY_FIRST`] + max − 1).
 pub const fn user_root_entity_last() -> u32 {
@@ -773,11 +778,11 @@ mod tests {
             assignments: vec![
                 PresenceAssignment {
                     sub: "alice-uuid".into(),
-                    entity_id: 3,
+                    entity_id: USER_ROOT_ENTITY_FIRST,
                 },
                 PresenceAssignment {
                     sub: "bob-uuid".into(),
-                    entity_id: 4,
+                    entity_id: USER_ROOT_ENTITY_FIRST + 1,
                 },
             ],
             protocol_pin: PROTOCOL_PIN.into(),
@@ -788,7 +793,7 @@ mod tests {
         let decoded = PresenceState::decode(bytes.as_slice()).expect("decode");
         assert_eq!(decoded.revision, 2);
         assert_eq!(decoded.assignments.len(), 2);
-        assert_eq!(decoded.assignments[0].entity_id, 3);
+        assert_eq!(decoded.assignments[0].entity_id, USER_ROOT_ENTITY_FIRST);
         assert_eq!(decoded.assignments[1].sub, "bob-uuid");
         assert_eq!(decoded.protocol_pin, PROTOCOL_PIN);
         assert_eq!(decoded.host_generation, 1);
@@ -881,6 +886,8 @@ mod tests {
             USER_ROOT_SLOTS_MAX
         );
         assert_eq!(user_root_slots_from_entries(&roots[..2]).unwrap(), 2);
+        // 5+ rooms are Manifest-width within the DoS ceiling (x009b / P2-13).
+        assert_eq!(user_root_slots_from_entries(&roots[..5]).unwrap(), 5);
         assert_eq!(
             user_root_slots_from_entries(&[]).unwrap_err(),
             UserRootSlotsError::Empty
@@ -917,6 +924,12 @@ mod tests {
                 entity_id: USER_ROOT_ENTITY_FIRST
             }
         );
+        // Legacy low ids are outside the band (pre-x009b DemoScene 3..6).
+        assert!(!scene_entry_is_user_root(3));
+        assert!(!scene_entry_is_user_root(6));
+        assert!(scene_entry_is_user_root(USER_ROOT_ENTITY_FIRST));
+        assert!(scene_entry_is_user_root(user_root_entity_last()));
+        assert!(!scene_entry_is_user_root(user_root_entity_last() + 1));
     }
 
     #[test]

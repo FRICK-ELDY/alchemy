@@ -273,7 +273,7 @@ pub fn decode_presence_checked(payload: &[u8]) -> Result<PresenceState, CheckedD
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PresenceAssignment, SceneEntry};
+    use crate::{PresenceAssignment, SceneEntry, USER_ROOT_ENTITY_FIRST};
 
     #[test]
     fn payload_byte_gate() {
@@ -423,7 +423,7 @@ mod tests {
             assignments: (0..=MAX_PRESENCE_ASSIGNMENTS)
                 .map(|i| PresenceAssignment {
                     sub: format!("user-{i}"),
-                    entity_id: 3 + i as u32,
+                    entity_id: USER_ROOT_ENTITY_FIRST + i as u32,
                 })
                 .collect(),
             ..Default::default()

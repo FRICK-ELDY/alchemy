@@ -93,9 +93,8 @@
 
 ### protocol/
 
-- **参加者上限の天井 `USER_ROOT_SLOTS_MAX = 4` が protocol 定数のまま（継続）** `-1`
-  > 部屋ごとの容量は Manifest から導出されるが、帯の天井は `protocol/src/lib.rs` L76 の定数。5 人以上の部屋は PROTOCOL_PIN 更新と全バイナリ再ビルドを要する。x0069 で pin が `0.18.0-x0069` まで進んだ今も手付かず。
-  > 対象ファイル: `protocol/src/lib.rs`（L76-80, L476-479）
+- ~~**参加者上限の天井 `USER_ROOT_SLOTS_MAX = 4` が protocol 定数のまま（継続）** `-1`~~ → **closed（x009b / P2-13）**
+  > 帯を `USER_ROOT_ENTITY_FIRST=0x1000_0000` に移し、DoS 天井を 32 に拡大。部屋幅は Manifest 連続 entries。5 人超は pin 再 bump 不要。
 
 ---
 
