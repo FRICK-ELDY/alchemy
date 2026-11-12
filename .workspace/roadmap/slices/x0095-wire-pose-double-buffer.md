@@ -60,7 +60,7 @@ physics net tick
 ## やらない（本 Slice）／次
 
 - Inspector / Uber-SDF / host↔client 親子 / TPS・Live（空間本線は一時停止）
-- `HostLoop::tick` 切り出し全体
+- `HostLoop::tick` 切り出し全体 → **[x0099](x0099-host-loop-tick.md) done**
 - improvement P2 の他残件（XR loader tempfile 等）。take-out session は [x0098](x0098-take-out-owner-session.md)；Origin Cert hash は [x0096](x0096-origin-cert-content-hash.md)
 
 ## 関連
