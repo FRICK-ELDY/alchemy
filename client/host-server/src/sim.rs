@@ -5,7 +5,7 @@
 //! hold aim / offset capped by [`alchemy_shared_sim::MAX_GRAB_HIT_DISTANCE`] (x0041);
 //! Grab on/off syncs [`alchemy_shared_sim::SlotGraph`] held parent (x0057);
 //! `release_slot` resets translation+rotation to Manifest spawn;
-//! Presence capacity = contiguous Manifest user_root entries (x004d);
+//! Presence capacity = contiguous Manifest user_root entries (x004d / x009b);
 //! wire TRS authority is Epoch Curr after [`Self::step`] (x0093).
 //! Classification via `alchemy-shared-sim` [`EntityKind`] (x0030).
 //! Non-guarantees: Grab aim **rotation** follow (translation only); throw impulse;
@@ -951,13 +951,14 @@ fn alloc_dynamic_sphere(
 
 /// Distinct tint per user_root slot when Manifest omits color.
 pub fn user_root_color(slot: usize) -> (f32, f32, f32, f32) {
-    const PALETTE: [(f32, f32, f32); USER_ROOT_SLOTS_MAX] = [
+    // DemoScene ships four roots; further slots cycle (Manifest may go up to MAX).
+    const PALETTE: [(f32, f32, f32); 4] = [
         (0.4, 0.7, 1.0),
         (1.0, 0.55, 0.25),
         (0.45, 0.9, 0.5),
         (0.9, 0.45, 0.85),
     ];
-    let (r, g, b) = PALETTE[slot % USER_ROOT_SLOTS_MAX];
+    let (r, g, b) = PALETTE[slot % PALETTE.len()];
     (r, g, b, 1.0)
 }
 
@@ -1140,8 +1141,11 @@ mod tests {
     fn four_slots_have_distinct_spawns() {
         let world = test_world();
         assert_eq!(world.user_root_slot_count(), 4);
-        assert_eq!(USER_ROOT_SLOTS_MAX, 4);
-        assert_eq!(PhysicsWorld::user_root_entity_id(3), 6);
+        assert!(USER_ROOT_SLOTS_MAX >= 5);
+        assert_eq!(
+            PhysicsWorld::user_root_entity_id(3),
+            USER_ROOT_ENTITY_FIRST + 3
+        );
         let n = world.user_root_slot_count();
         let mut xs = Vec::with_capacity(n);
         for slot in 0..n {
@@ -1162,11 +1166,37 @@ mod tests {
     fn slots_follow_manifest_entry_count() {
         let mut entries = demo_entries_for_test();
         entries.retain(|e| {
-            !alchemy_protocol::scene_entry_is_user_root(e.entity_id) || e.entity_id <= 4
+            !alchemy_protocol::scene_entry_is_user_root(e.entity_id)
+                || e.entity_id <= USER_ROOT_ENTITY_FIRST + 1
         });
         let world = PhysicsWorld::from_entries(&entries, LocoMode::Noclip, DEFAULT_MOVE_SPEED);
         assert_eq!(world.user_root_slot_count(), 2);
-        assert_eq!(PhysicsWorld::user_root_entity_id(1), 4);
+        assert_eq!(
+            PhysicsWorld::user_root_entity_id(1),
+            USER_ROOT_ENTITY_FIRST + 1
+        );
+    }
+
+    #[test]
+    fn five_manifest_roots_within_band_ceiling() {
+        let mut entries = demo_entries_for_test();
+        entries.push(SceneEntry {
+            entity_id: USER_ROOT_ENTITY_FIRST + 4,
+            x: 4.5,
+            y: 1.6,
+            z: 6.0,
+            r: 0.8,
+            g: 0.8,
+            b: 0.2,
+            a: 1.0,
+            ..Default::default()
+        });
+        let world = PhysicsWorld::from_entries(&entries, LocoMode::Noclip, DEFAULT_MOVE_SPEED);
+        assert_eq!(world.user_root_slot_count(), 5);
+        assert_eq!(
+            PhysicsWorld::user_root_entity_id(4),
+            USER_ROOT_ENTITY_FIRST + 4
+        );
     }
 
     #[test]

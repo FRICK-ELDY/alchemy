@@ -45,7 +45,7 @@ pub(crate) struct PoseOverride {
 
 /// Per-sub input slots (x0015) + Leave / jti-bound liveliness / Intent TTL reclaim (x0022).
 ///
-/// Storage is `[T; USER_ROOT_SLOTS_MAX]` + [`slot_count`] (Manifest-derived `n`, x004d).
+/// Storage is `[T; USER_ROOT_SLOTS_MAX]` + [`slot_count`] (Manifest-derived `n`, x004d / x009b).
 /// `by_slot` stays `Copy` so the physics tick can snapshot without a heap alloc.
 #[derive(Debug)]
 pub(crate) struct PresenceIntents {

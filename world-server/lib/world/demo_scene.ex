@@ -4,13 +4,14 @@ defmodule World.DemoScene do
 
   Guarantees: SSoT for demo entries + locomotion assigned at room create;
   `@user_roots` length is the room Presence capacity (contiguous user_root
-  entity ids from 3; protocol band ceiling is `USER_ROOT_SLOTS_MAX`;
-  spawn pose and tint are paired per entry).
+  entity ids from `World.Protocol.user_root_entity_first/0`; spawn pose and
+  tint are paired per entry).
   Non-guarantees: UGC editing; shared-sim; EntityKind taxonomy; collider scale;
   runtime resize of slots after host boot.
 
   Rust mirror: `alchemy_shared_sim::demo::demo_scene_entries`. Drift is caught by
   the shared ManifestSeal blake3 vector (`World.DemoSceneVector` / x0079).
+  Band constants live in `World.Protocol` (not here).
   """
 
   @coin_blake3 "fa24848fa7b971718ce6e8dc9bd2d211808fd64e4ddf555feb66d4f82ee1e72a"
@@ -91,11 +92,13 @@ defmodule World.DemoScene do
   end
 
   defp user_root_entries do
+    first = World.Protocol.user_root_entity_first()
+
     Enum.with_index(@user_roots)
     |> Enum.map(fn {{{x, y, z}, {r, g, b}}, i} ->
       Map.merge(
         %{
-          "entity_id" => 3 + i,
+          "entity_id" => first + i,
           "blake3" => "",
           "x" => x,
           "y" => y,

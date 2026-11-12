@@ -82,7 +82,7 @@ Optional Profile（billing / market-server）はディレクトリ未設置の�
 | 4 | world rate limit / Room 上限なし | closed | 上記 #8 |
 | 5 | 共有 JWKS 取得失敗時クールダウンなし | open | `jwks.ex` L149-152, L187（変化なし） |
 | 6 | ManifestSeal が毎回一時ファイル + CLI | partial | Port 化（`manifest_seal_hash/worker.ex`）。`/health` 非反映で -1 |
-| 7 | `USER_ROOT_SLOTS_MAX = 4` | open | `protocol/src/lib.rs` L76 |
+| 7 | `USER_ROOT_SLOTS_MAX = 4` | **closed**（x009b） | 帯 `0x1000_0000..` · DoS 天井 32 · 幅は Manifest |
 | 8 | host `main()` 一枚岩 | open | `main.rs` L790〜（約 640 行に拡大） |
 | 9 | `room_token.rs` 2000 行超 | closed | `room_token/` 7 ファイル分割（x0076） |
 | 10 | bind 全体バケット枯渇 | partial | 送信元分割（x0077）。キーが自己申告 timestamp ID で -1 |

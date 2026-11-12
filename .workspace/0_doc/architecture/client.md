@@ -31,7 +31,7 @@
 | Zenoh sample: class 別 **decode byte/count 上限**超過は drop（x003b） | router 側 max payload |
 | Manifest entries → mesh blake3 / box=`half_extent` 描画 / Grab=`SCENE_FLAG_GRABBABLE`（x0027）。分類は `alchemy-shared-sim` `ManifestIndex` / `EntityKind`（x0030）。entity 表 upsert/remove。late join / **tick gap** は snapshot 置換（クールダウン 500ms・x0024） | loco の client 解釈・boot 後の mesh blake3 再取得 |
 | Desktop: WASD/Space/C → Intent（look yaw 相対）。クリックで Confined（失敗時 Locked）→ マウスルック。look 中 RMB → Grab（x0013） | 感度 UI / クロスヘア必須 |
-| Presence で自 entity 解決→カメラ；他 root は色付きボックス（x0015）。欠落で unset（x0016）。Home タブ login/register/logout（x0018）。logout は Leave + liveliness undeclare（x0019）。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` はサイレント **login のみ**（部屋は MainHub Participation / Organizing）。`ZENOH_CONNECT` LAN | 5人以上・アバター GLB・XR 文字入力 |
+| Presence で自 entity 解決→カメラ；他 root は色付きボックス（x0015 / x009b）。欠落で unset（x0016）。Home タブ login/register/logout（x0018）。logout は Leave + liveliness undeclare（x0019）。`AUTH_USER` / `ALCHEMY_AUTH_TOKEN` はサイレント **login のみ**（部屋は MainHub Participation / Organizing）。`ZENOH_CONNECT` LAN | `USER_ROOT_SLOTS_MAX` 超・UBO 描画クリップ・アバター GLB・XR 文字入力 |
 | OpenXR: 左右 thumbstick（aim 相対・倒し量・加算）→ Intent | Vive トラックパッド専用 / ホバー |
 | OpenXR: `XR_EXT_render_model` 時に実機コントローラ GLB（ルート pose + 埋め込み baseColor + animatable node） | SteamVR パス直読み／PBR（MR/normal 等）／手トラ |
 | OpenXR: ダッシュ開→UI レーザー；閉→ワールドレーザー＋ Grab hold（squeeze／Select）（x0011） | Steal／回転追従／Facet 並べ替え／WorldRoot／CompositionLayerQuad |

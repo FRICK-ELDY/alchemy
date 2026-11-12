@@ -27,10 +27,14 @@ defmodule World.DemoSceneTest do
     assert_in_delta center["sx"], 1.5, 1.0e-9
     assert_in_delta center["sy"], 1.0, 1.0e-9
 
-    # x004d: contiguous user_root entries define Presence capacity (protocol band ceiling = 4).
-    roots = Enum.filter(scene["entries"], &(&1["entity_id"] in 3..6))
+    # x004d / x009b: contiguous high-band user_root entries define Presence capacity.
+    first = World.Protocol.user_root_entity_first()
+
+    roots =
+      Enum.filter(scene["entries"], fn e -> World.Protocol.user_root_band?(e["entity_id"]) end)
+
     assert length(roots) == 4
-    assert Enum.map(roots, & &1["entity_id"]) == [3, 4, 5, 6]
+    assert Enum.map(roots, & &1["entity_id"]) == [first, first + 1, first + 2, first + 3]
     # Spawn/color stay paired via `@user_roots` (no separate lists that can drift).
     assert Enum.all?(roots, fn e -> e["a"] == 1.0 and e["r"] > 0.0 end)
   end
