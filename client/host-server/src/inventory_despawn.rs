@@ -3,7 +3,7 @@
 //! Guarantees: Zenoh `…/inventory/despawn` is **Room AEAD**; session Ed25519 + SessionTable
 //! (**`role=host` bind** and `sub` == host Token sub); world HTTP delete uses host Token,
 //! PoP, and **scene revision CAS**; physics applies shared scene / re-seal and best-effort
-//! Rapier remove. Order: evaluate → rate → commit seq → HTTP (unbound/guest cannot burn
+//! XPBD mesh remove. Order: evaluate → rate → commit seq → HTTP (unbound/guest cannot burn
 //! shared rate).
 //!
 //! Non-guarantees: guest despawn for non-host sub; put-back coupling; Intent path;
@@ -29,7 +29,7 @@ use host_server::room_token::{
 };
 use host_server::session::SessionTable;
 
-/// Ready for physics: world already deleted; apply shared scene + reseal + Rapier remove.
+/// Ready for physics: world already deleted; apply shared scene + reseal + XPBD remove.
 #[derive(Debug, Clone)]
 pub struct ReadyDespawn {
     pub entity_id: u32,
@@ -225,7 +225,8 @@ fn process_sample(
 pub struct ApplyOutcome {
     pub entity_id: u32,
     pub scene_applied: bool,
-    pub rapier_ok: bool,
+    /// False when scene applied but XPBD/sim could not remove the mesh row.
+    pub physics_ok: bool,
 }
 
 /// Apply a ready despawn on the physics thread (no HTTP).
@@ -241,15 +242,15 @@ pub fn apply_ready_despawn(
         return Ok(ApplyOutcome {
             entity_id,
             scene_applied: false,
-            rapier_ok: false,
+            physics_ok: false,
         });
     }
     force_reseal.store(true, Ordering::SeqCst);
-    let rapier_ok = remove_mesh(entity_id);
+    let physics_ok = remove_mesh(entity_id);
     Ok(ApplyOutcome {
         entity_id,
         scene_applied: true,
-        rapier_ok,
+        physics_ok,
     })
 }
 
@@ -273,22 +274,22 @@ mod tests {
     }
 
     #[test]
-    fn apply_ready_despawn_scene_before_rapier_and_ok_on_miss() {
+    fn apply_ready_despawn_scene_before_physics_and_ok_on_miss() {
         let shared = Arc::new(RwLock::new(empty_scene(1)));
         let force = AtomicBool::new(false);
         let ready = ReadyDespawn {
             entity_id: 100,
             scene: empty_scene(2),
         };
-        let mut rapier_called = false;
+        let mut physics_called = false;
         let out = apply_ready_despawn(ready, &shared, &force, |_id| {
-            rapier_called = true;
+            physics_called = true;
             false
         })
         .unwrap();
         assert!(out.scene_applied);
-        assert!(!out.rapier_ok);
-        assert!(rapier_called);
+        assert!(!out.physics_ok);
+        assert!(physics_called);
         assert!(force.load(Ordering::SeqCst));
         assert_eq!(shared.read().unwrap().revision, 2);
     }
@@ -301,15 +302,15 @@ mod tests {
             entity_id: 100,
             scene: empty_scene(4),
         };
-        let mut rapier_called = false;
+        let mut physics_called = false;
         let out = apply_ready_despawn(ready, &shared, &force, |_id| {
-            rapier_called = true;
+            physics_called = true;
             true
         })
         .unwrap();
         assert!(!out.scene_applied);
-        assert!(!out.rapier_ok);
-        assert!(!rapier_called);
+        assert!(!out.physics_ok);
+        assert!(!physics_called);
         assert!(!force.load(Ordering::SeqCst));
         assert_eq!(shared.read().unwrap().revision, 5);
     }

@@ -242,3 +242,4 @@ pub struct EpochSheet {
 5. **Step 5: `client` GPU-Driven 補間 ＆ 仮想 Hierarchy UI の接続**
    - `Arc<EpochSheet>` の新旧2面を `wgpu` Storage Buffer へ差分転送して 120fps 補間シェーダーを回し、`euler_order` を直接参照する仮想スクロール Hierarchy UI と `Bitmask X-Ray` デバッグパネルを実装する。
    - **Display TRS 方針（x0091 採択・x0092 で eye 完了）:** 画面に見える／掴む／FPS eye・XR floor 基準の TRS 権威は wire Curr `EntityPose` ではなく **Prev/Curr + α / ABA（GPU `out` ＋ CPU 双子）**。描画だけ補間して Grab／eye を Curr に残すレガシーは **撤廃**。TPS／Live カメラは別保証（未着手）。詳細は [slices/x0091-epoch-out-scenegpu-draw.md](slices/x0091-epoch-out-scenegpu-draw.md) · [slices/x0092-eye-display-trs.md](slices/x0092-eye-display-trs.md)。
+   - **Host wire 権威（x0093）:** Rapier 影並走を廃止し、host 60Hz は Native XPBD（Epoch Curr → Frame sample）。床は地面平面、デモ重力 `-2.2`、Verlet 速度は `frame_delta_xyz` で commit を跨いで引き継ぐ。

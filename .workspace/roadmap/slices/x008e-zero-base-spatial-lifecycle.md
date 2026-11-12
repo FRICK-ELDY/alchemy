@@ -127,7 +127,7 @@
 ## やらない（本 Slice）／次
 
 - host 60Hz への `FrameBridge::tick` 本番配線 → **[x008f](x008f-host-frame-bridge.md)** **done**
-- Rapier / 既存 `SlotGraph` の置換・削除
+- Rapier / 既存 `SlotGraph` の置換・削除 → XPBD wire 権威は **[x0093](x0093-xpbd-wire-authority.md)** **done**（SlotGraph は維持）
 - SceneGpu への補間コンピュート bind → **[x0090](x0090-client-epoch-scenegpu-bind.md)** **done**；`out`→draw → **[x0091](x0091-epoch-out-scenegpu-draw.md)**
 - Loro CRDT / Zenoh 揮発 Grab ストリーム
 - Formula VM・全身 IK・StaticSDF asset-compiler

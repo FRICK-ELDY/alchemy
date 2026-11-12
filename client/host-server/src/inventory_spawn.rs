@@ -31,7 +31,7 @@ use host_server::room_token::{
 };
 use host_server::session::SessionTable;
 
-/// Ready for physics: world already appended; apply Rapier + shared scene + reseal.
+/// Ready for physics: world already appended; apply XPBD mesh row + shared scene + reseal.
 #[derive(Debug, Clone)]
 pub struct ReadySpawn {
     pub entry: SceneEntry,
@@ -292,8 +292,8 @@ pub struct ApplyOutcome {
     pub entity_id: u32,
     /// False when `ready.scene.revision` was not strictly newer than shared (stale race).
     pub scene_applied: bool,
-    /// False when Manifest/PlaceRead path succeeded but Rapier refused the collider.
-    pub rapier_ok: bool,
+    /// False when Manifest/PlaceRead path succeeded but XPBD/sim refused the collider.
+    pub physics_ok: bool,
 }
 
 /// Apply a ready spawn on the physics thread (no HTTP).
@@ -310,15 +310,15 @@ pub fn apply_ready_spawn(
         return Ok(ApplyOutcome {
             entity_id,
             scene_applied: false,
-            rapier_ok: false,
+            physics_ok: false,
         });
     }
     force_reseal.store(true, Ordering::SeqCst);
-    let rapier_ok = spawn_mesh(&entry);
+    let physics_ok = spawn_mesh(&entry);
     Ok(ApplyOutcome {
         entity_id,
         scene_applied: true,
-        rapier_ok,
+        physics_ok,
     })
 }
 
