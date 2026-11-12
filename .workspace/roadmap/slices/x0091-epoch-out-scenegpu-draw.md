@@ -15,7 +15,7 @@
 |:---|:---|:---|
 | **レガシー（撤廃）** | 画面に見えるもの／掴むものの TRS 権威を wire **Curr `EntityPose` のみ**にする。描画だけ α 補間して Grab/ヒットは Curr のまま、など **見た目と入力の面を分ける** | **採用しない**。x002b「hit matches draw TRS」および Zero-Base Ring3 の知覚面契約と矛盾する |
 | **新方式（正）** | **Display TRS** = 表示フレーム先頭で **一度だけ** Prev/Curr + α を固定（`begin_display_frame`）。GPU upload・Grab OBB・コイン色 Y はすべてその snap を読む。readback なし | **SSoT**。フレーム内の別 `Instant::now()` / 再 `load_pair` は禁止 |
-| **残レガシー（後続で撤廃）** | カメラ／loco **eye** がまだ WorldView Curr | x0091 では未配線。**長期方針ではない**。次 Slice で display 面へ移す（本 Slice の「保証しない」に残すのは実装未了の記録） |
+| **残レガシー（後続で撤廃 → x0092 done）** | カメラ／loco **eye** がまだ WorldView Curr | **[x0092](x0092-eye-display-trs.md)** で display 面へ移済。本行は史実メモ |
 
 採択メモ（レビュー回答）: 「描画だけ補間・Grab は Curr」は x0091 の意図ではない。Grab/ヒットは新方式必須。eye の Curr 据え置きは暫定残債であり、レガシー方式の延長として残してはならない。
 
@@ -26,7 +26,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | 表示フレームの mesh/box（＋remote root）TRS は `epoch_out` storage 経由（補間後） | GPU → CPU readback |
-| Grab / コイン Y / GPU は `begin_display_frame` の同一 snap | **eye の display 化**（残レガシー・後続撤廃） |
+| Grab / コイン Y / GPU は `begin_display_frame` の同一 snap | **eye の display 化** → **[x0092](x0092-eye-display-trs.md) done** |
 | pack は **フル active**；pack index は **packed Curr** から構築 | dirty-only の帯域最適化 |
 | `owner_scope` → pack index；未登録は `EntityPose` model_override フォールバック | topology 親子・色の tape 化 |
 | floor は従来どおり CPU model（`pack_index=MAX`） | XPBD wire 権威 / Rapier 削除 |
@@ -55,7 +55,7 @@ begin_display_frame (1× / display frame, Grab より前)
 - `out` は compute の `read_write` と vertex の `read` をパス順で共有（同一 encoder 内の暗黙バリア）。
 - コイン傾き（0.25 rad X）は `extra_rot` として client-local のまま。
 - 色チャンネルは tape 未搭載のため wire のまま；高さグラデ Y は **同一 freeze** の display pose。
-- wire Curr `EntityPose` は **受理・カメラ暫定・色チャンネル** 用。画面 TRS / Grab の権威には使わない（上表「レガシー撤廃」）。
+- wire Curr `EntityPose` は **受理・色チャンネル** 用（eye は x0092 で display 化）。画面 TRS / Grab の権威には使わない（上表「レガシー撤廃」）。
 
 ---
 
@@ -80,15 +80,17 @@ begin_display_frame (1× / display frame, Grab より前)
 
 ## やらない（本 Slice）／次
 
-- **カメラ／loco eye を display TRS へ移す**（残レガシー撤廃・次候補）
+- **カメラ／loco eye を display TRS へ移す** → **[x0092](x0092-eye-display-trs.md) done**
 - XPBD を wire 権威にする / Rapier 削除
 - Loro CRDT / Zenoh Grab ストリーム
 - UI Lens 本仕様 / Hierarchy 本配線
 - wire pose ダブルバッファ置換（improvement P2-6 残り）
 - Multi-Draw Indirect / 永続 GPU スロット freelist
+- TPS／Live カメラ（x0092 でも未着手・別保証）
 
 ## 関連
 
+- [x0092-eye-display-trs.md](x0092-eye-display-trs.md)
 - [x0090-client-epoch-scenegpu-bind.md](x0090-client-epoch-scenegpu-bind.md)
 - [x008e-zero-base-spatial-lifecycle.md](x008e-zero-base-spatial-lifecycle.md)
 - [x008f-host-frame-bridge.md](x008f-host-frame-bridge.md)

@@ -241,4 +241,4 @@ pub struct EpochSheet {
    - `EpochPrev` と `EpochCurr` の差分から慣性移動を行い、VR Grab・IK・バウンス・揺れものを `XpbdConstraintRow` で一括解決するループを実装する（Phase 2 物理完成）。
 5. **Step 5: `client` GPU-Driven 補間 ＆ 仮想 Hierarchy UI の接続**
    - `Arc<EpochSheet>` の新旧2面を `wgpu` Storage Buffer へ差分転送して 120fps 補間シェーダーを回し、`euler_order` を直接参照する仮想スクロール Hierarchy UI と `Bitmask X-Ray` デバッグパネルを実装する。
-   - **Display TRS 方針（x0091 採択）:** 画面に見える／掴む TRS の権威は wire Curr `EntityPose` ではなく **Prev/Curr + α / ABA（GPU `out` ＋ CPU 双子）**。描画だけ補間して Grab を Curr に残すレガシーは **撤廃**。カメラ eye の Curr 据え置きは残債（後続で display 化）。詳細は [slices/x0091-epoch-out-scenegpu-draw.md](slices/x0091-epoch-out-scenegpu-draw.md)「方針（レガシー撤廃 → 新方式）」。
+   - **Display TRS 方針（x0091 採択・x0092 で eye 完了）:** 画面に見える／掴む／FPS eye・XR floor 基準の TRS 権威は wire Curr `EntityPose` ではなく **Prev/Curr + α / ABA（GPU `out` ＋ CPU 双子）**。描画だけ補間して Grab／eye を Curr に残すレガシーは **撤廃**。TPS／Live カメラは別保証（未着手）。詳細は [slices/x0091-epoch-out-scenegpu-draw.md](slices/x0091-epoch-out-scenegpu-draw.md) · [slices/x0092-eye-display-trs.md](slices/x0092-eye-display-trs.md)。

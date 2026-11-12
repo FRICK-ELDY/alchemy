@@ -30,9 +30,7 @@ use super::render_model::{enable_if_available, RenderModelCache};
 use super::wgpu_interop::{self, FrameEndGuard, SwapchainReleaseGuard, XrWgpuBridge, VIEW_COUNT};
 use super::wgpu_overlays::{GpuController, XrOverlays};
 use crate::mesh::CpuMesh;
-use crate::scene::{
-    create_depth_view, EntityPose, MoveIntent, SceneGpu, SharedState, BOX_HALF_EXTENT,
-};
+use crate::scene::{create_depth_view, MoveIntent, SceneGpu, SharedState, BOX_HALF_EXTENT};
 use crate::system_ui::{InventoryPeerRequest, SystemUi, UiAction};
 use crate::turn::{update_turn_yaw, TURN_DEADZONE};
 use crate::world_hit::ray_hit_grabbable_boxes_with_extents;
@@ -40,7 +38,6 @@ use crate::world_hit::ray_hit_grabbable_boxes_with_extents;
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 const UI_CANVAS_W: u32 = 960;
 const UI_CANVAS_H: u32 = 540;
-const DEFAULT_EYE_Y: f32 = 1.6;
 const GRAB_SQUEEZE_THRESHOLD: f32 = 0.7;
 const WORLD_CLEAR: wgpu::Color = wgpu::Color {
     r: 0.05,
@@ -413,26 +410,16 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             }
         }
 
-        let user_root = shared
-            .world
-            .lock()
-            .ok()
-            .and_then(|w| w.entities.get(&shared.local_user_root()).copied())
-            .unwrap_or(EntityPose {
-                x: 0.0,
-                y: DEFAULT_EYE_Y,
-                z: 6.0,
-                ..Default::default()
-            });
+        let box_defs = shared.box_defs_snapshot();
+        // x0092 contract: begin_display_frame BEFORE user_root_pose / Grab.
+        // (Pre-x0092: floor used Curr while Grab used display — split surfaces.)
+        shared.begin_display_frame();
+        let user_root = shared.user_root_pose();
         let yaw_q = Quat::from_rotation_y(view_yaw);
         let floor_model = Mat4::from_rotation_translation(
             yaw_q,
             yaw_q * Vec3::new(-user_root.x, -user_root.y, -user_root.z),
         );
-
-        let box_defs = shared.box_defs_snapshot();
-        // Freeze display α/PrevCurr before Grab + later sync_epoch_gpu (x0091 同一 α).
-        shared.begin_display_frame();
         let (grabbable_boxes, _) = shared.grabbable_display_poses();
         let draw_box_count = shared
             .world

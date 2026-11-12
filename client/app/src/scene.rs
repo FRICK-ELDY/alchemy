@@ -13,12 +13,11 @@
 //! Epoch Prev/Curr GPU interpolate before the world pass (x0090); mesh/box **display TRS** from
 //! `epoch_out` (x0091; full active pack; no readback);
 //! [`SharedState::begin_display_frame`] freezes α/PrevCurr/pose cache once per frame; Grab /
-//! coin Y / GPU upload all read that snap (x002b / x0091 同一 α).
+//! coin Y / GPU upload / FPS eye / XR floor anchor all read that snap (x002b / x0091 / x0092).
 //! Non-guarantees: per-blake3 multi-GLB download; mesh draw beyond [`MESH_DRAW_SLOTS`];
-//! color on tape (height gradient uses display Y when mirrored); camera / loco **eye** still
-//! WorldView Curr (`EntityPose`) — **remaining legacy to abolish** (must move to display TRS;
-//! see x0091 policy); XR swapchain ownership, system_ui layout, avatar GLB.
-//! Abolished: Curr-only `EntityPose` as authority for on-screen draw/Grab TRS.
+//! color on tape (height gradient uses display Y when mirrored); TPS / Live camera modes;
+//! XR swapchain ownership, system_ui layout, avatar GLB.
+//! Abolished: Curr-only `EntityPose` as authority for on-screen draw/Grab/eye TRS.
 //! Leave / liveliness token ownership lives here; put/undeclare is `room::leave_room` (re-exported as `crate::leave_room`).
 
 use std::collections::{HashMap, HashSet};
@@ -385,6 +384,9 @@ pub struct SharedState {
     pub presence_peer_subs: Mutex<Vec<String>>,
     /// Zero-Base Epoch Prev/Curr snapshots + Hierarchy / X-Ray (Ring 3 view).
     pub epoch: crate::epoch_view::EpochViewState,
+    /// FPS eye TRS frozen with [`Self::begin_display_frame`] (x0092; avoid N× lock per frame).
+    /// Keyed by `local_user_root` id so Presence races cannot serve a stale anchor.
+    pub(crate) eye_pose_cache: Mutex<Option<(u32, EntityPose)>>,
 }
 
 impl SharedState {
@@ -645,7 +647,11 @@ impl SharedState {
     }
 
     pub fn set_local_user_root(&self, entity_id: u32) {
-        self.local_user_root.store(entity_id, Ordering::Relaxed)
+        self.local_user_root.store(entity_id, Ordering::Relaxed);
+        // Anchor changed — drop Redraw-frame eye cache until next begin_display_frame.
+        if let Ok(mut slot) = self.eye_pose_cache.lock() {
+            *slot = None;
+        }
     }
 
     pub fn is_grabbable(&self, id: u32) -> bool {
@@ -661,15 +667,28 @@ impl SharedState {
             .unwrap_or_else(|| Arc::new(BoxDefs::default()))
     }
 
-    /// Freeze display faces/α/pose cache for this client frame (once; before Grab).
+    /// Freeze display faces/α/pose cache for this client frame (once; before Grab/eye).
+    ///
+    /// Also refreshes [`Self::user_root_pose`] cache so Desktop intent/highlight/render
+    /// and XR floor share one lookup for the frame.
     pub fn begin_display_frame(&self) {
         self.epoch.begin_display_frame(std::time::Instant::now());
+        let id = self.local_user_root();
+        let eye = self.compute_user_root_pose_for(id);
+        if let Ok(mut slot) = self.eye_pose_cache.lock() {
+            // Presence may have raced during compute — publish only if id still matches.
+            if self.local_user_root() == id {
+                *slot = Some((id, eye));
+            } else {
+                *slot = None;
+            }
+        }
     }
 
     /// Display TRS from the **frozen** display frame (same α / faces as GPU; x0091).
     ///
     /// Color channels stay from `wire`. Missing cache row → `wire` unchanged.
-    /// Call [`Self::begin_display_frame`] (or ensure via sync) before Grab/draw.
+    /// Call [`Self::begin_display_frame`] (or ensure via sync) before Grab/draw/eye.
     pub fn display_pose_for(&self, entity_id: u32, wire: EntityPose) -> EntityPose {
         self.epoch
             .with_display_frame(std::time::Instant::now(), |frame| {
@@ -680,6 +699,42 @@ impl SharedState {
                     .unwrap_or(wire)
             })
             .unwrap_or(wire)
+    }
+
+    /// Wire Curr for a specific `user_root` id (unset → default eye). Not for draw/Grab/view.
+    fn user_root_wire_pose_for(&self, id: u32) -> EntityPose {
+        if id == LOCAL_USER_ROOT_UNSET {
+            return default_eye_pose();
+        }
+        self.world
+            .lock()
+            .ok()
+            .and_then(|w| w.entities.get(&id).copied())
+            .unwrap_or_else(default_eye_pose)
+    }
+
+    /// FPS / loco / XR-floor **eye** TRS from the frozen display snap (x0092).
+    ///
+    /// Viewpoint anchor remains `local_user_root` (FPS). TPS / Live camera are out of scope.
+    /// Prefer after [`Self::begin_display_frame`] (fills cache). Mid-frame callers reuse that
+    /// cache when the cached id still matches, else recompute.
+    pub fn user_root_pose(&self) -> EntityPose {
+        let id = self.local_user_root();
+        if let Ok(slot) = self.eye_pose_cache.lock() {
+            if let Some(pose) = eye_cache_hit(*slot, id) {
+                return pose;
+            }
+        }
+        self.compute_user_root_pose_for(id)
+    }
+
+    fn compute_user_root_pose_for(&self, id: u32) -> EntityPose {
+        let wire = self.user_root_wire_pose_for(id);
+        self.epoch
+            .with_display_frame(std::time::Instant::now(), |frame| {
+                resolve_user_root_display_pose(id, wire, Some(frame))
+            })
+            .unwrap_or_else(|| resolve_user_root_display_pose(id, wire, None))
     }
 
     /// Grabbable boxes with frozen display TRS (hit aligned to draw).
@@ -1717,27 +1772,9 @@ impl SceneGpu {
             .unwrap_or_default()
     }
 
+    /// Display-frame eye at `local_user_root` (x0092; delegates to [`SharedState::user_root_pose`]).
     pub fn user_root_pose(&self) -> EntityPose {
-        let id = self.shared.local_user_root();
-        if id == LOCAL_USER_ROOT_UNSET {
-            return EntityPose {
-                x: 0.0,
-                y: DEFAULT_EYE_Y,
-                z: 6.0,
-                ..Default::default()
-            };
-        }
-        self.shared
-            .world
-            .lock()
-            .ok()
-            .and_then(|w| w.entities.get(&id).copied())
-            .unwrap_or(EntityPose {
-                x: 0.0,
-                y: DEFAULT_EYE_Y,
-                z: 6.0,
-                ..Default::default()
-            })
+        self.shared.user_root_pose()
     }
 
     pub fn look(&self) -> CameraLook {
@@ -2093,7 +2130,43 @@ impl SceneGpu {
     }
 }
 
-/// Display TRS from frozen GPU row + wire color channels (x0091).
+fn default_eye_pose() -> EntityPose {
+    EntityPose {
+        x: 0.0,
+        y: DEFAULT_EYE_Y,
+        z: 6.0,
+        ..Default::default()
+    }
+}
+
+/// Map local user_root id + wire + optional display freeze → FPS eye TRS (x0092).
+///
+/// Pure helper so unset / lerp / wire-fallback are unit-tested without constructing
+/// full [`SharedState`]. Callers must not treat `wire` alone as view authority when a
+/// freeze row exists.
+fn resolve_user_root_display_pose(
+    local_id: u32,
+    wire: EntityPose,
+    frame: Option<&crate::epoch_view::DisplayFrame>,
+) -> EntityPose {
+    if local_id == LOCAL_USER_ROOT_UNSET {
+        return wire;
+    }
+    frame
+        .and_then(|f| f.poses.get(&local_id))
+        .map(|out| entity_pose_from_gpu_row(out, wire))
+        .unwrap_or(wire)
+}
+
+/// Hit only when cached anchor id still equals current `local_user_root`.
+fn eye_cache_hit(cached: Option<(u32, EntityPose)>, current_id: u32) -> Option<EntityPose> {
+    match cached {
+        Some((id, pose)) if id == current_id => Some(pose),
+        _ => None,
+    }
+}
+
+/// Display TRS from frozen GPU row + wire color channels (x0091 / x0092 eye).
 fn entity_pose_from_gpu_row(out: &crate::epoch_view::GpuEpochRow, wire: EntityPose) -> EntityPose {
     EntityPose {
         x: out.pos[0],
@@ -2252,6 +2325,130 @@ mod uniforms_layout_tests {
         // view_proj(64)+color(16)+scale_mul+pack(16)+extra_rot(16)+model(64)
         assert_eq!(std::mem::size_of::<Uniforms>(), 176);
         assert_eq!(std::mem::align_of::<Uniforms>(), 4);
+    }
+}
+
+#[cfg(test)]
+mod eye_display_tests {
+    use std::sync::Arc;
+
+    use alchemy_shared_sim::bridge::EpochFaces;
+    use alchemy_shared_sim::{EpochSheet, WorldTransformf64};
+
+    use super::{
+        default_eye_pose, eye_cache_hit, resolve_user_root_display_pose, EntityPose,
+        LOCAL_USER_ROOT_UNSET,
+    };
+    use crate::epoch_mirror::{published_instant, EPOCH_FRAME_PERIOD};
+    use crate::epoch_view::build_display_frame;
+
+    fn mid_alpha_frame(entity_id: u32) -> Arc<crate::epoch_view::DisplayFrame> {
+        let mut prev = EpochSheet::with_capacity(1);
+        let h = prev.alloc_row();
+        prev.owner_scope[h.row_id as usize] = entity_id;
+        prev.set_transform(h.row_id, WorldTransformf64::identity_at([0.0, 1.6, 0.0]))
+            .unwrap();
+        let mut curr = prev.clone();
+        curr.set_transform(h.row_id, WorldTransformf64::identity_at([10.0, 1.6, 0.0]))
+            .unwrap();
+
+        let published_at_ns = 10_000_000u64;
+        let faces = Arc::new(EpochFaces {
+            prev: Arc::new(prev),
+            curr: Arc::new(curr),
+            published_at_ns,
+        });
+        let now = published_instant(published_at_ns).unwrap() + EPOCH_FRAME_PERIOD / 2;
+        let frame = build_display_frame(faces, now);
+        assert!((frame.alpha - 0.5).abs() < 0.05, "alpha={}", frame.alpha);
+        frame
+    }
+
+    #[test]
+    fn eye_trs_follows_display_lerp_not_wire_curr() {
+        let frame = mid_alpha_frame(7);
+        let wire = EntityPose {
+            x: 10.0,
+            y: 1.6,
+            z: 0.0,
+            r: 0.25,
+            ..Default::default()
+        };
+        let eye = resolve_user_root_display_pose(7, wire, Some(&frame));
+        assert!(
+            (eye.x - 5.0).abs() < 0.15,
+            "eye should be mid Prev/Curr, got {}",
+            eye.x
+        );
+        assert!(
+            (eye.x - wire.x).abs() > 1.0,
+            "eye must not equal wire Curr alone"
+        );
+        assert_eq!(eye.r, wire.r, "color stays on wire");
+    }
+
+    #[test]
+    fn unset_local_user_root_keeps_default_eye_wire() {
+        let frame = mid_alpha_frame(7);
+        let wire = default_eye_pose();
+        let eye = resolve_user_root_display_pose(LOCAL_USER_ROOT_UNSET, wire, Some(&frame));
+        assert_eq!(eye, wire);
+        assert!((eye.y - 1.6).abs() < 1e-5);
+        assert!((eye.z - 6.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn missing_display_row_falls_back_to_wire() {
+        let frame = mid_alpha_frame(7);
+        let wire = EntityPose {
+            x: 3.0,
+            y: 1.6,
+            z: 9.0,
+            ..Default::default()
+        };
+        let eye = resolve_user_root_display_pose(99, wire, Some(&frame));
+        assert_eq!(eye, wire);
+    }
+
+    #[test]
+    fn no_frame_falls_back_to_wire() {
+        let wire = EntityPose {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+            ..Default::default()
+        };
+        let eye = resolve_user_root_display_pose(7, wire, None);
+        assert_eq!(eye, wire);
+    }
+
+    #[test]
+    fn eye_cache_hit_requires_matching_anchor_id() {
+        let pose = EntityPose {
+            x: 4.0,
+            y: 1.6,
+            z: 2.0,
+            ..Default::default()
+        };
+        assert_eq!(eye_cache_hit(Some((7, pose)), 7), Some(pose));
+        assert_eq!(eye_cache_hit(Some((7, pose)), 8), None);
+        assert_eq!(eye_cache_hit(None, 7), None);
+    }
+
+    /// XR / Desktop contract: freeze before reading eye (regression lock on source order).
+    #[test]
+    fn xr_session_freezes_before_user_root_pose() {
+        let src = include_str!("surface/xr/wgpu_session.rs");
+        let freeze = src
+            .find("shared.begin_display_frame();")
+            .expect("begin_display_frame call");
+        let eye = src
+            .find("shared.user_root_pose();")
+            .expect("user_root_pose call");
+        assert!(
+            freeze < eye,
+            "begin_display_frame must precede user_root_pose (x0092 floor/Grab same snap)"
+        );
     }
 }
 

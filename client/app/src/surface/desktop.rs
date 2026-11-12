@@ -1204,27 +1204,9 @@ impl App {
     }
 
     fn eye_and_look(&self) -> (EntityPose, CameraLook) {
-        let id = self.shared.local_user_root();
-        let eye = if id == crate::scene::LOCAL_USER_ROOT_UNSET {
-            EntityPose {
-                x: 0.0,
-                y: 1.6,
-                z: 6.0,
-                ..Default::default()
-            }
-        } else {
-            self.shared
-                .world
-                .lock()
-                .ok()
-                .and_then(|w| w.entities.get(&id).copied())
-                .unwrap_or(EntityPose {
-                    x: 0.0,
-                    y: 1.6,
-                    z: 6.0,
-                    ..Default::default()
-                })
-        };
+        // Display snap (x0092): Redraw path uses begin_display_frame cache; mid-frame
+        // rebuild_intent reuses that cache (or ensure freeze if cache was cleared).
+        let eye = self.shared.user_root_pose();
         let look = self.shared.look.lock().ok().map(|g| *g).unwrap_or_default();
         (eye, look)
     }
