@@ -57,7 +57,7 @@ flowchart TB
 | auth `/api/*` | 資格情報窃取・なりすまし JWT | TLS（Tunnel prod）+ 認証フロー；release シード fail-closed（x001e）；Social mutate rate limit（x0043） | `/dev/*` を公網に出すこと |
 | world host-token HTTP | 漏えい Token 連打で seal Port / scene DB 増幅 | 操作別 IP + `room_id\|jti` rate limit（x0084；PoP は x0081） | 検証前 jti の真正性 alone |
 | auth `/internal/*` | S2S 門番の公網露出 | Tunnel ingress 404（x0043・`/dev/*` と同型）；LAN は `x-alchemy-internal-token` | Cloudflare Access |
-| world Room Token / scene / seal | 不正入室・偽 scene | Bearer + host role（x0021）+ **cnf.spk PoP**（x0081）+ owner 系 + visibility ACL（x0034–x0036） | Group ACL / 一覧 UI；client アクセスレベル仮 UI（x0037）は門番ではない；PoP nonce（skew 内リプレイ） |
+| world Room Token / scene / seal | 不正入室・偽 scene；takeover host による canonical 改ざん | Bearer + host role（x0021）+ **cnf.spk PoP**（x0081）+ owner 系 + visibility ACL（x0034–x0036）+ **canonical scene は owner ∪ editor_subs**（x009d；active_host alone では append/delete 不可） | Group ACL / Dash Permissions UI；eligible_host / HostDelegation（x009d Phase 4）；session_overlay（Phase 3）；PoP nonce（skew 内リプレイ） |
 
 | assets GET/PUT | 容量食い・他人 blob 読み・（将来）所有権ロンダリング / Rug Pull / SSRF 等 | Bearer + Quota 原子更新（x002d）；BlobGrant 台帳（x004f）。GET は常時 Grant または PlaceRead（x006b/x006c・[assets-server.md](assets-server.md)）。詳細は [assets-threat-model.md](assets-threat-model.md) | PoP・Immutable Tag・access→Grant 本移設等（[assets-server-draft.md](assets-server-draft.md) / 脅威モデル目標列） |
 

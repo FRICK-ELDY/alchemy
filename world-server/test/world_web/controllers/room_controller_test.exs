@@ -1765,7 +1765,7 @@ defmodule WorldWeb.RoomControllerTest do
              )
              |> json_response(403)
 
-    # Nominated host with a fresh Host Token may read / write scene.
+    # Nominated non-owner host may read scene but cannot mutate canonical (x009d).
     %{"token" => new_host_token} =
       build_conn()
       |> TestAuthHelpers.put_auth(signer, guest)
@@ -1783,18 +1783,175 @@ defmodule WorldWeb.RoomControllerTest do
     assert scene["room_id"] == room
     assert is_list(scene["entries"])
 
+    assert %{"error" => "scene_writer_forbidden"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               new_host_token,
+               new_priv,
+               "/api/v1/rooms/#{room}/scene/entries",
+               %{blake3: blake3, expected_revision: scene["revision"]}
+             )
+             |> json_response(403)
+  end
+
+  test "editor active host may append and delete canonical scene (x009d)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "f6f6f6f6-f6f6-f6f6-f6f6-f6f6f6f6f6f6"
+    editor = "a7a7a7a7-a7a7-a7a7-a7a7-a7a7a7a7a7a7"
+    room = "scene-editor-ok"
+    blake3 = String.duplicate("11", 32)
+    {pub, priv} = TestAuthHelpers.session_keypair()
+
+    assert %{"room_id" => ^room} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: room, visibility: "public"})
+             |> json_response(201)
+
+    assert :ok = World.Rooms.set_editor_subs(room, owner, [editor])
+
+    assert %{"state" => "active", "active_host_sub" => ^editor} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, editor)
+             |> post("/api/v1/rooms/#{room}/takeover", %{})
+             |> json_response(200)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, editor)
+      |> post(
+        "/api/v1/rooms/#{room}/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(pub)})
+      )
+      |> json_response(200)
+
+    scene =
+      build_conn()
+      |> TestAuthHelpers.get_host(host_token, priv, "/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
     appended =
       build_conn()
       |> TestAuthHelpers.post_host_json(
-        new_host_token,
-        new_priv,
+        host_token,
+        priv,
         "/api/v1/rooms/#{room}/scene/entries",
         %{blake3: blake3, expected_revision: scene["revision"]}
       )
       |> json_response(200)
 
-    assert appended["room_id"] == room
-    assert Enum.any?(appended["entries"], fn e -> e["blake3"] == blake3 end)
+    entity_id =
+      appended["entries"]
+      |> Enum.find(fn e -> e["blake3"] == blake3 end)
+      |> Map.fetch!("entity_id")
+
+    deleted =
+      build_conn()
+      |> TestAuthHelpers.delete_host_json(
+        host_token,
+        priv,
+        "/api/v1/rooms/#{room}/scene/entries/#{entity_id}",
+        %{expected_revision: appended["revision"]}
+      )
+      |> json_response(200)
+
+    refute Enum.any?(deleted["entries"], fn e -> e["blake3"] == blake3 end)
+  end
+
+  test "takeover host cannot append or delete canonical scene (x009d)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1"
+    guest = "b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2"
+    room = "scene-to-forbid"
+    blake3 = String.duplicate("ef", 32)
+    {owner_pub, owner_priv} = TestAuthHelpers.session_keypair()
+    {guest_pub, guest_priv} = TestAuthHelpers.session_keypair()
+
+    assert %{"room_id" => ^room} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: room, visibility: "public"})
+             |> json_response(201)
+
+    # Owner hosts first to seed a real mesh, then dormants so guest can takeover.
+    %{"token" => owner_host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post(
+        "/api/v1/rooms/#{room}/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(owner_pub)})
+      )
+      |> json_response(200)
+
+    owner_scene =
+      build_conn()
+      |> TestAuthHelpers.get_host(owner_host_token, owner_priv, "/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
+    seeded =
+      build_conn()
+      |> TestAuthHelpers.post_host_json(
+        owner_host_token,
+        owner_priv,
+        "/api/v1/rooms/#{room}/scene/entries",
+        %{blake3: blake3, expected_revision: owner_scene["revision"]}
+      )
+      |> json_response(200)
+
+    mesh_id =
+      seeded["entries"]
+      |> Enum.find(fn e -> e["blake3"] == blake3 end)
+      |> Map.fetch!("entity_id")
+
+    assert %{"state" => "dormant"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms/#{room}/handover", %{target_sub: nil})
+             |> json_response(200)
+
+    assert %{"state" => "active", "active_host_sub" => ^guest} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, guest)
+             |> post("/api/v1/rooms/#{room}/takeover", %{})
+             |> json_response(200)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, guest)
+      |> post(
+        "/api/v1/rooms/#{room}/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(guest_pub)})
+      )
+      |> json_response(200)
+
+    scene =
+      build_conn()
+      |> TestAuthHelpers.get_host(host_token, guest_priv, "/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
+    assert %{"error" => "scene_writer_forbidden"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               guest_priv,
+               "/api/v1/rooms/#{room}/scene/entries",
+               %{blake3: String.duplicate("ab", 32), expected_revision: scene["revision"]}
+             )
+             |> json_response(403)
+
+    assert %{"error" => "scene_writer_forbidden"} =
+             build_conn()
+             |> TestAuthHelpers.delete_host_json(
+               host_token,
+               guest_priv,
+               "/api/v1/rooms/#{room}/scene/entries/#{mesh_id}",
+               %{expected_revision: scene["revision"]}
+             )
+             |> json_response(403)
   end
 
   test "handover null dormants session and drops public catalog (x0080)", %{

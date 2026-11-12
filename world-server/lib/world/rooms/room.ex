@@ -4,9 +4,9 @@ defmodule World.Rooms.Room do
 
   Guarantees: `room_id` + `owner_sub` + DemoScene `scene` + `visibility` + `wire_cap` (x004e) +
   `room_key` (x0069) + `room_key_epoch` (x007e) + host session (`active_host_sub` / `state` /
-  `host_lease_expires_at` · x0080) survive restart.
+  `host_lease_expires_at` · x0080) + `editor_subs` (x009d canonical scene writers) survive restart.
   Non-guarantees: Presence / physics pose; UGC edit history; previous-epoch key durability
-  (grace is memory-only via `RoomKeyGrace`); seamless sim handoff of poses.
+  (grace is memory-only via `RoomKeyGrace`); seamless sim handoff of poses; Dash Permissions UI.
   """
 
   use Ash.Resource,
@@ -104,6 +104,14 @@ defmodule World.Rooms.Room do
       public? true
     end
 
+    # x009d: JSON array of subs (Builders) allowed to mutate canonical scene with owner.
+    # Stored as text for SQLite / raw SQL; decoded in `Rooms.ensure_scene_writer/2`.
+    attribute :editor_subs, :string do
+      allow_nil? false
+      public? true
+      default "[]"
+    end
+
     create_timestamp :inserted_at
     update_timestamp :updated_at
   end
@@ -124,7 +132,8 @@ defmodule World.Rooms.Room do
         :wire_cap,
         :room_key,
         :room_key_epoch,
-        :room_key_rotated_at
+        :room_key_rotated_at,
+        :editor_subs
       ]
     end
 

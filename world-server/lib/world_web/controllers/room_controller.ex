@@ -790,7 +790,8 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
-  x006d / x0082: append one mesh SceneEntry (host Room Token + active ledger host).
+  x006d / x0082 / x009d: append one mesh SceneEntry (host Room Token + active ledger host +
+  owner/editor scene writer).
 
   Body: `%{"blake3" => 64-hex, "expected_revision" => int, optional pose/color}`.
   Assigns `entity_id`, CAS-bumps revision. Returned scene is the new canonical seal input.
@@ -805,6 +806,7 @@ defmodule WorldWeb.RoomController do
          :ok <- require_host_token(claims, room_id),
          :ok <- require_http_pop(conn, claims),
          :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
+         :ok <- Rooms.ensure_scene_writer(room_id, claims["sub"]),
          :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
          {:ok, expected_revision} <-
            ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
@@ -833,6 +835,11 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:forbidden)
         |> json(%{error: "host_role_forbidden"})
+
+      {:error, :forbidden_scene_writer} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "scene_writer_forbidden"})
 
       # Lease renew CAS lost (handover / takeover raced) — Token may still verify.
       {:error, :conflict} ->
@@ -888,7 +895,8 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
-  x007b / x0082: remove one mesh SceneEntry by entity_id (host Room Token + active ledger host).
+  x007b / x0082 / x009d: remove one mesh SceneEntry by entity_id (host Room Token + active
+  ledger host + owner/editor scene writer).
 
   Body: `%{"expected_revision" => int}`. Requires the entry to carry a 64-hex blake3.
   CAS-bumps revision. Returned scene is the new canonical seal input.
@@ -900,6 +908,7 @@ defmodule WorldWeb.RoomController do
          :ok <- require_host_token(claims, room_id),
          :ok <- require_http_pop(conn, claims),
          :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
+         :ok <- Rooms.ensure_scene_writer(room_id, claims["sub"]),
          :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
          {:ok, expected_revision} <-
            ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
@@ -923,6 +932,11 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:forbidden)
         |> json(%{error: "host_role_required"})
+
+      {:error, :forbidden_scene_writer} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "scene_writer_forbidden"})
 
       {:error, :room_mismatch} ->
         conn
