@@ -75,8 +75,7 @@ use presence::{lock_or_fatal, PresenceIntents, PRESENCE_SLOT_TTL};
 use room_token::{
     default_auth_url, earliest_hard_expire, ensure_sealed_manifest, fetch_room_scene,
     spawn_credential_worker, AuthBrokerInbox, CredentialWorkerConfig, HostCredentialChain,
-    HostPublishSnapshot,
-    ManifestSealCache, RoomTokenVerifier, SharedHostHttpAuth,
+    HostPublishSnapshot, ManifestSealCache, RoomTokenVerifier, SharedHostHttpAuth,
 };
 use session::SessionTable;
 use sim::{LocoMode, PhysicsWorld, USER_ROOT_ENTITY_FIRST};

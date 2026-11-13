@@ -2175,7 +2175,6 @@ fn start_worlds_host(
                     Some(access.as_str()),
                     access_expires_in,
                 ) {
-
                     Ok(()) => {
                         host_started = true;
                         send_enter_progress(
