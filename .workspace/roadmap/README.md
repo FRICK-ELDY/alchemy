@@ -215,16 +215,19 @@ depends_on: [x0006]
 | x00a2 | — | done | SceneBudget entries/JSON bytes（P1-5） | [x00a2-scene-budget.md](slices/x00a2-scene-budget.md) |
 | x00a3 | — | in_progress | MVCC×XPBD Phase 1 scaffold（着手） | [x00a3-mvcc-phase1-scaffold.md](slices/x00a3-mvcc-phase1-scaffold.md) |
 
-**現在の次:** [x00a3](slices/x00a3-mvcc-phase1-scaffold.md) MVCC Phase 1 続き（接触 / zero-alloc DoD）。ゲート P1-1 / P1-4 / P1-5 は **done**。空間本線再開 · Spot-Check 保留。  
-**P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
+**現在の次:** [x00a3](slices/x00a3-mvcc-phase1-scaffold.md) MVCC Phase 1 続き（接触 / zero-alloc DoD）。ゲート P1-1 / P1-4 / P1-5 は **done**。**品質本線**再開 · Spot-Check 保留。  
+**規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；実装は MVCC Phase 3 後。1000 人は horizon）。  
+旧メモ **P3-7（BLAKE3 ストリーミング）** は **CI が完了しなくなるためマージしない**（現行 P3-7 Spatial Interest とは別物）。Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 
-次の空き番号は **`x00a4`**。
+次の空き番号は **`x00a4`**（Interest 実装用に予約しない）。
 
 ## 関連
 
 | 文書 | 内容 |
 |:---|:---|
 | [ローカル CI](ci.md) | `make ci` など |
+| [mvcc_xpbd.md](mvcc_xpbd.md) | 品質本線（MVCC×XPBD Phase 1–3） |
+| [spatial_interest.md](spatial_interest.md) | 規模本線（配信の空間インデックス / P3-7） |
 | [inventory-ladder.md](inventory-ladder.md) | インベントリ B+2→C+3 交互ラダー |
 | [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md) | 未完了帯の優先度ビュー（2026-11-04） |
 | [x006a-zenohex-intro-spec.md](x006a-zenohex-intro-spec.md) | x006a 入力仕様（Adapter / :ring / stub；読み替え注記付き） |
