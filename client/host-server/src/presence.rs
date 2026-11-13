@@ -306,8 +306,8 @@ impl PresenceIntents {
 
     pub(crate) fn to_presence_state(&self, host_generation: u64) -> PresenceState {
         let mut assignments = Vec::with_capacity(self.slot_count);
-        for i in 0..self.slot_count {
-            if let Some(sub) = &self.occupied_sub[i] {
+        for (i, slot) in self.occupied_sub.iter().enumerate().take(self.slot_count) {
+            if let Some(sub) = slot {
                 assignments.push(PresenceAssignment {
                     sub: sub.clone(),
                     entity_id: PhysicsWorld::user_root_entity_id(i),

@@ -172,15 +172,26 @@ fn room_key_from_env_or_local() -> [u8; alchemy_protocol::wire_aead::ROOM_KEY_LE
     alchemy_protocol::LOCAL_ROOM_KEY
 }
 
-/// Auth session for long-running host (x0025 three-tier refresh).
+/// How the host renews its auth access JWT (x0025 / x009f).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthCredentialSource {
+    /// `AUTH_USER`(+password) / refresh_token three-tier refresh.
+    PasswordSession,
+    /// Long-lived `ALCHEMY_AUTH_TOKEN` without broker (`expires_in=0`).
+    StaticEnv,
+    /// Parent `HostSupervisor` pushes access JWT via IPC (x009f). No refresh_token on child.
+    ParentBroker,
+}
+
+/// Auth session for long-running host (x0025 three-tier refresh / x009f broker).
 #[derive(Debug, Clone)]
 pub struct HostAuthSession {
     pub access_token: String,
     pub refresh_token: Option<String>,
-    /// 0 = no scheduled auth refresh (`ALCHEMY_AUTH_TOKEN` env). That path assumes a
-    /// **long-lived** access JWT; a short-lived static token will fail when host Token
-    /// is re-issued and is **not** auto-refreshed.
+    /// 0 = no scheduled auth soft-refresh. StaticEnv assumes a **long-lived** access JWT.
+    /// ParentBroker sets remaining TTL and relies on IPC push before hard expiry.
     pub expires_in: u64,
+    pub source: AuthCredentialSource,
 }
 
 #[derive(Debug, Deserialize)]
@@ -192,20 +203,37 @@ struct AuthSessionJson {
     expires_in: u64,
 }
 
-/// Login to auth-server (or use `ALCHEMY_AUTH_TOKEN`).
+/// Login to auth-server (or use `ALCHEMY_AUTH_TOKEN` / ParentBroker env).
 ///
 /// Release (x001e): requires `ALCHEMY_AUTH_TOKEN` or both `AUTH_USER` + `AUTH_PASSWORD`.
 /// Debug: may fall back to seed `alice` / `Password1` when env is unset.
 ///
-/// `ALCHEMY_AUTH_TOKEN`: treated as long-lived (`expires_in=0`, no timed auth refresh).
-/// Prefer `AUTH_USER`/`AUTH_PASSWORD` (+ `remember_me` refresh) for production hosts.
+/// `ALCHEMY_AUTH_TOKEN` without `ALCHEMY_AUTH_BROKER=1`: long-lived (`expires_in=0`).
+/// With broker env (x009f): ParentBroker + `ALCHEMY_AUTH_EXPIRES_IN` remaining TTL.
+/// Prefer `AUTH_USER`/`AUTH_PASSWORD` (+ `remember_me` refresh) for headless hosts.
 pub fn fetch_auth_session(auth_url: &str) -> Result<HostAuthSession> {
     if let Ok(token) = std::env::var("ALCHEMY_AUTH_TOKEN") {
         if !token.is_empty() {
+            if parent_broker_env_enabled() {
+                // Symmetric with parent spawn: never invent TTL=1 on missing env.
+                let expires_in = parent_broker_expires_in_from_env().ok_or_else(|| {
+                    anyhow!(
+                        "ALCHEMY_AUTH_BROKER=1 requires {} ≥ 1 (refuse ~1s hard-expiry fallback)",
+                        alchemy_protocol::host_ipc::ENV_AUTH_EXPIRES_IN
+                    )
+                })?;
+                return Ok(HostAuthSession {
+                    access_token: token,
+                    refresh_token: None,
+                    expires_in,
+                    source: AuthCredentialSource::ParentBroker,
+                });
+            }
             return Ok(HostAuthSession {
                 access_token: token,
                 refresh_token: None,
                 expires_in: 0,
+                source: AuthCredentialSource::StaticEnv,
             });
         }
     }
@@ -233,6 +261,7 @@ pub fn fetch_auth_session(auth_url: &str) -> Result<HostAuthSession> {
         access_token: resp.access_token,
         refresh_token: resp.refresh_token.filter(|s| !s.is_empty()),
         expires_in: resp.expires_in,
+        source: AuthCredentialSource::PasswordSession,
     })
 }
 
@@ -257,7 +286,33 @@ pub fn refresh_auth_session(auth_url: &str, refresh_token: &str) -> Result<HostA
             .filter(|s| !s.is_empty())
             .or_else(|| Some(refresh_token.to_string())),
         expires_in: resp.expires_in,
+        source: AuthCredentialSource::PasswordSession,
     })
+}
+
+fn parent_broker_env_enabled() -> bool {
+    matches!(
+        std::env::var(alchemy_protocol::host_ipc::ENV_AUTH_BROKER)
+            .ok()
+            .as_deref()
+            .map(str::trim),
+        Some("1") | Some("true") | Some("TRUE")
+    )
+}
+
+fn parent_broker_expires_in_from_env() -> Option<u64> {
+    parent_broker_expires_in_from_env_parse(
+        std::env::var(alchemy_protocol::host_ipc::ENV_AUTH_EXPIRES_IN).ok(),
+    )
+}
+
+/// Parse `ALCHEMY_AUTH_EXPIRES_IN` (testable; absent/0/invalid → `None`).
+pub(crate) fn parent_broker_expires_in_from_env_parse(raw: Option<String>) -> Option<u64> {
+    raw.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse().ok())
+        .filter(|n: &u64| *n > 0)
 }
 
 fn auth_login_credentials() -> Result<(String, String)> {
@@ -568,7 +623,13 @@ impl HostCredentialChain {
         verifier: &RoomTokenVerifier,
     ) -> Result<Self> {
         let auth = fetch_auth_session(auth_url).context("fetch auth session")?;
-        let auth_refresh_at = refresh_deadline(auth.expires_in);
+        // ParentBroker: parent owns soft refresh via AUTH_PUSH; host only tracks hard expiry.
+        let auth_refresh_at = match auth.source {
+            AuthCredentialSource::ParentBroker => None,
+            AuthCredentialSource::PasswordSession | AuthCredentialSource::StaticEnv => {
+                refresh_deadline(auth.expires_in)
+            }
+        };
         let auth_hard_expire_at = hard_expire_deadline(auth.expires_in);
         let (csr_pem, eph_key) = if zenoh_connect::should_request_world_mtls() {
             let eph = zenoh_connect::EphemeralMtlsIdentity::generate()
@@ -651,6 +712,41 @@ impl HostCredentialChain {
         ])
     }
 
+    /// Apply a parent IPC `AUTH_PUSH` (x009f). Updates access JWT + hard expiry and
+    /// schedules an immediate host Room Token re-issue on the next plan.
+    ///
+    /// Rejects when auth source is not [`AuthCredentialSource::ParentBroker`] so a
+    /// PasswordSession / StaticEnv host cannot lose self-refresh via a mistaken push.
+    ///
+    /// Returns `true` when the access token string changed (caller should refresh host).
+    pub fn apply_parent_auth_push(
+        &mut self,
+        push: &alchemy_protocol::host_ipc::AuthPush,
+    ) -> Result<bool> {
+        if self.auth.source != AuthCredentialSource::ParentBroker {
+            return Err(anyhow!(
+                "AUTH_PUSH rejected: auth source is {:?}, not ParentBroker",
+                self.auth.source
+            ));
+        }
+        if push.expires_in == 0 {
+            return Err(anyhow!("AUTH_PUSH rejected: expires_in must be ≥ 1"));
+        }
+        let changed = self.auth.access_token != push.access_jwt;
+        self.auth.access_token = push.access_jwt.clone();
+        self.auth.refresh_token = None;
+        self.auth.expires_in = push.expires_in;
+        self.auth_refresh_at = None;
+        self.auth_hard_expire_at = hard_expire_deadline(self.auth.expires_in);
+        // Soft-due host Token soon so the new Bearer is used before the old JWT dies.
+        self.host_refresh_at = Instant::now();
+        log::info!(
+            "applied parent AUTH_PUSH (expires_in={}s, access_changed={changed})",
+            self.auth.expires_in
+        );
+        Ok(changed)
+    }
+
     /// Apply a precomputed refresh plan (x003d: caller owns `plan_credential_refresh` timing).
     /// Returns `true` when `host_attestation` rotated (caller should rebuild sealed Manifest).
     pub fn apply_credential_plan(
@@ -676,6 +772,12 @@ impl HostCredentialChain {
     }
 
     fn refresh_auth(&mut self, auth_url: &str) -> Result<()> {
+        if self.auth.source == AuthCredentialSource::ParentBroker {
+            // Soft auth deadline is never set for ParentBroker; if we get here, wait for push.
+            return Err(anyhow!(
+                "ParentBroker auth soft-refresh skipped; awaiting parent AUTH_PUSH"
+            ));
+        }
         if let Some(rt) = self.auth.refresh_token.clone() {
             match refresh_auth_session(auth_url, &rt) {
                 Ok(sess) => {
@@ -689,7 +791,13 @@ impl HostCredentialChain {
             }
         }
         let sess = fetch_auth_session(auth_url).context("re-login auth session")?;
-        self.auth_refresh_at = refresh_deadline(sess.expires_in);
+        let auth_refresh_at = match sess.source {
+            AuthCredentialSource::ParentBroker => None,
+            AuthCredentialSource::PasswordSession | AuthCredentialSource::StaticEnv => {
+                refresh_deadline(sess.expires_in)
+            }
+        };
+        self.auth_refresh_at = auth_refresh_at;
         self.auth_hard_expire_at = hard_expire_deadline(sess.expires_in);
         self.auth = sess;
         log::info!("refreshed auth JWT via login / ALCHEMY_AUTH_TOKEN");
@@ -1065,5 +1173,105 @@ mod tests {
                 refresh_attest: true,
             }
         );
+    }
+
+    fn test_chain(source: AuthCredentialSource) -> HostCredentialChain {
+        let pop = alchemy_protocol::wire_crypto::generate_signing_key();
+        HostCredentialChain {
+            auth: HostAuthSession {
+                access_token: "old".into(),
+                refresh_token: Some("rt".into()),
+                expires_in: 60,
+                source,
+            },
+            auth_refresh_at: None,
+            auth_hard_expire_at: hard_expire_deadline(60),
+            host_token: "host".into(),
+            pop_key: pop.clone(),
+            host_sub: "sub".into(),
+            host_refresh_at: Instant::now() + Duration::from_secs(120),
+            host_hard_expire_at: Instant::now() + Duration::from_secs(300),
+            host_attestation: "att".into(),
+            host_generation: 1,
+            attest_refresh_at: Instant::now() + Duration::from_secs(120),
+            attest_hard_expire_at: Instant::now() + Duration::from_secs(300),
+            wire_cap: "cap".into(),
+            room_key: [0u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
+            room_key_epoch: 0,
+            room_key_prev: None,
+            allocation_token: String::new(),
+            http_auth: SharedHostHttpAuth::new("host".into(), pop, "sub".into()),
+        }
+    }
+
+    #[test]
+    fn apply_parent_auth_push_sets_broker_and_hard_expiry() {
+        let mut chain = test_chain(AuthCredentialSource::ParentBroker);
+        let changed = chain
+            .apply_parent_auth_push(&alchemy_protocol::host_ipc::AuthPush {
+                expires_in: 900,
+                access_jwt: "new.jwt.here".into(),
+            })
+            .expect("ParentBroker accepts push");
+        assert!(changed);
+        assert_eq!(chain.auth.access_token, "new.jwt.here");
+        assert!(chain.auth.refresh_token.is_none());
+        assert_eq!(chain.auth.source, AuthCredentialSource::ParentBroker);
+        assert!(chain.auth_refresh_at.is_none());
+        assert!(chain.auth_hard_expire_at.is_some());
+        assert!(chain.host_refresh_at <= Instant::now());
+    }
+
+    #[test]
+    fn apply_parent_auth_push_rejects_password_session() {
+        // Documents IPC OK ≠ applied: inbox may have ACKed, but PasswordSession
+        // rejects here and the push is already consumed (parent must not push durable hosts).
+        let mut chain = test_chain(AuthCredentialSource::PasswordSession);
+        let err = chain
+            .apply_parent_auth_push(&alchemy_protocol::host_ipc::AuthPush {
+                expires_in: 900,
+                access_jwt: "new.jwt.here".into(),
+            })
+            .expect_err("PasswordSession must reject");
+        assert!(err.to_string().contains("ParentBroker"));
+        assert_eq!(chain.auth.access_token, "old");
+        assert_eq!(chain.auth.refresh_token.as_deref(), Some("rt"));
+        assert_eq!(chain.auth.source, AuthCredentialSource::PasswordSession);
+    }
+
+    #[test]
+    fn parent_broker_expires_in_parse_rejects_missing_or_zero() {
+        // Missing EXPIRES_IN must not become 1 (parent spawn + child bootstrap both fail-closed).
+        assert!(parent_broker_expires_in_from_env_parse(None).is_none());
+        assert!(parent_broker_expires_in_from_env_parse(Some("".into())).is_none());
+        assert!(parent_broker_expires_in_from_env_parse(Some("0".into())).is_none());
+        assert!(parent_broker_expires_in_from_env_parse(Some("nope".into())).is_none());
+        assert_eq!(
+            parent_broker_expires_in_from_env_parse(Some("90".into())),
+            Some(90)
+        );
+    }
+
+    #[test]
+    fn parent_broker_push_schedules_host_token_refresh_plan() {
+        // Regression: AUTH_PUSH must make the next credential plan refresh_host (new Bearer).
+        let mut chain = test_chain(AuthCredentialSource::ParentBroker);
+        chain
+            .apply_parent_auth_push(&alchemy_protocol::host_ipc::AuthPush {
+                expires_in: 600,
+                access_jwt: "brokered.jwt".into(),
+            })
+            .unwrap();
+        let now = Instant::now();
+        let plan = plan_credential_refresh(
+            now,
+            chain.auth_refresh_at,
+            chain.host_refresh_at,
+            chain.attest_refresh_at,
+        )
+        .expect("host soft-due after push");
+        assert!(!plan.refresh_auth);
+        assert!(plan.refresh_host);
+        assert_eq!(chain.auth.access_token, "brokered.jwt");
     }
 }

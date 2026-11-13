@@ -1,13 +1,23 @@
-//! Localhost TCP shutdown for client `HostSupervisor` (x0032 IPC).
+//! Localhost TCP shutdown + parent auth broker for client `HostSupervisor`
+//! (x0032 IPC / x009f AUTH_PUSH).
 //!
 //! Guarantees: when `ALCHEMY_HOST_IPC_TOKEN` is set, bind `127.0.0.1:0` (no TOCTOU),
-//! accept matching `SHUTDOWN <token>\n`, set [`shutdown_requested`] for main to leave
-//! cleanly (exit 0 — intentional stop).
-//! Non-guarantees: remote hosts, TLS, multi-command IPC, Zenoh host_control (separate).
+//! accept matching `SHUTDOWN <token>\n` (sets [`shutdown_requested`]) or
+//! `AUTH_PUSH <token> <expires_in> <access_jwt>\n` (stores into the shared
+//! [`AuthBrokerInbox`] passed to [`spawn_listener`]; `OK` = inbox accepted).
+//!
+//! **x009f asymmetry:** IPC `OK` does **not** mean the credential worker applied the
+//! push. Non-`ParentBroker` hosts reject at `apply_parent_auth_push` (push is consumed).
+//! Parent must only AUTH_PUSH when the child was spawned as ParentBroker (symmetric with
+//! skipping push when parent env prefers durable `AUTH_USER` / long-lived token).
+//!
+//! Non-guarantees: remote hosts, TLS, JWT signature verification (parent trust boundary),
+//! Zenoh host_control (separate).
 
-use alchemy_protocol::host_ipc::{authenticates_shutdown, ENV_TOKEN};
+use alchemy_protocol::host_ipc::{authenticates_shutdown, parse_auth_push, ENV_TOKEN};
 use anyhow::{Context, Result};
-use std::io::{BufRead, BufReader};
+use host_server::room_token::AuthBrokerInbox;
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -32,16 +42,16 @@ pub fn bound_addr() -> Option<String> {
 }
 
 /// Bind loopback ephemeral port when token env is set. Holds the listener until process end.
-pub fn spawn_listener() -> Result<()> {
+pub fn spawn_listener(auth_broker: AuthBrokerInbox) -> Result<()> {
     let Ok(token) = std::env::var(ENV_TOKEN) else {
-        log::info!("{ENV_TOKEN} unset — host IPC shutdown disabled");
+        log::info!("{ENV_TOKEN} unset — host IPC shutdown/broker disabled");
         // CI ready-file waiters still need a signal when IPC is off.
         write_ready_file_if_configured(None);
         return Ok(());
     };
     let token = token.trim().to_string();
     if token.is_empty() {
-        log::info!("{ENV_TOKEN} empty — host IPC shutdown disabled");
+        log::info!("{ENV_TOKEN} empty — host IPC shutdown/broker disabled");
         write_ready_file_if_configured(None);
         return Ok(());
     }
@@ -67,13 +77,14 @@ pub fn spawn_listener() -> Result<()> {
         .spawn(move || {
             for conn in listener.incoming() {
                 match conn {
-                    Ok(stream) => {
-                        if handle_client(stream, &token) {
+                    Ok(stream) => match handle_client(stream, &token, &auth_broker) {
+                        ClientResult::Shutdown => {
                             log::info!("host IPC: authenticated shutdown — signaling main loop");
                             SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
                             break;
                         }
-                    }
+                        ClientResult::AuthPushed | ClientResult::Ignored => {}
+                    },
                     Err(err) => log::warn!("host IPC accept: {err}"),
                 }
             }
@@ -96,25 +107,57 @@ fn write_ready_file_if_configured(ipc: Option<&str>) {
     }
 }
 
-fn handle_client(stream: TcpStream, expected_token: &str) -> bool {
+enum ClientResult {
+    Shutdown,
+    AuthPushed,
+    Ignored,
+}
+
+fn handle_client(stream: TcpStream, expected_token: &str, inbox: &AuthBrokerInbox) -> ClientResult {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let mut reader = BufReader::new(stream);
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let Ok(reader_stream) = stream.try_clone() else {
+        return ClientResult::Ignored;
+    };
+    let mut writer = stream;
+    let mut reader = BufReader::new(reader_stream);
     let mut line = String::new();
     if reader.read_line(&mut line).is_err() {
-        return false;
+        return ClientResult::Ignored;
     }
+
     if authenticates_shutdown(&line, expected_token) {
-        true
-    } else {
-        log::warn!("host IPC: ignored unauthenticated or malformed line");
-        false
+        return ClientResult::Shutdown;
     }
+    if let Some(push) = parse_auth_push(&line, expected_token) {
+        match inbox.store(push) {
+            Ok(()) => {
+                let _ = writer.write_all(b"OK\n");
+                let _ = writer.flush();
+                log::info!("host IPC: accepted AUTH_PUSH from parent broker");
+                return ClientResult::AuthPushed;
+            }
+            Err(err) => {
+                let _ = writer.write_all(b"ERR\n");
+                let _ = writer.flush();
+                log::error!("host IPC: AUTH_PUSH store failed ({err}); replied ERR");
+                return ClientResult::Ignored;
+            }
+        }
+    }
+    // Malformed / wrong token AUTH_PUSH or unknown command.
+    if line.trim_start().starts_with("AUTH_PUSH") {
+        let _ = writer.write_all(b"ERR\n");
+        let _ = writer.flush();
+    }
+    log::warn!("host IPC: ignored unauthenticated or malformed line");
+    ClientResult::Ignored
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alchemy_protocol::host_ipc::request_shutdown;
+    use alchemy_protocol::host_ipc::{request_auth_push, request_shutdown};
     use std::net::TcpListener;
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -126,10 +169,14 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let barrier = Arc::new(Barrier::new(2));
         let b2 = Arc::clone(&barrier);
+        let inbox = AuthBrokerInbox::new();
         let handle = thread::spawn(move || {
             b2.wait();
             let (stream, _) = listener.accept().unwrap();
-            handle_client(stream, "secret-token")
+            matches!(
+                handle_client(stream, "secret-token", &inbox),
+                ClientResult::Shutdown
+            )
         });
         barrier.wait();
         thread::sleep(Duration::from_millis(20));
@@ -143,14 +190,63 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let barrier = Arc::new(Barrier::new(2));
         let b2 = Arc::clone(&barrier);
+        let inbox = AuthBrokerInbox::new();
         let handle = thread::spawn(move || {
             b2.wait();
             let (stream, _) = listener.accept().unwrap();
-            handle_client(stream, "secret-token")
+            matches!(
+                handle_client(stream, "secret-token", &inbox),
+                ClientResult::Ignored
+            )
         });
         barrier.wait();
         thread::sleep(Duration::from_millis(20));
         request_shutdown(&addr.to_string(), "wrong").unwrap();
-        assert!(!handle.join().unwrap());
+        assert!(handle.join().unwrap());
+    }
+
+    #[test]
+    fn auth_push_accepts_matching_token_and_stores() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let barrier = Arc::new(Barrier::new(2));
+        let b2 = Arc::clone(&barrier);
+        let inbox = AuthBrokerInbox::new();
+        let inbox2 = inbox.clone();
+        let handle = thread::spawn(move || {
+            b2.wait();
+            let (stream, _) = listener.accept().unwrap();
+            handle_client(stream, "secret-token", &inbox2)
+        });
+        barrier.wait();
+        thread::sleep(Duration::from_millis(20));
+        request_auth_push(&addr, "secret-token", 600, "hdr.payload.sig").unwrap();
+        assert!(matches!(handle.join().unwrap(), ClientResult::AuthPushed));
+        let got = inbox.take().expect("stored");
+        assert_eq!(got.expires_in, 600);
+        assert_eq!(got.access_jwt, "hdr.payload.sig");
+    }
+
+    #[test]
+    fn auth_push_rejects_bad_token() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let barrier = Arc::new(Barrier::new(2));
+        let b2 = Arc::clone(&barrier);
+        let inbox = AuthBrokerInbox::new();
+        let inbox2 = inbox.clone();
+        let handle = thread::spawn(move || {
+            b2.wait();
+            let (stream, _) = listener.accept().unwrap();
+            handle_client(stream, "secret-token", &inbox2)
+        });
+        barrier.wait();
+        thread::sleep(Duration::from_millis(20));
+        let err = request_auth_push(&addr, "wrong", 600, "hdr.payload.sig").unwrap_err();
+        assert!(
+            err.to_string().contains("not OK") || err.kind() == std::io::ErrorKind::InvalidData
+        );
+        assert!(matches!(handle.join().unwrap(), ClientResult::Ignored));
+        assert!(inbox.take().is_none());
     }
 }

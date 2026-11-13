@@ -23,7 +23,7 @@
 //!   rebind GC skips the new pub). JWKS hard stale on Room Token verify
 //! - Zenoh keys from `ROOM_ID` via protocol `*_key` helpers (x0017)
 //! - Slice E / x001e: Zenoh `host_control` off by default; `ALCHEMY_HOST_CONTROL=1` to enable
-//! - x0032: localhost IPC shutdown when `ALCHEMY_HOST_IPC_*` set (client HostSupervisor)
+//! - x0032 / x009f: localhost IPC shutdown + parent AUTH_PUSH when `ALCHEMY_HOST_IPC_*` set
 //!
 //! Non-guarantees:
 //! - Steal / rotation follow / Formula / polished Walk / verifier
@@ -74,8 +74,8 @@ use network_worker::{spawn_network_worker, NetworkWorkerConfig};
 use presence::{lock_or_fatal, PresenceIntents, PRESENCE_SLOT_TTL};
 use room_token::{
     default_auth_url, earliest_hard_expire, ensure_sealed_manifest, fetch_room_scene,
-    spawn_credential_worker, CredentialWorkerConfig, HostCredentialChain, HostPublishSnapshot,
-    ManifestSealCache, RoomTokenVerifier, SharedHostHttpAuth,
+    spawn_credential_worker, AuthBrokerInbox, CredentialWorkerConfig, HostCredentialChain,
+    HostPublishSnapshot, ManifestSealCache, RoomTokenVerifier, SharedHostHttpAuth,
 };
 use session::SessionTable;
 use sim::{LocoMode, PhysicsWorld, USER_ROOT_ENTITY_FIRST};
@@ -549,7 +549,8 @@ fn main() -> Result<()> {
     )?;
     spawn_liveliness_watcher(session.clone(), &room_id, &wire_cap, Arc::clone(&presence))?;
     host_control::spawn_listener(session.clone(), &room_id, &wire_cap)?;
-    host_ipc::spawn_listener().context("host IPC listener")?;
+    let auth_broker = AuthBrokerInbox::new();
+    host_ipc::spawn_listener(auth_broker.clone()).context("host IPC listener")?;
     let http_auth: SharedHostHttpAuth = creds.http_auth.clone();
     let spawn_inbox = inventory_spawn::spawn_listener(
         session.clone(),
@@ -664,6 +665,7 @@ fn main() -> Result<()> {
             scene: Arc::clone(&shared_scene),
             force_reseal: Arc::clone(&force_reseal),
             room_aead: Arc::clone(&room_aead),
+            auth_broker,
         },
     );
     log::info!("credential worker spawned (HTTP refresh off physics thread)");

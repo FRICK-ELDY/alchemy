@@ -22,8 +22,8 @@
 
 | ID | 項目 | 根拠 | 作業イメージ | 完了条件 |
 |:---|:---|:---|:---|:---|
-| P0-1 | HostDelegation + canonical scene を owner/editor 限定 | -4 | **前半 x009d done:** scene writer 門番。**後半 x009e:** `session_overlay` + packed compose/seal + inventory→overlay；takeover = owner ∪ `eligible_host_subs` | 非オーナー canonical 403；dormant で overlay 消失；非 eligible takeover 403 |
-| P0-2 | 親 client 資格情報 broker | -3 | HostSupervisor が refresh を子に渡さず、loopback IPC で更新済み access JWT を push。hard expiry 前に必ず再供給 | GUI ログイン host が 30 分超えても Room Token 再発行できる統合テスト |
+| P0-1 | HostDelegation + canonical scene を owner/editor 限定 | -4 | **closed**（x009d + x009e / #189–#190） | 非オーナー canonical 403；dormant で overlay 消失；非 eligible takeover 403 |
+| P0-2 | 親 client 資格情報 broker | -3 | **closed**（x009f）: HostSupervisor が refresh を子に渡さず、loopback IPC `AUTH_PUSH` で更新済み access JWT を push。ParentBroker は自己 login しない | 偽 IPC トークン拒否；`apply_parent_auth_push` + IPC roundtrip；親 refresh→push 配線 |
 
 ---
 
@@ -83,8 +83,8 @@
 
 ## 推奨スライス順
 
-1. **HostDelegation + scene overlay**（P0-1）— 否定系を同 PR
-2. **資格情報 broker**（P0-2）— GUI 本線ホストの寿命
+1. **HostDelegation + scene overlay**（P0-1）— **closed**（x009d / x009e）
+2. **資格情報 broker**（P0-2 / x009f）— **closed**
 3. **XPBD 接触 + zero-alloc**（P1-2 / P1-3）を並行
 4. **kick/epoch + SceneBudget + handover accept**（P1-1 / P1-4 / P1-5）
 5. **UI 分割 / docs / CI フレーク**（P2）
