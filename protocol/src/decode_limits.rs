@@ -45,12 +45,14 @@ impl WireClass {
 }
 
 /// Pre-decode payload byte ceilings (inclusive).
+/// World SceneBudget (`World.SceneBudget` / x00a2) mirrors `MAX_MANIFEST_BYTES` for JSON scene CAS.
 pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 pub const MAX_PRESENCE_BYTES: usize = 64 * 1024;
 pub const MAX_INPUT_BYTES: usize = 32 * 1024;
 
 /// Post-decode repeated-field ceilings.
+/// Keep in sync with `World.SceneBudget.max_entries/0` (x00a2).
 pub const MAX_MANIFEST_ENTRIES: usize = 4096;
 /// DoS bound — see module docs (not a host steady-state publish quota).
 pub const MAX_FRAME_UPSERTS: usize = 4096;

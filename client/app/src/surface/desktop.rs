@@ -502,12 +502,14 @@ fn kick_waiting_host_session_poll(
         let Ok(summary) = world_api::get_room(&world_url, &access, room_id.as_ref()) else {
             return;
         };
+        // x00a1: nominated = candidate waiting to accept (dormant), not yet active_host.
+        // Takeover CTA only when dormant with **no** pending candidate (else server 409).
         let nominated = summary
-            .active_host_sub
+            .handover_candidate_sub
             .as_deref()
             .is_some_and(|s| s == local_sub)
-            && summary.state == "active";
-        let can_takeover = summary.state == "dormant";
+            && summary.state == "dormant";
+        let can_takeover = summary.state == "dormant" && summary.handover_candidate_sub.is_none();
         let auto_start = nominated && server_operator && !session_enter_active;
         let _ = tx.send(WaitingSessionSnapshot {
             nominated,
@@ -560,7 +562,8 @@ fn apply_waiting_host_session_poll(
     }
 }
 
-/// x0080: nominate a Presence peer or dormant the session before stopping local host.
+/// x0080 / x00a1: nominate a Presence peer as **candidate** (no lease) or dormant.
+/// Candidate must `accept_handover` before becoming active_host.
 /// Runs ureq off this thread but waits up to 3s so stop-host does not race the CAS.
 fn maybe_handover_before_leave(shared: &SharedState) {
     let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
@@ -572,6 +575,7 @@ fn maybe_handover_before_leave(shared: &SharedState) {
     if room_id.is_empty() {
         return;
     }
+    // Still may propose a peer as candidate; lease is deferred until accept (x00a1).
     let target = shared.first_presence_peer_sub();
     let world_url = shared.get_world_url();
     let (tx, rx) = mpsc::channel();
@@ -604,9 +608,10 @@ fn apply_host_authority_conflict(ui: &mut SystemUi, shared: &SharedState, err: &
     stop_supervised_host(shared);
     ui.state.worlds_nominated_host = false;
     // Stay in-room Waiting when already joined; otherwise clear enter shell only.
+    // Do not invent Takeover CTA — pending candidate still yields server 409 until poll.
     if ui.state.worlds_in_room {
         ui.state.worlds_waiting_host = true;
-        ui.state.worlds_can_takeover = true;
+        ui.state.worlds_can_takeover = false;
         ui.state.worlds_can_host_rescue = false;
         ui.state.session_enter_active = false;
         ui.state.home_status =
@@ -1966,6 +1971,8 @@ fn apply_start_session_result(
             );
         }
         (vis, Err(err)) => {
+            // x00a1: accept/claim failure must drop nominated so Waiting does not auto-retry forever.
+            ui.state.worlds_nominated_host = false;
             if is_host_authority_conflict(&err) {
                 apply_host_authority_conflict(ui, shared, &err);
             } else {
@@ -2041,8 +2048,9 @@ fn apply_join_result(
         Err(err) => {
             if is_host_authority_conflict(&err) {
                 // Takeover race while Waiting — keep Waiting shell; access JWT stays.
+                // CTA from next session poll only (pending candidate must not flash Takeover).
                 ui.state.worlds_nominated_host = false;
-                ui.state.worlds_can_takeover = true;
+                ui.state.worlds_can_takeover = false;
                 ui.state.session_enter_active = false;
                 ui.state.home_status =
                     "Takeover lost (409) — another host claimed; wait or retry".into();
@@ -2068,7 +2076,7 @@ enum HostStartKind {
     Owner,
     /// CAS takeover while dormant / lease-expired.
     Takeover,
-    /// Already nominated via handover (`active_host_sub == self`).
+    /// Handover candidate — must `accept_handover` before host Token (x00a1).
     Nominated,
 }
 
@@ -2157,7 +2165,19 @@ fn start_worlds_host(
                     .map(|_| ())
                     .map_err(|e| format!("{e:#}"))
             }
-            HostStartKind::Nominated => Ok(()),
+            HostStartKind::Nominated => {
+                send_enter_progress(
+                    &tx,
+                    &shared_job,
+                    epoch,
+                    0.28,
+                    "Accepting handover…",
+                    "POST /rooms/:id/handover/accept",
+                );
+                world_api::accept_handover(&world_url, &access, room_id.as_ref())
+                    .map(|_| ())
+                    .map_err(|e| format!("{e:#}"))
+            }
         };
         let mut host_started = false;
         let join = match claim {

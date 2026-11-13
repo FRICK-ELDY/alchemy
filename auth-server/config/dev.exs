@@ -1,7 +1,10 @@
 import Config
 
-# world → auth S2S (dev only; prod requires AUTH_INTERNAL_TOKEN)
+# world ↔ auth S2S (dev only; prod requires AUTH_INTERNAL_TOKEN)
 config :auth, :internal_token, "dev-internal-token"
+# Dev-only default; prod requires WORLD_INTERNAL_URL (runtime.exs).
+config :auth, :world_internal_url, "http://127.0.0.1:4005"
+config :auth, :world_notify_mode, :http
 
 # Ecto.Repo.transaction + Ash updates; no Ash notifiers yet. Drop when notifiers are added.
 config :ash, :missed_notifications, :ignore

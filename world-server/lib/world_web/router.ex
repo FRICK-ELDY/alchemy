@@ -13,6 +13,10 @@ defmodule WorldWeb.Router do
     plug WorldWeb.Plugs.RateLimit
   end
 
+  pipeline :internal do
+    plug WorldWeb.Plugs.InternalToken
+  end
+
   scope "/api/v1", WorldWeb do
     pipe_through [:api, :user_auth, :rate_limited]
 
@@ -23,7 +27,17 @@ defmodule WorldWeb.Router do
     put "/rooms/:room_id/visibility", RoomController, :update_visibility
     put "/rooms/:room_id/eligible_hosts", RoomController, :update_eligible_hosts
     post "/rooms/:room_id/handover", RoomController, :handover
+    post "/rooms/:room_id/handover/accept", RoomController, :accept_handover
     post "/rooms/:room_id/takeover", RoomController, :takeover
+    # x00a0: owner kick / manual Room key revoke
+    post "/rooms/:room_id/room_key/rotate", RoomController, :rotate_room_key
+  end
+
+  # x00a0: auth → world friendship / follow revoke hook
+  scope "/internal/v1", WorldWeb do
+    pipe_through [:api, :internal]
+
+    post "/relation_changed", RelationController, :changed
   end
 
   # x0025 / x0026: Bearer is host Room Token (not auth JWT).

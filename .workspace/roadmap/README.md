@@ -210,11 +210,15 @@ depends_on: [x0006]
 | x009d | — | done | canonical scene owner/editor 門番（P0-1 前半 · Phase 0–2） | [x009d-host-delegation-scene-overlay.md](slices/x009d-host-delegation-scene-overlay.md) |
 | x009e | — | done | session_overlay + eligible_host（P0-1 後半） | [x009e-session-overlay-eligible-host.md](slices/x009e-session-overlay-eligible-host.md) |
 | x009f | — | done | 親 client 資格情報 broker（P0-2） | [x009f-parent-credential-broker.md](slices/x009f-parent-credential-broker.md) |
+| x00a0 | — | done | kick / friendship → Room key epoch（P1-1） | [x00a0-kick-epoch-rotate.md](slices/x00a0-kick-epoch-rotate.md) |
+| x00a1 | — | done | handover 候補 accept 二段階（P1-4） | [x00a1-handover-accept.md](slices/x00a1-handover-accept.md) |
+| x00a2 | — | done | SceneBudget entries/JSON bytes（P1-5） | [x00a2-scene-budget.md](slices/x00a2-scene-budget.md) |
+| x00a3 | — | in_progress | MVCC×XPBD Phase 1 scaffold（着手） | [x00a3-mvcc-phase1-scaffold.md](slices/x00a3-mvcc-phase1-scaffold.md) |
 
-**現在の次:** P1（XPBD 接触 / zero-alloc / kick→epoch / SceneBudget / handover accept）。[x009f](slices/x009f-parent-credential-broker.md) **done**（[P0-2](../0_doc/evaluation/improvement-plan-2026-11-12.md)）。空間本線は一時停止 · Spot-Check 保留。  
+**現在の次:** [x00a3](slices/x00a3-mvcc-phase1-scaffold.md) MVCC Phase 1 続き（接触 / zero-alloc DoD）。ゲート P1-1 / P1-4 / P1-5 は **done**。空間本線再開 · Spot-Check 保留。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 
-次の空き番号は **`x00a0`**。
+次の空き番号は **`x00a4`**。
 
 ## 関連
 

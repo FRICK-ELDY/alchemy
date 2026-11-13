@@ -46,6 +46,8 @@ config :auth, :jwt_verification_key_paths, []
 config :auth, :jwt_generate_key_on_startup, false
 config :auth, :trusted_proxies, ["127.0.0.1", "::1"]
 config :auth, :internal_token, "dev-internal-token"
+config :auth, :world_notify_mode, :stub
+config :auth, :world_internal_url, "http://127.0.0.1:9"
 
 config :auth, Auth.RateLimit,
   limits: %{

@@ -178,7 +178,7 @@ pub struct DashState {
     pub worlds_can_host_rescue: bool,
     /// Waiting overlay may show Takeover when session is dormant / lease-expired (x0080).
     pub worlds_can_takeover: bool,
-    /// Local sub was nominated as `active_host_sub` (x0080 auto-host when Server Operator ON).
+    /// Local sub is handover candidate (x00a1; accept then auto-host when Server Operator ON).
     pub worlds_nominated_host: bool,
     /// Last Waiting host-session poll (x0080 nomination / takeover CTA).
     pub worlds_session_poll_at: Option<std::time::Instant>,

@@ -6,9 +6,10 @@ defmodule Auth.Social do
   - Directed follow / unfollow
   - Friend request only when mutual follow
   - Unfollow clears friendship (pending or accepted) for that pair (same DB transaction)
+  - After accepted friendship clear (unfriend / unfollow), notify world for Room key rotate (x00a0)
 
   Non-guarantees: Block, Group, push notifications, JWT claims for the graph;
-  Room Token revocation on unfollow (world issues tokens; TTL-only until later).
+  world notify retry; already-issued Room Token JWT immediate revoke (TTL; new epoch AEAD closed).
   """
 
   require Logger
@@ -16,6 +17,7 @@ defmodule Auth.Social do
   alias Auth.Accounts.User
   alias Auth.Repo
   alias Auth.Social.{Follow, Friendship}
+  alias Auth.WorldNotify
 
   @type user_id :: String.t() | Ecto.UUID.t()
 
@@ -44,6 +46,8 @@ defmodule Auth.Social do
          {:ok, followee_id} <- cast_id(followee_id),
          :ok <- reject_self(follower_id, followee_id),
          {:ok, %Follow{} = edge} <- fetch_follow(follower_id, followee_id) do
+      had_accepted = friends?(follower_id, followee_id)
+
       case Repo.transaction(fn ->
              with :ok <- destroy_follow(edge),
                   :ok <- clear_friendship(follower_id, followee_id) do
@@ -52,8 +56,15 @@ defmodule Auth.Social do
                {:error, reason} -> Repo.rollback(reason)
              end
            end) do
-        {:ok, :ok} -> :ok
-        {:error, reason} -> {:error, reason}
+        {:ok, :ok} ->
+          if had_accepted do
+            WorldNotify.relation_changed(follower_id, followee_id, "unfollow")
+          end
+
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
       end
     end
   end
@@ -151,8 +162,10 @@ defmodule Auth.Social do
     with {:ok, a} <- cast_id(a),
          {:ok, b} <- cast_id(b),
          {lo, hi} <- pair(a, b),
-         {:ok, %Friendship{state: :accepted} = row} <- fetch_pair(lo, hi) do
-      destroy_friendship(row)
+         {:ok, %Friendship{state: :accepted} = row} <- fetch_pair(lo, hi),
+         :ok <- destroy_friendship(row) do
+      WorldNotify.relation_changed(a, b, "unfriend")
+      :ok
     else
       {:error, _} = err -> err
       _ -> {:error, :not_found}

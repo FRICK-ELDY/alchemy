@@ -71,12 +71,25 @@ defmodule WorldWeb.Plugs.RateLimit do
        }),
        do: :room_visibility
 
-  # x0080: reuse visibility budget for host transfer endpoints.
+  # x0080 / x00a1: reuse visibility budget for host transfer endpoints.
   defp action_for(%{method: "POST", path_info: ["api", "v1", "rooms", _room_id, "handover"]}),
     do: :room_visibility
 
+  defp action_for(%{
+         method: "POST",
+         path_info: ["api", "v1", "rooms", _room_id, "handover", "accept"]
+       }),
+       do: :room_visibility
+
   defp action_for(%{method: "POST", path_info: ["api", "v1", "rooms", _room_id, "takeover"]}),
     do: :room_visibility
+
+  # x00a0: owner Room key rotate (kick / manual revoke).
+  defp action_for(%{
+         method: "POST",
+         path_info: ["api", "v1", "rooms", _room_id, "room_key", "rotate"]
+       }),
+       do: :room_visibility
 
   # x0084: host-token / PlaceRead scope (operation-separated).
   defp action_for(%{method: "POST", path_info: ["api", "v1", "rooms", _room_id, "host_keys"]}),

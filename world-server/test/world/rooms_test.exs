@@ -46,6 +46,61 @@ defmodule World.RoomsTest do
     assert {:ok, %Room{room_key: ^key1, room_key_epoch: 1}} = Room.get_by_room_id("rk-narrow")
   end
 
+  test "accept_handover grants lease only to candidate (x00a1)" do
+    owner = "a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1"
+    guest = "a2a2a2a2-a2a2-a2a2-a2a2-a2a2a2a2a2a2"
+    other = "a3a3a3a3-a3a3-a3a3-a3a3-a3a3a3a3a3a3"
+
+    assert {:ok, "ho-acc", _, _} = Rooms.create("ho-acc", owner)
+    assert {:ok, _} = Rooms.activate_as_host("ho-acc", owner)
+    assert {:ok, nominated} = Rooms.handover("ho-acc", owner, guest)
+    assert nominated.state == "dormant"
+    assert nominated.handover_candidate_sub == guest
+    assert nominated.active_host_sub == nil
+
+    assert {:error, :forbidden_host} = Rooms.accept_handover("ho-acc", other)
+    assert {:ok, accepted} = Rooms.accept_handover("ho-acc", guest)
+    assert accepted.state == "active"
+    assert accepted.active_host_sub == guest
+    assert accepted.handover_candidate_sub == nil
+  end
+
+  test "append_scene_entry rejects over entry budget (x00a2)" do
+    owner = "b1b1b1b1-b1b1-b1b1-b1b1-b1b1b1b1b1b1"
+    assert {:ok, "budget-ent", _, _} = Rooms.create("budget-ent", owner)
+    assert {:ok, scene0} = Rooms.scene("budget-ent")
+
+    # Raw SQL fill avoids AshSqlite json recursion on huge maps; CAS path still gates.
+    entries =
+      for i <- 1..World.SceneBudget.max_entries() do
+        %{"entity_id" => i, "blake3" => String.duplicate("ab", 32)}
+      end
+
+    encoded =
+      Jason.encode!(%{
+        "revision" => scene0["revision"],
+        "entries" => entries,
+        "locomotion" => scene0["locomotion"] || %{}
+      })
+
+    assert {:ok, _} =
+             World.Repo.query("UPDATE rooms SET scene = ? WHERE room_id = ?", [
+               encoded,
+               "budget-ent"
+             ])
+
+    assert {:ok, filled} = Rooms.scene("budget-ent")
+    assert length(filled["entries"]) == World.SceneBudget.max_entries()
+
+    assert {:error, :scene_entries_exceeded} =
+             Rooms.append_scene_entry(
+               "budget-ent",
+               %{"blake3" => String.duplicate("cd", 32)},
+               filled["revision"],
+               0
+             )
+  end
+
   test "owner rotate_room_key bumps epoch without visibility change (x007e)" do
     alias World.Rooms.RoomKeyGrace
 
@@ -115,6 +170,8 @@ defmodule World.RoomsTest do
   end
 
   test "create rejects when owner room cap is exceeded (x0071 / x0097)" do
+    # Unique owner avoids leftover room_owner_quotas rows outside the sandbox TX.
+    owner = "cap00000-0000-0000-0000-000000000001"
     previous = Application.get_env(:world, :max_rooms_per_owner)
     Application.put_env(:world, :max_rooms_per_owner, 1)
 
@@ -125,11 +182,11 @@ defmodule World.RoomsTest do
       end
     end)
 
-    assert {:ok, "cap-1", _, _} = Rooms.create("cap-1", @owner)
-    assert {:error, :owner_room_cap_exceeded} = Rooms.create("cap-2", @owner)
+    assert {:ok, "cap-1", _, _} = Rooms.create("cap-1", owner)
+    assert {:error, :owner_room_cap_exceeded} = Rooms.create("cap-2", owner)
 
     assert %OwnerQuota{room_count: 1} =
-             Repo.get(OwnerQuota, @owner)
+             Repo.get(OwnerQuota, owner)
   end
 
   test "conditional quota: dual create callers yield exactly one success (x0097)" do
@@ -330,18 +387,134 @@ defmodule World.RoomsTest do
     assert {:ok, %Room{state: "dormant", active_host_sub: nil}} = Rooms.get("lease-1")
   end
 
-  test "handover and takeover CAS (x0080)" do
+  test "handover and takeover CAS (x0080 / x00a1)" do
     guest = "88888888-8888-8888-8888-888888888888"
     assert {:ok, "ht-1", _, _} = Rooms.create("ht-1", @owner)
     assert {:ok, _} = Rooms.activate_as_host("ht-1", @owner)
 
-    assert {:ok, %Room{active_host_sub: ^guest, state: "active", owner_sub: @owner}} =
-             Rooms.handover("ht-1", @owner, guest)
+    assert {:ok,
+            %Room{
+              active_host_sub: nil,
+              state: "dormant",
+              handover_candidate_sub: ^guest,
+              owner_sub: @owner
+            }} = Rooms.handover("ht-1", @owner, guest)
+
+    # Pending candidate blocks takeover / owner host-token claim (x00a1).
+    assert {:ok, _} = Rooms.set_eligible_host_subs("ht-1", @owner, [guest])
+    assert {:error, :conflict} = Rooms.takeover("ht-1", guest)
+    assert {:error, :forbidden_host} = Rooms.activate_as_host("ht-1", @owner)
+
+    assert {:ok, %Room{active_host_sub: ^guest, state: "active", handover_candidate_sub: nil}} =
+             Rooms.accept_handover("ht-1", guest)
 
     assert {:error, :conflict} = Rooms.takeover("ht-1", @owner)
     assert {:ok, _} = Rooms.handover("ht-1", guest, nil)
-    assert {:ok, _} = Rooms.set_eligible_host_subs("ht-1", @owner, [guest])
     assert {:ok, %Room{active_host_sub: ^guest, state: "active"}} = Rooms.takeover("ht-1", guest)
+  end
+
+  test "lease_view hides expired handover candidate (x00a1)" do
+    owner = "e1e1e1e1-e1e1-e1e1-e1e1-e1e1e1e1e1e1"
+    guest = "e2e2e2e2-e2e2-e2e2-e2e2-e2e2e2e2e2e2"
+    assert {:ok, "ho-exp", _, _} = Rooms.create("ho-exp", owner)
+    assert {:ok, _} = Rooms.activate_as_host("ho-exp", owner)
+    assert {:ok, _} = Rooms.handover("ho-exp", owner, guest)
+
+    past = DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.truncate(:second)
+
+    assert {:ok, _} =
+             World.Repo.query(
+               """
+               UPDATE rooms
+               SET handover_candidate_expires_at = ?
+               WHERE room_id = ?
+               """,
+               [past, "ho-exp"]
+             )
+
+    {:ok, raw} = Rooms.get("ho-exp")
+    viewed = Rooms.lease_view_public(raw)
+    assert viewed.handover_candidate_sub == nil
+    assert viewed.handover_candidate_expires_at == nil
+  end
+
+  test "expire_due_host_leases durable-clears expired handover candidate (x00a1)" do
+    owner = "e3e3e3e3-e3e3-e3e3-e3e3-e3e3e3e3e3e3"
+    guest = "e4e4e4e4-e4e4-e4e4-e4e4-e4e4e4e4e4e4"
+    assert {:ok, "ho-sw", _, _} = Rooms.create("ho-sw", owner)
+    assert {:ok, _} = Rooms.activate_as_host("ho-sw", owner)
+    assert {:ok, _} = Rooms.handover("ho-sw", owner, guest)
+
+    past = DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.truncate(:second)
+
+    assert {:ok, _} =
+             World.Repo.query(
+               """
+               UPDATE rooms
+               SET handover_candidate_expires_at = ?
+               WHERE room_id = ?
+               """,
+               [past, "ho-sw"]
+             )
+
+    assert {_, _} = Rooms.expire_due_host_leases()
+
+    assert {:ok, %Room{handover_candidate_sub: nil, handover_candidate_expires_at: nil}} =
+             Rooms.get("ho-sw")
+  end
+
+  test "owner may re-nominate pending handover candidate (x00a1)" do
+    owner = "e5e5e5e5-e5e5-e5e5-e5e5-e5e5e5e5e5e5"
+    guest_a = "e6e6e6e6-e6e6-e6e6-e6e6-e6e6e6e6e6e6"
+    guest_b = "e7e7e7e7-e7e7-e7e7-e7e7-e7e7e7e7e7e7"
+    assert {:ok, "ho-ren", _, _} = Rooms.create("ho-ren", owner)
+    assert {:ok, _} = Rooms.activate_as_host("ho-ren", owner)
+    assert {:ok, first} = Rooms.handover("ho-ren", owner, guest_a)
+    assert first.handover_candidate_sub == guest_a
+    assert {:ok, second} = Rooms.handover("ho-ren", owner, guest_b)
+    assert second.handover_candidate_sub == guest_b
+    assert second.state == "dormant"
+  end
+
+  test "canonical append rejects when composed with overlay would exceed budget (x00a2)" do
+    owner = "e8e8e8e8-e8e8-e8e8-e8e8-e8e8e8e8e8e8"
+    assert {:ok, "budget-comp", _, _} = Rooms.create("budget-comp", owner)
+    assert {:ok, scene0} = Rooms.scene("budget-comp")
+    canon_n = World.SceneBudget.max_entries() - 1
+
+    canon_entries =
+      for i <- 1..canon_n do
+        %{"entity_id" => i, "blake3" => String.duplicate("ab", 32)}
+      end
+
+    overlay_entries = [
+      %{"entity_id" => 90_001, "blake3" => String.duplicate("cd", 32)},
+      %{"entity_id" => 90_002, "blake3" => String.duplicate("ef", 32)}
+    ]
+
+    assert {:ok, _} =
+             World.Repo.query(
+               "UPDATE rooms SET scene = ?, session_overlay = ? WHERE room_id = ?",
+               [
+                 Jason.encode!(%{
+                   "revision" => scene0["revision"],
+                   "entries" => canon_entries,
+                   "locomotion" => scene0["locomotion"] || %{}
+                 }),
+                 Jason.encode!(%{"revision" => 0, "entries" => overlay_entries}),
+                 "budget-comp"
+               ]
+             )
+
+    assert {:ok, filled} = Rooms.scene("budget-comp")
+
+    assert {:error, :scene_entries_exceeded} =
+             Rooms.append_scene_entry(
+               "budget-comp",
+               %{"blake3" => String.duplicate("11", 32)},
+               filled["revision"],
+               0
+             )
   end
 
   test "owner Host Token activate cannot overwrite live takeover host (x0080)" do
@@ -358,7 +531,7 @@ defmodule World.RoomsTest do
   end
 
   test "renew_host_lease CAS conflicts when active_host was stolen (x0080)" do
-    guest = "a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1"
+    guest = "c9c9c9c9-c9c9-c9c9-c9c9-c9c9c9c9c9c9"
     assert {:ok, "race-2", _, _} = Rooms.create("race-2", @owner)
     assert {:ok, _} = Rooms.activate_as_host("race-2", @owner)
 
