@@ -3,6 +3,7 @@
 * **対象リポジトリ**: `https://github.com/FRICK-ELDY/alchemy`
 * **対象コンポーネント**: `client/` ワークスペース（**既存** `shared-sim` の進化、`host-server`, `app`）、`protocol/`
 * **改善計画上の位置**: [improvement-plan-2026-11-12.md](../0_doc/evaluation/improvement-plan-2026-11-12.md) — **P1-1 / P1-4 / P1-5 完了後**に Phase 1。P1-2 / P1-3 は Phase 1、P3-2 は Phase 2 に吸収
+* **本線の役割**: **品質本線**（近傍物理・ゼロアロ・handover 速度・補間）。同一 Room の大規模 CCU（1000 人 horizon）は規模本線 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**）
 * **関連スライス**: `x0020` (Desktop 正本), `x0039` (`ManifestSeal`), `x0053` (体感並行補間), `x0067` (Zenoh 非対称 ACL), `x0068` (短命 mTLS), `x0069` (Room 鍵 AEAD)
 * **最優先規約**: 全 Rust クレートにおいて `#![forbid(unsafe_code)]` を厳守し、既存の `./.scripts/ci.sh rust`・`./.scripts/ci.sh protocol`・`make smoke-desktop-handthrough` を常に Green に保つこと。
 
@@ -16,6 +17,7 @@ P0 closed
   → Phase 1（P1-2 接触 + P1-3 ゼロアロを DoD に含む）
   → Phase 2（= P3-2 Frame 補間 / wgpu Compute）
   → Phase 3（host 権威ループ + XOR デルタ）
+  → 規模本線: spatial_interest.md（P3-7；アウトライン並走可・実装は Phase 3 後）
 P1-6 / P2（vault・UI/docs/CI）は Phase 1 と並行可。P3-1 / P3-3 以降は独立。
 ```
 
@@ -35,19 +37,21 @@ P1-6 / P2（vault・UI/docs/CI）は Phase 1 と並行可。P3-1 / P3-3 以降�
 
 ## 1. 背景と目的（Executive Summary）
 
-本指示書は、1,000 人規模の同一空間マルチプレイと 60〜120fps の低遅延 VR/Desktop 体験を両立するため、**Ring-Buffer MVCC（多版同時実行制御）** と **決定論的 SIMD XPBD（拡張位置ベースダイナミクス）**、および **`wgpu` Compute Shader 補間パイプライン** を現在の `alchemy` アーキテクチャへ無理なく統合するための実装仕様書である。
+本指示書は、近傍物理の品質と 60〜120fps の低遅延 VR/Desktop 体験のための**物理・状態本線**として、**Ring-Buffer MVCC（多版同時実行制御）** と **決定論的 SIMD XPBD（拡張位置ベースダイナミクス）**、および **`wgpu` Compute Shader 補間パイプライン** を現在の `alchemy` アーキテクチャへ無理なく統合するための実装仕様書である。
 
-この統合により、以下の 4 つの技術的メリットを同時に達成する：
+同一 Room の大規模 CCU（horizon としての 1,000 人）は本指示書 Phase 1–3 では保証しない。規模本線は [spatial_interest.md](spatial_interest.md)（AOI / セル購読 / avatar LOD）である。
+
+この統合により、以下の 4 つの技術的メリットを達成する（いずれも**品質 KPI**；規模 KPI ではない）：
 1. **実行時アロケーション $0\text{ bytes/frame}$**: 事前確保された $64\text{ KB}$ 境界の SoA ページ（`HotPhysicsPage`）と Dirty Bitmask による Copy-on-Write（CoW）管理。
-2. **ロックフリーな 120fps GPU 補間描画**: `client (app)` の描画スレッドが MVCC の確定スナップショット（$V_{t-1}$ と $V_t$）をロック待ちゼロで `wgpu` Storage Buffer へ転送し、Compute Shader 上で位置 Lerp・回転 Slerp を完結。
+2. **描画スレッドを sim から外した 120fps GPU 補間**: `client (app)` が確定スナップショット（$V_{t-1}$ と $V_t$）を `wgpu` Storage Buffer へ転送し、Compute Shader 上で位置 Lerp・回転 Slerp を完結。**確定スナップショットの出版契約**（世代ポインタ / `ArcSwap` 相当など）は Phase 2 統合時に明示する。§4.3 のアリーナ API スケッチは `&mut` であり、文面の「ロック待ちゼロ」はプール設計の目標であって、現状スケッチ単体では lock-free 出版を保証しない。
 3. **0秒ホスト引き継ぎ（Handover / Takeover）時の物理速度完全復元**: 60Hz 1ティック分の変位 $\Delta \mathbf{x} = \mathbf{x}_t - \mathbf{x}_{t-1}$ を MVCC ページおよび差分フレームに保持することで、30Hz 受信のゲストが新ホストに昇格した瞬間でもオブジェクトの速度が半減・暴発しない。
-4. **O(1) 差分抽出による帯域圧縮**: MVCC の世代間 `dirty_entity_mask` 比較と Smallest-Three クォータニオン量子化により、既存の Zenoh + Room 鍵 AEAD パイプライン上のペイロードサイズを極小化。
+4. **O(popcnt) 差分抽出による帯域圧縮（フルメッシュ前提）**: MVCC の世代間 `dirty_entity_mask` 比較と Smallest-Three クォータニオン量子化により、既存の Zenoh + Room 鍵 AEAD パイプライン上の**ペイロードを極小化**する。これは N 人ファンアウト（誰が何を購読するか）を解かない。大規模 CCU は [spatial_interest.md](spatial_interest.md) が担当する。
 
 ---
 
 ## 2. 絶対厳守ガードレール（Non-Goals & Architecture Constraints）
 
-Cursor エージェントは実装にあたり、以下の **6つのアーキテクチャ制約** を絶対に破ってはならない。
+Cursor エージェントは実装にあたり、以下の **7つのアーキテクチャ制約** を絶対に破ってはならない。
 
 ### 🚫 1. 独自トランスポート層（生 `quinn` / 生 `WebTransport`）の新設禁止
 * 初期提案書にあった `net/transport.rs`（生の `quinn` や `web-sys::WebTransport` を直接叩く通信層）は **一切作成しないこと**。
@@ -70,9 +74,14 @@ Cursor エージェントは実装にあたり、以下の **6つのアーキテ
 
 ### 🚫 6. VR 特化機能（Raycast・Grab・親子 Slot 階層）の欠落禁止
 * 単純な均一サイズ球体/カプセルの空間ハッシュだけでは VR 空間は成立しない。以下の 3 点を必ず組み込むこと：
-  1. **空間ハッシュ（近傍衝突・AOI 用）＋ Flat LBVH（30-bit モートン曲線ソートによる VR レーザー UI Raycast・異種サイズ AABB 判定用）** の併用。
+  1. **空間ハッシュ（近傍衝突・AOI 用）＋ Flat LBVH（30-bit モートン曲線ソートによる VR レーザー UI Raycast・異種サイズ AABB 判定用）** の併用。ここでの「AOI」は**物理近傍・Raycast**であり、配信 interest（誰がどの frame を購読するか）の完成を意味しない → 🚫7 / [spatial_interest.md](spatial_interest.md)。
   2. **`is_grabbed_mask`（Bitmask）**: Desktop/XR Grab 中のエンティティは逆質量 $w_i = 0$（Kinematic 相当）または高剛性ターゲット拘束として XPBD ソルバーに統合。
   3. **Depth バケット順の親子 Slot 階層伝播**: XPBD 解決後、フラット化されたトポロジ配列（親 $\to$ 子の Depth 順）を走査してローカル座標からワールド座標を一括更新。
+
+### 🚫 7. Phase 1–3 完了をもって大規模 CCU / フルメッシュ同期を保証しない
+* Phase 1–3 の DoD に「同一 Room 1000 人」「Room 全体フルメッシュのままスケール」を入れない。
+* AOI / セル購読分割 / avatar sync LOD /（後段の）権威セル分割は **[spatial_interest.md](spatial_interest.md)** が第一級仕様である。
+* 本指示書の dirty デルタはフルメッシュ前提のペイロード最適化に留まる。規模を宣言する PR・文書では必ず規模本線を参照すること。
 
 ---
 
@@ -145,16 +154,18 @@ flowchart TB
 
     subgraph ClientApp["🥽 client/app (VRAlchemy / 60〜120fps)"]
         ClientNet["📥 AEAD 復号 & Snapshot 適用<br/>・遅延補正時は V_t-k を Checkout<br/>・ホスト昇格時は frame_delta_xyz から速度復元"]:::sim
-        ClientMVCC["💎 Client MvccPageArena<br/>・ロックフリーで V_t-1 と V_t を公開"]:::sim
+        ClientMVCC["💎 Client MvccPageArena<br/>・V_t-1 と V_t を描画へ公開<br/>（出版契約は Phase 2 で明示）"]:::sim
         WGPU["⚡ render_wgpu (Compute 補間)<br/>・V_t-1 / V_t を StorageBuffer へ転送<br/>・interp.wgsl で Lerp/Slerp 補間<br/>・Multi-Draw Indirect / Instanced 描画"]:::gpu
 
         ClientNet --> ClientMVCC ===>|"StagingBelt / Zero-Copy"| WGPU
     end
 
     World & Agent -.->|"証明書・Room鍵・ManifestSeal"| HostProc & ClientApp
-    Delta ===>|"30Hz 暗号化デルタ"| Zenoh
+    Delta ===>|"30Hz 暗号化デルタ<br/>（Room 単一 frame＝フルメッシュ）"| Zenoh
     Zenoh ===>|"空間ストリーム"| ClientNet
 ```
+
+> **規模注記**: 上図の `30Hz デルタ → 単一 wire_cap frame ストリーム` は現行どおり**フルメッシュ**である。セル購読分割・avatar LOD は [spatial_interest.md](spatial_interest.md)（Phase 3 の次／アウトライン並走）。
 
 ---
 
@@ -628,6 +639,8 @@ fn cs_interpolate_entities(@builtin(global_invocation_id) gid: vec3<u32>) {
 既存の CI や E2E を一切壊さずに導入するため、必ず以下の **3 フェーズ順** に実装とテストを進めること。  
 §0 の着手ゲートを満たす前に次 Phase へ進まないこと。improvement-plan の **P1-2 / P1-3 / P3-2** はここで閉じる。
 
+**DoD に含めないもの**: 同一 Room の大規模 CCU・フルメッシュ解除・interest キー族。それらは [spatial_interest.md](spatial_interest.md) のマイルストーン（32→64→128、1000 は horizon）が担当する。
+
 ### Phase 1: 既存 `shared-sim` の進化とヘッドレス決定論テスト（host/app 本線は触らない）
 
 **前提**: improvement-plan **P1-1 / P1-4 / P1-5** closed。  
@@ -668,3 +681,8 @@ fn cs_interpolate_entities(@builtin(global_invocation_id) gid: vec3<u32>) {
 2. **検証条件**:
    * `./.scripts/ci.sh rust` および `./.scripts/ci.sh protocol` が Green であること。
    * `make smoke-desktop-handthrough` が Green で完走すること。
+   * 規模 CCU・セル購読・avatar LOD の合格条件は**含めない**（🚫7）。
+
+### 次文書（規模本線）
+
+Phase 3 DoD Green の後（アウトライン整備は並走可）、配信の空間インデックス実装は **[spatial_interest.md](spatial_interest.md)**（improvement-plan **P3-7**）に従う。本指示書を増やすことでフルメッシュ同期のままスケールしたことにしてはならない。

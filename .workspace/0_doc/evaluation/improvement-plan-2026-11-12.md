@@ -2,7 +2,8 @@
 
 > 根拠: [specific-weaknesses-2026-11-12.md](specific-weaknesses-2026-11-12.md)  
 > 前回計画: [archive/2026-11-05/improvement-plan-2026-11-05.md](archive/2026-11-05/improvement-plan-2026-11-05.md)  
-> 物理本線: [mvcc_xpbd.md](../../roadmap/mvcc_xpbd.md)（P1-2 / P1-3 / P3-2 を吸収）  
+> 品質本線（物理）: [mvcc_xpbd.md](../../roadmap/mvcc_xpbd.md)（P1-2 / P1-3 / P3-2 を吸収）  
+> 規模本線（配信）: [spatial_interest.md](../../roadmap/spatial_interest.md)（**P3-7**；1000 人は horizon）  
 > 目的: 採用マイナス ~-23 を潰し、正味 ~+109 をさらに押し上げる。
 
 ---
@@ -11,9 +12,10 @@
 
 1. **見る権利・実行権・定義書き込み権を分離する**（HostDelegation + scene overlay）
 2. **通常 UI ホストの資格情報寿命を閉じる**（親 client broker / IPC）
-3. **権限・資源ゲートを先に閉じ、その後 MVCC×XPBD で物理本線を引き上げる**（接触・ゼロアロ・補間を対症療法で薄く直さない）
+3. **権限・資源ゲートを先に閉じ、その後 MVCC×XPBD で物理品質本線を引き上げる**（接触・ゼロアロ・補間を対症療法で薄く直さない）
 4. **Room revoke と SceneBudget を門番に足す**
 5. **handover / UI 一枚岩を衛生する**
+6. **品質本線（MVCC×XPBD）と規模本線（Spatial Interest）を分離する** — フルメッシュのまま物理 Phase を増やして大規模 CCU を宣言しない
 
 前回 P0（PoP / scene CAS / CSR-only / host RL / GLB budget / hermetic / WAN host E2E / Allocation throughput）と P2 大半はコードで閉じた。残課題と新規をこの版に載せ替える。
 
@@ -64,12 +66,13 @@
 | P3-2 | Frame 補間 / jitter buffer | 提案 | **[`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md) Phase 2 に吸収**（`wgpu` Compute・既存 `epoch_mirror` / Prev-Curr の段階置換）。Phase 1 Green 後 |
 | P3-3 | S2S 連合 / Spatial VCS 本体 | 目標 | Origin Cert v1 が素地。MVCC と独立 |
 | P3-4 | billing / market / Relay QoS | 目標 | ディレクトリ未設置 |
-| P3-5 | Formula / Wake / OSC / LOD / audio | 目標 | 減点しない |
+| P3-5 | Formula / Wake / OSC / LOD / audio | 目標 | 減点しない。描画 LOD と **avatar sync LOD（規模本線）** を混同しない |
 | P3-6 | 署名付き installer / 自動更新 | 提案 | Windows release 延長 |
+| P3-7 | 配信の空間インデックス（Spatial Interest） | 規模本線 | 正本 [`spatial_interest.md`](../../roadmap/spatial_interest.md)。アウトラインは並走可；**実装は MVCC Phase 3 後**。roadmap README 旧メモ「P3-7 BLAKE3 ストリーミング」とは**無関係**（BLAKE3 ストリーミング禁止は継続） |
 
-### MVCC×XPBD（物理本線・横断）
+### MVCC×XPBD（品質本線・横断）
 
-正本: [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md)。improvement-plan 上の差し込み位置:
+正本: [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md)。**大規模 CCU / 1000 人はここに書かない**（→ P3-7）。improvement-plan 上の差し込み位置:
 
 | Phase | 内容 | 吸収する ID | 着手条件 |
 |:---|:---|:---|:---|
@@ -77,7 +80,7 @@
 | Phase 2 | `client/app` の MVCC バッファ + `wgpu` Compute 補間 | P3-2 | Phase 1 のビット一致リプレイ・接触回帰・alloc 上限が Green |
 | Phase 3 | `host-server` 権威ループ + XOR デルタ（Room AEAD / wire_cap） | （host 本線置換） | Phase 2 のシェーダ検証・描画経路が Green |
 
-**やらないこと**: P1 ゲート前に Phase 2/3 を host/app へ配線する。現行 `xpbd.rs` に bounds だけ戻して P1-2 を閉じ、MVCC を無期限 P3 に棚上げする。
+**やらないこと**: P1 ゲート前に Phase 2/3 を host/app へ配線する。現行 `xpbd.rs` に bounds だけ戻して P1-2 を閉じ、MVCC を無期限 P3 に棚上げする。**MVCC だけで大規模 CCU を宣言する**／フルメッシュのまま Phase を増やしてスケールしたことにする。
 
 ---
 
@@ -103,7 +106,8 @@
 5. **P1-6 / P2**（vault・UI 分割 / docs / CI）— Phase 1 と **並行可**
 6. **MVCC×XPBD Phase 2**（P3-2 吸収）— `wgpu` Compute 補間
 7. **MVCC×XPBD Phase 3** — host 権威ループ + XOR デルタ配信
-8. **P3-1 / P3-3 以降** — MVCC と独立；物理本線の直後に必須ではない
+8. **Spatial Interest 実装スライス群**（P3-7）— 正本 [`spatial_interest.md`](../../roadmap/spatial_interest.md) は先行済；**実装は Phase 3 Green 後**（採番は着手時。`x00a4` は予約しない）
+9. **P3-1 / P3-3 以降** — MVCC / Interest と独立；品質本線の直後に必須ではない
 
 スライス完了条件に必ず含める:
 
@@ -111,3 +115,4 @@
 - **保証表とコードが一致**（特に権限表・物理非保証）
 - **新クレートは CI・cargo deny・テスト >0**（再発防止）
 - **MVCC 各 Phase は [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md) の着手条件を満たしてから開始**
+- **規模 CCU を宣言する変更は [`spatial_interest.md`](../../roadmap/spatial_interest.md) のゲートに従う**

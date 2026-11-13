@@ -36,7 +36,7 @@
 ## 物理・シミュレーション
 
 - **host で XPBD body-body 接触を有効化 + zero-allocation tick / 規模別 benchmark** `0`（双方）
-  > 対症療法の bounds 渡しでは閉じない。[`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md) Phase 1（既存 `shared-sim` 進化）の DoD に吸収。着手は improvement-plan P1-1 / P1-4 / P1-5 の後。
+  > 対症療法の bounds 渡しでは閉じない。[`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md) Phase 1（既存 `shared-sim` 進化）の DoD に吸収。着手は improvement-plan P1-1 / P1-4 / P1-5 の後。**大規模 CCU は品質本線の外** → [`spatial_interest.md`](../../roadmap/spatial_interest.md)。
 - **Frame 補間・jitter buffer を Epoch Prev/Curr へ接続** `0`（双方）
   > [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md) Phase 2（`wgpu` Compute）に吸収。Phase 1 Green 後。
 
@@ -52,6 +52,8 @@
 
 ## 目標・長期（減点しない）
 
+- **配信の空間インデックス（Spatial Interest / AOI・セル購読・avatar sync LOD）** `0`
+  > フルメッシュ `frame` のままでは N 人でリレーが先に死ぬ。正本 [`spatial_interest.md`](../../roadmap/spatial_interest.md)（improvement-plan **P3-7**）。実装は MVCC Phase 3 後。1000 人は horizon。
 - **verifier Spot-Check オーケストレーション（OSS は配線のみ）** `0`
 - **S2S 連合 / Spatial VCS 本体 / Formula / OSC / Wake-on-Join / audio** `0`
 - **relay 帯域 QoS・SLO dashboard** `0`
