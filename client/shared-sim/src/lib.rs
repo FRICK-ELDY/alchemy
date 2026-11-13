@@ -4,10 +4,11 @@
 //! [`ManifestIndex`] one-pass mesh / box / grabbable maps; shared interaction +
 //! demo id constants; [`scene_entry_color_rgba`]; runtime held slots via
 //! [`slot_graph::SlotGraph`] (x0056); Zero-Base spatial lifecycle primitives in
-//! [`tape`] / [`topology`] / [`spatial`] / [`xpbd`] / [`bridge`].
+//! [`tape`] / [`topology`] / [`spatial`] / [`xpbd`] / [`bridge`] / [`mvcc`] (x00a3).
 //! Non-guarantees: Rapier / Formula / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
-//! Slot graphs (→ x0059); CRDT / Zenoh / GPU wiring (client `epoch_view`).
+//! Slot graphs (→ x0059); CRDT / Zenoh / GPU wiring (client `epoch_view`);
+//! MVCC host/app wiring / XOR delta (Phase 1+).
 
 use std::collections::{HashMap, HashSet};
 
@@ -15,6 +16,7 @@ use alchemy_protocol::{scene_entry_grabbable, scene_entry_is_user_root, SceneEnt
 
 pub mod bridge;
 pub mod demo;
+pub mod mvcc;
 pub mod slot_graph;
 pub mod slot_undo;
 pub mod spatial;

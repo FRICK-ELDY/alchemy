@@ -20,9 +20,19 @@ defmodule World.Rooms do
   `mine=1` may include dormant definitions. Handover / takeover / lease sweep are world-authoritative.
   **x009e**: `session_overlay` holds active-host temporary entries (dormant clears);
   `composed_scene/1` merges canonical ∥ overlay; takeover requires owner ∪ `eligible_host_subs`.
+  **x00a0**: owner `rotate_room_key/2` is HTTP-reachable; auth relation_changed rotates
+  social-visibility rooms owned by either party (CAS).
+  **x00a1**: handover nominates `handover_candidate_sub` and goes **dormant**; lease only after
+  `accept_handover/2`. Null target → dormant + clear candidate. Owner/active-host may
+  **re-nominate** (`handover(other)`) to replace a pending candidate without cancel first.
+  Unexpired pending candidate blocks owner Host Token claim and takeover (cancel via
+  `handover(nil)` or wait for expiry). `lease_view` nulls expired candidates; sweeper
+  durable-clears them.
+  **x00a2**: scene/overlay CAS enforces SceneBudget (≤ protocol manifest entries/bytes) and
+  composed (canon ∥ overlay) entry cap on **both** canonical and overlay mutate paths.
   Non-guarantees: full UGC editor; multi-node replication; Postgres (swap path documented);
   overlay→canonical Save/merge; signed HostDelegation JWT;
-  friendship-change alone does not rotate (use narrow visibility / owner rotate);
+  relation notify retry queue; already-issued Room Token JWT revocation (TTL; new epoch AEAD closed);
   grace durability across world restart; Room physical DELETE (and quota decrement);
   user_root / cuboid (empty blake3) despawn;
   catalog Frame reachability; seamless pose / grab inheritance across hosts;
@@ -42,6 +52,9 @@ defmodule World.Rooms do
 
   Errors: `:invalid_room_id` / `:already_exists` / `:not_found` / `:owner_room_cap_exceeded`
   are client-facing. `:storage_error` is infrastructure (SQLite busy, disk, Repo) → HTTP 5xx.
+  Create path: raised `Exqlite.Error` whose message matches SQLITE_BUSY is mapped to
+  `:storage_error`; uniqueness / constraint failures are expected as `{:error, _}`
+  (Ash / `unique_violation?`) → `:already_exists`, not via raise→rescue.
   """
 
   require Logger
@@ -385,6 +398,8 @@ defmodule World.Rooms do
              | :scene_revision_conflict
              | :invalid_scene_revision
              | :invalid_revision
+             | :scene_entries_exceeded
+             | :scene_bytes_exceeded
              | storage_error()}
   def append_overlay_entry(room_id, entry, expected_canonical_revision, expected_overlay_revision)
       when is_binary(room_id) and is_map(entry) and is_integer(expected_canonical_revision) and
@@ -490,6 +505,8 @@ defmodule World.Rooms do
              | :scene_revision_conflict
              | :invalid_scene_revision
              | :invalid_revision
+             | :scene_entries_exceeded
+             | :scene_bytes_exceeded
              | storage_error()}
   def append_scene_entry(room_id, entry, expected_canonical_revision, expected_overlay_revision)
       when is_binary(room_id) and is_map(entry) and is_integer(expected_canonical_revision) and
@@ -593,68 +610,70 @@ defmodule World.Rooms do
   defp ensure_revision_headroom(_), do: {:error, :invalid_revision}
 
   # Optimistic packed CAS: both canonical and overlay revisions must match (x009e).
+  # x00a2: SceneBudget on next canonical body + composed (canon∥overlay) entry cap.
   defp cas_set_scene(room_id, expected_canon, expected_overlay, next_scene)
        when is_binary(room_id) and is_integer(expected_canon) and is_integer(expected_overlay) and
               is_map(next_scene) do
-    encoded = Jason.encode!(next_scene)
+    with {:ok, %Room{} = room} <- fetch_room(room_id),
+         {:ok, overlay} <- require_overlay(room.session_overlay),
+         :ok <- World.SceneBudget.ensure_composed(next_scene, overlay),
+         {:ok, encoded} <- World.SceneBudget.encode_checked(next_scene) do
+      sql = """
+      UPDATE rooms
+      SET scene = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE room_id = ?
+        AND CAST(json_extract(scene, '$.revision') AS INTEGER) = ?
+        AND CAST(json_extract(session_overlay, '$.revision') AS INTEGER) = ?
+      """
 
-    sql = """
-    UPDATE rooms
-    SET scene = ?,
-        updated_at = CURRENT_TIMESTAMP
-    WHERE room_id = ?
-      AND CAST(json_extract(scene, '$.revision') AS INTEGER) = ?
-      AND CAST(json_extract(session_overlay, '$.revision') AS INTEGER) = ?
-    """
-
-    case World.Repo.query(sql, [encoded, room_id, expected_canon, expected_overlay]) do
-      {:ok, %{num_rows: 1}} ->
-        :ok
-
-      {:ok, %{num_rows: 0}} ->
-        # Distinguish vanished room from lost CAS race.
-        # If the row still exists we return conflict (409). That includes rare cases where
-        # `json_extract` no longer matches after a concurrent corrupt write that slipped past
-        # the early `scene_revision/1` check — host may 409-retry once, then hit
-        # `:invalid_scene_revision` (500) on the next fetch. Acceptable; not treated as 404.
-        case fetch_room(room_id) do
-          {:ok, _} -> {:error, :scene_revision_conflict}
-          {:error, _} = err -> err
-        end
-
-      {:error, error} ->
-        storage_error(error, :cas_set_scene)
+      # Distinguish vanished room from lost CAS race.
+      # If the row still exists we return conflict (409). That includes rare cases where
+      # `json_extract` no longer matches after a concurrent corrupt write that slipped past
+      # the early `scene_revision/1` check — host may 409-retry once, then hit
+      # `:invalid_scene_revision` (500) on the next fetch. Acceptable; not treated as 404.
+      cas_packed_update_result(
+        World.Repo.query(sql, [encoded, room_id, expected_canon, expected_overlay]),
+        room_id,
+        :cas_set_scene
+      )
     end
   end
 
   defp cas_set_overlay(room_id, expected_canon, expected_overlay, next_overlay)
        when is_binary(room_id) and is_integer(expected_canon) and is_integer(expected_overlay) and
               is_map(next_overlay) do
-    encoded = Jason.encode!(next_overlay)
+    with {:ok, %Room{} = room} <- fetch_room(room_id),
+         :ok <- World.SceneBudget.ensure_composed(room.scene, next_overlay),
+         {:ok, encoded} <- World.SceneBudget.encode_checked(next_overlay) do
+      sql = """
+      UPDATE rooms
+      SET session_overlay = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE room_id = ?
+        AND CAST(json_extract(scene, '$.revision') AS INTEGER) = ?
+        AND CAST(json_extract(session_overlay, '$.revision') AS INTEGER) = ?
+      """
 
-    sql = """
-    UPDATE rooms
-    SET session_overlay = ?,
-        updated_at = CURRENT_TIMESTAMP
-    WHERE room_id = ?
-      AND CAST(json_extract(scene, '$.revision') AS INTEGER) = ?
-      AND CAST(json_extract(session_overlay, '$.revision') AS INTEGER) = ?
-    """
-
-    case World.Repo.query(sql, [encoded, room_id, expected_canon, expected_overlay]) do
-      {:ok, %{num_rows: 1}} ->
-        :ok
-
-      {:ok, %{num_rows: 0}} ->
-        case fetch_room(room_id) do
-          {:ok, _} -> {:error, :scene_revision_conflict}
-          {:error, _} = err -> err
-        end
-
-      {:error, error} ->
-        storage_error(error, :cas_set_overlay)
+      cas_packed_update_result(
+        World.Repo.query(sql, [encoded, room_id, expected_canon, expected_overlay]),
+        room_id,
+        :cas_set_overlay
+      )
     end
   end
+
+  defp cas_packed_update_result({:ok, %{num_rows: 1}}, _room_id, _context), do: :ok
+
+  defp cas_packed_update_result({:ok, %{num_rows: 0}}, room_id, _context) do
+    case fetch_room(room_id) do
+      {:ok, _} -> {:error, :scene_revision_conflict}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp cas_packed_update_result({:error, error}, _room_id, context),
+    do: storage_error(error, context)
 
   defp empty_overlay, do: %{"revision" => 0, "entries" => []}
 
@@ -1008,11 +1027,11 @@ defmodule World.Rooms do
   end
 
   @doc """
-  Owner-driven Room key revoke (x007e). Same effect as visibility narrow without
-  changing visibility — kick / manual revoke entry until a dedicated kick API exists.
+  Owner-driven Room key revoke (x007e / x00a0). Same effect as visibility narrow without
+  changing visibility. HTTP: `POST …/room_key/rotate`.
   """
   @spec rotate_room_key(room_id(), owner_sub()) ::
-          {:ok, non_neg_integer()}
+          {:ok, non_neg_integer() | :noop}
           | {:error, :invalid_room_id | :not_found | :forbidden_host | storage_error()}
   def rotate_room_key(room_id, sub) when is_binary(room_id) and is_binary(sub) do
     with {:ok, %Room{} = room} <- get(room_id),
@@ -1022,6 +1041,53 @@ defmodule World.Rooms do
   end
 
   def rotate_room_key(_, _), do: {:error, :invalid_room_id}
+
+  @doc """
+  x00a0: after auth friendship/follow revoke, rotate social-visibility rooms owned by
+  either party. Returns list of `%{room_id:, room_key_epoch:}` (`room_key_epoch` may be `:noop`).
+  """
+  @spec rotate_for_relation_change(owner_sub(), owner_sub()) ::
+          {:ok, [%{room_id: room_id(), room_key_epoch: non_neg_integer() | :noop}]}
+          | {:error, storage_error()}
+  def rotate_for_relation_change(sub_a, sub_b)
+      when is_binary(sub_a) and sub_a != "" and is_binary(sub_b) and sub_b != "" do
+    query =
+      from r in Room,
+        where: r.owner_sub in ^[sub_a, sub_b]
+
+    try do
+      rooms = World.Repo.all(query)
+
+      rooms
+      |> Enum.filter(&Visibility.needs_social?(&1.visibility))
+      |> Enum.reduce_while([], &accumulate_relation_rotate/2)
+      |> finalize_relation_rotate()
+    rescue
+      error -> storage_error(error, :rotate_for_relation_change)
+    end
+  end
+
+  def rotate_for_relation_change(_, _), do: {:ok, []}
+
+  defp accumulate_relation_rotate(room, acc) do
+    case do_rotate_room_key(room) do
+      {:ok, epoch} ->
+        {:cont, [%{room_id: room.room_id, room_key_epoch: epoch} | acc]}
+
+      {:error, :storage_error} ->
+        {:halt, {:error, :storage_error}}
+
+      {:error, _} ->
+        {:cont, acc}
+    end
+  end
+
+  defp finalize_relation_rotate({:error, _} = err), do: err
+  defp finalize_relation_rotate(list) when is_list(list), do: {:ok, Enum.reverse(list)}
+
+  @doc "Public lease view for HTTP session summaries (expired → dormant projection)."
+  @spec lease_view_public(Room.t()) :: Room.t()
+  def lease_view_public(%Room{} = room), do: lease_view(room)
 
   @doc """
   Catalog summaries visible to `viewer_sub` under RoomAccess (x007c).
@@ -1273,11 +1339,13 @@ defmodule World.Rooms do
   def get_session(_), do: {:error, :invalid_room_id}
 
   @doc """
-  x0080: whether `sub` may receive `role=host` Room Token.
+  x0080 / x00a1: whether `sub` may receive `role=host` Room Token.
 
   Allowed when:
   - `state = active`, lease valid, and `sub == active_host_sub`, or
-  - session is dormant (or lease-expired) and `sub == owner_sub` (owner resume).
+  - session is dormant (or lease-expired), **no unexpired handover candidate**,
+    and `sub == owner_sub` (owner resume).
+  Pending candidate blocks owner resume — use `accept_handover` or `handover(nil)` cancel.
   """
   @spec authorize_host_role(Room.t(), owner_sub()) :: :ok | {:error, :forbidden_host}
   def authorize_host_role(%Room{} = room, sub) when is_binary(sub) and sub != "" do
@@ -1287,7 +1355,7 @@ defmodule World.Rooms do
       room.state == "active" and room.active_host_sub == sub ->
         :ok
 
-      room.state == "dormant" and room.owner_sub == sub ->
+      room.state == "dormant" and room.owner_sub == sub and is_nil(room.handover_candidate_sub) ->
         :ok
 
       true ->
@@ -1298,10 +1366,11 @@ defmodule World.Rooms do
   def authorize_host_role(_, _), do: {:error, :forbidden_host}
 
   @doc """
-  x0080: mark `sub` as active compute host and renew lease (Host Token / Start path).
+  x0080 / x00a1: mark `sub` as active compute host and renew lease (Host Token / Start path).
 
-  CAS: renew only if already `active_host_sub`, or claim only from dormant / lease-expired.
-  Prevents owner Host Token from overwriting a concurrent successful `takeover`.
+  CAS: renew only if already `active_host_sub`, or claim only from dormant / lease-expired
+  **without** an unexpired handover candidate. Candidate must `accept_handover/2`;
+  owner cancels with `handover(nil)` before resume.
   """
   @spec activate_as_host(room_id(), owner_sub()) ::
           {:ok, Room.t()}
@@ -1315,12 +1384,40 @@ defmodule World.Rooms do
   def activate_as_host(room_id, sub) when is_binary(room_id) and is_binary(sub) and sub != "" do
     with :ok <- validate_room_id(room_id),
          {:ok, %Room{} = room} <- get(room_id),
-         :ok <- authorize_host_role(room, sub) do
+         room = lease_view(room),
+         :ok <- maybe_accept_or_authorize_activate(room, sub),
+         :ok <- maybe_cas_handover_accept(room, room_id, sub) do
       cas_activate_host_token(room_id, sub)
     end
   end
 
   def activate_as_host(_, _), do: {:error, :invalid_room_id}
+
+  defp maybe_accept_or_authorize_activate(%Room{} = room, sub) do
+    if pending_handover_candidate?(room) and room.handover_candidate_sub == sub do
+      :ok
+    else
+      authorize_host_role(room, sub)
+    end
+  end
+
+  # Candidate Host Token path: accept first, then renew under active lease.
+  defp maybe_cas_handover_accept(%Room{} = room, room_id, sub) do
+    if pending_handover_candidate?(room) do
+      case cas_handover_accept(room_id, sub) do
+        {:ok, _} -> :ok
+        {:error, _} = err -> err
+      end
+    else
+      :ok
+    end
+  end
+
+  defp pending_handover_candidate?(%Room{} = room) do
+    is_binary(room.handover_candidate_sub) and room.handover_candidate_sub != "" and
+      match?(%DateTime{}, room.handover_candidate_expires_at) and
+      DateTime.compare(room.handover_candidate_expires_at, DateTime.utc_now()) == :gt
+  end
 
   @doc false
   @spec activate_as_host_cas(room_id(), owner_sub()) ::
@@ -1377,11 +1474,13 @@ defmodule World.Rooms do
   def ensure_active_host(_, _), do: {:error, :invalid_room_id}
 
   @doc """
-  x0080: Graceful Handover. Caller must be `active_host_sub` or `owner_sub`.
+  x0080 / x00a1: Graceful Handover stage A. Caller must be `active_host_sub` or `owner_sub`.
 
-  `target_sub` binary → nominate and keep `active`; `nil` → dormant (clear host).
-  Does not change `owner_sub`. Owner may nominate even while another host is active
-  (owner privilege); concurrent Token activate still uses stricter CAS.
+  `target_sub` binary → record `handover_candidate_sub` and go **dormant** (no lease).
+  While a candidate is already pending, another `target_sub` **replaces** it (re-nominate;
+  cancel via `nil` is not required first).
+  `nil` → dormant and clear candidate. Does not change `owner_sub`.
+  Lease is granted only via `accept_handover/2`.
   """
   @spec handover(room_id(), owner_sub(), owner_sub() | nil) ::
           {:ok, Room.t()}
@@ -1411,6 +1510,46 @@ defmodule World.Rooms do
   def handover(_, _, _), do: {:error, :invalid_target}
 
   @doc """
+  x00a1: Handover stage B — caller must equal unexpired `handover_candidate_sub`.
+  CAS sets active_host + lease, clears candidate and overlay.
+  """
+  @spec accept_handover(room_id(), owner_sub()) ::
+          {:ok, Room.t()}
+          | {:error,
+             :invalid_room_id
+             | :not_found
+             | :forbidden_host
+             | :conflict
+             | :invalid_revision
+             | storage_error()}
+  def accept_handover(room_id, caller_sub)
+      when is_binary(room_id) and is_binary(caller_sub) and caller_sub != "" do
+    with :ok <- validate_room_id(room_id),
+         {:ok, %Room{} = room} <- get(room_id),
+         :ok <- authorize_handover_accept(room, caller_sub) do
+      cas_handover_accept(room_id, caller_sub)
+    end
+  end
+
+  def accept_handover(_, _), do: {:error, :invalid_room_id}
+
+  defp authorize_handover_accept(%Room{} = room, caller_sub) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    cond do
+      room.handover_candidate_sub != caller_sub ->
+        {:error, :forbidden_host}
+
+      match?(%DateTime{}, room.handover_candidate_expires_at) and
+          DateTime.compare(room.handover_candidate_expires_at, now) != :gt ->
+        {:error, :forbidden_host}
+
+      true ->
+        :ok
+    end
+  end
+
+  @doc """
   x0080 / x009e: Manual Takeover CAS — dormant or lease-expired, and caller is
   `owner_sub` or listed in `eligible_host_subs`.
   """
@@ -1427,17 +1566,22 @@ defmodule World.Rooms do
       when is_binary(room_id) and is_binary(caller_sub) and caller_sub != "" do
     with :ok <- validate_room_id(room_id),
          {:ok, %Room{} = room} <- get(room_id),
-         :ok <- authorize_takeover_caller(room, caller_sub) do
+         room = lease_view(room),
+         :ok <- authorize_takeover_caller(room, caller_sub),
+         :ok <- reject_pending_handover_steal(room) do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
       expires = DateTime.add(now, host_lease_ttl_seconds(), :second)
 
       # Host identity change: clear overlay (bump revision) so prior host inventory
       # cannot leak into the new host's composed scene — even if sweeper has not run.
+      # x00a1: refuse while unexpired candidate remains (SQL also gates).
       sql = """
       UPDATE rooms
       SET active_host_sub = ?,
           state = 'active',
           host_lease_expires_at = ?,
+          handover_candidate_sub = NULL,
+          handover_candidate_expires_at = NULL,
           session_overlay = #{cleared_overlay_sql()},
           updated_at = CURRENT_TIMESTAMP
       WHERE room_id = ?
@@ -1446,10 +1590,15 @@ defmodule World.Rooms do
           OR host_lease_expires_at IS NULL
           OR host_lease_expires_at <= ?
         )
+        AND (
+          handover_candidate_sub IS NULL
+          OR handover_candidate_expires_at IS NULL
+          OR handover_candidate_expires_at <= ?
+        )
         AND #{overlay_clear_headroom_sql()}
       """
 
-      case World.Repo.query(sql, [caller_sub, expires, room_id, now]) do
+      case World.Repo.query(sql, [caller_sub, expires, room_id, now, now]) do
         {:ok, %{num_rows: 1}} -> get(room_id)
         {:ok, %{num_rows: 0}} -> miss_after_overlay_clear(room_id)
         {:error, error} -> storage_error(error, :takeover)
@@ -1458,6 +1607,10 @@ defmodule World.Rooms do
   end
 
   def takeover(_, _), do: {:error, :invalid_room_id}
+
+  defp reject_pending_handover_steal(%Room{} = room) do
+    if pending_handover_candidate?(room), do: {:error, :conflict}, else: :ok
+  end
 
   defp authorize_takeover_caller(%Room{} = room, sub) do
     cond do
@@ -1468,7 +1621,8 @@ defmodule World.Rooms do
   end
 
   @doc """
-  x0080 / x009e: sweep lease-expired active sessions to dormant.
+  x0080 / x009e / x00a1: sweep lease-expired active sessions to dormant, and clear
+  expired handover candidates (durable counterpart to `lease_view` projection).
 
   Returns `{ok_count, err_count}`. `err_count` includes stride-ceiling skips
   (due but cannot clear overlay without GenRev regression) so zombies are visible
@@ -1477,12 +1631,15 @@ defmodule World.Rooms do
   @spec expire_due_host_leases() :: {non_neg_integer(), non_neg_integer()}
   def expire_due_host_leases do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
+    _ = expire_due_handover_candidates(now)
 
     sql = """
     UPDATE rooms
     SET active_host_sub = NULL,
         state = 'dormant',
         host_lease_expires_at = NULL,
+        handover_candidate_sub = NULL,
+        handover_candidate_expires_at = NULL,
         session_overlay = #{cleared_overlay_sql()},
         updated_at = CURRENT_TIMESTAMP
     WHERE state = 'active'
@@ -1511,6 +1668,30 @@ defmodule World.Rooms do
     end
   end
 
+  defp expire_due_handover_candidates(now) do
+    sql = """
+    UPDATE rooms
+    SET handover_candidate_sub = NULL,
+        handover_candidate_expires_at = NULL,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE handover_candidate_sub IS NOT NULL
+      AND (handover_candidate_expires_at IS NULL OR handover_candidate_expires_at <= ?)
+    """
+
+    case World.Repo.query(sql, [now]) do
+      {:ok, %{num_rows: n}} when is_integer(n) and n > 0 ->
+        Logger.info("handover candidate sweep: expired=#{n}")
+        n
+
+      {:ok, _} ->
+        0
+
+      {:error, error} ->
+        _ = storage_error(error, :expire_due_handover_candidates)
+        0
+    end
+  end
+
   defp count_due_overlay_stride_blocked(now) do
     sql = """
     SELECT COUNT(*) AS c
@@ -1536,10 +1717,29 @@ defmodule World.Rooms do
     end
   end
 
-  # Read-only: expired lease looks dormant without writing (GET / Waiting poll safe).
+  # Read-only: expired lease looks dormant; expired handover candidate is cleared
+  # without writing (GET / Waiting poll safe). Durable candidate clear is sweeper.
   defp lease_view(%Room{} = room) do
-    if room.state == "active" and not lease_valid?(room.host_lease_expires_at) do
-      %{room | state: "dormant", active_host_sub: nil, host_lease_expires_at: nil}
+    room =
+      if room.state == "active" and not lease_valid?(room.host_lease_expires_at) do
+        %{room | state: "dormant", active_host_sub: nil, host_lease_expires_at: nil}
+      else
+        room
+      end
+
+    clear_expired_candidate_projection(room)
+  end
+
+  defp clear_expired_candidate_projection(%Room{} = room) do
+    now = DateTime.utc_now()
+
+    expired? =
+      is_binary(room.handover_candidate_sub) and
+        (not match?(%DateTime{}, room.handover_candidate_expires_at) or
+           DateTime.compare(room.handover_candidate_expires_at, now) != :gt)
+
+    if expired? do
+      %{room | handover_candidate_sub: nil, handover_candidate_expires_at: nil}
     else
       room
     end
@@ -1547,6 +1747,7 @@ defmodule World.Rooms do
 
   # Host Token path: renew self OR claim from dormant/expired only (never steal live host).
   # Valid-lease self-renew keeps overlay; dormant/expired claim clears+bumps (x009e).
+  # x00a1: claim SQL refuses unexpired handover_candidate (owner resume cannot wipe nominate).
   defp cas_activate_host_token(room_id, sub) do
     case cas_renew_active_host_while_lease_valid(room_id, sub) do
       {:ok, _} = ok -> ok
@@ -1588,6 +1789,8 @@ defmodule World.Rooms do
     SET active_host_sub = ?,
         state = 'active',
         host_lease_expires_at = ?,
+        handover_candidate_sub = NULL,
+        handover_candidate_expires_at = NULL,
         session_overlay = #{cleared_overlay_sql()},
         updated_at = CURRENT_TIMESTAMP
     WHERE room_id = ?
@@ -1596,10 +1799,15 @@ defmodule World.Rooms do
         OR host_lease_expires_at IS NULL
         OR host_lease_expires_at <= ?
       )
+      AND (
+        handover_candidate_sub IS NULL
+        OR handover_candidate_expires_at IS NULL
+        OR handover_candidate_expires_at <= ?
+      )
       AND #{overlay_clear_headroom_sql()}
     """
 
-    case World.Repo.query(sql, [sub, expires, room_id, now]) do
+    case World.Repo.query(sql, [sub, expires, room_id, now, now]) do
       {:ok, %{num_rows: 1}} -> get(room_id)
       {:ok, %{num_rows: 0}} -> miss_after_overlay_clear(room_id)
       {:error, error} -> storage_error(error, :activate_as_host)
@@ -1626,16 +1834,18 @@ defmodule World.Rooms do
     end
   end
 
-  # Nominate continues the session on a new host; clear overlay so inventory does not transfer.
+  # x00a1: nominate stores candidate and goes dormant — no lease until accept.
   defp cas_handover_nominate(room_id, caller_sub, target_sub) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
-    expires = DateTime.add(now, host_lease_ttl_seconds(), :second)
+    cand_expires = DateTime.add(now, host_lease_ttl_seconds(), :second)
 
     sql = """
     UPDATE rooms
-    SET active_host_sub = ?,
-        state = 'active',
-        host_lease_expires_at = ?,
+    SET active_host_sub = NULL,
+        state = 'dormant',
+        host_lease_expires_at = NULL,
+        handover_candidate_sub = ?,
+        handover_candidate_expires_at = ?,
         session_overlay = #{cleared_overlay_sql()},
         updated_at = CURRENT_TIMESTAMP
     WHERE room_id = ?
@@ -1646,10 +1856,42 @@ defmodule World.Rooms do
       AND #{overlay_clear_headroom_sql()}
     """
 
-    case World.Repo.query(sql, [target_sub, expires, room_id, caller_sub, caller_sub]) do
+    case World.Repo.query(sql, [target_sub, cand_expires, room_id, caller_sub, caller_sub]) do
       {:ok, %{num_rows: 1}} -> get(room_id)
       {:ok, %{num_rows: 0}} -> miss_after_overlay_clear(room_id)
       {:error, error} -> storage_error(error, :handover)
+    end
+  end
+
+  defp cas_handover_accept(room_id, caller_sub) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    expires = DateTime.add(now, host_lease_ttl_seconds(), :second)
+
+    sql = """
+    UPDATE rooms
+    SET active_host_sub = ?,
+        state = 'active',
+        host_lease_expires_at = ?,
+        handover_candidate_sub = NULL,
+        handover_candidate_expires_at = NULL,
+        session_overlay = #{cleared_overlay_sql()},
+        updated_at = CURRENT_TIMESTAMP
+    WHERE room_id = ?
+      AND handover_candidate_sub = ?
+      AND handover_candidate_expires_at IS NOT NULL
+      AND handover_candidate_expires_at > ?
+      AND (
+        state = 'dormant'
+        OR host_lease_expires_at IS NULL
+        OR host_lease_expires_at <= ?
+      )
+      AND #{overlay_clear_headroom_sql()}
+    """
+
+    case World.Repo.query(sql, [caller_sub, expires, room_id, caller_sub, now, now]) do
+      {:ok, %{num_rows: 1}} -> get(room_id)
+      {:ok, %{num_rows: 0}} -> miss_after_overlay_clear(room_id)
+      {:error, error} -> storage_error(error, :accept_handover)
     end
   end
 
@@ -1659,6 +1901,8 @@ defmodule World.Rooms do
     SET active_host_sub = NULL,
         state = 'dormant',
         host_lease_expires_at = NULL,
+        handover_candidate_sub = NULL,
+        handover_candidate_expires_at = NULL,
         session_overlay = #{cleared_overlay_sql()},
         updated_at = CURRENT_TIMESTAMP
     WHERE room_id = ?
@@ -1852,7 +2096,22 @@ defmodule World.Rooms do
     # Repo stopped / not registered (tests simulate outage before insert).
     e in [RuntimeError, ArgumentError] ->
       storage_error(e, :create)
+
+    # Only SQLITE_BUSY (and message variants). Constraint/unique must not raise here —
+    # they return {:error, _} and map to :already_exists via unique_violation?/1.
+    e in [Exqlite.Error] ->
+      if sqlite_busy_message?(Map.get(e, :message)) do
+        storage_error(e, :create)
+      else
+        reraise e, __STACKTRACE__
+      end
   end
+
+  defp sqlite_busy_message?(msg) when is_binary(msg) do
+    String.contains?(String.downcase(msg), "busy")
+  end
+
+  defp sqlite_busy_message?(_), do: false
 
   defp commit_create_with_owner_quota(attrs, cap) do
     case Repo.transaction(fn -> create_with_owner_quota!(attrs, cap) end, mode: :immediate) do

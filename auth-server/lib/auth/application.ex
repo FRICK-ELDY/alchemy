@@ -17,6 +17,7 @@ defmodule Auth.Application do
       Auth.Repo,
       Auth.TokenCleanup,
       Auth.Token.Keys,
+      {Task.Supervisor, name: Auth.TaskSupervisor},
       {DNSCluster, query: Application.get_env(:auth, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Auth.PubSub},
       # x007a: dedicated loopback Bandit — never on Endpoint

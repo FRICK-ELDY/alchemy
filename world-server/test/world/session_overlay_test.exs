@@ -125,7 +125,10 @@ defmodule World.SessionOverlayTest do
 
     assert {:ok, ^canon0, overlay1} = Rooms.unpack_revision(composed1["revision"])
 
-    assert {:ok, _} = Rooms.handover(room_id, @owner, @guest)
+    assert {:ok, nominated} = Rooms.handover(room_id, @owner, @guest)
+    assert nominated.state == "dormant"
+    assert nominated.active_host_sub == nil
+    assert nominated.handover_candidate_sub == @guest
     assert {:ok, composed_after} = Rooms.composed_scene(room_id)
     refute Enum.any?(composed_after["entries"], fn e -> e["blake3"] == @blake3 end)
     assert {:ok, ^canon0, overlay_after} = Rooms.unpack_revision(composed_after["revision"])

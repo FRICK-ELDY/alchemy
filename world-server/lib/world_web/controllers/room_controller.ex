@@ -568,6 +568,7 @@ defmodule WorldWeb.RoomController do
 
   defp room_session_summary(room, viewer_sub) do
     role_hint = if room.owner_sub == viewer_sub, do: "owner", else: "joinable"
+    room = Rooms.lease_view_public(room)
 
     %{
       room_id: room.room_id,
@@ -575,12 +576,59 @@ defmodule WorldWeb.RoomController do
       owner_sub: room.owner_sub,
       role_hint: role_hint,
       state: room.state,
-      active_host_sub: room.active_host_sub
+      active_host_sub: room.active_host_sub,
+      handover_candidate_sub: room.handover_candidate_sub
     }
   end
 
   @doc """
-  x0080: Graceful Handover — nominate `target_sub` or pass null to dormant.
+  x00a0: Owner Room key rotate (kick / manual revoke entry).
+  """
+  def rotate_room_key(conn, %{"room_id" => room_id} = params) do
+    case resolve_sub(conn, params) do
+      {:ok, sub} ->
+        case Rooms.rotate_room_key(room_id, sub) do
+          {:ok, epoch} when is_integer(epoch) ->
+            json(conn, %{room_id: room_id, room_key_epoch: epoch})
+
+          {:ok, :noop} ->
+            rotate_room_key_noop_response(conn, room_id)
+
+          {:error, :forbidden_host} ->
+            conn |> put_status(:forbidden) |> json(%{error: "owner_only"})
+
+          {:error, :not_found} ->
+            conn |> put_status(:not_found) |> json(%{error: "room_not_found"})
+
+          {:error, :invalid_room_id} ->
+            conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_room_id"})
+
+          {:error, :storage_error} ->
+            storage_unavailable(conn)
+        end
+
+      {:error, :anon_disabled} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "anon_tokens_disabled"})
+    end
+  end
+
+  defp rotate_room_key_noop_response(conn, room_id) do
+    case Rooms.get(room_id) do
+      {:ok, room} ->
+        json(conn, %{room_id: room_id, room_key_epoch: room.room_key_epoch})
+
+      {:error, :not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "room_not_found"})
+
+      {:error, :storage_error} ->
+        storage_unavailable(conn)
+    end
+  end
+
+  @doc """
+  x00a1: Graceful Handover stage A — nominate candidate (dormant) or null → dormant.
   """
   def handover(conn, %{"room_id" => room_id} = params) do
     case resolve_sub(conn, params) do
@@ -612,6 +660,51 @@ defmodule WorldWeb.RoomController do
         |> put_status(:unauthorized)
         |> json(%{error: "anon_tokens_disabled"})
     end
+  end
+
+  @doc """
+  x00a1: Handover stage B — candidate accept CAS → active_host + lease.
+  """
+  def accept_handover(conn, %{"room_id" => room_id} = params) do
+    case resolve_sub(conn, params) do
+      {:ok, caller_sub} ->
+        room_id
+        |> Rooms.accept_handover(caller_sub)
+        |> render_accept_handover(conn, caller_sub)
+
+      {:error, :anon_disabled} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "anon_tokens_disabled"})
+    end
+  end
+
+  defp render_accept_handover({:ok, room}, conn, caller_sub) do
+    json(conn, room_session_summary(room, caller_sub))
+  end
+
+  defp render_accept_handover({:error, :not_found}, conn, _caller_sub) do
+    conn |> put_status(:not_found) |> json(%{error: "room_not_found"})
+  end
+
+  defp render_accept_handover({:error, :forbidden_host}, conn, _caller_sub) do
+    conn |> put_status(:forbidden) |> json(%{error: "handover_accept_forbidden"})
+  end
+
+  defp render_accept_handover({:error, :conflict}, conn, _caller_sub) do
+    conn |> put_status(:conflict) |> json(%{error: "handover_accept_conflict"})
+  end
+
+  defp render_accept_handover({:error, :invalid_revision}, conn, _caller_sub) do
+    conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_revision"})
+  end
+
+  defp render_accept_handover({:error, :invalid_room_id}, conn, _caller_sub) do
+    conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_room_id"})
+  end
+
+  defp render_accept_handover({:error, :storage_error}, conn, _caller_sub) do
+    storage_unavailable(conn)
   end
 
   @doc """
@@ -920,6 +1013,12 @@ defmodule WorldWeb.RoomController do
         |> put_status(:conflict)
         |> json(%{error: "scene_revision_conflict"})
 
+      {:error, :scene_entries_exceeded} ->
+        scene_budget_exceeded(conn)
+
+      {:error, :scene_bytes_exceeded} ->
+        scene_budget_exceeded(conn)
+
       {:error, :invalid_scene_revision} ->
         conn
         |> put_status(:internal_server_error)
@@ -955,6 +1054,12 @@ defmodule WorldWeb.RoomController do
         |> put_status(:unauthorized)
         |> json(%{error: "invalid_room_token"})
     end
+  end
+
+  defp scene_budget_exceeded(conn) do
+    conn
+    |> put_status(:request_entity_too_large)
+    |> json(%{error: "scene_budget_exceeded"})
   end
 
   @doc """
@@ -1113,6 +1218,12 @@ defmodule WorldWeb.RoomController do
 
       {:error, :scene_revision_conflict} ->
         conn |> put_status(:conflict) |> json(%{error: "scene_revision_conflict"})
+
+      {:error, :scene_entries_exceeded} ->
+        scene_budget_exceeded(conn)
+
+      {:error, :scene_bytes_exceeded} ->
+        scene_budget_exceeded(conn)
 
       {:error, :invalid_scene_revision} ->
         conn |> put_status(:internal_server_error) |> json(%{error: "invalid_scene_revision"})

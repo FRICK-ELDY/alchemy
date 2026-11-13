@@ -28,6 +28,9 @@ pub struct RoomSummary {
     pub state: String,
     #[serde(default)]
     pub active_host_sub: Option<String>,
+    /// x00a1: nominated candidate waiting for accept (dormant until then).
+    #[serde(default)]
+    pub handover_candidate_sub: Option<String>,
 }
 
 fn default_unknown_state() -> String {
@@ -178,7 +181,7 @@ pub fn get_room(world_url: &str, access_token: &str, room_id: &str) -> Result<Ro
     }
 }
 
-/// Graceful Handover (`target_sub = None` → dormant). Caller must be active host or owner.
+/// Graceful Handover stage A (`target_sub = None` → dormant). Nominates candidate without lease (x00a1).
 pub fn handover(
     world_url: &str,
     access_token: &str,
@@ -204,6 +207,26 @@ pub fn handover(
             bail!("handover failed status={code} body={body}")
         }
         Err(err) => Err(err).context("handover request failed"),
+    }
+}
+
+/// Handover stage B: candidate accept CAS → active_host + lease (x00a1).
+pub fn accept_handover(world_url: &str, access_token: &str, room_id: &str) -> Result<RoomSummary> {
+    let base = world_url.trim_end_matches('/');
+    let authz = format!("Bearer {access_token}");
+    let url = format!("{base}/api/v1/rooms/{room_id}/handover/accept");
+
+    match ureq::post(&url)
+        .set("content-type", "application/json")
+        .set("authorization", &authz)
+        .send_json(serde_json::json!({}))
+    {
+        Ok(resp) => resp.into_json().context("parse handover accept"),
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            bail!("handover accept failed status={code} body={body}")
+        }
+        Err(err) => Err(err).context("handover accept request failed"),
     }
 }
 

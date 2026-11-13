@@ -16,12 +16,14 @@
 | `owner_sub`（永続）と `active_host_sub`（計算ホスト）の分離。`POST …/handover` / `POST …/takeover`（CAS）/ host lease 失効で昇格・休止。Host Token は active_host または dormant からの owner 再開に限定（x0080） | 偽 Zenoh Notice 単独での Host Token；pose/grab のシームレス継承；Room 行の物理 DELETE |
 | canonical scene 書き込み（`POST/DELETE …/scene/entries`）は **active_host かつ** `owner_sub` ∪ `editor_subs`（x009d）。非 writer → 403 `scene_writer_forbidden`。`Rooms.set_editor_subs/3` は owner のみ | Dash Permissions UI；Moderator ロール；overlay→canonical Save/merge |
 | `session_overlay`（x009e）: active host が `POST/DELETE …/overlay/entries`（**atomic packed CAS**）。GET/seal/PlaceHashes は **composed**。dormant / lease expire / takeover / expired activate / nominate で entries 破棄 + overlay rev bump（self-renew は保持） | セッションまたぎの inventory 永続 |
-| takeover は visibility に加え **owner ∪ `eligible_host_subs`**（空 = owner のみ・x009e）。`PUT …/eligible_hosts` で owner 設定。非 eligible → 403 `takeover_forbidden` | 署名付き HostDelegation JWT；candidate opt-in（P1-4） |
+| takeover は visibility に加え **owner ∪ `eligible_host_subs`**（空 = owner のみ・x009e）。`PUT …/eligible_hosts` で owner 設定。非 eligible → 403 `takeover_forbidden` | 署名付き HostDelegation JWT |
+| handover 二段階（x00a1）: `POST …/handover` は candidate 記録 + **dormant**（lease なし）。`POST …/handover/accept` で CAS して active+lease。null target → dormant + candidate クリア。pending 中の再 `handover(other)` は **candidate 差し替え**（cancel 不要）。**未期限切れ candidate 中は owner Host Token claim / takeover による横取り不可**（cancel は `handover(null)`；期限切れは projection + sweeper で消える） | Presence / Server Operator の world 検証；accept TTL 長寿命永続 |
 | 短命 Room Token（RS256）の発行（**`cnf.spk` = session_pub・x003e**） | Friendship 正本（auth）。Token 前に S2S 照会；`jkt` 互換 |
 | 7段階公開範囲 ACL（Token 発行時・x0034–x0036） | unfollow 単独の既発行 Token 即時失効（TTL まで有効） |
 | 短命 mTLS（x0066）: Token 発行時の任意 `csr_pem` → **CSR Subject 無視**・role CN（`alchemy-host` / `alchemy-guest`）で client cert 署名。応答 `mtls`（`client_cert_pem` / `ca_cert_pem` / `expires_at`）。NotAfter ≈ Token soft TTL（x0068）。CA 未設定時は `csr_pem` を無視して Token のみ（Relay Agent 併存） | QUIC；zenohd 側の JWT；IP allowlist；Agent 退役必須化 |
 | Room 鍵 AEAD 配布（x0069）: Room 作成時に 32B `room_key` + `wire_cap` を発行。Token **応答 JSON**（JWT claims 外）に `room_key`（URL-safe base64）/ `wire_cap` / `room_key_epoch` を同梱。Zenoh 平文の機密性正本は AEAD；`wire_cap` はルーティングのみ | `wire_cap` トピック名の秘匿；入室者同士の鍵 forward 秘匿；Allocation JWT への `room_key` 載せ |
-| Room 鍵寿命（x007e）: `room_key_epoch` + Token JSON；visibility **縮小** / owner `rotate_room_key` / 定期（`ROOM_KEY_ROTATE_HOURS` 既定 24）で回転；直前世代は `RoomKeyGrace`（≈ Token TTL・メモリのみ）→ **host Token** に `room_key_prev*` として同梱（guest には載せない） | 3 世代以上の受理；world 再起動後の旧鍵；Allocation/Relay への `room_key` 配布；push 通知（host は ≈15s Token 再取得で採用） |
+| Room 鍵寿命（x007e / x00a0）: `room_key_epoch` + Token JSON；visibility **縮小** / owner `POST …/room_key/rotate` / 定期（`ROOM_KEY_ROTATE_HOURS` 既定 24）/ auth `relation_changed`（social visibility）で回転；直前世代は `RoomKeyGrace`（≈ Token TTL・メモリのみ）→ **host Token** に `room_key_prev*` として同梱（guest には載せない） | 3 世代以上の受理；world 再起動後の旧鍵；Allocation/Relay への `room_key` 配布；push 通知（host は ≈15s Token 再取得で採用）；既発行 Room Token JWT 即時失効（TTL；新 epoch AEAD は閉じる） |
+| SceneBudget（x00a2）: scene/overlay CAS 前に entries ≤ 4096・JSON bytes ≤ 1 MiB（protocol Manifest 上限ミラー）。超過 → 413 `scene_budget_exceeded`。**canonical 追記・overlay 追記の双方**で composed（canon ∥ overlay）entries も ≤ 4096 | protobuf Manifest バイト一致；既存汚染行の自動刈り込み |
 | client Home「新規ワールド作成」仮 UI でアクセスレベル選択→ create/PUT + 入室（x0037）；Worlds カタログ Join/Host での `room_id` retarget（`ROOM_ID` env・seal/attest・HostSupervisor 再起動 · x007c） | UI デザイン最終化；入室中の途中変更 UI（Leave なしの in-place 昇格）；テンプレ複数；カタログ全件の無制限走査 |
 | `GET /.well-known/jwks.json`（Room Token 用） | verifier / ホスト死活監視 / S2S 連合 |
 | Room API は auth-server Bearer JWT 必須（`sub` を Room Token に転写） | 匿名 Token（既定 OFF。`WORLD_ALLOW_ANON_TOKENS=true` のみ） |
@@ -74,8 +76,11 @@ Token **応答 JSON**（JWT 外・同梱）: `wire_cap`（ルーティング）�
 | POST | `/api/v1/rooms` | Bearer（auth JWT） | Room 作成（任意 `visibility`；初期 `state=dormant`） |
 | PUT | `/api/v1/rooms/:room_id/visibility` | Bearer（auth JWT） | owner のみ更新 |
 | POST | `/api/v1/rooms/:room_id/tokens` | Bearer（auth JWT） | Token 発行（`session_pub` 必須・任意 `csr_pem`→`mtls`・x0066；応答に `wire_cap` / `room_key` / `room_key_epoch`・x0069/x007e；host は active_host / owner-resume・x0080） |
-| POST | `/api/v1/rooms/:room_id/handover` | Bearer（auth JWT） | Graceful Handover（active_host または owner；`target_sub` null → dormant・x0080） |
+| POST | `/api/v1/rooms/:room_id/handover` | Bearer（auth JWT） | Handover stage A（candidate + dormant / null → dormant・x00a1） |
+| POST | `/api/v1/rooms/:room_id/handover/accept` | Bearer（auth JWT） | Handover stage B（candidate accept CAS → active+lease・x00a1） |
 | POST | `/api/v1/rooms/:room_id/takeover` | Bearer（auth JWT） | Manual Takeover CAS（dormant / lease 切れ・x0080） |
+| POST | `/api/v1/rooms/:room_id/room_key/rotate` | Bearer（auth JWT）+ owner | Room key epoch bump（kick / manual revoke・x00a0） |
+| POST | `/internal/v1/relation_changed` | internal token | auth friendship/follow revoke → social Room ローテ（x00a0） |
 | POST | `/api/v1/rooms/:room_id/host_keys` | Bearer（**host Room Token**）+ PoP（x0081） | HostAttestation 発行（`host_pub` base64url・`host_generation`・x0025 / x003a） |
 | POST | `/api/v1/rooms/:room_id/manifest_seal` | Bearer（**host Room Token**）+ PoP（x0081） | ManifestSeal 発行（`revision` + `host_generation` + `manifest_blake3` + `host_attestation`；canonical 照合・x0039 / x003a） |
 | GET | `/api/v1/rooms/:room_id/scene` | Bearer（**host Room Token**）+ PoP（x0081） | DemoScene `{ revision, entries, locomotion, owner_sub, room_id }`（x0027 / x0098） |

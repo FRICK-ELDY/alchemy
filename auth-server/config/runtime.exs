@@ -85,6 +85,17 @@ if config_env() == :prod do
 
   config :auth, :internal_token, internal_token
 
+  world_internal_url =
+    System.get_env("WORLD_INTERNAL_URL") ||
+      raise """
+      environment variable WORLD_INTERNAL_URL is missing.
+      Required for auth → world relation_changed S2S (x00a0; no silent localhost default).
+      """
+
+  config :auth,
+    world_internal_url: world_internal_url,
+    world_notify_mode: :http
+
   database_url =
     System.get_env("DATABASE_URL") ||
       raise """

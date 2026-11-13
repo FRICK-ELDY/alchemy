@@ -27,6 +27,21 @@ case System.get_env("ROOM_KEY_ROTATE_HOURS") do
     end
 end
 
+# x0080: HostLeaseSweeper interval (ms). 0 disables periodic sweep.
+case System.get_env("HOST_LEASE_SWEEP_MS") do
+  nil ->
+    :ok
+
+  raw ->
+    case Integer.parse(String.trim(raw)) do
+      {ms, ""} when ms >= 0 ->
+        config :world, host_lease_sweep_ms: ms
+
+      _ ->
+        :ok
+    end
+end
+
 if System.get_env("ROOM_TOKEN_GENERATE_KEY") in ~w(true 1) do
   config :world, room_token_generate_key_on_startup: true
 end

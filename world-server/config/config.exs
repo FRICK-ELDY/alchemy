@@ -11,6 +11,9 @@ config :world,
   room_token_ttl_seconds: 300,
   # x0080: compute-host heartbeat budget while session is active.
   host_lease_ttl_seconds: 300,
+  # x0080: HostLeaseSweeper tick interval (ms). 0 disables periodic sweep.
+  # Runtime override: HOST_LEASE_SWEEP_MS (see runtime.exs). ExUnit sets 0.
+  host_lease_sweep_ms: 15_000,
   # x007e: periodic room_key rotate interval (hours). 0 disables.
   # Runtime override: ROOM_KEY_ROTATE_HOURS (see runtime.exs when present).
   room_key_rotate_hours: 24,

@@ -1687,7 +1687,7 @@ defmodule WorldWeb.RoomControllerTest do
              |> json_response(500)
   end
 
-  test "handover nominates guest host without changing owner (x0080)", %{
+  test "handover nominates candidate without lease; accept grants host (x00a1)", %{
     conn: conn,
     signer: signer
   } do
@@ -1702,13 +1702,36 @@ defmodule WorldWeb.RoomControllerTest do
 
     activate_host!(signer, owner, "ho-1")
 
-    assert %{"state" => "active", "active_host_sub" => ^guest, "owner_sub" => ^owner} =
+    assert %{
+             "state" => "dormant",
+             "active_host_sub" => nil,
+             "handover_candidate_sub" => ^guest,
+             "owner_sub" => ^owner
+           } =
              build_conn()
              |> TestAuthHelpers.put_auth(signer, owner)
              |> post("/api/v1/rooms/ho-1/handover", %{target_sub: guest})
              |> json_response(200)
 
-    # Nominated guest may issue host Token; previous host may not.
+    # Before accept: candidate cannot issue host Token.
+    assert %{"error" => "host_role_forbidden"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, guest)
+             |> post("/api/v1/rooms/ho-1/tokens", token_params(%{role: "host"}))
+             |> json_response(403)
+
+    assert %{"error" => "handover_accept_forbidden"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms/ho-1/handover/accept", %{})
+             |> json_response(403)
+
+    assert %{"state" => "active", "active_host_sub" => ^guest, "handover_candidate_sub" => nil} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, guest)
+             |> post("/api/v1/rooms/ho-1/handover/accept", %{})
+             |> json_response(200)
+
     assert %{"role" => "host", "active_host_sub" => ^guest} =
              build_conn()
              |> TestAuthHelpers.put_auth(signer, guest)
@@ -1748,10 +1771,16 @@ defmodule WorldWeb.RoomControllerTest do
       )
       |> json_response(200)
 
-    assert %{"state" => "active", "active_host_sub" => ^guest} =
+    assert %{"state" => "dormant", "handover_candidate_sub" => ^guest} =
              build_conn()
              |> TestAuthHelpers.put_auth(signer, owner)
              |> post("/api/v1/rooms/#{room}/handover", %{target_sub: guest})
+             |> json_response(200)
+
+    assert %{"state" => "active", "active_host_sub" => ^guest} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, guest)
+             |> post("/api/v1/rooms/#{room}/handover/accept", %{})
              |> json_response(200)
 
     assert %{"error" => "host_role_forbidden"} =
@@ -2102,5 +2131,156 @@ defmodule WorldWeb.RoomControllerTest do
              |> TestAuthHelpers.put_auth(signer, owner)
              |> put("/api/v1/rooms/elig-http/eligible_hosts", %{subs: []})
              |> json_response(200)
+  end
+
+  test "owner room_key rotate HTTP bumps epoch; non-owner forbidden (x00a0)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0"
+    guest = "b0b0b0b0-b0b0-b0b0-b0b0-b0b0b0b0b0b0"
+
+    assert %{"room_id" => "rk-http"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "rk-http", visibility: "friends"})
+             |> json_response(201)
+
+    assert %{"room_key_epoch" => 0, "room_key" => old_key} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms/rk-http/tokens", token_params(%{role: "host"}))
+             |> json_response(200)
+
+    assert %{"room_id" => "rk-http", "room_key_epoch" => 1} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms/rk-http/room_key/rotate", %{})
+             |> json_response(200)
+
+    assert %{"error" => "owner_only"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, guest)
+             |> post("/api/v1/rooms/rk-http/room_key/rotate", %{})
+             |> json_response(403)
+
+    assert %{"room_key_epoch" => 1, "room_key" => new_key} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms/rk-http/tokens", token_params(%{role: "host"}))
+             |> json_response(200)
+
+    # Key material + epoch bump: AEAD open(old_key, new_epoch) fails in
+    # protocol `wire_aead::tests::wrong_epoch_fails` / wrong_key (x00a0 DoD).
+    assert new_key != old_key
+  end
+
+  test "scene append over entry budget returns 413 (x00a2)", %{conn: conn, signer: signer} do
+    owner = "f0f0f0f0-f0f0-f0f0-f0f0-f0f0f0f0f0f0"
+    {pub, priv} = TestAuthHelpers.session_keypair()
+    room = "budget-http"
+
+    assert %{"room_id" => ^room} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: room, visibility: "public"})
+             |> json_response(201)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post(
+        "/api/v1/rooms/#{room}/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(pub)})
+      )
+      |> json_response(200)
+
+    scene =
+      build_conn()
+      |> TestAuthHelpers.get_host(host_token, priv, "/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
+    {:ok, canon, overlay} = World.Rooms.unpack_revision(scene["revision"])
+
+    entries =
+      for i <- 1..World.SceneBudget.max_entries() do
+        %{"entity_id" => i, "blake3" => String.duplicate("ab", 32)}
+      end
+
+    encoded =
+      Jason.encode!(%{
+        "revision" => canon,
+        "entries" => entries,
+        "locomotion" => scene["locomotion"] || %{}
+      })
+
+    assert {:ok, _} =
+             World.Repo.query("UPDATE rooms SET scene = ? WHERE room_id = ?", [encoded, room])
+
+    assert {:ok, packed} = World.Rooms.pack_revision(canon, overlay)
+
+    assert %{"error" => "scene_budget_exceeded"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/scene/entries",
+               %{
+                 blake3: String.duplicate("cd", 32),
+                 expected_revision: packed
+               }
+             )
+             |> json_response(413)
+  end
+
+  test "relation_changed rotates social rooms owned by either party (x00a0)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "c0c0c0c0-c0c0-c0c0-c0c0-c0c0c0c0c0c0"
+    friend = "d0d0d0d0-d0d0-d0d0-d0d0-d0d0d0d0d0d0"
+
+    assert %{"room_id" => "rel-friends"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "rel-friends", visibility: "friends"})
+             |> json_response(201)
+
+    assert %{"room_id" => "rel-public"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "rel-public", visibility: "public"})
+             |> json_response(201)
+
+    {:ok, before} = World.Rooms.get("rel-friends")
+    assert before.room_key_epoch == 0
+    old_key = before.room_key
+
+    assert %{"ok" => true, "rotated" => rotated} =
+             build_conn()
+             |> put_req_header("x-alchemy-internal-token", "dev-internal-token")
+             |> post("/internal/v1/relation_changed", %{
+               sub_a: owner,
+               sub_b: friend,
+               reason: "unfriend"
+             })
+             |> json_response(200)
+
+    assert Enum.any?(rotated, fn
+             %{"room_id" => "rel-friends", "room_key_epoch" => 1} -> true
+             _ -> false
+           end)
+
+    refute Enum.any?(rotated, fn
+             %{"room_id" => "rel-public"} -> true
+             _ -> false
+           end)
+
+    {:ok, after_friends} = World.Rooms.get("rel-friends")
+    assert after_friends.room_key_epoch == 1
+    assert after_friends.room_key != old_key
+
+    {:ok, after_public} = World.Rooms.get("rel-public")
+    assert after_public.room_key_epoch == 0
   end
 end

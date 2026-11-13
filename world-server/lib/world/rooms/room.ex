@@ -5,7 +5,7 @@ defmodule World.Rooms.Room do
   Guarantees: `room_id` + `owner_sub` + DemoScene `scene` + `visibility` + `wire_cap` (x004e) +
   `room_key` (x0069) + `room_key_epoch` (x007e) + host session (`active_host_sub` / `state` /
   `host_lease_expires_at` · x0080) + `editor_subs` (x009d) + `session_overlay` /
-  `eligible_host_subs` (x009e) survive restart.
+  `eligible_host_subs` (x009e) + handover candidate (x00a1) survive restart.
   Non-guarantees: Presence / physics pose; UGC edit history; previous-epoch key durability
   (grace is memory-only via `RoomKeyGrace`); seamless sim handoff of poses; Dash Permissions UI;
   overlay→canonical Save/merge.
@@ -126,6 +126,17 @@ defmodule World.Rooms.Room do
       allow_nil? false
       public? true
       default "[]"
+    end
+
+    # x00a1: nominated host candidate (dormant until accept).
+    attribute :handover_candidate_sub, :string do
+      allow_nil? true
+      public? true
+    end
+
+    attribute :handover_candidate_expires_at, :utc_datetime do
+      allow_nil? true
+      public? true
     end
 
     create_timestamp :inserted_at
