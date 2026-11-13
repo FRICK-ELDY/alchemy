@@ -26,13 +26,12 @@
 //! - Leave/Logout do **not** stop the supervised host (only Exit / failed Start / Drop)
 //! - UI access JWT handoff (`ALCHEMY_AUTH_TOKEN` on child): **only when** parent env lacks
 //!   `AUTH_USER` (password optional — debug host may seed it) and lacks `ALCHEMY_AUTH_TOKEN`.
-//!   Host treats injected token as `expires_in=0` (no auth refresh); Room Token reissue
-//!   fails after access JWT TTL (≈12–15 min). **Prefer env `AUTH_USER`(+password) for
-//!   durable Host.**
-//! - `refresh_token` is **not** passed (host has no matching env; would collide with
-//!   long-lived `ALCHEMY_AUTH_TOKEN` semantics).
+//!   Injected path sets `ALCHEMY_AUTH_BROKER=1` + `ALCHEMY_AUTH_EXPIRES_IN` and parent
+//!   pushes refreshed access JWT via IPC `AUTH_PUSH` (x009f) before hard expiry.
+//! - `refresh_token` is **never** passed to the child (parent broker owns refresh).
+//! - Durable env `AUTH_USER`(+password) / long-lived parent `ALCHEMY_AUTH_TOKEN` skip broker.
 
-use alchemy_protocol::host_ipc::{self, ENV_TOKEN};
+use alchemy_protocol::host_ipc::{self, ENV_AUTH_BROKER, ENV_AUTH_EXPIRES_IN, ENV_TOKEN};
 use anyhow::{bail, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -124,19 +123,85 @@ impl HostSupervisor {
     /// always matches the catalog selection.
     pub fn ensure_running(&self) -> Result<()> {
         let room = std::env::var("ROOM_ID").unwrap_or_else(|_| "local".into());
-        self.ensure_running_for_room(&room, None)
+        self.ensure_running_for_room(&room, None, None)
+    }
+
+    /// Push a fresh access JWT to a Running supervised host (x009f ParentBroker).
+    ///
+    /// No-op when Idle / not broker path / missing loopback IPC. Failures are returned
+    /// so callers can retry or surface status without killing the host.
+    pub fn push_access_token(&self, access_token: &str, expires_in: u64) -> Result<()> {
+        let token = access_token.trim();
+        if token.is_empty() {
+            bail!("empty access token for AUTH_PUSH");
+        }
+        if expires_in == 0 {
+            bail!("expires_in must be ≥1 for AUTH_PUSH");
+        }
+        if parent_env_prefers_durable_auth() {
+            return Ok(());
+        }
+        let (ipc_addr, ipc_token) = {
+            let mut g = self.state.lock().expect("host_supervisor state");
+            g.refresh_exited();
+            match &g.phase {
+                Phase::Running {
+                    ipc_addr,
+                    ipc_token,
+                    ..
+                } => (ipc_addr.clone(), ipc_token.clone()),
+                _ => return Ok(()),
+            }
+        };
+        if !host_ipc::is_loopback_addr(&ipc_addr) {
+            bail!("host IPC addr not loopback: {ipc_addr}");
+        }
+        host_ipc::request_auth_push(&ipc_addr, &ipc_token, expires_in, token)
+            .context("AUTH_PUSH to host")?;
+        log::info!("host supervisor: AUTH_PUSH ok (expires_in={expires_in}s)");
+        Ok(())
+    }
+
+    /// Best-effort AUTH_PUSH with short retries (ParentBroker hard-expiry is sensitive).
+    ///
+    /// Callers that hold `auth` must **clone** token + `expires_in` and drop the lock
+    /// before calling — IPC timeouts can take seconds. Do not add `&AuthGate` helpers
+    /// that invite holding `MutexGuard` across this path.
+    pub fn push_access_token_retry(&self, access_token: &str, expires_in: u64) {
+        const ATTEMPTS: u32 = 3;
+        for attempt in 1..=ATTEMPTS {
+            match self.push_access_token(access_token, expires_in) {
+                Ok(()) => return,
+                Err(err) if attempt == ATTEMPTS => {
+                    if self.owns_local_host() {
+                        log::error!(
+                            "parent AUTH_PUSH failed after {ATTEMPTS} attempts (host may hard-expire): {err:#}"
+                        );
+                    } else {
+                        log::warn!("parent AUTH_PUSH failed after {ATTEMPTS} attempts: {err:#}");
+                    }
+                }
+                Err(err) => {
+                    log::warn!("parent AUTH_PUSH attempt {attempt}/{ATTEMPTS} failed: {err:#}");
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
     }
 
     /// Spawn host-server for `room_id` if not already running for that room.
     ///
-    /// `auth_access_token`: UI-login access JWT. Injected as child `ALCHEMY_AUTH_TOKEN`
-    /// **only** when parent env has neither `AUTH_USER` nor `ALCHEMY_AUTH_TOKEN`
-    /// (see [`prefers_durable_auth`]). Not written into the parent process env.
+    /// `auth_access_token` + `auth_expires_in`: UI-login access JWT. Injected as child
+    /// `ALCHEMY_AUTH_TOKEN` with ParentBroker env **only** when parent env has neither
+    /// `AUTH_USER` nor `ALCHEMY_AUTH_TOKEN` (see [`prefers_durable_auth`]). Not written
+    /// into the parent process env. `refresh_token` is never forwarded.
     ///
     /// When a host is already Running/Starting for a **different** room, shut it
-    /// down and respawn with `ROOM_ID=room_id` (x007c). Same-room Running → Ok
-    /// (**does not** refresh credentials on the existing child — stop host / Host
-    /// another room / Exit first if the child was started without usable auth).
+    /// down and respawn with `ROOM_ID=room_id` (x007c). Same-room Running (x009f):
+    /// - UI token + `expires_in ≥ 1` → [`Self::push_access_token_retry`] then Ok
+    /// - UI token without usable `expires_in` (and not durable parent env) → **Err**
+    ///   (same fail-closed rule as ParentBroker spawn; do not pretend Host succeeded)
+    /// - no UI token / durable parent env → Ok without push
     ///
     /// Reservation is taken under the state mutex. Ready-wait runs unlocked so
     /// [`Self::shutdown_graceful`] can cancel via [`Self::cancel_spawn`].
@@ -144,6 +209,7 @@ impl HostSupervisor {
         &self,
         room_id: &str,
         auth_access_token: Option<&str>,
+        auth_expires_in: Option<u64>,
     ) -> Result<()> {
         if room_id.is_empty() {
             bail!("empty room_id for local host-server");
@@ -157,9 +223,11 @@ impl HostSupervisor {
             let mut g = self.state.lock().expect("host_supervisor state");
             g.refresh_exited();
             match &g.phase {
-                // Same room already up: keep child as-is (ignore a newer UI token).
+                // Same room already up: keep child; push fresh JWT if provided (x009f).
+                // Token without expires_in must fail like ParentBroker spawn — not silent Ok.
                 Phase::Running { .. } if g.active_room_id.as_deref() == Some(room_id) => {
-                    return Ok(());
+                    drop(g);
+                    return self.same_room_auth_push(auth_access_token, auth_expires_in);
                 }
                 Phase::Running { .. } => retarget = true,
                 Phase::Starting { .. } | Phase::Reserved
@@ -233,7 +301,13 @@ impl HostSupervisor {
             Err(err) => return finish_fail(err),
         };
 
-        let mut child = match spawn_host(&token, &ready_path, room_id, auth_access_token) {
+        let mut child = match spawn_host(
+            &token,
+            &ready_path,
+            room_id,
+            auth_access_token,
+            auth_expires_in,
+        ) {
             Ok(c) => c,
             Err(err) => {
                 let _ = fs::remove_file(&ready_path);
@@ -334,6 +408,11 @@ impl HostSupervisor {
             job,
         };
         log::info!("host-server ready; ipc={ipc_addr} room_id={room_id}");
+        drop(g);
+        // Immediate AUTH_PUSH so bootstrap TTL and parent clock stay aligned (x009f).
+        if let (Some(tok), Some(exp)) = (auth_access_token, auth_expires_in) {
+            self.push_access_token_retry(tok, exp);
+        }
         Ok(())
     }
 
@@ -500,11 +579,59 @@ fn make_token() -> String {
     hex[..32].to_string()
 }
 
+/// Same-room Running: push when UI handoff has token+TTL; refuse token without TTL
+/// (symmetric with ParentBroker spawn). Durable parent env skips push.
+fn same_room_auth_push_inner(
+    prefers_durable: bool,
+    auth_access_token: Option<&str>,
+    auth_expires_in: Option<u64>,
+) -> Result<SameRoomAuthAction> {
+    let ui_tok = auth_access_token.map(str::trim).filter(|s| !s.is_empty());
+    match (ui_tok, auth_expires_in) {
+        (None, _) => Ok(SameRoomAuthAction::None),
+        (Some(_), _) if prefers_durable => Ok(SameRoomAuthAction::None),
+        (Some(tok), Some(exp)) if exp >= 1 => Ok(SameRoomAuthAction::Push {
+            token: tok.to_string(),
+            expires_in: exp,
+        }),
+        (Some(_), exp) => Err(anyhow::anyhow!(
+            "same-room Host requires expires_in ≥ 1 to AUTH_PUSH ParentBroker child (got {exp:?})"
+        )),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SameRoomAuthAction {
+    None,
+    Push { token: String, expires_in: u64 },
+}
+
+impl HostSupervisor {
+    fn same_room_auth_push(
+        &self,
+        auth_access_token: Option<&str>,
+        auth_expires_in: Option<u64>,
+    ) -> Result<()> {
+        match same_room_auth_push_inner(
+            parent_env_prefers_durable_auth(),
+            auth_access_token,
+            auth_expires_in,
+        )? {
+            SameRoomAuthAction::None => Ok(()),
+            SameRoomAuthAction::Push { token, expires_in } => {
+                self.push_access_token_retry(&token, expires_in);
+                Ok(())
+            }
+        }
+    }
+}
+
 fn spawn_host(
     ipc_token: &str,
     ready_path: &Path,
     room_id: &str,
     auth_access_token: Option<&str>,
+    auth_expires_in: Option<u64>,
 ) -> Result<Child> {
     let mut cmd = host_command();
     cmd.env(ENV_TOKEN, ipc_token)
@@ -521,10 +648,22 @@ fn spawn_host(
                 "host spawn: skipping UI access JWT inject (parent AUTH_USER and/or ALCHEMY_AUTH_TOKEN set)"
             );
         }
+        cmd.env_remove(ENV_AUTH_BROKER);
+        cmd.env_remove(ENV_AUTH_EXPIRES_IN);
     } else if let Some(tok) = ui_tok {
+        // Inject and post-ready AUTH_PUSH share the same prerequisite: expires_in ≥ 1.
+        // Never invent TTL=1 — that hard-expires the child ~immediately without a push.
+        let Some(expires_in) = auth_expires_in.filter(|&e| e >= 1) else {
+            bail!(
+                "UI access JWT handoff requires expires_in ≥ 1 (got {:?}); refuse ParentBroker spawn",
+                auth_expires_in
+            );
+        };
         cmd.env("ALCHEMY_AUTH_TOKEN", tok);
+        cmd.env(ENV_AUTH_BROKER, "1");
+        cmd.env(ENV_AUTH_EXPIRES_IN, expires_in.to_string());
         log::info!(
-            "host spawn: injecting UI access JWT as ALCHEMY_AUTH_TOKEN (short-lived; prefer AUTH_* for durable Host)"
+            "host spawn: injecting UI access JWT as ParentBroker (expires_in={expires_in}s; refresh stays on parent)"
         );
     }
     cmd.env_remove(alchemy_protocol::host_ipc::ENV_ADDR);
@@ -1003,6 +1142,29 @@ mod tests {
         assert!(prefers_durable_auth(Some("alice"), Some("Password1"), None));
         assert!(prefers_durable_auth(None, None, Some("tok")));
         assert!(!prefers_durable_auth(Some("  "), None, None));
+    }
+
+    #[test]
+    fn same_room_auth_push_refuses_token_without_expires_in() {
+        assert_eq!(
+            same_room_auth_push_inner(false, None, None).unwrap(),
+            SameRoomAuthAction::None
+        );
+        assert_eq!(
+            same_room_auth_push_inner(true, Some("jwt"), None).unwrap(),
+            SameRoomAuthAction::None
+        );
+        assert_eq!(
+            same_room_auth_push_inner(false, Some("jwt"), Some(900)).unwrap(),
+            SameRoomAuthAction::Push {
+                token: "jwt".into(),
+                expires_in: 900,
+            }
+        );
+        let err = same_room_auth_push_inner(false, Some("jwt"), None).unwrap_err();
+        assert!(err.to_string().contains("expires_in"));
+        let err0 = same_room_auth_push_inner(false, Some("jwt"), Some(0)).unwrap_err();
+        assert!(err0.to_string().contains("expires_in"));
     }
 
     #[test]

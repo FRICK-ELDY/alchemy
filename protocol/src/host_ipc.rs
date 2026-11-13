@@ -1,9 +1,13 @@
-//! Localhost TCP host shutdown + ready-file helpers (x0032; discovery LOOKUP retired).
+//! Localhost TCP host shutdown + auth broker + ready-file helpers
+//! (x0032; x009f AUTH_PUSH; discovery LOOKUP retired).
 //!
 //! Not a Zenoh wire schema — shared line format / client request / ready-file
 //! parsing so host and client (`HostSupervisor`) stay in sync.
 //!
-//! Host IPC: one line `SHUTDOWN <token>\n` on TCP to the host listener.
+//! Host IPC lines on TCP to the host listener:
+//! - `SHUTDOWN <token>\n`
+//! - `AUTH_PUSH <token> <expires_in> <access_jwt>\n` (x009f parent credential broker)
+//!
 //! Ready file (optional second line): `ipc=127.0.0.1:<port>`.
 //! Legacy discovery LOOKUP helpers remain for protocol tests / transitional callers.
 
@@ -20,12 +24,25 @@ pub const ENV_ADDR: &str = "ALCHEMY_HOST_IPC_ADDR";
 /// Env: launcher discovery loopback `host:port` (session-fixed; x0072).
 pub const ENV_DISCOVERY_ADDR: &str = "ALCHEMY_LAUNCHER_DISCOVERY_ADDR";
 
+/// Env: when `1`, host treats `ALCHEMY_AUTH_TOKEN` as parent-brokered (x009f).
+pub const ENV_AUTH_BROKER: &str = "ALCHEMY_AUTH_BROKER";
+
+/// Env: remaining access JWT TTL seconds for ParentBroker bootstrap (x009f).
+pub const ENV_AUTH_EXPIRES_IN: &str = "ALCHEMY_AUTH_EXPIRES_IN";
+
 /// Ready-file line prefix announcing the bound IPC address.
 pub const READY_IPC_PREFIX: &str = "ipc=";
 
 /// Format the shutdown request line (includes trailing newline).
 pub fn shutdown_line(token: &str) -> String {
     format!("SHUTDOWN {token}\n")
+}
+
+/// Format parent→host access JWT push (x009f). `expires_in` is remaining seconds (≥1).
+///
+/// `access_jwt` must not contain whitespace (JWT compact form).
+pub fn auth_push_line(token: &str, expires_in: u64, access_jwt: &str) -> String {
+    format!("AUTH_PUSH {token} {expires_in} {access_jwt}\n")
 }
 
 /// Format the discovery LOOKUP request line (includes trailing newline).
@@ -47,6 +64,36 @@ pub fn authenticates_shutdown(line: &str, expected_token: &str) -> bool {
     };
     let got = rest.trim();
     !got.is_empty() && got == expected_token
+}
+
+/// Parsed `AUTH_PUSH` payload after IPC token authentication (x009f).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthPush {
+    pub expires_in: u64,
+    pub access_jwt: String,
+}
+
+/// Parse `AUTH_PUSH <token> <expires_in> <access_jwt>`; `None` when malformed or token mismatch.
+pub fn parse_auth_push(line: &str, expected_token: &str) -> Option<AuthPush> {
+    let line = line.trim();
+    let rest = line.strip_prefix("AUTH_PUSH")?;
+    let mut parts = rest.split_whitespace();
+    let got = parts.next()?;
+    if got.is_empty() || got != expected_token {
+        return None;
+    }
+    let expires_in: u64 = parts.next()?.parse().ok()?;
+    if expires_in == 0 {
+        return None;
+    }
+    let access_jwt = parts.next()?;
+    if access_jwt.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    Some(AuthPush {
+        expires_in,
+        access_jwt: access_jwt.to_string(),
+    })
 }
 
 /// Parse a single discovery request line; true only when LOOKUP and token matches.
@@ -151,6 +198,31 @@ pub fn request_shutdown(addr: &str, token: &str) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+/// Connect, send [`auth_push_line`], expect `OK\n` (x009f). Caller should enforce loopback.
+pub fn request_auth_push(
+    addr: &str,
+    token: &str,
+    expires_in: u64,
+    access_jwt: &str,
+) -> Result<(), std::io::Error> {
+    let mut stream = TcpStream::connect(addr)?;
+    stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+    stream.write_all(auth_push_line(token, expires_in, access_jwt).as_bytes())?;
+    stream.flush().ok();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    if line.trim() == "OK" {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("auth push reply not OK: {line:?}"),
+        ))
+    }
+}
+
 /// Connect to launcher discovery, send LOOKUP, parse OK. Caller should enforce loopback.
 pub fn request_lookup(discovery_addr: &str, token: &str) -> Result<LookupOk, LookupError> {
     let mut stream = TcpStream::connect(discovery_addr).map_err(LookupError::Io)?;
@@ -201,6 +273,22 @@ mod tests {
         assert!(authenticates_shutdown(&line, "tok"));
         assert!(!authenticates_shutdown(&line, "other"));
         assert!(!authenticates_shutdown("PING tok\n", "tok"));
+    }
+
+    #[test]
+    fn auth_push_line_roundtrip() {
+        let line = auth_push_line("tok", 900, "hdr.payload.sig");
+        assert_eq!(
+            parse_auth_push(&line, "tok"),
+            Some(AuthPush {
+                expires_in: 900,
+                access_jwt: "hdr.payload.sig".into(),
+            })
+        );
+        assert!(parse_auth_push(&line, "other").is_none());
+        assert!(parse_auth_push("AUTH_PUSH tok 0 jwt\n", "tok").is_none());
+        assert!(parse_auth_push("AUTH_PUSH tok 9\n", "tok").is_none());
+        assert!(parse_auth_push("SHUTDOWN tok\n", "tok").is_none());
     }
 
     #[test]

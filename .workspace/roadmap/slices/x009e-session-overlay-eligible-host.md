@@ -1,6 +1,6 @@
 # x009e — session_overlay + eligible_host（P0-1 後半）
 
-> **ID:** `x009e` · **slug:** `session-overlay-eligible-host` · **status:** `active` · **area:** `[world, host, docs]` · **depends_on:** `[x009d, x0080, x0082]`  
+> **ID:** `x009e` · **slug:** `session-overlay-eligible-host` · **status:** `done` · **area:** `[world, host, docs]` · **depends_on:** `[x009d, x0080, x0082]`  
 > **優先度:** improvement-plan P0-1 後半（[x009d](x009d-host-delegation-scene-overlay.md) Phase 3–4）
 
 目標: active host の一時 entity を **`session_overlay`** に閉じ（dormant で破棄）、GET scene / ManifestSeal は canonical ⊕ overlay を合成する。inventory spawn/despawn は overlay HTTP へ。takeover は **owner ∪ `eligible_host_subs`** に限定する。

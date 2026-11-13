@@ -208,12 +208,13 @@ depends_on: [x0006]
 | x009b | — | done | USER_ROOT 帯を Manifest 配（P2-13） | [x009b-user-root-band-manifest.md](slices/x009b-user-root-band-manifest.md) |
 | x009c | — | done | bind 全体上限 + session_pub 起点（成功 JWT 返却 · P2-14） | [x009c-bind-global-session-pub.md](slices/x009c-bind-global-session-pub.md) |
 | x009d | — | done | canonical scene owner/editor 門番（P0-1 前半 · Phase 0–2） | [x009d-host-delegation-scene-overlay.md](slices/x009d-host-delegation-scene-overlay.md) |
-| x009e | — | active | session_overlay + eligible_host（P0-1 後半） | [x009e-session-overlay-eligible-host.md](slices/x009e-session-overlay-eligible-host.md) |
+| x009e | — | done | session_overlay + eligible_host（P0-1 後半） | [x009e-session-overlay-eligible-host.md](slices/x009e-session-overlay-eligible-host.md) |
+| x009f | — | done | 親 client 資格情報 broker（P0-2） | [x009f-parent-credential-broker.md](slices/x009f-parent-credential-broker.md) |
 
-**現在の次:** [x009e](slices/x009e-session-overlay-eligible-host.md) **active**（[P0-1](../0_doc/evaluation/improvement-plan-2026-11-12.md) 後半）。空間本線は一時停止 · Spot-Check 保留。  
+**現在の次:** P1（XPBD 接触 / zero-alloc / kick→epoch / SceneBudget / handover accept）。[x009f](slices/x009f-parent-credential-broker.md) **done**（[P0-2](../0_doc/evaluation/improvement-plan-2026-11-12.md)）。空間本線は一時停止 · Spot-Check 保留。  
 **P3-7**（BLAKE3 ストリーミング）は **CI が完了しなくなるためマージしない**；Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 
-次の空き番号は **`x009f`**。
+次の空き番号は **`x00a0`**。
 
 ## 関連
 

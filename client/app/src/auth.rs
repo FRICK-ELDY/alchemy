@@ -43,6 +43,8 @@ pub struct AuthGate {
     pub local_sub: Option<String>,
     /// When `Instant::now() >= deadline`, refresh access (None = do not auto-refresh).
     pub access_deadline: Option<Instant>,
+    /// Full access JWT expiry (x009f parent→host AUTH_PUSH remaining TTL).
+    pub access_hard_expire: Option<Instant>,
     /// When `Instant::now() >= deadline`, re-issue Room Token.
     pub room_deadline: Option<Instant>,
     /// After Room Token refresh: declare new `…/alive/{sub}/{jti}` after the next Intent put (x0022).
@@ -69,6 +71,7 @@ impl AuthGate {
         self.host_room_token = None;
         self.local_sub = None;
         self.access_deadline = None;
+        self.access_hard_expire = None;
         self.room_deadline = None;
         self.liveliness_rebind = false;
         self.liveliness_retire_prev = false;
@@ -76,9 +79,22 @@ impl AuthGate {
 
     pub fn apply_auth_session(&mut self, session: AuthSession) {
         self.access_deadline = refresh_deadline(session.expires_in);
+        self.access_hard_expire = hard_expire_deadline(session.expires_in);
         self.access_token = Some(session.access_token);
         self.refresh_token = session.refresh_token;
         self.username = Some(session.user.username);
+    }
+
+    /// Remaining access JWT TTL seconds for host AUTH_PUSH (≥1).
+    /// `None` when hard expiry is untracked **or already past** (do not push expired JWT).
+    pub fn access_expires_in_remaining(&self) -> Option<u64> {
+        let at = self.access_hard_expire?;
+        let now = Instant::now();
+        if now >= at {
+            return None;
+        }
+        let secs = at.duration_since(now).as_secs();
+        Some(secs.max(1))
     }
 
     pub fn apply_room(&mut self, room_token: String, local_sub: String, expires_in: u64) {
@@ -121,6 +137,14 @@ pub fn refresh_deadline(expires_in: u64) -> Option<Instant> {
     }
     let secs = ((expires_in as f64) * TOKEN_REFRESH_FRACTION).floor() as u64;
     Some(Instant::now() + Duration::from_secs(secs.max(1)))
+}
+
+/// Instant at which a token with `expires_in` is fully expired, or `None` if TTL is 0.
+pub fn hard_expire_deadline(expires_in: u64) -> Option<Instant> {
+    if expires_in == 0 {
+        return None;
+    }
+    Some(Instant::now() + Duration::from_secs(expires_in))
 }
 
 pub fn login(
@@ -281,12 +305,22 @@ mod tests {
         assert!(g.host_room_token.is_some());
         assert!(g.room_deadline.is_some());
         assert!(g.access_deadline.is_some());
+        assert!(g.access_hard_expire.is_some());
+        assert!(g.access_expires_in_remaining().is_some_and(|s| s >= 1));
         g.clear_session();
         assert!(!g.is_authenticated());
         assert!(!g.is_joined());
         assert!(g.host_room_token.is_none());
         assert!(g.room_deadline.is_none());
         assert!(g.access_deadline.is_none());
+        assert!(g.access_hard_expire.is_none());
+    }
+
+    #[test]
+    fn access_expires_in_remaining_none_when_expired() {
+        let mut g = AuthGate::default();
+        g.access_hard_expire = Some(Instant::now() - Duration::from_secs(1));
+        assert!(g.access_expires_in_remaining().is_none());
     }
 
     #[test]

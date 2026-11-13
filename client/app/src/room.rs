@@ -578,8 +578,17 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                     match refresh_token {
                         Some(rt) => match auth::refresh(&shared.get_auth_url(), &rt) {
                             Ok(session) => {
-                                if let Ok(mut gate) = shared.auth.lock() {
+                                // Release auth lock before IPC retry (timeouts can block seconds).
+                                let push = if let Ok(mut gate) = shared.auth.lock() {
                                     gate.apply_auth_session(session);
+                                    gate.access_token
+                                        .clone()
+                                        .zip(gate.access_expires_in_remaining())
+                                } else {
+                                    None
+                                };
+                                if let Some((tok, exp)) = push {
+                                    shared.host_supervisor.push_access_token_retry(&tok, exp);
                                 }
                                 log::info!("access token refreshed");
                             }

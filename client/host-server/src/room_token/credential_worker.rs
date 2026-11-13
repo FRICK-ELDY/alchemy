@@ -6,6 +6,7 @@
 //! with backoff, capped by the sync interval).
 //! Non-guarantees: Zenoh put path (x0042), auth UI.
 
+use super::auth_broker::AuthBrokerInbox;
 use super::credential_chain::{
     plan_credential_refresh, CredentialRefreshPlan, HostCredentialChain,
 };
@@ -73,6 +74,8 @@ pub struct CredentialWorkerConfig {
     pub force_reseal: Arc<std::sync::atomic::AtomicBool>,
     /// Shared with AEAD seal/open paths; updated when host Token epoch advances (x007e).
     pub room_aead: crate::room_aead::SharedRoomAead,
+    /// Parent `HostSupervisor` AUTH_PUSH inbox (x009f); empty when IPC unused.
+    pub auth_broker: AuthBrokerInbox,
 }
 
 fn combined_hard_expire(
@@ -197,12 +200,49 @@ pub fn spawn_credential_worker(
                     }
                 }
 
+                // x009f: apply parent AUTH_PUSH before planning soft-refresh layers.
+                let parent_pushed = match cfg.auth_broker.take() {
+                    Some(push) => match creds.apply_parent_auth_push(&push) {
+                        Ok(_) => {
+                            // Extend publish hard-expiry immediately so a late push before auth
+                            // hard-expire re-enables the gate without waiting for host Token HTTP.
+                            if let Ok(mut snap) = snapshot.write() {
+                                snap.hard_expire_at = combined_hard_expire(&creds, &seal_cache);
+                                if snap.hard_expire_at.is_some_and(|at| Instant::now() < at) {
+                                    snap.publish_allowed = true;
+                                }
+                            }
+                            true
+                        }
+                        Err(err) => {
+                            log::warn!("parent AUTH_PUSH not applied: {err:#}");
+                            false
+                        }
+                    },
+                    None => false,
+                };
+
                 let mut plan = plan_credential_refresh(
                     now,
                     creds.auth_refresh_at,
                     creds.host_refresh_at,
                     creds.attest_refresh_at,
                 );
+                if parent_pushed {
+                    // Always re-issue host Token after a broker push (Bearer may be rotated).
+                    plan = Some(match plan {
+                        Some(mut p) => {
+                            p.refresh_host = true;
+                            p.refresh_auth = false;
+                            p
+                        }
+                        None => CredentialRefreshPlan {
+                            refresh_auth: false,
+                            refresh_host: true,
+                            refresh_attest: false,
+                        },
+                    });
+                }
                 // Advance `next_room_key_sync` only after a successful refresh (below);
                 // on failure, backoff + short re-arm keep the ≈15s guarantee closer.
                 let key_sync_due = now >= next_room_key_sync;

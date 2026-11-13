@@ -2091,7 +2091,12 @@ fn start_worlds_host(
         ui.rebuild();
         return;
     }
-    let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+    let (access, access_expires_in) = shared
+        .auth
+        .lock()
+        .ok()
+        .map(|g| (g.access_token.clone(), g.access_expires_in_remaining()))
+        .unwrap_or((None, None));
     let Some(access) = access else {
         ui.state.worlds_status = "Sign in before hosting".into();
         ui.rebuild();
@@ -2165,10 +2170,12 @@ fn start_worlds_host(
                     "Starting local host…",
                     "Spawning host-server (cargo run can take a while)",
                 );
-                match shared_job
-                    .host_supervisor
-                    .ensure_running_for_room(room_id.as_ref(), Some(access.as_str()))
-                {
+                match shared_job.host_supervisor.ensure_running_for_room(
+                    room_id.as_ref(),
+                    Some(access.as_str()),
+                    access_expires_in,
+                ) {
+
                     Ok(()) => {
                         host_started = true;
                         send_enter_progress(
@@ -2597,7 +2604,8 @@ fn handle_ui_action(
                         }
                         let username = session.user.username.clone();
                         let applied_access = session.access_token.clone();
-                        {
+                        // Clone push payload under lock, then release before IPC retry (x009f).
+                        let push = {
                             let Ok(mut gate) = shared_job.auth.lock() else {
                                 return;
                             };
@@ -2605,6 +2613,15 @@ fn handle_ui_action(
                                 return;
                             }
                             gate.apply_auth_session(session);
+                            gate.access_token
+                                .clone()
+                                .zip(gate.access_expires_in_remaining())
+                        };
+                        // Leave/Logout keep supervised host — re-login must refresh child JWT.
+                        if let Some((tok, exp)) = push {
+                            shared_job
+                                .host_supervisor
+                                .push_access_token_retry(&tok, exp);
                         }
                         if !shared_job.auth_work_is_current(epoch) {
                             if let Ok(mut gate) = shared_job.auth.lock() {
@@ -2660,7 +2677,8 @@ fn handle_ui_action(
                         }
                         let username = session.user.username.clone();
                         let applied_access = session.access_token.clone();
-                        {
+                        // Clone push payload under lock, then release before IPC retry (x009f).
+                        let push = {
                             let Ok(mut gate) = shared_job.auth.lock() else {
                                 return;
                             };
@@ -2668,6 +2686,15 @@ fn handle_ui_action(
                                 return;
                             }
                             gate.apply_auth_session(session);
+                            gate.access_token
+                                .clone()
+                                .zip(gate.access_expires_in_remaining())
+                        };
+                        // Leave/Logout keep supervised host — register must refresh child JWT.
+                        if let Some((tok, exp)) = push {
+                            shared_job
+                                .host_supervisor
+                                .push_access_token_retry(&tok, exp);
                         }
                         if !shared_job.auth_work_is_current(epoch) {
                             if let Ok(mut gate) = shared_job.auth.lock() {
@@ -2753,7 +2780,12 @@ fn handle_ui_action(
                 return;
             }
             // Auth gate before Leave (same order as Worlds Join/Host).
-            let access = shared.auth.lock().ok().and_then(|g| g.access_token.clone());
+            let (access, access_expires_in) = shared
+                .auth
+                .lock()
+                .ok()
+                .map(|g| (g.access_token.clone(), g.access_expires_in_remaining()))
+                .unwrap_or((None, None));
             let Some(access) = access else {
                 ui.state.home_status = "Sign in before starting a session".into();
                 ui.mark_dash_form_dirty();
@@ -2810,10 +2842,11 @@ fn handle_ui_action(
                             "Starting local host…",
                             "Spawning host-server (cargo run can take a while)",
                         );
-                        match shared_job
-                            .host_supervisor
-                            .ensure_running_for_room(room_id.as_ref(), Some(access.as_str()))
-                        {
+                        match shared_job.host_supervisor.ensure_running_for_room(
+                            room_id.as_ref(),
+                            Some(access.as_str()),
+                            access_expires_in,
+                        ) {
                             Ok(()) => {
                                 host_started = true;
                                 send_enter_progress(

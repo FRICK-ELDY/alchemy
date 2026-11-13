@@ -170,6 +170,16 @@ fn main() -> Result<()> {
     // Sync AUTH/WORLD/ASSETS/ZENOH into process env for supervised host spawn.
     // Same world_url as the JWKS fetch above → apply_endpoints skips a second refresh.
     shared.apply_endpoints(&boot_ep);
+    // Silent / remember-me already applied above; push if a supervised host is somehow
+    // already Running (normally Idle at boot — no-op). Keeps "access JWT 更新 → AUTH_PUSH".
+    let boot_push = shared.auth.lock().ok().and_then(|g| {
+        g.access_token
+            .clone()
+            .zip(g.access_expires_in_remaining())
+    });
+    if let Some((tok, exp)) = boot_push {
+        shared.host_supervisor.push_access_token_retry(&tok, exp);
+    }
     log::info!(
         "boot endpoints: auth={} world={} zenoh={}",
         boot_ep.auth_url,
