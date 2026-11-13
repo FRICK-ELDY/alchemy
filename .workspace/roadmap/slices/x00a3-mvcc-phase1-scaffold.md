@@ -14,7 +14,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | `HotPhysicsPage::zeroed_page` + `try_set_kinematic_pose` が NaN/Inf / inactive を拒否 | host/app 本線配線；`wide` 依存（人承認後） |
-| `MvccPageArena::new` が固定プールを事前確保し、ページを checkout/commit できる最小 API | XOR デルタ；接触ソルバ置換；alloc 上限ベンチ全文 |
+| `MvccPageArena::new` が固定プールを事前確保し、ページを checkout/commit できる最小 API | dirty 合成デルタ（x0024；旧称「XOR デルタ」は使わない）；接触ソルバ置換；alloc 上限ベンチ全文；host 本線接触オン |
 | `#![forbid(unsafe_code)]` 維持；bytemuck 既存依存のみ | Phase 2 wgpu / Phase 3 host 権威ループ |
 | | 大規模 CCU（64+/1000）・フルメッシュ解除・配信 interest 平面（→ [spatial_interest.md](../spatial_interest.md)） |
 
