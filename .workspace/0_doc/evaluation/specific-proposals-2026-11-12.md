@@ -36,7 +36,9 @@
 ## 物理・シミュレーション
 
 - **host で XPBD body-body 接触を有効化 + zero-allocation tick / 規模別 benchmark** `0`（双方）
+  > 対症療法の bounds 渡しでは閉じない。[`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md) Phase 1（既存 `shared-sim` 進化）の DoD に吸収。着手は improvement-plan P1-1 / P1-4 / P1-5 の後。
 - **Frame 補間・jitter buffer を Epoch Prev/Curr へ接続** `0`（双方）
+  > [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md) Phase 2（`wgpu` Compute）に吸収。Phase 1 Green 後。
 
 ---
 

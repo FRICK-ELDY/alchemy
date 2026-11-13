@@ -2,6 +2,7 @@
 
 > 根拠: [specific-weaknesses-2026-11-12.md](specific-weaknesses-2026-11-12.md)  
 > 前回計画: [archive/2026-11-05/improvement-plan-2026-11-05.md](archive/2026-11-05/improvement-plan-2026-11-05.md)  
+> 物理本線: [mvcc_xpbd.md](../../roadmap/mvcc_xpbd.md)（P1-2 / P1-3 / P3-2 を吸収）  
 > 目的: 採用マイナス ~-23 を潰し、正味 ~+109 をさらに押し上げる。
 
 ---
@@ -10,7 +11,7 @@
 
 1. **見る権利・実行権・定義書き込み権を分離する**（HostDelegation + scene overlay）
 2. **通常 UI ホストの資格情報寿命を閉じる**（親 client broker / IPC）
-3. **XPBD を「動く」だけでなく「接触する・確保しない」まで引き上げる**
+3. **権限・資源ゲートを先に閉じ、その後 MVCC×XPBD で物理本線を引き上げる**（接触・ゼロアロ・補間を対症療法で薄く直さない）
 4. **Room revoke と SceneBudget を門番に足す**
 5. **handover / UI 一枚岩を衛生する**
 
@@ -31,12 +32,12 @@
 
 | ID | 項目 | 根拠 | 作業イメージ | 完了条件 |
 |:---|:---|:---|:---|:---|
-| P1-1 | kick API + friendship → epoch | -2 | `POST /rooms/:id/room_key/rotate`（owner・RL）。auth relation 変更で CAS ローテ | Friends 解除後、旧鍵で新 epoch 平文が読めない否定系 |
-| P1-2 | host で XPBD body-body 接触 | -2 | `step_dt` に bounds 渡し。未使用 `rapier3d` を外すか理由コメント。overview/client.md を XPBD に更新 | 2 箱が重ならない回帰テスト |
-| P1-3 | hot-path zero-allocation | -2 | `clone_from` / buffer swap、彩色マーカー、LBVH scratch 常駐。1k entity alloc count | tick 確保回数が上限以下のテストまたは bench 記録 |
-| P1-4 | handover 候補 accept 二段階 | -2 | Presence 先頭指名をやめ、候補 accept 後に CAS。不在時は即 dormant | 非 accept 候補に lease が付かない否定系 |
-| P1-5 | SceneBudget | -2 | entries / JSON bytes を protocol decode 上限以下で原子検査 | 上限超過 413/422 + 競合テスト |
-| P1-6 | refresh token を OS vault へ | -1 | prefs は key id のみ。不能時は session-only | 平文 refresh がディスクに残らない |
+| P1-1 | kick API + friendship → epoch | -2 | `POST /rooms/:id/room_key/rotate`（owner・RL）。auth relation 変更で CAS ローテ。**MVCC Phase 1 の前提ゲート** | Friends 解除後、旧鍵で新 epoch 平文が読めない否定系 |
+| P1-2 | host で XPBD body-body 接触 | -2 | **対症療法の bounds 渡しのみでは閉じない**。[`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md) Phase 1（既存 `shared-sim` 進化）の DoD に吸収 | Phase 1: 2 箱が重ならない回帰 + ページ／アリーナ側接触保証 |
+| P1-3 | hot-path zero-allocation | -2 | 現行 `EpochSheet` clone の薄修では閉じない。同上 Phase 1（`HotPhysicsPage` / プール常駐）に吸収 | Phase 1: tick 確保回数が上限以下（1k entity・500 Tick） |
+| P1-4 | handover 候補 accept 二段階 | -2 | Presence 先頭指名をやめ、候補 accept 後に CAS。不在時は即 dormant。**MVCC Phase 1 の前提ゲート** | 非 accept 候補に lease が付かない否定系 |
+| P1-5 | SceneBudget | -2 | entries / JSON bytes を protocol decode 上限以下で原子検査。**MVCC Phase 1 の前提ゲート** | 上限超過 413/422 + 競合テスト |
+| P1-6 | refresh token を OS vault へ | -1 | prefs は key id のみ。不能時は session-only。MVCC と直交（並行可） | 平文 refresh がディスクに残らない |
 
 ---
 
@@ -59,12 +60,24 @@
 
 | ID | 項目 | 根拠 | 備考 |
 |:---|:---|:---|:---|
-| P3-1 | verifier Spot-Check orchestration | 目標 | Noop 配線のみ OSS |
-| P3-2 | Frame 補間 / jitter buffer | 提案 | Epoch Prev/Curr |
-| P3-3 | S2S 連合 / Spatial VCS 本体 | 目標 | Origin Cert v1 が素地 |
+| P3-1 | verifier Spot-Check orchestration | 目標 | Noop 配線のみ OSS。MVCC と独立 |
+| P3-2 | Frame 補間 / jitter buffer | 提案 | **[`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md) Phase 2 に吸収**（`wgpu` Compute・既存 `epoch_mirror` / Prev-Curr の段階置換）。Phase 1 Green 後 |
+| P3-3 | S2S 連合 / Spatial VCS 本体 | 目標 | Origin Cert v1 が素地。MVCC と独立 |
 | P3-4 | billing / market / Relay QoS | 目標 | ディレクトリ未設置 |
 | P3-5 | Formula / Wake / OSC / LOD / audio | 目標 | 減点しない |
 | P3-6 | 署名付き installer / 自動更新 | 提案 | Windows release 延長 |
+
+### MVCC×XPBD（物理本線・横断）
+
+正本: [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md)。improvement-plan 上の差し込み位置:
+
+| Phase | 内容 | 吸収する ID | 着手条件 |
+|:---|:---|:---|:---|
+| Phase 1 | 既存 `client/shared-sim` を `HotPhysicsPage` / `MvccPageArena` / 決定論 XPBD へ進化（クレート新設ではない） | P1-2 / P1-3 | **P1-1 / P1-4 / P1-5 が否定系付きで closed** |
+| Phase 2 | `client/app` の MVCC バッファ + `wgpu` Compute 補間 | P3-2 | Phase 1 のビット一致リプレイ・接触回帰・alloc 上限が Green |
+| Phase 3 | `host-server` 権威ループ + XOR デルタ（Room AEAD / wire_cap） | （host 本線置換） | Phase 2 のシェーダ検証・描画経路が Green |
+
+**やらないこと**: P1 ゲート前に Phase 2/3 を host/app へ配線する。現行 `xpbd.rs` に bounds だけ戻して P1-2 を閉じ、MVCC を無期限 P3 に棚上げする。
 
 ---
 
@@ -85,12 +98,16 @@
 
 1. **HostDelegation + scene overlay**（P0-1）— **closed**（x009d / x009e）
 2. **資格情報 broker**（P0-2 / x009f）— **closed**
-3. **XPBD 接触 + zero-alloc**（P1-2 / P1-3）を並行
-4. **kick/epoch + SceneBudget + handover accept**（P1-1 / P1-4 / P1-5）
-5. **UI 分割 / docs / CI フレーク**（P2）
+3. **kick/epoch + handover accept + SceneBudget**（P1-1 / P1-4 / P1-5）— **MVCC 着手前の必須ゲート**
+4. **MVCC×XPBD Phase 1**（P1-2 / P1-3 吸収）— 既存 `shared-sim` 進化；接触 + ゼロアロを DoD に含む
+5. **P1-6 / P2**（vault・UI 分割 / docs / CI）— Phase 1 と **並行可**
+6. **MVCC×XPBD Phase 2**（P3-2 吸収）— `wgpu` Compute 補間
+7. **MVCC×XPBD Phase 3** — host 権威ループ + XOR デルタ配信
+8. **P3-1 / P3-3 以降** — MVCC と独立；物理本線の直後に必須ではない
 
 スライス完了条件に必ず含める:
 
 - **新しい保証は否定系 E2E で確認**
 - **保証表とコードが一致**（特に権限表・物理非保証）
 - **新クレートは CI・cargo deny・テスト >0**（再発防止）
+- **MVCC 各 Phase は [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md) の着手条件を満たしてから開始**
