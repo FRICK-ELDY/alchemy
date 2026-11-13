@@ -7,7 +7,10 @@ config :world, World.Repo,
       __DIR__
     ),
   pool: Ecto.Adapters.SQL.Sandbox,
-  pool_size: 5
+  pool_size: 5,
+  # Secondary only: primary anti-flake is host_lease_sweep_ms: 0 below.
+  # Longer wait softens residual SQLITE_BUSY if a lock remains; can delay a true hang.
+  busy_timeout: 10_000
 
 config :world, WorldWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4005],
@@ -30,7 +33,10 @@ config :world,
   # High enough that multi-room tests do not hit the structural cap.
   max_rooms_per_owner: 10_000,
   # x008d: small pool so ExUnit exercises multi-Port without spawning many OS procs
-  manifest_seal_hash_partitions: 2
+  manifest_seal_hash_partitions: 2,
+  # Disable periodic lease sweep in ExUnit (direct `expire_due_host_leases/0` coverage).
+  # Avoids SQLITE_BUSY races with Sandbox-owned create/CAS (stride-ceiling leftovers).
+  host_lease_sweep_ms: 0
 
 config :world, World.RateLimit,
   limits: %{

@@ -52,6 +52,9 @@ defmodule World.Rooms do
 
   Errors: `:invalid_room_id` / `:already_exists` / `:not_found` / `:owner_room_cap_exceeded`
   are client-facing. `:storage_error` is infrastructure (SQLite busy, disk, Repo) → HTTP 5xx.
+  Create path: raised `Exqlite.Error` whose message matches SQLITE_BUSY is mapped to
+  `:storage_error`; uniqueness / constraint failures are expected as `{:error, _}`
+  (Ash / `unique_violation?`) → `:already_exists`, not via raise→rescue.
   """
 
   require Logger
@@ -2093,7 +2096,22 @@ defmodule World.Rooms do
     # Repo stopped / not registered (tests simulate outage before insert).
     e in [RuntimeError, ArgumentError] ->
       storage_error(e, :create)
+
+    # Only SQLITE_BUSY (and message variants). Constraint/unique must not raise here —
+    # they return {:error, _} and map to :already_exists via unique_violation?/1.
+    e in [Exqlite.Error] ->
+      if sqlite_busy_message?(Map.get(e, :message)) do
+        storage_error(e, :create)
+      else
+        reraise e, __STACKTRACE__
+      end
   end
+
+  defp sqlite_busy_message?(msg) when is_binary(msg) do
+    String.contains?(String.downcase(msg), "busy")
+  end
+
+  defp sqlite_busy_message?(_), do: false
 
   defp commit_create_with_owner_quota(attrs, cap) do
     case Repo.transaction(fn -> create_with_owner_quota!(attrs, cap) end, mode: :immediate) do
