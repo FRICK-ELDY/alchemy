@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x00aa`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x00ad`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -220,12 +220,15 @@ depends_on: [x0006]
 | x00a7 | — | done | EntityDirectory + セル越え（Q8 暫定） | [x00a7-entity-directory.md](slices/x00a7-entity-directory.md) |
 | x00a8 | — | done | 不等式接触（引き寄せ禁止） | [x00a8-inequality-contact.md](slices/x00a8-inequality-contact.md) |
 | x00a9 | — | done | Phase 2 出版土台（ArcSwap / sim_tick） | [x00a9-phase2-publish-foundation.md](slices/x00a9-phase2-publish-foundation.md) |
+| x00aa | — | done | Phase 2 sim_tick jitter + PublishedPair 配線 | [x00aa-phase2-sim-jitter.md](slices/x00aa-phase2-sim-jitter.md) |
+| x00ab | — | done | 手元予測（Keep / Blend / Snap） | [x00ab-owned-prediction.md](slices/x00ab-owned-prediction.md) |
+| x00ac | — | done | HotPhysicsPage `interp.wgsl` + naga 検証 | [x00ac-interp-wgsl.md](slices/x00ac-interp-wgsl.md) |
 
-**現在の次:** MVCC×XPBD **Phase 2 残り**（app: jitter / 手元予測 / `interp.wgsl`）。ゲート x00a3–x00a9 は **done**。**品質本線** · Spot-Check 保留（Q2）。  
-**規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；実装は MVCC Phase 3 後。1000 人は horizon）。  
+**現在の次:** MVCC×XPBD **Phase 3**（host 権威・接触オン・dirty デルタ・`sim_state`）。Phase 2（x00a9–x00ac）は **done**。**品質本線** · Spot-Check 保留（Q2）。
+**規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；実装は MVCC Phase 3 後。1000 人は horizon）。
 旧メモ **P3-7（BLAKE3 ストリーミング）** は **CI が完了しなくなるためマージしない**（現行 P3-7 Spatial Interest とは別物）。Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 
-次の空き番号は **`x00aa`**（Interest 実装用に予約しない）。
+次の空き番号は **`x00ad`**（Interest 実装用に予約しない）。
 
 ## 関連
 

@@ -21,6 +21,8 @@ use alchemy_shared_sim::topology::FlatTopology;
 use bytemuck::{Pod, Zeroable};
 
 use crate::epoch_mirror::EpochFrameMirror;
+use crate::mvcc_mirror::MvccFrameMirror;
+use crate::sim_jitter::SimJitterState;
 
 /// GPU-side packed transform (f32) for storage-buffer interpolate — no CPU readback.
 #[repr(C)]
@@ -111,12 +113,9 @@ pub struct DisplayFrame {
     pub poses: HashMap<u32, GpuEpochRow>,
 }
 
-/// Build a display-frame snap from one `load_pair` + one `now` (testable pure helper).
-pub fn build_display_frame(faces: Arc<EpochFaces>, now: Instant) -> Arc<DisplayFrame> {
-    let alpha = crate::epoch_mirror::epoch_interp_alpha(
-        crate::epoch_mirror::published_instant(faces.published_at_ns),
-        now,
-    );
+/// Build a display-frame snap from one `load_pair` + explicit α (testable pure helper).
+pub fn build_display_frame_with_alpha(faces: Arc<EpochFaces>, alpha: f32) -> Arc<DisplayFrame> {
+    let alpha = alpha.clamp(0.0, 1.0);
     let ids = aligned_row_ids(&faces.prev, &faces.curr, false);
     let (prev_rows, curr_rows) = pack_aligned_gpu_faces(&faces.prev, &faces.curr, &ids);
     let mut poses = HashMap::with_capacity(curr_rows.len());
@@ -135,6 +134,16 @@ pub fn build_display_frame(faces: Arc<EpochFaces>, now: Instant) -> Arc<DisplayF
     })
 }
 
+/// Build a display-frame snap; α from wall-clock publish time (legacy / cold jitter).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn build_display_frame(faces: Arc<EpochFaces>, now: Instant) -> Arc<DisplayFrame> {
+    let alpha = crate::epoch_mirror::epoch_interp_alpha(
+        crate::epoch_mirror::published_instant(faces.published_at_ns),
+        now,
+    );
+    build_display_frame_with_alpha(faces, alpha)
+}
+
 /// Owns lock-free snapshots + topology for Hierarchy / X-Ray.
 pub struct EpochViewState {
     pub snapshots: Arc<EpochSnapshotPair>,
@@ -144,6 +153,10 @@ pub struct EpochViewState {
     pub scene_bounds: Mutex<SceneBounds>,
     /// Frame → tape kinematic mirror (x0090).
     pub mirror: Mutex<EpochFrameMirror>,
+    /// Frame → MVCC tip page publish pair (x00aa; coexists with Epoch draw).
+    pub mvcc: Mutex<MvccFrameMirror>,
+    /// `sim_tick` / `host_time_ms` jitter clock (x00aa).
+    pub jitter: Mutex<SimJitterState>,
     /// Frozen display faces/α/poses for the current client frame (x0091).
     display_frame: Mutex<Option<Arc<DisplayFrame>>>,
     /// Hierarchy collapse set. Ingest clears tombstoned + freshly allocated row ids
@@ -162,15 +175,31 @@ impl EpochViewState {
             xray_row: AtomicU32::new(u32::MAX),
             scene_bounds: Mutex::new(SceneBounds::default()),
             mirror: Mutex::new(EpochFrameMirror::default()),
+            mvcc: Mutex::new(MvccFrameMirror::new()),
+            jitter: Mutex::new(SimJitterState::default()),
             display_frame: Mutex::new(None),
             hierarchy_collapsed: Mutex::new(HashSet::new()),
         }
     }
 
+    /// Prefer sim-tick jitter α when a publish pair exists; else wall-clock Frame period.
+    pub fn display_alpha(&self, faces: &EpochFaces, now: Instant) -> f32 {
+        if let Ok(j) = self.jitter.lock() {
+            if let Some(a) = j.alpha_at(now) {
+                return a;
+            }
+        }
+        crate::epoch_mirror::epoch_interp_alpha(
+            crate::epoch_mirror::published_instant(faces.published_at_ns),
+            now,
+        )
+    }
+
     /// Freeze Prev/Curr + α + pose cache for this display frame (call once at frame start).
     pub fn begin_display_frame(&self, now: Instant) {
         let faces = self.snapshots.load_pair();
-        let frame = build_display_frame(faces, now);
+        let alpha = self.display_alpha(&faces, now);
+        let frame = build_display_frame_with_alpha(faces, alpha);
         if let Ok(mut slot) = self.display_frame.lock() {
             *slot = Some(frame);
         }
@@ -190,22 +219,50 @@ impl EpochViewState {
         now: Instant,
         f: impl FnOnce(&DisplayFrame) -> R,
     ) -> Option<R> {
-        let mut slot = self.display_frame.lock().ok()?;
-        if slot.is_none() {
+        // α before display_frame lock (lock order: jitter → display_frame).
+        let needs_build = self
+            .display_frame
+            .lock()
+            .ok()
+            .map(|s| s.is_none())
+            .unwrap_or(true);
+        if needs_build {
             let faces = self.snapshots.load_pair();
-            *slot = Some(build_display_frame(faces, now));
+            let alpha = self.display_alpha(&faces, now);
+            let frame = build_display_frame_with_alpha(faces, alpha);
+            if let Ok(mut slot) = self.display_frame.lock() {
+                if slot.is_none() {
+                    *slot = Some(frame);
+                }
+            }
         }
+        let slot = self.display_frame.lock().ok()?;
         Some(f(slot.as_ref()?))
     }
 
     /// Cheap [`Arc`] clone of the frozen frame (ensure + clone under one lock).
     pub fn display_frame_snapshot(&self) -> Option<Arc<DisplayFrame>> {
-        let mut slot = self.display_frame.lock().ok()?;
-        if slot.is_none() {
+        let needs_build = self
+            .display_frame
+            .lock()
+            .ok()
+            .map(|s| s.is_none())
+            .unwrap_or(true);
+        if needs_build {
+            let now = Instant::now();
             let faces = self.snapshots.load_pair();
-            *slot = Some(build_display_frame(faces, Instant::now()));
+            let alpha = self.display_alpha(&faces, now);
+            let frame = build_display_frame_with_alpha(faces, alpha);
+            if let Ok(mut slot) = self.display_frame.lock() {
+                if slot.is_none() {
+                    *slot = Some(frame);
+                }
+            }
         }
-        slot.as_ref().map(Arc::clone)
+        self.display_frame
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(Arc::clone))
     }
 
     pub fn set_xray_row(&self, row: Option<u32>) {

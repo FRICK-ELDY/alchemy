@@ -173,6 +173,13 @@ struct App {
     blank_cursor: Option<CustomCursor>,
     /// Entity held by Desktop Grab (cleared on release or dash open).
     held_grab: Option<u32>,
+    /// Aim-relative attach offset + rotation captured at Grab begin (host hold model).
+    /// Aim is eye **position** (matches host Intent aim); mouse look does not move the
+    /// predicted attach point until the eye translates.
+    grab_attach_offset: Option<[f32; 3]>,
+    grab_attach_rot: Option<[f32; 4]>,
+    /// After host reject: block new Grab until the grab button is fully released.
+    grab_needs_release: bool,
     /// RMB held.
     grab_down: bool,
     /// After look capture, require one LMB release before LMB can Grab (avoid capture-click grab).
@@ -722,7 +729,7 @@ impl App {
         self.refresh_window_title();
         // Ownership edge: drop look / Grab and zero shared Intent (no ghost WASD/stick).
         self.set_look_capture(false);
-        self.held_grab = None;
+        self.clear_grab_attach();
         self.grab_down = false;
         self.keys_down.clear();
         self.ui.clear_pointer();
@@ -1226,22 +1233,104 @@ impl App {
         self.shared.grabbable_display_poses()
     }
 
+    fn clear_grab_attach(&mut self) {
+        self.held_grab = None;
+        self.grab_attach_offset = None;
+        self.grab_attach_rot = None;
+        // Drop prediction override immediately (do not wait for next predict_held_grab(None)).
+        self.shared.clear_held_grab_prediction();
+    }
+}
+
+/// Desktop UI latch (x00ab): after reject, block new Grab until the button is released.
+///
+/// Kept on the surface layer (not prediction core) so XR can diverge later.
+pub(crate) fn desktop_grab_may_start(
+    needs_release: &mut bool,
+    button_held: bool,
+    just_rejected: bool,
+) -> bool {
+    if just_rejected {
+        *needs_release = true;
+    }
+    if !button_held {
+        *needs_release = false;
+    }
+    button_held && !*needs_release
+}
+
+impl App {
     /// Update held Grab from LMB/RMB/E + look-forward pick (x0013).
+    ///
+    /// Spec (x00ab): after host reject, **re-Grab is forbidden until the grab button
+    /// is released** (no press-and-hold retry loop / Intent spam).
     fn update_grab_hold(&mut self) {
-        if self.ui.state.open || !self.look_captured {
+        // Host reject Snap (x00ab heuristic until Phase 3 acked_intent_seq / holder).
+        let just_rejected = self
+            .shared
+            .owned_prediction
+            .lock()
+            .ok()
+            .is_some_and(|mut o| o.take_grab_rejected());
+        if just_rejected {
             if self.held_grab.take().is_some() {
+                log::info!("desktop grab released (host reject)");
+            }
+            self.grab_attach_offset = None;
+            self.grab_attach_rot = None;
+            self.shared.clear_held_grab_prediction();
+        }
+        let button = self.grab_button_held();
+        let may_start = desktop_grab_may_start(&mut self.grab_needs_release, button, just_rejected);
+        if self.ui.state.open || !self.look_captured {
+            if self.held_grab.is_some() {
                 log::info!("desktop grab released (dash/look)");
+                self.clear_grab_attach();
             }
             return;
         }
-        if self.grab_button_held() {
-            if self.held_grab.is_none() {
+        if button {
+            if self.held_grab.is_none() && may_start {
                 let (eye, look) = self.eye_and_look();
                 let ray = desktop_look_ray(eye, look);
                 let (boxes, defs) = self.grabbable_boxes();
                 if let Some(hit) = pick_grabbable_desktop(ray, &boxes, &defs.half_extents) {
-                    self.held_grab = Some(hit.entity_id);
-                    log::info!("desktop grab begin entity={}", hit.entity_id);
+                    // Same `boxes` as pick — missing id is a logic bug; do not invent origin attach.
+                    let Some((_, display)) =
+                        boxes.iter().find(|(id, _)| *id == hit.entity_id).copied()
+                    else {
+                        log::warn!(
+                            "desktop grab: pick entity={} missing from display pose list",
+                            hit.entity_id
+                        );
+                        return;
+                    };
+                    // Host hold model: offset = display entity − aim (eye **position**).
+                    let offset = [display.x - eye.x, display.y - eye.y, display.z - eye.z];
+                    let rot = [display.qx, display.qy, display.qz, display.qw];
+                    let pred = crate::owned_prediction::PredictionPose::xyz_quat(
+                        display.x, display.y, display.z, rot[0], rot[1], rot[2], rot[3],
+                    );
+                    // Only mirror Desktop held state when prediction begin succeeds
+                    // (avoids Intent GRAB while grab_rejected made begin_held a no-op).
+                    if self.shared.begin_held_grab(hit.entity_id, pred) {
+                        self.grab_attach_offset = Some(offset);
+                        self.grab_attach_rot = Some(rot);
+                        self.held_grab = Some(hit.entity_id);
+                        log::info!("desktop grab begin entity={}", hit.entity_id);
+                    } else if self
+                        .shared
+                        .owned_prediction
+                        .lock()
+                        .ok()
+                        .is_some_and(|mut o| o.take_grab_rejected())
+                    {
+                        self.grab_needs_release = true;
+                        log::info!("desktop grab begin blocked (pending host reject)");
+                    } else {
+                        // Lock poison / transient false: leave needs_release alone; retry next tick.
+                        log::warn!("desktop grab begin skipped (prediction lock/begin failed)");
+                    }
                 } else {
                     let now = std::time::Instant::now();
                     let should_log = self
@@ -1256,8 +1345,9 @@ impl App {
                     }
                 }
             }
-        } else if self.held_grab.take().is_some() {
+        } else if self.held_grab.is_some() {
             log::info!("desktop grab released");
+            self.clear_grab_attach();
         }
     }
 
@@ -1338,6 +1428,29 @@ impl App {
             }
             intent.buttons = buttons;
         }
+
+        // x00ab: predict only (aim + attach offset). Reconcile runs on Applied Frame.
+        let _ = look; // aim uses eye; look reserved for future controller aim
+        let predicted_held = match (
+            self.held_grab,
+            self.grab_attach_offset,
+            self.grab_attach_rot,
+        ) {
+            (Some(_), Some(off), Some(rot)) => {
+                Some(crate::owned_prediction::PredictionPose::xyz_quat(
+                    eye.x + off[0],
+                    eye.y + off[1],
+                    eye.z + off[2],
+                    rot[0],
+                    rot[1],
+                    rot[2],
+                    rot[3],
+                ))
+            }
+            _ => None,
+        };
+        self.shared
+            .predict_held_grab(self.held_grab, predicted_held);
 
         if let Ok(mut guard) = self.shared.intent.lock() {
             *guard = intent;
@@ -1515,7 +1628,7 @@ impl ApplicationHandler for App {
                         self.ui.toggle();
                         if self.ui.state.open {
                             self.set_look_capture(false);
-                            self.held_grab = None;
+                            self.clear_grab_attach();
                             self.grab_down = false;
                             self.ui.clear_pointer();
                         }
@@ -3748,6 +3861,9 @@ pub fn run(
         last_cursor: None,
         blank_cursor: None,
         held_grab: None,
+        grab_attach_offset: None,
+        grab_attach_rot: None,
+        grab_needs_release: false,
         grab_down: false,
         lmb_grab_armed: false,
         last_grab_miss_log: None,
@@ -3780,6 +3896,18 @@ mod tests {
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(format!(r#"{{"role":"{role}"}}"#));
         format!("hdr.{payload}.sig")
+    }
+
+    #[test]
+    fn desktop_grab_may_start_blocks_until_release() {
+        let mut needs = false;
+        assert!(desktop_grab_may_start(&mut needs, true, false));
+        assert!(!desktop_grab_may_start(&mut needs, true, true));
+        assert!(needs);
+        assert!(!desktop_grab_may_start(&mut needs, true, false));
+        assert!(!desktop_grab_may_start(&mut needs, false, false));
+        assert!(!needs);
+        assert!(desktop_grab_may_start(&mut needs, true, false));
     }
 
     #[test]

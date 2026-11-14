@@ -189,7 +189,15 @@ fn apply_frame(
             shared.metrics.note_frame_accepted();
             shared.note_host_alive();
             if let Some(poses) = poses_for_epoch {
-                crate::epoch_mirror::ingest_applied_world(&shared.epoch, &poses);
+                // Phase 3 will add wire `sim_tick`; until then net `tick` is the sim clock.
+                crate::epoch_mirror::ingest_applied_world(
+                    &shared.epoch,
+                    &poses,
+                    frame.tick,
+                    frame.host_time_ms,
+                );
+                // x00ab: reconcile held Grab on authority only (held id lookup inside).
+                shared.reconcile_held_on_authority(&poses);
             }
         }
         _ => {}

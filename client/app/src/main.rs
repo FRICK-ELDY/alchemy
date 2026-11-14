@@ -30,10 +30,14 @@ mod inventory;
 mod jwt_sub;
 mod mesh;
 mod metrics;
+mod mvcc_mirror;
 mod operator_prefs;
+mod owned_prediction;
 mod place_read;
+mod render_wgpu;
 mod room;
 mod scene;
+mod sim_jitter;
 mod surface;
 mod system_ui;
 mod turn;
@@ -165,6 +169,7 @@ fn main() -> Result<()> {
         host_supervisor: Arc::new(crate::host_supervisor::HostSupervisor::default()),
         presence_peer_subs: Mutex::new(Vec::new()),
         epoch: crate::epoch_view::EpochViewState::new(),
+        owned_prediction: Mutex::new(crate::owned_prediction::OwnedPrediction::new()),
         eye_pose_cache: Mutex::new(None),
     });
     // Sync AUTH/WORLD/ASSETS/ZENOH into process env for supervised host spawn.
