@@ -5,7 +5,7 @@
 > 品質本線（物理）: [mvcc_xpbd.md](../../roadmap/mvcc_xpbd.md)（P1-2 / P1-3 / P3-2 を吸収；[レビュー取り込み](../../roadmap/mvcc_xpbd_review_proposal.md) 2026-11-13）  
 > 規模本線（配信）: [spatial_interest.md](../../roadmap/spatial_interest.md)（**P3-7**；1000 人は horizon）  
 > 目的: 採用マイナス ~-23 を潰し、正味 ~+109 をさらに押し上げる。  
-> 更新: 2026-11-13 — MVCC×XPBD Phase 1 を「ゲート+scaffold 完了／残り作業あり」と明記。同日レビュー指摘で Phase 1 接触＝shared-sim のみ・Q1 採用済み・crash 正本規則・dirty reuse 契約を追記（文書反映 ≠ コード完了）。
+> 更新: 2026-11-14 — Phase 1 DoD（x00a4）でページ経路接触・page-alloc・リプレイを shared-sim 単体で closed。host 本線は Phase 3。
 
 ---
 
@@ -37,13 +37,8 @@
 | ID | 項目 | 根拠 | 作業イメージ | 完了条件 |
 |:---|:---|:---|:---|:---|
 | P1-1 | kick API + friendship → epoch | -2 | **closed**（x00a0） | Friends 解除後、旧鍵で新 epoch 平文が読めない否定系 |
-<<<<<<< Updated upstream
-| P1-2 | host で XPBD body-body 接触 | -2 | **対症療法の bounds 渡し／等式距離では閉じない**。[`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md): **Phase 1 = shared-sim ヘッドレス**（不等式接触＋箱形状）· **Phase 3 = host `bounds: Some` 配線** · [x00a3](../../roadmap/slices/x00a3-mvcc-phase1-scaffold.md) scaffold 済・能力は **残り** | Phase 1: `contact_never_attracts` + 2 箱積み閾値（host 本線は触らない）。Phase 3: host 接触オンでも地面・Grab 通過で本 ID を閉じる |
-| P1-3 | hot-path zero-allocation | -2 | 現行 `EpochSheet` clone の薄修では閉じない。同上 Phase 1（真の CoW・`make_mut`・固定長履歴・スクラッチ再利用）に吸収 · x00a3 scaffold 済・alloc DoD は **残り**。計測手段（テスト専用クレート / `dhat`）は人承認（mvcc_xpbd §6 Q4） | Phase 1: tick 確保回数が上限以下（1k entity・500 Tick）+ 履歴窓内のページ再利用なし |
-=======
-| P1-2 | host で XPBD body-body 接触 | -2 | **closed**（ページ経路 · [x00a4](../../roadmap/slices/x00a4-mvcc-phase1-dod.md)）。対症療法の host `bounds` 渡しでは閉じない方針は維持；host 本線配線は Phase 3 | Phase 1: 2 箱が重ならない回帰 + ページ／アリーナ側接触保証 |
-| P1-3 | hot-path zero-allocation | -2 | **closed**（プール **page-alloc ≤ 2**/tick · [x00a4](../../roadmap/slices/x00a4-mvcc-phase1-dod.md)）。`WorldSnapshot` Vec / XPBD scratch / シート clone は非保証のまま | Phase 1: tick ページ確保が上限以下（1k entity・500 Tick） |
->>>>>>> Stashed changes
+| P1-2 | host で XPBD body-body 接触 | -2 | **Phase 1（shared-sim ページ経路）closed**（[x00a4](../../roadmap/slices/x00a4-mvcc-phase1-dod.md)）。対症療法の host `bounds` 渡しでは閉じない；**Phase 3 = host `bounds: Some` 配線** | Phase 1: 2 箱が重ならない回帰（host 本線は触らない）。Phase 3: host 接触オンでも地面・Grab 通過 |
+| P1-3 | hot-path zero-allocation | -2 | **Phase 1（プール page-alloc）closed**（[x00a4](../../roadmap/slices/x00a4-mvcc-phase1-dod.md)；**page-alloc ≤ 2**/tick）。`WorldSnapshot` Vec / XPBD scratch / シート clone は非保証 | Phase 1: tick ページ確保が上限以下（1k entity・500 Tick） |
 | P1-4 | handover 候補 accept 二段階 | -2 | **closed**（x00a1） | 非 accept 候補に lease が付かない否定系 |
 | P1-5 | SceneBudget | -2 | **closed**（x00a2） | 上限超過 413/422 + 競合テスト |
 | P1-6 | refresh token を OS vault へ | -1 | prefs は key id のみ。不能時は session-only。MVCC と直交（並行可） | 平文 refresh がディスクに残らない |
@@ -81,19 +76,13 @@
 
 正本: [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md)（レビュー反映の詳細・未決 Q1–Q8 は同書 §6 / [review_proposal](../../roadmap/mvcc_xpbd_review_proposal.md)）。**大規模 CCU / 1000 人はここに書かない**（→ P3-7）。
 
-**現状（2026-11-13）**: 着手ゲート P1-1/4/5 と scaffold（x00a3）まで。Phase 1 DoD（接触・ゼロアロ・真の CoW・レイアウト予約・クレート直下 `forbid`）は **文書反映済み・コード未着手**。
+**現状（2026-11-14）**: 着手ゲート P1-1/4/5・scaffold（x00a3）・Phase 1 DoD（x00a4: ページ経路接触・page-alloc・リプレイ）まで **closed**。host/app 本線は未配線。
 
 | Phase | 内容 | 吸収する ID | 着手条件 |
 |:---|:---|:---|:---|
-<<<<<<< Updated upstream
-| Phase 1（残り） | `forbid` クレート直下・真の CoW・不等式接触（**shared-sim のみ**）・`frame_delta` 統一・回転/holder/`EntityDirectory` 予約・Android CI・alloc 上限 | P1-2（能力）/ P1-3 | **P1-1 / P1-4 / P1-5 closed**（済） |
-| Phase 2 | MVCC バッファ + `wgpu` Compute + jitter（`sim_tick` 基準）+ 手元予測 + ArcSwap 出版 | P3-2 | Phase 1 のビット一致（同一アーキ）・接触回帰・alloc 上限・CoW が Green |
-| Phase 3 | host 権威 + **host 接触オン（P1-2 完了）** + dirty 合成（x0024）+ `sim_state` handover（Q1 採用済み）+ 確定レーン並走 | P1-2（host 配線）+ host 本線置換 | Phase 2 Green。Room AEAD / wire_cap |
-=======
-| Phase 1 | 既存 `client/shared-sim` を `HotPhysicsPage` / `MvccPageArena` / 決定論 XPBD へ進化（クレート新設ではない） | P1-2 / P1-3 | **closed**（x00a3 + x00a4；host 本線は Phase 3） |
-| Phase 2 | `client/app` の MVCC バッファ + `wgpu` Compute 補間 | P3-2 | Phase 1 のビット一致リプレイ・接触回帰・alloc 上限が Green |
-| Phase 3 | `host-server` 権威ループ + XOR デルタ（Room AEAD / wire_cap） | （host 本線置換） | Phase 2 のシェーダ検証・描画経路が Green |
->>>>>>> Stashed changes
+| Phase 1 | 既存 `shared-sim` を `HotPhysicsPage` / `MvccPageArena` / ページ経路 XPBD へ進化（クレート新設ではない） | P1-2（shared-sim 能力）/ P1-3 | **closed**（x00a3 + x00a4；host 本線は Phase 3） |
+| Phase 2 | MVCC バッファ + `wgpu` Compute + jitter（`sim_tick` 基準）+ 手元予測 + ArcSwap 出版 | P3-2 | Phase 1 のビット一致・接触回帰・alloc 上限・CoW が Green |
+| Phase 3 | host 権威 + **host 接触オン（P1-2 host 配線）** + dirty 合成（x0024）+ `sim_state` handover + 確定レーン並走 | P1-2（host）+ host 本線置換 | Phase 2 Green。Room AEAD / wire_cap |
 
 **やらないこと**: P1 ゲート前に Phase 2/3 を host/app へ配線する。現行 `xpbd.rs` に bounds だけ戻して／等式距離のまま P1-2 を閉じる。Phase 1 で host 接触オンだけして「P1-2 closed」と書く。**MVCC だけで大規模 CCU を宣言する**／フルメッシュのまま Phase を増やしてスケールしたことにする。描画用 frame の量子化値だけで「0 秒 handover 速度完全復元」を宣言する（→ `sim_state`）。
 
@@ -117,21 +106,12 @@
 1. **HostDelegation + scene overlay**（P0-1）— **closed**（x009d / x009e）
 2. **資格情報 broker**（P0-2 / x009f）— **closed**
 3. **kick/epoch + handover accept + SceneBudget**（P1-1 / P1-4 / P1-5）— **closed**（x00a0 / x00a1 / x00a2）
-<<<<<<< Updated upstream
-4. **MVCC×XPBD Phase 1 残り**（P1-2 能力 / P1-3）— scaffold 済（x00a3）；shared-sim 不等式接触・真の CoW・alloc・レイアウト・`forbid`・Android CI が**コード未着手**（host 接触オンは Phase 3）
+4. **MVCC×XPBD Phase 1**（P1-2 shared-sim 能力 / P1-3）— **closed**（x00a3 scaffold + [x00a4](../../roadmap/slices/x00a4-mvcc-phase1-dod.md) DoD；host 接触オンは Phase 3）
 5. **P1-6 / P2**（vault・UI 分割 / docs / CI）— Phase 1 と **並行可**
 6. **MVCC×XPBD Phase 2**（P3-2 吸収）— jitter + 手元予測 + ArcSwap 出版 + `wgpu` Compute
 7. **MVCC×XPBD Phase 3** — host 権威 + dirty デルタ（x0024）+ `sim_state` handover；確定レーン（`…/edit`）は並走可
-8. **Spatial Interest 実装スライス群**（P3-7）— 正本 [`spatial_interest.md`](../../roadmap/spatial_interest.md) は先行済；**実装は Phase 3 Green 後**（採番は着手時。`x00a4` は予約しない）
-9. **P3-1 / P3-3 以降** — MVCC / Interest と独立；品質本線の直後に必須ではない（Spot-Check 再シミュレーション要否は mvcc_xpbd §6 Q2）
-=======
-4. **MVCC×XPBD Phase 1**（P1-2 / P1-3 吸収）— **closed**（x00a3 scaffold + [x00a4](../../roadmap/slices/x00a4-mvcc-phase1-dod.md) DoD）
-5. **P1-6 / P2**（vault・UI 分割 / docs / CI）— Phase 1 と **並行可**
-6. **MVCC×XPBD Phase 2**（P3-2 吸収）— `wgpu` Compute 補間
-7. **MVCC×XPBD Phase 3** — host 権威ループ + XOR デルタ配信
 8. **Spatial Interest 実装スライス群**（P3-7）— 正本 [`spatial_interest.md`](../../roadmap/spatial_interest.md) は先行済；**実装は Phase 3 Green 後**（採番は着手時）
-9. **P3-1 / P3-3 以降** — MVCC / Interest と独立；品質本線の直後に必須ではない
->>>>>>> Stashed changes
+9. **P3-1 / P3-3 以降** — MVCC / Interest と独立；品質本線の直後に必須ではない（Spot-Check 再シミュレーション要否は mvcc_xpbd §6 Q2）
 
 スライス完了条件に必ず含める:
 

@@ -8,11 +8,7 @@
 //! Non-guarantees: Rapier / Formula / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); CRDT / Zenoh / GPU wiring (client `epoch_view`);
-<<<<<<< Updated upstream
-//! MVCC host/app wiring / dirty-delta codec (x0024; Phase 1+; not V_ack/XOR).
-=======
-//! MVCC host/app wiring / XOR delta (Phase 2/3).
->>>>>>> Stashed changes
+//! MVCC host/app wiring / dirty-delta codec (x0024; Phase 2/3; not V_ack/XOR).
 
 use std::collections::{HashMap, HashSet};
 

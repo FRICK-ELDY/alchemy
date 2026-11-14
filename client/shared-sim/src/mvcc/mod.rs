@@ -1,16 +1,9 @@
 //! Ring-buffer MVCC pages for shared-sim (x00a3 / Phase 1 DoD).
 //!
 //! Guarantees: fixed SoA page layout; NaN/Inf quarantine on pose writes; pre-allocated arena pool;
-<<<<<<< Updated upstream
-//! `release_page` never underflows refcount.
-//! Non-guarantees: host/app wiring; dirty-delta codec (x0024; not V_ack/XOR); XPBD contact
-//! replacement; `wide` SIMD; `commit_snapshot` does not retain page refs (history may dangle
-//! after `release_page`).
-=======
 //! CoW `fork_page`; [`MvccPageArena::commit_transfer`] / [`commit_share`] retain-then-release
 //! (dead / duplicate / history-only transfer rejected); page-path XPBD contacts via [`adapter`].
-//! Non-guarantees: host/app wiring; XOR delta codec; `wide` SIMD.
->>>>>>> Stashed changes
+//! Non-guarantees: host/app wiring; dirty-delta codec (x0024; not V_ack/XOR); `wide` SIMD.
 
 mod adapter;
 mod arena;
