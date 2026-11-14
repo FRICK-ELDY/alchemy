@@ -69,5 +69,5 @@
   > 対象ファイル: `.scripts/pack-windows-zip.ps1`, `.github/workflows/windows-release.yml`
 
 - **Optional Profileは実装時まで評価対象外を維持する** `0`
-  > billing / market / verifier統計 / Formula / OSC / audioは現時点のコード保証ではない。追加時は既存Core Profileへ混ぜず、BSLまたは外部Proprietary注入境界と否定系contractを先に固定する。
+  > billing / market / verifier統計 / Dual-AST Kernel / OSC / audioは現時点のコード保証ではない。追加時は既存Core Profileへ混ぜず、BSLまたは外部Proprietary注入境界と否定系contractを先に固定する。
   > 対象ファイル: `.workspace/0_doc/architecture/overview.md`, `.cursor/rules/license-and-boundaries.mdc`

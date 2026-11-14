@@ -47,7 +47,7 @@ defmodule Assets do
   - PlaceRead TTL refresh UI; client mesh render; existence oracle (403 vs 404)
   - Group Vault, sharing, Mail/Comms, Shopfront
   - VcsRepo fork/transfer, CA chain, cert revocation, License Token
-  - CRDT, Formula VM, non-FF merge, 3D Diff
+  - CRDT, Dual-AST Kernel, non-FF merge, 3D Diff
   - mime/size first-writer change; CasObject-with-zero-refs GC; S3 bucket listing scan
   """
 end

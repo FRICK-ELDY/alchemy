@@ -38,7 +38,7 @@
 
 - WASD / 親指スティック移動
 - Walk / Fly / Noclip / Warp（ワールドロコモーションカタログ）
-- launcher 本実装、Quest 単体、Formula、verifier
+- launcher 本実装、Quest 単体、Dual-AST Kernel、verifier
 
 ## 起動（Desktop / WSL）
 

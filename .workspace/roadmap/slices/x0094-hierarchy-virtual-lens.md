@@ -18,7 +18,7 @@
 | Settings に仮想スクロール Hierarchy（窓最大 8 行）を表示 | Spatial Lens 空間パネル（1 パネル＝1 行板）・Uber-SDF / MSDF |
 | 折りたたみは `euler_tout` 経由 O(1) スキップ（親子が載ったとき有効） | Inspector Zero-String・NodeGraph・Tear-Off・CRDT パネル同期 |
 | 行クリックで `xray_row` を設定し Tape X-Ray と連動 | Resonite レーザー Stickiness / 角度変調 |
-| | Formula / Atom Hydration / TPS・Live |
+| | Dual-AST Kernel / Atom Hydration / TPS・Live |
 
 ---
 

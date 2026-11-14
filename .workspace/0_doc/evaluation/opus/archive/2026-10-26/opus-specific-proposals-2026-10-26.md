@@ -79,7 +79,7 @@
   > 目標に挙がっているが未実装。Presence が 0 人になったら物理 tick を止め、liveliness の Put（入室）で再開するだけなら、liveliness の監視がすでにあるので数十行で実装できる。
   > 対象ファイル: `client/host-server/src/main.rs`
 
-- **Formula VM** `0`
+- **Dual-AST Kernel** `0`
   > 未実装なので対象外。導入するなら、Manifest からギミックの定義を受け取り、固定 tick で決定的に実行する Pure Rust のインタプリタとして作る。最初は `rhai` などの既存エンジンで、性能と安全性の境界を探るのが現実的。
 
 ### client/app

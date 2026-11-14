@@ -71,7 +71,7 @@
 | P3-3 | Frame 補間 / jitter buffer | 提案 | |
 | P3-4 | launcher deep link / handoff | 目標 | |
 | P3-5 | billing / market / Relay QoS | 目標 | ディレクトリ未設置 |
-| P3-6 | Formula / Wake / OSC / LOD / audio | 目標 | 減点しない |
+| P3-6 | Dual-AST Kernel / Wake / OSC / LOD / audio | 目標 | 減点しない |
 
 ---
 

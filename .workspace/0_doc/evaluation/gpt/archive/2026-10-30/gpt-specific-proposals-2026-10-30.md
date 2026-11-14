@@ -48,8 +48,8 @@
   > worker分離済みなので、queue saturationとdrop/coalesce理由を低cardinalityで出せば、60Hz維持とWAN障害を定量的に判別できる。
   > 対象ファイル: `client/host-server/src/network_worker.rs`
 
-- **Formula VM・Wake-on-Join・handoffは現境界を維持して追加する** `0`
-  > Formulaはdeterministic sandbox、Wakeはroom lifecycle、handoffはworld generation証明+snapshot transferとして実装する。未実装目標なので現評価では減点しない。
+- **Dual-AST Kernel・Wake-on-Join・handoffは現境界を維持して追加する** `0`
+  > Dual-AST Kernelはdeterministic sandbox、Wakeはroom lifecycle、handoffはworld generation証明+snapshot transferとして実装する。未実装目標なので現評価では減点しない。
 
 ## ホストユーザー端末
 

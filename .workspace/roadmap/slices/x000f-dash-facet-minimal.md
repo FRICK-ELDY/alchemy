@@ -42,7 +42,7 @@
 | ダッシュは個人・非同期（他クライアントから触れない） | ワールド共同編集・Room への Dash レプリカ |
 | Exit は Pinned（消せない）。既存 Exit 経路を壊さない | ユーザー Facet の自由追加・並べ替え・非必須削除 UI |
 | Button hover で色が変わる（Desktop ポインタ / XR レーザー命中） | Vault 永続のレイアウト保存、テーマエンジン |
-| system_ui が OpenXR / Zenoh Room を知らないこと | `WorldRoot` 実装、Grab 編集、Formula / Dual Editor |
+| system_ui が OpenXR / Zenoh Room を知らないこと | `WorldRoot` 実装、Grab 編集、Dual-AST Kernel / Dual Editor |
 | Desktop ESC / XR Menu の開閉とレーザー（x000e）維持 | CompositionLayerQuad 復帰、WSL 実 HMD |
 
 ## やらない（後続）

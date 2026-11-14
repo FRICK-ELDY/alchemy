@@ -20,7 +20,7 @@
 |:---|:---|
 | 同一マシン上で `zenohd` → Publish → Subscribe → 最小描画が通る | Room Token / 入室ゲート |
 | `auth-server` の JWT/JWKS 起動（Docker） | assets / LOD / Quota |
-| `PROTOCOL_PIN` 付き `RenderFrame` の encode/decode | デルタ圧縮・Rapier・Formula |
+| `PROTOCOL_PIN` 付き `RenderFrame` の encode/decode | デルタ圧縮・Rapier・Dual-AST Kernel |
 | キー式 `alchemy/dev/room/local/frame` | 公式リレー・P2P・verifier・launcher |
 
 ## 起動手順

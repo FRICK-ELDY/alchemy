@@ -20,7 +20,7 @@
 | **合計** | **+69** | **-40** | **+29** |
 
 **評価日:** 2026-10-28  
-**評価方式:** architecture の保証／非保証、2026-10-26 の自評価弱点、現行コード・test・CIを直接再検証した。目標のみの verifier / Formula / OSC / billing / market 等は減点していない。  
+**評価方式:** architecture の保証／非保証、2026-10-26 の自評価弱点、現行コード・test・CIを直接再検証した。目標のみの verifier / Dual-AST Kernel / OSC / billing / market 等は減点していない。  
 **総点:** **+69 / -40 = +29点**
 
 ## 採点基準

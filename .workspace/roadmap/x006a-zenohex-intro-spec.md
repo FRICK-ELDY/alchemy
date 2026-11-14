@@ -8,7 +8,7 @@
 
 ## 1. 背景とアーキテクチャ上の位置づけ
 
-Alchemy では、かつて `world-server` 内に存在した空間・物理演算（Rapier3d / Formula VM）の NIF を完全廃止し、100% Pure Rust 製の `host-server` へと分離した。
+Alchemy では、かつて `world-server` 内に存在した空間・物理演算（Rapier3d / Dual-AST Kernel）の NIF を完全廃止し、100% Pure Rust 製の `host-server` へと分離した。
 これにより、`world-server`（Elixir）は毎秒 20〜60Hz の重たい空間座標中継のホットパスから外れ、以下の**コントロールプレーンおよび監査・指揮ロール**に専念する設計となっている。
 
 1. **ルーム制御・空間台帳**（`apps/core` / `apps/network` ※当時想定）: Room Token 発行、Scene Manifest の署名配信、エンティティ制御指令。

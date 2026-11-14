@@ -128,7 +128,7 @@
 | [mvcc_xpbd.md](mvcc_xpbd.md) **Phase 3** DoD Green | dirty デルタ・host 権威ループ・AEAD 配信が品質として使えること |
 | x0024 delivery-class | latest / snapshot 再同期語彙 |
 | x0067 / x0069 | ACL・部屋機密を壊さない拡張 |
-| 独立 | P3-1 verifier · P3-3 S2S · P3-4 billing · Formula / OSC |
+| 独立 | P3-1 verifier · P3-3 S2S · P3-4 billing · Dual-AST Kernel / OSC |
 
 | 作業 | 条件 |
 |:---|:---|

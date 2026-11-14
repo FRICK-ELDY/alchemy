@@ -35,13 +35,13 @@ ESC で開閉、Material Icons 静的同梱、終了フロー（client 保証 / 
 | 「client のみ終了」でプロセス終了 | launcher 本実装・ホスト移譲 |
 | 「client+host 終了」スタブ（`ALCHEMY_HOST_PID` / `host_control`） | 確実なリモート host kill / 複数 host |
 | Material Icons 静的同梱 | テーマエンジン・ロケール本格 |
-| C-C/D の frame/manifest/input 契約を壊さない | Formula / 予測補間 / verifier / WASD→Rapier |
+| C-C/D の frame/manifest/input 契約を壊さない | Dual-AST Kernel / 予測補間 / verifier / WASD→Rapier |
 
 ## やらない（後続）
 
 - WASD → Rapier 入力ループ
 - 設定画面の中身、マイク/同期の実機能
-- OpenXR、予測補間、launcher、Formula、署名 Manifest
+- OpenXR、予測補間、launcher、Dual-AST Kernel、署名 Manifest
 
 ## 起動
 

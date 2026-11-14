@@ -78,7 +78,7 @@
 ## プロダクト（目標機能・減点対象外）
 
 - **5 人以上の部屋（user_root 帯の幅を Manifest で配る）** `0`
-- **Formula VM / Wake-on-Join / OSC 受信エッジ / LOD ビルド / 空間オーディオ** `0`
+- **Dual-AST Kernel / Wake-on-Join / OSC 受信エッジ / LOD ビルド / 空間オーディオ** `0`
   > overview の目標。コードが無いため減点しない。
 - **billing / market-server（BSL-1.1）** `0`
   > ディレクトリ未設置のため評価対象外。新設時は直下に BSL-1.1 `LICENSE`。

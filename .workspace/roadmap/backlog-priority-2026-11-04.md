@@ -85,7 +85,7 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 | 領域 | 未着手の例 |
 |:---|:---|
 | **監査** | verifier Spot-Check・スマートホスト移譲・リレー SLA（Behaviour 注入点のみ） |
-| **空間実行** | Formula VM、Wake-on-Join、SimState Snapshot、0秒ホスト移譲、CRDT 共同編集 |
+| **空間実行** | Dual-AST Kernel、Wake-on-Join、SimState Snapshot、0秒ホスト移譲、CRDT 共同編集 |
 | **体感** | フルボディ IK / SpringBone / VRM、OSC 受信エッジ、予測・補間、空間オーディオ、Dual Editor、LOD ビルド、P2P キャッシュ |
 | **連合・発見** | S2S 連合、`alchemy-node-info`、Room Token 時の relay URI+mTLS セット返却の完全導線 |
 | **安全弁・検疫** | クライアント Mute/Block・シェーダー/爆音安全弁；Tombstone / PDQ / KTX2 検疫（v2 仕様・OSS にはヒューリスティックを置かない） |
@@ -118,6 +118,6 @@ overview にあるがコード無し〜薄皮のみ。roadmap でも「保留」
 10. ~~[x0096](slices/x0096-origin-cert-content-hash.md) Origin Cert content hash（P2-4）~~ **done**
 11. ~~[x0097](slices/x0097-room-owner-cap-strict.md) Room per-owner 上限厳密化（P2-11）~~ **done**
 12. ~~[x0098](slices/x0098-take-out-owner-session.md) take-out guest+session / owner_sub（improvement P2-7）~~ **done**
-13. verifier Spot-Check（保留）· Formula / market / 検疫（減点対象外）
+13. verifier Spot-Check（保留）· Dual-AST Kernel / market / 検疫（減点対象外）
 
 ← [Roadmap 目次](README.md)

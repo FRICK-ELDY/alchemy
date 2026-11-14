@@ -138,6 +138,6 @@
 ## 評価の前提
 
 - 旧 Elixir 権威実行前提は未使用
-- 目標のみ（verifier / billing / market / Formula / OSC / inventory x0054〜x0065 等）は減点せず提案/対象外
+- 目標のみ（verifier / billing / market / Dual-AST Kernel / OSC / inventory x0054〜x0065 等）は減点せず提案/対象外
 - 各評価者は相手文書を読んでいない。まとめは双方詳細を読み、合意・相違・採用を明示した
 - Opus の wildcard 指摘は設定読解ベース（zenohd 実機未確認）。実装前に否定系 1 本を推奨

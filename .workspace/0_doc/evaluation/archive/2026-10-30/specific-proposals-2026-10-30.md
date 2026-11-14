@@ -48,7 +48,7 @@
 - **user_root 幅を Manifest 配下へ** `0`
 - **予測・補間バッファ（verified state と分離）** `0`
 - **XR↔Desktop hot switch（x0053）** `0`
-- **Formula VM / Wake-on-Join / OSC / LOD / audio** `0`
+- **Dual-AST Kernel / Wake-on-Join / OSC / LOD / audio** `0`
 - **launcher 固定 discovery（IPC stale・deep link・handoff の control plane）** `0`
 
 ---

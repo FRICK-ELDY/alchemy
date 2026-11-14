@@ -68,7 +68,7 @@
 | P3-2 | Frame 補間 / jitter buffer | 提案 | **[`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md) Phase 2 に吸収**（`sim_tick` 基準 + jitter・`wgpu` Compute・手元予測・ArcSwap 出版）。Phase 1 Green 後 |
 | P3-3 | S2S 連合 / Spatial VCS 本体 | 目標 | Origin Cert v1 が素地。MVCC と独立 |
 | P3-4 | billing / market / Relay QoS | 目標 | ディレクトリ未設置 |
-| P3-5 | Formula / Wake / OSC / LOD / audio | 目標 | 減点しない。描画 LOD と **avatar sync LOD（規模本線）** を混同しない |
+| P3-5 | Dual-AST Kernel / Wake / OSC / LOD / audio | 目標 | 減点しない。描画 LOD と **avatar sync LOD（規模本線）** を混同しない |
 | P3-6 | 署名付き installer / 自動更新 | 提案 | Windows release 延長 |
 | P3-7 | 配信の空間インデックス（Spatial Interest） | 規模本線 | 正本 [`spatial_interest.md`](../../roadmap/spatial_interest.md)。アウトラインは並走可；**実装は MVCC Phase 3 後**。roadmap README 旧メモ「P3-7 BLAKE3 ストリーミング」とは**無関係**（BLAKE3 ストリーミング禁止は継続） |
 

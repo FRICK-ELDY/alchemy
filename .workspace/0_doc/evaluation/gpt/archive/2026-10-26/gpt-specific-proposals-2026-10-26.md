@@ -56,8 +56,8 @@
   > simulation thread は 60Hz state を更新し、network worker が reusable snapshot buffer から 20/30/60Hz delta を生成する。遅延時は古い未送信 delta を統合し、physics を止めない。
   > 対象ファイル: `client/host-server/src/main.rs`
 
-- **Formula VM / Wake-on-Join / snapshot handoff** `0`
-  > deterministic Formula VM、0人時 sleep、host lease と snapshot sequence を shared-sim 保証単位として追加する。現状コードがないため減点しない。
+- **Dual-AST Kernel / Wake-on-Join / snapshot handoff** `0`
+  > deterministic Dual-AST Kernel、0人時 sleep、host lease と snapshot sequence を shared-sim 保証単位として追加する。現状コードがないため減点しない。
   > 対象ファイル: `client/host-server/`
 
 ## クライアント・プロセス管理

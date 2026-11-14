@@ -28,7 +28,7 @@ SceneManifest / assets 経路は C-C のまま（GLB は host 非経由）。
 
 | 保証する | 保証しない |
 |:---|:---|
-| 入力の非 finite（NaN/Inf）を物理に入れない | Formula VM / Dual Editor ギミック |
+| 入力の非 finite（NaN/Inf）を物理に入れない | Dual-AST Kernel / Dual Editor ギミック |
 | 内部 60Hz と配信 30Hz の分離 | 可変配信レート UI（20/60Hz 切替） |
 | Rapier で少なくとも床衝突する 1 動体の pose がデルタで届く | 本格キャラコン・ジョイント・連続CCD 全般 |
 | C-C の Manifest / デルタ契約を壊さない（`PROTOCOL_PIN` 据え置き） | client 予測補間・verifier・署名 Manifest |
@@ -36,7 +36,7 @@ SceneManifest / assets 経路は C-C のまま（GLB は host 非経由）。
 
 ## やらない（後続）
 
-- Formula VM / Dual Representation
+- Dual-AST Kernel / Dual Representation
 - world-server 署名付き Scene Manifest
 - client 側 60–120fps 予測補間の本格化
 - verifier Spot-Check / ホスト移譲

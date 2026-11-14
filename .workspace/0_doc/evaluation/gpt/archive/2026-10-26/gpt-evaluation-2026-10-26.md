@@ -137,7 +137,7 @@ Alchemy は「auth/assets/world を永続権威と門番に限定し、Pure Rust
 
 #### 💡 提案
 
-- **bounded network pipeline、Formula VM、Wake-on-Join、handoff** `0`
+- **bounded network pipeline、Dual-AST Kernel、Wake-on-Join、handoff** `0`
 
 **小計: +11 / -14 = -3点**
 

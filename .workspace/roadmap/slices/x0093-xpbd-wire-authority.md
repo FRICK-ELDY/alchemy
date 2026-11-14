@@ -16,7 +16,7 @@
 | host wire Frame の TRS 権威は Epoch/XPBD | client が host ArcSwap を共有する |
 | coin / grabbable box は `DYNAMIC` + `inv_mass>0`；床は地面平面（y=0）＋デモ重力 `-2.2` | Rapier 数値の完全ビット一致・剛体回転慣性の完全再現 |
 | Intent loco は user_root を kinematic；Grab は `GRABBED` + `grab_targets` + SlotGraph / distance clamp | throw impulse・Grab 回転追従・capsule Walk 押し出しの本採用 |
-| spawn/despawn は tape membership を直接更新（Rapier 二重登録なし） | Loro CRDT / Formula / StaticSDF asset / Hierarchy Lens |
+| spawn/despawn は tape membership を直接更新（Rapier 二重登録なし） | Loro CRDT / Dual-AST Kernel / StaticSDF asset / Hierarchy Lens |
 | `host-server` から `rapier3d` 依存を除去 | workspace 他クレートの Rapier 掃除 |
 
 ---

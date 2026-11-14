@@ -100,7 +100,7 @@
 
 - `launcher/` — `.gitkeep` のみ
 - billing / market-server — ディレクトリなし
-- verifier / Formula VM / OSC / Dual Editor / LOD / P2P / Wake-on-Join — 目標のみ（提案へ）
+- verifier / Dual-AST Kernel / OSC / Dual Editor / LOD / P2P / Wake-on-Join — 目標のみ（提案へ）
 
 ---
 

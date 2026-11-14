@@ -53,7 +53,7 @@
 - **Friendship / Group / ToS version migration** `0` — `auth-server/`
 - **presigned direct PUT + 軽量検疫** `0` — `assets-server/`
 - **Spatial VCS / Origin Cert（別保証単位）** `0` — `assets-server/`
-- **Formula VM / Wake-on-Join / host handoff** `0` — `client/host-server/`
+- **Dual-AST Kernel / Wake-on-Join / host handoff** `0` — `client/host-server/`
 - **OSC Device Input Edge / Dual Editor / LOD cache** `0` — `client/app/`
 - **audio / tracking 独立 schema** `0` — `protocol/proto/`
 - **launcher 最小プロセスマネージャ** `0` — `launcher/`
@@ -86,4 +86,4 @@
 3. snapshot + client 署名/sequence 検証
 4. WAN 相互認証・ACL
 5. launcher 最小実装 + Compose E2E
-6. Friendship / verifier / Formula（ロードマップ順）
+6. Friendship / verifier / Dual-AST Kernel（ロードマップ順）

@@ -9,7 +9,7 @@
   > 対象ファイル: `.git`, `.workspace/roadmap/slices/`
 
 - **評価境界** `0`
-  > architecture の保証表と現行コードを直接突き合わせた。旧 Elixir 権威実行は前提にせず、目標のみの billing/market、verifier統計、Formula、OSC、audio等は減点していない。第1評価者の文書および `.workspace/0_doc/evaluation/opus/` 配下は参照していない。
+  > architecture の保証表と現行コードを直接突き合わせた。旧 Elixir 権威実行は前提にせず、目標のみの billing/market、verifier統計、Dual-AST Kernel、OSC、audio等は減点していない。第1評価者の文書および `.workspace/0_doc/evaluation/opus/` 配下は参照していない。
 
 ## 総合スコア
 

@@ -45,7 +45,7 @@ cargo run -p client
 - assets-server / アセット LOD / Quota
 - 公式リレー（ConoHa）・サードパーティリレー
 - P2P・verifier・launcher 本実装
-- Rapier / Formula / デルタ圧縮
+- Rapier / Dual-AST Kernel / デルタ圧縮
 - client の git submodule 化
 - Friendship / グループ / 公開範囲 ACL
 
