@@ -59,7 +59,20 @@ pub mod wire_crypto;
 /// x009b: user_root entity band moves to high ids (`USER_ROOT_ENTITY_FIRST`); peers must agree.
 /// x00af: `RenderFrame.sim_tick` / `redundancy` / `acked_intent_seq`; `Entity.holder`;
 ///        Intent `release_v*` / `release_w*` (throw apply still host-local).
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.22.0-x00af";
+/// x00b2: `EditProposal` / `EditCommit` on `…/edit` (Spawn/Despawn ops).
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.22.0-x00b2";
+
+/// `EditCommit.reject_reason` codes (x00b2).
+pub mod edit_reject {
+    pub const NONE: u32 = 0;
+    pub const AUTH: u32 = 1;
+    pub const RATE: u32 = 2;
+    pub const SIG: u32 = 3;
+    pub const OP_UNSUPPORTED: u32 = 4;
+    pub const OPS_COUNT: u32 = 5;
+    pub const PAYLOAD: u32 = 6;
+    pub const WORLD: u32 = 7;
+}
 
 /// Wire `Entity.holder`: nobody holds the entity.
 pub const ENTITY_HOLDER_NONE: u32 = 0;
@@ -308,6 +321,9 @@ pub const SNAPSHOT_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap0000
 /// Default Zenoh key for local planned-handover sim_state queryable (x00b0).
 pub const SIM_STATE_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/sim_state";
 
+/// Default Zenoh key for local edit lane (x00b2; proposal + commit share the key).
+pub const EDIT_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/edit";
+
 /// Payload accepted by host-server on `host_control_key(room_id)` (Slice E stub).
 pub const HOST_CONTROL_SHUTDOWN: &[u8] = b"shutdown";
 
@@ -477,6 +493,14 @@ pub fn sim_state_key(room_id: &str, wire_cap: &str) -> String {
     format!("{}/sim_state", room_prefix(room_id, wire_cap))
 }
 
+/// Build the deterministic edit-lane key (x00b2 / mvcc_xpbd §4.7).
+///
+/// Clients put [`EditProposal`]; host puts [`EditCommit`]. Distinct [`wire_aead::AeadKind`]s
+/// separate the envelopes on the same topic.
+pub fn edit_key(room_id: &str, wire_cap: &str) -> String {
+    format!("{}/edit", room_prefix(room_id, wire_cap))
+}
+
 /// True when wire `protocol_pin` matches this crate's [`PROTOCOL_PIN`].
 pub fn protocol_pin_matches(pin: &str) -> bool {
     pin == PROTOCOL_PIN
@@ -558,6 +582,7 @@ include!(concat!(env!("OUT_DIR"), "/alchemy.render.rs"));
 include!(concat!(env!("OUT_DIR"), "/alchemy.input.rs"));
 include!(concat!(env!("OUT_DIR"), "/alchemy.scene.rs"));
 include!(concat!(env!("OUT_DIR"), "/alchemy.presence.rs"));
+include!(concat!(env!("OUT_DIR"), "/alchemy.edit.rs"));
 
 /// Room Presence / user_root capacity from Manifest entries (x004d).
 ///
@@ -946,6 +971,7 @@ mod tests {
         assert_eq!(presence_key("local", cap), PRESENCE_KEY_LOCAL);
         assert_eq!(snapshot_key("local", cap), SNAPSHOT_KEY_LOCAL);
         assert_eq!(sim_state_key("local", cap), SIM_STATE_KEY_LOCAL);
+        assert_eq!(edit_key("local", cap), EDIT_KEY_LOCAL);
         assert_eq!(
             presence_key("alpha", cap),
             format!("alchemy/dev/room/alpha/{cap}/presence")

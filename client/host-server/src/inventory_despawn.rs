@@ -23,9 +23,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use std::time::{Duration, Instant};
 use zenoh::Wait;
 
+use crate::control_rate::SharedControlRate;
 use host_server::room_token::{
     delete_room_scene_entry, install_shared_scene_if_newer, RoomScene, SharedHostHttpAuth,
 };
@@ -52,6 +52,12 @@ pub struct DespawnInbox {
 }
 
 impl DespawnInbox {
+    /// Shared channel for inventory despawn + `…/edit` (x00b2 dual-subscribe).
+    pub fn pair() -> (Sender<ReadyDespawn>, Self) {
+        let (tx, rx) = mpsc::channel();
+        (tx, Self { rx: Mutex::new(rx) })
+    }
+
     pub fn try_recv(&self) -> Option<ReadyDespawn> {
         self.rx.lock().ok()?.try_recv().ok()
     }
@@ -78,36 +84,6 @@ fn decode_b64(field: &str, value: &str) -> Result<Vec<u8>> {
         .with_context(|| format!("{field} base64url"))
 }
 
-struct DespawnRate {
-    window: Duration,
-    max: u32,
-    start: Instant,
-    count: u32,
-}
-
-impl DespawnRate {
-    fn new(max: u32, window: Duration) -> Self {
-        Self {
-            window,
-            max,
-            start: Instant::now(),
-            count: 0,
-        }
-    }
-
-    fn allow(&mut self) -> bool {
-        if self.start.elapsed() >= self.window {
-            self.start = Instant::now();
-            self.count = 0;
-        }
-        if self.count >= self.max {
-            return false;
-        }
-        self.count += 1;
-        true
-    }
-}
-
 /// Subscribe → AEAD open → session verify → world HTTP delete → enqueue for physics.
 #[allow(clippy::too_many_arguments)] // wire + shared_scene wiring stays flat at the listener edge
 pub fn despawn_listener(
@@ -119,7 +95,9 @@ pub fn despawn_listener(
     sessions: Arc<Mutex<SessionTable>>,
     http_auth: SharedHostHttpAuth,
     shared_scene: Arc<RwLock<RoomScene>>,
-) -> Result<DespawnInbox> {
+    tx: Sender<ReadyDespawn>,
+    control_rate: Arc<Mutex<SharedControlRate>>,
+) -> Result<()> {
     let key = inventory_despawn_key(room_id, wire_cap);
     let room_id = room_id.to_string();
     let subscriber = session
@@ -127,15 +105,13 @@ pub fn despawn_listener(
         .wait()
         .map_err(|e| anyhow!("declare_subscriber inventory/despawn: {e}"))?;
 
-    let (tx, rx): (Sender<ReadyDespawn>, Receiver<ReadyDespawn>) = mpsc::channel();
-    let tx = Arc::new(Mutex::new(tx));
-
     thread::Builder::new()
         .name("inventory-despawn".into())
         .spawn(move || {
             let _session = session;
-            let mut rate = DespawnRate::new(8, Duration::from_secs(10));
-            log::info!("subscribed to {key} (x0081 inventory despawn, session sig)");
+            log::info!(
+                "subscribed to {key} (x0081 inventory despawn, session sig; shared rate x00b2)"
+            );
             while let Ok(sample) = subscriber.recv() {
                 let bytes = sample.payload().to_bytes();
                 match process_sample(
@@ -146,12 +122,10 @@ pub fn despawn_listener(
                     &sessions,
                     &http_auth,
                     &shared_scene,
-                    &mut rate,
+                    &control_rate,
                 ) {
                     Ok(ready) => {
-                        if let Ok(guard) = tx.lock() {
-                            let _ = guard.send(ready);
-                        }
+                        let _ = tx.send(ready);
                     }
                     Err(err) => log::warn!("inventory despawn rejected: {err:#}"),
                 }
@@ -159,7 +133,7 @@ pub fn despawn_listener(
         })
         .context("spawn inventory-despawn thread")?;
 
-    Ok(DespawnInbox { rx: Mutex::new(rx) })
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)] // HTTP CAS path needs auth + shared_scene beside rate
@@ -171,7 +145,7 @@ fn process_sample(
     sessions: &Arc<Mutex<SessionTable>>,
     http_auth: &SharedHostHttpAuth,
     shared_scene: &Arc<RwLock<RoomScene>>,
-    rate: &mut DespawnRate,
+    control_rate: &Arc<Mutex<SharedControlRate>>,
 ) -> Result<ReadyDespawn> {
     wire_aead::check_aead_envelope_bytes(AeadKind::InventoryDespawn, envelope.len())
         .map_err(|e| anyhow!("aead envelope: {e}"))?;
@@ -214,19 +188,29 @@ fn process_sample(
             owner_sub.as_deref(),
         )?;
     }
-    if !rate.allow() {
-        return Err(anyhow!("rate limited"));
+    {
+        let mut rate = control_rate
+            .lock()
+            .map_err(|_| anyhow!("SharedControlRate poisoned"))?;
+        if !rate.allow() {
+            return Err(anyhow!("rate limited"));
+        }
     }
     {
         let mut table = sessions
             .lock()
             .map_err(|_| anyhow!("SessionTable poisoned"))?;
-        table.commit_control(
+        if let Err(err) = table.commit_control(
             &session_pub,
             parsed.control_seq,
             &auth.sub,
             owner_sub.as_deref(),
-        )?;
+        ) {
+            if let Ok(mut rate) = control_rate.lock() {
+                rate.refund();
+            }
+            return Err(err);
+        }
     }
 
     let scene = delete_room_scene_entry(

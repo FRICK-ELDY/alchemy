@@ -333,6 +333,9 @@ pub struct SharedState {
     pub host_pub: Mutex<Option<Vec<u8>>>,
     /// Last accepted Manifest `(host_generation, revision)` watermark (x003a).
     pub manifest_gen_rev: Mutex<Option<alchemy_protocol::generation_gate::GenRev>>,
+    /// Monotonic tip of **accepted** `EditCommit.scene_rev` (overlay packed; x00b2).
+    /// Used as `EditProposal.base_scene_rev` — not Manifest revision; rejects do not update.
+    pub last_edit_scene_rev: Mutex<Option<u64>>,
     /// Last accepted Manifest `world_seal` for PlaceRead issuance (x006c).
     pub last_world_seal: Mutex<Option<String>>,
     /// Last accepted Presence watermark (x003a); generation must match Manifest.
@@ -1106,6 +1109,9 @@ impl SharedState {
                 *gen_rev = None;
             }
             _ => log::error!("leave_room_local: host_pub/manifest_gen_rev lock poisoned"),
+        }
+        if let Ok(mut edit_rev) = self.last_edit_scene_rev.lock() {
+            *edit_rev = None;
         }
         if let Ok(mut seal) = self.last_world_seal.lock() {
             *seal = None;

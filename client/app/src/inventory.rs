@@ -1,19 +1,17 @@
-//! Inventory take-out / put-back / despawn client helpers (x006d / x006e / x007b / x007f / x0081 / x0098).
+//! Inventory take-out / put-back / despawn client helpers (x006d / x006e / x007b / x007f / x0081 / x0098 / x00b2).
 //!
 //! Guarantees: Drive list / take_out / put_back over assets HTTP; spawn/despawn put on
-//! Zenoh `inventory/spawn|despawn` sealed with Room AEAD and **session-signed** (no Room
-//! Token on the bus · x0081); no Drive node_id on the wire to host. Owner may use guest
-//! Room Token + Intent bind; host Dual-auth accepts `owner_sub` or host-role (x0098).
-//! Put-back is Bearer→assets only (no Zenoh); Despawn removes the room entity via host.
-//! Prefab take_out expands children (x007f); client `session.put`s each blake3
-//! sequentially (same style as room Intent puts; declare_publisher not required).
-//! Desktop paces puts under host `SpawnRate(8/10s)` on an auth/inventory worker
-//! (not the UI loop); status reports `spawn put N/M` (Zenoh success ≠ host accept).
-//! Non-guarantees: atomic multi-spawn rollback; host spawn ack to client;
-//! XR-direct HTTP/Zenoh; put-back+despawn TX.
+//! Zenoh `…/edit` as session-signed `EditProposal` (Room AEAD · x00b2); no Drive node_id
+//! on the wire to host. Owner may use guest Room Token + Intent bind; host Dual-auth
+//! accepts `owner_sub` or host-role (x0098). Put-back is Bearer→assets only (no Zenoh);
+//! Despawn removes the room entity via host. Prefab take_out expands children (x007f);
+//! client `session.put`s each blake3 sequentially. Desktop paces puts under host
+//! `SharedControlRate` (8/10s across edit + legacy inventory) on an auth/inventory
+//! worker (not the UI loop); status reports `spawn put N/M` (Zenoh success ≠ host accept).
+//! Non-guarantees: atomic multi-spawn rollback; XR-direct HTTP/Zenoh; put-back+despawn TX.
 
 use alchemy_protocol::wire_aead::{self, AeadKind};
-use alchemy_protocol::{inventory_despawn_key, inventory_spawn_key};
+use alchemy_protocol::{edit_key, EditProposal, Message};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::json;
@@ -214,125 +212,28 @@ pub fn room_token_role_unverified(room_token: &str) -> Option<String> {
     v.get("role")?.as_str().map(|s| s.to_string())
 }
 
-/// Put AEAD-sealed spawn request on Zenoh (x006d / x0069 / x0081).
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)] // room + pose wire args; mirrors host spawn payload
-pub fn publish_inventory_spawn(
+/// Put AEAD-sealed `EditProposal` on `…/edit` (x00b2).
+pub fn publish_edit_proposal(
     session: &zenoh::Session,
     room_id: &str,
     wire_cap: &str,
     room_key: &[u8; wire_aead::ROOM_KEY_LEN],
     room_key_epoch: u64,
-    control: &crate::intent_session::ControlSig,
-    blake3: &str,
-    x: f64,
-    y: f64,
-    z: f64,
+    proposal: &EditProposal,
 ) -> Result<()> {
-    publish_inventory_spawn_pose(
-        session,
-        room_id,
-        wire_cap,
-        room_key,
-        room_key_epoch,
-        control,
-        blake3,
-        x,
-        y,
-        z,
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-    )
-}
-
-/// Spawn with full TRS (x007f prefab child). Session-signed — no Room Token (x0081).
-#[allow(clippy::too_many_arguments)]
-pub fn publish_inventory_spawn_pose(
-    session: &zenoh::Session,
-    room_id: &str,
-    wire_cap: &str,
-    room_key: &[u8; wire_aead::ROOM_KEY_LEN],
-    room_key_epoch: u64,
-    control: &crate::intent_session::ControlSig,
-    blake3: &str,
-    x: f64,
-    y: f64,
-    z: f64,
-    qx: f64,
-    qy: f64,
-    qz: f64,
-    qw: f64,
-    sx: f64,
-    sy: f64,
-    sz: f64,
-) -> Result<()> {
-    let key = inventory_spawn_key(room_id, wire_cap);
-    let payload = json!({
-        "session_pub": control.session_pub_b64,
-        "control_seq": control.control_seq,
-        "control_sig": control.control_sig_b64,
-        "blake3": blake3.to_ascii_lowercase(),
-        "x": x,
-        "y": y,
-        "z": z,
-        "qx": qx,
-        "qy": qy,
-        "qz": qz,
-        "qw": qw,
-        "sx": sx,
-        "sy": sy,
-        "sz": sz,
-    });
-    let plain = serde_json::to_vec(&payload).context("encode spawn JSON")?;
+    let key = edit_key(room_id, wire_cap);
+    let plain = proposal.encode_to_vec();
     let envelope = wire_aead::seal(
         room_key,
         room_id,
         room_key_epoch,
-        AeadKind::InventorySpawn,
+        AeadKind::EditProposal,
         &plain,
     )
-    .map_err(|e| anyhow!("seal spawn: {e}"))?;
+    .map_err(|e| anyhow!("seal EditProposal: {e}"))?;
     session
         .put(&key, envelope)
         .wait()
-        .map_err(|e| anyhow!("spawn put: {e}"))?;
-    Ok(())
-}
-
-/// Put AEAD-sealed despawn request on Zenoh (x007b / x0081).
-pub fn publish_inventory_despawn(
-    session: &zenoh::Session,
-    room_id: &str,
-    wire_cap: &str,
-    room_key: &[u8; wire_aead::ROOM_KEY_LEN],
-    room_key_epoch: u64,
-    control: &crate::intent_session::ControlSig,
-    entity_id: u32,
-) -> Result<()> {
-    let key = inventory_despawn_key(room_id, wire_cap);
-    let payload = json!({
-        "session_pub": control.session_pub_b64,
-        "control_seq": control.control_seq,
-        "control_sig": control.control_sig_b64,
-        "entity_id": entity_id,
-    });
-    let plain = serde_json::to_vec(&payload).context("encode despawn JSON")?;
-    let envelope = wire_aead::seal(
-        room_key,
-        room_id,
-        room_key_epoch,
-        AeadKind::InventoryDespawn,
-        &plain,
-    )
-    .map_err(|e| anyhow!("seal despawn: {e}"))?;
-    session
-        .put(&key, envelope)
-        .wait()
-        .map_err(|e| anyhow!("despawn put: {e}"))?;
+        .map_err(|e| anyhow!("edit put: {e}"))?;
     Ok(())
 }

@@ -6,7 +6,7 @@
 * **本線の役割**: **品質本線**（近傍物理・ゼロアロ・handover 速度・補間）。同一 Room の大規模 CCU（1000 人 horizon）は規模本線 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**）
 * **関連スライス**: `x0020` (Desktop 正本), `x0039` (`ManifestSeal`), `x0053` (体感並行補間), `x0067` (Zenoh 非対称 ACL), `x0068` (短命 mTLS), `x0069` (Room 鍵 AEAD), `x0024`（frame tick 連番 + 欠落時 snapshot）
 * **レビュー取り込み**: [mvcc_xpbd_review_proposal.md](mvcc_xpbd_review_proposal.md)（2026-11-13）の P0/P1 を本版に反映。未決事項は §6
-* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜dirty 30Hz（x00ad–[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)）**done**。残り:（並走可）`…/edit`（次空き `x00b2`〜）。
+* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜dirty 30Hz（x00ad–[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)）+ 確定レーン土台 [x00b2](slices/x00b2-phase3-edit-lane-foundation.md) **done**。残り: `x00b3`〜（Reparent/SetField 等）。
 * **最優先規約**: 全 Rust クレートにおいて `#![forbid(unsafe_code)]` を**クレート直下（`lib.rs` / 該当 `main.rs`）**に宣言し、既存の `./.scripts/ci.sh rust`・`./.scripts/ci.sh protocol`・`make smoke-desktop-handthrough` を常に Green に保つこと。差分配信の用語は **dirty 合成 + x0024 snapshot**（`V_ack` / 「XOR デルタ」は使わない）。
 
 ---
@@ -594,7 +594,7 @@ flowchart LR
 
 **DoD に含めないもの**: 同一 Room の大規模 CCU・フルメッシュ解除・interest キー族。それらは [spatial_interest.md](spatial_interest.md) のマイルストーン（32→64→128、1000 は horizon）が担当する。
 
-**現状**: Phase 1–2 + Phase 3 着手〜dirty 30Hz（x00a3–[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)）まで **コード完了**。実装本線の次は（並走可）確定レーン `…/edit`（次空き `x00b2`）。
+**現状**: Phase 1–2 + Phase 3 着手〜dirty 30Hz + 確定レーン土台（x00a3–[x00b2](slices/x00b2-phase3-edit-lane-foundation.md)）まで **コード完了**。実装本線の次は `x00b3`（Reparent/SetField + FrameBridge）。
 
 ### Phase 1: 既存 `shared-sim` の進化とヘッドレス決定論テスト（host/app 本線は触らない）
 
@@ -630,7 +630,8 @@ flowchart LR
 * **[x00af](slices/x00af-phase3-protocol-pin.md)** — PROTOCOL_PIN 一括（`sim_tick` / `holder` / `release_*`）— **done**。
 * **[x00b0](slices/x00b0-phase3-sim-state.md)** — `…/sim_state` 計画的 handover + crash fail-closed — **done**。
 * **[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)** — host dirty 30Hz 本番切替 — **done**。
-* 後続（次空き `x00b2`〜）:（並走可）確定レーン `…/edit`。
+* **[x00b2](slices/x00b2-phase3-edit-lane-foundation.md)** — 確定レーン土台（`…/edit` + Spawn/Despawn）— **done**。
+* 後続（次空き `x00b3`〜）: Reparent/SetField + FrameBridge · snapshot `scene_rev`。
 
 1. **作業内容**:
    * `ALCHEMY_SIM_BACKEND=mvcc_xpbd|epoch_xpbd` で切替可能な権威ループ。Ingress 検疫 → Fork/`make_mut` → XPBD（**接触オン＝`bounds: Some`**）→ 階層 → Commit。ここで P1-2 の host 配線を閉じる（**→ x00ad**）。

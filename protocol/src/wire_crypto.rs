@@ -15,7 +15,10 @@ use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 use prost::Message;
 use rand::rngs::OsRng;
 
-use crate::{InputEvent, PresenceState, RenderFrame, SceneManifest, SimEntity, SimState};
+use crate::{
+    EditCommit, EditProposal, InputEvent, PresenceState, RenderFrame, SceneManifest, SimEntity,
+    SimState,
+};
 
 pub use ed25519_dalek::{SigningKey, SIGNATURE_LENGTH};
 
@@ -215,6 +218,52 @@ pub fn sim_state_entities_finite(state: &SimState) -> bool {
     state.entities.iter().all(sim_entity_is_finite)
 }
 
+/// Encode `EditProposal` for signing (`sig` cleared) (x00b2).
+pub fn edit_proposal_signing_bytes(proposal: &EditProposal) -> Vec<u8> {
+    let mut p = proposal.clone();
+    p.sig.clear();
+    p.encode_to_vec()
+}
+
+/// Sign EditProposal in place (`sig` filled).
+pub fn sign_edit_proposal(key: &SigningKey, proposal: &mut EditProposal) {
+    proposal.sig.clear();
+    let msg = proposal.encode_to_vec();
+    proposal.sig = key.sign(&msg).to_bytes().to_vec();
+}
+
+/// Verify EditProposal with `session_pub`.
+pub fn verify_edit_proposal(proposal: &EditProposal) -> Result<(), WireCryptoError> {
+    let vk = verifying_key_from(&proposal.session_pub)?;
+    let sig = signature_from(&proposal.sig)?;
+    let msg = edit_proposal_signing_bytes(proposal);
+    vk.verify(&msg, &sig)
+        .map_err(|_| WireCryptoError::VerifyFailed)
+}
+
+/// Encode `EditCommit` for signing (`host_sig` cleared) (x00b2).
+pub fn edit_commit_signing_bytes(commit: &EditCommit) -> Vec<u8> {
+    let mut c = commit.clone();
+    c.host_sig.clear();
+    c.encode_to_vec()
+}
+
+/// Sign EditCommit in place (`host_sig` filled).
+pub fn sign_edit_commit(key: &SigningKey, commit: &mut EditCommit) {
+    commit.host_sig.clear();
+    let msg = commit.encode_to_vec();
+    commit.host_sig = key.sign(&msg).to_bytes().to_vec();
+}
+
+/// Verify EditCommit with the expected host public key.
+pub fn verify_edit_commit(host_pub: &[u8], commit: &EditCommit) -> Result<(), WireCryptoError> {
+    let vk = verifying_key_from(host_pub)?;
+    let sig = signature_from(&commit.host_sig)?;
+    let msg = edit_commit_signing_bytes(commit);
+    vk.verify(&msg, &sig)
+        .map_err(|_| WireCryptoError::VerifyFailed)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireCryptoError {
     BadPublicKeyLen(usize),
@@ -320,6 +369,60 @@ mod tests {
         sign_presence(&key, &mut state);
         assert!(verify_presence(&public_key_bytes(&key), &state).is_ok());
         assert!(verify_presence(&[0u8; 32], &state).is_err());
+    }
+
+    #[test]
+    fn edit_proposal_commit_roundtrip_sign_verify() {
+        use crate::edit_op::Op;
+        use crate::{EditDespawn, EditOp, EditSpawn};
+
+        let session = generate_signing_key();
+        let host = generate_signing_key();
+        let mut proposal = EditProposal {
+            session_pub: public_key_bytes(&session),
+            control_seq: 3,
+            base_scene_rev: 7,
+            op_id: 42,
+            ops: vec![EditOp {
+                op: Some(Op::Spawn(EditSpawn {
+                    blake3: "a".repeat(64),
+                    x: 1.0,
+                    y: 1.5,
+                    z: 2.0,
+                    qx: 0.0,
+                    qy: 0.0,
+                    qz: 0.0,
+                    qw: 1.0,
+                    sx: 1.0,
+                    sy: 1.0,
+                    sz: 1.0,
+                })),
+            }],
+            sig: vec![],
+            room_id: "local".into(),
+        };
+        sign_edit_proposal(&session, &mut proposal);
+        assert!(verify_edit_proposal(&proposal).is_ok());
+        proposal.room_id = "other".into();
+        assert!(verify_edit_proposal(&proposal).is_err());
+        proposal.room_id = "local".into();
+        proposal.control_seq += 1;
+        assert!(verify_edit_proposal(&proposal).is_err());
+
+        let mut commit = EditCommit {
+            scene_rev: 8,
+            op_id: 42,
+            author_session_pub: public_key_bytes(&session),
+            accepted: true,
+            reject_reason: 0,
+            ops: vec![EditOp {
+                op: Some(Op::Despawn(EditDespawn { entity_id: 9 })),
+            }],
+            host_sig: vec![],
+        };
+        sign_edit_commit(&host, &mut commit);
+        assert!(verify_edit_commit(&public_key_bytes(&host), &commit).is_ok());
+        assert!(verify_edit_commit(&[0u8; 32], &commit).is_err());
     }
 
     #[test]

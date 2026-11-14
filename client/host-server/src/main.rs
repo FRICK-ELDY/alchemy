@@ -41,6 +41,8 @@
 
 #![forbid(unsafe_code)]
 
+mod control_rate;
+mod edit;
 mod finite;
 mod host_control;
 mod host_ipc;
@@ -841,7 +843,10 @@ fn main() -> Result<()> {
     let auth_broker = AuthBrokerInbox::new();
     host_ipc::spawn_listener(auth_broker.clone()).context("host IPC listener")?;
     let http_auth: SharedHostHttpAuth = creds.http_auth.clone();
-    let spawn_inbox = inventory_spawn::spawn_listener(
+    let (spawn_tx, spawn_inbox) = inventory_spawn::SpawnInbox::pair();
+    let (despawn_tx, despawn_inbox) = inventory_despawn::DespawnInbox::pair();
+    let control_rate = control_rate::SharedControlRate::new_shared();
+    inventory_spawn::spawn_listener(
         session.clone(),
         &room_id,
         &wire_cap,
@@ -850,9 +855,24 @@ fn main() -> Result<()> {
         Arc::clone(&sessions),
         http_auth.clone(),
         Arc::clone(&shared_scene),
+        spawn_tx.clone(),
+        Arc::clone(&control_rate),
     )
     .context("inventory spawn listener")?;
-    let despawn_inbox = inventory_despawn::despawn_listener(
+    inventory_despawn::despawn_listener(
+        session.clone(),
+        &room_id,
+        &wire_cap,
+        Arc::clone(&room_aead),
+        world_url.clone(),
+        Arc::clone(&sessions),
+        http_auth.clone(),
+        Arc::clone(&shared_scene),
+        despawn_tx.clone(),
+        Arc::clone(&control_rate),
+    )
+    .context("inventory despawn listener")?;
+    edit::edit_listener(
         session.clone(),
         &room_id,
         &wire_cap,
@@ -861,8 +881,12 @@ fn main() -> Result<()> {
         Arc::clone(&sessions),
         http_auth,
         Arc::clone(&shared_scene),
+        spawn_tx,
+        despawn_tx,
+        host_signing_key.clone(),
+        control_rate,
     )
-    .context("inventory despawn listener")?;
+    .context("edit lane listener")?;
 
     let manifest_pub = session
         .declare_publisher(manifest_key_expr)

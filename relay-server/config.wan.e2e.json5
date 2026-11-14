@@ -55,6 +55,7 @@
           "alchemy/dev/room/*/*/presence",
           "alchemy/dev/room/*/*/snapshot",
           "alchemy/dev/room/*/*/sim_state",
+          "alchemy/dev/room/*/*/edit",
           "alchemy/dev/room/*/*/host_control",
           "alchemy/dev/room/*/*/alive/**",
         ],
@@ -71,6 +72,7 @@
         ],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/edit",
           "alchemy/dev/room/*/*/inventory/spawn",
           "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
@@ -89,6 +91,7 @@
         messages: ["put", "delete", "liveliness_token", "query", "reply"],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/edit",
           "alchemy/dev/room/*/*/inventory/spawn",
           "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
@@ -105,6 +108,7 @@
         messages: ["declare_subscriber", "declare_liveliness_subscriber"],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/edit",
           "alchemy/dev/room/*/*/inventory/spawn",
           "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
@@ -115,8 +119,8 @@
           "alchemy/dev/room/*/*/sim_state",
         ],
       },
-      // Guest → router: client input / alive / inventory spawn only (never sim put ingress).
-      // x006d/x007b: inventory/spawn|despawn app-verified (host role); ACL only routes.
+      // Guest → router: client input / alive / edit / inventory (never sim put ingress).
+      // x00b2: …/edit; x006d/x007b: inventory dual-subscribe; ACL only routes.
       {
         id: "guest-put-input",
         permission: "allow",
@@ -124,6 +128,7 @@
         messages: ["put", "delete", "liveliness_token"],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/edit",
           "alchemy/dev/room/*/*/inventory/spawn",
           "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
@@ -145,6 +150,7 @@
           "alchemy/dev/room/*/*/frame",
           "alchemy/dev/room/*/*/presence",
           "alchemy/dev/room/*/*/snapshot",
+          "alchemy/dev/room/*/*/edit",
           "alchemy/dev/room/*/*/alive/**",
         ],
       },
@@ -160,6 +166,7 @@
           "alchemy/dev/room/*/*/frame",
           "alchemy/dev/room/*/*/presence",
           "alchemy/dev/room/*/*/snapshot",
+          "alchemy/dev/room/*/*/edit",
           "alchemy/dev/room/*/*/alive/**",
         ],
       },
@@ -174,6 +181,7 @@
         messages: ["declare_subscriber", "declare_liveliness_subscriber"],
         key_exprs: [
           "alchemy/dev/room/*/*/input",
+          "alchemy/dev/room/*/*/edit",
           "alchemy/dev/room/*/*/inventory/spawn",
           "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
