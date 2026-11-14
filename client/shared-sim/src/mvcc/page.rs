@@ -81,6 +81,18 @@ impl HotPhysicsPage {
         }
     }
 
+    /// Heap-resident zero page for constrained stacks (Windows main ≈ 1MiB).
+    ///
+    /// Prefer over storing [`Self`] by value inside long-lived host structs.
+    /// `Box::new` may still materialize one ~79KiB temporary; true `alloc_zeroed`
+    /// placement is blocked here by `#![forbid(unsafe_code)]` and by holders
+    /// needing [`NO_HOLDER`] (not all-zero / not [`Zeroable`]).
+    /// If `mvcc_xpbd` cold start overflows again after Zenoh has thickened the
+    /// stack, this temporary is the next cut point (layout / scoped unsafe).
+    pub fn zeroed_boxed() -> Box<Self> {
+        Box::new(Self::zeroed_page())
+    }
+
     #[inline]
     fn mask_bit(local_idx: usize) -> Option<(usize, u64)> {
         if local_idx >= ENTITIES_PER_PAGE {

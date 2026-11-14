@@ -58,13 +58,16 @@ const DEFAULT_DT: f64 = 1.0 / 60.0;
 const GROUND_Y: f64 = 0.0;
 
 /// Page-path XPBD state for [`SimBackendKind::MvccXpbd`] (x00ad) + wire dirty (x00b1).
+///
+/// Large SoA faces stay behind [`Box`] so constructing this value (and nesting it
+/// under [`PhysicsWorld`]) does not enlarge every stack frame that moves a world.
 struct HostMvccState {
     adapter: PageXpbdAdapter,
-    page: HotPhysicsPage,
+    page: Box<HotPhysicsPage>,
     /// OR-accumulator across skipped net ticks (capacity 1 · contract A slot 0).
     wire_dirty: WireDirtyAccumulator,
     /// Wire `entity_id` per page local (filled before extract).
-    entity_of: [u32; ENTITIES_PER_PAGE],
+    entity_of: Box<[u32; ENTITIES_PER_PAGE]>,
     /// Reused extract buffer (avoid per-net-tick `Vec` alloc).
     delta_scratch: Vec<EntityDeltaRecord>,
 }
@@ -142,10 +145,25 @@ pub struct PhysicsWorld {
     active_row_scratch: Vec<u32>,
     backend: SimBackendKind,
     scene_bounds: SceneBounds,
-    mvcc: Option<HostMvccState>,
+    /// `Option<Box<_>>` (not `Option<HostMvccState>`): [`HotPhysicsPage`] is ~79KiB.
+    ///
+    /// Root cause of the Windows cold-start overflow (`0xc00000fd`):
+    /// `size_of::<PhysicsWorld>()` itself was ~80KiB+ because `Option<HostMvccState>`
+    /// reserves the full `Some` layout even when `epoch_xpbd` leaves this `None`.
+    /// That alone, moved through `from_entries_with_backend` → `main` → `HostLoop`
+    /// on the 1MiB main stack (with Zenoh already framed), was enough — sheet clones
+    /// are heap `Vec`s and were not the primary driver. Box the branch so the
+    /// epoch path stays thin; mvcc construct still spikes once inside
+    /// [`HotPhysicsPage::zeroed_boxed`].
+    mvcc: Option<Box<HostMvccState>>,
     pub barrier_ticks: u64,
     pub publishes: u64,
 }
+
+/// Compile-time budget for [`PhysicsWorld`] (canonical). By-value [`HotPhysicsPage`]
+/// inside `Option<HostMvccState>` made this ~80KiB+ and overflowed Windows main.
+const PHYSICS_WORLD_STACK_BUDGET: usize = 8 * 1024;
+const _: () = assert!(std::mem::size_of::<PhysicsWorld>() < PHYSICS_WORLD_STACK_BUDGET);
 
 fn entry_quat_xyzw(entry: &SceneEntry) -> [f32; 4] {
     let [qx, qy, qz, qw] = scene_entry_quat_xyzw(entry);
@@ -155,6 +173,13 @@ fn entry_quat_xyzw(entry: &SceneEntry) -> [f32; 4] {
 fn entry_scale_f32(entry: &SceneEntry) -> [f32; 3] {
     let [sx, sy, sz] = scene_entry_scale(entry);
     [sx as f32, sy as f32, sz as f32]
+}
+
+fn boxed_zero_entity_of() -> Box<[u32; ENTITIES_PER_PAGE]> {
+    vec![0u32; ENTITIES_PER_PAGE]
+        .into_boxed_slice()
+        .try_into()
+        .unwrap_or_else(|_| unreachable!("len == ENTITIES_PER_PAGE"))
 }
 
 fn xf_at(pos: [f64; 3], rot: [f32; 4], scale: [f32; 3], inv_mass: f64) -> WorldTransformf64 {
@@ -343,14 +368,18 @@ impl PhysicsWorld {
                 let mut adapter = PageXpbdAdapter::new(scene_bounds);
                 adapter.set_gravity(world.gravity);
                 adapter.set_substeps(world.substeps);
-                Some(HostMvccState {
+                // Page / entity_of allocated first so `Box::new(HostMvccState { … })`
+                // does not also keep a by-value ~79KiB page in that temporary.
+                let page = HotPhysicsPage::zeroed_boxed();
+                let entity_of = boxed_zero_entity_of();
+                Some(Box::new(HostMvccState {
                     adapter,
-                    page: HotPhysicsPage::zeroed_page(),
+                    page,
                     // Single live page: capacity 1 (not snapshot cap 64).
                     wire_dirty: WireDirtyAccumulator::from_arena_capacity(1),
-                    entity_of: [0u32; ENTITIES_PER_PAGE],
+                    entity_of,
                     delta_scratch: Vec::with_capacity(64),
-                })
+                }))
             }
         };
         let mut host = Self {
@@ -998,7 +1027,7 @@ impl PhysicsWorld {
         let Some(mvcc) = self.mvcc.as_mut() else {
             return;
         };
-        mvcc.entity_of = [0u32; ENTITIES_PER_PAGE];
+        mvcc.entity_of.fill(0);
         for (&entity_id, handle) in &self.entity_rows {
             let row = handle.row_id as usize;
             if row < ENTITIES_PER_PAGE {
@@ -1133,7 +1162,7 @@ impl PhysicsWorld {
 
     #[cfg(test)]
     pub fn mvcc_page(&self) -> Option<&HotPhysicsPage> {
-        self.mvcc.as_ref().map(|m| &m.page)
+        self.mvcc.as_ref().map(|m| m.page.as_ref())
     }
 
     /// Restore Verlet `prev` from last tick's **frame** displacement.
@@ -1644,6 +1673,19 @@ fn test_world() -> PhysicsWorld {
 mod tests {
     use super::*;
     use crate::sim_state::SimStateImportKind;
+
+    #[test]
+    fn physics_world_stays_stack_thin() {
+        // Size ceiling is compile-time (`PHYSICS_WORLD_STACK_BUDGET`); this only
+        // checks the niche and prints the live size if that regresses.
+        assert_eq!(
+            std::mem::size_of::<Option<Box<HostMvccState>>>(),
+            std::mem::size_of::<usize>(),
+            "mvcc must stay niche-optimized Option<Box<_>> (PhysicsWorld is {} bytes, budget {})",
+            std::mem::size_of::<PhysicsWorld>(),
+            PHYSICS_WORLD_STACK_BUDGET,
+        );
+    }
 
     #[test]
     fn ball_falls_onto_floor() {
