@@ -70,7 +70,7 @@ use alchemy_protocol::{
     RenderFrame, DEFAULT_MOVE_SPEED, PROTOCOL_PIN, USER_ROOT_SLOTS_MAX,
 };
 use anyhow::{Context, Result};
-use finite::input_event_is_finite;
+use finite::{input_event_is_finite, sanitize_release_velocity};
 use host_loop::{read_publish_gate, HostLoop, HostLoopParts, NET_HZ, PHYSICS_HZ};
 use intent_rate::IntentRateLimiter;
 use network_worker::{spawn_network_worker, NetworkWorkerConfig};
@@ -269,6 +269,7 @@ fn spawn_input_gate(
                                         event.move_z
                                     );
                                 } else {
+                                    sanitize_release_velocity(&mut event);
                                     let mut guard = lock_or_fatal(&presence, "presence");
                                     match guard.assign_or_lookup(&sub, &jti, Instant::now()) {
                                         Some(slot) => {
@@ -283,6 +284,14 @@ fn spawn_input_gate(
                                             overlay.aim_x = event.aim_x;
                                             overlay.aim_y = event.aim_y;
                                             overlay.aim_z = event.aim_z;
+                                            // Wire ack = applied overlay seq (not SessionBinding.last_seq).
+                                            overlay.applied_intent_seq = event.intent_seq;
+                                            overlay.release_vx = event.release_vx;
+                                            overlay.release_vy = event.release_vy;
+                                            overlay.release_vz = event.release_vz;
+                                            overlay.release_wx = event.release_wx;
+                                            overlay.release_wy = event.release_wy;
+                                            overlay.release_wz = event.release_wz;
                                             accepted += 1;
                                         }
                                         None => {
@@ -527,6 +536,7 @@ fn main() -> Result<()> {
         upserts: vec![],
         removes: vec![],
         host_sig: vec![],
+        ..Default::default()
     }));
 
     // Bootstrap already applied world mtls or allocate into env when configured (x0066/x004e).

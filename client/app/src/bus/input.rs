@@ -86,6 +86,7 @@ pub(crate) fn spawn_input_publisher(
                             aim_y: intent.aim_y,
                             aim_z: intent.aim_z,
                             leave: false,
+                            ..Default::default()
                         }
                     };
                     Some(session.signed_intent(Some(&room_token), body))

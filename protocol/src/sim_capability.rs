@@ -64,6 +64,13 @@ pub fn mask_intent(caps: u32, event: &mut InputEvent) {
         event.aim_x = 0.0;
         event.aim_y = 0.0;
         event.aim_z = 0.0;
+        // Release velocities are Grab-adjacent (x00af); clear with the same gate.
+        event.release_vx = 0.0;
+        event.release_vy = 0.0;
+        event.release_vz = 0.0;
+        event.release_wx = 0.0;
+        event.release_wy = 0.0;
+        event.release_wz = 0.0;
     }
     if !has_all(caps, INTENT_LEAVE) {
         event.leave = false;
@@ -117,7 +124,10 @@ mod tests {
             session_pub: vec![],
             intent_seq: 1,
             intent_sig: vec![],
+            ..Default::default()
         };
+        event.release_vx = 3.0;
+        event.release_wy = 1.0;
         mask_intent(INTENT_MOVE, &mut event);
         assert!((event.move_x - 1.0).abs() < f32::EPSILON);
         assert_eq!(event.buttons & input_buttons::GRAB, 0);
@@ -126,6 +136,8 @@ mod tests {
             input_buttons::PRIMARY
         );
         assert_eq!(event.grab_entity_id, 0);
+        assert_eq!(event.release_vx, 0.0);
+        assert_eq!(event.release_wy, 0.0);
         assert!(!event.leave);
 
         event.leave = true;

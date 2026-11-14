@@ -76,7 +76,7 @@
 
 正本: [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md)（レビュー反映の詳細・未決 Q1–Q8 は同書 §6 / [review_proposal](../../roadmap/mvcc_xpbd_review_proposal.md)）。**大規模 CCU / 1000 人はここに書かない**（→ P3-7）。
 
-**現状（2026-11-14）**: Phase 1–2（x00a3–x00ac）+ Phase 3 着手 [x00ad](../../roadmap/slices/x00ad-phase3-host-sim-backend.md)（`SimBackend` + 接触オン / **P1-2 host closed**）まで **done**。dirty・`sim_state`・PROTOCOL_PIN・`…/edit` は後続（`x00ae`〜）。
+**現状（2026-11-14）**: Phase 1–2（x00a3–x00ac）+ Phase 3 着手 [x00ad](../../roadmap/slices/x00ad-phase3-host-sim-backend.md)（`SimBackend` + 接触オン / **P1-2 host closed**）+ dirty [x00ae](../../roadmap/slices/x00ae-phase3-dirty-delta-codec.md) + PROTOCOL_PIN [x00af](../../roadmap/slices/x00af-phase3-protocol-pin.md) **done**。残り `sim_state`・`…/edit`（`x00ag`〜）。
 
 | Phase | 内容 | 吸収する ID | 着手条件 |
 |:---|:---|:---|:---|

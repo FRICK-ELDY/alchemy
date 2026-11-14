@@ -108,6 +108,7 @@ fn pose_with_trs(
         g,
         b,
         a,
+        holder: alchemy_protocol::ENTITY_HOLDER_NONE,
     }
 }
 
@@ -140,6 +141,7 @@ fn fill_wire_poses_from_sim(
     world: &PhysicsWorld,
     occupied: &[Option<String>],
     slot_count: usize,
+    holders: &mut Vec<u32>,
     out: &mut Vec<(u32, Pose)>,
 ) {
     out.clear();
@@ -152,8 +154,36 @@ fn fill_wire_poses_from_sim(
             ));
         }
     }
+    // O(slots): grab → box index → wire holder (avoid O(boxes×slots)).
+    holders.clear();
+    holders.resize(world.boxes.len(), alchemy_protocol::ENTITY_HOLDER_NONE);
+    for slot in 0..slot_count {
+        if let Some(box_idx) = world.grabbed_box_index(slot) {
+            if box_idx < holders.len() {
+                holders[box_idx] = alchemy_protocol::entity_holder_from_slot(slot as u8);
+            }
+        }
+    }
     for i in 0..world.boxes.len() {
-        out.push((world.boxes.entity_ids[i], box_pose_from_sim(world, i)));
+        let mut pose = box_pose_from_sim(world, i);
+        pose.holder = holders[i];
+        out.push((world.boxes.entity_ids[i], pose));
+    }
+}
+
+/// Frame `acked_intent_seq` from the same Presence snapshot as loco/grab overlays.
+fn fill_acked_intent_seq_from_overlays(
+    by_slot: &[crate::presence::PoseOverride],
+    occupied: &[Option<String>],
+    slot_count: usize,
+    out: &mut Vec<u64>,
+) {
+    out.clear();
+    out.resize(slot_count, 0);
+    for (slot, occupied_sub) in occupied.iter().enumerate().take(slot_count) {
+        if occupied_sub.is_some() {
+            out[slot] = by_slot[slot].applied_intent_seq;
+        }
     }
 }
 
@@ -197,6 +227,14 @@ pub(crate) struct HostLoop {
     last_presence_rev: u64,
     last_publish_denied_log: Instant,
     last_log: Instant,
+    /// Reused holder fill scratch (x00af · avoid per-tick `Vec` alloc).
+    holder_scratch: Vec<u32>,
+    /// Reused ack fill scratch (cleared/filled each tick; swapped into Frame / last_wire).
+    acked_scratch: Vec<u64>,
+    /// Last ack published with a pose sample (mid-net removes must not advance alone).
+    last_wire_acked: Vec<u64>,
+    /// `sim_tick` paired with [`Self::last_wire_acked`] / last pose sample.
+    last_wire_sim_tick: u64,
 }
 
 /// Wiring inputs for [`HostLoop::new`] (boot-owned arcs / inboxes / initial manifest).
@@ -248,6 +286,10 @@ impl HostLoop {
             last_presence_rev: parts.last_presence_rev,
             last_publish_denied_log: parts.last_publish_denied_log,
             last_log: Instant::now(),
+            holder_scratch: Vec::new(),
+            acked_scratch: Vec::new(),
+            last_wire_acked: Vec::new(),
+            last_wire_sim_tick: 0,
         }
     }
 
@@ -362,6 +404,13 @@ impl HostLoop {
                 join_assist,
             )
         };
+        // Same snapshot as loco/grab apply — fill scratch now; Frame uses this on net ticks.
+        fill_acked_intent_seq_from_overlays(
+            &by_slot,
+            &occupied,
+            slot_count,
+            &mut self.acked_scratch,
+        );
 
         for (entity_id, sub) in &reclaimed {
             let slot = (entity_id - crate::sim::USER_ROOT_ENTITY_FIRST) as usize;
@@ -428,6 +477,7 @@ impl HostLoop {
         if !self.physics_steps.is_multiple_of(PHYSICS_PER_NET) {
             // Still flush removes promptly when reclaim happens between net ticks.
             // Resume catch-up (with synthesized removes) waits for a net tick below.
+            // sim_tick/ack stay pose-paired: last net-tick values (do not advance mid-net).
             if !remove_ids.is_empty()
                 && pub_snap.publish_allowed
                 && !resume_catchup
@@ -438,6 +488,8 @@ impl HostLoop {
                     publish_allowed: true,
                     removes_only: true,
                     host_time_ms: host_time_ms(),
+                    sim_tick: self.last_wire_sim_tick,
+                    acked_intent_seq: self.last_wire_acked.clone(),
                 })
             {
                 self.publish_stats
@@ -450,7 +502,17 @@ impl HostLoop {
         // Pose sample only on net ticks (delta/encode/put live on zenoh-publish).
         // x0095: recycled scratch — worker / coalesce returns the Vec to the pool.
         let mut all_poses = self.outbound.acquire_poses();
-        fill_wire_poses_from_sim(&self.physics, &occupied, slot_count, &mut all_poses);
+        fill_wire_poses_from_sim(
+            &self.physics,
+            &occupied,
+            slot_count,
+            &mut self.holder_scratch,
+            &mut all_poses,
+        );
+        // Swap filled scratch into `last_wire_acked`; clone once for the Frame sample.
+        std::mem::swap(&mut self.last_wire_acked, &mut self.acked_scratch);
+        self.last_wire_sim_tick = self.physics_steps;
+        let acked_intent_seq = self.last_wire_acked.clone();
 
         if self.outbound.submit_frame(FrameSample {
             poses: all_poses,
@@ -459,6 +521,8 @@ impl HostLoop {
             publish_allowed: pub_snap.publish_allowed,
             removes_only: false,
             host_time_ms: host_time_ms(),
+            sim_tick: self.physics_steps,
+            acked_intent_seq,
         }) {
             self.publish_stats
                 .coalesce_frames

@@ -46,6 +46,8 @@ pub struct Pose {
     pub g: f32,
     pub b: f32,
     pub a: f32,
+    /// Wire `Entity.holder` (0 = none, 1..=32 = slot+1 · x00af).
+    pub holder: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -84,6 +86,25 @@ pub struct FrameSample {
     /// Mid-net reclaim flush (no pose delta this physics step).
     pub removes_only: bool,
     pub host_time_ms: u64,
+    /// Physics tick at sample time (`RenderFrame.sim_tick` · x00af).
+    pub sim_tick: u64,
+    /// Per user_root slot last applied Intent seq (`RenderFrame.acked_intent_seq`).
+    pub acked_intent_seq: Vec<u64>,
+}
+
+impl Default for FrameSample {
+    fn default() -> Self {
+        Self {
+            poses: Vec::new(),
+            removes: Vec::new(),
+            resume_catchup: false,
+            publish_allowed: false,
+            removes_only: false,
+            host_time_ms: 0,
+            sim_tick: 0,
+            acked_intent_seq: Vec::new(),
+        }
+    }
 }
 
 /// In-flight pose scratches: physics fill + hub pending + worker handle_frame.
@@ -147,23 +168,36 @@ impl PoseScratchPool {
 /// - **removes**: sorted unique union (mid-net reclaim must survive net-tick coalesce).
 /// - **resume_catchup**: sticky OR (gate catch-up must not be cleared by a later tick).
 /// - **removes_only**: true only if **both** sides are remove-only (else net path).
+/// - **sim_tick** / **acked_intent_seq**: when keeping prior poses (removes-only `next`),
+///   always `prev` so both stay paired with the pose sample (mid-net must not advance alone).
 /// - Discarded pose buffers are returned to `pool`.
 pub fn coalesce_frame(prev: FrameSample, next: FrameSample, pool: &PoseScratchPool) -> FrameSample {
     let removes = union_sorted_ids(prev.removes, next.removes);
     let resume_catchup = prev.resume_catchup || next.resume_catchup;
     let removes_only = prev.removes_only && next.removes_only;
-    let (poses, host_time_ms, publish_allowed) = if next.removes_only && next.poses.is_empty() {
-        // Keep prior net-tick poses when only flushing more removes.
-        pool.release(next.poses);
-        (
-            prev.poses,
-            prev.host_time_ms.max(next.host_time_ms),
-            prev.publish_allowed || next.publish_allowed,
-        )
-    } else {
-        pool.release(prev.poses);
-        (next.poses, next.host_time_ms, next.publish_allowed)
-    };
+    let (poses, host_time_ms, publish_allowed, sim_tick, acked_intent_seq) =
+        if next.removes_only && next.poses.is_empty() {
+            // Keep prior net-tick poses when only flushing more removes.
+            pool.release(next.poses);
+            let _ = next.acked_intent_seq; // drop; poses↔sim_tick↔ack stay prev
+            let _ = next.sim_tick;
+            (
+                prev.poses,
+                prev.host_time_ms.max(next.host_time_ms),
+                prev.publish_allowed || next.publish_allowed,
+                prev.sim_tick,
+                prev.acked_intent_seq,
+            )
+        } else {
+            pool.release(prev.poses);
+            (
+                next.poses,
+                next.host_time_ms,
+                next.publish_allowed,
+                next.sim_tick,
+                next.acked_intent_seq,
+            )
+        };
     FrameSample {
         poses,
         removes,
@@ -171,6 +205,8 @@ pub fn coalesce_frame(prev: FrameSample, next: FrameSample, pool: &PoseScratchPo
         publish_allowed,
         removes_only,
         host_time_ms,
+        sim_tick,
+        acked_intent_seq,
     }
 }
 
@@ -359,7 +395,7 @@ pub struct NetworkWorkerConfig {
 }
 
 fn to_entity(id: u32, pose: Pose) -> Entity {
-    alchemy_protocol::entity_trs(
+    let mut e = alchemy_protocol::entity_trs(
         id,
         pose.x,
         pose.y,
@@ -370,7 +406,9 @@ fn to_entity(id: u32, pose: Pose) -> Entity {
         pose.g,
         pose.b,
         pose.a,
-    )
+    );
+    e.holder = pose.holder;
+    e
 }
 
 fn pose_changed(prev: Pose, next: Pose) -> bool {
@@ -380,6 +418,7 @@ fn pose_changed(prev: Pose, next: Pose) -> bool {
             [next.qx, next.qy, next.qz, next.qw],
         )
         || pose_delta::scale_changed([prev.sx, prev.sy, prev.sz], [next.sx, next.sy, next.sz])
+        || prev.holder != next.holder
 }
 
 /// Wire catch-up after publish gate: removes for ids last sent but no longer live,
@@ -515,11 +554,16 @@ impl WorkerState {
         cache: &Mutex<RenderFrame>,
         tick: u64,
         host_time_ms: u64,
+        sim_tick: u64,
+        acked_intent_seq: &[u64],
         poses: &[(u32, Pose)],
     ) {
         let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
         cache.tick = tick;
         cache.host_time_ms = host_time_ms;
+        cache.sim_tick = sim_tick;
+        cache.redundancy = 0;
+        cache.acked_intent_seq = acked_intent_seq.to_vec();
         cache.upserts = poses
             .iter()
             .map(|(id, pose)| to_entity(*id, *pose))
@@ -539,6 +583,8 @@ impl WorkerState {
         upserts: Vec<Entity>,
         removes: Vec<u32>,
         host_time_ms: u64,
+        sim_tick: u64,
+        acked_intent_seq: Vec<u64>,
     ) {
         let upsert_len = upserts.len() as u64;
         let mut frame = RenderFrame {
@@ -547,6 +593,9 @@ impl WorkerState {
             upserts,
             removes,
             host_sig: vec![],
+            sim_tick,
+            redundancy: 0,
+            acked_intent_seq,
         };
         sign_frame(key, &mut frame);
         let env = seal_or_die(AeadKind::Frame, room_id, room_aead, frame.encode_to_vec());
@@ -579,6 +628,8 @@ impl WorkerState {
             publish_allowed,
             removes_only,
             host_time_ms,
+            sim_tick,
+            acked_intent_seq,
         } = sample;
         // Drop returns the scratch even on early return (x0095).
         let pose_return = PoseScratchReturn { hub, poses };
@@ -604,6 +655,8 @@ impl WorkerState {
                 c.upserts.retain(|e| !removes.contains(&e.id));
                 c.tick = self.net_tick;
                 c.host_time_ms = host_time_ms;
+                c.sim_tick = sim_tick;
+                c.acked_intent_seq = acked_intent_seq.clone();
                 c.host_sig.clear();
             }
             let remove_ids = removes.clone();
@@ -616,6 +669,8 @@ impl WorkerState {
                 vec![],
                 remove_ids,
                 host_time_ms,
+                sim_tick,
+                acked_intent_seq,
             );
             for id in &removes {
                 self.last_sent.remove(id);
@@ -629,11 +684,20 @@ impl WorkerState {
             // (Physics also sets was_publishing=false; worker defer is the hard guarantee.)
             self.defer_until_allowed(removes, resume_catchup);
             if let Some(tick) = wire_tick::snapshot_tick_on_empty_hold(self.last_published_tick) {
-                Self::refresh_snapshot_cache(cache, tick, host_time_ms, poses);
+                Self::refresh_snapshot_cache(
+                    cache,
+                    tick,
+                    host_time_ms,
+                    sim_tick,
+                    &acked_intent_seq,
+                    poses,
+                );
             } else {
                 // No published tick yet — warm poses only; leave tick untouched.
                 let mut c = cache.lock().unwrap_or_else(|p| p.into_inner());
                 c.host_time_ms = host_time_ms;
+                c.sim_tick = sim_tick;
+                c.acked_intent_seq = acked_intent_seq;
                 c.upserts = poses
                     .iter()
                     .map(|(id, pose)| to_entity(*id, *pose))
@@ -666,12 +730,26 @@ impl WorkerState {
         if upserts.is_empty() && removes.is_empty() {
             stats.empty_delta_frames.fetch_add(1, Ordering::Relaxed);
             if let Some(tick) = wire_tick::snapshot_tick_on_empty_hold(self.last_published_tick) {
-                Self::refresh_snapshot_cache(cache, tick, host_time_ms, poses);
+                Self::refresh_snapshot_cache(
+                    cache,
+                    tick,
+                    host_time_ms,
+                    sim_tick,
+                    &acked_intent_seq,
+                    poses,
+                );
             }
             return;
         }
 
-        Self::refresh_snapshot_cache(cache, self.net_tick, host_time_ms, poses);
+        Self::refresh_snapshot_cache(
+            cache,
+            self.net_tick,
+            host_time_ms,
+            sim_tick,
+            &acked_intent_seq,
+            poses,
+        );
         let remove_ids = removes.clone();
         self.put_signed_frame(
             frame_pub,
@@ -682,6 +760,8 @@ impl WorkerState {
             upserts,
             remove_ids,
             host_time_ms,
+            sim_tick,
+            acked_intent_seq,
         );
         if !resume_catchup {
             for id in &removes {
@@ -813,6 +893,8 @@ mod tests {
             publish_allowed: true,
             removes_only: false,
             host_time_ms: 1,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         }));
         assert!(hub.submit_frame(FrameSample {
             poses: b_poses,
@@ -821,6 +903,8 @@ mod tests {
             publish_allowed: true,
             removes_only: false,
             host_time_ms: 2,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         }));
         let mut g = hub.pending.lock().unwrap();
         let f = g.frame.take().unwrap();
@@ -846,6 +930,8 @@ mod tests {
             publish_allowed: true,
             removes_only: true,
             host_time_ms: 1,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         };
         let net = FrameSample {
             poses: scratch_one(
@@ -861,6 +947,8 @@ mod tests {
             publish_allowed: true,
             removes_only: false,
             host_time_ms: 2,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         };
         let m = coalesce_frame(mid, net, &pool);
         assert_eq!(m.removes, vec![3, 5, 7]);
@@ -887,6 +975,8 @@ mod tests {
             publish_allowed: true,
             removes_only: false,
             host_time_ms: 1,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         };
         let mid = FrameSample {
             poses: vec![],
@@ -895,6 +985,8 @@ mod tests {
             publish_allowed: true,
             removes_only: true,
             host_time_ms: 2,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         };
         let m = coalesce_frame(net, mid, &pool);
         assert!(!m.removes_only);
@@ -957,6 +1049,8 @@ mod tests {
             publish_allowed: true,
             removes_only: true,
             host_time_ms: 1,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         };
         let b = FrameSample {
             poses: vec![],
@@ -965,6 +1059,8 @@ mod tests {
             publish_allowed: true,
             removes_only: true,
             host_time_ms: 2,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         };
         let m = coalesce_frame(a, b, &pool);
         assert!(m.removes_only);
@@ -990,6 +1086,8 @@ mod tests {
             publish_allowed: true,
             removes_only: false,
             host_time_ms: 1,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         };
         let later = FrameSample {
             poses: scratch_one(
@@ -1006,6 +1104,8 @@ mod tests {
             publish_allowed: true,
             removes_only: false,
             host_time_ms: 2,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         };
         let m = coalesce_frame(catchup, later, &pool);
         assert!(
@@ -1032,6 +1132,8 @@ mod tests {
             publish_allowed: true,
             removes_only: false,
             host_time_ms: 1,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         }));
         // One scratch still pending; free list keeps the other startup scratches (POOLED-1).
         assert_eq!(hub.pose_pool.free_len(), POSE_SCRATCH_POOLED - 1);
@@ -1051,6 +1153,8 @@ mod tests {
             publish_allowed: true,
             removes_only: false,
             host_time_ms: 2,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         }));
         // Coalesce released `a` into free; pending still holds `b` → free_len == POOLED-1.
         assert_eq!(hub.pose_pool.free_len(), POSE_SCRATCH_POOLED - 1);
@@ -1124,6 +1228,8 @@ mod tests {
             publish_allowed: true,
             removes_only: true,
             host_time_ms: 1,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         }));
         assert_eq!(hub.pose_pool.free_len(), before);
         let mut g = hub.pending.lock().unwrap();
@@ -1147,6 +1253,8 @@ mod tests {
             publish_allowed: true,
             removes_only: true,
             host_time_ms: 1,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         }));
         let mut poses = hub.acquire_poses();
         poses.push((
@@ -1163,6 +1271,8 @@ mod tests {
             publish_allowed: true,
             removes_only: false,
             host_time_ms: 2,
+            sim_tick: 0,
+            acked_intent_seq: vec![],
         }));
         let mut g = hub.pending.lock().unwrap();
         let f = g.frame.take().unwrap();
@@ -1187,5 +1297,98 @@ mod tests {
         };
         assert!(pose_changed(a, b));
         assert!(!pose_changed(a, a));
+    }
+
+    #[test]
+    fn pose_changed_detects_holder() {
+        let a = Pose {
+            qw: 1.0,
+            ..Pose::default()
+        };
+        let b = Pose {
+            qw: 1.0,
+            holder: alchemy_protocol::entity_holder_from_slot(0),
+            ..Pose::default()
+        };
+        assert!(pose_changed(a, b));
+    }
+
+    #[test]
+    fn coalesce_removes_only_keeps_prev_acked_even_if_next_nonempty() {
+        let pool = PoseScratchPool::new(8);
+        let net = FrameSample {
+            poses: scratch_one(
+                &pool,
+                10,
+                Pose {
+                    qw: 1.0,
+                    ..Pose::default()
+                },
+            ),
+            removes: vec![],
+            resume_catchup: false,
+            publish_allowed: true,
+            removes_only: false,
+            host_time_ms: 1,
+            sim_tick: 40,
+            acked_intent_seq: vec![7, 0, 3],
+        };
+        let mid = FrameSample {
+            poses: vec![],
+            removes: vec![2],
+            resume_catchup: false,
+            publish_allowed: true,
+            removes_only: true,
+            host_time_ms: 2,
+            sim_tick: 41,
+            // Deliberately mismatched next ack/sim_tick: coalesce must keep prev with poses.
+            acked_intent_seq: vec![9, 1, 4],
+        };
+        let m = coalesce_frame(net, mid, &pool);
+        assert_eq!(m.sim_tick, 40, "sim_tick stays with prior pose sample");
+        assert_eq!(
+            m.acked_intent_seq,
+            vec![7, 0, 3],
+            "acked stays with prior pose sample"
+        );
+        assert_eq!(m.poses.len(), 1);
+        pool.release(m.poses);
+    }
+
+    #[test]
+    fn coalesce_net_tick_takes_next_acked_and_sim_tick() {
+        let pool = PoseScratchPool::new(8);
+        let a = FrameSample {
+            poses: scratch_one(&pool, 1, Pose::default()),
+            removes: vec![],
+            resume_catchup: false,
+            publish_allowed: true,
+            removes_only: false,
+            host_time_ms: 1,
+            sim_tick: 10,
+            acked_intent_seq: vec![1],
+        };
+        let b = FrameSample {
+            poses: scratch_one(
+                &pool,
+                1,
+                Pose {
+                    x: 2.0,
+                    ..Pose::default()
+                },
+            ),
+            removes: vec![],
+            resume_catchup: false,
+            publish_allowed: true,
+            removes_only: false,
+            host_time_ms: 2,
+            sim_tick: 12,
+            acked_intent_seq: vec![9],
+        };
+        let m = coalesce_frame(a, b, &pool);
+        assert_eq!(m.sim_tick, 12);
+        assert_eq!(m.acked_intent_seq, vec![9]);
+        assert!((m.poses[0].1.x - 2.0).abs() < f64::EPSILON);
+        pool.release(m.poses);
     }
 }

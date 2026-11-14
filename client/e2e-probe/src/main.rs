@@ -392,6 +392,7 @@ fn move_input(key: &SigningKey, room_token: Option<&str>, seq: u64) -> InputEven
         session_pub: public_key_bytes(key),
         intent_seq: seq,
         intent_sig: vec![],
+        ..Default::default()
     };
     sign_input(key, &mut event);
     event
@@ -608,6 +609,7 @@ fn main() -> Result<()> {
         session_pub: vec![0u8; 32],
         intent_seq: 99,
         intent_sig: vec![0u8; 64],
+        ..Default::default()
     };
     drain_pending_frames(&mut poll_frame);
     put_input(&session, &input_k, &room_id, &room_key, &bad)?;

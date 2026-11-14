@@ -322,6 +322,7 @@ fn run_hermetic() -> Result<()> {
         session_pub: public_key_bytes(&session_key),
         intent_seq: 1,
         intent_sig: vec![],
+        ..Default::default()
     };
     alchemy_protocol::wire_crypto::sign_input(&session_key, &mut event);
     let env = wire_aead::seal(
@@ -607,6 +608,7 @@ fn run_wan() -> Result<()> {
         session_pub: public_key_bytes(&key_a),
         intent_seq: 1,
         intent_sig: vec![],
+        ..Default::default()
     };
     alchemy_protocol::wire_crypto::sign_input(&key_a, &mut event);
     let env = wire_aead::seal(
@@ -743,6 +745,7 @@ fn run_wan() -> Result<()> {
             session_pub: public_key_bytes(&key_obs),
             intent_seq: 1,
             intent_sig: vec![],
+            ..Default::default()
         };
         alchemy_protocol::wire_crypto::sign_input(&key_obs, &mut obs_event);
         let obs_env = wire_aead::seal(

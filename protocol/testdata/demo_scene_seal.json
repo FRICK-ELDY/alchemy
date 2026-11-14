@@ -288,7 +288,7 @@
     "mode": "noclip",
     "move_speed": 4.0
   },
-  "protocol_pin": "alchemy-protocol/0.21.0-x009b",
+  "protocol_pin": "alchemy-protocol/0.22.0-x00af",
   "revision": 1,
   "room_id": "demo-scene-vector"
 }

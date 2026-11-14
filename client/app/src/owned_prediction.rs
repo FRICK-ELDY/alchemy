@@ -4,9 +4,9 @@
 //! forces Snap; under Keep the display pose stays within `keep_threshold_m` of the
 //! predicted pose; [`display_override`] is consumed by hit ([`crate::scene::SharedState::grabbable_display_poses`])
 //! and draw (`model_override` when pack would otherwise ignore CPU TRS).
-//! Non-guarantees: host `acked_intent_seq` / holder wire (Phase 3) — reject uses
-//! authority-distance after a short grace; user_root loco prediction (Epoch eye path);
-//! rewriting Epoch GPU storage rows.
+//! Non-guarantees: full `acked_intent_seq` / `Entity.holder` Snap wiring (fields on
+//! wire as of x00af; reject still uses authority-distance after a short grace);
+//! user_root loco prediction (Epoch eye path); rewriting Epoch GPU storage rows.
 
 /// How predicted pose is reconciled with host authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,10 +133,10 @@ pub fn reconcile_owned(
     }
 }
 
-/// Whether host appears to have accepted the Grab (Phase 2 heuristic).
+/// Whether host appears to have accepted the Grab (distance heuristic).
 ///
-/// Until Phase 3 `acked_intent_seq` / `holder`, accept = authority within
-/// `blend_threshold_m` of the predicted hand attachment after grace frames.
+/// Wire carries `acked_intent_seq` / `Entity.holder` as of x00af, but this helper
+/// still uses authority distance after grace — callers have not switched yet.
 /// `auth_frames_since_grab <= grace_frames` → optimistic accept (no distance check).
 pub fn grab_accepted_heuristic(
     auth_frames_since_grab: u32,

@@ -28,6 +28,14 @@ pub struct IntentBody {
     pub aim_y: f32,
     pub aim_z: f32,
     pub leave: bool,
+    /// World-space release linear velocity (m/s) when releasing Grab (x00af).
+    pub release_vx: f32,
+    pub release_vy: f32,
+    pub release_vz: f32,
+    /// World-space release angular velocity (rad/s) when releasing Grab (x00af).
+    pub release_wx: f32,
+    pub release_wy: f32,
+    pub release_wz: f32,
 }
 
 #[derive(Clone)]
@@ -104,6 +112,12 @@ impl IntentSession {
             session_pub: self.session_pub().to_vec(),
             intent_seq: self.seq,
             intent_sig: vec![],
+            release_vx: body.release_vx,
+            release_vy: body.release_vy,
+            release_vz: body.release_vz,
+            release_wx: body.release_wx,
+            release_wy: body.release_wy,
+            release_wz: body.release_wz,
         };
         sign_input(&self.key, &mut event);
         event
