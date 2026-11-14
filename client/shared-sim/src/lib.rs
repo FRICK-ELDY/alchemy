@@ -8,8 +8,9 @@
 //! Non-guarantees: Rapier / Dual-AST Kernel / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); CRDT / Zenoh / GPU wiring (client `epoch_view`);
-//! dirty-delta codec (x0024; not V_ack/XOR); cross-arch determinism (Q2).
-//! Host `SimBackend` + contact-on wiring starts in x00ad (`host-server`);
+//! host 本番 dirty publish / PROTOCOL_PIN（[`delta_codec`] は x00ae で codec 保証済み;
+//! not V_ack/XOR）; cross-arch determinism (Q2).
+//! Host `SimBackend` + contact-on wiring is x00ad (`host-server`);
 //! MVCC gate x00a6–x00a9 + Phase 2 app x00aa–x00ac are in [`mvcc`] / client;
 //! SoA inertia SIMD (x00a5) is not on the tick path yet.
 
@@ -20,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use alchemy_protocol::{scene_entry_grabbable, scene_entry_is_user_root, SceneEntry};
 
 pub mod bridge;
+pub mod delta_codec;
 pub mod demo;
 pub mod mvcc;
 pub mod slot_graph;

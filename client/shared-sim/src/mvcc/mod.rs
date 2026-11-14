@@ -5,8 +5,9 @@
 //! [`EntityDirectory`] cell cross; page-path XPBD contacts via [`adapter`]; inequality
 //! contacts (x00a8); SoA inertia Safe SIMD ([`inertia::step_inertia`]; **not on tick path**);
 //! ArcSwap publish foundation ([`publish::PublishedPair`]; app jitter/WGSL in x00aa–x00ac).
-//! Non-guarantees: dirty-delta codec (x0024; not V_ack/XOR); full solver SIMD;
-//! replacing Epoch draw with page SoA upload. Host `mvcc_xpbd` step sync is x00ad.
+//! Non-guarantees: full solver SIMD; replacing Epoch draw with page SoA upload;
+//! PROTOCOL_PIN / host dirty publish (post-x00ae). Dirty codec lives in
+//! [`crate::delta_codec`] (x00ae). Host `mvcc_xpbd` step sync is x00ad.
 
 mod adapter;
 mod arena;

@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x00ae`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x00af`**）
 
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
@@ -224,12 +224,13 @@ depends_on: [x0006]
 | x00ab | — | done | 手元予測（Keep / Blend / Snap） | [x00ab-owned-prediction.md](slices/x00ab-owned-prediction.md) |
 | x00ac | — | done | HotPhysicsPage `interp.wgsl` + naga 検証 | [x00ac-interp-wgsl.md](slices/x00ac-interp-wgsl.md) |
 | x00ad | — | done | Phase 3 着手: host `SimBackend` + 接触オン（P1-2 host） | [x00ad-phase3-host-sim-backend.md](slices/x00ad-phase3-host-sim-backend.md) |
+| x00ae | — | done | Phase 3: dirty デルタ codec（`WireDirtyAccumulator`） | [x00ae-phase3-dirty-delta-codec.md](slices/x00ae-phase3-dirty-delta-codec.md) |
 
-**現在の次:** Phase 3 残り — dirty デルタ（`WireDirtyAccumulator`）· PROTOCOL_PIN 一括 · `…/sim_state` ·（並走可）`…/edit`。採番は着手時（次空き `x00ae`）。[x00ad](slices/x00ad-phase3-host-sim-backend.md) で host 接触オン / `SimBackend` は **done**。**品質本線** · Spot-Check 保留（Q2）。
+**現在の次:** Phase 3 残り — PROTOCOL_PIN 一括 · `…/sim_state` ·（並走可）`…/edit`。採番は着手時（次空き `x00af`）。[x00ae](slices/x00ae-phase3-dirty-delta-codec.md) で dirty codec は **done**。**品質本線** · Spot-Check 保留（Q2）。
 **規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；実装は MVCC Phase 3 後。1000 人は horizon）。
 旧メモ **P3-7（BLAKE3 ストリーミング）** は **CI が完了しなくなるためマージしない**（現行 P3-7 Spatial Interest とは別物）。Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 
-次の空き番号は **`x00ae`**（Interest 実装用に予約しない）。
+次の空き番号は **`x00af`**（Interest 実装用に予約しない）。
 
 ## 関連
 

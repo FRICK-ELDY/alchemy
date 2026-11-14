@@ -6,7 +6,7 @@
 * **本線の役割**: **品質本線**（近傍物理・ゼロアロ・handover 速度・補間）。同一 Room の大規模 CCU（1000 人 horizon）は規模本線 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**）
 * **関連スライス**: `x0020` (Desktop 正本), `x0039` (`ManifestSeal`), `x0053` (体感並行補間), `x0067` (Zenoh 非対称 ACL), `x0068` (短命 mTLS), `x0069` (Room 鍵 AEAD), `x0024`（frame tick 連番 + 欠落時 snapshot）
 * **レビュー取り込み**: [mvcc_xpbd_review_proposal.md](mvcc_xpbd_review_proposal.md)（2026-11-13）の P0/P1 を本版に反映。未決事項は §6
-* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手 [x00ad](slices/x00ad-phase3-host-sim-backend.md)（`SimBackend` + host 接触オン / P1-2 host）**done**。残り: dirty・PROTOCOL_PIN・`sim_state`・`…/edit`（次空き `x00ae`〜）。
+* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手 [x00ad](slices/x00ad-phase3-host-sim-backend.md)（`SimBackend` + 接触オン）+ dirty codec [x00ae](slices/x00ae-phase3-dirty-delta-codec.md) **done**。残り: PROTOCOL_PIN・`sim_state`・`…/edit`（次空き `x00af`〜）。
 * **最優先規約**: 全 Rust クレートにおいて `#![forbid(unsafe_code)]` を**クレート直下（`lib.rs` / 該当 `main.rs`）**に宣言し、既存の `./.scripts/ci.sh rust`・`./.scripts/ci.sh protocol`・`make smoke-desktop-handthrough` を常に Green に保つこと。差分配信の用語は **dirty 合成 + x0024 snapshot**（`V_ack` / 「XOR デルタ」は使わない）。
 
 ---
@@ -19,7 +19,8 @@ P0 closed
   → Phase 1（x00a3–x00a8: DoD + レイアウト/CoW/Directory/不等式）✓；host 接触オンは Phase 3
   → Phase 2（x00a9–x00ac: ArcSwap / jitter / 手元予測 / interp.wgsl）✓
   → Phase 3 着手 x00ad（SimBackend + 接触オン）✓
-  → Phase 3 残り（dirty デルタ + sim_state handover + 確定レーン並走）
+  → Phase 3 dirty codec x00ae✓
+  → Phase 3 残り（PROTOCOL_PIN + sim_state handover + 確定レーン並走）
     → 規模本線: spatial_interest.md（P3-7；アウトライン並走可・実装は Phase 3 後）
 P1-6 / P2（vault・UI/docs/CI）は並走可。P3-1 / P3-3 以降は独立。
 確定レーン（§4.7）の設計確定は今、実装は Phase 3 と並走可（inventory 一般化）。
@@ -406,14 +407,18 @@ fn solve_contact(/* … */, penetration: f64) {
 
 use crate::mvcc::page::{HotPhysicsPage, BITMASK_WORDS};
 
-/// 送信間隔分の dirty 合成。page_slot キーなら alloc/reuse 時に clear_slot 必須（上記契約）
+/// 送信間隔分の dirty 合成。キーはプール index（`PageId.0`）。
+/// host 正は `for_arena(&arena)`（容量=`arena.capacity()`）。`from_arena_capacity` はテスト／低レベル。
+/// `MAX_PAGES_PER_SNAPSHOT`（64）固定や `new(64)` は禁止。
 pub struct WireDirtyAccumulator {
     acc: Box<[[u64; BITMASK_WORDS]]>,
 }
 
 impl WireDirtyAccumulator {
-    pub fn absorb(&mut self, page_slot: usize, page: &HotPhysicsPage) { /* OR */ }
-    pub fn clear_slot(&mut self, page_slot: usize) { /* alloc/reuse 時 */ }
+    pub fn for_arena(arena: &MvccPageArena) -> Self { /* capacity = arena.capacity() */ Self { acc: Box::new([]) } }
+    pub fn from_arena_capacity(pool_capacity_pages: usize) -> Self { /* tests / low-level */ Self { acc: Box::new([]) } }
+    pub fn absorb(&mut self, page_slot: usize, page: &HotPhysicsPage) -> Result<(), DirtyAccumError> { /* OR; OOR=Err */ Ok(()) }
+    pub fn clear_slot(&mut self, page_slot: usize) -> Result<(), DirtyAccumError> { /* alloc/reuse 時 */ Ok(()) }
     pub fn clear_after_publish(&mut self) { /* zero all */ }
 }
 
@@ -583,7 +588,7 @@ flowchart LR
 
 **DoD に含めないもの**: 同一 Room の大規模 CCU・フルメッシュ解除・interest キー族。それらは [spatial_interest.md](spatial_interest.md) のマイルストーン（32→64→128、1000 は horizon）が担当する。
 
-**現状**: Phase 1–2 + Phase 3 着手（x00a3–x00ad）まで **コード完了**。以下の Phase 2 節は完了記録；実装本線の次は dirty / PROTOCOL_PIN / `sim_state`（`x00ae`〜）。
+**現状**: Phase 1–2 + Phase 3 着手〜dirty（x00a3–x00ae）まで **コード完了**。以下の Phase 2 節は完了記録；実装本線の次は PROTOCOL_PIN / `sim_state`（`x00af`〜）。
 
 ### Phase 1: 既存 `shared-sim` の進化とヘッドレス決定論テスト（host/app 本線は触らない）
 
@@ -615,7 +620,8 @@ flowchart LR
 
 **スライス分割（着手順）**:
 * **[x00ad](slices/x00ad-phase3-host-sim-backend.md)** — `SimBackend` + **接触オン**（P1-2 host）— **done**。
-* 後続（採番は着手時・次空き `x00ae`〜）: `delta_codec` + dirty 合成 → PROTOCOL_PIN 一括 → `…/sim_state` →（並走可）確定レーン `…/edit`。
+* **[x00ae](slices/x00ae-phase3-dirty-delta-codec.md)** — `delta_codec` + dirty 合成 + Smallest-Three — **done**。
+* 後続（採番は着手時・次空き `x00af`〜）: PROTOCOL_PIN 一括 → `…/sim_state` →（並走可）確定レーン `…/edit`。
 
 1. **作業内容**:
    * `ALCHEMY_SIM_BACKEND=mvcc_xpbd|epoch_xpbd` で切替可能な権威ループ。Ingress 検疫 → Fork/`make_mut` → XPBD（**接触オン＝`bounds: Some`**）→ 階層 → Commit。ここで P1-2 の host 配線を閉じる（**→ x00ad**）。
