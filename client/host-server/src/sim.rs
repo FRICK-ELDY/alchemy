@@ -11,7 +11,8 @@
 //! `mvcc_xpbd` is a **temporary bridge** (page steps XPBD; wire still samples Epoch Curr).
 //! Classification via `alchemy-shared-sim` [`EntityKind`] (x0030).
 //! Non-guarantees: Grab aim **rotation** follow (translation only); throw impulse;
-//! Rapier bit-exact parity; capsule Walk extrude; dirty delta / `sim_state` / PROTOCOL_PIN;
+//! Rapier bit-exact parity; capsule Walk extrude; host dirty publish / `sim_state` / PROTOCOL_PIN
+//! (shared-sim `delta_codec` is x00ae; wire switch still Phase 3);
 //! non-uniform collider scale; Frame parent fields / pass-place Intent wiring;
 //! exact OBB box-box (sphere approx via LBVH); production default `mvcc_xpbd`;
 //! `mvcc_xpbd` cell_origin always 0（近傍デモ向け；遠方は f32 量子化）;

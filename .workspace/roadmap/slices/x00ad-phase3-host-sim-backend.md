@@ -2,7 +2,7 @@
 
 > **ID:** `x00ad` · **slug:** `phase3-host-sim-backend` · **status:** `done` · **area:** `[host, sim, client, docs]` · **depends_on:** `[x00a8, x00ac]`  
 > **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 3 着手 / improvement-plan **P1-2（host 配線）**  
-> **後続（本スライス外）:** dirty 合成 · PROTOCOL_PIN 一括 · `…/sim_state` · 確定レーン `…/edit`（採番は着手時；次空きは目次参照）
+> **後続:** [x00ae](x00ae-phase3-dirty-delta-codec.md) dirty codec **done** · PROTOCOL_PIN · `…/sim_state` · `…/edit`（次空き `x00af`〜）
 
 目標: Phase 2（x00a9–x00ac）Green 後、`host-server` 権威ループに **切替可能な `SimBackend`** を入れ、**body-body 接触をオン**（`xpbd::step(..., bounds: Some)`）にして improvement-plan **P1-2 の host 側**を閉じる。x0093 で意図的に切っていた LBVH 接触を、不等式経路（x00a8）のまま本線に戻す。
 
