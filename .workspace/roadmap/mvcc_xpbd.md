@@ -33,7 +33,7 @@ P1-6 / P2（vault・UI/docs/CI）は Phase 1 と並行可。P3-1 / P3-3 以降�
 **作業の性質**: `shared-sim` は既に存在する（`EpochSheet` / XPBD / LBVH / FrameBridge）。Phase 1 はクレート**新設ではなく**、現行テープ → `HotPhysicsPage` / `MvccPageArena` への**段階置換・進化**である。現行 XPBD はまだ `EpochSheet` 上で動き、`mvcc/` は独立 scaffold — ページ移行時に回転・holder・ディレクトリをまとめて入れる。
 
 **依存・ビルド注意**:
-* `wide` / `glam`（shared-sim 未依存）等の**新規依存は人承認後**（guardrails / §6 Q5）。承認前は既存依存とスカラー実装で正しさを優先する。
+* `wide` / `glam` は **人承認済み**（§6 Q5；2026-11-14）かつ **x00a5 で shared-sim に配線済み**。SoA 慣性は [`step_inertia`](../../client/shared-sim/src/mvcc/inertia.rs)（SIMD 既定）＋スカラー参照。拘束ソルバー全体の SIMD 化は未着手。
 * `.cargo/config.toml` のターゲット別 `rustflags` はワークスペース全体に効くため、Phase 1 ではまず単体テスト用フィーチャ／局所設定から段階導入し、一括強制しない。Rust/LLVM は `a*b+c` を暗黙 FMA 化しないため、`-fma` の有無だけでは決定論は変わらない（明示 `mul_add` と `libm` 固定・演算順の方が効く）。
 * Quest 最優先のため、決定論の厳密化より先に **`aarch64-linux-android` の CI ビルド 1 本**を入れる（§5 Phase 1）。
 
@@ -64,7 +64,7 @@ Cursor エージェントは実装にあたり、以下の **7つのアーキテ
 
 ### 🚫 2. `unsafe` コードおよび `crossbeam-epoch` / `mimalloc` の導入禁止
 * `alchemy` のセキュリティ原則（RCE 根絶）に従い、**`shared-sim` / `host-server` のクレート直下**（`lib.rs` 等）に `#![forbid(unsafe_code)]` を宣言すること。モジュール単位だけの宣言では `mvcc/` 等が漏れるため不十分。`app` は XR で `unsafe` が必要なので対象外。
-* `crossbeam-epoch` や `mimalloc` は導入しない。MVCC の世代管理は事前確保配列 `Box<[HotPhysicsPage]>` に対するインデックス（`PageId(u16)`）と参照カウント（Phase 1 は `u16`、出版契約導入時に必要なら原子化）で Safe Rust として実装し、GPU 転送可能な部分のみ `bytemuck`（`Pod`, `Zeroable`）。SIMD の `wide` は**人承認後**；Phase 1 はスカラー正しさ優先可（§6 Q5）。
+* `crossbeam-epoch` や `mimalloc` は導入しない。MVCC の世代管理は事前確保配列 `Box<[HotPhysicsPage]>` に対するインデックス（`PageId(u16)`）と参照カウント（Phase 1 は `u16`、出版契約導入時に必要なら原子化）で Safe Rust として実装し、GPU 転送可能な部分のみ `bytemuck`（`Pod`, `Zeroable`）。SIMD の `wide` と幾何の `glam`（`libm`）は **人承認済み**（§6 Q5）かつ **x00a5 配線済み**（慣性ホットパス；スカラー参照＋ビット一致テスト）。
 * alloc 計測用のテスト専用クレートで `GlobalAlloc` に限って `unsafe` を許可する場合は**人承認事項**（§6 Q4）。本番コードには入れない。
 
 ### 🚫 3. `client` 単一クレートへの密結合禁止（既存 `shared-sim` への集約）
@@ -219,17 +219,13 @@ rustflags = ["-C", "target-feature=+simd128"]
 
 ### 4.2 `shared-sim/Cargo.toml`（追加分のみ・現行を消さない）
 
-**正本はリポジトリ上の `client/shared-sim/Cargo.toml`**。現行依存（`alchemy-protocol` / `arc-swap` / `bytemuck`、workspace 継承の package メタ）を維持する。以下は**将来の追加候補だけ**の差分スケッチであり、このブロックで Cargo.toml を置き換えないこと。
+**正本はリポジトリ上の `client/shared-sim/Cargo.toml`**（x00a5 で `glam` / `wide` 反映済み）。workspace 継承の package メタを維持する。
 
 ```toml
-# --- 現行（維持。version/edition/license は workspace）---
-# alchemy-protocol = { workspace = true }
-# arc-swap = { workspace = true }
-# bytemuck = { workspace = true }
-
-# --- 追加候補（人承認後・§6 Q5）。承認前はスカラー実装 ---
-# glam = { version = "0.29", features = ["bytemuck", "libm"] }
-# wide = "0.7"
+# --- shared-sim 依存（要約；版は workspace）---
+# alchemy-protocol / arc-swap / bytemuck
+# glam = { workspace = true, features = ["bytemuck", "libm"] }
+# wide = { workspace = true }  # 0.7 系；SoA 慣性 Safe SIMD（x00a5）
 ```
 
 ### 4.3 `HotPhysicsPage` と `MvccPageArena`（`shared-sim/src/mvcc/page.rs`, `arena.rs`）
@@ -590,7 +586,7 @@ flowchart LR
 
 ### Phase 1: 既存 `shared-sim` の進化とヘッドレス決定論テスト（host/app 本線は触らない）
 
-**状態**: **DoD closed**（[x00a3](slices/x00a3-mvcc-phase1-scaffold.md) scaffold + [x00a4](slices/x00a4-mvcc-phase1-dod.md) 接触 / page-alloc / リプレイ / `frame_delta`）。`xpbd/` モジュール分割・`wide`・`delta_codec` は後続強化。host/app 本線は未配線。  
+**状態**: **DoD closed**（[x00a3](slices/x00a3-mvcc-phase1-scaffold.md) + [x00a4](slices/x00a4-mvcc-phase1-dod.md)）。[x00a5](slices/x00a5-soa-safe-simd.md) で `wide`/`glam` 慣性 SIMD 配線済み。`xpbd/` モジュール分割・拘束 SIMD・`delta_codec` は後続強化。host/app 本線は未配線。  
 **前提**: improvement-plan **P1-1 / P1-4 / P1-5** closed。  
 **吸収**: **P1-2** の *shared-sim 側能力*（不等式接触＋箱形状のヘッドレス保証）、**P1-3**（hot-path zero-alloc）。  
 **スコープ境界**: host の `step_dt(..., bounds: None)` は **意図的に触らない**。host で接触をオンにする（`bounds: Some`）・本番経路の回帰は **Phase 3**（P1-2 の host 配線完了）。Phase 1 で P1-2 を「closed」と書いてはならない（improvement-plan は Phase 1=能力、Phase 3=host 有効化と読む）。
@@ -680,7 +676,7 @@ Phase 3 DoD Green の後（アウトライン整備は並走可）、配信の�
 | Q2 | Spot-Check は再シミュレーションか | 未決。決まるまで決定論 DoD は同一アーキ内ビット一致 |
 | Q3 | 確定レーンの権威は host か world か | 暫定: ライブ順は host、永続は world overlay（inventory 同型） |
 | Q4 | alloc 計測（テスト専用クレートの `unsafe` vs `dhat` 等） | 人承認待ち。本番 `forbid` は維持 |
-| Q5 | `glam` / `wide` を shared-sim に入れるか | 人承認待ち。Phase 1 はスカラー正しさ優先可 |
+| Q5 | `glam` / `wide` を shared-sim に入れるか | **承認済み＋x00a5 配線済み**。`glam`（`bytemuck`+`libm`）＝幾何；`wide`＝SoA 慣性 Safe SIMD（スカラー参照＋ビット一致テスト）。拘束ソルバー SIMD は未着手 |
 | Q6 | 冗長デルタ窓 K | まず K=1 で欠落計測。K=2 は Quest Wi-Fi データ後 |
 | Q7 | 掴みタイブレーク（小スロット優先）とリース時間 | 暫定: 小スロット勝ち + リース。不公平なら tick 回転方式へ |
 | Q8 | セル 64m（局所 ±32m）と巨大建造物 | 暫定: 基準点が属するセル。物が複数セルにまたがる扱いは規模本線と同時に詰める |

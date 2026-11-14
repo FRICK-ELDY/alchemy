@@ -39,6 +39,8 @@ log = "0.4"
 gltf = "1"
 blake3 = "1"
 glam = "0.29"
+# Human-approved (2026-11-14): Zlib OR Apache-2.0 OR MIT; SoA Safe SIMD (mvcc_xpbd Q5 / x00a5).
+wide = "0.7"
 rapier3d = "0.22"
 openxr = "0.22"
 ash = "0.38"

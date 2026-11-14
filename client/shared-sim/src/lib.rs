@@ -8,7 +8,10 @@
 //! Non-guarantees: Rapier / Formula / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); CRDT / Zenoh / GPU wiring (client `epoch_view`);
-//! MVCC host/app wiring / dirty-delta codec (x0024; Phase 2/3; not V_ack/XOR).
+//! MVCC host/app wiring / dirty-delta codec (x0024; Phase 2/3; not V_ack/XOR);
+//! cross-arch determinism (Q2). SoA inertia SIMD building block is in [`mvcc`] (x00a5; not on tick path yet).
+
+#![forbid(unsafe_code)]
 
 use std::collections::{HashMap, HashSet};
 

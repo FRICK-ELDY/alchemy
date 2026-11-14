@@ -12,3 +12,10 @@ workspace = true
 alchemy-protocol = { workspace = true }
 arc-swap = { workspace = true }
 bytemuck = { workspace = true }
+# Q5 / x00a5: geometry helpers + SoA Safe SIMD (scalar ref kept).
+# Feature unification: enabling `libm`/`bytemuck` here turns them on for every
+# workspace crate that depends on the same `glam` 0.29 (app camera included).
+# glam still defaults to `std` math for √/trig used by app; `libm` is the approved
+# hook for future no_std-style / trig-fixed paths (mvcc_xpbd §4.4).
+glam = { workspace = true, features = ["bytemuck", "libm"] }
+wide = { workspace = true }

@@ -14,7 +14,7 @@
 | 保証する | 保証しない |
 |:---|:---|
 | `PageXpbdAdapter` が `HotPhysicsPage` 上で LBVH 接触付き `xpbd::step` を回す | host/app 配線・`ALCHEMY_SIM_BACKEND` |
-| 2 箱フィクスチャがページ経路で重ならない（P1-2） | `wide` SIMD（人承認後） |
+| 2 箱フィクスチャがページ経路で重ならない（P1-2） | `wide` SIMD（→ [x00a5](x00a5-soa-safe-simd.md)） |
 | **P1-3**: 1k entity・128 Tick 履歴・500 Tick でプール枯渇なし・**tick page-alloc ≤ 2**（プール外ページ確保のみ） | `WorldSnapshot` の `Vec`、XPBD scratch/`FlatLbvh`、シート clone など **非 page ヒープ** |
 | Tick 50→100 および `snapshot_at` 巻き戻し再シミュが SoA + **全 mask（dirty 含む）** ビット一致 | Phase 2 wgpu / Phase 3 XOR デルタ |
 | `pos - frame_delta` を `step_page` の pull で復元した 1 Tick が連続実行と一致 | 大規模 CCU / Spatial Interest |

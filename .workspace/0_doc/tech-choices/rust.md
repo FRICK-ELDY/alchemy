@@ -32,7 +32,8 @@
 | クレート | 宣言 | 固定（目安） | 利用者 | 理由 |
 |:---|:---|:---|:---|:---|
 | `rapier3d` | `0.22` | `0.22.0` | host-server | 60 Hz の剛体物理 |
-| `glam` | `0.29` | `0.29.3` | client | カメラ／UI 用の CPU 側ベクトル・行列 |
+| `glam` | `0.29` | `0.29.3` | client；shared-sim（x00a5） | カメラ／UI 用の CPU 側ベクトル・行列。shared-sim が `bytemuck`+`libm` を付けると **workspace 全体へ feature 統合**される（app も同 feature）。既定 `std` 数学は維持；`libm` は将来の trig 固定用フック（MVCC×XPBD Q5） |
+| `wide` | `0.7` | `0.7.33` | shared-sim（x00a5） | SoA 慣性ホットパス Safe SIMD（`f32x8`）。スカラー参照＋ビット一致テスト（MVCC×XPBD Q5） |
 
 ## グラフィックス / XR / 窓
 
