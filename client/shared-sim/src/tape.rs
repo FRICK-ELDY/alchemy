@@ -457,6 +457,42 @@ impl EpochSheet {
         }
     }
 
+    /// Fixed-index install for MVCC page adapter (`row_id == local_idx`).
+    ///
+    /// Keeps [`Self::free_list`] consistent with [`PendingPatch::SetReadiness`] /
+    /// [`Self::copy_row_from`]. Live writes apply the same finite gate as
+    /// [`Self::set_transform`]. Prefer this over raw readiness writes when the same
+    /// sheet may also use [`Self::alloc_row`].
+    pub fn write_fixed_slot(
+        &mut self,
+        row_id: u32,
+        readiness: ReadinessMask,
+        transform: WorldTransformf64,
+        collider: ColliderShape,
+    ) -> Result<(), TapeError> {
+        let idx = row_id as usize;
+        if idx >= self.readiness.len() {
+            return Err(TapeError::OutOfBounds);
+        }
+        if readiness.contains(ReadinessMask::TOMBSTONE) {
+            self.mark_tombstone_slot(row_id);
+            return Ok(());
+        }
+        if !transform.is_finite() {
+            return Err(TapeError::NonFinite);
+        }
+        let was_tomb = self.readiness[idx].contains(ReadinessMask::TOMBSTONE);
+        if was_tomb {
+            self.free_list.retain(|&id| id != row_id);
+        }
+        self.readiness[idx] = readiness;
+        self.world_transforms[idx] = transform;
+        self.colliders[idx] = collider;
+        self.set_active(row_id, true);
+        self.mark_dirty(row_id);
+        Ok(())
+    }
+
     #[inline]
     pub fn mark_dirty(&mut self, row_id: u32) {
         let (wi, bi) = word_bit(row_id);
@@ -724,5 +760,57 @@ mod tests {
             sheet.world_transforms[b.row_id as usize].position,
             [4.0, 5.0, 6.0]
         );
+    }
+
+    #[test]
+    fn write_fixed_slot_tombstone_and_resurrect_keeps_free_list() {
+        let mut sheet = EpochSheet::with_capacity(2);
+        sheet.ensure_len_append(2);
+        let live = ReadinessMask(
+            ReadinessMask::ALLOCATED | ReadinessMask::TRANSFORM | ReadinessMask::DYNAMIC,
+        );
+        let xf = WorldTransformf64::identity_at([1.0, 0.0, 0.0]);
+        sheet
+            .write_fixed_slot(0, live, xf, ColliderShape::default())
+            .unwrap();
+        assert!(!sheet.readiness[0].contains(ReadinessMask::TOMBSTONE));
+
+        sheet
+            .write_fixed_slot(
+                0,
+                ReadinessMask(ReadinessMask::TOMBSTONE),
+                WorldTransformf64::default(),
+                ColliderShape::default(),
+            )
+            .unwrap();
+        assert!(sheet.readiness[0].contains(ReadinessMask::TOMBSTONE));
+
+        // Freelist should reuse row 0 on alloc after fixed-slot tombstone.
+        let reused = sheet.alloc_row();
+        assert_eq!(reused.row_id, 0);
+
+        // Pad slot 1 is still TOMBSTONE from ensure_len_append (not on freelist).
+        // write_fixed_slot resurrect must scrub if it were listed; live write on 1 works.
+        sheet
+            .write_fixed_slot(1, live, xf, ColliderShape::default())
+            .unwrap();
+        assert!(!sheet.readiness[1].contains(ReadinessMask::TOMBSTONE));
+        let next = sheet.alloc_row();
+        // row 0 was allocated above; freelist empty → append
+        assert_eq!(next.row_id, 2);
+    }
+
+    #[test]
+    fn write_fixed_slot_rejects_non_finite() {
+        let mut sheet = EpochSheet::with_capacity(1);
+        sheet.ensure_len_append(1);
+        let live = ReadinessMask(ReadinessMask::ALLOCATED | ReadinessMask::TRANSFORM);
+        let mut bad = WorldTransformf64::identity_at([0.0, 0.0, 0.0]);
+        bad.position[0] = f64::NAN;
+        assert_eq!(
+            sheet.write_fixed_slot(0, live, bad, ColliderShape::default()),
+            Err(TapeError::NonFinite)
+        );
+        assert!(sheet.readiness[0].contains(ReadinessMask::TOMBSTONE));
     }
 }

@@ -590,6 +590,7 @@ flowchart LR
 
 ### Phase 1: 既存 `shared-sim` の進化とヘッドレス決定論テスト（host/app 本線は触らない）
 
+**状態**: **DoD closed**（[x00a3](slices/x00a3-mvcc-phase1-scaffold.md) scaffold + [x00a4](slices/x00a4-mvcc-phase1-dod.md) 接触 / page-alloc / リプレイ / `frame_delta`）。`xpbd/` モジュール分割・`wide`・`delta_codec` は後続強化。host/app 本線は未配線。  
 **前提**: improvement-plan **P1-1 / P1-4 / P1-5** closed。  
 **吸収**: **P1-2** の *shared-sim 側能力*（不等式接触＋箱形状のヘッドレス保証）、**P1-3**（hot-path zero-alloc）。  
 **スコープ境界**: host の `step_dt(..., bounds: None)` は **意図的に触らない**。host で接触をオンにする（`bounds: Some`）・本番経路の回帰は **Phase 3**（P1-2 の host 配線完了）。Phase 1 で P1-2 を「closed」と書いてはならない（improvement-plan は Phase 1=能力、Phase 3=host 有効化と読む）。

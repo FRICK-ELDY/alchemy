@@ -56,13 +56,19 @@ impl HotPhysicsPage {
         }
     }
 
+    #[inline]
+    fn mask_bit(local_idx: usize) -> Option<(usize, u64)> {
+        if local_idx >= ENTITIES_PER_PAGE {
+            return None;
+        }
+        Some((local_idx / 64, 1u64 << (local_idx % 64)))
+    }
+
     /// Mark local entity active (ManifestSeal gate stub for Phase 1 scaffold).
     pub fn set_active(&mut self, local_idx: usize, active: bool) {
-        if local_idx >= ENTITIES_PER_PAGE {
+        let Some((word, bit)) = Self::mask_bit(local_idx) else {
             return;
-        }
-        let word = local_idx / 64;
-        let bit = 1u64 << (local_idx % 64);
+        };
         if active {
             self.active_mask[word] |= bit;
         } else {
@@ -70,17 +76,93 @@ impl HotPhysicsPage {
         }
     }
 
+    #[inline]
+    pub fn is_active(&self, local_idx: usize) -> bool {
+        let Some((word, bit)) = Self::mask_bit(local_idx) else {
+            return false;
+        };
+        (self.active_mask[word] & bit) != 0
+    }
+
+    #[inline]
+    pub fn is_grabbed(&self, local_idx: usize) -> bool {
+        let Some((word, bit)) = Self::mask_bit(local_idx) else {
+            return false;
+        };
+        (self.is_grabbed_mask[word] & bit) != 0
+    }
+
+    #[inline]
+    pub fn set_grabbed(&mut self, local_idx: usize, grabbed: bool) {
+        let Some((word, bit)) = Self::mask_bit(local_idx) else {
+            return;
+        };
+        if grabbed {
+            self.is_grabbed_mask[word] |= bit;
+        } else {
+            self.is_grabbed_mask[word] &= !bit;
+        }
+    }
+
+    #[inline]
+    pub fn is_sleeping(&self, local_idx: usize) -> bool {
+        let Some((word, bit)) = Self::mask_bit(local_idx) else {
+            return false;
+        };
+        (self.sleeping_mask[word] & bit) != 0
+    }
+
+    #[inline]
+    pub fn set_sleeping(&mut self, local_idx: usize, sleeping: bool) {
+        let Some((word, bit)) = Self::mask_bit(local_idx) else {
+            return;
+        };
+        if sleeping {
+            self.sleeping_mask[word] |= bit;
+        } else {
+            self.sleeping_mask[word] &= !bit;
+        }
+    }
+
+    #[inline]
+    pub fn clear_sleeping(&mut self, local_idx: usize) {
+        self.set_sleeping(local_idx, false);
+    }
+
+    #[inline]
+    pub fn mark_dirty(&mut self, local_idx: usize) {
+        let Some((word, bit)) = Self::mask_bit(local_idx) else {
+            return;
+        };
+        self.dirty_entity_mask[word] |= bit;
+    }
+
+    /// Deactivate and scrub SoA pose/delta to finite defaults (quarantine).
+    pub fn quarantine_slot(&mut self, local_idx: usize) {
+        if local_idx >= ENTITIES_PER_PAGE {
+            return;
+        }
+        self.set_active(local_idx, false);
+        self.set_grabbed(local_idx, false);
+        self.clear_sleeping(local_idx);
+        self.soa.pos_x[local_idx] = 0.0;
+        self.soa.pos_y[local_idx] = 0.0;
+        self.soa.pos_z[local_idx] = 0.0;
+        self.soa.delta_x[local_idx] = 0.0;
+        self.soa.delta_y[local_idx] = 0.0;
+        self.soa.delta_z[local_idx] = 0.0;
+        self.soa.inv_mass[local_idx] = 0.0;
+        self.soa.damping[local_idx] = 0.0;
+        self.soa.rot_x[local_idx] = 0.0;
+        self.soa.rot_y[local_idx] = 0.0;
+        self.soa.rot_z[local_idx] = 0.0;
+        self.soa.rot_w[local_idx] = 1.0;
+        self.mark_dirty(local_idx);
+    }
+
     /// Quarantined kinematic pose write: rejects NaN/Inf and inactive slots.
     pub fn try_set_kinematic_pose(&mut self, local_idx: usize, pose: KinematicPoseF32) -> bool {
-        if local_idx >= ENTITIES_PER_PAGE {
-            return false;
-        }
-        if !pose.is_finite() {
-            return false;
-        }
-        let word = local_idx / 64;
-        let bit = 1u64 << (local_idx % 64);
-        if (self.active_mask[word] & bit) == 0 {
+        if !self.is_active(local_idx) || !pose.is_finite() {
             return false;
         }
 
@@ -99,8 +181,8 @@ impl HotPhysicsPage {
         self.soa.rot_z[local_idx] = pose.qz;
         self.soa.rot_w[local_idx] = pose.qw;
 
-        self.dirty_entity_mask[word] |= bit;
-        self.sleeping_mask[word] &= !bit;
+        self.mark_dirty(local_idx);
+        self.clear_sleeping(local_idx);
         true
     }
 }
