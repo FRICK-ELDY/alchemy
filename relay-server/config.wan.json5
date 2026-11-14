@@ -70,6 +70,7 @@
           "alchemy/dev/room/*/*/frame",
           "alchemy/dev/room/*/*/presence",
           "alchemy/dev/room/*/*/snapshot",
+          "alchemy/dev/room/*/*/sim_state",
           "alchemy/dev/room/*/*/host_control",
           "alchemy/dev/room/*/*/alive/**",
         ],
@@ -93,6 +94,7 @@
           "alchemy/dev/room/*/*/frame",
           "alchemy/dev/room/*/*/presence",
           "alchemy/dev/room/*/*/snapshot",
+          "alchemy/dev/room/*/*/sim_state",
         ],
       },
       // Router → host: guest Intent / liveliness (and queryable replies).
@@ -107,6 +109,7 @@
           "alchemy/dev/room/*/*/inventory/despawn",
           "alchemy/dev/room/*/*/alive/**",
           "alchemy/dev/room/*/*/snapshot",
+          "alchemy/dev/room/*/*/sim_state",
         ],
       },
       // Router → host: subscriber interest (x0067 exp C). Trace showed
@@ -125,6 +128,7 @@
           "alchemy/dev/room/*/*/frame",
           "alchemy/dev/room/*/*/presence",
           "alchemy/dev/room/*/*/snapshot",
+          "alchemy/dev/room/*/*/sim_state",
         ],
       },
       // Guest → router: client input / alive / inventory spawn only (never sim put ingress).

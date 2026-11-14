@@ -43,6 +43,8 @@ pub enum AeadKind {
     InventorySpawn,
     /// Low-frequency inventory scene despawn (x007b); session-signed control (x0081).
     InventoryDespawn,
+    /// Planned handover full sim state (x00ag / mvcc_xpbd §4.8); distinct from Snapshot poses.
+    SimState,
 }
 
 impl AeadKind {
@@ -55,6 +57,7 @@ impl AeadKind {
             Self::Input => "input",
             Self::InventorySpawn => "inventory_spawn",
             Self::InventoryDespawn => "inventory_despawn",
+            Self::SimState => "sim_state",
         }
     }
 
@@ -65,6 +68,7 @@ impl AeadKind {
             Self::Frame | Self::Snapshot => WireClass::Frame,
             Self::Presence => WireClass::Presence,
             Self::Input | Self::InventorySpawn | Self::InventoryDespawn => WireClass::Input,
+            Self::SimState => WireClass::SimState,
         }
     }
 }
@@ -297,6 +301,23 @@ mod tests {
         assert_eq!(
             open(&key(), "local", 0, AeadKind::Snapshot, &env).unwrap(),
             b"full"
+        );
+    }
+
+    #[test]
+    fn sim_state_not_snapshot_or_frame_aad() {
+        let env = seal(&key(), "local", 0, AeadKind::SimState, b"sim").unwrap();
+        assert_eq!(
+            open(&key(), "local", 0, AeadKind::Frame, &env),
+            Err(WireAeadError::CryptographicFailure)
+        );
+        assert_eq!(
+            open(&key(), "local", 0, AeadKind::Snapshot, &env),
+            Err(WireAeadError::CryptographicFailure)
+        );
+        assert_eq!(
+            open(&key(), "local", 0, AeadKind::SimState, &env).unwrap(),
+            b"sim"
         );
     }
 
