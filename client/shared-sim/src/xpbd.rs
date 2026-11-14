@@ -2,7 +2,8 @@
 //!
 //! Guarantees: position-based constraints (no force blow-up); Grab via GRABBED bit;
 //! sleeping / dirty bitsets for sparse work; finite gate on writes.
-//! Non-guarantees: full-body IK UX; Zenoh delta publish; Dual-AST Kernel.
+//! Non-guarantees: full-body IK UX; Zenoh delta publish; Dual-AST Kernel;
+//! Grab-vs-contact priority under heavy overlap (sensor exclusion is best-effort).
 //!
 //! Safety: `#![forbid(unsafe_code)]`.
 
@@ -272,12 +273,19 @@ pub fn grab_constraint_rows_into(sheet: &EpochSheet, out: &mut Vec<XpbdConstrain
 /// Convert overlapping pairs into inequality non-penetration constraints (extends `out`).
 ///
 /// Separated bodies (`dist >= ra+rb`) are not pulled together (x00a8).
+///
+/// Pair filter (x00ad follow-up): a row participates if it is **DYNAMIC**, or a
+/// **static BOX** (world geometry). Non-DYNAMIC spheres (host `user_root` sensors)
+/// do **not** emit contacts — they must not shove dynamics on proximity.
 pub fn contact_constraints_from_lbvh_into(
     sheet: &EpochSheet,
     lbvh: &FlatLbvh,
     out: &mut Vec<XpbdConstraintRow>,
 ) {
     for (a, b) in collect_overlap_pairs(lbvh) {
+        if !row_emits_body_contact(sheet, a) || !row_emits_body_contact(sheet, b) {
+            continue;
+        }
         let ia = a as usize;
         let ib = b as usize;
         let ra = collider_radius_estimate(&sheet.colliders[ia]);
@@ -290,6 +298,23 @@ pub fn contact_constraints_from_lbvh_into(
             ..Default::default()
         });
     }
+}
+
+#[inline]
+fn row_emits_body_contact(sheet: &EpochSheet, row: u32) -> bool {
+    let idx = row as usize;
+    if idx >= sheet.len() {
+        return false;
+    }
+    let mask = sheet.readiness[idx];
+    if !mask.is_ready(ReadinessMask::COLLIDER) {
+        return false;
+    }
+    if mask.is_ready(ReadinessMask::DYNAMIC) {
+        return true;
+    }
+    // Fixed world boxes (inv_mass typically 0, no DYNAMIC bit).
+    sheet.colliders[idx].shape_type == ColliderShape::BOX
 }
 
 fn collider_radius_estimate(shape: &ColliderShape) -> f32 {
@@ -843,6 +868,99 @@ mod tests {
             (dist2 - min_sep).abs() < 1e-3,
             "resting spheres should stay near rest distance: dist={dist2}"
         );
+    }
+
+    #[test]
+    fn sensor_sphere_emits_no_contact_with_dynamic() {
+        // Non-DYNAMIC SPHERE (user_root sensor) × DYNAMIC must yield 0 contact rows.
+        let mut sheet = EpochSheet::with_capacity(2);
+        let sensor = {
+            let h = sheet.alloc_row();
+            let mut xf = WorldTransformf64::identity_at([0.0, 0.0, 0.0]);
+            xf.inv_mass = 0.0;
+            sheet.set_transform(h.row_id, xf).unwrap();
+            sheet.colliders[h.row_id as usize] = ColliderShape {
+                shape_type: ColliderShape::SPHERE,
+                extents: [0.5, 0.0, 0.0],
+            };
+            sheet.readiness[h.row_id as usize] = ReadinessMask(
+                ReadinessMask::ALLOCATED | ReadinessMask::TRANSFORM | ReadinessMask::COLLIDER,
+            );
+            h.row_id
+        };
+        let dyn_row = {
+            let h = sheet.alloc_row();
+            let mut xf = WorldTransformf64::identity_at([0.2, 0.0, 0.0]);
+            xf.inv_mass = 1.0;
+            sheet.set_transform(h.row_id, xf).unwrap();
+            sheet.colliders[h.row_id as usize] = ColliderShape {
+                shape_type: ColliderShape::SPHERE,
+                extents: [0.5, 0.0, 0.0],
+            };
+            sheet.readiness[h.row_id as usize] = ReadinessMask(
+                ReadinessMask::ALLOCATED
+                    | ReadinessMask::TRANSFORM
+                    | ReadinessMask::COLLIDER
+                    | ReadinessMask::DYNAMIC,
+            );
+            h.row_id
+        };
+        let _ = (sensor, dyn_row);
+        let tree = FlatLbvh::build_from_sheet(&sheet, SceneBounds::default());
+        let mut contacts = Vec::new();
+        contact_constraints_from_lbvh_into(&sheet, &tree, &mut contacts);
+        assert!(
+            contacts.is_empty(),
+            "sensor SPHERE must not emit body contact, got {}",
+            contacts.len()
+        );
+    }
+
+    #[test]
+    fn static_box_emits_contact_with_dynamic() {
+        // Non-DYNAMIC BOX (wall) × DYNAMIC must yield ≥1 contact when overlapping.
+        let mut sheet = EpochSheet::with_capacity(2);
+        let wall = {
+            let h = sheet.alloc_row();
+            let mut xf = WorldTransformf64::identity_at([0.0, 0.0, 0.0]);
+            xf.inv_mass = 0.0;
+            sheet.set_transform(h.row_id, xf).unwrap();
+            sheet.colliders[h.row_id as usize] = ColliderShape {
+                shape_type: ColliderShape::BOX,
+                extents: [0.5, 0.5, 0.5],
+            };
+            sheet.readiness[h.row_id as usize] = ReadinessMask(
+                ReadinessMask::ALLOCATED | ReadinessMask::TRANSFORM | ReadinessMask::COLLIDER,
+            );
+            h.row_id
+        };
+        let dyn_row = {
+            let h = sheet.alloc_row();
+            let mut xf = WorldTransformf64::identity_at([0.2, 0.0, 0.0]);
+            xf.inv_mass = 1.0;
+            sheet.set_transform(h.row_id, xf).unwrap();
+            sheet.colliders[h.row_id as usize] = ColliderShape {
+                shape_type: ColliderShape::SPHERE,
+                extents: [0.5, 0.0, 0.0],
+            };
+            sheet.readiness[h.row_id as usize] = ReadinessMask(
+                ReadinessMask::ALLOCATED
+                    | ReadinessMask::TRANSFORM
+                    | ReadinessMask::COLLIDER
+                    | ReadinessMask::DYNAMIC,
+            );
+            h.row_id
+        };
+        let _ = (wall, dyn_row);
+        let tree = FlatLbvh::build_from_sheet(&sheet, SceneBounds::default());
+        let mut contacts = Vec::new();
+        contact_constraints_from_lbvh_into(&sheet, &tree, &mut contacts);
+        assert_eq!(
+            contacts.len(),
+            1,
+            "static BOX × DYNAMIC must emit one contact"
+        );
+        assert!(contacts[0].is_inequality());
     }
 
     #[test]

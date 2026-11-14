@@ -37,7 +37,7 @@
 | ID | 項目 | 根拠 | 作業イメージ | 完了条件 |
 |:---|:---|:---|:---|:---|
 | P1-1 | kick API + friendship → epoch | -2 | **closed**（x00a0） | Friends 解除後、旧鍵で新 epoch 平文が読めない否定系 |
-| P1-2 | host で XPBD body-body 接触 | -2 | **Phase 1（shared-sim ページ経路）closed**（[x00a4](../../roadmap/slices/x00a4-mvcc-phase1-dod.md)）。対症療法の host `bounds` 渡しでは閉じない；**Phase 3 = host `bounds: Some` 配線** | Phase 1: 2 箱が重ならない回帰（host 本線は触らない）。Phase 3: host 接触オンでも地面・Grab 通過 |
+| P1-2 | host で XPBD body-body 接触 | -2 | **closed**（Phase 1 [x00a4](../../roadmap/slices/x00a4-mvcc-phase1-dod.md) + Phase 3 host [x00ad](../../roadmap/slices/x00ad-phase3-host-sim-backend.md)：`bounds: Some` + 2 箱 host 回帰） | host 接触オンでも地面・Grab 通過；等式距離流用なし |
 | P1-3 | hot-path zero-allocation | -2 | **Phase 1（プール page-alloc）closed**（[x00a4](../../roadmap/slices/x00a4-mvcc-phase1-dod.md)；**page-alloc ≤ 2**/tick）。`WorldSnapshot` Vec / XPBD scratch / シート clone は非保証 | Phase 1: tick ページ確保が上限以下（1k entity・500 Tick） |
 | P1-4 | handover 候補 accept 二段階 | -2 | **closed**（x00a1） | 非 accept 候補に lease が付かない否定系 |
 | P1-5 | SceneBudget | -2 | **closed**（x00a2） | 上限超過 413/422 + 競合テスト |
@@ -76,13 +76,13 @@
 
 正本: [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md)（レビュー反映の詳細・未決 Q1–Q8 は同書 §6 / [review_proposal](../../roadmap/mvcc_xpbd_review_proposal.md)）。**大規模 CCU / 1000 人はここに書かない**（→ P3-7）。
 
-**現状（2026-11-14）**: 着手ゲート〜Phase 1（x00a3–x00a8）+ Phase 2（x00a9–x00ac: ArcSwap / sim_tick jitter / 手元予測 / `interp.wgsl`）まで **closed**。次は Phase 3（host 権威・接触オン・dirty・`sim_state`）。
+**現状（2026-11-14）**: Phase 1–2（x00a3–x00ac）+ Phase 3 着手 [x00ad](../../roadmap/slices/x00ad-phase3-host-sim-backend.md)（`SimBackend` + 接触オン / **P1-2 host closed**）まで **done**。dirty・`sim_state`・PROTOCOL_PIN・`…/edit` は後続（`x00ae`〜）。
 
 | Phase | 内容 | 吸収する ID | 着手条件 |
 |:---|:---|:---|:---|
 | Phase 1 | 既存 `shared-sim` を `HotPhysicsPage` / `MvccPageArena` / ページ経路 XPBD へ進化（クレート新設ではない） | P1-2（shared-sim 能力）/ P1-3 | **closed**（x00a3 + x00a4；x00a5 SoA SIMD；host 本線は Phase 3） |
 | Phase 2 | MVCC バッファ + `wgpu` Compute + jitter（`sim_tick` 基準）+ 手元予測 + ArcSwap 出版 | P3-2 | Phase 1 のビット一致・接触回帰・alloc 上限・CoW が Green |
-| Phase 3 | host 権威 + **host 接触オン（P1-2 host 配線）** + dirty 合成（x0024）+ `sim_state` handover + 確定レーン並走 | P1-2（host）+ host 本線置換 | Phase 2 Green。Room AEAD / wire_cap |
+| Phase 3 | host 権威 + **host 接触オン（P1-2 · x00ad done）** + dirty 合成（x0024）+ `sim_state` handover + 確定レーン並走 | P1-2（host）+ host 本線置換 | x00ad done。残りは dirty / proto / sim_state |
 
 **やらないこと**: P1 ゲート前に Phase 2/3 を host/app へ配線する。現行 `xpbd.rs` に bounds だけ戻して／等式距離のまま P1-2 を閉じる。Phase 1 で host 接触オンだけして「P1-2 closed」と書く。**MVCC だけで大規模 CCU を宣言する**／フルメッシュのまま Phase を増やしてスケールしたことにする。描画用 frame の量子化値だけで「0 秒 handover 速度完全復元」を宣言する（→ `sim_state`）。
 
@@ -109,7 +109,7 @@
 4. **MVCC×XPBD Phase 1**（P1-2 shared-sim 能力 / P1-3）— **closed**（x00a3 scaffold + [x00a4](../../roadmap/slices/x00a4-mvcc-phase1-dod.md) DoD；host 接触オンは Phase 3）
 5. **P1-6 / P2**（vault・UI 分割 / docs / CI）— Phase 1 と **並行可**
 6. **MVCC×XPBD Phase 2**（P3-2 吸収）— jitter + 手元予測 + ArcSwap 出版 + `wgpu` Compute
-7. **MVCC×XPBD Phase 3** — host 権威 + dirty デルタ（x0024）+ `sim_state` handover；確定レーン（`…/edit`）は並走可
+7. **MVCC×XPBD Phase 3** — [x00ad](../../roadmap/slices/x00ad-phase3-host-sim-backend.md) **done** → dirty デルタ（x0024）+ `sim_state` handover；確定レーン（`…/edit`）は並走可
 8. **Spatial Interest 実装スライス群**（P3-7）— 正本 [`spatial_interest.md`](../../roadmap/spatial_interest.md) は先行済；**実装は Phase 3 Green 後**（採番は着手時）
 9. **P3-1 / P3-3 以降** — MVCC / Interest と独立；品質本線の直後に必須ではない（Spot-Check 再シミュレーション要否は mvcc_xpbd §6 Q2）
 

@@ -6,7 +6,7 @@
 * **本線の役割**: **品質本線**（近傍物理・ゼロアロ・handover 速度・補間）。同一 Room の大規模 CCU（1000 人 horizon）は規模本線 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**）
 * **関連スライス**: `x0020` (Desktop 正本), `x0039` (`ManifestSeal`), `x0053` (体感並行補間), `x0067` (Zenoh 非対称 ACL), `x0068` (短命 mTLS), `x0069` (Room 鍵 AEAD), `x0024`（frame tick 連番 + 欠落時 snapshot）
 * **レビュー取り込み**: [mvcc_xpbd_review_proposal.md](mvcc_xpbd_review_proposal.md)（2026-11-13）の P0/P1 を本版に反映。未決事項は §6
-* **現状**: 着手ゲート〜Phase 1 DoD（[x00a3](slices/x00a3-mvcc-phase1-scaffold.md)–[x00a5](slices/x00a5-soa-safe-simd.md)）+ ゲート閉じ（[x00a6](slices/x00a6-mvcc-layout-cow.md)–[x00a8](slices/x00a8-inequality-contact.md)）+ Phase 2（[x00a9](slices/x00a9-phase2-publish-foundation.md)–[x00ac](slices/x00ac-interp-wgsl.md): ArcSwap / sim_tick jitter / 手元予測 / `interp.wgsl`）。host 権威・dirty・`sim_state` は Phase 3。
+* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手 [x00ad](slices/x00ad-phase3-host-sim-backend.md)（`SimBackend` + host 接触オン / P1-2 host）**done**。残り: dirty・PROTOCOL_PIN・`sim_state`・`…/edit`（次空き `x00ae`〜）。
 * **最優先規約**: 全 Rust クレートにおいて `#![forbid(unsafe_code)]` を**クレート直下（`lib.rs` / 該当 `main.rs`）**に宣言し、既存の `./.scripts/ci.sh rust`・`./.scripts/ci.sh protocol`・`make smoke-desktop-handthrough` を常に Green に保つこと。差分配信の用語は **dirty 合成 + x0024 snapshot**（`V_ack` / 「XOR デルタ」は使わない）。
 
 ---
@@ -18,7 +18,8 @@ P0 closed
   → P1-1 kick/epoch + P1-4 handover accept + P1-5 SceneBudget（必須ゲート）✓
   → Phase 1（x00a3–x00a8: DoD + レイアウト/CoW/Directory/不等式）✓；host 接触オンは Phase 3
   → Phase 2（x00a9–x00ac: ArcSwap / jitter / 手元予測 / interp.wgsl）✓
-  → Phase 3（host 権威ループ + dirty デルタ + sim_state handover + 確定レーン並走）
+  → Phase 3 着手 x00ad（SimBackend + 接触オン）✓
+  → Phase 3 残り（dirty デルタ + sim_state handover + 確定レーン並走）
     → 規模本線: spatial_interest.md（P3-7；アウトライン並走可・実装は Phase 3 後）
 P1-6 / P2（vault・UI/docs/CI）は並走可。P3-1 / P3-3 以降は独立。
 確定レーン（§4.7）の設計確定は今、実装は Phase 3 と並走可（inventory 一般化）。
@@ -582,7 +583,7 @@ flowchart LR
 
 **DoD に含めないもの**: 同一 Room の大規模 CCU・フルメッシュ解除・interest キー族。それらは [spatial_interest.md](spatial_interest.md) のマイルストーン（32→64→128、1000 は horizon）が担当する。
 
-**現状**: Phase 1–2 まで **コード完了**（x00a3–x00ac）。以下の Phase 2 節は完了記録；実装本線の次は Phase 3。
+**現状**: Phase 1–2 + Phase 3 着手（x00a3–x00ad）まで **コード完了**。以下の Phase 2 節は完了記録；実装本線の次は dirty / PROTOCOL_PIN / `sim_state`（`x00ae`〜）。
 
 ### Phase 1: 既存 `shared-sim` の進化とヘッドレス決定論テスト（host/app 本線は触らない）
 
@@ -612,15 +613,19 @@ flowchart LR
 
 **前提**: Phase 2 DoD Green。Room AEAD / wire_cap 契約が明示。handover は §4.8 に従う（**Q1 採用済み** — 追加の「合意待ち」ゲートは設けない）。
 
+**スライス分割（着手順）**:
+* **[x00ad](slices/x00ad-phase3-host-sim-backend.md)** — `SimBackend` + **接触オン**（P1-2 host）— **done**。
+* 後続（採番は着手時・次空き `x00ae`〜）: `delta_codec` + dirty 合成 → PROTOCOL_PIN 一括 → `…/sim_state` →（並走可）確定レーン `…/edit`。
+
 1. **作業内容**:
-   * `ALCHEMY_SIM_BACKEND=mvcc_xpbd|epoch_xpbd` で切替可能な権威ループ。Ingress 検疫 → Fork/`make_mut` → XPBD（**接触オン＝`bounds: Some`**）→ 階層 → Commit。ここで P1-2 の host 配線を閉じる。
+   * `ALCHEMY_SIM_BACKEND=mvcc_xpbd|epoch_xpbd` で切替可能な権威ループ。Ingress 検疫 → Fork/`make_mut` → XPBD（**接触オン＝`bounds: Some`**）→ 階層 → Commit。ここで P1-2 の host 配線を閉じる（**→ x00ad**）。
    * 30Hz: `WireDirtyAccumulator`（§4.5 の reuse クリア契約）＋ `extract_dirty_records_into`。Room AEAD + wire_cap。欠落は x0024 snapshot。
    * **proto 一括**（PROTOCOL_PIN を 1 回）: `sim_tick` / `redundancy` / `acked_intent_seq` / `Entity.holder` / 投げ `release_v*/w*`（クライアント計算・host クランプ）/ 必要なら量子化ポーズ。
    * **`…/sim_state`**: 計画的 handover。crash は §4.8（last-good／旧 host snapshot 死時は非起動・Manifest 冷起動禁止・1 frame なら速度 0）。
    * **確定レーン**（§4.7）: `…/edit` + `EditCommit`（wire_cap ACL・`AeadKind` 追加）。inventory 一般化。**物理ページ本線（本 Phase）と並走可**（互いにブロッキングしない）。
 2. **検証条件**:
    * `./.scripts/ci.sh rust` / `protocol` Green。`make smoke-desktop-handthrough` Green。
-   * host 接触オンでも既存地面・Grab 回帰が通る（P1-2 host 完了）。
+   * host 接触オンでも既存地面・Grab 回帰が通る（P1-2 host 完了 · **x00ad**）。
    * `planned_handover_continues_trajectory`（同一バイナリ）。crash: last-good で起動可／unknown+snapshot 不可なら物理・frame publish 非起動（Manifest 冷起動しない）。`crash_handover_single_frame_velocity_zero`（1 frame last-good → 速度 0）。`dirty_survives_skipped_net_tick` / publish ゲート蓄積 / **reuse 後 dirty 混入なし**（既定 A）。
    * 規模 CCU・セル購読・avatar LOD の合格条件は**含めない**（🚫7）。
 

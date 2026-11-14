@@ -8,9 +8,10 @@
 //! Non-guarantees: Rapier / Dual-AST Kernel / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); CRDT / Zenoh / GPU wiring (client `epoch_view`);
-//! MVCC host wiring / dirty-delta codec (x0024; Phase 3; not V_ack/XOR);
-//! cross-arch determinism (Q2). MVCC gate x00a6–x00a9 + Phase 2 app x00aa–x00ac
-//! are in [`mvcc`] / client; SoA inertia SIMD (x00a5) is not on the tick path yet.
+//! dirty-delta codec (x0024; not V_ack/XOR); cross-arch determinism (Q2).
+//! Host `SimBackend` + contact-on wiring starts in x00ad (`host-server`);
+//! MVCC gate x00a6–x00a9 + Phase 2 app x00aa–x00ac are in [`mvcc`] / client;
+//! SoA inertia SIMD (x00a5) is not on the tick path yet.
 
 #![forbid(unsafe_code)]
 

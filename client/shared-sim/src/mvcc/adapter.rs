@@ -1,9 +1,12 @@
-//! HotPhysicsPage ↔ Epoch/XPBD adapter (Phase 1 DoD; host/app 本線は未配線).
+//! HotPhysicsPage ↔ Epoch/XPBD adapter (Phase 1 DoD; host `mvcc_xpbd` 配線は x00ad).
 //!
 //! Guarantees: page-path body-body contacts via existing [`crate::xpbd::step`] + LBVH;
-//! prev reconstructed from `frame_delta` (`pos - delta`); cell_origin f64 + local f32.
+//! prev reconstructed from `frame_delta` (`pos - delta`); cell_origin f64 + local f32;
+//! **page-face `DYNAMIC` ≡ `inv_mass > 0`** on pull (x00ad).
 //! Non-guarantees: zero heap inside XPBD scratch; history is fixed [`crate::mvcc::SnapshotSlot`]
-//! (not a per-commit page `Vec` growth); SIMD/`wide` on this path; host wiring.
+//! (not a per-commit page `Vec` growth); SIMD/`wide` on this path; preserving a sheet
+//! `DYNAMIC` bit when `inv_mass == 0` (needs an explicit page mask later);
+//! app 描画本線の page SoA 置換（Epoch 経路並存）; dirty コーデック直結.
 //! Scratch [`XpbdWorld`] is fixed-index only (`local_idx == row_id`);
 //! do not call [`EpochSheet::alloc_row`] on it.
 
@@ -68,6 +71,16 @@ impl PageXpbdAdapter {
         }
     }
 
+    /// Match host Epoch gravity (x00ad `mvcc_xpbd` sync).
+    pub fn set_gravity(&mut self, gravity: [f64; 3]) {
+        self.world.gravity = gravity;
+    }
+
+    /// Match host Epoch substep count (x00ad `mvcc_xpbd` sync).
+    pub fn set_substeps(&mut self, substeps: u32) {
+        self.world.substeps = substeps;
+    }
+
     /// Spawn / refresh a dynamic (or kinematic) entity into the page + collider table.
     pub fn seed_entity(
         &mut self,
@@ -119,13 +132,25 @@ impl PageXpbdAdapter {
     /// Handover / guest restore is the same path: publish `pos` + `delta`, then
     /// `step_page` on a fresh (or any) adapter — `pull_page` rebuilds Prev.
     pub fn step_page(&mut self, page: &mut HotPhysicsPage, dt: f64) {
+        self.step_page_with_grabs(page, &[], dt);
+    }
+
+    /// Like [`Self::step_page`], but applies Grab distance targets (`row_id`, world aim).
+    ///
+    /// Host (x00ad) uses this so `mvcc_xpbd` keeps Grab follow while contacts stay on.
+    pub fn step_page_with_grabs(
+        &mut self,
+        page: &mut HotPhysicsPage,
+        grab_targets: &[(u32, [f64; 3])],
+        dt: f64,
+    ) {
         self.pull_page(page);
         xpbd::sync_prev_capacity(&mut self.world);
         xpbd::step(
             &mut self.world,
             &mut self.topo,
             &[],
-            &[],
+            grab_targets,
             Some(self.bounds),
             dt,
         );
@@ -170,16 +195,22 @@ impl PageXpbdAdapter {
                 curr_local[2] - delta[2],
             ];
 
+            // Page-face contract (x00ad): **DYNAMIC ≡ inv_mass > 0**.
+            // Do not stamp DYNAMIC on every active row (that let sensor spheres shove
+            // dynamics). Kinematic/static keep COLLIDER only; static BOX still emits
+            // contacts via `row_emits_body_contact`. A future sheet row that is
+            // DYNAMIC with inv_mass==0 would lose DYNAMIC on this path until the
+            // page grows an explicit dynamic mask.
             let mut ready = ReadinessMask(
-                ReadinessMask::ALLOCATED
-                    | ReadinessMask::TRANSFORM
-                    | ReadinessMask::COLLIDER
-                    | ReadinessMask::DYNAMIC,
+                ReadinessMask::ALLOCATED | ReadinessMask::TRANSFORM | ReadinessMask::COLLIDER,
             );
+            if inv_mass > 0.0 {
+                ready = ready.with_bits(ReadinessMask::DYNAMIC);
+            }
             if page.is_grabbed(idx) {
                 ready = ready.with_bits(ReadinessMask::GRABBED);
             }
-            if page.is_sleeping(idx) {
+            if page.is_sleeping(idx) && inv_mass > 0.0 {
                 ready = ready.with_bits(ReadinessMask::SLEEPING);
             }
 
@@ -396,6 +427,91 @@ mod tests {
             "boxes still overlapping: dist={dist} min_sep={min_sep}"
         );
         assert!(page.soa.pos_x[0].is_finite() && page.soa.pos_x[1].is_finite());
+    }
+
+    #[test]
+    fn pull_page_inv_mass_zero_sphere_is_not_dynamic() {
+        // Regression: stamping DYNAMIC on every active row let sensor spheres shove
+        // dynamics on the mvcc page path (x00ad review).
+        let bounds = SceneBounds {
+            min: [-10.0, -10.0, -10.0],
+            max: [10.0, 10.0, 10.0],
+        };
+        let mut adapter = PageXpbdAdapter::new(bounds);
+        adapter.world.gravity = [0.0, 0.0, 0.0];
+        adapter.world.substeps = 4;
+        let mut page = HotPhysicsPage::zeroed_page();
+        adapter.seed_entity(
+            &mut page,
+            0,
+            [0.0, 0.0, 0.0],
+            0.0,
+            sphere_shape(0.5),
+            [0.0, 0.0, 0.0],
+        );
+        adapter.seed_entity(
+            &mut page,
+            1,
+            [0.2, 0.0, 0.0],
+            1.0,
+            sphere_shape(0.5),
+            [0.0, 0.0, 0.0],
+        );
+        let x1_before = page.soa.pos_x[1];
+        for _ in 0..20 {
+            adapter.step_page(&mut page, 1.0 / 60.0);
+        }
+        assert!(
+            !adapter.world.curr.readiness[0].is_ready(ReadinessMask::DYNAMIC),
+            "inv_mass=0 sphere must stay non-DYNAMIC after pull_page"
+        );
+        assert!(
+            adapter.world.curr.readiness[1].is_ready(ReadinessMask::DYNAMIC),
+            "inv_mass>0 must be DYNAMIC"
+        );
+        assert!(
+            (page.soa.pos_x[1] - x1_before).abs() < 1e-5,
+            "sensor must not shove dynamic: before={x1_before} after={}",
+            page.soa.pos_x[1]
+        );
+    }
+
+    #[test]
+    fn page_path_static_box_still_shoves_dynamic() {
+        let bounds = SceneBounds {
+            min: [-10.0, -10.0, -10.0],
+            max: [10.0, 10.0, 10.0],
+        };
+        let mut adapter = PageXpbdAdapter::new(bounds);
+        adapter.world.gravity = [0.0, 0.0, 0.0];
+        adapter.world.substeps = 8;
+        let mut page = HotPhysicsPage::zeroed_page();
+        let half = 0.5_f32;
+        adapter.seed_entity(
+            &mut page,
+            0,
+            [0.0, 0.0, 0.0],
+            0.0,
+            box_shape(half),
+            [0.0, 0.0, 0.0],
+        );
+        adapter.seed_entity(
+            &mut page,
+            1,
+            [0.2, 0.0, 0.0],
+            1.0,
+            sphere_shape(0.5),
+            [0.0, 0.0, 0.0],
+        );
+        let x1_before = page.soa.pos_x[1];
+        for _ in 0..40 {
+            adapter.step_page(&mut page, 1.0 / 60.0);
+        }
+        assert!(
+            page.soa.pos_x[1] > x1_before + 0.05,
+            "static BOX must shove dynamic outward: before={x1_before} after={}",
+            page.soa.pos_x[1]
+        );
     }
 
     #[test]
