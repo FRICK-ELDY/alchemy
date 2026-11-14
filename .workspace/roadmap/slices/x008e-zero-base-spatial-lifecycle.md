@@ -14,7 +14,7 @@
 | `row_id` 不変・generation ABA・Hierarchical bitset・`is_finite` ゲート | Rapier の削除・本番 tick 置換 |
 | Depth / Euler Baker・親→子伝播（間接配列のみ再構築） | 任意回転の完全な階層クォータニオン合成（並進＋scale 優先） |
 | 30bit Morton + radix・Flat LBVH・Raycast・狭相（Sphere/Capsule/Box/Ray）・カプセル押し出し | StaticSDF 生成（Atom 参照スタブのみ）・凹メッシュ GJK/EPA |
-| Prev/Curr 契約（publish は step 前 Prev＋step 後 Curr → その後 commit）・substep Verlet（`sub_prev`＝predict 直前） | Formula VM / 全身 IK UX |
+| Prev/Curr 契約（publish は step 前 Prev＋step 後 Curr → その後 commit）・substep Verlet（`sub_prev`＝predict 直前） | Dual-AST Kernel / 全身 IK UX |
 | Grab / 距離 / soft compliance / sleeping・dirty・Patch Merge（物理座標 preserve） | Loro CRDT Commit・Zenoh 揮発ストリーム本番配線 |
 | `arc-swap` Epoch 公開（**人承認済** MIT OR Apache-2.0）・GPU 行の **row_id 整列パック** | SceneGpu への補間コンピュート本配線・GPU Readback |
 | Settings Tape X-Ray（`ensure_xray_row` + 読取分離）・`euler_order` 仮想 Hierarchy API | Spatial Lens UI 本仕様（別ドキュメント） |
@@ -130,7 +130,7 @@
 - Rapier / 既存 `SlotGraph` の置換・削除 → XPBD wire 権威は **[x0093](x0093-xpbd-wire-authority.md)** **done**（SlotGraph は維持）
 - SceneGpu への補間コンピュート bind → **[x0090](x0090-client-epoch-scenegpu-bind.md)** **done**；`out`→draw → **[x0091](x0091-epoch-out-scenegpu-draw.md)**
 - Loro CRDT / Zenoh 揮発 Grab ストリーム
-- Formula VM・全身 IK・StaticSDF asset-compiler
+- Dual-AST Kernel・全身 IK・StaticSDF asset-compiler
 - UI Lens 本仕様 → [alchemy_zero_base_spatial_ui_lens_uix_architecture.md](../alchemy_zero_base_spatial_ui_lens_uix_architecture.md)
 
 ## 関連

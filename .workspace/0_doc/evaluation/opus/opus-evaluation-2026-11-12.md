@@ -253,6 +253,6 @@ HostSupervisor はプロセス境界の設計として非常に丁寧（Job Obje
 ## 評価の前提
 
 - 旧 Elixir 権威実行前提は使っていない。
-- 目標のみ（verifier 統計・billing / market・Formula / OSC・Wake-on-Join 等）は減点せず提案または対象外とした。
+- 目標のみ（verifier 統計・billing / market・Dual-AST Kernel / OSC・Wake-on-Join 等）は減点せず提案または対象外とした。
 - 第2評価者の文書は読んでいない。改善計画の「done」注記は参照のみで、判定はすべて当日コードの再読に基づく。
 - assets の初回失敗は再実行で消え、恒常バグではなくフレークとして記録した。

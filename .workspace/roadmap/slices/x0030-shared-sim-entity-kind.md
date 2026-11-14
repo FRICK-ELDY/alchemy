@@ -2,7 +2,7 @@
 
 > **ID:** `x0030` · **slug:** `shared-sim-entity-kind` · **status:** `done` · **area:** `[sim, host, client, docs]` · **depends_on:** `[x0027]`
 
-目標: host と client で重複していた Manifest 分類・entity 定数を **`alchemy-shared-sim`** に寄せる。Rapier / wgpu / Formula は移さない。
+目標: host と client で重複していた Manifest 分類・entity 定数を **`alchemy-shared-sim`** に寄せる。Rapier / wgpu / Dual-AST Kernel は移さない。
 
 正本: [protocol.md](../../0_doc/architecture/protocol.md) · [client.md](../../0_doc/architecture/client.md)
 
@@ -24,7 +24,7 @@
 
 ## やらない
 
-- Rapier / 予測補間 / Formula VM の移管
+- Rapier / 予測補間 / Dual-AST Kernel の移管
 - Elixir `DemoScene` codegen（定数コメントで手動同期）
 - threat model（x0031）・launcher（x0032）
 - PROTOCOL_PIN 上げ（ワイヤ schema 不変）

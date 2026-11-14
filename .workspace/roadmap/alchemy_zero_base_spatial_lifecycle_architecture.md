@@ -24,7 +24,7 @@
 | **1. `Atom`** | **不変ハッシュ塊 (Immutable CAS Blob)**<br>メッシュ(GLB)、静的SDF/BVH、KTX2テクスチャ、音声、コンパイル済みAST等の不変バイト列。`BLAKE3` (32Byte) で識別され、全スレッド・P2P間でゼロコピー共有される。 | `Content` |
 | **2. `Tape<T>`** | **世代管理された1次元連続メモリ列 (Epoch SoA Column)**<br>64Byteキャッシュラインにアラインされた `#[repr(C)]` (`bytemuck::Pod`) の1次元配列。実データの行インデックス（`row_id`）はスポーン時から固定され、移動しない。 | `Component`, `Struct` |
 | **3. `Topology`** | **平坦化空間スケジュール (Indirect Schedule & Flat LBVH)**<br>実データ配列（`Tape`）を並び替えるのではなく、「どの順番で行を計算・描画するか」を表す1次元の間接インデックス配列（Depthバケット、オイラーツアー区間、Morton LBVH）。 | `Scene`, `Object`, `Node` |
-| **4. `Kernel`** | **純粋データ変換器 (Dataflow Pure Function)**<br>入力 `Tape` を受け取り、出力 `Tape` へ書き出す関数（Native XPBD Solver / Formula VM Bytecode / Wasmtime / wgpu Compute Shader）。 | `Behavior` |
+| **4. `Kernel`** | **純粋データ変換器 (Dataflow Pure Function)**<br>入力 `Tape` を受け取り、出力 `Tape` へ書き出す関数（Native XPBD Solver / Dual-AST bytecode / Wasmtime / wgpu Compute Shader）。 | `Behavior` |
 | **5. `Impulse`** | **因果順序付き差分パッチ & 準備マスク (Causal Patch & Bitmask)**<br>確定操作のCRDTパッチ、ドラッグ中の揮発ストリーム、および各行の有効状態を示す64bitの `ReadinessMask`。 | `Event` |
 
 ---
@@ -57,11 +57,11 @@ flowchart TB
 
     subgraph Ring2["⚙️ Ring 2: 60Hz Native XPBD & Causal Sim Ring (host-server / shared-sim)"]
         direction LR
-        LogicVM["① Formula VM / Logic Kernel<br/>階層型Bitsetで有効行のみSIMD評価"]:::ring2
+        DualAstKernel["① Dual-AST Kernel<br/>階層型Bitsetで有効行のみSIMD評価"]:::ring2
         BroadLBVH["② 慣性予測 & Flat LBVH<br/>・Curr = Curr + Velocity + g*dt²<br/>・30bit Morton Code 算出 & Radix Sort"]:::ring2
         NarrowXPBD["③ 空間クエリ & XPBD 統合ソルバー<br/>・Raycast / 接触ペア生成<br/>・剛体 / VR Grab / 全身IK / 揺れもの一括解決"]:::ring2
         DepthProp["④ Depth Bucket 階層伝播 & デルタ抽出<br/>・親➔子へワールド座標をSIMD一括伝播<br/>・Dirty BlockのみZenohへ30Hz配信"]:::ring2
-        LogicVM --> BroadLBVH --> NarrowXPBD --> DepthProp
+        DualAstKernel --> BroadLBVH --> NarrowXPBD --> DepthProp
     end
 
     subgraph Ring3["⚡ Ring 3: 120Hz 知覚・ハイブリッドGPU描画 (client wgpu)"]
@@ -152,7 +152,7 @@ impl ReadinessMask {
     pub const DYNAMIC: u64   = 1 << 5; // XPBD 重力・慣性移動対象
     pub const GRABBED: u64   = 1 << 6; // VR手で保持中 (Kinematic追従拘束)
     pub const SLEEPING: u64  = 1 << 7; // 静止スリープ中 (計算・送信スキップ)
-    pub const LOGIC: u64     = 1 << 8; // Formula VM 評価対象
+    pub const LOGIC: u64     = 1 << 8; // Dual-AST Kernel 評価対象
     pub const TOMBSTONE: u64 = 1 << 63; // 削除予約
 
     #[inline(always)]

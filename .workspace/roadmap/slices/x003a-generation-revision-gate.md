@@ -47,7 +47,7 @@
 ## やらない
 
 - decode limit / prod S2S / test DB（→ x003b）
-- Formula VM / verifier 本体
+- Dual-AST Kernel / verifier 本体
 - mTLS
 
 ## 成功条件

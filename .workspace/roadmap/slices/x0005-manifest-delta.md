@@ -28,7 +28,7 @@
 |:---|:---|
 | Manifest と RenderFrame の役割分離（低頻度参照 / 高頻度 pose） | Manifest の world-server 署名・HTTPS 正本化（後続） |
 | 同一 room の client が Manifest の blake3 で同じ Blob を取得できる | LOD / KTX2 / P2P キャッシュ / Vault・Commit |
-| 静止 Entity を毎 tick フルスナップショット再送しない | Rapier / Formula / 本格ビット圧縮 |
+| 静止 Entity を毎 tick フルスナップショット再送しない | Rapier / Dual-AST Kernel / 本格ビット圧縮 |
 | host に GLB バイトを載せない | verifier / 公式リレー / launcher |
 
 ## やらない（後続）

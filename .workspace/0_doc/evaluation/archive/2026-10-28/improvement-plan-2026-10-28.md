@@ -79,7 +79,7 @@
 | P4-1 | 描画経路統合（wgpu + OpenXR） | -2 | **クローズ** — **[x0050](../../roadmap/slices/x0050-xr-swapchain-wgpu.md)**/**[x0051](../../roadmap/slices/x0051-xr-scene-gpu-unify.md)**/**[x0052](../../roadmap/slices/x0052-xr-vk-loop-gpu-remove.md)** done（ash graphics 削除・wgpu 既定） |
 | P4-2 | launcher discovery / deep link / handoff | 提案 | IPC stale 解消を含む |
 | P4-3 | verifier（Spot-Check） | 目標 | **P0-2/P0-3 が先行条件** |
-| P4-4 | Formula VM / Wake-on-Join / OSC / LOD / audio | 目標 | 減点しない |
+| P4-4 | Dual-AST Kernel / Wake-on-Join / OSC / LOD / audio | 目標 | 減点しない |
 | P4-5 | billing / market / BlobGrant 経済圏 | 目標 | **台帳 MVP（案 A）= [x004f](../../roadmap/slices/x004f-blob-grant-mvp.md)**。GET 常時 Grant（案 B）・Vault / market は後続 |
 | P4-6 | XR ↔ Desktop ホットスイッチ | 提案 | Resonite 風 presence／明示トグル。[**x0053**](../../roadmap/slices/x0053-xr-desktop-hotswitch.md) planned（調査メモ済み・実装未） |
 

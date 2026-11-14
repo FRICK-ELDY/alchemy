@@ -1,7 +1,7 @@
 # Alchemy — 提案（0 点）詳細（第1評価者 Claude Opus 5.5 / 2026-11-12）
 
 > 評価対象コミット: `8833821`。いずれも「現時点では存在しないが、実装すれば価値が上がる」前向きな次の一手であり、加点も減点もしない。
-> 目標のみでコードが無い項目（verifier 統計・billing / market・Formula / OSC 等）はここに置き、減点していない。第2評価者（`gpt/`）の文書は参照していない。
+> 目標のみでコードが無い項目（verifier 統計・billing / market・Dual-AST Kernel / OSC 等）はここに置き、減点していない。第2評価者（`gpt/`）の文書は参照していない。
 
 ## 採点基準
 
@@ -59,7 +59,7 @@
   > `FrameBridge` 側では既に LBVH contact を通している。host でも bounds を渡し、`EpochSheet::clone_from`・彩色の世代マーカー化・LBVH の refit（再構築ではなく AABB 更新）で毎 tick の確保を消す。Bevy の `bevy_xpbd`（現 avian）や Jolt の broadphase と同じ方向。
   > 対象ファイル: `client/shared-sim/src/xpbd.rs`, `client/shared-sim/src/spatial.rs`
 
-- **Formula VM / Dual Representation（目標）** `0`
+- **Dual-AST Kernel / Dual Representation（目標）** `0`
   > overview ブロック 3 の目標。コードが無いので減点しない。
   > 対象ファイル: なし（目標）
 

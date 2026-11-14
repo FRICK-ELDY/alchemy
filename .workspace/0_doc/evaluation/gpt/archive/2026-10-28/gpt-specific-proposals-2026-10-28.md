@@ -46,8 +46,8 @@
   > Intent Hz、bind refresh、Grab transition を `sub/session_pub` ごとの token bucket で制限し、drop reason と temporary ban を集約する。
   > 対象ファイル: `client/host-server/src/session.rs`
 
-- **Formula VM・Wake-on-Join・handoff は次段として実装する** `0`
-  > 現在の shared-sim/launcher 境界を保ち、Formula は deterministic sandbox、Wake-on-Join は room lifecycle、handoff は world generation 証明と snapshot transfer として追加する。未実装の目標機能なので現評価では減点しない。
+- **Dual-AST Kernel・Wake-on-Join・handoff は次段として実装する** `0`
+  > 現在の shared-sim/launcher 境界を保ち、Dual-AST Kernel は deterministic sandbox、Wake-on-Join は room lifecycle、handoff は world generation 証明と snapshot transfer として追加する。未実装の目標機能なので現評価では減点しない。
 
 ### client/app
 

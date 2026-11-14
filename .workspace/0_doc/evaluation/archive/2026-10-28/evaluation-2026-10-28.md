@@ -132,5 +132,5 @@
 ## 評価の前提
 
 - 旧 Elixir 権威実行前提は未使用
-- 目標のみ（verifier / billing / market / Formula / OSC 等）は減点せず提案/対象外
+- 目標のみ（verifier / billing / market / Dual-AST Kernel / OSC 等）は減点せず提案/対象外
 - 各評価者は相手文書を読んでいない。まとめは双方詳細を読み、合意・相違・採用を明示した

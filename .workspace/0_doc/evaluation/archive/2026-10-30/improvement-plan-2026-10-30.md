@@ -69,7 +69,7 @@
 | P3-2 | XR↔Desktop hot switch x0053 | 提案 | planned 継続 |
 | P3-3 | verifier Spot-Check | 目標 | canonical seal / gen-rev 先行条件 **満たした** |
 | P3-4 | BlobGrant 案 B（GET 常時 Grant） | 目標 | P0-5 と連続 |
-| P3-5 | Formula / Wake / OSC / LOD / audio | 目標 | 減点しない |
+| P3-5 | Dual-AST Kernel / Wake / OSC / LOD / audio | 目標 | 減点しない |
 | P3-6 | billing / market / Relay QoS 経済圏 | 目標 | ディレクトリ未設置 |
 
 ---

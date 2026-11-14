@@ -11,7 +11,7 @@ alwaysApply: false
 > **技術評価層の正本**  
 > 観点は [`.workspace/0_doc/architecture/overview.md`](../../.workspace/0_doc/architecture/overview.md) の目標構成と、リポジトリ直下の実ディレクトリに対応させる。  
 > 評価時は各コンポーネントの [`architecture/*.md`](../../.workspace/0_doc/architecture/)（保証する／しない）と現状コードを突き合わせる。  
-> **目標のみでコードが無い項目**は減点せず「未実装・評価対象外」または提案点 `0` とする。旧 Elixir 権威実行（contents / Formula NIF / Phoenix Channel・独自 UDP）前提は使わない。
+> **目標のみでコードが無い項目**は減点せず「未実装・評価対象外」または提案点 `0` とする。旧 Elixir 権威実行（contents / Formula NIF / Phoenix Channel・独自 UDP）前提は使わない。Dual-AST Kernel（旧称 Formula VM）は別系譜の Pure Rust 目標実行器であり、廃止済み Formula NIF の後継表記ではない。
 
 ---
 
@@ -120,7 +120,7 @@ alwaysApply: false
 
 - **シミュレーション範囲**
   - Rapier 等の物理・entity 割当（user_root 等）の設計品質
-  - （目標）Formula VM・Wake-on-Join・貸し出しプール連携 — 未実装なら提案または対象外
+  - （目標）Dual-AST Kernel・Wake-on-Join・貸し出しプール連携 — 未実装なら提案または対象外
 
 ---
 

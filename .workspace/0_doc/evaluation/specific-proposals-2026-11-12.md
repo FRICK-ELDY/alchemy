@@ -55,7 +55,7 @@
 - **配信の空間インデックス（Spatial Interest / AOI・セル購読・avatar sync LOD）** `0`
   > フルメッシュ `frame` のままでは N 人でリレーが先に死ぬ。正本 [`spatial_interest.md`](../../roadmap/spatial_interest.md)（improvement-plan **P3-7**）。実装は MVCC Phase 3 後。1000 人は horizon。
 - **verifier Spot-Check オーケストレーション（OSS は配線のみ）** `0`
-- **S2S 連合 / Spatial VCS 本体 / Formula / OSC / Wake-on-Join / audio** `0`
+- **S2S 連合 / Spatial VCS 本体 / Dual-AST Kernel / OSC / Wake-on-Join / audio** `0`
 - **relay 帯域 QoS・SLO dashboard** `0`
 - **署名付き installer / 自動更新 / host バイナリ hash 検証** `0`
 - **Optional Profile（billing / market）は実装時まで対象外維持** `0`

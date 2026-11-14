@@ -61,7 +61,7 @@
 
 ## 目標のみ（減点しない・評価対象外）
 
-- **verifier（Spot-Check）・Formula VM・Wake-on-Join・OSC・Dual Editor・LOD/KTX2・空間オーディオ**
+- **verifier（Spot-Check）・Dual-AST Kernel・Wake-on-Join・OSC・Dual Editor・LOD/KTX2・空間オーディオ**
 - **billing / market-server / FederationPolicy**
   > いずれもディレクトリ未設置または契約未。world-authored Manifest・generation・BlobGrant が先行条件。
 

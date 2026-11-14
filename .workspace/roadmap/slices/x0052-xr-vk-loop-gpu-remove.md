@@ -13,7 +13,7 @@
 |:---|:---|
 | XR ビルドが ash **グラフィックスパイプライン**に依存しない | OpenXR+Vulkan enable／wgpu-hal interop 用の ash 残存（必要最小） |
 | Desktop / XR のワールド描画ロジックが SceneGpu 系で単一 | ファイル名必須リネーム（`frame_loop.rs` 等は任意） |
-| 一時フラグ（clear／旧 ash 切替）を整理し wgpu を既定化 | Formula / LOD / 予測補間 |
+| 一時フラグ（clear／旧 ash 切替）を整理し wgpu を既定化 | Dual-AST Kernel / LOD / 予測補間 |
 | roadmap / client.md / improvement-plan の P4-1 クローズ記載 | verifier / launcher 本実装 |
 
 ## 設計（要点）

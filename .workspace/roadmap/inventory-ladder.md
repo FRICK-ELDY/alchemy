@@ -29,7 +29,7 @@ ID は roadmap 規約どおり **`x` + 4桁ゼロ埋め小文字 16進**（`x005
 |:---|:---|
 | GET 常時 Grant（案 B 本体）・room 連動読取 Grant | x004f 後続。本ラダーの x0054 は **inventory PUT 固定**のみ |
 | Mail / Comms / Shopfront | Drive・Vcs 安定後の独立帯（Wave 4 後に Shop） |
-| CRDT・Formula VM | host Step 4〜5。B+2 / C+3 本線の外 |
+| CRDT・Dual-AST Kernel | host Step 4〜5。B+2 / C+3 本線の外 |
 | x0053 XR↔Desktop ホットスイッチ | 体感帯・並行可・同一 PR 禁止 |
 
 ## 関連

@@ -129,7 +129,7 @@ smoke スクリプト（`smoke-*.sh`）は、auth / world / zenohd を起動し�
 
 ## 評価の前提と制約
 
-- 旧 Elixir 権威実行（contents / Formula NIF / Phoenix Channel・独自 UDP）を前提とした観点は使っていない。
-- 目標にあるだけでコードが無い項目（verifier・Formula VM・Wake-on-Join・OSC・Dual Editor・LOD・空間オーディオ・P2P・テナント名前空間・billing / market・launcher の本実装）は減点せず、提案または対象外とした。
+- 旧 Elixir 権威実行（contents / Formula NIF / Phoenix Channel・独自 UDP）を前提とした観点は使っていない。Dual-AST Kernel（旧称 Formula VM）は別系譜の目標であり、Formula NIF の後継表記ではない。
+- 目標にあるだけでコードが無い項目（verifier・Dual-AST Kernel・Wake-on-Join・OSC・Dual Editor・LOD・空間オーディオ・P2P・テナント名前空間・billing / market・launcher の本実装）は減点せず、提案または対象外とした。
 - 実機の HMD での動作、および smoke の縦通し（実際の auth / world / zenohd を起動した状態）は確認していない。OpenXR 関連の評価はコードの読解に基づく。
 - 本レポートの数値は第1評価者の独立した判断である。まとめは親エージェントが別途作成する。

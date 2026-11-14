@@ -35,6 +35,6 @@
 
 - verifier プロセス
 - Shopfront
-- CRDT / Formula
+- CRDT / Dual-AST Kernel
 
 ← [目次](../README.md) · [ladder](../inventory-ladder.md)

@@ -22,7 +22,7 @@
 | プロジェクト全体設計 | +3 | 0 | +3 |
 | **合計** | **+86** | **-15** | **+71** |
 
-**評価対象:** `d2d9f44`。architectureの保証／非保証と現行コードを直接照合した。x0053〜x0065のplanned inventory/XR文書、verifier、Formula、billing、market等は未実装・評価対象外として減点していない。  
+**評価対象:** `d2d9f44`。architectureの保証／非保証と現行コードを直接照合した。x0053〜x0065のplanned inventory/XR文書、verifier、Dual-AST Kernel、billing、market等は未実装・評価対象外として減点していない。  
 **総評:** 2026-10-28時点の「公開WANに出せない三大穴」— ManifestSeal oracle、署名済みreplay、無制限protobuf decode — は実コードと否定系testで閉じた。physics/network分離、cnf、rate/hard-stale、mTLS role ACL、wgpu XR統合まで進み、正味は **+29→+71**。一方、Relay Agentは新しい最重要境界なのに、証明書の実寿命、JWKS hard expiry、request resource bound、CIが未成熟である。次の焦点は機能追加ではなく、この門番の契約をコードどおり短命・boundedにすることである。
 
 ## 採点基準

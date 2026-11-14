@@ -97,7 +97,7 @@
 - **物理ループの `HostLoop::tick` 化とダブルバッファ** `0`
   > `main()` から tick 本体を切り出してユニットテスト可能にし、`FrameSample` のバッファを worker と往復させて毎 tick の確保を消す。
 
-- **Formula VM / Wake-on-Join / 貸し出しプール** `0`
+- **Dual-AST Kernel / Wake-on-Join / 貸し出しプール** `0`
   > overview の目標。現時点で対象外。
 
 ### client/app

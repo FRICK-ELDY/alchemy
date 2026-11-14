@@ -21,7 +21,7 @@
 //! # Non-guarantees
 //! - Bit-packing / prediction coding, DrawCommand taxonomy, audio/tracking frames.
 //! - Cryptographic verification of `InputEvent.room_token` (host-server JWKS).
-//! - Rapier / Formula execution (see `alchemy-shared-sim` EntityKind index; x0030).
+//! - Rapier / Dual-AST Kernel execution (see `alchemy-shared-sim` EntityKind index; x0030).
 //! - Frame scale animation / non-uniform collider resize (x0029 emits unit scale).
 //! - Caps on Presence / JWT claim; invite ACL; reliable-delivery ACK / event-id channel.
 //! - Manifest scale resizing Rapier colliders (half_extent stays definition size).

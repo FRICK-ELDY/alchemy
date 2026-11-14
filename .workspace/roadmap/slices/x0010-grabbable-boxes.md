@@ -40,7 +40,7 @@
 - Grab hold（grip → transform 追従）→ **x0011**
 - 汎用 Slot / Component / ProtoFlux 相当
 - WorldRoot UI・Facet 並べ替え
-- Formula / Dual Editor
+- Dual-AST Kernel / Dual Editor
 
 ## 起動
 
