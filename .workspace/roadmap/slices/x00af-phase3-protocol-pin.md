@@ -2,7 +2,7 @@
 
 > **ID:** `x00af` · **slug:** `phase3-protocol-pin` · **status:** `done` · **area:** `[protocol, host, client, docs]` · **depends_on:** `[x00ae]`  
 > **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 3 残り（PROTOCOL_PIN → `sim_state`）  
-> **後続:** `…/sim_state`（次空き `x00ag`）·（並走可）確定レーン `…/edit`
+> **後続:** `…/sim_state`（次空き `x00b0`）·（並走可）確定レーン `…/edit`
 
 目標: Phase 3 で必要なワイヤ拡張を **PROTOCOL_PIN 1 回**で固定する。`sim_tick` / `redundancy` / `acked_intent_seq` / `Entity.holder` / Intent `release_v*/w*` を proto に載せ、host / app は既定値または最小配線で encode・decode する。
 
@@ -72,7 +72,7 @@
 4. `release_*` の NaN / 過大値が有限＋上限にクランプされる — **done**（適用は非保証）
 5. `cargo test -p alchemy-protocol` / host-server / client 関連 Green — **done**
 6. `…/sim_state` / `…/edit` / dirty 本番切替を入れない — **done**
-7. roadmap 目次の次 = `sim_state`（`x00ag`）— **done**
+7. roadmap 目次の次 = `sim_state`（`x00b0`）— **done**
 
 ---
 

@@ -305,7 +305,7 @@ pub const PRESENCE_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap0000
 /// Default Zenoh key for local room snapshot queryable (x0023).
 pub const SNAPSHOT_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/snapshot";
 
-/// Default Zenoh key for local planned-handover sim_state queryable (x00ag).
+/// Default Zenoh key for local planned-handover sim_state queryable (x00b0).
 pub const SIM_STATE_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/sim_state";
 
 /// Payload accepted by host-server on `host_control_key(room_id)` (Slice E stub).
@@ -472,7 +472,7 @@ pub fn snapshot_key(room_id: &str, wire_cap: &str) -> String {
     format!("{}/snapshot", room_prefix(room_id, wire_cap))
 }
 
-/// Build a planned-handover sim_state queryable key (x00ag / mvcc_xpbd §4.8).
+/// Build a planned-handover sim_state queryable key (x00b0 / mvcc_xpbd §4.8).
 pub fn sim_state_key(room_id: &str, wire_cap: &str) -> String {
     format!("{}/sim_state", room_prefix(room_id, wire_cap))
 }

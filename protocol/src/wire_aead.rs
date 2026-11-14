@@ -43,7 +43,7 @@ pub enum AeadKind {
     InventorySpawn,
     /// Low-frequency inventory scene despawn (x007b); session-signed control (x0081).
     InventoryDespawn,
-    /// Planned handover full sim state (x00ag / mvcc_xpbd §4.8); distinct from Snapshot poses.
+    /// Planned handover full sim state (x00b0 / mvcc_xpbd §4.8); distinct from Snapshot poses.
     SimState,
 }
 

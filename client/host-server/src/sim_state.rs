@@ -1,4 +1,4 @@
-//! Planned handover / crash boot decisions for `…/sim_state` (x00ag / mvcc_xpbd §4.8).
+//! Planned handover / crash boot decisions for `…/sim_state` (x00b0 / mvcc_xpbd §4.8).
 //!
 //! # Guarantees
 //! - Planned path: signed+AEAD SimState → quarantine → PhysicsWorld import (callers).
@@ -21,7 +21,7 @@ pub const SIM_STATE_DT: f32 = 1.0 / 60.0;
 /// Soft world bound for import quarantine (demo cell_origin≈0; not Spatial Interest).
 pub const SIM_STATE_POS_ABS_MAX: f64 = 1.0e5;
 
-/// How the host process should obtain its initial physics state (x00ag).
+/// How the host process should obtain its initial physics state (x00b0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostBootMode {
     /// Manifest entries → PhysicsWorld (existing default).

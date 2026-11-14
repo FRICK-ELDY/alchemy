@@ -12,7 +12,7 @@
 //! Classification via `alchemy-shared-sim` [`EntityKind`] (x0030).
 //! Non-guarantees: Grab aim **rotation** follow (translation only); throw impulse;
 //! Rapier bit-exact parity; capsule Walk extrude; host dirty 30Hz 本番切替 / PROTOCOL_PIN bump;
-//! (shared-sim `delta_codec` is x00ae; `…/sim_state` export/import is x00ag);
+//! (shared-sim `delta_codec` is x00ae; `…/sim_state` export/import is x00b0);
 //! non-uniform collider scale; Frame parent fields / pass-place Intent wiring;
 //! exact OBB box-box (sphere approx via LBVH); production default `mvcc_xpbd`;
 //! `mvcc_xpbd` cell_origin always 0（近傍デモ向け；遠方は f32 量子化）;
@@ -368,7 +368,7 @@ impl PhysicsWorld {
         Ok(host)
     }
 
-    /// Export quantum-free sheet state for `…/sim_state` (x00ag). `drot` is always 0.
+    /// Export quantum-free sheet state for `…/sim_state` (x00b0). `drot` is always 0.
     pub fn export_sim_state(
         &self,
         room_id: &str,
@@ -430,7 +430,7 @@ impl PhysicsWorld {
         }
     }
 
-    /// Resume from a quarantined [`SimState`] after Manifest topology seed (x00ag).
+    /// Resume from a quarantined [`SimState`] after Manifest topology seed (x00b0).
     ///
     /// Skips the cold-start mesh kick; applies poses/deltas/`flags`→readiness;
     /// restores grabs from `holder` (and re-asserts GRABBED).

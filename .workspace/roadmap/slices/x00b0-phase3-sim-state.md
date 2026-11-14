@@ -1,8 +1,9 @@
-# x00ag — Phase 3: `…/sim_state`（計画的 handover + crash fail-closed）
+# x00b0 — Phase 3: `…/sim_state`（計画的 handover + crash fail-closed）
 
-> **ID:** `x00ag` · **slug:** `phase3-sim-state` · **status:** `done` · **area:** `[protocol, host, relay, docs]` · **depends_on:** `[x00af]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 3 残り（`sim_state` → 並走可 `…/edit`）  
-> **後続:**（並走可）確定レーン `…/edit` · host dirty 30Hz 本番切替 · Spatial Interest は Phase 3 後
+> **ID:** `x00b0` · **slug:** `phase3-sim-state` · **status:** `done` · **area:** `[protocol, host, relay, docs]` · **depends_on:** `[x00af]`
+> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 3 残り（`sim_state` → 並走可 `…/edit`）
+> **後続:** [x00b1](x00b1-phase3-dirty-30hz-cutover.md) dirty 30Hz 本番 ·（並走可）確定レーン `…/edit` · Spatial Interest は Phase 3 後
+> **ID 訂正:** 誤って `x00ag` と採番されていたが、規約は **16 進**のため `x00af` の次は **`x00b0`**（`g` は非 hex）。旧 PR / ブランチ名 `feat/x00ag-…` は歴史名として残る。
 
 目標: 計画的 handover 用に **量子化なし** `…/sim_state`（request/response・Room AEAD・host 署名）を追加し、旧 host からの丸渡しで軌道を継続する。crash は §4.8（last-good / snapshot / Manifest 冷起動禁止）。
 
@@ -84,4 +85,4 @@ cargo test -p host-server --bin host-server sim_state
 cargo test -p host-server --bin host-server planned_handover
 ```
 
-推奨ブランチ: `feat/x00ag-phase3-sim-state`
+推奨ブランチ: `feat/x00b0-phase3-sim-state`
