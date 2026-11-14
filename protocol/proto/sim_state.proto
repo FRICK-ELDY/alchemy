@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package alchemy.render;
 
-// Planned host handover state (mvcc_xpbd §4.8 / x00ag).
+// Planned host handover state (mvcc_xpbd §4.8 / x00b0).
 // Request/response on …/sim_state — not a latest delta. Quantum-free poses +
 // per-tick displacement. Distinct AEAD kind from Frame / Snapshot.
 // PROTOCOL_PIN is carried in-message for pin mismatch reject (wire pin bump optional).

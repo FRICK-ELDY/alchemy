@@ -12,7 +12,7 @@
 //! - x0042: Zenoh Frame/Manifest/Presence `put().wait()` on `zenoh-publish`; physics
 //!   submits wire-agnostic pose samples / jobs (encode+sign stay in the worker)
 //! - `…/snapshot` queryable for late join (refused while gated); pure pose deltas
-//! - `…/sim_state` queryable for planned handover (x00ag; Room AEAD + host sig; refused while gated)
+//! - `…/sim_state` queryable for planned handover (x00b0; Room AEAD + host sig; refused while gated)
 //! - `ALCHEMY_HOST_BOOT_MODE=cold|planned_handover|crash_promote` (default cold)
 //! - Empty deltas: **no publish and no `net_tick` advance**; snapshot tick = last published (x0024)
 //! - Per-`sub` Intent/Grab → Manifest user_root slots (≤ `USER_ROOT_SLOTS_MAX` DoS; x004d / x009b);
@@ -478,7 +478,7 @@ fn spawn_sim_state_queryable(
     Ok(())
 }
 
-/// Fetch planned-handover SimState from the previous host (x00ag).
+/// Fetch planned-handover SimState from the previous host (x00b0).
 fn fetch_sim_state(
     session: &zenoh::Session,
     room_id: &str,
@@ -1037,7 +1037,7 @@ fn main() -> Result<()> {
     let decision = decide_boot(boot_source);
     let (physics, resume_sim_tick) = match decision {
         sim_state::BootDecision::FailClosed { reason } => {
-            anyhow::bail!("host boot fail-closed (x00ag §4.8): {reason}");
+            anyhow::bail!("host boot fail-closed (x00b0 §4.8): {reason}");
         }
         sim_state::BootDecision::Start {
             state: None,
@@ -1086,7 +1086,7 @@ fn main() -> Result<()> {
         physics.entity_count()
     );
 
-    // Seed cache + declare queryables only after boot fetch completed (x00ag review).
+    // Seed cache + declare queryables only after boot fetch completed (x00b0 review).
     {
         let host_generation = read_publish_gate(&publish_snapshot, Instant::now()).host_generation;
         let seeded = physics.export_sim_state(

@@ -32,7 +32,7 @@ pub enum WireClass {
     Frame,
     Presence,
     Input,
-    /// Planned handover full sim state (x00ag); larger than Frame (f64 + deltas).
+    /// Planned handover full sim state (x00b0); larger than Frame (f64 + deltas).
     SimState,
 }
 
@@ -54,7 +54,7 @@ pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 pub const MAX_PRESENCE_BYTES: usize = 64 * 1024;
 pub const MAX_INPUT_BYTES: usize = 32 * 1024;
-/// Full-scene quantum-free state (x00ag); aligned with Manifest ceiling.
+/// Full-scene quantum-free state (x00b0); aligned with Manifest ceiling.
 pub const MAX_SIM_STATE_BYTES: usize = 1024 * 1024;
 
 /// Post-decode repeated-field ceilings.
@@ -64,7 +64,7 @@ pub const MAX_MANIFEST_ENTRIES: usize = 4096;
 pub const MAX_FRAME_UPSERTS: usize = 4096;
 pub const MAX_FRAME_REMOVES: usize = 4096;
 pub const MAX_PRESENCE_ASSIGNMENTS: usize = USER_ROOT_SLOTS_MAX;
-/// Same DoS bound as Manifest entries / Frame upserts (x00ag).
+/// Same DoS bound as Manifest entries / Frame upserts (x00b0).
 pub const MAX_SIM_STATE_ENTITIES: usize = MAX_MANIFEST_ENTRIES;
 
 /// Post-decode string / JWT / key ceilings (bytes).
@@ -224,7 +224,7 @@ pub fn check_frame(frame: &RenderFrame) -> Result<(), DecodeLimitError> {
     Ok(())
 }
 
-/// Post-decode SimState entity / string / holder ceilings (x00ag).
+/// Post-decode SimState entity / string / holder ceilings (x00b0).
 pub fn check_sim_state(state: &SimState) -> Result<(), DecodeLimitError> {
     check_str("protocol_pin", &state.protocol_pin, MAX_PROTOCOL_PIN_BYTES)?;
     check_str("room_id", &state.room_id, ROOM_ID_MAX_BYTES)?;
@@ -324,7 +324,7 @@ pub fn decode_presence_checked(payload: &[u8]) -> Result<PresenceState, CheckedD
     Ok(state)
 }
 
-/// Decode + post-check SimState after payload byte gate (x00ag).
+/// Decode + post-check SimState after payload byte gate (x00b0).
 pub fn decode_sim_state_checked(payload: &[u8]) -> Result<SimState, CheckedDecodeError> {
     check_payload_bytes(WireClass::SimState, payload.len()).map_err(CheckedDecodeError::Limit)?;
     let state = SimState::decode(payload).map_err(CheckedDecodeError::Decode)?;

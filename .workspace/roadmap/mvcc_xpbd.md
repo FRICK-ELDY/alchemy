@@ -6,7 +6,7 @@
 * **本線の役割**: **品質本線**（近傍物理・ゼロアロ・handover 速度・補間）。同一 Room の大規模 CCU（1000 人 horizon）は規模本線 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**）
 * **関連スライス**: `x0020` (Desktop 正本), `x0039` (`ManifestSeal`), `x0053` (体感並行補間), `x0067` (Zenoh 非対称 ACL), `x0068` (短命 mTLS), `x0069` (Room 鍵 AEAD), `x0024`（frame tick 連番 + 欠落時 snapshot）
 * **レビュー取り込み**: [mvcc_xpbd_review_proposal.md](mvcc_xpbd_review_proposal.md)（2026-11-13）の P0/P1 を本版に反映。未決事項は §6
-* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜`sim_state`（x00ad–[x00ag](slices/x00ag-phase3-sim-state.md)）**done**。残り: `…/edit`（並走可）・dirty 30Hz 本番切替（次空き `x00ah`〜）。
+* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜`sim_state`（x00ad–[x00b0](slices/x00b0-phase3-sim-state.md)）**done**。残り: dirty 30Hz 本番切替（[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md) **planned**）・（並走可）`…/edit`（次空き `x00b2`〜）。
 * **最優先規約**: 全 Rust クレートにおいて `#![forbid(unsafe_code)]` を**クレート直下（`lib.rs` / 該当 `main.rs`）**に宣言し、既存の `./.scripts/ci.sh rust`・`./.scripts/ci.sh protocol`・`make smoke-desktop-handthrough` を常に Green に保つこと。差分配信の用語は **dirty 合成 + x0024 snapshot**（`V_ack` / 「XOR デルタ」は使わない）。
 
 ---
@@ -21,7 +21,7 @@ P0 closed
   → Phase 3 着手 x00ad（SimBackend + 接触オン）✓
   → Phase 3 dirty codec x00ae✓
   → Phase 3 PROTOCOL_PIN x00af✓
-  → Phase 3 sim_state x00ag✓
+  → Phase 3 sim_state x00b0✓
   → Phase 3 残り（確定レーン並走 · dirty 本番）
     → 規模本線: spatial_interest.md（P3-7；アウトライン並走可・実装は Phase 3 後）
 P1-6 / P2（vault・UI/docs/CI）は並走可。P3-1 / P3-3 以降は独立。
@@ -590,7 +590,7 @@ flowchart LR
 
 **DoD に含めないもの**: 同一 Room の大規模 CCU・フルメッシュ解除・interest キー族。それらは [spatial_interest.md](spatial_interest.md) のマイルストーン（32→64→128、1000 は horizon）が担当する。
 
-**現状**: Phase 1–2 + Phase 3 着手〜PROTOCOL_PIN（x00a3–x00af）まで **コード完了**。以下の Phase 2 節は完了記録；実装本線の次は `sim_state`（`x00ag`〜）。
+**現状**: Phase 1–2 + Phase 3 着手〜`sim_state`（x00a3–[x00b0](slices/x00b0-phase3-sim-state.md)）まで **コード完了**。実装本線の次は dirty 30Hz 本番切替（[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md) **planned**；slice のみ・実装は別 PR。並走可 `…/edit`）。
 
 ### Phase 1: 既存 `shared-sim` の進化とヘッドレス決定論テスト（host/app 本線は触らない）
 
@@ -624,8 +624,9 @@ flowchart LR
 * **[x00ad](slices/x00ad-phase3-host-sim-backend.md)** — `SimBackend` + **接触オン**（P1-2 host）— **done**。
 * **[x00ae](slices/x00ae-phase3-dirty-delta-codec.md)** — `delta_codec` + dirty 合成 + Smallest-Three — **done**。
 * **[x00af](slices/x00af-phase3-protocol-pin.md)** — PROTOCOL_PIN 一括（`sim_tick` / `holder` / `release_*`）— **done**。
-* **[x00ag](slices/x00ag-phase3-sim-state.md)** — `…/sim_state` 計画的 handover + crash fail-closed — **done**。
-* 後続（次空き `x00ah`〜）:（並走可）確定レーン `…/edit` · dirty 30Hz 本番切替。
+* **[x00b0](slices/x00b0-phase3-sim-state.md)** — `…/sim_state` 計画的 handover + crash fail-closed — **done**。
+* **[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)** — host dirty 30Hz 本番切替 — **planned**（slice / 目次のみ）。
+* 後続（次空き `x00b2`〜）:（並走可）確定レーン `…/edit`。
 
 1. **作業内容**:
    * `ALCHEMY_SIM_BACKEND=mvcc_xpbd|epoch_xpbd` で切替可能な権威ループ。Ingress 検疫 → Fork/`make_mut` → XPBD（**接触オン＝`bounds: Some`**）→ 階層 → Commit。ここで P1-2 の host 配線を閉じる（**→ x00ad**）。

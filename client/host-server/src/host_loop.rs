@@ -243,7 +243,7 @@ pub(crate) struct HostLoop {
     last_wire_acked: Vec<u64>,
     /// `sim_tick` paired with [`Self::last_wire_acked`] / last pose sample.
     last_wire_sim_tick: u64,
-    /// Room id for `…/sim_state` export (x00ag).
+    /// Room id for `…/sim_state` export (x00b0).
     room_id: String,
     /// Shared with sim_state queryable; refreshed each physics tick.
     sim_state_cache: Arc<Mutex<Option<SimState>>>,
@@ -270,7 +270,7 @@ pub(crate) struct HostLoopParts {
     pub last_presence: Instant,
     pub last_presence_rev: u64,
     pub last_publish_denied_log: Instant,
-    /// Resume physics step counter after planned handover (x00ag); default 0.
+    /// Resume physics step counter after planned handover (x00b0); default 0.
     pub resume_sim_tick: u64,
     pub room_id: String,
     pub sim_state_cache: Arc<Mutex<Option<SimState>>>,

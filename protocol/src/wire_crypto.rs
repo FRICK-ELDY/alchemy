@@ -166,7 +166,7 @@ pub fn frame_entities_finite(frame: &RenderFrame) -> bool {
     frame.upserts.iter().all(entity_is_finite)
 }
 
-/// Encode `SimState` for signing (`host_sig` cleared) (x00ag).
+/// Encode `SimState` for signing (`host_sig` cleared) (x00b0).
 pub fn sim_state_signing_bytes(state: &SimState) -> Vec<u8> {
     let mut s = state.clone();
     s.host_sig.clear();
@@ -189,7 +189,7 @@ pub fn verify_sim_state(host_pub: &[u8], state: &SimState) -> Result<(), WireCry
         .map_err(|_| WireCryptoError::VerifyFailed)
 }
 
-/// True when a SimEntity has finite pose / delta / drot and a usable quat (x00ag).
+/// True when a SimEntity has finite pose / delta / drot and a usable quat (x00b0).
 pub fn sim_entity_is_finite(e: &SimEntity) -> bool {
     e.x.is_finite()
         && e.y.is_finite()

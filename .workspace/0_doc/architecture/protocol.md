@@ -103,7 +103,7 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 | `INPUT_KEY_LOCAL` / `input_key(room_id, wire_cap)` | `…/input` |
 | `PRESENCE_KEY_LOCAL` / `presence_key(room_id, wire_cap)` | `…/presence` |
 | `SNAPSHOT_KEY_LOCAL` / `snapshot_key(room_id, wire_cap)` | `…/snapshot` |
-| `SIM_STATE_KEY_LOCAL` / `sim_state_key(room_id, wire_cap)` | `…/sim_state`（計画的 handover・x00ag） |
+| `SIM_STATE_KEY_LOCAL` / `sim_state_key(room_id, wire_cap)` | `…/sim_state`（計画的 handover・x00b0） |
 | `INVENTORY_SPAWN_KEY_LOCAL` / `inventory_spawn_key` | `…/inventory/spawn`（x006d / x0081） |
 | `INVENTORY_DESPAWN_KEY_LOCAL` / `inventory_despawn_key` | `…/inventory/despawn`（x007b / x0081） |
 | `HOST_CONTROL_KEY_LOCAL` / `host_control_key(room_id, wire_cap)` | `…/host_control` |
