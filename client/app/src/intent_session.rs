@@ -1,14 +1,17 @@
-//! Client Intent session key (x0023 / x003e / x0081).
+//! Client Intent session key (x0023 / x003e / x0081 / x00b2).
 //!
 //! Guarantees: bind Intent carries Room Token until enough successful puts; steady
 //! Intents are Ed25519-signed thereafter. Room Token must be issued for this
-//! session_pub (`cnf.spk`, x003e). Inventory control (spawn/despawn) reuses the same
-//! key with a separate `control_seq` (x0081) — no Room Token on Zenoh.
+//! session_pub (`cnf.spk`, x003e). Edit-lane Spawn/Despawn (and legacy inventory JSON
+//! helpers) reuse the same key with a separate `control_seq` — no Room Token on Zenoh.
 //! Non-guarantees: host acceptance ack (Zenoh put ≠ verify); key persistence across restart.
 
 use alchemy_protocol::control_plane::{self, ControlPose};
-use alchemy_protocol::wire_crypto::{generate_signing_key, sign_input, SigningKey};
-use alchemy_protocol::InputEvent;
+use alchemy_protocol::edit_op::Op;
+use alchemy_protocol::wire_crypto::{
+    generate_signing_key, public_key_bytes, sign_edit_proposal, sign_input, SigningKey,
+};
+use alchemy_protocol::{EditDespawn, EditOp, EditProposal, EditSpawn, InputEvent};
 use base64::Engine;
 
 /// Successful Zenoh puts that must still include `room_token` after join / refresh.
@@ -38,6 +41,18 @@ pub struct IntentBody {
     pub release_wz: f32,
 }
 
+/// Legacy inventory JSON control signature payload (x0081).
+///
+/// Not used by x00b2 client publish (see [`IntentSession::sign_edit_spawn`]); retained for
+/// host dual-subscribe probes / unit tests of `control_plane` signing.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct ControlSig {
+    pub session_pub_b64: String,
+    pub control_seq: u64,
+    pub control_sig_b64: String,
+}
+
 #[derive(Clone)]
 pub struct IntentSession {
     key: SigningKey,
@@ -46,13 +61,6 @@ pub struct IntentSession {
     control_seq: u64,
     /// Remaining successful puts that must carry `room_token`.
     bind_puts_remaining: u32,
-}
-
-/// Signed inventory control fields for Zenoh JSON (x0081).
-pub struct ControlSig {
-    pub session_pub_b64: String,
-    pub control_seq: u64,
-    pub control_sig_b64: String,
 }
 
 impl IntentSession {
@@ -123,9 +131,11 @@ impl IntentSession {
         event
     }
 
-    /// Sign inventory spawn control (advances `control_seq`).
+    /// Sign legacy inventory JSON spawn (`control_plane` bytes; advances `control_seq`).
     ///
-    /// `blake3_hex` is normalized to lowercase so verify matches host-side canonical form.
+    /// **Dead client publish path (x00b2):** kept for unit tests / dual-subscribe host
+    /// compatibility probes. Production UI must use [`Self::sign_edit_spawn`].
+    #[allow(dead_code)]
     pub fn sign_control_spawn(
         &mut self,
         room_id: &str,
@@ -142,7 +152,8 @@ impl IntentSession {
         }
     }
 
-    /// Sign inventory despawn control (advances `control_seq`).
+    /// Sign legacy inventory JSON despawn. Same dead-publish policy as [`Self::sign_control_spawn`].
+    #[allow(dead_code)]
     pub fn sign_control_despawn(&mut self, room_id: &str, entity_id: u32) -> ControlSig {
         self.control_seq = self.control_seq.saturating_add(1);
         let sig = control_plane::sign_despawn(&self.key, room_id, self.control_seq, entity_id);
@@ -151,6 +162,68 @@ impl IntentSession {
             control_seq: self.control_seq,
             control_sig_b64: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig),
         }
+    }
+
+    /// Build a signed `EditProposal` Spawn (x00b2; advances `control_seq`).
+    ///
+    /// `base_scene_rev` must be the last observed overlay `EditCommit.scene_rev` (or 0).
+    pub fn sign_edit_spawn(
+        &mut self,
+        room_id: &str,
+        base_scene_rev: u64,
+        blake3_hex: &str,
+        pose: ControlPose,
+    ) -> EditProposal {
+        self.control_seq = self.control_seq.saturating_add(1);
+        let blake3 = blake3_hex.to_ascii_lowercase();
+        let mut proposal = EditProposal {
+            session_pub: public_key_bytes(&self.key),
+            control_seq: self.control_seq,
+            base_scene_rev,
+            op_id: self.control_seq,
+            ops: vec![EditOp {
+                op: Some(Op::Spawn(EditSpawn {
+                    blake3,
+                    x: pose[0],
+                    y: pose[1],
+                    z: pose[2],
+                    qx: pose[3],
+                    qy: pose[4],
+                    qz: pose[5],
+                    qw: pose[6],
+                    sx: pose[7],
+                    sy: pose[8],
+                    sz: pose[9],
+                })),
+            }],
+            sig: vec![],
+            room_id: room_id.to_string(),
+        };
+        sign_edit_proposal(&self.key, &mut proposal);
+        proposal
+    }
+
+    /// Build a signed `EditProposal` Despawn (x00b2; advances `control_seq`).
+    pub fn sign_edit_despawn(
+        &mut self,
+        room_id: &str,
+        base_scene_rev: u64,
+        entity_id: u32,
+    ) -> EditProposal {
+        self.control_seq = self.control_seq.saturating_add(1);
+        let mut proposal = EditProposal {
+            session_pub: public_key_bytes(&self.key),
+            control_seq: self.control_seq,
+            base_scene_rev,
+            op_id: self.control_seq,
+            ops: vec![EditOp {
+                op: Some(Op::Despawn(EditDespawn { entity_id })),
+            }],
+            sig: vec![],
+            room_id: room_id.to_string(),
+        };
+        sign_edit_proposal(&self.key, &mut proposal);
+        proposal
     }
 }
 

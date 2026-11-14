@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package alchemy.edit;
+
+// Deterministic edit lane (mvcc_xpbd §4.7 / x00b2).
+// Client puts EditProposal on …/edit (AeadKind::EditProposal).
+// Host puts EditCommit on the same key (AeadKind::EditCommit).
+// x00b2 guarantees Spawn + Despawn only; Reparent/SetField are later slices.
+
+message EditProposal {
+  bytes session_pub = 1;
+  uint64 control_seq = 2;
+  // Overlay packed revision the proposer last observed via EditCommit (0 = none yet).
+  // Same space as EditCommit.scene_rev / RoomScene.revision — not Manifest revision.
+  uint64 base_scene_rev = 3;
+  // Client-chosen id for commit correlation.
+  uint64 op_id = 4;
+  repeated EditOp ops = 5;
+  // Ed25519 over encode with `sig` cleared (includes room_id).
+  bytes sig = 6;
+  // Must match the room; bound into the signature (defense beyond AEAD AAD).
+  string room_id = 7;
+}
+
+message EditOp {
+  oneof op {
+    EditSpawn spawn = 1;
+    EditDespawn despawn = 2;
+  }
+}
+
+message EditSpawn {
+  // Lowercase hex blake3 (64 chars) of the mesh blob.
+  string blake3 = 1;
+  double x = 2;
+  double y = 3;
+  double z = 4;
+  double qx = 5;
+  double qy = 6;
+  double qz = 7;
+  double qw = 8;
+  double sx = 9;
+  double sy = 10;
+  double sz = 11;
+}
+
+message EditDespawn {
+  uint32 entity_id = 1;
+}
+
+message EditCommit {
+  // Host-assigned monotonic live scene_rev (accept only). Reject keeps prior.
+  uint64 scene_rev = 1;
+  uint64 op_id = 2;
+  bytes author_session_pub = 3;
+  bool accepted = 4;
+  // 0 = none/accepted; see alchemy_protocol::edit_reject::*
+  uint32 reject_reason = 5;
+  repeated EditOp ops = 6;
+  // Ed25519 over encode with `host_sig` cleared.
+  bytes host_sig = 7;
+}

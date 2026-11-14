@@ -45,6 +45,10 @@ pub enum AeadKind {
     InventoryDespawn,
     /// Planned handover full sim state (x00b0 / mvcc_xpbd §4.8); distinct from Snapshot poses.
     SimState,
+    /// Deterministic edit-lane proposal (x00b2 / §4.7); session-signed prost.
+    EditProposal,
+    /// Deterministic edit-lane commit (x00b2); host-signed prost on the same `…/edit` key.
+    EditCommit,
 }
 
 impl AeadKind {
@@ -58,6 +62,8 @@ impl AeadKind {
             Self::InventorySpawn => "inventory_spawn",
             Self::InventoryDespawn => "inventory_despawn",
             Self::SimState => "sim_state",
+            Self::EditProposal => "edit_proposal",
+            Self::EditCommit => "edit_commit",
         }
     }
 
@@ -67,7 +73,11 @@ impl AeadKind {
             Self::Manifest => WireClass::Manifest,
             Self::Frame | Self::Snapshot => WireClass::Frame,
             Self::Presence => WireClass::Presence,
-            Self::Input | Self::InventorySpawn | Self::InventoryDespawn => WireClass::Input,
+            Self::Input
+            | Self::InventorySpawn
+            | Self::InventoryDespawn
+            | Self::EditProposal
+            | Self::EditCommit => WireClass::Input,
             Self::SimState => WireClass::SimState,
         }
     }
@@ -244,6 +254,29 @@ mod tests {
         assert!(open(&key(), "local", 1, AeadKind::InventoryDespawn, &env).is_err());
         assert_eq!(
             open(&key(), "local", 1, AeadKind::Input, &env),
+            Err(WireAeadError::CryptographicFailure)
+        );
+    }
+
+    #[test]
+    fn roundtrip_edit_kinds_cross_reject() {
+        let pt = b"edit-proposal-bytes";
+        let env = seal(&key(), "local", 2, AeadKind::EditProposal, pt).unwrap();
+        assert_eq!(
+            open(&key(), "local", 2, AeadKind::EditProposal, &env).unwrap(),
+            pt
+        );
+        assert_eq!(
+            open(&key(), "local", 2, AeadKind::EditCommit, &env),
+            Err(WireAeadError::CryptographicFailure)
+        );
+        assert_eq!(
+            open(&key(), "local", 2, AeadKind::InventorySpawn, &env),
+            Err(WireAeadError::CryptographicFailure)
+        );
+        let commit = seal(&key(), "local", 2, AeadKind::EditCommit, b"commit").unwrap();
+        assert_eq!(
+            open(&key(), "local", 2, AeadKind::EditProposal, &commit),
             Err(WireAeadError::CryptographicFailure)
         );
     }

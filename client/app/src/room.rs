@@ -35,12 +35,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use alchemy_protocol::wire_aead::AeadKind;
-use alchemy_protocol::{frame_key, input_key, manifest_key, presence_key, Message};
+use alchemy_protocol::{edit_key, frame_key, input_key, manifest_key, presence_key, Message};
 use anyhow::{Context, Result};
 use zenoh::Wait;
 
 use crate::assets_fetch::{load_auth_mesh, try_place_read_for_mesh, AuthMeshLoad};
 use crate::auth;
+use crate::bus::edit::spawn_edit_commit_subscriber;
 use crate::bus::frame::spawn_frame_subscriber;
 use crate::bus::input::spawn_input_publisher;
 use crate::bus::liveliness::declare_room_alive;
@@ -402,6 +403,7 @@ pub(crate) fn ensure_room_bus(
         let frame_key_expr = frame_key(room_id.as_ref(), &wire_cap);
         let input_key_expr = input_key(room_id.as_ref(), &wire_cap);
         let presence_key_expr = presence_key(room_id.as_ref(), &wire_cap);
+        let edit_key_expr = edit_key(room_id.as_ref(), &wire_cap);
         let blake3_tx = match blake3_tx {
             Some(tx) => tx,
             None => {
@@ -423,6 +425,7 @@ pub(crate) fn ensure_room_bus(
         )?;
         spawn_presence_subscriber(session.clone(), presence_key_expr, Arc::clone(shared))?;
         spawn_frame_subscriber(session.clone(), frame_key_expr, Arc::clone(shared))?;
+        spawn_edit_commit_subscriber(session.clone(), edit_key_expr, Arc::clone(shared))?;
         spawn_input_publisher(session.clone(), input_key_expr, Arc::clone(shared))?;
         log::info!("room Zenoh bus started (wire_cap_len={})", wire_cap.len());
         Ok(())

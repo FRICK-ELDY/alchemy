@@ -26,9 +26,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use std::time::{Duration, Instant};
 use zenoh::Wait;
 
+use crate::control_rate::SharedControlRate;
 use host_server::room_token::{
     append_room_scene_entry, install_shared_scene_if_newer, RoomScene, SharedHostHttpAuth,
 };
@@ -88,6 +88,12 @@ pub struct SpawnInbox {
 }
 
 impl SpawnInbox {
+    /// Shared channel for inventory spawn + `…/edit` (x00b2 dual-subscribe).
+    pub fn pair() -> (Sender<ReadySpawn>, Self) {
+        let (tx, rx) = mpsc::channel();
+        (tx, Self { rx: Mutex::new(rx) })
+    }
+
     pub fn try_recv(&self) -> Option<ReadySpawn> {
         self.rx.lock().ok()?.try_recv().ok()
     }
@@ -133,37 +139,6 @@ fn decode_b64(field: &str, value: &str) -> Result<Vec<u8>> {
         .with_context(|| format!("{field} base64url"))
 }
 
-/// Simple flood guard on the spawn worker (app-level; ACL alone is not enough).
-struct SpawnRate {
-    window: Duration,
-    max: u32,
-    start: Instant,
-    count: u32,
-}
-
-impl SpawnRate {
-    fn new(max: u32, window: Duration) -> Self {
-        Self {
-            window,
-            max,
-            start: Instant::now(),
-            count: 0,
-        }
-    }
-
-    fn allow(&mut self) -> bool {
-        if self.start.elapsed() >= self.window {
-            self.start = Instant::now();
-            self.count = 0;
-        }
-        if self.count >= self.max {
-            return false;
-        }
-        self.count += 1;
-        true
-    }
-}
-
 /// Subscribe → AEAD open → session verify → world HTTP append → enqueue for physics.
 #[allow(clippy::too_many_arguments)] // wire + shared_scene wiring stays flat at the listener edge
 pub fn spawn_listener(
@@ -175,7 +150,9 @@ pub fn spawn_listener(
     sessions: Arc<Mutex<SessionTable>>,
     http_auth: SharedHostHttpAuth,
     shared_scene: Arc<RwLock<RoomScene>>,
-) -> Result<SpawnInbox> {
+    tx: Sender<ReadySpawn>,
+    control_rate: Arc<Mutex<SharedControlRate>>,
+) -> Result<()> {
     let key = inventory_spawn_key(room_id, wire_cap);
     let room_id = room_id.to_string();
     let subscriber = session
@@ -183,15 +160,13 @@ pub fn spawn_listener(
         .wait()
         .map_err(|e| anyhow!("declare_subscriber inventory/spawn: {e}"))?;
 
-    let (tx, rx): (Sender<ReadySpawn>, Receiver<ReadySpawn>) = mpsc::channel();
-    let tx = Arc::new(Mutex::new(tx));
-
     thread::Builder::new()
         .name("inventory-spawn".into())
         .spawn(move || {
             let _session = session;
-            let mut rate = SpawnRate::new(8, Duration::from_secs(10));
-            log::info!("subscribed to {key} (x0081 inventory spawn, session sig)");
+            log::info!(
+                "subscribed to {key} (x0081 inventory spawn, session sig; shared rate x00b2)"
+            );
             while let Ok(sample) = subscriber.recv() {
                 let bytes = sample.payload().to_bytes();
                 match process_sample(
@@ -202,12 +177,10 @@ pub fn spawn_listener(
                     &sessions,
                     &http_auth,
                     &shared_scene,
-                    &mut rate,
+                    &control_rate,
                 ) {
                     Ok(ready) => {
-                        if let Ok(guard) = tx.lock() {
-                            let _ = guard.send(ready);
-                        }
+                        let _ = tx.send(ready);
                     }
                     Err(err) => log::warn!("inventory spawn rejected: {err:#}"),
                 }
@@ -215,7 +188,7 @@ pub fn spawn_listener(
         })
         .context("spawn inventory-spawn thread")?;
 
-    Ok(SpawnInbox { rx: Mutex::new(rx) })
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)] // HTTP CAS path needs auth + shared_scene beside rate
@@ -227,7 +200,7 @@ fn process_sample(
     sessions: &Arc<Mutex<SessionTable>>,
     http_auth: &SharedHostHttpAuth,
     shared_scene: &Arc<RwLock<RoomScene>>,
-    rate: &mut SpawnRate,
+    control_rate: &Arc<Mutex<SharedControlRate>>,
 ) -> Result<ReadySpawn> {
     wire_aead::check_aead_envelope_bytes(AeadKind::InventorySpawn, envelope.len())
         .map_err(|e| anyhow!("aead envelope: {e}"))?;
@@ -273,19 +246,29 @@ fn process_sample(
             owner_sub.as_deref(),
         )?;
     }
-    if !rate.allow() {
-        return Err(anyhow!("rate limited"));
+    {
+        let mut rate = control_rate
+            .lock()
+            .map_err(|_| anyhow!("SharedControlRate poisoned"))?;
+        if !rate.allow() {
+            return Err(anyhow!("rate limited"));
+        }
     }
     {
         let mut table = sessions
             .lock()
             .map_err(|_| anyhow!("SessionTable poisoned"))?;
-        table.commit_control(
+        if let Err(err) = table.commit_control(
             &session_pub,
             parsed.control_seq,
             &auth.sub,
             owner_sub.as_deref(),
-        )?;
+        ) {
+            if let Ok(mut rate) = control_rate.lock() {
+                rate.refund();
+            }
+            return Err(err);
+        }
     }
 
     let (scene, entry) = append_room_scene_entry(

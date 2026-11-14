@@ -2592,7 +2592,7 @@ fn run_paced_inventory_take_out(
             // Default pose with slight X offset so children do not stack.
             (i as f64 * 0.35, 1.5, 2.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
         };
-        let control = {
+        let proposal = {
             let Ok(mut gate) = shared.intent_session.lock() else {
                 return format!("spawn put {spawned}/{total} then failed: intent_session lock");
             };
@@ -2601,26 +2601,27 @@ fn run_paced_inventory_take_out(
                     "spawn put {spawned}/{total} then failed: no Intent session (bind first)"
                 );
             };
-            intent.sign_control_spawn(room_id, &blob.blake3, [x, y, z, qx, qy, qz, qw, sx, sy, sz])
+            // Overlay EditCommit watermark (not Manifest revision).
+            let base_scene_rev = shared
+                .last_edit_scene_rev
+                .lock()
+                .ok()
+                .and_then(|g| *g)
+                .unwrap_or(0);
+            intent.sign_edit_spawn(
+                room_id,
+                base_scene_rev,
+                &blob.blake3,
+                [x, y, z, qx, qy, qz, qw, sx, sy, sz],
+            )
         };
-        match crate::inventory::publish_inventory_spawn_pose(
+        match crate::inventory::publish_edit_proposal(
             session,
             room_id,
             wire_cap,
             room_key,
             room_key_epoch,
-            &control,
-            &blob.blake3,
-            x,
-            y,
-            z,
-            qx,
-            qy,
-            qz,
-            qw,
-            sx,
-            sy,
-            sz,
+            &proposal,
         ) {
             Ok(()) => {
                 spawned += 1;
@@ -3724,7 +3725,7 @@ fn handle_ui_action(
                 return;
             };
             let room_id = shared.get_room_id();
-            let control = {
+            let proposal = {
                 let Ok(mut gate) = shared.intent_session.lock() else {
                     inventory_status_rebuild(ui, shared, "intent_session lock failed");
                     return;
@@ -3737,16 +3738,21 @@ fn handle_ui_action(
                     );
                     return;
                 };
-                intent.sign_control_despawn(room_id.as_ref(), entity_id)
+                let base_scene_rev = shared
+                    .last_edit_scene_rev
+                    .lock()
+                    .ok()
+                    .and_then(|g| *g)
+                    .unwrap_or(0);
+                intent.sign_edit_despawn(room_id.as_ref(), base_scene_rev, entity_id)
             };
-            match crate::inventory::publish_inventory_despawn(
+            match crate::inventory::publish_edit_proposal(
                 session,
                 room_id.as_ref(),
                 wire_cap.as_ref(),
                 room_key.as_ref(),
                 room_key_epoch,
-                &control,
-                entity_id,
+                &proposal,
             ) {
                 Ok(()) => {
                     ui.state.inventory_status = format!(

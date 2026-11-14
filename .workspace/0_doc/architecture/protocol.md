@@ -2,7 +2,7 @@
 
 > **正本**: [`protocol/`](../../../protocol/)  
 > **配送契約**: [`protocol/peer-delivery.md`](../../../protocol/peer-delivery.md)（x0024）  
-> **PROTOCOL_PIN**: `alchemy-protocol/0.22.0-x00af`（`sim_tick` / `holder` / `release_*` · x00af；user_root 帯高位化 · x009b；制御面 session 署名 + HTTP PoP · x0081；x003b decode limits / x0055 ItemRef 草案は pin 非対象）
+> **PROTOCOL_PIN**: `alchemy-protocol/0.22.0-x00b2`（`…/edit` EditProposal/EditCommit · x00b2；`sim_tick` / `holder` / `release_*` · x00af；user_root 帯高位化 · x009b；制御面 session 署名 + HTTP PoP · x0081；x003b decode limits / x0055 ItemRef 草案は pin 非対象）
 
 ## 置き場の方針
 
@@ -92,7 +92,7 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 
 ## キー式ヘルパ（x0017 + x0022 liveliness + x0023 snapshot + x004e wire_cap + x006d/x007b inventory）
 
-式: `alchemy/dev/room/{room_id}/{wire_cap}/{manifest|frame|input|presence|host_control|snapshot|sim_state|inventory/spawn|inventory/despawn|alive/{sub}/{jti}}`。  
+式: `alchemy/dev/room/{room_id}/{wire_cap}/{manifest|frame|input|presence|host_control|snapshot|sim_state|edit|inventory/spawn|inventory/despawn|alive/{sub}/{jti}}`。  
 `*_KEY_LOCAL` は `room_id=local` + fixture `LOCAL_WIRE_CAP` の別名。host/client は `ROOM_ID` + Token の `wire_cap` を `validate_*` してから `*_key` で declare する。
 
 | 定数 / 関数 | 既定 |
@@ -104,8 +104,9 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 | `PRESENCE_KEY_LOCAL` / `presence_key(room_id, wire_cap)` | `…/presence` |
 | `SNAPSHOT_KEY_LOCAL` / `snapshot_key(room_id, wire_cap)` | `…/snapshot` |
 | `SIM_STATE_KEY_LOCAL` / `sim_state_key(room_id, wire_cap)` | `…/sim_state`（計画的 handover・x00b0） |
-| `INVENTORY_SPAWN_KEY_LOCAL` / `inventory_spawn_key` | `…/inventory/spawn`（x006d / x0081） |
-| `INVENTORY_DESPAWN_KEY_LOCAL` / `inventory_despawn_key` | `…/inventory/despawn`（x007b / x0081） |
+| `EDIT_KEY_LOCAL` / `edit_key` | `…/edit`（確定レーン提案・x00b2；EditCommit も同キー） |
+| `INVENTORY_SPAWN_KEY_LOCAL` / `inventory_spawn_key` | `…/inventory/spawn`（x006d / x0081；x00b2 以降 dual-subscribe） |
+| `INVENTORY_DESPAWN_KEY_LOCAL` / `inventory_despawn_key` | `…/inventory/despawn`（x007b / x0081；x00b2 以降 dual-subscribe） |
 | `HOST_CONTROL_KEY_LOCAL` / `host_control_key(room_id, wire_cap)` | `…/host_control` |
 | `liveliness_key(room_id, wire_cap, sub, jti)` / `liveliness_wildcard` | `…/alive/{sub}/{jti}` / `…/alive/**` |
 | `liveliness_binding_from_key` | `(sub, jti)`。単セグメント旧キーは拒否 |

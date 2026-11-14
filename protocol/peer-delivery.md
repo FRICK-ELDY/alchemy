@@ -31,6 +31,8 @@
 | world `GET …/scene` | **request/response**（HTTP） | host が Room 作成後に DemoScene（初期 quat/scale 含む）を取得し Rapier / Manifest の入力にする（x0027 / x002c） | guest 取得・シーン編集・collider の非一様リサイズ |
 | `…/presence` | **latest**（低頻度） | 届いた割当表を **AEAD 開封**（x0069）+ **byte/count 上限**（x003b）+ pin + **`host_sig`**（attested `host_pub`）+ **Manifest `host_generation` 一致 / revision 単調** 後に採用（x0025 / x003a）。Presence 単独で generation を上げない | world 署名・途中欠落の補完 |
 | `…/input` | **best-effort Intent** | host が **AEAD 開封**（x0069）+ **byte/token 上限**（x003b）後に受理した Intent について `intent_seq` 単調。bind 時 `role`→caps で move/grab/leave をマスク（x002a） | put 成功＝適用成功、ACK、確実配送、caps のワイヤ明示 |
+| `…/edit` | **提案 + 確定**（同一キー・別 AEAD kind） | client `EditProposal` → host 検証 → overlay CAS → Ready enqueue 後に `EditCommit`（`scene_rev` = packed overlay `RoomScene.revision`）。client は `host_pub` 必須で `host_sig` 検証（fail-closed）。Spawn/Despawn のみ（x00b2） | Reparent/SetField；inventory dual-subscribe の EditCommit；snapshot gap；旧キー削除 |
+| `…/inventory/spawn` / `…/inventory/despawn` | **best-effort control**（dual-subscribe） | x00b2 以降も host が購読（互換）。本線 publish は `…/edit` | 新規 client 本線 |
 | `…/host_control` | **best-effort command**（既定 OFF） | `ALCHEMY_HOST_CONTROL=1` のとき到達は best-effort | 認証・ACK |
 | `…/alive/{sub}/{jti}` | liveliness | Delete で host が jti 一致時 reclaim（x0022） | WAN ACL・他人 Delete の完全防御 |
 | assets HTTP CAS | **Blob（参照）** | blake3 参照の取得は assets 層の契約 | Zenoh 上の Blob 配送 |
