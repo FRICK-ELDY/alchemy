@@ -76,11 +76,11 @@
 
 正本: [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md)（レビュー反映の詳細・未決 Q1–Q8 は同書 §6 / [review_proposal](../../roadmap/mvcc_xpbd_review_proposal.md)）。**大規模 CCU / 1000 人はここに書かない**（→ P3-7）。
 
-**現状（2026-11-14）**: 着手ゲート P1-1/4/5・scaffold（x00a3）・Phase 1 DoD（x00a4: ページ経路接触・page-alloc・リプレイ）まで **closed**。host/app 本線は未配線。
+**現状（2026-11-14）**: 着手ゲート P1-1/4/5・scaffold（x00a3）・Phase 1 DoD（x00a4）・SoA Safe SIMD（x00a5: `wide`/`glam` 慣性）まで **closed**。host/app 本線は未配線。次は Phase 2（P3-2）。
 
 | Phase | 内容 | 吸収する ID | 着手条件 |
 |:---|:---|:---|:---|
-| Phase 1 | 既存 `shared-sim` を `HotPhysicsPage` / `MvccPageArena` / ページ経路 XPBD へ進化（クレート新設ではない） | P1-2（shared-sim 能力）/ P1-3 | **closed**（x00a3 + x00a4；host 本線は Phase 3） |
+| Phase 1 | 既存 `shared-sim` を `HotPhysicsPage` / `MvccPageArena` / ページ経路 XPBD へ進化（クレート新設ではない） | P1-2（shared-sim 能力）/ P1-3 | **closed**（x00a3 + x00a4；x00a5 SoA SIMD；host 本線は Phase 3） |
 | Phase 2 | MVCC バッファ + `wgpu` Compute + jitter（`sim_tick` 基準）+ 手元予測 + ArcSwap 出版 | P3-2 | Phase 1 のビット一致・接触回帰・alloc 上限・CoW が Green |
 | Phase 3 | host 権威 + **host 接触オン（P1-2 host 配線）** + dirty 合成（x0024）+ `sim_state` handover + 確定レーン並走 | P1-2（host）+ host 本線置換 | Phase 2 Green。Room AEAD / wire_cap |
 

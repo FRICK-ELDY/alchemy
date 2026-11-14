@@ -213,13 +213,15 @@ depends_on: [x0006]
 | x00a0 | — | done | kick / friendship → Room key epoch（P1-1） | [x00a0-kick-epoch-rotate.md](slices/x00a0-kick-epoch-rotate.md) |
 | x00a1 | — | done | handover 候補 accept 二段階（P1-4） | [x00a1-handover-accept.md](slices/x00a1-handover-accept.md) |
 | x00a2 | — | done | SceneBudget entries/JSON bytes（P1-5） | [x00a2-scene-budget.md](slices/x00a2-scene-budget.md) |
-| x00a3 | — | in_progress | MVCC×XPBD Phase 1 scaffold（着手） | [x00a3-mvcc-phase1-scaffold.md](slices/x00a3-mvcc-phase1-scaffold.md) |
+| x00a3 | — | done | MVCC×XPBD Phase 1 scaffold | [x00a3-mvcc-phase1-scaffold.md](slices/x00a3-mvcc-phase1-scaffold.md) |
+| x00a4 | — | done | MVCC×XPBD Phase 1 DoD（接触 / page-alloc / リプレイ） | [x00a4-mvcc-phase1-dod.md](slices/x00a4-mvcc-phase1-dod.md) |
+| x00a5 | — | done | SoA ホットパス Safe SIMD（`wide` / `glam` · Q5） | [x00a5-soa-safe-simd.md](slices/x00a5-soa-safe-simd.md) |
 
-**現在の次:** [x00a3](slices/x00a3-mvcc-phase1-scaffold.md) MVCC Phase 1 続き（接触 / zero-alloc DoD）。ゲート P1-1 / P1-4 / P1-5 は **done**。**品質本線**再開 · Spot-Check 保留。  
+**現在の次:** MVCC×XPBD **Phase 2**（P3-2: Frame 補間 / jitter / 手元予測 / ArcSwap）。ゲート Phase 1（x00a3–x00a5）は **done**。**品質本線** · Spot-Check 保留（Q2）。  
 **規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；実装は MVCC Phase 3 後。1000 人は horizon）。  
 旧メモ **P3-7（BLAKE3 ストリーミング）** は **CI が完了しなくなるためマージしない**（現行 P3-7 Spatial Interest とは別物）。Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 
-次の空き番号は **`x00a4`**（Interest 実装用に予約しない）。
+次の空き番号は **`x00a6`**（Interest 実装用に予約しない）。
 
 ## 関連
 
