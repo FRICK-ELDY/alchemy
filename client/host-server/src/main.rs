@@ -26,7 +26,7 @@
 //! - x0032 / x009f: localhost IPC shutdown + parent AUTH_PUSH when `ALCHEMY_HOST_IPC_*` set
 //!
 //! Non-guarantees:
-//! - Steal / rotation follow / Formula / polished Walk / verifier
+//! - Steal / rotation follow / Dual-AST Kernel / polished Walk / verifier
 //! - Rapier bit-exact parity; LBVH body-body contacts; capsule Walk extrude
 //! - Authenticated remote (WAN) host shutdown
 //! - Full UGC scene editor (x006d only appends one mesh entry via world HTTP)

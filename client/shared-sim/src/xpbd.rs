@@ -2,7 +2,7 @@
 //!
 //! Guarantees: position-based constraints (no force blow-up); Grab via GRABBED bit;
 //! sleeping / dirty bitsets for sparse work; finite gate on writes.
-//! Non-guarantees: full-body IK UX; Zenoh delta publish; Formula VM.
+//! Non-guarantees: full-body IK UX; Zenoh delta publish; Dual-AST Kernel.
 //!
 //! Safety: `#![forbid(unsafe_code)]`.
 

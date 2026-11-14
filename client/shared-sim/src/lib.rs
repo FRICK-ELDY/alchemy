@@ -5,7 +5,7 @@
 //! demo id constants; [`scene_entry_color_rgba`]; runtime held slots via
 //! [`slot_graph::SlotGraph`] (x0056); Zero-Base spatial lifecycle primitives in
 //! [`tape`] / [`topology`] / [`spatial`] / [`xpbd`] / [`bridge`] / [`mvcc`] (x00a3).
-//! Non-guarantees: Rapier / Formula / prediction; Elixir `DemoScene` codegen
+//! Non-guarantees: Rapier / Dual-AST Kernel / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); CRDT / Zenoh / GPU wiring (client `epoch_view`);
 //! MVCC host wiring / dirty-delta codec (x0024; Phase 3; not V_ack/XOR);
