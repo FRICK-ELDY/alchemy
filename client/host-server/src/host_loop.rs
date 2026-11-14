@@ -316,6 +316,19 @@ impl HostLoop {
     /// `now` is the **publish-gate clock**. Pass the pre-sleep sample (legacy contract) so
     /// hard-expiry does not advance by up to one physics period relative to pre-x0099.
     pub(crate) fn tick(&mut self, now: Instant) {
+        // x00b1: restore in-flight bits from empty/fail puts before this tick's absorb.
+        {
+            let mut q = self
+                .publish_stats
+                .wire_dirty_restores
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if !q.is_empty() {
+                let masks: Vec<_> = q.drain(..).collect();
+                drop(q);
+                self.physics.restore_wire_dirty_inflight_bits(masks);
+            }
+        }
         if let Some(ready) = self.spawn_inbox.try_recv() {
             let blake3 = ready.entry.blake3.clone();
             match inventory_spawn::apply_ready_spawn(
@@ -508,6 +521,8 @@ impl HostLoop {
                     host_time_ms: host_time_ms(),
                     sim_tick: self.last_wire_sim_tick,
                     acked_intent_seq: self.last_wire_acked.clone(),
+                    dirty_authored: false,
+                    dirty_inflight_mask: None,
                 })
             {
                 self.publish_stats
@@ -519,14 +534,23 @@ impl HostLoop {
 
         // Pose sample only on net ticks (delta/encode/put live on zenoh-publish).
         // x0095: recycled scratch — worker / coalesce returns the Vec to the pool.
+        // x00b1: mvcc + publish_allowed + !catchup → dirty-authored sample (else full scan).
         let mut all_poses = self.outbound.acquire_poses();
-        fill_wire_poses_from_sim(
-            &self.physics,
-            &occupied,
-            slot_count,
-            &mut self.holder_scratch,
-            &mut all_poses,
-        );
+        let dirty_authored =
+            pub_snap.publish_allowed && !resume_catchup && self.physics.uses_wire_dirty();
+        let dirty_inflight_mask = if dirty_authored {
+            self.physics
+                .fill_wire_dirty_poses(&occupied, slot_count, &mut all_poses)
+        } else {
+            fill_wire_poses_from_sim(
+                &self.physics,
+                &occupied,
+                slot_count,
+                &mut self.holder_scratch,
+                &mut all_poses,
+            );
+            None
+        };
         // Swap filled scratch into `last_wire_acked`; clone once for the Frame sample.
         std::mem::swap(&mut self.last_wire_acked, &mut self.acked_scratch);
         self.last_wire_sim_tick = self.physics_steps;
@@ -541,6 +565,8 @@ impl HostLoop {
             host_time_ms: host_time_ms(),
             sim_tick: self.physics_steps,
             acked_intent_seq,
+            dirty_authored,
+            dirty_inflight_mask,
         }) {
             self.publish_stats
                 .coalesce_frames

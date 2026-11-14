@@ -6,8 +6,8 @@
 //! `q ≡ -q` pose identity; `extract_dirty_records_into` reuses `out`.
 //! Pose deltas only cover **active** locals (`acc & active`); quarantine /
 //! despawn / structure edits stay on §4.7 `…/edit` + x0024 snapshot — not this lane.
-//! Non-guarantees: PROTOCOL_PIN / host 30Hz dirty frame switch; `…/sim_state`; K>1
-//! redundancy window (Q6); Spatial Interest.
+//! Non-guarantees: PROTOCOL_PIN quantized pose bump; host wiring is x00b1 (`host-server`);
+//! `…/sim_state`; K>1 redundancy window (Q6); Spatial Interest.
 
 use crate::mvcc::{HotPhysicsPage, MvccPageArena, BITMASK_WORDS, ENTITIES_PER_PAGE};
 
@@ -101,6 +101,48 @@ impl WireDirtyAccumulator {
         for slot in self.acc.iter_mut() {
             *slot = [0u64; BITMASK_WORDS];
         }
+    }
+
+    /// Move bits into an in-flight sample (x00b1): clear them from the accumulator now.
+    ///
+    /// Pack-time detach so a later delayed outcome cannot erase re-dirties absorbed after
+    /// pack. On publish **failure** / empty delta, callers must [`Self::restore_bits`];
+    /// on **success**, discard the mask (already removed from `acc`).
+    pub fn detach_bits(
+        &mut self,
+        page_slot: usize,
+        inflight_mask: &[u64; BITMASK_WORDS],
+    ) -> Result<(), DirtyAccumError> {
+        let capacity = self.acc.len();
+        let Some(slot) = self.acc.get_mut(page_slot) else {
+            return Err(DirtyAccumError::SlotOutOfRange {
+                page_slot,
+                capacity,
+            });
+        };
+        for (dst, bit) in slot.iter_mut().zip(inflight_mask.iter()) {
+            *dst &= !bit;
+        }
+        Ok(())
+    }
+
+    /// OR bits back after a failed / empty publish (inverse of [`Self::detach_bits`]).
+    pub fn restore_bits(
+        &mut self,
+        page_slot: usize,
+        inflight_mask: &[u64; BITMASK_WORDS],
+    ) -> Result<(), DirtyAccumError> {
+        let capacity = self.acc.len();
+        let Some(slot) = self.acc.get_mut(page_slot) else {
+            return Err(DirtyAccumError::SlotOutOfRange {
+                page_slot,
+                capacity,
+            });
+        };
+        for (dst, bit) in slot.iter_mut().zip(inflight_mask.iter()) {
+            *dst |= *bit;
+        }
+        Ok(())
     }
 
     /// Accumulated dirty mask for a page slot, if in range.
@@ -354,6 +396,30 @@ mod tests {
             &mut out,
         );
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn detach_bits_preserves_post_pack_redirty() {
+        let mut page = HotPhysicsPage::zeroed_page();
+        page.set_active(3, true);
+        assert!(page.try_set_kinematic_pose(3, identity_pose(1.0, 0.0, 0.0)));
+
+        let mut acc = WireDirtyAccumulator::from_arena_capacity(1);
+        acc.absorb(0, &page).expect("in range");
+        let mut inflight = [0u64; BITMASK_WORDS];
+        inflight[0] = 1u64 << 3;
+        acc.detach_bits(0, &inflight).expect("detach");
+        assert_eq!(acc.slot_mask(0).unwrap()[0] & (1 << 3), 0);
+
+        // Re-dirty after pack (new absorb) must survive a late "success" (no restore).
+        page.dirty_entity_mask = [0; BITMASK_WORDS];
+        page.mark_dirty(3);
+        acc.absorb(0, &page).expect("in range");
+        assert_ne!(acc.slot_mask(0).unwrap()[0] & (1 << 3), 0);
+
+        // Failure path: restore of the old inflight must OR, not wipe the re-dirty.
+        acc.restore_bits(0, &inflight).expect("restore");
+        assert_ne!(acc.slot_mask(0).unwrap()[0] & (1 << 3), 0);
     }
 
     #[test]
