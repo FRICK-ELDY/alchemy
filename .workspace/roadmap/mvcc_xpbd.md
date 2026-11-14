@@ -6,7 +6,7 @@
 * **本線の役割**: **品質本線**（近傍物理・ゼロアロ・handover 速度・補間）。同一 Room の大規模 CCU（1000 人 horizon）は規模本線 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**）
 * **関連スライス**: `x0020` (Desktop 正本), `x0039` (`ManifestSeal`), `x0053` (体感並行補間), `x0067` (Zenoh 非対称 ACL), `x0068` (短命 mTLS), `x0069` (Room 鍵 AEAD), `x0024`（frame tick 連番 + 欠落時 snapshot）
 * **レビュー取り込み**: [mvcc_xpbd_review_proposal.md](mvcc_xpbd_review_proposal.md)（2026-11-13）の P0/P1 を本版に反映。未決事項は §6
-* **現状**: 着手ゲート〜Phase 1 DoD（[x00a3](slices/x00a3-mvcc-phase1-scaffold.md)–[x00a5](slices/x00a5-soa-safe-simd.md)）+ ゲート閉じ（[x00a6](slices/x00a6-mvcc-layout-cow.md) レイアウト/真 CoW · [x00a7](slices/x00a7-entity-directory.md) Directory · [x00a8](slices/x00a8-inequality-contact.md) 不等式）+ Phase 2 土台（[x00a9](slices/x00a9-phase2-publish-foundation.md) ArcSwap）。host/app 補間・権威配線は未。
+* **現状**: 着手ゲート〜Phase 1 DoD（[x00a3](slices/x00a3-mvcc-phase1-scaffold.md)–[x00a5](slices/x00a5-soa-safe-simd.md)）+ ゲート閉じ（[x00a6](slices/x00a6-mvcc-layout-cow.md)–[x00a8](slices/x00a8-inequality-contact.md)）+ Phase 2（[x00a9](slices/x00a9-phase2-publish-foundation.md)–[x00ac](slices/x00ac-interp-wgsl.md): ArcSwap / sim_tick jitter / 手元予測 / `interp.wgsl`）。host 権威・dirty・`sim_state` は Phase 3。
 * **最優先規約**: 全 Rust クレートにおいて `#![forbid(unsafe_code)]` を**クレート直下（`lib.rs` / 該当 `main.rs`）**に宣言し、既存の `./.scripts/ci.sh rust`・`./.scripts/ci.sh protocol`・`make smoke-desktop-handthrough` を常に Green に保つこと。差分配信の用語は **dirty 合成 + x0024 snapshot**（`V_ack` / 「XOR デルタ」は使わない）。
 
 ---
@@ -17,7 +17,7 @@
 P0 closed
   → P1-1 kick/epoch + P1-4 handover accept + P1-5 SceneBudget（必須ゲート）✓
   → Phase 1（x00a3–x00a8: DoD + レイアウト/CoW/Directory/不等式）✓；host 接触オンは Phase 3
-  → Phase 2 土台 x00a9 ✓ → 残り（app jitter / 手元予測 / interp.wgsl）
+  → Phase 2（x00a9–x00ac: ArcSwap / jitter / 手元予測 / interp.wgsl）✓
   → Phase 3（host 権威ループ + dirty デルタ + sim_state handover + 確定レーン並走）
     → 規模本線: spatial_interest.md（P3-7；アウトライン並走可・実装は Phase 3 後）
 P1-6 / P2（vault・UI/docs/CI）は並走可。P3-1 / P3-3 以降は独立。
@@ -582,7 +582,7 @@ flowchart LR
 
 **DoD に含めないもの**: 同一 Room の大規模 CCU・フルメッシュ解除・interest キー族。それらは [spatial_interest.md](spatial_interest.md) のマイルストーン（32→64→128、1000 は horizon）が担当する。
 
-**現状**: Phase 1 ゲート閉じまで **コード完了**（x00a3–x00a8）。以下は Phase 2 以降。
+**現状**: Phase 1–2 まで **コード完了**（x00a3–x00ac）。以下の Phase 2 節は完了記録；実装本線の次は Phase 3。
 
 ### Phase 1: 既存 `shared-sim` の進化とヘッドレス決定論テスト（host/app 本線は触らない）
 
@@ -595,7 +595,7 @@ flowchart LR
 
 **前提**: Phase 1 ゲート Green（x00a6–x00a8）。  
 **吸収**: improvement-plan **P3-2**（Frame 補間 / jitter buffer）。  
-**土台**: [x00a9](slices/x00a9-phase2-publish-foundation.md) で `PublishedPair`（ArcSwap + `sim_tick`）済み。残りは app 配線。
+**状態**: **closed**（[x00a9](slices/x00a9-phase2-publish-foundation.md)–[x00ac](slices/x00ac-interp-wgsl.md)）。Epoch 描画経路は並存；host 本線切替は Phase 3。
 
 1. **作業内容**:
    * 既存 `epoch_mirror` / Prev-Curr を `MvccPageArena` / `PublishedPair` アダプタへ寄せる。

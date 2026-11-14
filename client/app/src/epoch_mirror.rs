@@ -5,7 +5,8 @@
 //! full entity map; freelist row reuse is safe for GPU pack via generation/ABA gate
 //! in [`crate::epoch_view::pack_aligned_gpu_faces`].
 //! After ingest, [`crate::epoch_view::sync_topology_flat_roots`] refreshes Hierarchy
-//! topology (x0094; flat parents only).
+//! topology (x0094; flat parents only). Also advances MVCC [`PublishedPair`] +
+//! sim-tick jitter (x00aa; net `tick` stands in for `sim_tick` until Phase 3).
 //! Non-guarantees: held/Prefab parent sync; color on tape; host ArcSwap sharing;
 //! XPBD. Draw/Grab/eye display TRS is Epoch freeze (`begin_display_frame` / `out`; x0091/x0092);
 //! color channels remain WorldView.
@@ -207,13 +208,33 @@ pub fn epoch_interp_alpha(published_at: Option<Instant>, now: Instant) -> f32 {
 }
 
 /// Ingest after WorldView mutation (Applied Frame).
-pub fn ingest_applied_world(epoch: &EpochViewState, entities: &HashMap<u32, KinematicPose>) {
+///
+/// `sim_tick` / `host_time_ms` drive x00aa jitter (pass wire `tick` / `host_time_ms`
+/// until proto grows a dedicated `sim_tick`).
+pub fn ingest_applied_world(
+    epoch: &EpochViewState,
+    entities: &HashMap<u32, KinematicPose>,
+    sim_tick: u64,
+    host_time_ms: u64,
+) {
     let Ok(mut mirror) = epoch.mirror.lock() else {
         log::warn!("epoch mirror lock poisoned; skip ingest");
         return;
     };
     let collapse_clear = mirror.ingest_world(&epoch.snapshots, entities);
     drop(mirror);
+
+    if let Ok(mut mvcc) = epoch.mvcc.lock() {
+        mvcc.ingest_world(entities, sim_tick);
+    } else {
+        log::warn!("mvcc mirror lock poisoned; skip mvcc ingest");
+    }
+    if let Ok(mut jitter) = epoch.jitter.lock() {
+        jitter.on_publish(sim_tick, host_time_ms, Instant::now());
+    } else {
+        log::warn!("sim jitter lock poisoned; skip jitter publish");
+    }
+
     crate::epoch_view::clear_hierarchy_collapsed_rows(epoch, &collapse_clear);
     crate::epoch_view::sync_topology_flat_roots(epoch);
     crate::epoch_view::scrub_hierarchy_collapsed(epoch);
@@ -233,14 +254,18 @@ mod tests {
         }
     }
 
+    fn ingest(epoch: &EpochViewState, map: &HashMap<u32, KinematicPose>, tick: u64) {
+        ingest_applied_world(epoch, map, tick, tick.saturating_mul(33));
+    }
+
     #[test]
     fn consecutive_ingest_keeps_prev_curr_distinct() {
         let epoch = EpochViewState::new();
         let mut map = HashMap::new();
         map.insert(1, pose_at(0.0));
-        ingest_applied_world(&epoch, &map);
+        ingest(&epoch, &map, 1);
         map.insert(1, pose_at(5.0));
-        ingest_applied_world(&epoch, &map);
+        ingest(&epoch, &map, 2);
 
         let faces = epoch.snapshots.load_pair();
         assert!(faces.published_at_ns > 0);
@@ -249,6 +274,8 @@ mod tests {
         assert_eq!(faces.curr.world_transforms[row].position[0], 5.0);
         assert_eq!(faces.curr.world_transforms[row].inv_mass, 0.0);
         assert!(!faces.curr.readiness[row].contains(ReadinessMask::DYNAMIC));
+        assert_eq!(epoch.mvcc.lock().unwrap().load_curr().sim_tick, 2);
+        assert!(epoch.jitter.lock().unwrap().has_pair());
     }
 
     #[test]
@@ -257,10 +284,10 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(1, pose_at(1.0));
         map.insert(2, pose_at(2.0));
-        ingest_applied_world(&epoch, &map);
+        ingest(&epoch, &map, 1);
 
         map.remove(&1);
-        ingest_applied_world(&epoch, &map);
+        ingest(&epoch, &map, 2);
 
         let curr = epoch.snapshots.load_curr();
         let mirror = epoch.mirror.lock().unwrap();
@@ -276,11 +303,11 @@ mod tests {
         let epoch = EpochViewState::new();
         let mut map = HashMap::new();
         map.insert(7, pose_at(3.0));
-        ingest_applied_world(&epoch, &map);
+        ingest(&epoch, &map, 1);
         let row = epoch.mirror.lock().unwrap().row_for(7).unwrap().row_id;
 
         map.clear();
-        ingest_applied_world(&epoch, &map);
+        ingest(&epoch, &map, 2);
 
         let curr = epoch.snapshots.load_curr();
         assert!(epoch.mirror.lock().unwrap().row_for(7).is_none());
@@ -293,12 +320,12 @@ mod tests {
         let epoch = EpochViewState::new();
         let mut map = HashMap::new();
         map.insert(1, pose_at(1.0));
-        ingest_applied_world(&epoch, &map);
+        ingest(&epoch, &map, 1);
         let row = epoch.mirror.lock().unwrap().row_for(1).unwrap().row_id;
         epoch.hierarchy_collapsed.lock().unwrap().insert(row);
 
         map.clear();
-        ingest_applied_world(&epoch, &map);
+        ingest(&epoch, &map, 2);
         assert!(
             !epoch.hierarchy_collapsed.lock().unwrap().contains(&row),
             "tombstone ingest must clear collapse via ingest_applied_world wiring"
@@ -307,7 +334,7 @@ mod tests {
         // Stale bit left on the freelist id (would be wrong if only live-scrub ran after reuse).
         epoch.hierarchy_collapsed.lock().unwrap().insert(row);
         map.insert(2, pose_at(2.0));
-        ingest_applied_world(&epoch, &map);
+        ingest(&epoch, &map, 3);
         let row2 = epoch.mirror.lock().unwrap().row_for(2).unwrap().row_id;
         assert_eq!(row2, row, "expect freelist reuse of row_id");
         assert!(
@@ -321,13 +348,13 @@ mod tests {
         let epoch = EpochViewState::new();
         let mut map = HashMap::new();
         map.insert(1, pose_at(9.0));
-        ingest_applied_world(&epoch, &map);
+        ingest(&epoch, &map, 1);
         let row_old = epoch.mirror.lock().unwrap().row_for(1).unwrap();
 
         map.clear();
-        ingest_applied_world(&epoch, &map);
+        ingest(&epoch, &map, 2);
         map.insert(2, pose_at(1.0));
-        ingest_applied_world(&epoch, &map);
+        ingest(&epoch, &map, 3);
         let row_new = epoch.mirror.lock().unwrap().row_for(2).unwrap();
         assert_eq!(row_new.row_id, row_old.row_id, "expect freelist reuse");
         assert_ne!(row_new.generation, row_old.generation);

@@ -16,4 +16,4 @@
 ## 完了条件
 
 1. `cargo test -p alchemy-shared-sim --lib mvcc::publish` Green。
-2. roadmap 目次で本スライス `done`；次は app 側補間配線。
+2. roadmap 目次で本スライス `done`；後続 [x00aa](x00aa-phase2-sim-jitter.md) / [x00ab](x00ab-owned-prediction.md) / [x00ac](x00ac-interp-wgsl.md) で Phase 2 閉じ。

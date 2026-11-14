@@ -384,6 +384,8 @@ pub struct SharedState {
     pub presence_peer_subs: Mutex<Vec<String>>,
     /// Zero-Base Epoch Prev/Curr snapshots + Hierarchy / X-Ray (Ring 3 view).
     pub epoch: crate::epoch_view::EpochViewState,
+    /// Local user_root / Grab prediction vs host authority (x00ab).
+    pub owned_prediction: Mutex<crate::owned_prediction::OwnedPrediction>,
     /// FPS eye TRS frozen with [`Self::begin_display_frame`] (x0092; avoid N× lock per frame).
     /// Keyed by `local_user_root` id so Presence races cannot serve a stale anchor.
     pub(crate) eye_pose_cache: Mutex<Option<(u32, EntityPose)>>,
@@ -689,8 +691,39 @@ impl SharedState {
     ///
     /// Color channels stay from `wire`. Missing cache row → `wire` unchanged.
     /// Call [`Self::begin_display_frame`] (or ensure via sync) before Grab/draw/eye.
+    /// Owned entities (x00ab) prefer prediction override when present.
     pub fn display_pose_for(&self, entity_id: u32, wire: EntityPose) -> EntityPose {
-        self.epoch
+        self.display_pose_for_draw(entity_id, wire).0
+    }
+
+    /// Like [`Self::display_pose_for`], plus whether the pose is an owned-prediction
+    /// override (draw must use `model_override` in the same decision).
+    pub fn display_pose_for_draw(&self, entity_id: u32, wire: EntityPose) -> (EntityPose, bool) {
+        if let Ok(owned) = self.owned_prediction.lock() {
+            if let Some(p) = owned.display_override(entity_id) {
+                return (
+                    EntityPose {
+                        x: p.x,
+                        y: p.y,
+                        z: p.z,
+                        qx: p.qx,
+                        qy: p.qy,
+                        qz: p.qz,
+                        qw: p.qw,
+                        sx: wire.sx,
+                        sy: wire.sy,
+                        sz: wire.sz,
+                        r: wire.r,
+                        g: wire.g,
+                        b: wire.b,
+                        a: wire.a,
+                    },
+                    true,
+                );
+            }
+        }
+        let pose = self
+            .epoch
             .with_display_frame(std::time::Instant::now(), |frame| {
                 frame
                     .poses
@@ -698,7 +731,74 @@ impl SharedState {
                     .map(|out| entity_pose_from_gpu_row(out, wire))
                     .unwrap_or(wire)
             })
-            .unwrap_or(wire)
+            .unwrap_or(wire);
+        (pose, false)
+    }
+
+    /// Begin local Grab hold in the prediction tracker (Desktop Grab start).
+    /// `false` if pending reject — Desktop must not set `held_grab` / Intent GRAB.
+    pub fn begin_held_grab(
+        &self,
+        entity_id: u32,
+        pose: crate::owned_prediction::PredictionPose,
+    ) -> bool {
+        let Ok(mut owned) = self.owned_prediction.lock() else {
+            return false;
+        };
+        owned.begin_held(entity_id, pose)
+    }
+
+    /// Drop prediction hold immediately (button release / dash). Keeps pending reject latch.
+    pub fn clear_held_grab_prediction(&self) {
+        if let Ok(mut owned) = self.owned_prediction.lock() {
+            owned.set_held(None);
+        }
+    }
+
+    /// Push local Grab prediction only (every input tick). Does **not** reconcile —
+    /// authority Snap/Keep runs on Applied Frame via [`Self::reconcile_held_on_authority`].
+    ///
+    /// Lock order: `owned_prediction` only (never acquire `world` under this lock).
+    /// While `grab_rejected` is pending, updates are ignored (no hold resurrection).
+    pub fn predict_held_grab(
+        &self,
+        held_entity: Option<u32>,
+        predicted_held: Option<crate::owned_prediction::PredictionPose>,
+    ) {
+        let Ok(mut owned) = self.owned_prediction.lock() else {
+            return;
+        };
+        if owned.has_pending_reject() {
+            return;
+        }
+        match (held_entity, predicted_held) {
+            (Some(id), Some(pose)) => owned.predict_held(id, pose),
+            (None, _) => owned.set_held(None),
+            (Some(_), None) => {}
+        }
+    }
+
+    /// Reconcile held Grab against one kinematic authority sample (Applied Frame).
+    ///
+    /// Missing `held_id` in `authority` → force reject (despawn / gap).
+    pub fn reconcile_held_on_authority(
+        &self,
+        authority: &std::collections::HashMap<u32, crate::epoch_mirror::KinematicPose>,
+    ) {
+        let Ok(mut owned) = self.owned_prediction.lock() else {
+            return;
+        };
+        let Some(id) = owned.held_entity else {
+            return;
+        };
+        let Some(p) = authority.get(&id).copied() else {
+            owned.force_reject();
+            return;
+        };
+        let auth = crate::owned_prediction::PredictionPose::xyz_quat(
+            p.x, p.y, p.z, p.qx, p.qy, p.qz, p.qw,
+        );
+        let _ = owned.reconcile_held(auth);
     }
 
     /// Wire Curr for a specific `user_root` id (unset → default eye). Not for draw/Grab/view.
@@ -737,13 +837,11 @@ impl SharedState {
             .unwrap_or_else(|| resolve_user_root_display_pose(id, wire, None))
     }
 
-    /// Grabbable boxes with frozen display TRS (hit aligned to draw).
+    /// Grabbable boxes with display TRS (hit aligned to draw; owned Grab uses prediction).
     pub fn grabbable_display_poses(&self) -> (Vec<(u32, EntityPose)>, Arc<BoxDefs>) {
         let defs = self.box_defs_snapshot();
-        let Some(frame) = self.epoch.display_frame_snapshot() else {
-            return (Vec::new(), defs);
-        };
-        let boxes = self
+        // Snapshot wires under `world`, then resolve display without holding `world`.
+        let wires: Vec<(u32, EntityPose)> = self
             .world
             .lock()
             .ok()
@@ -751,17 +849,14 @@ impl SharedState {
                 w.entities
                     .iter()
                     .filter(|(id, _)| defs.grabbable.contains(*id))
-                    .map(|(&id, &wire)| {
-                        let pose = frame
-                            .poses
-                            .get(&id)
-                            .map(|out| entity_pose_from_gpu_row(out, wire))
-                            .unwrap_or(wire);
-                        (id, pose)
-                    })
+                    .map(|(&id, &wire)| (id, wire))
                     .collect()
             })
             .unwrap_or_default();
+        let boxes = wires
+            .into_iter()
+            .map(|(id, wire)| (id, self.display_pose_for(id, wire)))
+            .collect();
         (boxes, defs)
     }
 
@@ -1892,15 +1987,27 @@ impl SceneGpu {
     }
 
     /// Resolve draw uniforms: epoch pack when mirrored, else CPU `EntityPose` model.
+    #[allow(clippy::too_many_arguments)] // draw path packs epoch/owned flags with TRS
     fn draw_uniforms_for(
         &self,
         view_proj: Mat4,
         entity_id: u32,
         pose: EntityPose,
+        owned_override: bool,
         scale_mul: Vec3,
         extra_rot: glam::Quat,
         color: [f32; 4],
     ) -> Uniforms {
+        // x00ab: owned Grab prediction must win over Epoch `out[pack]` (which ignores CPU TRS).
+        // `owned_override` comes from the same `display_pose_for_draw` lock as `pose`.
+        if owned_override {
+            let model = Mat4::from_scale_rotation_translation(
+                pose.scale() * scale_mul,
+                pose.rotation() * extra_rot,
+                pose.position(),
+            );
+            return Uniforms::with_model(view_proj, model, color);
+        }
         if let Some(&pack) = self.epoch_entity_pack.get(&entity_id) {
             Uniforms::with_epoch(view_proj, pack, scale_mul, extra_rot, color)
         } else {
@@ -2004,9 +2111,9 @@ impl SceneGpu {
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 for (slot, (id, wire)) in poses.into_iter().enumerate().take(MESH_DRAW_SLOTS) {
-                    // Mesh asset tilt stays client-local; display TRS is epoch_out (x0091).
-                    // Height gradient uses display Y so color tracks the interpolated pose.
-                    let display = self.shared.display_pose_for(id, wire);
+                    // Mesh asset tilt stays client-local; TRS from display (Epoch or owned pred).
+                    // Height gradient uses display Y so color tracks the visible pose.
+                    let (display, owned) = self.shared.display_pose_for_draw(id, wire);
                     let height_t = (display.y / 5.0).clamp(0.0, 1.0);
                     let coin_color = [
                         0.95 * height_t + 0.15,
@@ -2017,7 +2124,8 @@ impl SceneGpu {
                     let mesh_uniforms = self.draw_uniforms_for(
                         view_proj,
                         id,
-                        wire,
+                        display,
+                        owned,
                         Vec3::splat(visual_scale),
                         mesh_tilt,
                         coin_color,
@@ -2068,7 +2176,7 @@ impl SceneGpu {
             let remote_reserve = remotes.len().min(BOX_DRAW_SLOTS);
             let box_slots = BOX_DRAW_SLOTS.saturating_sub(remote_reserve);
             let identity_rot = glam::Quat::IDENTITY;
-            for (draw_i, (id, pose)) in boxes.into_iter().enumerate() {
+            for (draw_i, (id, wire)) in boxes.into_iter().enumerate() {
                 if draw_i >= box_slots {
                     break;
                 }
@@ -2078,7 +2186,8 @@ impl SceneGpu {
                     .get(&id)
                     .copied()
                     .unwrap_or(BOX_HALF_EXTENT);
-                let mut color = pose.color();
+                let (display, owned) = self.shared.display_pose_for_draw(id, wire);
+                let mut color = wire.color();
                 if highlight_entity == Some(id) {
                     // Brighten so look-aim / Grab target is obvious without a crosshair.
                     color = [
@@ -2091,7 +2200,8 @@ impl SceneGpu {
                 let box_uniforms = self.draw_uniforms_for(
                     view_proj,
                     id,
-                    pose,
+                    display,
+                    owned,
                     Vec3::splat(he * 2.0),
                     identity_rot,
                     color,
@@ -2114,6 +2224,7 @@ impl SceneGpu {
                     view_proj,
                     *id,
                     *pose,
+                    false,
                     Vec3::splat(REMOTE_ROOT_HALF_EXTENT * 2.0),
                     identity_rot,
                     pose.color(),
