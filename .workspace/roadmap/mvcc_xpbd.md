@@ -6,7 +6,7 @@
 * **本線の役割**: **品質本線**（近傍物理・ゼロアロ・handover 速度・補間）。同一 Room の大規模 CCU（1000 人 horizon）は規模本線 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**）
 * **関連スライス**: `x0020` (Desktop 正本), `x0039` (`ManifestSeal`), `x0053` (体感並行補間), `x0067` (Zenoh 非対称 ACL), `x0068` (短命 mTLS), `x0069` (Room 鍵 AEAD), `x0024`（frame tick 連番 + 欠落時 snapshot）
 * **レビュー取り込み**: [mvcc_xpbd_review_proposal.md](mvcc_xpbd_review_proposal.md)（2026-11-13）の P0/P1 を本版に反映。未決事項は §6
-* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜`sim_state`（x00ad–[x00b0](slices/x00b0-phase3-sim-state.md)）**done**。残り: dirty 30Hz 本番切替（[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md) **planned**）・（並走可）`…/edit`（次空き `x00b2`〜）。
+* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜dirty 30Hz（x00ad–[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)）**done**。残り:（並走可）`…/edit`（次空き `x00b2`〜）。
 * **最優先規約**: 全 Rust クレートにおいて `#![forbid(unsafe_code)]` を**クレート直下（`lib.rs` / 該当 `main.rs`）**に宣言し、既存の `./.scripts/ci.sh rust`・`./.scripts/ci.sh protocol`・`make smoke-desktop-handthrough` を常に Green に保つこと。差分配信の用語は **dirty 合成 + x0024 snapshot**（`V_ack` / 「XOR デルタ」は使わない）。
 
 ---
@@ -22,7 +22,8 @@ P0 closed
   → Phase 3 dirty codec x00ae✓
   → Phase 3 PROTOCOL_PIN x00af✓
   → Phase 3 sim_state x00b0✓
-  → Phase 3 残り（確定レーン並走 · dirty 本番）
+  → Phase 3 dirty 30Hz 本番 x00b1✓
+  → Phase 3 残り（確定レーン並走）
     → 規模本線: spatial_interest.md（P3-7；アウトライン並走可・実装は Phase 3 後）
 P1-6 / P2（vault・UI/docs/CI）は並走可。P3-1 / P3-3 以降は独立。
 確定レーン（§4.7）の設計確定は今、実装は Phase 3 と並走可（inventory 一般化）。
@@ -397,7 +398,8 @@ fn solve_contact(/* … */, penetration: f64) {
 * 基準 = **直前に publish した frame（全員共通）**。受信者別 `V_ack` / reliable ACK チャネルは作らない。
 * `RenderFrame.tick` は **publish 通し番号（net_tick）**。物理ティックは別フィールド `sim_tick` で載せる（Phase 3・PROTOCOL_PIN）。
 * 欠落は既存どおり `…/snapshot` を get（定期キーフレームを frame に流さない）。
-* host は 60Hz 計算・おおむね 2 ティックに 1 回送信するため、**送らないティックの dirty を OR で蓄積**する（`fork_page` が dirty をクリアしても、止まって見えない退行を防ぐ）。publish 成功時だけクリア。
+* host は 60Hz 計算・おおむね 2 ティックに 1 回送信するため、**送らないティックの dirty を OR で蓄積**する（`fork_page` が dirty をクリアしても、止まって見えない退行を防ぐ）。
+* **in-flight 契約（x00b1）**: pack 時に **wire へ載せた bit だけ** `detach_bits`（acc から外す）。put **成功**なら mask 破棄（pack 後に再 absorb された bit は acc に残る）。**空デルタ / gate 閉**なら `restore_bits` で OR 復元。遅延 `acc &= !mask`（成功時一括クリア）は使わない — worker 遅延中の再 dirty を消してしまうため。
 * 冗長デルタ窓 K（直近 K publish の OR）は任意・おすすめ（§6 Q6）。K>1 なら `FRAME_TICK_GAP_RESYNC` を広げられる。
 * **`WireDirtyAccumulator` のキー契約（必須）**: プール index（`PageId.0`）で OR する場合、CoW fork 後の付け替えと `release` 後のスロット再利用で **別エンティティへ dirty が残留**しうる。**文書上の既定は (A)**: `alloc_page` / 再利用時に当該 slot の `clear_slot` を必ず呼び、fork 元→先への absorb は新 `PageId` に対して行う。**(B) 世代付きキー**・**(C) entity_id 側蓄積**は代替（採用するならスライスで明示）。DoD に「reuse 後に旧 dirty が新ページへ混入しない」テストを含める。
 
@@ -421,7 +423,9 @@ impl WireDirtyAccumulator {
     pub fn from_arena_capacity(pool_capacity_pages: usize) -> Self { /* tests / low-level */ Self { acc: Box::new([]) } }
     pub fn absorb(&mut self, page_slot: usize, page: &HotPhysicsPage) -> Result<(), DirtyAccumError> { /* OR; OOR=Err */ Ok(()) }
     pub fn clear_slot(&mut self, page_slot: usize) -> Result<(), DirtyAccumError> { /* alloc/reuse 時 */ Ok(()) }
-    pub fn clear_after_publish(&mut self) { /* zero all */ }
+    pub fn clear_after_publish(&mut self) { /* zero all — test / full reset; not the host wire path */ }
+    pub fn detach_bits(&mut self, page_slot: usize, mask: &[u64; BITMASK_WORDS]) -> Result<(), DirtyAccumError> { /* pack: acc &= !mask */ Ok(()) }
+    pub fn restore_bits(&mut self, page_slot: usize, mask: &[u64; BITMASK_WORDS]) -> Result<(), DirtyAccumError> { /* empty/fail: acc |= mask */ Ok(()) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -590,7 +594,7 @@ flowchart LR
 
 **DoD に含めないもの**: 同一 Room の大規模 CCU・フルメッシュ解除・interest キー族。それらは [spatial_interest.md](spatial_interest.md) のマイルストーン（32→64→128、1000 は horizon）が担当する。
 
-**現状**: Phase 1–2 + Phase 3 着手〜`sim_state`（x00a3–[x00b0](slices/x00b0-phase3-sim-state.md)）まで **コード完了**。実装本線の次は dirty 30Hz 本番切替（[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md) **planned**；slice のみ・実装は別 PR。並走可 `…/edit`）。
+**現状**: Phase 1–2 + Phase 3 着手〜dirty 30Hz（x00a3–[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)）まで **コード完了**。実装本線の次は（並走可）確定レーン `…/edit`（次空き `x00b2`）。
 
 ### Phase 1: 既存 `shared-sim` の進化とヘッドレス決定論テスト（host/app 本線は触らない）
 
@@ -625,7 +629,7 @@ flowchart LR
 * **[x00ae](slices/x00ae-phase3-dirty-delta-codec.md)** — `delta_codec` + dirty 合成 + Smallest-Three — **done**。
 * **[x00af](slices/x00af-phase3-protocol-pin.md)** — PROTOCOL_PIN 一括（`sim_tick` / `holder` / `release_*`）— **done**。
 * **[x00b0](slices/x00b0-phase3-sim-state.md)** — `…/sim_state` 計画的 handover + crash fail-closed — **done**。
-* **[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)** — host dirty 30Hz 本番切替 — **planned**（slice / 目次のみ）。
+* **[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)** — host dirty 30Hz 本番切替 — **done**。
 * 後続（次空き `x00b2`〜）:（並走可）確定レーン `…/edit`。
 
 1. **作業内容**:

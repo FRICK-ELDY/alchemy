@@ -26,6 +26,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use zenoh::Wait;
 
+use alchemy_shared_sim::mvcc::BITMASK_WORDS;
+
 use crate::pose_delta;
 use crate::wire_tick;
 
@@ -90,6 +92,10 @@ pub struct FrameSample {
     pub sim_tick: u64,
     /// Per user_root slot last applied Intent seq (`RenderFrame.acked_intent_seq`).
     pub acked_intent_seq: Vec<u64>,
+    /// When true, `poses` is the dirty set (x00b1): skip `last_sent` pose_changed filter.
+    pub dirty_authored: bool,
+    /// Bits detached from acc at pack (x00b1): restore on empty/fail, discard on success.
+    pub dirty_inflight_mask: Option<[u64; BITMASK_WORDS]>,
 }
 
 /// In-flight pose scratches: physics fill + hub pending + worker handle_frame.
@@ -150,6 +156,10 @@ impl PoseScratchPool {
 ///
 /// - **poses / host_time / publish_allowed**: latest (`next`) wins, except a
 ///   `removes_only` next must not wipe a prior net-tick pose set.
+/// - **dirty↔dirty poses** (x00b1): entity_id union with last-write-wins (`next` wins);
+///   `dirty_inflight_mask` is bitwise OR so empty/fail restore covers both packs.
+/// - **dirty→full**: `next` poses win, but prev inflight mask is OR'd onto next so a
+///   successful full put discards both; empty/fail restores both.
 /// - **removes**: sorted unique union (mid-net reclaim must survive net-tick coalesce).
 /// - **resume_catchup**: sticky OR (gate catch-up must not be cleared by a later tick).
 /// - **removes_only**: true only if **both** sides are remove-only (else net path).
@@ -160,39 +170,98 @@ pub fn coalesce_frame(prev: FrameSample, next: FrameSample, pool: &PoseScratchPo
     let removes = union_sorted_ids(prev.removes, next.removes);
     let resume_catchup = prev.resume_catchup || next.resume_catchup;
     let removes_only = prev.removes_only && next.removes_only;
-    let (poses, host_time_ms, publish_allowed, sim_tick, acked_intent_seq) =
-        if next.removes_only && next.poses.is_empty() {
-            // Keep prior net-tick poses when only flushing more removes.
-            pool.release(next.poses);
-            let _ = next.acked_intent_seq; // drop; poses↔sim_tick↔ack stay prev
-            let _ = next.sim_tick;
-            (
-                prev.poses,
-                prev.host_time_ms.max(next.host_time_ms),
-                prev.publish_allowed || next.publish_allowed,
-                prev.sim_tick,
-                prev.acked_intent_seq,
-            )
-        } else {
-            pool.release(prev.poses);
-            (
-                next.poses,
-                next.host_time_ms,
-                next.publish_allowed,
-                next.sim_tick,
-                next.acked_intent_seq,
-            )
+    let keep_prev_poses = next.removes_only && next.poses.is_empty();
+    if keep_prev_poses {
+        // Keep prior net-tick poses when only flushing more removes.
+        pool.release(next.poses);
+        let _ = next.acked_intent_seq;
+        let _ = next.sim_tick;
+        // removes_only next should not carry inflight; OR any stray bits onto prev.
+        let dirty_inflight_mask =
+            or_dirty_masks(prev.dirty_inflight_mask, next.dirty_inflight_mask);
+        return FrameSample {
+            poses: prev.poses,
+            removes,
+            resume_catchup,
+            publish_allowed: prev.publish_allowed || next.publish_allowed,
+            removes_only,
+            host_time_ms: prev.host_time_ms.max(next.host_time_ms),
+            sim_tick: prev.sim_tick,
+            acked_intent_seq: prev.acked_intent_seq,
+            dirty_authored: prev.dirty_authored,
+            dirty_inflight_mask,
         };
+    }
+
+    if prev.dirty_authored && next.dirty_authored {
+        let dirty_inflight_mask =
+            or_dirty_masks(prev.dirty_inflight_mask, next.dirty_inflight_mask);
+        let poses = union_dirty_poses_lww(prev.poses, next.poses, pool);
+        return FrameSample {
+            poses,
+            removes,
+            resume_catchup,
+            publish_allowed: next.publish_allowed,
+            removes_only,
+            host_time_ms: next.host_time_ms,
+            sim_tick: next.sim_tick,
+            acked_intent_seq: next.acked_intent_seq,
+            dirty_authored: true,
+            dirty_inflight_mask,
+        };
+    }
+
+    // Full / catchup wins poses; keep prior dirty inflight so success discards / fail restores.
+    pool.release(prev.poses);
+    let dirty_inflight_mask = or_dirty_masks(prev.dirty_inflight_mask, next.dirty_inflight_mask);
     FrameSample {
-        poses,
+        poses: next.poses,
         removes,
         resume_catchup,
-        publish_allowed,
+        publish_allowed: next.publish_allowed,
         removes_only,
-        host_time_ms,
-        sim_tick,
-        acked_intent_seq,
+        host_time_ms: next.host_time_ms,
+        sim_tick: next.sim_tick,
+        acked_intent_seq: next.acked_intent_seq,
+        dirty_authored: next.dirty_authored,
+        dirty_inflight_mask,
     }
+}
+
+fn or_dirty_masks(
+    a: Option<[u64; BITMASK_WORDS]>,
+    b: Option<[u64; BITMASK_WORDS]>,
+) -> Option<[u64; BITMASK_WORDS]> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (Some(mut x), Some(y)) => {
+            for (dst, src) in x.iter_mut().zip(y.iter()) {
+                *dst |= *src;
+            }
+            Some(x)
+        }
+    }
+}
+
+/// Last-write-wins by `entity_id` (`next` overwrites `prev`); recycles `next` buffer.
+///
+/// O(n·m) scan is intentional while dirty cardinality stays scene-small (full-mesh
+/// Phase 3). Larger sets belong with Spatial Interest — swap to a scratch map then.
+fn union_dirty_poses_lww(
+    mut prev: Vec<(u32, Pose)>,
+    mut next: Vec<(u32, Pose)>,
+    pool: &PoseScratchPool,
+) -> Vec<(u32, Pose)> {
+    for (id, pose) in next.drain(..) {
+        if let Some((_, slot)) = prev.iter_mut().find(|(i, _)| *i == id) {
+            *slot = pose;
+        } else {
+            prev.push((id, pose));
+        }
+    }
+    pool.release(next);
+    prev
 }
 
 /// Merge two id lists into a sorted unique vec (O(n+m) when inputs are sorted).
@@ -348,6 +417,8 @@ pub struct PublishStats {
     pub empty_delta_frames: AtomicU64,
     pub coalesce_frames: AtomicU64,
     pub net_tick: AtomicU64,
+    /// In-flight dirty masks to OR back on the physics thread after empty/fail put (x00b1).
+    pub wire_dirty_restores: Mutex<Vec<[u64; BITMASK_WORDS]>>,
 }
 
 impl PublishStats {
@@ -615,6 +686,8 @@ impl WorkerState {
             host_time_ms,
             sim_tick,
             acked_intent_seq,
+            dirty_authored,
+            dirty_inflight_mask,
         } = sample;
         // Drop returns the scratch even on early return (x0095).
         let pose_return = PoseScratchReturn { hub, poses };
@@ -668,6 +741,7 @@ impl WorkerState {
             // Hold coalesced removes / sticky catch-up until the gate opens again.
             // (Physics also sets was_publishing=false; worker defer is the hard guarantee.)
             self.defer_until_allowed(removes, resume_catchup);
+            queue_dirty_inflight_restore(stats, dirty_inflight_mask);
             if let Some(tick) = wire_tick::snapshot_tick_on_empty_hold(self.last_published_tick) {
                 Self::refresh_snapshot_cache(
                     cache,
@@ -699,6 +773,12 @@ impl WorkerState {
         if resume_catchup {
             log::info!("publish resumed; synthesizing catch-up upserts+removes");
             upserts = catchup_after_publish_gate(&mut self.last_sent, poses, &mut removes);
+        } else if dirty_authored {
+            // x00b1: dirty mask already selected the set — do not re-filter vs last_sent.
+            for &(id, next_pose) in poses {
+                upserts.push(to_entity(id, next_pose));
+                self.last_sent.insert(id, next_pose);
+            }
         } else {
             for &(id, next_pose) in poses {
                 let should_send = match self.last_sent.get(&id) {
@@ -714,6 +794,8 @@ impl WorkerState {
 
         if upserts.is_empty() && removes.is_empty() {
             stats.empty_delta_frames.fetch_add(1, Ordering::Relaxed);
+            // Bits were detached at pack — restore so a later net tick can send them.
+            queue_dirty_inflight_restore(stats, dirty_inflight_mask);
             if let Some(tick) = wire_tick::snapshot_tick_on_empty_hold(self.last_published_tick) {
                 Self::refresh_snapshot_cache(
                     cache,
@@ -748,12 +830,26 @@ impl WorkerState {
             sim_tick,
             acked_intent_seq,
         );
+        // Success: drop inflight mask without restore — bits stay detached from acc.
+        // Re-dirties absorbed after pack remain in acc (detach only removed the packed set).
+        let _ = (dirty_authored, dirty_inflight_mask);
         if !resume_catchup {
             for id in &removes {
                 self.last_sent.remove(id);
             }
         }
     }
+}
+
+fn queue_dirty_inflight_restore(stats: &PublishStats, mask: Option<[u64; BITMASK_WORDS]>) {
+    let Some(mask) = mask else {
+        return;
+    };
+    let mut q = stats
+        .wire_dirty_restores
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    q.push(mask);
 }
 
 /// Returns pose scratch to the pool when `handle_frame` exits (any path).
@@ -880,6 +976,8 @@ mod tests {
             host_time_ms: 1,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         }));
         assert!(hub.submit_frame(FrameSample {
             poses: b_poses,
@@ -890,6 +988,8 @@ mod tests {
             host_time_ms: 2,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         }));
         let mut g = hub.pending.lock().unwrap();
         let f = g.frame.take().unwrap();
@@ -897,6 +997,156 @@ mod tests {
         assert!((f.poses[0].1.x - 9.0).abs() < f64::EPSILON);
         drop(g);
         hub.release_poses(f.poses);
+    }
+
+    #[test]
+    fn coalesce_dirty_authored_unions_poses_and_or_masks() {
+        // x00b1: delayed worker must not drop the earlier dirty pack when coalescing.
+        let pool = PoseScratchPool::new(8);
+        let mut mask_a = [0u64; BITMASK_WORDS];
+        mask_a[0] = 1 << 1;
+        let mut mask_b = [0u64; BITMASK_WORDS];
+        mask_b[0] = 1 << 3;
+        let prev = FrameSample {
+            poses: scratch_one(
+                &pool,
+                11,
+                Pose {
+                    x: 1.0,
+                    ..Pose::default()
+                },
+            ),
+            removes: vec![],
+            resume_catchup: false,
+            publish_allowed: true,
+            removes_only: false,
+            host_time_ms: 1,
+            sim_tick: 2,
+            acked_intent_seq: vec![],
+            dirty_authored: true,
+            dirty_inflight_mask: Some(mask_a),
+        };
+        let next = FrameSample {
+            poses: scratch_one(
+                &pool,
+                33,
+                Pose {
+                    x: 3.0,
+                    ..Pose::default()
+                },
+            ),
+            removes: vec![],
+            resume_catchup: false,
+            publish_allowed: true,
+            removes_only: false,
+            host_time_ms: 2,
+            sim_tick: 4,
+            acked_intent_seq: vec![],
+            dirty_authored: true,
+            dirty_inflight_mask: Some(mask_b),
+        };
+        let merged = coalesce_frame(prev, next, &pool);
+        assert!(merged.dirty_authored);
+        assert_eq!(merged.poses.len(), 2);
+        assert!(merged.poses.iter().any(|(id, p)| *id == 11 && p.x == 1.0));
+        assert!(merged.poses.iter().any(|(id, p)| *id == 33 && p.x == 3.0));
+        let mask = merged.dirty_inflight_mask.expect("mask");
+        assert_eq!(mask[0] & (1 << 1), 1 << 1);
+        assert_eq!(mask[0] & (1 << 3), 1 << 3);
+        pool.release(merged.poses);
+    }
+
+    #[test]
+    fn coalesce_dirty_same_entity_lww_next_wins() {
+        let pool = PoseScratchPool::new(8);
+        let prev = FrameSample {
+            poses: scratch_one(
+                &pool,
+                7,
+                Pose {
+                    x: 1.0,
+                    ..Pose::default()
+                },
+            ),
+            removes: vec![],
+            resume_catchup: false,
+            publish_allowed: true,
+            removes_only: false,
+            host_time_ms: 1,
+            sim_tick: 1,
+            acked_intent_seq: vec![],
+            dirty_authored: true,
+            dirty_inflight_mask: Some([1u64 << 0; BITMASK_WORDS]),
+        };
+        let next = FrameSample {
+            poses: scratch_one(
+                &pool,
+                7,
+                Pose {
+                    x: 9.0,
+                    ..Pose::default()
+                },
+            ),
+            removes: vec![],
+            resume_catchup: false,
+            publish_allowed: true,
+            removes_only: false,
+            host_time_ms: 2,
+            sim_tick: 2,
+            acked_intent_seq: vec![],
+            dirty_authored: true,
+            dirty_inflight_mask: Some([1u64 << 1; BITMASK_WORDS]),
+        };
+        let merged = coalesce_frame(prev, next, &pool);
+        assert_eq!(merged.poses.len(), 1);
+        assert_eq!(merged.poses[0].0, 7);
+        assert!((merged.poses[0].1.x - 9.0).abs() < f64::EPSILON);
+        pool.release(merged.poses);
+    }
+
+    #[test]
+    fn coalesce_dirty_into_full_keeps_prev_inflight_mask() {
+        let pool = PoseScratchPool::new(8);
+        let mut mask = [0u64; BITMASK_WORDS];
+        mask[0] = 1 << 5;
+        let prev = FrameSample {
+            poses: scratch_one(&pool, 5, Pose::default()),
+            removes: vec![],
+            resume_catchup: false,
+            publish_allowed: true,
+            removes_only: false,
+            host_time_ms: 1,
+            sim_tick: 1,
+            acked_intent_seq: vec![],
+            dirty_authored: true,
+            dirty_inflight_mask: Some(mask),
+        };
+        let next = FrameSample {
+            poses: scratch_one(
+                &pool,
+                99,
+                Pose {
+                    x: 2.0,
+                    ..Pose::default()
+                },
+            ),
+            removes: vec![],
+            resume_catchup: true,
+            publish_allowed: true,
+            removes_only: false,
+            host_time_ms: 2,
+            sim_tick: 2,
+            acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
+        };
+        let merged = coalesce_frame(prev, next, &pool);
+        assert!(!merged.dirty_authored);
+        assert_eq!(merged.poses.len(), 1);
+        assert_eq!(merged.poses[0].0, 99);
+        let kept = merged.dirty_inflight_mask.expect("prev inflight kept");
+        assert_eq!(kept[0] & (1 << 5), 1 << 5);
+        pool.release(merged.poses);
     }
 
     fn scratch_one(pool: &PoseScratchPool, id: u32, pose: Pose) -> Vec<(u32, Pose)> {
@@ -917,6 +1167,8 @@ mod tests {
             host_time_ms: 1,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         };
         let net = FrameSample {
             poses: scratch_one(
@@ -934,6 +1186,8 @@ mod tests {
             host_time_ms: 2,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         };
         let m = coalesce_frame(mid, net, &pool);
         assert_eq!(m.removes, vec![3, 5, 7]);
@@ -962,6 +1216,8 @@ mod tests {
             host_time_ms: 1,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         };
         let mid = FrameSample {
             poses: vec![],
@@ -972,6 +1228,8 @@ mod tests {
             host_time_ms: 2,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         };
         let m = coalesce_frame(net, mid, &pool);
         assert!(!m.removes_only);
@@ -1036,6 +1294,8 @@ mod tests {
             host_time_ms: 1,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         };
         let b = FrameSample {
             poses: vec![],
@@ -1046,6 +1306,8 @@ mod tests {
             host_time_ms: 2,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         };
         let m = coalesce_frame(a, b, &pool);
         assert!(m.removes_only);
@@ -1073,6 +1335,8 @@ mod tests {
             host_time_ms: 1,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         };
         let later = FrameSample {
             poses: scratch_one(
@@ -1091,6 +1355,8 @@ mod tests {
             host_time_ms: 2,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         };
         let m = coalesce_frame(catchup, later, &pool);
         assert!(
@@ -1119,6 +1385,8 @@ mod tests {
             host_time_ms: 1,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         }));
         // One scratch still pending; free list keeps the other startup scratches (POOLED-1).
         assert_eq!(hub.pose_pool.free_len(), POSE_SCRATCH_POOLED - 1);
@@ -1140,6 +1408,8 @@ mod tests {
             host_time_ms: 2,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         }));
         // Coalesce released `a` into free; pending still holds `b` → free_len == POOLED-1.
         assert_eq!(hub.pose_pool.free_len(), POSE_SCRATCH_POOLED - 1);
@@ -1215,6 +1485,8 @@ mod tests {
             host_time_ms: 1,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         }));
         assert_eq!(hub.pose_pool.free_len(), before);
         let mut g = hub.pending.lock().unwrap();
@@ -1240,6 +1512,8 @@ mod tests {
             host_time_ms: 1,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         }));
         let mut poses = hub.acquire_poses();
         poses.push((
@@ -1258,6 +1532,8 @@ mod tests {
             host_time_ms: 2,
             sim_tick: 0,
             acked_intent_seq: vec![],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         }));
         let mut g = hub.pending.lock().unwrap();
         let f = g.frame.take().unwrap();
@@ -1317,6 +1593,8 @@ mod tests {
             host_time_ms: 1,
             sim_tick: 40,
             acked_intent_seq: vec![7, 0, 3],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         };
         let mid = FrameSample {
             poses: vec![],
@@ -1328,6 +1606,8 @@ mod tests {
             sim_tick: 41,
             // Deliberately mismatched next ack/sim_tick: coalesce must keep prev with poses.
             acked_intent_seq: vec![9, 1, 4],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         };
         let m = coalesce_frame(net, mid, &pool);
         assert_eq!(m.sim_tick, 40, "sim_tick stays with prior pose sample");
@@ -1352,6 +1632,8 @@ mod tests {
             host_time_ms: 1,
             sim_tick: 10,
             acked_intent_seq: vec![1],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         };
         let b = FrameSample {
             poses: scratch_one(
@@ -1369,6 +1651,8 @@ mod tests {
             host_time_ms: 2,
             sim_tick: 12,
             acked_intent_seq: vec![9],
+            dirty_authored: false,
+            dirty_inflight_mask: None,
         };
         let m = coalesce_frame(a, b, &pool);
         assert_eq!(m.sim_tick, 12);

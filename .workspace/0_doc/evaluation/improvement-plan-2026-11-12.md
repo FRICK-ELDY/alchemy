@@ -76,7 +76,7 @@
 
 正本: [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md)（レビュー反映の詳細・未決 Q1–Q8 は同書 §6 / [review_proposal](../../roadmap/mvcc_xpbd_review_proposal.md)）。**大規模 CCU / 1000 人はここに書かない**（→ P3-7）。
 
-**現状（2026-11-14）**: Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜`sim_state`（[x00ad](../../roadmap/slices/x00ad-phase3-host-sim-backend.md)–[x00b0](../../roadmap/slices/x00b0-phase3-sim-state.md)）**done**（**P1-2 host closed**）。残り: dirty 30Hz 本番（[x00b1](../../roadmap/slices/x00b1-phase3-dirty-30hz-cutover.md) **planned**；slice のみ・実装は別 PR）・（並走可）`…/edit`。
+**現状（2026-11-14）**: Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜dirty 30Hz（[x00ad](../../roadmap/slices/x00ad-phase3-host-sim-backend.md)–[x00b1](../../roadmap/slices/x00b1-phase3-dirty-30hz-cutover.md)）**done**（**P1-2 host closed**）。残り:（並走可）`…/edit`。
 
 | Phase | 内容 | 吸収する ID | 着手条件 |
 |:---|:---|:---|:---|

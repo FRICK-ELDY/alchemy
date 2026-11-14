@@ -227,9 +227,9 @@ depends_on: [x0006]
 | x00ae | — | done | Phase 3: dirty デルタ codec（`WireDirtyAccumulator`） | [x00ae-phase3-dirty-delta-codec.md](slices/x00ae-phase3-dirty-delta-codec.md) |
 | x00af | — | done | Phase 3: PROTOCOL_PIN 一括（sim_tick / holder / release） | [x00af-phase3-protocol-pin.md](slices/x00af-phase3-protocol-pin.md) |
 | x00b0 | — | done | Phase 3: `…/sim_state`（計画的 handover + crash fail-closed） | [x00b0-phase3-sim-state.md](slices/x00b0-phase3-sim-state.md) |
-| x00b1 | — | planned | Phase 3: host dirty 30Hz 本番切替（`WireDirtyAccumulator`） | [x00b1-phase3-dirty-30hz-cutover.md](slices/x00b1-phase3-dirty-30hz-cutover.md) |
+| x00b1 | — | done | Phase 3: host dirty 30Hz 本番切替（`WireDirtyAccumulator`） | [x00b1-phase3-dirty-30hz-cutover.md](slices/x00b1-phase3-dirty-30hz-cutover.md) |
 
-**現在の次:** [x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md) host dirty 30Hz 本番切替（**planned**；slice のみ、実装は別 PR）。並走可: `…/edit`。**品質本線** · Spot-Check 保留（Q2）。
+**現在の次:** Phase 3 残り —（並走可）確定レーン `…/edit`（次空き `x00b2`）。[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md) dirty 30Hz は **done**。**品質本線** · Spot-Check 保留（Q2）。
 **規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；実装は MVCC Phase 3 後。1000 人は horizon）。
 旧メモ **P3-7（BLAKE3 ストリーミング）** は **CI が完了しなくなるためマージしない**（現行 P3-7 Spatial Interest とは別物）。Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 

@@ -11,13 +11,14 @@
 //! `mvcc_xpbd` is a **temporary bridge** (page steps XPBD; wire still samples Epoch Curr).
 //! Classification via `alchemy-shared-sim` [`EntityKind`] (x0030).
 //! Non-guarantees: Grab aim **rotation** follow (translation only); throw impulse;
-//! Rapier bit-exact parity; capsule Walk extrude; host dirty 30Hz 本番切替 / PROTOCOL_PIN bump;
-//! (shared-sim `delta_codec` is x00ae; `…/sim_state` export/import is x00b0);
+//! Rapier bit-exact parity; capsule Walk extrude; PROTOCOL_PIN bump for quantized poses;
+//! (shared-sim `delta_codec` is x00ae; host dirty 30Hz cutover is x00b1;
+//! `…/sim_state` export/import is x00b0);
 //! non-uniform collider scale; Frame parent fields / pass-place Intent wiring;
 //! exact OBB box-box (sphere approx via LBVH); production default `mvcc_xpbd`;
 //! `mvcc_xpbd` cell_origin always 0（近傍デモ向け；遠方は f32 量子化）;
-//! sheet↔page 毎 tick 往復の zero-alloc（後続 dirty 前に計測）;
-//! Epoch 二重管理の解消（dirty 本番切替で畳む）; `drot` 復元（予約 0）.
+//! sheet↔page 毎 tick 往復の zero-alloc;
+//! Epoch 二重管理の完全解消（page-only 権威）; `drot` 復元（予約 0）.
 
 use std::collections::{HashMap, HashSet};
 
@@ -27,6 +28,10 @@ use alchemy_protocol::{
     entity_holder_from_slot, entity_holder_slot, scene_entry_grabbable, scene_entry_quat_xyzw,
     scene_entry_scale, user_root_slots_from_entries, LocomotionMode, SceneEntry, SimEntity,
     SimState, DEFAULT_MOVE_SPEED, ENTITY_HOLDER_NONE, PROTOCOL_PIN,
+};
+use alchemy_shared_sim::delta_codec::{
+    extract_dirty_records_into, unpack_quaternion_smallest_three, EntityDeltaRecord,
+    WireDirtyAccumulator,
 };
 #[cfg(test)]
 use alchemy_shared_sim::mvcc::KinematicPoseF32;
@@ -39,6 +44,11 @@ use alchemy_shared_sim::{
     PHYS_BALL_RADIUS,
 };
 
+use crate::network_worker::Pose;
+
+/// Single live page slot for host `WireDirtyAccumulator` (x00b1; no arena pool yet).
+const WIRE_DIRTY_PAGE_SLOT: usize = 0;
+
 pub use crate::sim_backend::SimBackendKind;
 pub use alchemy_protocol::{USER_ROOT_ENTITY_FIRST, USER_ROOT_SLOTS_MAX};
 
@@ -47,10 +57,16 @@ const DEMO_GRAVITY_Y: f64 = -2.2;
 const DEFAULT_DT: f64 = 1.0 / 60.0;
 const GROUND_Y: f64 = 0.0;
 
-/// Page-path XPBD state for [`SimBackendKind::MvccXpbd`] (x00ad).
+/// Page-path XPBD state for [`SimBackendKind::MvccXpbd`] (x00ad) + wire dirty (x00b1).
 struct HostMvccState {
     adapter: PageXpbdAdapter,
     page: HotPhysicsPage,
+    /// OR-accumulator across skipped net ticks (capacity 1 · contract A slot 0).
+    wire_dirty: WireDirtyAccumulator,
+    /// Wire `entity_id` per page local (filled before extract).
+    entity_of: [u32; ENTITIES_PER_PAGE],
+    /// Reused extract buffer (avoid per-net-tick `Vec` alloc).
+    delta_scratch: Vec<EntityDeltaRecord>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,6 +346,10 @@ impl PhysicsWorld {
                 Some(HostMvccState {
                     adapter,
                     page: HotPhysicsPage::zeroed_page(),
+                    // Single live page: capacity 1 (not snapshot cap 64).
+                    wire_dirty: WireDirtyAccumulator::from_arena_capacity(1),
+                    entity_of: [0u32; ENTITIES_PER_PAGE],
+                    delta_scratch: Vec::with_capacity(64),
                 })
             }
         };
@@ -909,6 +929,8 @@ impl PhysicsWorld {
             self.publishes = self.publishes.wrapping_add(1);
             self.publish_dirty = false;
         }
+        // Intent / ground / sanitize dirties land on the sheet after page step — OR in (x00b1).
+        self.absorb_sheet_dirty_into_wire();
         self.world.curr.clear_dirty();
         self.world.commit_prev_from_curr();
         self.barrier_ticks = self.barrier_ticks.wrapping_add(1);
@@ -950,6 +972,147 @@ impl PhysicsWorld {
         mvcc.adapter
             .step_page_with_grabs(&mut mvcc.page, grab_targets, dt);
         sync_page_poses_to_sheet(&mvcc.page, &mut self.world.curr);
+        // push_page left dirty bits for this phys tick — OR into wire acc before sheet clear.
+        mvcc.wire_dirty
+            .absorb(WIRE_DIRTY_PAGE_SLOT, &mvcc.page)
+            .expect("x00b1: wire dirty slot 0 in range for capacity-1 accumulator");
+    }
+
+    /// OR host-sheet dirty rows (Intent / ground / sanitize) onto the page, then absorb (x00b1).
+    fn absorb_sheet_dirty_into_wire(&mut self) {
+        let Some(mvcc) = self.mvcc.as_mut() else {
+            return;
+        };
+        for row in self.world.curr.iter_dirty_rows() {
+            let idx = row as usize;
+            if idx < ENTITIES_PER_PAGE {
+                mvcc.page.mark_dirty(idx);
+            }
+        }
+        mvcc.wire_dirty
+            .absorb(WIRE_DIRTY_PAGE_SLOT, &mvcc.page)
+            .expect("x00b1: wire dirty slot 0 in range for capacity-1 accumulator");
+    }
+
+    fn sync_wire_entity_of(&mut self) {
+        let Some(mvcc) = self.mvcc.as_mut() else {
+            return;
+        };
+        mvcc.entity_of = [0u32; ENTITIES_PER_PAGE];
+        for (&entity_id, handle) in &self.entity_rows {
+            let row = handle.row_id as usize;
+            if row < ENTITIES_PER_PAGE {
+                mvcc.entity_of[row] = entity_id;
+            }
+        }
+    }
+
+    /// Fill `out` with dirty poses and **detach** only the emitted bits (x00b1 in-flight).
+    ///
+    /// Returns the detached mask (restore on empty/fail publish; discard on success).
+    /// `occupied` filters user_root IDs to Presence-occupied slots (match full-scan wire set).
+    pub fn fill_wire_dirty_poses(
+        &mut self,
+        occupied: &[Option<String>],
+        slot_count: usize,
+        out: &mut Vec<(u32, Pose)>,
+    ) -> Option<[u64; alchemy_shared_sim::mvcc::BITMASK_WORDS]> {
+        out.clear();
+        self.mvcc.as_ref()?;
+        self.sync_wire_entity_of();
+        let records = {
+            let mvcc = self.mvcc.as_mut().expect("mvcc");
+            let acc_mask = *mvcc.wire_dirty.slot_mask(WIRE_DIRTY_PAGE_SLOT)?;
+            extract_dirty_records_into(
+                &mvcc.page,
+                &mvcc.entity_of,
+                &acc_mask,
+                &mut mvcc.delta_scratch,
+            );
+            std::mem::take(&mut mvcc.delta_scratch)
+        };
+
+        let mut sent = [0u64; alchemy_shared_sim::mvcc::BITMASK_WORDS];
+        for rec in &records {
+            if rec.entity_id == 0 {
+                continue;
+            }
+            if let Some(slot) = user_root_slot_of(rec.entity_id) {
+                let occupied_here =
+                    slot < slot_count && occupied.get(slot).and_then(|s| s.as_ref()).is_some();
+                if !occupied_here {
+                    // Bit stays in acc (not detached). Sticky until occupied again or a
+                    // future mowing path (reclaim / catchup); not cleared here.
+                    continue;
+                }
+            }
+            let local = rec.local_hint as usize;
+            if local < ENTITIES_PER_PAGE {
+                sent[local / 64] |= 1u64 << (local % 64);
+            }
+            let page = &self.mvcc.as_ref().expect("mvcc").page;
+            out.push((rec.entity_id, pose_from_delta_record(self, page, rec)));
+        }
+
+        let mvcc = self.mvcc.as_mut().expect("mvcc");
+        mvcc.delta_scratch = records;
+        if sent.iter().any(|w| *w != 0) {
+            mvcc.wire_dirty
+                .detach_bits(WIRE_DIRTY_PAGE_SLOT, &sent)
+                .expect("x00b1: wire dirty slot 0 in range for capacity-1 accumulator");
+            Some(sent)
+        } else {
+            None
+        }
+    }
+
+    /// OR in-flight masks back after empty / failed publish (x00b1).
+    pub fn restore_wire_dirty_inflight_bits(
+        &mut self,
+        masks: impl IntoIterator<Item = [u64; alchemy_shared_sim::mvcc::BITMASK_WORDS]>,
+    ) {
+        let Some(mvcc) = self.mvcc.as_mut() else {
+            return;
+        };
+        for mask in masks {
+            mvcc.wire_dirty
+                .restore_bits(WIRE_DIRTY_PAGE_SLOT, &mask)
+                .expect("x00b1: wire dirty slot 0 in range for capacity-1 accumulator");
+        }
+    }
+
+    /// Whether this world uses the dirty wire path (`mvcc_xpbd`).
+    pub fn uses_wire_dirty(&self) -> bool {
+        self.mvcc.is_some()
+    }
+
+    #[cfg(test)]
+    pub fn wire_dirty_active_count_for_test(&self) -> u32 {
+        let Some(mvcc) = self.mvcc.as_ref() else {
+            return 0;
+        };
+        let Some(mask) = mvcc.wire_dirty.slot_mask(WIRE_DIRTY_PAGE_SLOT) else {
+            return 0;
+        };
+        mask.iter().map(|w| w.count_ones()).sum()
+    }
+
+    #[cfg(test)]
+    pub fn clear_all_wire_dirty_for_test(&mut self) {
+        if let Some(mvcc) = self.mvcc.as_mut() {
+            mvcc.wire_dirty.clear_after_publish();
+        }
+    }
+
+    #[cfg(test)]
+    pub fn wire_dirty_mask_for_test(
+        &self,
+    ) -> Option<[u64; alchemy_shared_sim::mvcc::BITMASK_WORDS]> {
+        self.mvcc
+            .as_ref()?
+            .wire_dirty
+            .slot_mask(WIRE_DIRTY_PAGE_SLOT)
+            .copied()
     }
 
     /// Test-only: quarantine check on the MVCC page face.
@@ -1308,6 +1471,54 @@ pub fn user_root_color(slot: usize) -> (f32, f32, f32, f32) {
 /// `holder_by_row[local]` is the Grab owner slot (`NO_HOLDER` if free) — must match
 /// host `grabs[]` (not hard-coded 0) so later `Entity.holder` wire stays honest.
 ///
+fn user_root_slot_of(entity_id: u32) -> Option<usize> {
+    if entity_id >= USER_ROOT_ENTITY_FIRST
+        && entity_id < USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS_MAX as u32
+    {
+        Some((entity_id - USER_ROOT_ENTITY_FIRST) as usize)
+    } else {
+        None
+    }
+}
+
+fn pose_from_delta_record(
+    world: &PhysicsWorld,
+    page: &HotPhysicsPage,
+    rec: &EntityDeltaRecord,
+) -> Pose {
+    let (qx, qy, qz, qw) = unpack_quaternion_smallest_three(rec.packed_quat);
+    let scale = world.scale_for(rec.entity_id);
+    let (r, g, b, a) = world.color_for(rec.entity_id);
+    let local = rec.local_hint as usize;
+    let holder = if local < ENTITIES_PER_PAGE {
+        let slot = page.holder_at(local);
+        if slot == NO_HOLDER {
+            ENTITY_HOLDER_NONE
+        } else {
+            entity_holder_from_slot(slot)
+        }
+    } else {
+        ENTITY_HOLDER_NONE
+    };
+    Pose {
+        x: f64::from(rec.pos_xyz[0]),
+        y: f64::from(rec.pos_xyz[1]),
+        z: f64::from(rec.pos_xyz[2]),
+        qx: f64::from(qx),
+        qy: f64::from(qy),
+        qz: f64::from(qz),
+        qw: f64::from(qw),
+        sx: f64::from(scale[0]),
+        sy: f64::from(scale[1]),
+        sz: f64::from(scale[2]),
+        r,
+        g,
+        b,
+        a,
+        holder,
+    }
+}
+
 /// **Near-origin only (x00ad):** `cell_origin` is forced to 0; world f64 is cast to
 /// local f32. Far-from-origin scenes need Directory cell origins (post–dirty).
 fn sync_sheet_to_page(
@@ -2204,10 +2415,72 @@ mod tests {
     }
 
     #[test]
+    fn dirty_survives_skipped_net_tick() {
+        // x00b1: OR across skipped net ticks; pack detaches sent bits; fail restores.
+        let mut world = test_world_mvcc();
+        for _ in 0..20 {
+            world.step();
+        }
+        let mut poses = Vec::new();
+        let occupied = [Some("alice".into())];
+        // Settle may leave unoccupied-root bits; force-clear for a clean baseline.
+        let _ = world.fill_wire_dirty_poses(&occupied, 1, &mut poses);
+        world.clear_all_wire_dirty_for_test();
+        assert_eq!(world.wire_dirty_active_count_for_test(), 0);
+
+        world.apply_user_intent(0, 1.0, 0.0, 0.0, 1.0 / 60.0);
+        world.step();
+        let after_intent = world.wire_dirty_active_count_for_test();
+        assert!(after_intent > 0, "Intent + step must leave wire dirty bits");
+
+        world.step();
+        assert!(
+            world.wire_dirty_active_count_for_test() >= after_intent,
+            "skipped net tick must not drop accumulated dirty"
+        );
+
+        let inflight = world
+            .fill_wire_dirty_poses(&occupied, 1, &mut poses)
+            .expect("dirty pack should detach bits");
+        assert!(
+            !poses.is_empty(),
+            "dirty from skipped ticks must appear on next extract"
+        );
+        assert!(
+            poses
+                .iter()
+                .any(|(id, _)| *id == PhysicsWorld::user_root_entity_id(0)),
+            "user_root Intent dirty must be in extract: {poses:?}"
+        );
+        let acc = world.wire_dirty_mask_for_test().expect("mask");
+        for (a, i) in acc.iter().zip(inflight.iter()) {
+            assert_eq!(
+                *a & *i,
+                0,
+                "emitted inflight bits must be detached from acc"
+            );
+        }
+        // Filtered leftovers (e.g. unoccupied roots) may remain — that is intentional.
+        world.restore_wire_dirty_inflight_bits(std::iter::once(inflight));
+        let acc2 = world.wire_dirty_mask_for_test().expect("mask");
+        for (a, i) in acc2.iter().zip(inflight.iter()) {
+            assert_eq!(*a & *i, *i, "empty/fail restore must OR inflight back");
+        }
+    }
+
+    #[test]
+    fn epoch_backend_has_no_wire_dirty() {
+        let world = test_world();
+        assert!(!world.uses_wire_dirty());
+        assert_eq!(world.wire_dirty_active_count_for_test(), 0);
+    }
+
+    #[test]
     fn mvcc_backend_steps_and_rejects_nan_ingest() {
         let mut world = test_world_mvcc();
         assert_eq!(world.backend(), SimBackendKind::MvccXpbd);
         assert!(world.mvcc_page().is_some());
+        assert!(world.uses_wire_dirty());
 
         for _ in 0..30 {
             world.step();
