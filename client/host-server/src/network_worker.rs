@@ -76,7 +76,7 @@ pub struct PresenceJob {
 ///
 /// Not `Clone`: `poses` may be a pooled scratch (x0095). Cloning would bypass the
 /// recycle contract and allocate a duplicate `Vec`.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FrameSample {
     /// Full live pose set (empty for mid-net remove-only flush; not pooled).
     pub poses: Vec<(u32, Pose)>,
@@ -90,21 +90,6 @@ pub struct FrameSample {
     pub sim_tick: u64,
     /// Per user_root slot last applied Intent seq (`RenderFrame.acked_intent_seq`).
     pub acked_intent_seq: Vec<u64>,
-}
-
-impl Default for FrameSample {
-    fn default() -> Self {
-        Self {
-            poses: Vec::new(),
-            removes: Vec::new(),
-            resume_catchup: false,
-            publish_allowed: false,
-            removes_only: false,
-            host_time_ms: 0,
-            sim_tick: 0,
-            acked_intent_seq: Vec::new(),
-        }
-    }
 }
 
 /// In-flight pose scratches: physics fill + hub pending + worker handle_frame.

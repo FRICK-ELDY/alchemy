@@ -164,10 +164,16 @@ fn fill_wire_poses_from_sim(
             }
         }
     }
-    for i in 0..world.boxes.len() {
+    for (i, (&entity_id, &holder)) in world
+        .boxes
+        .entity_ids
+        .iter()
+        .zip(holders.iter())
+        .enumerate()
+    {
         let mut pose = box_pose_from_sim(world, i);
-        pose.holder = holders[i];
-        out.push((world.boxes.entity_ids[i], pose));
+        pose.holder = holder;
+        out.push((entity_id, pose));
     }
 }
 
