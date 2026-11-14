@@ -1,8 +1,10 @@
-//! Presence slots + Intent overlays (x0015 / x0022 / x004d).
+//! Presence slots + Intent overlays (x0015 / x0022 / x004d / x00af).
 //!
 //! Guarantees: Manifest-derived `slot_count`; Leave / liveliness grace / Intent TTL reclaim;
-//! `by_slot` stays `Copy` for physics tick snapshots.
-//! Non-guarantees: WAN peer ACL; authenticated remote reclaim.
+//! `by_slot` stays `Copy` for physics tick snapshots; overlay stores `applied_intent_seq`
+//! and clamped `release_*` when Presence accepts an Intent (wire Frame ack source).
+//! Non-guarantees: WAN peer ACL; authenticated remote reclaim; `apply_grab` success
+//! (distance / no-steal can still reject after overlay ack advances).
 
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -41,6 +43,20 @@ pub(crate) struct PoseOverride {
     pub aim_x: f32,
     pub aim_y: f32,
     pub aim_z: f32,
+    /// Last Intent `intent_seq` written into this overlay (wire `acked_intent_seq` · x00af).
+    ///
+    /// Distinct from `SessionBinding.last_seq` (auth/rate advance). Bumps only when
+    /// Presence accepts the Intent into this slot (finite reject / full drop leave it
+    /// unchanged). Means "overlay fields refreshed", **not** "physics `apply_grab` /
+    /// loco succeeded" — distance / no-steal can still reject on the sim side.
+    pub applied_intent_seq: u64,
+    /// Clamped release velocities from that Intent (throw impulse apply is separate).
+    pub release_vx: f32,
+    pub release_vy: f32,
+    pub release_vz: f32,
+    pub release_wx: f32,
+    pub release_wy: f32,
+    pub release_wz: f32,
 }
 
 /// Per-sub input slots (x0015) + Leave / jti-bound liveliness / Intent TTL reclaim (x0022).

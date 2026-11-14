@@ -90,6 +90,12 @@ pub enum DecodeLimitError {
         len: usize,
         max: usize,
     },
+    /// Numeric field outside the documented wire range (x00af `Entity.holder`).
+    ValueOutOfRange {
+        field: &'static str,
+        value: u64,
+        max: u64,
+    },
 }
 
 impl std::fmt::Display for DecodeLimitError {
@@ -110,6 +116,9 @@ impl std::fmt::Display for DecodeLimitError {
             }
             Self::BytesTooLong { field, len, max } => {
                 write!(f, "{field} too long: {len} > {max} bytes")
+            }
+            Self::ValueOutOfRange { field, value, max } => {
+                write!(f, "{field} out of range: {value} > {max}")
             }
         }
     }
@@ -184,10 +193,25 @@ pub fn check_manifest(manifest: &SceneManifest) -> Result<(), DecodeLimitError> 
     Ok(())
 }
 
-/// Post-decode Frame upserts / removes ceilings.
+/// Post-decode Frame upserts / removes / ack-seq ceilings / holder range.
 pub fn check_frame(frame: &RenderFrame) -> Result<(), DecodeLimitError> {
     check_count("upserts", frame.upserts.len(), MAX_FRAME_UPSERTS)?;
     check_count("removes", frame.removes.len(), MAX_FRAME_REMOVES)?;
+    check_count(
+        "acked_intent_seq",
+        frame.acked_intent_seq.len(),
+        USER_ROOT_SLOTS_MAX,
+    )?;
+    let holder_max = USER_ROOT_SLOTS_MAX as u64;
+    for e in &frame.upserts {
+        if u64::from(e.holder) > holder_max {
+            return Err(DecodeLimitError::ValueOutOfRange {
+                field: "entity.holder",
+                value: u64::from(e.holder),
+                max: holder_max,
+            });
+        }
+    }
     Ok(())
 }
 
@@ -475,5 +499,46 @@ mod tests {
         assert!(check_frame(&RenderFrame::default()).is_ok());
         assert!(check_presence(&PresenceState::default()).is_ok());
         assert!(check_input(&InputEvent::default()).is_ok());
+    }
+
+    #[test]
+    fn frame_rejects_too_many_acked_intent_seq() {
+        let frame = RenderFrame {
+            acked_intent_seq: vec![0; USER_ROOT_SLOTS_MAX + 1],
+            ..Default::default()
+        };
+        assert!(matches!(
+            check_frame(&frame),
+            Err(DecodeLimitError::TooManyEntries {
+                field: "acked_intent_seq",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn frame_rejects_holder_out_of_range() {
+        let frame = RenderFrame {
+            upserts: vec![crate::Entity {
+                holder: USER_ROOT_SLOTS_MAX as u32 + 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            check_frame(&frame),
+            Err(DecodeLimitError::ValueOutOfRange {
+                field: "entity.holder",
+                ..
+            })
+        ));
+        let ok = RenderFrame {
+            upserts: vec![crate::Entity {
+                holder: USER_ROOT_SLOTS_MAX as u32,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(check_frame(&ok).is_ok());
     }
 }

@@ -643,6 +643,14 @@ impl PhysicsWorld {
         self.grabs[slot].map(|ag| self.boxes.entity_ids[ag.index])
     }
 
+    /// Box SoA index held by `slot`, if any (wire holder fill · x00af).
+    pub fn grabbed_box_index(&self, slot: usize) -> Option<usize> {
+        if slot >= self.slot_count {
+            return None;
+        }
+        self.grabs[slot].map(|ag| ag.index)
+    }
+
     pub fn loco_mode(&self) -> LocoMode {
         self.loco_mode
     }

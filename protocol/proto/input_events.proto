@@ -33,6 +33,15 @@ message InputEvent {
   // Ed25519 signature (64 bytes) over encode with `intent_sig` cleared (x0023).
   // Steady Intent may omit `room_token`; bind / Token refresh must include a valid JWT.
   bytes intent_sig = 14;
+  // World-space release linear velocity (m/s) when GRAB is cleared (x00af).
+  // Client-computed; host clamps / rejects non-finite. Throw impulse apply is separate.
+  float release_vx = 15;
+  float release_vy = 16;
+  float release_vz = 17;
+  // World-space release angular velocity (rad/s) when GRAB is cleared (x00af).
+  float release_wx = 18;
+  float release_wy = 19;
+  float release_wz = 20;
 }
 
 // Bit flags for InputEvent.buttons (Desktop x0009/x0013; VR Grab = grip / Select when dash closed).

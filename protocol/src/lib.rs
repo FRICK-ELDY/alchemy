@@ -57,7 +57,18 @@ pub mod wire_crypto;
 /// x0069: Zenoh payloads are Room-key AEAD envelopes (incompatible with x004e plain protobuf peers).
 /// x0081: inventory control JSON drops `room_token` (session sig); host HTTP adds PoP headers.
 /// x009b: user_root entity band moves to high ids (`USER_ROOT_ENTITY_FIRST`); peers must agree.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.21.0-x009b";
+/// x00af: `RenderFrame.sim_tick` / `redundancy` / `acked_intent_seq`; `Entity.holder`;
+///        Intent `release_v*` / `release_w*` (throw apply still host-local).
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.22.0-x00af";
+
+/// Wire `Entity.holder`: nobody holds the entity.
+pub const ENTITY_HOLDER_NONE: u32 = 0;
+
+/// Default linear release-speed clamp (m/s) for Intent `release_v*` (x00af).
+pub const RELEASE_LINEAR_SPEED_MAX: f32 = 20.0;
+
+/// Default angular release-speed clamp (rad/s) for Intent `release_w*` (x00af).
+pub const RELEASE_ANGULAR_SPEED_MAX: f32 = 40.0;
 
 /// Identity orientation on the wire (`Entity.qx..qw`, xyzw).
 pub const ENTITY_QUAT_IDENTITY: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -140,6 +151,65 @@ pub fn scene_entry_is_box(blake3: &str, half_extent: f32, entity_id: u32) -> boo
     !scene_entry_is_user_root(entity_id) && blake3.is_empty() && half_extent > 0.0
 }
 
+/// Wire `Entity.holder` from a user_root slot index (`0..USER_ROOT_SLOTS_MAX`).
+///
+/// Returns [`ENTITY_HOLDER_NONE`] when `slot` is out of range (callers should not
+/// pass page `NO_HOLDER=255` here — map that to none first).
+pub const fn entity_holder_from_slot(slot: u8) -> u32 {
+    if (slot as usize) >= USER_ROOT_SLOTS_MAX {
+        ENTITY_HOLDER_NONE
+    } else {
+        slot as u32 + 1
+    }
+}
+
+/// Inverse of [`entity_holder_from_slot`]. `None` when holder is none / invalid.
+pub const fn entity_holder_slot(holder: u32) -> Option<u8> {
+    if holder == ENTITY_HOLDER_NONE || holder > USER_ROOT_SLOTS_MAX as u32 {
+        None
+    } else {
+        Some((holder - 1) as u8)
+    }
+}
+
+/// Clamp / sanitize Intent release linear+angular velocity (x00af).
+///
+/// Non-finite components become 0. Magnitude above `lin_max` / `ang_max` is scaled down.
+/// Does **not** apply impulse to sim — host callers decide when to use the result.
+pub fn clamp_release_velocity(
+    lin: [f32; 3],
+    ang: [f32; 3],
+    lin_max: f32,
+    ang_max: f32,
+) -> ([f32; 3], [f32; 3]) {
+    (
+        clamp_vec3_speed(lin, lin_max),
+        clamp_vec3_speed(ang, ang_max),
+    )
+}
+
+fn clamp_vec3_speed(v: [f32; 3], max_speed: f32) -> [f32; 3] {
+    let [x, y, z] = v;
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        return [0.0, 0.0, 0.0];
+    }
+    let max_speed = if max_speed.is_finite() && max_speed > 0.0 {
+        max_speed
+    } else {
+        return [0.0, 0.0, 0.0];
+    };
+    let speed_sq = x * x + y * y + z * z;
+    if speed_sq <= max_speed * max_speed {
+        return [x, y, z];
+    }
+    let speed = speed_sq.sqrt();
+    if !speed.is_finite() || speed <= 0.0 {
+        return [0.0, 0.0, 0.0];
+    }
+    let s = max_speed / speed;
+    [x * s, y * s, z * s]
+}
+
 /// Build an [`Entity`] with identity orientation and unit scale (x0029).
 #[allow(clippy::too_many_arguments)]
 pub fn entity_at(id: u32, x: f64, y: f64, z: f64, r: f32, g: f32, b: f32, a: f32) -> Entity {
@@ -157,7 +227,7 @@ pub fn entity_at(id: u32, x: f64, y: f64, z: f64, r: f32, g: f32, b: f32, a: f32
     )
 }
 
-/// Build an [`Entity`] with explicit TRS (x0029).
+/// Build an [`Entity`] with explicit TRS (x0029). `holder` defaults to none.
 #[allow(clippy::too_many_arguments)]
 pub fn entity_trs(
     id: u32,
@@ -187,6 +257,7 @@ pub fn entity_trs(
         sx: scale[0],
         sy: scale[1],
         sz: scale[2],
+        holder: ENTITY_HOLDER_NONE,
     }
 }
 
@@ -564,32 +635,73 @@ mod tests {
 
     #[test]
     fn roundtrip_delta_frame() {
+        let mut upsert = entity_trs(
+            1,
+            1.5,
+            0.0,
+            -2.0,
+            [0.0, 0.7071067811865476, 0.0, 0.7071067811865476],
+            [2.0, 1.0, 0.5],
+            1.0,
+            0.2,
+            0.1,
+            1.0,
+        );
+        upsert.holder = entity_holder_from_slot(0);
         let frame = RenderFrame {
             tick: 42,
             host_time_ms: 1_000,
-            upserts: vec![entity_trs(
-                1,
-                1.5,
-                0.0,
-                -2.0,
-                [0.0, 0.7071067811865476, 0.0, 0.7071067811865476],
-                [2.0, 1.0, 0.5],
-                1.0,
-                0.2,
-                0.1,
-                1.0,
-            )],
+            upserts: vec![upsert],
             removes: vec![9],
             host_sig: vec![],
+            sim_tick: 84,
+            redundancy: 0,
+            acked_intent_seq: vec![3, 0, 7],
         };
         let bytes = frame.encode_to_vec();
         let decoded = RenderFrame::decode(bytes.as_slice()).expect("decode");
         assert_eq!(decoded.tick, 42);
+        assert_eq!(decoded.sim_tick, 84);
+        assert_eq!(decoded.redundancy, 0);
+        assert_eq!(decoded.acked_intent_seq, vec![3, 0, 7]);
         assert_eq!(decoded.upserts.len(), 1);
         assert!((decoded.upserts[0].x - 1.5).abs() < f64::EPSILON);
         assert!((decoded.upserts[0].qw - 0.7071067811865476).abs() < 1e-9);
         assert!((decoded.upserts[0].sx - 2.0).abs() < f64::EPSILON);
+        assert_eq!(decoded.upserts[0].holder, 1);
+        assert_eq!(entity_holder_slot(decoded.upserts[0].holder), Some(0));
         assert_eq!(decoded.removes, vec![9]);
+    }
+
+    #[test]
+    fn release_velocity_clamped() {
+        let (lin, ang) = clamp_release_velocity(
+            [100.0, 0.0, 0.0],
+            [0.0, 80.0, 0.0],
+            RELEASE_LINEAR_SPEED_MAX,
+            RELEASE_ANGULAR_SPEED_MAX,
+        );
+        assert!((lin[0] - RELEASE_LINEAR_SPEED_MAX).abs() < 1e-5);
+        assert!(lin[1].abs() < 1e-6 && lin[2].abs() < 1e-6);
+        assert!((ang[1] - RELEASE_ANGULAR_SPEED_MAX).abs() < 1e-5);
+
+        let (bad, _) = clamp_release_velocity(
+            [f32::NAN, 1.0, 0.0],
+            [0.0, 0.0, 0.0],
+            RELEASE_LINEAR_SPEED_MAX,
+            RELEASE_ANGULAR_SPEED_MAX,
+        );
+        assert_eq!(bad, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn entity_holder_wire_roundtrip() {
+        assert_eq!(entity_holder_from_slot(0), 1);
+        assert_eq!(entity_holder_from_slot(31), 32);
+        assert_eq!(entity_holder_from_slot(255), ENTITY_HOLDER_NONE);
+        assert_eq!(entity_holder_slot(0), None);
+        assert_eq!(entity_holder_slot(1), Some(0));
+        assert_eq!(entity_holder_slot(33), None);
     }
 
     #[test]
@@ -735,6 +847,12 @@ mod tests {
             session_pub: vec![0u8; 32],
             intent_seq: 3,
             intent_sig: vec![0u8; 64],
+            release_vx: 1.5,
+            release_vy: 0.0,
+            release_vz: -0.25,
+            release_wx: 0.1,
+            release_wy: 0.0,
+            release_wz: 0.0,
         };
         let bytes = event.encode_to_vec();
         let decoded = InputEvent::decode(bytes.as_slice()).expect("decode");
@@ -749,6 +867,9 @@ mod tests {
         assert!(!decoded.leave);
         assert_eq!(decoded.intent_seq, 3);
         assert_eq!(decoded.session_pub.len(), 32);
+        assert!((decoded.release_vx - 1.5).abs() < f32::EPSILON);
+        assert!((decoded.release_vz - -0.25).abs() < f32::EPSILON);
+        assert!((decoded.release_wx - 0.1).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -768,6 +889,7 @@ mod tests {
             session_pub: vec![],
             intent_seq: 0,
             intent_sig: vec![],
+            ..Default::default()
         };
         let decoded = InputEvent::decode(event.encode_to_vec().as_slice()).expect("decode");
         assert!(decoded.leave);

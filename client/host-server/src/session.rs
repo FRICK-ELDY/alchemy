@@ -359,6 +359,7 @@ mod tests {
             session_pub,
             intent_seq: seq,
             intent_sig: vec![],
+            ..Default::default()
         }
     }
 

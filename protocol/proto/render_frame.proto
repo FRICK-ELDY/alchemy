@@ -7,9 +7,9 @@ package alchemy.render;
 // PROTOCOL_PIN must bump when this schema changes incompatibly.
 
 message RenderFrame {
-  // Monotonic tick from the publishing host.
+  // Publish sequence (net_tick). Missing ticks → …/snapshot (x0024). Not physics tick.
   uint64 tick = 1;
-  // Wall-clock-ish host time in milliseconds (demo / debug).
+  // Wall-clock-ish host time in milliseconds (demo / debug / jitter).
   uint64 host_time_ms = 2;
   // Entities that spawned or moved since the last published frame.
   repeated Entity upserts = 3;
@@ -18,6 +18,14 @@ message RenderFrame {
   // Ed25519 signature (64 bytes) over encode with `host_sig` cleared (x0023).
   // Verified with `SceneManifest.host_pub`.
   bytes host_sig = 5;
+  // 60Hz physics tick (MVCC / XPBD). Distinct from `tick` (x00af).
+  uint64 sim_tick = 6;
+  // Redundant dirty window K (how many prior publishes this frame covers).
+  // 0 = legacy single-interval synthesis; K=1 first (Q6). Never a per-receiver ACK.
+  uint32 redundancy = 7;
+  // Per user_root slot: last Intent `intent_seq` host applied (index = slot).
+  // Length 0..USER_ROOT_SLOTS_MAX; absent slots read as 0 (x00af / owned prediction).
+  repeated uint64 acked_intent_seq = 8;
 }
 
 message Entity {
@@ -43,4 +51,6 @@ message Entity {
   double sx = 13;
   double sy = 14;
   double sz = 15;
+  // Grab owner on the wire (x00af): 0 = none; 1..=USER_ROOT_SLOTS_MAX = slot + 1.
+  uint32 holder = 16;
 }

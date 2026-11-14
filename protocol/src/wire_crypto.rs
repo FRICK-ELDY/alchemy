@@ -213,6 +213,7 @@ mod tests {
             session_pub: public_key_bytes(&key),
             intent_seq: 1,
             intent_sig: vec![],
+            ..Default::default()
         };
         sign_input(&key, &mut event);
         assert!(verify_input(&event).is_ok());
@@ -230,6 +231,7 @@ mod tests {
             upserts: vec![crate::entity_at(1, 1.0, 2.0, 3.0, 1.0, 1.0, 1.0, 1.0)],
             removes: vec![],
             host_sig: vec![],
+            ..Default::default()
         };
         sign_frame(&key, &mut frame);
         assert!(verify_frame(&public_key_bytes(&key), &frame).is_ok());

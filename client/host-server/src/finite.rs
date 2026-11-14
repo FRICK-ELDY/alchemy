@@ -1,12 +1,16 @@
-//! Input sanitization (Slice D / x0011 / x0021 / x0030 / x0041).
+//! Input sanitization (Slice D / x0011 / x0021 / x0030 / x0041 / x00af).
 //!
-//! Guarantees: non-finite move_* / aim_* never reach physics; move magnitude
+//! Guarantees: non-finite move_* / aim_* / release_* never reach physics; move magnitude
 //! capped to unit ball; Grab start requires player↔entity within [`MAX_GRAB_START_DISTANCE`];
-//! hold aim / hold offset use **the same** radius (not a separate budget).
+//! hold aim / hold offset use **the same** radius (not a separate budget);
+//! release velocities are clamped (`sanitize_release_velocity`) before overlay store.
 //! Non-guarantees: Intent Hz (see `intent_rate` / x0040); Steal; rotation follow;
+//! throw impulse apply from stored release (x00af stores on overlay only);
 //! final entity pose reprojected to ≤MAX (P1-6 allows up to ~2·MAX = aim球+offset).
 
-use alchemy_protocol::InputEvent;
+use alchemy_protocol::{
+    clamp_release_velocity, InputEvent, RELEASE_ANGULAR_SPEED_MAX, RELEASE_LINEAR_SPEED_MAX,
+};
 
 /// Protocol contract: move_* are ~-1..1; host clamps to this sphere.
 pub const MAX_MOVE_MAGNITUDE: f32 = 1.0;
@@ -23,6 +27,28 @@ pub fn input_event_is_finite(event: &InputEvent) -> bool {
         && event.aim_x.is_finite()
         && event.aim_y.is_finite()
         && event.aim_z.is_finite()
+        && event.release_vx.is_finite()
+        && event.release_vy.is_finite()
+        && event.release_vz.is_finite()
+        && event.release_wx.is_finite()
+        && event.release_wy.is_finite()
+        && event.release_wz.is_finite()
+}
+
+/// Clamp Intent release velocities in place (x00af). Non-finite → zero.
+pub fn sanitize_release_velocity(event: &mut InputEvent) {
+    let (lin, ang) = clamp_release_velocity(
+        [event.release_vx, event.release_vy, event.release_vz],
+        [event.release_wx, event.release_wy, event.release_wz],
+        RELEASE_LINEAR_SPEED_MAX,
+        RELEASE_ANGULAR_SPEED_MAX,
+    );
+    event.release_vx = lin[0];
+    event.release_vy = lin[1];
+    event.release_vz = lin[2];
+    event.release_wx = ang[0];
+    event.release_wy = ang[1];
+    event.release_wz = ang[2];
 }
 
 /// Project `(x,y,z)` onto a ball of radius `max` about the origin (f64 length).
@@ -96,6 +122,7 @@ mod tests {
             session_pub: vec![],
             intent_seq: 0,
             intent_sig: vec![],
+            ..Default::default()
         }
     }
 
@@ -120,6 +147,23 @@ mod tests {
         let mut e = sample(0.0, 0.0, 0.0);
         e.aim_y = f32::NAN;
         assert!(!input_event_is_finite(&e));
+    }
+
+    #[test]
+    fn rejects_non_finite_release() {
+        let mut e = sample(0.0, 0.0, 0.0);
+        e.release_vx = f32::INFINITY;
+        assert!(!input_event_is_finite(&e));
+    }
+
+    #[test]
+    fn sanitize_release_clamps_oversize() {
+        let mut e = sample(0.0, 0.0, 0.0);
+        e.release_vx = 100.0;
+        e.release_wy = 80.0;
+        sanitize_release_velocity(&mut e);
+        assert!((e.release_vx - RELEASE_LINEAR_SPEED_MAX).abs() < 1e-5);
+        assert!((e.release_wy - RELEASE_ANGULAR_SPEED_MAX).abs() < 1e-5);
     }
 
     #[test]
