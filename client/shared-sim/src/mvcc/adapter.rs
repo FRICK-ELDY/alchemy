@@ -2,8 +2,9 @@
 //!
 //! Guarantees: page-path body-body contacts via existing [`crate::xpbd::step`] + LBVH;
 //! prev reconstructed from `frame_delta` (`pos - delta`); cell_origin f64 + local f32.
-//! Non-guarantees: zero heap inside XPBD scratch / `WorldSnapshot` `Vec`; SIMD/`wide`;
-//! host wiring. Scratch [`XpbdWorld`] is fixed-index only (`local_idx == row_id`);
+//! Non-guarantees: zero heap inside XPBD scratch; history is fixed [`crate::mvcc::SnapshotSlot`]
+//! (not a per-commit page `Vec` growth); SIMD/`wide` on this path; host wiring.
+//! Scratch [`XpbdWorld`] is fixed-index only (`local_idx == row_id`);
 //! do not call [`EpochSheet::alloc_row`] on it.
 
 #![forbid(unsafe_code)]
@@ -100,6 +101,13 @@ impl PageXpbdAdapter {
         page.soa.rot_y[local_idx] = 0.0;
         page.soa.rot_z[local_idx] = 0.0;
         page.soa.rot_w[local_idx] = 1.0;
+        page.soa.drot_x[local_idx] = 0.0;
+        page.soa.drot_y[local_idx] = 0.0;
+        page.soa.drot_z[local_idx] = 0.0;
+        page.soa.inv_inertia_x[local_idx] = 0.0;
+        page.soa.inv_inertia_y[local_idx] = 0.0;
+        page.soa.inv_inertia_z[local_idx] = 0.0;
+        page.clear_holder(local_idx);
         page.clear_sleeping(local_idx);
         page.mark_dirty(local_idx);
         self.colliders.set(local_idx, shape);
@@ -298,16 +306,18 @@ pub fn page_fingerprint(page: &HotPhysicsPage) -> u64 {
     for w in &page.dirty_entity_mask {
         w.hash(&mut h);
     }
-    for w in &page.is_grabbed_mask {
+    for w in page.grabbed_mask_words() {
         w.hash(&mut h);
     }
     for w in &page.sleeping_mask {
         w.hash(&mut h);
     }
+    page.holder_slots().hash(&mut h);
+    page.holder_since_ticks().hash(&mut h);
     h.finish()
 }
 
-/// True when two pages match bit-for-bit on SoA + all masks (incl. dirty).
+/// True when two pages match bit-for-bit on SoA + all masks + holders (incl. dirty).
 pub fn pages_bit_equal(a: &HotPhysicsPage, b: &HotPhysicsPage) -> bool {
     bytemuck::bytes_of(&a.soa) == bytemuck::bytes_of(&b.soa)
         && a.cell_origin_x.to_bits() == b.cell_origin_x.to_bits()
@@ -315,8 +325,10 @@ pub fn pages_bit_equal(a: &HotPhysicsPage, b: &HotPhysicsPage) -> bool {
         && a.cell_origin_z.to_bits() == b.cell_origin_z.to_bits()
         && a.active_mask == b.active_mask
         && a.dirty_entity_mask == b.dirty_entity_mask
-        && a.is_grabbed_mask == b.is_grabbed_mask
+        && a.grabbed_mask_words() == b.grabbed_mask_words()
         && a.sleeping_mask == b.sleeping_mask
+        && a.holder_slots() == b.holder_slots()
+        && a.holder_since_ticks() == b.holder_since_ticks()
 }
 
 #[cfg(test)]
@@ -396,7 +408,7 @@ mod tests {
 
         let mut page_id = arena.alloc_page().expect("initial page");
         {
-            let page = arena.page_mut(page_id).expect("mut");
+            let page = arena.make_mut(&mut page_id).expect("mut");
             for i in 0..1000 {
                 let x = (i % 32) as f32 * 0.5 - 8.0;
                 let z = (i / 32) as f32 * 0.5 - 8.0;
@@ -410,21 +422,18 @@ mod tests {
                 );
             }
         }
-        arena.commit_transfer(0, vec![page_id]).unwrap();
+        arena.commit_transfer_slice(0, &[page_id]).unwrap();
 
         const MAX_ALLOCS_PER_TICK: u32 = 2;
         let dt = 1.0 / 60.0;
         for tick in 1u64..=500 {
             arena.begin_tick();
-            let working = arena.fork_page(page_id).unwrap_or_else(|| {
-                panic!(
-                    "pool exhausted at tick {tick}; capacity={} total_allocs={}",
-                    arena.capacity(),
-                    arena.total_page_allocs()
-                )
-            });
             {
-                let page = arena.page_mut(working).expect("working");
+                let cap = arena.capacity();
+                let total = arena.total_page_allocs();
+                let page = arena.make_mut(&mut page_id).unwrap_or_else(|e| {
+                    panic!("make_mut failed at tick {tick}: {e:?}; capacity={cap} total_allocs={total}")
+                });
                 adapter.step_page(page, dt);
             }
             assert!(
@@ -432,8 +441,7 @@ mod tests {
                 "tick {tick} page allocs {}",
                 arena.tick_page_allocs()
             );
-            arena.commit_transfer(tick, vec![working]).unwrap();
-            page_id = working;
+            arena.commit_transfer_slice(tick, &[page_id]).unwrap();
         }
         assert_eq!(arena.latest_tick(), 500);
         assert_eq!(arena.total_page_allocs(), 501);
@@ -453,7 +461,7 @@ mod tests {
 
         let mut page_id = arena.alloc_page().expect("page");
         {
-            let page = arena.page_mut(page_id).expect("mut");
+            let page = arena.make_mut(&mut page_id).expect("mut");
             for i in 0..8 {
                 adapter.seed_entity(
                     page,
@@ -465,24 +473,22 @@ mod tests {
                 );
             }
         }
-        arena.commit_transfer(0, vec![page_id]).unwrap();
+        arena.commit_transfer_slice(0, &[page_id]).unwrap();
 
         // Advance far enough that HISTORY wraps, then checkout an in-window tick.
         for tick in 1u64..=200 {
-            let working = arena.fork_page(page_id).expect("fork");
             {
-                let page = arena.page_mut(working).expect("working");
+                let page = arena.make_mut(&mut page_id).expect("make_mut");
                 adapter.step_page(page, dt);
             }
-            arena.commit_transfer(tick, vec![working]).unwrap();
-            page_id = working;
+            arena.commit_transfer_slice(tick, &[page_id]).unwrap();
         }
 
         let rollback_tick = 200 - 50; // still inside 128-tick ring
         let snap = arena
             .snapshot_at(rollback_tick)
             .expect("rollback snapshot live");
-        let rolled_id = snap.hot_pages[0];
+        let rolled_id = snap.pages_slice()[0];
         let mut rolled = *arena.page(rolled_id).expect("rollback page live");
 
         let continuous_at_200 = *arena.page(page_id).expect("tip");
@@ -518,7 +524,7 @@ mod tests {
 
             let mut page_id = arena.alloc_page().expect("page");
             {
-                let page = arena.page_mut(page_id).expect("mut");
+                let page = arena.make_mut(&mut page_id).expect("mut");
                 for i in 0..8 {
                     adapter.seed_entity(
                         page,
@@ -530,17 +536,15 @@ mod tests {
                     );
                 }
             }
-            arena.commit_transfer(0, vec![page_id]).unwrap();
+            arena.commit_transfer_slice(0, &[page_id]).unwrap();
 
             let mut checkout: Option<HotPhysicsPage> = None;
             for tick in 1..=end_tick {
-                let working = arena.fork_page(page_id).expect("fork");
                 {
-                    let page = arena.page_mut(working).expect("working");
+                    let page = arena.make_mut(&mut page_id).expect("make_mut");
                     adapter.step_page(page, dt);
                 }
-                arena.commit_transfer(tick, vec![working]).unwrap();
-                page_id = working;
+                arena.commit_transfer_slice(tick, &[page_id]).unwrap();
                 if Some(tick) == checkout_at {
                     checkout = Some(*arena.page(page_id).expect("snap"));
                 }

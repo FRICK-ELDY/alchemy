@@ -76,7 +76,7 @@
 
 正本: [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md)（レビュー反映の詳細・未決 Q1–Q8 は同書 §6 / [review_proposal](../../roadmap/mvcc_xpbd_review_proposal.md)）。**大規模 CCU / 1000 人はここに書かない**（→ P3-7）。
 
-**現状（2026-11-14）**: 着手ゲート P1-1/4/5・scaffold（x00a3）・Phase 1 DoD（x00a4）・SoA Safe SIMD（x00a5: `wide`/`glam` 慣性）まで **closed**。host/app 本線は未配線。次は Phase 2（P3-2）。
+**現状（2026-11-14）**: 着手ゲート〜Phase 1 ゲート閉じ（x00a3–x00a8: DoD・SIMD・レイアウト/真 CoW・Directory・不等式）+ Phase 2 土台（x00a9 ArcSwap）まで **closed**。host/app 本線・WGSL 補間は未。次は Phase 2 残り（app jitter / 手元予測 / `interp.wgsl`）。
 
 | Phase | 内容 | 吸収する ID | 着手条件 |
 |:---|:---|:---|:---|

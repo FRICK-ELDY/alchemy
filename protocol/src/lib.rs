@@ -35,6 +35,8 @@
 //! - `wire_cap` topic-name secrecy (x0069: confidentiality is Room-key AEAD).
 //! - ItemRef `repo@rev` / spawn execution / wire carriage (x0055 draft only; → x0063+).
 
+#![forbid(unsafe_code)]
+
 pub use prost::Message;
 
 pub mod control_plane;

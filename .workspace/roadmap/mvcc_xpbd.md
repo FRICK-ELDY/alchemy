@@ -6,7 +6,7 @@
 * **本線の役割**: **品質本線**（近傍物理・ゼロアロ・handover 速度・補間）。同一 Room の大規模 CCU（1000 人 horizon）は規模本線 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**）
 * **関連スライス**: `x0020` (Desktop 正本), `x0039` (`ManifestSeal`), `x0053` (体感並行補間), `x0067` (Zenoh 非対称 ACL), `x0068` (短命 mTLS), `x0069` (Room 鍵 AEAD), `x0024`（frame tick 連番 + 欠落時 snapshot）
 * **レビュー取り込み**: [mvcc_xpbd_review_proposal.md](mvcc_xpbd_review_proposal.md)（2026-11-13）の P0/P1 を本版に反映。未決事項は §6
-* **現状**: Phase 1 は **着手ゲート + scaffold まで**（[x00a3](slices/x00a3-mvcc-phase1-scaffold.md)）。接触・ゼロアロ・真の CoW・レイアウト予約・クレート直下 `forbid` は **文書反映済み・コード未着手**（実装 P0 と混同しない）
+* **現状**: 着手ゲート〜Phase 1 DoD（[x00a3](slices/x00a3-mvcc-phase1-scaffold.md)–[x00a5](slices/x00a5-soa-safe-simd.md)）+ ゲート閉じ（[x00a6](slices/x00a6-mvcc-layout-cow.md) レイアウト/真 CoW · [x00a7](slices/x00a7-entity-directory.md) Directory · [x00a8](slices/x00a8-inequality-contact.md) 不等式）+ Phase 2 土台（[x00a9](slices/x00a9-phase2-publish-foundation.md) ArcSwap）。host/app 補間・権威配線は未。
 * **最優先規約**: 全 Rust クレートにおいて `#![forbid(unsafe_code)]` を**クレート直下（`lib.rs` / 該当 `main.rs`）**に宣言し、既存の `./.scripts/ci.sh rust`・`./.scripts/ci.sh protocol`・`make smoke-desktop-handthrough` を常に Green に保つこと。差分配信の用語は **dirty 合成 + x0024 snapshot**（`V_ack` / 「XOR デルタ」は使わない）。
 
 ---
@@ -16,11 +16,11 @@
 ```text
 P0 closed
   → P1-1 kick/epoch + P1-4 handover accept + P1-5 SceneBudget（必須ゲート）✓
-  → Phase 1 残り（P1-2 shared-sim 能力＝不等式接触 + P1-3 ゼロアロ + CoW/レイアウト確定；host 接触オンは Phase 3）
-  → Phase 2（= P3-2 Frame 補間 / wgpu Compute + 手元予測 + 出版契約）
+  → Phase 1（x00a3–x00a8: DoD + レイアウト/CoW/Directory/不等式）✓；host 接触オンは Phase 3
+  → Phase 2 土台 x00a9 ✓ → 残り（app jitter / 手元予測 / interp.wgsl）
   → Phase 3（host 権威ループ + dirty デルタ + sim_state handover + 確定レーン並走）
     → 規模本線: spatial_interest.md（P3-7；アウトライン並走可・実装は Phase 3 後）
-P1-6 / P2（vault・UI/docs/CI）は Phase 1 と並行可。P3-1 / P3-3 以降は独立。
+P1-6 / P2（vault・UI/docs/CI）は並走可。P3-1 / P3-3 以降は独立。
 確定レーン（§4.7）の設計確定は今、実装は Phase 3 と並走可（inventory 一般化）。
 ```
 
@@ -30,7 +30,7 @@ P1-6 / P2（vault・UI/docs/CI）は Phase 1 と並行可。P3-1 / P3-3 以降�
 | Phase 2 着手 | Phase 1 のビット一致リプレイ・接触回帰・alloc 上限・真の CoW・レイアウト予約が Green。CI を壊さないアダプタ境界が決まっている | 現行 `xpbd.rs` の薄修だけで P1-2 を「closed」にして本指示書を棚上げしない |
 | Phase 3 着手 | Phase 2 のシェーダ検証・描画経路が Green。Room AEAD（x0069）・wire_cap をバイパスしないデルタ契約が protocol 側で明示。handover は §4.8（計画的＝`…/sim_state`、crash＝§4.8 正本規則）に従う（**Q1 は文書方針として採用済み**） | 独自トランスポートや検証スキップで帯域を稼がない。`V_ack` 型の受信者別 ACK を新設しない（x0024 契約を壊さない）。Phase 1 で host 本線の接触オンだけをして P1-2 を閉じない |
 
-**作業の性質**: `shared-sim` は既に存在する（`EpochSheet` / XPBD / LBVH / FrameBridge）。Phase 1 はクレート**新設ではなく**、現行テープ → `HotPhysicsPage` / `MvccPageArena` への**段階置換・進化**である。現行 XPBD はまだ `EpochSheet` 上で動き、`mvcc/` は独立 scaffold — ページ移行時に回転・holder・ディレクトリをまとめて入れる。
+**作業の性質**: `shared-sim` は既に存在する（`EpochSheet` / XPBD / LBVH / FrameBridge）。Phase 1 はクレート**新設ではなく**、現行テープ → `HotPhysicsPage` / `MvccPageArena` への**段階置換・進化**である。現行 XPBD はまだ `EpochSheet` 上で動き、ページ経路は `PageXpbdAdapter`；`drot`/`holder`/`EntityDirectory`/`make_mut` は x00a6–x00a7 で予約済み。本番本線切替は Phase 3。
 
 **依存・ビルド注意**:
 * `wide` / `glam` は **人承認済み**（§6 Q5；2026-11-14）かつ **x00a5 で shared-sim に配線済み**。SoA 慣性は [`step_inertia`](../../client/shared-sim/src/mvcc/inertia.rs)（SIMD 既定）＋スカラー参照。拘束ソルバー全体の SIMD 化は未着手。
@@ -582,40 +582,24 @@ flowchart LR
 
 **DoD に含めないもの**: 同一 Room の大規模 CCU・フルメッシュ解除・interest キー族。それらは [spatial_interest.md](spatial_interest.md) のマイルストーン（32→64→128、1000 は horizon）が担当する。
 
-**現状**: 着手ゲート（P1-1/4/5）と scaffold（x00a3）まで。以下は **Phase 1 残り＋以降**。
+**現状**: Phase 1 ゲート閉じまで **コード完了**（x00a3–x00a8）。以下は Phase 2 以降。
 
 ### Phase 1: 既存 `shared-sim` の進化とヘッドレス決定論テスト（host/app 本線は触らない）
 
-**状態**: **DoD closed**（[x00a3](slices/x00a3-mvcc-phase1-scaffold.md) + [x00a4](slices/x00a4-mvcc-phase1-dod.md)）。[x00a5](slices/x00a5-soa-safe-simd.md) で `wide`/`glam` 慣性 SIMD 配線済み。`xpbd/` モジュール分割・拘束 SIMD・`delta_codec` は後続強化。host/app 本線は未配線。  
+**状態**: **closed**（[x00a3](slices/x00a3-mvcc-phase1-scaffold.md)–[x00a8](slices/x00a8-inequality-contact.md)）。レイアウト予約・真 CoW・Directory・不等式接触・`forbid`・Android CI 含む。`xpbd/` モジュール分割・拘束 SIMD・`delta_codec` は後続強化。host/app 本線は未配線。  
 **前提**: improvement-plan **P1-1 / P1-4 / P1-5** closed。  
 **吸収**: **P1-2** の *shared-sim 側能力*（不等式接触＋箱形状のヘッドレス保証）、**P1-3**（hot-path zero-alloc）。  
-**スコープ境界**: host の `step_dt(..., bounds: None)` は **意図的に触らない**。host で接触をオンにする（`bounds: Some`）・本番経路の回帰は **Phase 3**（P1-2 の host 配線完了）。Phase 1 で P1-2 を「closed」と書いてはならない（improvement-plan は Phase 1=能力、Phase 3=host 有効化と読む）。
-
-1. **作業内容**:
-   * `shared-sim` / `host-server` のクレート直下に `#![forbid(unsafe_code)]`（**コード未着手**・次の実装スライスで入れる）。
-   * 空クレートを増やさない。`mvcc`（真の CoW・固定長履歴・回転/holder 予約・`EntityDirectory`）、`xpbd` 分割（不等式 Contact・スクラッチ再利用・`frame_delta` 意味統一）、`delta_codec` 骨格。
-   * 現行 `EpochSheet` 経路は共存。本線切替・host 接触オンは Phase 3。
-   * `aarch64-linux-android` の CI ビルド 1 本（Quest）。
-   * alloc 計測方法は人承認後に確定（§6 Q4）。作業配列は `out: &mut Vec` / スクラッチ `clear()` にそろえる。
-   * `commit_snapshot` が `MAX_PAGES_PER_SNAPSHOT` 超過で Err（切り捨てない）。
-2. **単体テスト要件**（shared-sim / ヘッドレスのみ）:
-   * **アロケーション上限（P1-3）**: 1k entity・500 Tick で tick あたり確保回数が上限以下。履歴ページが窓内で再利用されない・プールが枯れない。
-   * **真の CoW**: `make_mut` が共有ページを fork し履歴側が変わらない。`commit_snapshot` の retain/release 対称。
-   * **接触回帰（P1-2・shared-sim）**: `contact_never_attracts`；2 箱積みで隙間・重なりが閾値以内。等式距離の流用で閉じない。**host `bounds` 有効化は Phase 3 DoD**。
-   * **決定論リプレイ**: **同じバイナリ・同じアーキテクチャ**で Tick 50→100 のページハッシュがビット一致。クロスアーキは Q2 次第。
-   * **NaN / Inf / 過大角速度検疫**: 書き込みゲートが汚染しない。初回 activate の delta=0。
-   * **列の保存・復元（位置＋`drot` 予約）**: 量子化なしラウンドトリップで列が一致。**剛体回転 XPBD の軌道ビット一致は Phase 1 後半〜Phase 3**（列予約と混同しない）。
-   * **セル越え**: どのティックの snapshot でもエンティティがちょうど 1 ページにだけ存在。ヒステリシスでフラッピングしない。ページ数超過が Err。
-   * **`frame_delta` 統一（shared-sim）**: `FrameBridge` / XPBD 経路で end−start。現行 host `step_dt` は既に tick 変位へ上書き済みのため Phase 1 では host を変えず、意味の食い違い再導入を禁止するコメント／テストで固定。
+**スコープ境界**: host の `step_dt(..., bounds: None)` は **意図的に触らない**。host で接触をオンにする（`bounds: Some`）・本番経路の回帰は **Phase 3**（P1-2 の host 配線完了）。
 
 ### Phase 2: `client (app)` への MVCC バッファ & `wgpu` Compute 補間統合（`x0053` / **P3-2**）
 
-**前提**: Phase 1 DoD Green。  
-**吸収**: improvement-plan **P3-2**（Frame 補間 / jitter buffer）。
+**前提**: Phase 1 ゲート Green（x00a6–x00a8）。  
+**吸収**: improvement-plan **P3-2**（Frame 補間 / jitter buffer）。  
+**土台**: [x00a9](slices/x00a9-phase2-publish-foundation.md) で `PublishedPair`（ArcSwap + `sim_tick`）済み。残りは app 配線。
 
 1. **作業内容**:
-   * 既存 `epoch_mirror` / Prev-Curr を `MvccPageArena` アダプタへ寄せる。
-   * 出版契約: 承認済み `arc-swap` ＋事前確保 `Arc` の再利用（毎 tick `Arc::new` しない）。
+   * 既存 `epoch_mirror` / Prev-Curr を `MvccPageArena` / `PublishedPair` アダプタへ寄せる。
+   * 出版契約: 承認済み `arc-swap` ＋事前確保 `Arc` の再利用（毎 tick `Arc::new` しない）— shared-sim 側は x00a9。
    * 補間を受信時刻基準から **`sim_tick` / `host_time_ms` 基準 + 1〜2 フレーム jitter buffer** に。
    * **手元予測**: 自分の `user_root` と自分が掴んでいる物はローカル即時反映し、host 結果で照合（Keep / Blend / Snap）。それ以外は補間。
    * `interp.wgsl` を組み込み、セル原点差分は CPU 側 `f64` 減算 → `cell_rel_offset`。WGSL に回転系列を反映。

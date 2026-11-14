@@ -36,6 +36,8 @@
 //! - Join denial while soft-global is drained by failed-JWT flood; new-pub join while
 //!   bind-pub map is full and every row stays hot within `BIND_PUB_IDLE`
 
+#![forbid(unsafe_code)]
+
 mod finite;
 mod host_control;
 mod host_ipc;
