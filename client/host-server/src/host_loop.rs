@@ -13,6 +13,8 @@ use host_server::intent_rate::IntentRateLimiter;
 use host_server::room_token::{publish_allowed_at, HostPublishSnapshot, RoomScene};
 use host_server::session::SessionTable;
 
+use alchemy_protocol::SimState;
+
 use crate::inventory_despawn::{self, DespawnInbox};
 use crate::inventory_spawn::{self, SpawnInbox};
 use crate::network_worker::{
@@ -241,6 +243,10 @@ pub(crate) struct HostLoop {
     last_wire_acked: Vec<u64>,
     /// `sim_tick` paired with [`Self::last_wire_acked`] / last pose sample.
     last_wire_sim_tick: u64,
+    /// Room id for `…/sim_state` export (x00ag).
+    room_id: String,
+    /// Shared with sim_state queryable; refreshed each physics tick.
+    sim_state_cache: Arc<Mutex<Option<SimState>>>,
 }
 
 /// Wiring inputs for [`HostLoop::new`] (boot-owned arcs / inboxes / initial manifest).
@@ -264,6 +270,10 @@ pub(crate) struct HostLoopParts {
     pub last_presence: Instant,
     pub last_presence_rev: u64,
     pub last_publish_denied_log: Instant,
+    /// Resume physics step counter after planned handover (x00ag); default 0.
+    pub resume_sim_tick: u64,
+    pub room_id: String,
+    pub sim_state_cache: Arc<Mutex<Option<SimState>>>,
 }
 
 impl HostLoop {
@@ -281,7 +291,7 @@ impl HostLoop {
             shared_scene: parts.shared_scene,
             force_reseal: parts.force_reseal,
             dt: parts.dt,
-            physics_steps: 0,
+            physics_steps: parts.resume_sim_tick,
             physics_steps_logged: 0,
             was_publishing: true,
             manifest_bytes: parts.manifest_bytes,
@@ -295,7 +305,9 @@ impl HostLoop {
             holder_scratch: Vec::new(),
             acked_scratch: Vec::new(),
             last_wire_acked: Vec::new(),
-            last_wire_sim_tick: 0,
+            last_wire_sim_tick: parts.resume_sim_tick,
+            room_id: parts.room_id,
+            sim_state_cache: parts.sim_state_cache,
         }
     }
 
@@ -534,6 +546,10 @@ impl HostLoop {
                 .coalesce_frames
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
+        // sim_state cache: every other net tick when publishing (~15Hz); avoid 60Hz rebuild.
+        if pub_snap.publish_allowed && (self.physics_steps / PHYSICS_PER_NET).is_multiple_of(2) {
+            self.refresh_sim_state_cache(pub_snap.host_generation);
+        }
         // Catch-up flag is sticky in `coalesce_frame`; clearing local gate latch here is
         // safe even if this sample merges with a later `resume_catchup: false` tick.
         if resume_catchup && pub_snap.publish_allowed {
@@ -573,6 +589,24 @@ impl HostLoop {
             );
             self.physics_steps_logged = 0;
             self.last_log = Instant::now();
+        }
+    }
+
+    fn refresh_sim_state_cache(&self, host_generation: u64) {
+        let net_tick = self.physics_steps / PHYSICS_PER_NET;
+        let state = self.physics.export_sim_state(
+            &self.room_id,
+            host_generation,
+            self.manifest_revision,
+            self.physics_steps,
+            net_tick,
+        );
+        match self.sim_state_cache.lock() {
+            Ok(mut guard) => *guard = Some(state),
+            Err(_) => {
+                log::error!("sim_state_cache Mutex poisoned; aborting host-server");
+                std::process::exit(78);
+            }
         }
     }
 }
@@ -647,6 +681,9 @@ mod tests {
             last_presence: now,
             last_presence_rev: 0,
             last_publish_denied_log: now - Duration::from_secs(60),
+            resume_sim_tick: 0,
+            room_id: "local".into(),
+            sim_state_cache: Arc::new(Mutex::new(None)),
         })
     }
 

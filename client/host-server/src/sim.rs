@@ -11,19 +11,22 @@
 //! `mvcc_xpbd` is a **temporary bridge** (page steps XPBD; wire still samples Epoch Curr).
 //! Classification via `alchemy-shared-sim` [`EntityKind`] (x0030).
 //! Non-guarantees: Grab aim **rotation** follow (translation only); throw impulse;
-//! Rapier bit-exact parity; capsule Walk extrude; host dirty publish / `sim_state` / PROTOCOL_PIN
-//! (shared-sim `delta_codec` is x00ae; wire switch still Phase 3);
+//! Rapier bit-exact parity; capsule Walk extrude; host dirty 30Hz 本番切替 / PROTOCOL_PIN bump;
+//! (shared-sim `delta_codec` is x00ae; `…/sim_state` export/import is x00ag);
 //! non-uniform collider scale; Frame parent fields / pass-place Intent wiring;
 //! exact OBB box-box (sphere approx via LBVH); production default `mvcc_xpbd`;
 //! `mvcc_xpbd` cell_origin always 0（近傍デモ向け；遠方は f32 量子化）;
 //! sheet↔page 毎 tick 往復の zero-alloc（後続 dirty 前に計測）;
-//! Epoch 二重管理の解消（dirty / `sim_state` スライスで畳む）。
+//! Epoch 二重管理の解消（dirty 本番切替で畳む）; `drot` 復元（予約 0）.
 
 use std::collections::{HashMap, HashSet};
 
+#[cfg(test)]
+use alchemy_protocol::Message;
 use alchemy_protocol::{
-    scene_entry_grabbable, scene_entry_quat_xyzw, scene_entry_scale, user_root_slots_from_entries,
-    LocomotionMode, SceneEntry, DEFAULT_MOVE_SPEED,
+    entity_holder_from_slot, entity_holder_slot, scene_entry_grabbable, scene_entry_quat_xyzw,
+    scene_entry_scale, user_root_slots_from_entries, LocomotionMode, SceneEntry, SimEntity,
+    SimState, DEFAULT_MOVE_SPEED, ENTITY_HOLDER_NONE, PROTOCOL_PIN,
 };
 #[cfg(test)]
 use alchemy_shared_sim::mvcc::KinematicPoseF32;
@@ -363,6 +366,204 @@ impl PhysicsWorld {
         host.publishes = 1;
         host.barrier_ticks = 1;
         Ok(host)
+    }
+
+    /// Export quantum-free sheet state for `…/sim_state` (x00ag). `drot` is always 0.
+    pub fn export_sim_state(
+        &self,
+        room_id: &str,
+        host_generation: u64,
+        scene_rev: u64,
+        sim_tick: u64,
+        net_tick: u64,
+    ) -> SimState {
+        let mut holder_by_entity = HashMap::<u32, u32>::new();
+        for slot in 0..self.slot_count {
+            if let Some(ag) = self.grabs[slot] {
+                let eid = self.boxes.entity_ids[ag.index];
+                holder_by_entity.insert(eid, entity_holder_from_slot(slot as u8));
+            }
+        }
+        let mut entities = Vec::with_capacity(self.entity_rows.len());
+        let mut ids: Vec<u32> = self.entity_rows.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let Some(handle) = self.entity_rows.get(&id) else {
+                continue;
+            };
+            let idx = handle.row_id as usize;
+            let xf = &self.world.curr.world_transforms[idx];
+            // Low 32 bits of sheet readiness (TOMBSTONE=1<<63 is not on the wire).
+            // Non-zero → restored on import; `0` → keep Manifest/cold mask (crash snapshot).
+            let flags = (self.world.curr.readiness[idx].0 & 0xffff_ffff) as u32;
+            entities.push(SimEntity {
+                id,
+                x: xf.position[0],
+                y: xf.position[1],
+                z: xf.position[2],
+                qx: xf.rotation[0],
+                qy: xf.rotation[1],
+                qz: xf.rotation[2],
+                qw: xf.rotation[3],
+                dx: xf.frame_delta_xyz[0],
+                dy: xf.frame_delta_xyz[1],
+                dz: xf.frame_delta_xyz[2],
+                drot_x: 0.0,
+                drot_y: 0.0,
+                drot_z: 0.0,
+                holder: holder_by_entity
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(ENTITY_HOLDER_NONE),
+                flags,
+            });
+        }
+        SimState {
+            protocol_pin: PROTOCOL_PIN.into(),
+            room_id: room_id.into(),
+            host_generation,
+            scene_rev,
+            sim_tick,
+            net_tick,
+            entities,
+            host_sig: Vec::new(),
+        }
+    }
+
+    /// Resume from a quarantined [`SimState`] after Manifest topology seed (x00ag).
+    ///
+    /// Skips the cold-start mesh kick; applies poses/deltas/`flags`→readiness;
+    /// restores grabs from `holder` (and re-asserts GRABBED).
+    ///
+    /// [`SimStateImportKind::Planned`] rejects all-zero `flags` (crash sentinel) so
+    /// trajectory DoD cannot silently keep cold readiness.
+    pub fn from_sim_state_with_backend(
+        entries: &[SceneEntry],
+        loco_mode: LocoMode,
+        move_speed: f32,
+        backend: SimBackendKind,
+        state: &SimState,
+        import: crate::sim_state::SimStateImportKind,
+    ) -> Result<Self, String> {
+        crate::sim_state::quarantine_sim_state(state, import).map_err(|e| e.to_string())?;
+        let mut host = Self::from_entries_with_backend(entries, loco_mode, move_speed, backend)?;
+        // Drop cold-start mesh kick before applying exported deltas.
+        for i in 0..host.world.curr.len() {
+            host.world.curr.world_transforms[i].frame_delta_xyz = [0.0, 0.0, 0.0];
+            if i < host.world.prev.len() {
+                host.world.prev.world_transforms[i].frame_delta_xyz = [0.0, 0.0, 0.0];
+            }
+        }
+        host.apply_sim_state_entities(state, import)?;
+        host.snapshots
+            .publish(host.world.prev.clone(), host.world.curr.clone());
+        host.publishes = host.publishes.saturating_add(1);
+        host.publish_dirty = true;
+        Ok(host)
+    }
+
+    fn apply_sim_state_entities(
+        &mut self,
+        state: &SimState,
+        import: crate::sim_state::SimStateImportKind,
+    ) -> Result<(), String> {
+        let restore_readiness = import == crate::sim_state::SimStateImportKind::Planned;
+        for e in &state.entities {
+            let Some(handle) = self.entity_rows.get(&e.id).copied() else {
+                continue;
+            };
+            let idx = handle.row_id as usize;
+            let scale = self.world.curr.world_transforms[idx].scale;
+            let inv_mass = self.world.curr.world_transforms[idx].inv_mass;
+            let xf = WorldTransformf64 {
+                position: [e.x, e.y, e.z],
+                inv_mass,
+                rotation: [e.qx, e.qy, e.qz, e.qw],
+                scale,
+                frame_delta_xyz: [e.dx, e.dy, e.dz],
+                flags: 0,
+                _pad0: 0,
+                _pad1: [0; 4],
+            };
+            if !xf.is_finite() {
+                return Err(format!(
+                    "sim_state entity {} not finite after assemble",
+                    e.id
+                ));
+            }
+            let _ = self.world.curr.set_transform(handle.row_id, xf);
+            // Planned: restore low-32 readiness (GRABBED re-applied below).
+            // CrashPoseOnly: keep Manifest/cold readiness even if wire flags are non-zero.
+            if restore_readiness {
+                let mut mask = ReadinessMask(u64::from(e.flags));
+                mask = mask.without_bits(ReadinessMask::GRABBED);
+                self.world.curr.readiness[idx] = mask;
+                if idx < self.world.prev.len() {
+                    self.world.prev.readiness[idx] = mask;
+                }
+            }
+            if idx < self.world.prev.len() {
+                // Verlet prev ≈ curr − delta (epoch path restores via apply_frame_delta_to_prev).
+                let mut prev = xf;
+                prev.position = [
+                    e.x - f64::from(e.dx),
+                    e.y - f64::from(e.dy),
+                    e.z - f64::from(e.dz),
+                ];
+                self.world.prev.world_transforms[idx] = prev;
+            }
+        }
+        // Clear grabs then restore from holder (first holder wins on conflict).
+        for slot in 0..self.slot_count {
+            if self.grabs[slot].is_some() {
+                self.release_grab(slot);
+            }
+        }
+        // Drop any residual GRABBED from wire flags before holder restore.
+        for e in &state.entities {
+            if e.holder == ENTITY_HOLDER_NONE {
+                self.set_grabbed_bit(e.id, false);
+            }
+        }
+        for e in &state.entities {
+            let Some(slot) = entity_holder_slot(e.holder) else {
+                continue;
+            };
+            let slot = slot as usize;
+            if slot >= self.slot_count || self.grabs[slot].is_some() {
+                self.set_grabbed_bit(e.id, false);
+                continue;
+            }
+            let Some(box_index) = self.boxes.entity_ids.iter().position(|&id| id == e.id) else {
+                self.set_grabbed_bit(e.id, false);
+                continue;
+            };
+            if !self
+                .boxes
+                .grabbable
+                .get(box_index)
+                .copied()
+                .unwrap_or(false)
+            {
+                self.set_grabbed_bit(e.id, false);
+                continue;
+            }
+            let (ux, uy, uz) = self.user_root_translation(slot);
+            let (bx, by, bz) = (e.x as f32, e.y as f32, e.z as f32);
+            let (ox, oy, oz) = crate::finite::clamp_hold_offset(bx - ux, by - uy, bz - uz);
+            let holder_id = Self::user_root_entity_id(slot);
+            if self.slots.attach_held(holder_id, e.id).is_err() {
+                self.set_grabbed_bit(e.id, false);
+                continue;
+            }
+            self.grabs[slot] = Some(ActiveGrab {
+                index: box_index,
+                offset: [ox, oy, oz],
+            });
+            self.grab_aims[slot] = [ux, uy, uz];
+            self.set_grabbed_bit(e.id, true);
+        }
+        Ok(())
     }
 
     pub fn backend(&self) -> SimBackendKind {
@@ -1231,6 +1432,7 @@ fn test_world() -> PhysicsWorld {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim_state::SimStateImportKind;
 
     #[test]
     fn ball_falls_onto_floor() {
@@ -2165,6 +2367,268 @@ mod tests {
             world.mvcc_page().unwrap().holder_at(row),
             1,
             "page holder must follow pass_held to slot 1"
+        );
+    }
+
+    fn assert_worlds_bit_equal(a: &PhysicsWorld, b: &PhysicsWorld) {
+        assert_eq!(a.entity_count(), b.entity_count());
+        let mut ids: Vec<u32> = a.entity_rows.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let ra = a.entity_row(id).unwrap().row_id as usize;
+            let rb = b.entity_row(id).unwrap().row_id as usize;
+            let xa = &a.world.curr.world_transforms[ra];
+            let xb = &b.world.curr.world_transforms[rb];
+            for i in 0..3 {
+                assert_eq!(
+                    xa.position[i].to_bits(),
+                    xb.position[i].to_bits(),
+                    "pos mismatch entity={id} axis={i}"
+                );
+            }
+            for i in 0..4 {
+                assert_eq!(
+                    xa.rotation[i].to_bits(),
+                    xb.rotation[i].to_bits(),
+                    "rot mismatch entity={id} axis={i}"
+                );
+            }
+            for i in 0..3 {
+                assert_eq!(
+                    xa.frame_delta_xyz[i].to_bits(),
+                    xb.frame_delta_xyz[i].to_bits(),
+                    "delta mismatch entity={id} axis={i}"
+                );
+            }
+            let ma = a.world.curr.readiness[ra];
+            let mb = b.world.curr.readiness[rb];
+            assert_eq!(
+                ma.contains(ReadinessMask::SLEEPING),
+                mb.contains(ReadinessMask::SLEEPING),
+                "SLEEPING mismatch entity={id}"
+            );
+            assert_eq!(
+                ma.contains(ReadinessMask::GRABBED),
+                mb.contains(ReadinessMask::GRABBED),
+                "GRABBED mismatch entity={id}"
+            );
+        }
+    }
+
+    fn planned_handover_continues_for(backend: SimBackendKind) {
+        let entries = demo_entries_for_test();
+        let mut old = PhysicsWorld::from_entries_with_backend(
+            &entries,
+            LocoMode::Noclip,
+            DEFAULT_MOVE_SPEED,
+            backend,
+        )
+        .expect("old world");
+        for _ in 0..90 {
+            old.step();
+        }
+        // Grab a box so holder survives export/import.
+        let id = old.boxes.entity_ids[0];
+        let (bx, by, bz) = old.box_pose(0).0;
+        old.apply_grab(0, true, id, (bx, by, bz));
+        // Force SLEEPING on a non-held mesh so flags→readiness restore is covered.
+        if let Some(mesh_id) = old.mesh_entity_id() {
+            let row = old.entity_row(mesh_id).unwrap().row_id as usize;
+            let mask = old.world.curr.readiness[row];
+            old.world.curr.readiness[row] = mask.with_bits(ReadinessMask::SLEEPING);
+        }
+        old.step();
+        let sim_tick = 91u64;
+        let exported = old.export_sim_state("local", 1, 1, sim_tick, 45);
+        assert!(!exported.entities.is_empty());
+        assert!(exported.entities.iter().any(|e| e.holder == 1));
+
+        let key = alchemy_protocol::wire_crypto::generate_signing_key();
+        let mut signed = exported.clone();
+        alchemy_protocol::wire_crypto::sign_sim_state(&key, &mut signed);
+        let plain = signed.encode_to_vec();
+        let room_key = [0x42u8; 32];
+        let env = alchemy_protocol::wire_aead::seal(
+            &room_key,
+            "local",
+            0,
+            alchemy_protocol::wire_aead::AeadKind::SimState,
+            &plain,
+        )
+        .expect("seal");
+        let opened = alchemy_protocol::wire_aead::open(
+            &room_key,
+            "local",
+            0,
+            alchemy_protocol::wire_aead::AeadKind::SimState,
+            &env,
+        )
+        .expect("open");
+        let decoded = alchemy_protocol::decode_limits::decode_sim_state_checked(&opened)
+            .expect("decode+limits");
+        alchemy_protocol::wire_crypto::verify_sim_state(
+            &alchemy_protocol::wire_crypto::public_key_bytes(&key),
+            &decoded,
+        )
+        .expect("verify");
+        assert!(alchemy_protocol::wire_crypto::sim_state_entities_finite(
+            &decoded
+        ));
+
+        let mut resumed = PhysicsWorld::from_sim_state_with_backend(
+            &entries,
+            LocoMode::Noclip,
+            DEFAULT_MOVE_SPEED,
+            backend,
+            &decoded,
+            SimStateImportKind::Planned,
+        )
+        .expect("resume");
+        assert_eq!(resumed.grab_entity_id(0), Some(id));
+
+        let mut control = PhysicsWorld::from_sim_state_with_backend(
+            &entries,
+            LocoMode::Noclip,
+            DEFAULT_MOVE_SPEED,
+            backend,
+            &decoded,
+            SimStateImportKind::Planned,
+        )
+        .expect("control twin");
+
+        for _ in 0..60 {
+            resumed.step();
+            control.step();
+            old.step();
+        }
+        assert_worlds_bit_equal(&resumed, &control);
+        // Same binary: resumed twin matches the continuously stepped old host.
+        assert_worlds_bit_equal(&resumed, &old);
+    }
+
+    #[test]
+    fn planned_handover_continues_trajectory_epoch() {
+        planned_handover_continues_for(SimBackendKind::EpochXpbd);
+    }
+
+    #[test]
+    fn planned_handover_continues_trajectory_mvcc() {
+        planned_handover_continues_for(SimBackendKind::MvccXpbd);
+    }
+
+    #[test]
+    fn sim_state_flags_zero_keeps_cold_readiness() {
+        let entries = demo_entries_for_test();
+        let mut old = PhysicsWorld::from_entries_with_backend(
+            &entries,
+            LocoMode::Noclip,
+            DEFAULT_MOVE_SPEED,
+            SimBackendKind::EpochXpbd,
+        )
+        .expect("old");
+        for _ in 0..30 {
+            old.step();
+        }
+        let mesh_id = old.mesh_entity_id().expect("mesh");
+        let row_before = old.entity_row(mesh_id).unwrap().row_id as usize;
+        assert!(old.world.curr.readiness[row_before].contains(ReadinessMask::ALLOCATED));
+        assert!(old.world.curr.readiness[row_before].is_ready(ReadinessMask::DYNAMIC));
+
+        let mut crash_seed = old.export_sim_state("local", 1, 1, 30, 15);
+        for e in &mut crash_seed.entities {
+            e.flags = 0; // crash snapshot contract
+            e.dx = 0.0;
+            e.dy = 0.0;
+            e.dz = 0.0;
+        }
+        let resumed = PhysicsWorld::from_sim_state_with_backend(
+            &entries,
+            LocoMode::Noclip,
+            DEFAULT_MOVE_SPEED,
+            SimBackendKind::EpochXpbd,
+            &crash_seed,
+            SimStateImportKind::CrashPoseOnly,
+        )
+        .expect("resume");
+        let row = resumed.entity_row(mesh_id).unwrap().row_id as usize;
+        assert!(
+            resumed.world.curr.readiness[row].contains(ReadinessMask::ALLOCATED),
+            "flags==0 must not wipe ALLOCATED"
+        );
+        assert!(
+            resumed.world.curr.readiness[row].is_ready(ReadinessMask::DYNAMIC),
+            "flags==0 must not wipe DYNAMIC"
+        );
+        assert!(
+            PhysicsWorld::from_sim_state_with_backend(
+                &entries,
+                LocoMode::Noclip,
+                DEFAULT_MOVE_SPEED,
+                SimBackendKind::EpochXpbd,
+                &crash_seed,
+                SimStateImportKind::Planned,
+            )
+            .is_err(),
+            "planned must reject all-zero flags"
+        );
+
+        // CrashPoseOnly must ignore non-zero wire flags (keep cold mask).
+        let mut sneaky = crash_seed.clone();
+        for e in &mut sneaky.entities {
+            e.flags = ReadinessMask::SLEEPING as u32;
+        }
+        let resumed2 = PhysicsWorld::from_sim_state_with_backend(
+            &entries,
+            LocoMode::Noclip,
+            DEFAULT_MOVE_SPEED,
+            SimBackendKind::EpochXpbd,
+            &sneaky,
+            SimStateImportKind::CrashPoseOnly,
+        )
+        .expect("crash ignores flags");
+        let row2 = resumed2.entity_row(mesh_id).unwrap().row_id as usize;
+        assert!(
+            !resumed2.world.curr.readiness[row2].contains(ReadinessMask::SLEEPING),
+            "CrashPoseOnly must not apply wire SLEEPING"
+        );
+        assert!(resumed2.world.curr.readiness[row2].is_ready(ReadinessMask::DYNAMIC));
+    }
+
+    #[test]
+    fn sim_state_restores_sleeping_readiness_flags() {
+        let entries = demo_entries_for_test();
+        let mut old = PhysicsWorld::from_entries_with_backend(
+            &entries,
+            LocoMode::Noclip,
+            DEFAULT_MOVE_SPEED,
+            SimBackendKind::EpochXpbd,
+        )
+        .expect("old");
+        let mesh_id = old.mesh_entity_id().expect("mesh");
+        let row = old.entity_row(mesh_id).unwrap().row_id as usize;
+        let mask = old.world.curr.readiness[row];
+        old.world.curr.readiness[row] = mask.with_bits(ReadinessMask::SLEEPING);
+        let exported = old.export_sim_state("local", 1, 1, 1, 0);
+        let e = exported
+            .entities
+            .iter()
+            .find(|e| e.id == mesh_id)
+            .expect("mesh entity");
+        assert_ne!(e.flags & (ReadinessMask::SLEEPING as u32), 0);
+
+        let resumed = PhysicsWorld::from_sim_state_with_backend(
+            &entries,
+            LocoMode::Noclip,
+            DEFAULT_MOVE_SPEED,
+            SimBackendKind::EpochXpbd,
+            &exported,
+            SimStateImportKind::Planned,
+        )
+        .expect("resume");
+        let row2 = resumed.entity_row(mesh_id).unwrap().row_id as usize;
+        assert!(
+            resumed.world.curr.readiness[row2].contains(ReadinessMask::SLEEPING),
+            "SLEEPING must survive sim_state roundtrip"
         );
     }
 }

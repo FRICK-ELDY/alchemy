@@ -37,7 +37,8 @@ jobs:
             protocol/proto/render_frame.proto \
             protocol/proto/input_events.proto \
             protocol/proto/presence.proto \
-            protocol/proto/scene_manifest.proto
+            protocol/proto/scene_manifest.proto \
+            protocol/proto/sim_state.proto
           test -s /tmp/alchemy-descriptor.pb
 
   rust-test:

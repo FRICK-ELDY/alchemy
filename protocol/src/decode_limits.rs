@@ -18,7 +18,8 @@ use prost::Message;
 
 use crate::wire_crypto::{PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
 use crate::{
-    InputEvent, PresenceState, RenderFrame, SceneManifest, ROOM_ID_MAX_BYTES, USER_ROOT_SLOTS_MAX,
+    InputEvent, PresenceState, RenderFrame, SceneManifest, SimState, ROOM_ID_MAX_BYTES,
+    USER_ROOT_SLOTS_MAX,
 };
 
 /// Ed25519 signature wire length ceiling (aligned with [`SIGNATURE_LENGTH`]).
@@ -31,6 +32,8 @@ pub enum WireClass {
     Frame,
     Presence,
     Input,
+    /// Planned handover full sim state (x00ag); larger than Frame (f64 + deltas).
+    SimState,
 }
 
 impl WireClass {
@@ -40,6 +43,7 @@ impl WireClass {
             Self::Frame => "frame",
             Self::Presence => "presence",
             Self::Input => "input",
+            Self::SimState => "sim_state",
         }
     }
 }
@@ -50,6 +54,8 @@ pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 pub const MAX_PRESENCE_BYTES: usize = 64 * 1024;
 pub const MAX_INPUT_BYTES: usize = 32 * 1024;
+/// Full-scene quantum-free state (x00ag); aligned with Manifest ceiling.
+pub const MAX_SIM_STATE_BYTES: usize = 1024 * 1024;
 
 /// Post-decode repeated-field ceilings.
 /// Keep in sync with `World.SceneBudget.max_entries/0` (x00a2).
@@ -58,6 +64,8 @@ pub const MAX_MANIFEST_ENTRIES: usize = 4096;
 pub const MAX_FRAME_UPSERTS: usize = 4096;
 pub const MAX_FRAME_REMOVES: usize = 4096;
 pub const MAX_PRESENCE_ASSIGNMENTS: usize = USER_ROOT_SLOTS_MAX;
+/// Same DoS bound as Manifest entries / Frame upserts (x00ag).
+pub const MAX_SIM_STATE_ENTITIES: usize = MAX_MANIFEST_ENTRIES;
 
 /// Post-decode string / JWT / key ceilings (bytes).
 pub const MAX_PROTOCOL_PIN_BYTES: usize = 128;
@@ -133,6 +141,7 @@ pub const fn max_payload_bytes(class: WireClass) -> usize {
         WireClass::Frame => MAX_FRAME_BYTES,
         WireClass::Presence => MAX_PRESENCE_BYTES,
         WireClass::Input => MAX_INPUT_BYTES,
+        WireClass::SimState => MAX_SIM_STATE_BYTES,
     }
 }
 
@@ -207,6 +216,25 @@ pub fn check_frame(frame: &RenderFrame) -> Result<(), DecodeLimitError> {
         if u64::from(e.holder) > holder_max {
             return Err(DecodeLimitError::ValueOutOfRange {
                 field: "entity.holder",
+                value: u64::from(e.holder),
+                max: holder_max,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Post-decode SimState entity / string / holder ceilings (x00ag).
+pub fn check_sim_state(state: &SimState) -> Result<(), DecodeLimitError> {
+    check_str("protocol_pin", &state.protocol_pin, MAX_PROTOCOL_PIN_BYTES)?;
+    check_str("room_id", &state.room_id, ROOM_ID_MAX_BYTES)?;
+    check_count("entities", state.entities.len(), MAX_SIM_STATE_ENTITIES)?;
+    check_bytes("host_sig", &state.host_sig, SIGNATURE_LENGTH)?;
+    let holder_max = USER_ROOT_SLOTS_MAX as u64;
+    for e in &state.entities {
+        if u64::from(e.holder) > holder_max {
+            return Err(DecodeLimitError::ValueOutOfRange {
+                field: "sim_entity.holder",
                 value: u64::from(e.holder),
                 max: holder_max,
             });
@@ -296,6 +324,14 @@ pub fn decode_presence_checked(payload: &[u8]) -> Result<PresenceState, CheckedD
     Ok(state)
 }
 
+/// Decode + post-check SimState after payload byte gate (x00ag).
+pub fn decode_sim_state_checked(payload: &[u8]) -> Result<SimState, CheckedDecodeError> {
+    check_payload_bytes(WireClass::SimState, payload.len()).map_err(CheckedDecodeError::Limit)?;
+    let state = SimState::decode(payload).map_err(CheckedDecodeError::Decode)?;
+    check_sim_state(&state).map_err(CheckedDecodeError::Limit)?;
+    Ok(state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +354,11 @@ mod tests {
         ));
         assert!(matches!(
             check_payload_bytes(WireClass::Presence, MAX_PRESENCE_BYTES + 1),
+            Err(DecodeLimitError::PayloadTooLarge { .. })
+        ));
+        assert!(check_payload_bytes(WireClass::SimState, MAX_SIM_STATE_BYTES).is_ok());
+        assert!(matches!(
+            check_payload_bytes(WireClass::SimState, MAX_SIM_STATE_BYTES + 1),
             Err(DecodeLimitError::PayloadTooLarge { .. })
         ));
     }

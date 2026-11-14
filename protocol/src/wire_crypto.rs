@@ -15,7 +15,7 @@ use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 use prost::Message;
 use rand::rngs::OsRng;
 
-use crate::{InputEvent, PresenceState, RenderFrame, SceneManifest};
+use crate::{InputEvent, PresenceState, RenderFrame, SceneManifest, SimEntity, SimState};
 
 pub use ed25519_dalek::{SigningKey, SIGNATURE_LENGTH};
 
@@ -166,6 +166,55 @@ pub fn frame_entities_finite(frame: &RenderFrame) -> bool {
     frame.upserts.iter().all(entity_is_finite)
 }
 
+/// Encode `SimState` for signing (`host_sig` cleared) (x00ag).
+pub fn sim_state_signing_bytes(state: &SimState) -> Vec<u8> {
+    let mut s = state.clone();
+    s.host_sig.clear();
+    s.encode_to_vec()
+}
+
+/// Sign SimState in place (`host_sig` filled).
+pub fn sign_sim_state(key: &SigningKey, state: &mut SimState) {
+    state.host_sig.clear();
+    let msg = state.encode_to_vec();
+    state.host_sig = key.sign(&msg).to_bytes().to_vec();
+}
+
+/// Verify SimState with the expected host public key (caller supplies attested pub).
+pub fn verify_sim_state(host_pub: &[u8], state: &SimState) -> Result<(), WireCryptoError> {
+    let vk = verifying_key_from(host_pub)?;
+    let sig = signature_from(&state.host_sig)?;
+    let msg = sim_state_signing_bytes(state);
+    vk.verify(&msg, &sig)
+        .map_err(|_| WireCryptoError::VerifyFailed)
+}
+
+/// True when a SimEntity has finite pose / delta / drot and a usable quat (x00ag).
+pub fn sim_entity_is_finite(e: &SimEntity) -> bool {
+    e.x.is_finite()
+        && e.y.is_finite()
+        && e.z.is_finite()
+        && e.qx.is_finite()
+        && e.qy.is_finite()
+        && e.qz.is_finite()
+        && e.qw.is_finite()
+        && e.dx.is_finite()
+        && e.dy.is_finite()
+        && e.dz.is_finite()
+        && e.drot_x.is_finite()
+        && e.drot_y.is_finite()
+        && e.drot_z.is_finite()
+        && {
+            let n2 = f64::from(e.qx * e.qx + e.qy * e.qy + e.qz * e.qz + e.qw * e.qw);
+            n2.is_finite() && n2 > 1e-24
+        }
+}
+
+/// True when every entity in the SimState is finite.
+pub fn sim_state_entities_finite(state: &SimState) -> bool {
+    state.entities.iter().all(sim_entity_is_finite)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireCryptoError {
     BadPublicKeyLen(usize),
@@ -271,5 +320,68 @@ mod tests {
         sign_presence(&key, &mut state);
         assert!(verify_presence(&public_key_bytes(&key), &state).is_ok());
         assert!(verify_presence(&[0u8; 32], &state).is_err());
+    }
+
+    #[test]
+    fn sim_state_roundtrip_sign_verify() {
+        let key = generate_signing_key();
+        let mut state = SimState {
+            protocol_pin: crate::PROTOCOL_PIN.into(),
+            room_id: "local".into(),
+            host_generation: 1,
+            scene_rev: 2,
+            sim_tick: 10,
+            net_tick: 5,
+            entities: vec![SimEntity {
+                id: 1,
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+                qx: 0.0,
+                qy: 0.0,
+                qz: 0.0,
+                qw: 1.0,
+                dx: 0.1,
+                dy: 0.0,
+                dz: 0.0,
+                drot_x: 0.0,
+                drot_y: 0.0,
+                drot_z: 0.0,
+                holder: 0,
+                flags: 0,
+            }],
+            host_sig: vec![],
+        };
+        assert!(sim_state_entities_finite(&state));
+        sign_sim_state(&key, &mut state);
+        assert!(verify_sim_state(&public_key_bytes(&key), &state).is_ok());
+        assert!(verify_sim_state(&[0u8; 32], &state).is_err());
+        state.entities[0].x = 9.0;
+        assert!(verify_sim_state(&public_key_bytes(&key), &state).is_err());
+    }
+
+    #[test]
+    fn sim_entity_rejects_non_finite() {
+        let mut e = SimEntity {
+            id: 1,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            qw: 1.0,
+            dx: 0.0,
+            dy: 0.0,
+            dz: 0.0,
+            drot_x: 0.0,
+            drot_y: 0.0,
+            drot_z: 0.0,
+            holder: 0,
+            flags: 0,
+        };
+        assert!(sim_entity_is_finite(&e));
+        e.dx = f32::NAN;
+        assert!(!sim_entity_is_finite(&e));
     }
 }

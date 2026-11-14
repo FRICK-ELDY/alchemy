@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package alchemy.render;
+
+// Planned host handover state (mvcc_xpbd §4.8 / x00ag).
+// Request/response on …/sim_state — not a latest delta. Quantum-free poses +
+// per-tick displacement. Distinct AEAD kind from Frame / Snapshot.
+// PROTOCOL_PIN is carried in-message for pin mismatch reject (wire pin bump optional).
+
+message SimState {
+  // Must match crate PROTOCOL_PIN when verified by peers that enforce it.
+  string protocol_pin = 1;
+  string room_id = 2;
+  uint64 host_generation = 3;
+  // Scene / overlay revision at export time (informational for CAS checks).
+  uint64 scene_rev = 4;
+  // 60Hz physics tick the exporter last completed.
+  uint64 sim_tick = 5;
+  // Last published net_tick (informational; resume policy is host-local).
+  uint64 net_tick = 6;
+  repeated SimEntity entities = 7;
+  // Ed25519 signature (64 bytes) over encode with `host_sig` cleared.
+  bytes host_sig = 8;
+}
+
+message SimEntity {
+  uint32 id = 1;
+  // World position (binary64 / f64) — not frame quantized.
+  double x = 2;
+  double y = 3;
+  double z = 4;
+  // Unit quaternion xyzw (f32 wire as float).
+  float qx = 5;
+  float qy = 6;
+  float qz = 7;
+  float qw = 8;
+  // Full-frame linear displacement (end − start) for the last completed tick.
+  float dx = 9;
+  float dy = 10;
+  float dz = 11;
+  // Angular displacement (axis × angle rad). Reserved; exporters send 0 until rigid XPBD.
+  float drot_x = 12;
+  float drot_y = 13;
+  float drot_z = 14;
+  // Same encoding as Entity.holder: 0 = none; 1..=USER_ROOT_SLOTS_MAX = slot + 1.
+  uint32 holder = 15;
+  // Low 32 bits of sheet readiness (SLEEPING / GRABBED / …). TOMBSTONE (1<<63) is
+  // not representable. Non-zero → restore on import (planned handover). Zero → keep
+  // Manifest/cold readiness (crash snapshot is pose-only / velocity 0).
+  uint32 flags = 16;
+}
