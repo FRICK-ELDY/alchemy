@@ -27,7 +27,7 @@
 //!
 //! Non-guarantees:
 //! - Steal / rotation follow / Dual-AST Kernel / polished Walk / verifier
-//! - Rapier bit-exact parity; LBVH body-body contacts; capsule Walk extrude
+//! - Rapier bit-exact parity; capsule Walk extrude; production default `mvcc_xpbd`
 //! - Authenticated remote (WAN) host shutdown
 //! - Full UGC scene editor (x006d only appends one mesh entry via world HTTP)
 //! - rkyv / bytemuck wire (encode is protobuf inside network worker today)
@@ -48,6 +48,7 @@ mod network_worker;
 mod pose_delta;
 mod presence;
 mod sim;
+mod sim_backend;
 mod wire_tick;
 
 use host_server::{intent_rate, metrics, room_aead, room_token, session};
@@ -704,12 +705,20 @@ fn main() -> Result<()> {
     let outbound = net.hub;
     let publish_stats = net.stats;
 
-    let physics = PhysicsWorld::from_entries(&room_scene.entries, loco_mode, move_speed);
+    let sim_backend = sim::SimBackendKind::from_env().map_err(anyhow::Error::msg)?;
+    let physics = PhysicsWorld::from_entries_with_backend(
+        &room_scene.entries,
+        loco_mode,
+        move_speed,
+        sim_backend,
+    )
+    .map_err(anyhow::Error::msg)?;
     debug_assert_eq!(physics.user_root_slot_count(), user_root_slots);
     let grabbable_n = physics.boxes.grabbable.iter().filter(|&&g| g).count();
     let last_root = USER_ROOT_ENTITY_FIRST + physics.user_root_slot_count() as u32 - 1;
     log::info!(
-        "XPBD world ready (mesh={:?} + user_roots {USER_ROOT_ENTITY_FIRST}..{last_root} + boxes={} grabbable={grabbable_n} mode={:?}); rows={}",
+        "XPBD world ready (backend={} mesh={:?} + user_roots {USER_ROOT_ENTITY_FIRST}..{last_root} + boxes={} grabbable={grabbable_n} mode={:?}); rows={}",
+        physics.backend().as_str(),
         physics.mesh_entity_id(),
         physics.boxes.len(),
         physics.loco_mode(),

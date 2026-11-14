@@ -6,11 +6,17 @@
 //! Grab on/off syncs [`alchemy_shared_sim::SlotGraph`] held parent (x0057);
 //! `release_slot` resets translation+rotation to Manifest spawn;
 //! Presence capacity = contiguous Manifest user_root entries (x004d / x009b);
-//! wire TRS authority is Epoch Curr after [`Self::step`] (x0093).
+//! wire TRS authority is Epoch Curr after [`Self::step`] (x0093);
+//! **x00ad**: [`SimBackendKind`] switch; LBVH body-body contacts **on** (`bounds: Some`);
+//! `mvcc_xpbd` is a **temporary bridge** (page steps XPBD; wire still samples Epoch Curr).
 //! Classification via `alchemy-shared-sim` [`EntityKind`] (x0030).
 //! Non-guarantees: Grab aim **rotation** follow (translation only); throw impulse;
-//! Rapier bit-exact parity; capsule Walk extrude; LBVH body-body contacts on host;
-//! non-uniform collider scale; Frame parent fields / pass-place Intent wiring.
+//! Rapier bit-exact parity; capsule Walk extrude; dirty delta / `sim_state` / PROTOCOL_PIN;
+//! non-uniform collider scale; Frame parent fields / pass-place Intent wiring;
+//! exact OBB box-box (sphere approx via LBVH); production default `mvcc_xpbd`;
+//! `mvcc_xpbd` cell_origin always 0（近傍デモ向け；遠方は f32 量子化）;
+//! sheet↔page 毎 tick 往復の zero-alloc（後続 dirty 前に計測）;
+//! Epoch 二重管理の解消（dirty / `sim_state` スライスで畳む）。
 
 use std::collections::{HashMap, HashSet};
 
@@ -18,18 +24,30 @@ use alchemy_protocol::{
     scene_entry_grabbable, scene_entry_quat_xyzw, scene_entry_scale, user_root_slots_from_entries,
     LocomotionMode, SceneEntry, DEFAULT_MOVE_SPEED,
 };
+#[cfg(test)]
+use alchemy_shared_sim::mvcc::KinematicPoseF32;
+use alchemy_shared_sim::mvcc::{HotPhysicsPage, PageXpbdAdapter, ENTITIES_PER_PAGE, NO_HOLDER};
+use alchemy_shared_sim::spatial::SceneBounds;
 use alchemy_shared_sim::xpbd::{self, XpbdWorld};
 use alchemy_shared_sim::{
-    classify_scene_entry, scene_entry_color_rgba, ColliderShape, EntityKind, EpochSnapshotPair,
-    FlatTopology, NodeHandle, ReadinessMask, SlotGraph, WorldTransformf64, PHYS_BALL_RADIUS,
+    classify_scene_entry, scene_entry_color_rgba, ColliderShape, EntityKind, EpochSheet,
+    EpochSnapshotPair, FlatTopology, NodeHandle, ReadinessMask, SlotGraph, WorldTransformf64,
+    PHYS_BALL_RADIUS,
 };
 
+pub use crate::sim_backend::SimBackendKind;
 pub use alchemy_protocol::{USER_ROOT_ENTITY_FIRST, USER_ROOT_SLOTS_MAX};
 
 const USER_ROOT_SENSOR_RADIUS: f32 = 0.3;
 const DEMO_GRAVITY_Y: f64 = -2.2;
 const DEFAULT_DT: f64 = 1.0 / 60.0;
 const GROUND_Y: f64 = 0.0;
+
+/// Page-path XPBD state for [`SimBackendKind::MvccXpbd`] (x00ad).
+struct HostMvccState {
+    adapter: PageXpbdAdapter,
+    page: HotPhysicsPage,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LocoMode {
@@ -75,7 +93,7 @@ struct ActiveGrab {
     offset: [f32; 3],
 }
 
-/// Authoritative host sim: EpochSheet + XPBD (x0093).
+/// Authoritative host sim: EpochSheet + XPBD (x0093 / x00ad backend switch).
 pub struct PhysicsWorld {
     world: XpbdWorld,
     topo: FlatTopology,
@@ -102,6 +120,9 @@ pub struct PhysicsWorld {
     /// Rows reset by [`Self::sanitize_non_finite_dynamics`] this tick (force delta = 0).
     sanitize_scratch: HashSet<u32>,
     active_row_scratch: Vec<u32>,
+    backend: SimBackendKind,
+    scene_bounds: SceneBounds,
+    mvcc: Option<HostMvccState>,
     pub barrier_ticks: u64,
     pub publishes: u64,
 }
@@ -140,9 +161,24 @@ fn support_half_y(shape: &ColliderShape) -> f64 {
 
 impl PhysicsWorld {
     /// Build physics from world-authored Manifest entries (x0027 / x004d / x0093).
+    /// Uses [`SimBackendKind::EpochXpbd`] (tests / callers that do not select a backend).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_entries(entries: &[SceneEntry], loco_mode: LocoMode, move_speed: f32) -> Self {
-        let slots = user_root_slots_from_entries(entries)
-            .unwrap_or_else(|e| panic!("invalid Manifest user_roots: {e}"));
+        Self::from_entries_with_backend(entries, loco_mode, move_speed, SimBackendKind::EpochXpbd)
+            .unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Like [`Self::from_entries`], with explicit [`SimBackendKind`] (x00ad).
+    ///
+    /// Failures (capacity / invalid Manifest roots) are `Err` — same class as bad
+    /// `ALCHEMY_SIM_BACKEND` (startup failure, not silent fallback).
+    pub fn from_entries_with_backend(
+        entries: &[SceneEntry],
+        loco_mode: LocoMode,
+        move_speed: f32,
+        backend: SimBackendKind,
+    ) -> Result<Self, String> {
+        let slots = user_root_slots_from_entries(entries).map_err(|e| e.to_string())?;
 
         let mut colors = HashMap::new();
         let mut scales: HashMap<u32, [f32; 3]> = HashMap::new();
@@ -274,6 +310,25 @@ impl PhysicsWorld {
         };
 
         let snapshots = EpochSnapshotPair::new(world.prev.clone(), world.curr.clone());
+        let scene_bounds = SceneBounds::default();
+        let mvcc = match backend {
+            SimBackendKind::EpochXpbd => None,
+            SimBackendKind::MvccXpbd => {
+                if world.curr.len() > ENTITIES_PER_PAGE {
+                    return Err(format!(
+                        "mvcc_xpbd requires sheet len ≤ {ENTITIES_PER_PAGE}, got {}",
+                        world.curr.len()
+                    ));
+                }
+                let mut adapter = PageXpbdAdapter::new(scene_bounds);
+                adapter.set_gravity(world.gravity);
+                adapter.set_substeps(world.substeps);
+                Some(HostMvccState {
+                    adapter,
+                    page: HotPhysicsPage::zeroed_page(),
+                })
+            }
+        };
         let mut host = Self {
             world,
             topo: FlatTopology::default(),
@@ -296,6 +351,9 @@ impl PhysicsWorld {
             ground_scratch: HashSet::new(),
             sanitize_scratch: HashSet::new(),
             active_row_scratch: Vec::new(),
+            backend,
+            scene_bounds,
+            mvcc,
             barrier_ticks: 0,
             publishes: 0,
         };
@@ -303,7 +361,11 @@ impl PhysicsWorld {
             .publish(host.world.prev.clone(), host.world.curr.clone());
         host.publishes = 1;
         host.barrier_ticks = 1;
-        host
+        Ok(host)
+    }
+
+    pub fn backend(&self) -> SimBackendKind {
+        self.backend
     }
 
     #[allow(dead_code)]
@@ -599,19 +661,26 @@ impl PhysicsWorld {
 
         let grab_targets = self.collect_grab_targets();
         xpbd::sync_prev_capacity(&mut self.world);
-        // Host barrier (not FrameBridge::tick): ground plane + frame_delta handoff live here.
-        // Restore Verlet prev from frame_delta so commit_prev does not kill velocity.
-        self.apply_frame_delta_to_prev();
         let start = self.world.curr.clone();
-        // Body-body LBVH contacts intentionally off (x0093); ground plane only.
-        xpbd::step(
-            &mut self.world,
-            &mut self.topo,
-            &[],
-            &grab_targets,
-            None,
-            dt,
-        );
+        match self.backend {
+            SimBackendKind::EpochXpbd => {
+                // Host barrier: restore Verlet prev from frame_delta (epoch path only).
+                // mvcc_xpbd rebuilds Prev inside PageXpbdAdapter::pull_page — do not dual-apply.
+                self.apply_frame_delta_to_prev();
+                // x00ad: body-body LBVH contacts on (x0093 had bounds: None).
+                xpbd::step(
+                    &mut self.world,
+                    &mut self.topo,
+                    &[],
+                    &grab_targets,
+                    Some(self.scene_bounds),
+                    dt,
+                );
+            }
+            SimBackendKind::MvccXpbd => {
+                self.step_mvcc_page(&grab_targets, dt);
+            }
+        }
         self.resolve_ground_plane();
         self.sanitize_non_finite_dynamics();
         // Re-run sleep against tick-start pose (step's update_sleeping saw Verlet prev).
@@ -633,6 +702,65 @@ impl PhysicsWorld {
         self.world.curr.clear_dirty();
         self.world.commit_prev_from_curr();
         self.barrier_ticks = self.barrier_ticks.wrapping_add(1);
+    }
+
+    /// Sync Epoch → page, XPBD+contacts+grabs on page, copy poses back (x00ad bridge).
+    fn step_mvcc_page(&mut self, grab_targets: &[(u32, [f64; 3])], dt: f64) {
+        let sub = self.world.substeps.max(1) as f32;
+        let inv_sub = 1.0 / sub;
+        // `grabs[]` is SSoT for page holder (not sheet GRABBED bit alone).
+        let mut holders = [NO_HOLDER; ENTITIES_PER_PAGE];
+        for slot in 0..self.slot_count {
+            let Some(g) = self.grabs[slot] else {
+                continue;
+            };
+            let held_id = self.boxes.entity_ids[g.index];
+            let Some(handle) = self.entity_rows.get(&held_id) else {
+                continue;
+            };
+            let row = handle.row_id as usize;
+            if row < ENTITIES_PER_PAGE {
+                holders[row] = slot as u8;
+            }
+        }
+        let mvcc = self
+            .mvcc
+            .as_mut()
+            .expect("mvcc_xpbd requires HostMvccState (constructed in from_entries_with_backend)");
+        mvcc.adapter.bounds = self.scene_bounds;
+        mvcc.adapter.set_gravity(self.world.gravity);
+        mvcc.adapter.set_substeps(self.world.substeps);
+        sync_sheet_to_page(
+            &self.world.curr,
+            &mut mvcc.page,
+            &mut mvcc.adapter,
+            inv_sub,
+            &holders,
+        );
+        mvcc.adapter
+            .step_page_with_grabs(&mut mvcc.page, grab_targets, dt);
+        sync_page_poses_to_sheet(&mvcc.page, &mut self.world.curr);
+    }
+
+    /// Test-only: quarantine check on the MVCC page face.
+    ///
+    /// **Not** production Ingress — the next [`Self::step_dt`] re-syncs from Epoch and
+    /// overwrites page writes. Page-first Intent lands with dirty / `sim_state` work.
+    #[cfg(test)]
+    pub fn try_ingest_mvcc_kinematic_for_test(
+        &mut self,
+        local_idx: usize,
+        pose: KinematicPoseF32,
+    ) -> bool {
+        let Some(mvcc) = self.mvcc.as_mut() else {
+            return false;
+        };
+        mvcc.page.try_set_kinematic_pose(local_idx, pose)
+    }
+
+    #[cfg(test)]
+    pub fn mvcc_page(&self) -> Option<&HotPhysicsPage> {
+        self.mvcc.as_ref().map(|m| &m.page)
     }
 
     /// Restore Verlet `prev` from last tick's **frame** displacement.
@@ -962,6 +1090,120 @@ pub fn user_root_color(slot: usize) -> (f32, f32, f32, f32) {
     (r, g, b, 1.0)
 }
 
+/// Copy live Epoch rows into a HotPhysicsPage for [`PageXpbdAdapter`].
+///
+/// `delta_scale` is typically `1 / substeps` so page Prev rebuild matches the
+/// epoch handoff (`curr - delta/substeps`) and avoids ×substeps velocity blow-up.
+///
+/// `holder_by_row[local]` is the Grab owner slot (`NO_HOLDER` if free) — must match
+/// host `grabs[]` (not hard-coded 0) so later `Entity.holder` wire stays honest.
+///
+/// **Near-origin only (x00ad):** `cell_origin` is forced to 0; world f64 is cast to
+/// local f32. Far-from-origin scenes need Directory cell origins (post–dirty).
+fn sync_sheet_to_page(
+    sheet: &EpochSheet,
+    page: &mut HotPhysicsPage,
+    adapter: &mut PageXpbdAdapter,
+    delta_scale: f32,
+    holder_by_row: &[u8; ENTITIES_PER_PAGE],
+) {
+    page.cell_origin_x = 0.0;
+    page.cell_origin_y = 0.0;
+    page.cell_origin_z = 0.0;
+    let n = sheet.len().min(ENTITIES_PER_PAGE);
+    for (idx, &holder) in holder_by_row.iter().enumerate() {
+        if idx >= n {
+            page.set_active(idx, false);
+            page.clear_holder(idx);
+            continue;
+        }
+        let mask = sheet.readiness[idx];
+        if mask.contains(ReadinessMask::TOMBSTONE) || !mask.contains(ReadinessMask::ALLOCATED) {
+            page.set_active(idx, false);
+            page.clear_holder(idx);
+            continue;
+        }
+        let xf = &sheet.world_transforms[idx];
+        if !xf.is_finite() {
+            page.quarantine_slot(idx);
+            continue;
+        }
+        let lx = xf.position[0] as f32;
+        let ly = xf.position[1] as f32;
+        let lz = xf.position[2] as f32;
+        let dx = xf.frame_delta_xyz[0] * delta_scale;
+        let dy = xf.frame_delta_xyz[1] * delta_scale;
+        let dz = xf.frame_delta_xyz[2] * delta_scale;
+        if !(lx.is_finite()
+            && ly.is_finite()
+            && lz.is_finite()
+            && dx.is_finite()
+            && dy.is_finite()
+            && dz.is_finite())
+        {
+            page.quarantine_slot(idx);
+            continue;
+        }
+        page.set_active(idx, true);
+        page.soa.pos_x[idx] = lx;
+        page.soa.pos_y[idx] = ly;
+        page.soa.pos_z[idx] = lz;
+        page.soa.delta_x[idx] = dx;
+        page.soa.delta_y[idx] = dy;
+        page.soa.delta_z[idx] = dz;
+        page.soa.inv_mass[idx] = xf.inv_mass as f32;
+        page.soa.rot_x[idx] = xf.rotation[0];
+        page.soa.rot_y[idx] = xf.rotation[1];
+        page.soa.rot_z[idx] = xf.rotation[2];
+        page.soa.rot_w[idx] = xf.rotation[3];
+        page.set_sleeping(idx, mask.contains(ReadinessMask::SLEEPING));
+        if holder != NO_HOLDER {
+            let _ = page.set_holder(idx, holder, 0);
+        } else {
+            page.clear_holder(idx);
+        }
+        adapter.colliders.set(idx, sheet.colliders[idx]);
+    }
+}
+
+/// Write page local poses back into Epoch Curr (f64 = cell_origin + local).
+fn sync_page_poses_to_sheet(page: &HotPhysicsPage, sheet: &mut EpochSheet) {
+    let ox = page.cell_origin_x;
+    let oy = page.cell_origin_y;
+    let oz = page.cell_origin_z;
+    let n = sheet.len().min(ENTITIES_PER_PAGE);
+    for idx in 0..n {
+        if !page.is_active(idx) {
+            continue;
+        }
+        let lx = page.soa.pos_x[idx];
+        let ly = page.soa.pos_y[idx];
+        let lz = page.soa.pos_z[idx];
+        if !(lx.is_finite() && ly.is_finite() && lz.is_finite()) {
+            continue;
+        }
+        let xf = &mut sheet.world_transforms[idx];
+        xf.position = [ox + f64::from(lx), oy + f64::from(ly), oz + f64::from(lz)];
+        xf.rotation = [
+            page.soa.rot_x[idx],
+            page.soa.rot_y[idx],
+            page.soa.rot_z[idx],
+            page.soa.rot_w[idx],
+        ];
+        // Poses only for all rows. SLEEPING write-back is DYNAMIC-only — kinematic
+        // user_roots must never pick up SLEEPING from the page adapter face.
+        let mut mask = sheet.readiness[idx];
+        if mask.is_ready(ReadinessMask::DYNAMIC) {
+            if page.is_sleeping(idx) {
+                mask = mask.with_bits(ReadinessMask::SLEEPING);
+            } else {
+                mask = mask.without_bits(ReadinessMask::SLEEPING);
+            }
+            sheet.readiness[idx] = mask;
+        }
+    }
+}
+
 /// Unit-test fixture mirroring `World.DemoScene` layout (x0079 shared vector).
 #[cfg(test)]
 pub fn demo_entries_for_test() -> Vec<SceneEntry> {
@@ -1141,7 +1383,7 @@ mod tests {
     fn four_slots_have_distinct_spawns() {
         let world = test_world();
         assert_eq!(world.user_root_slot_count(), 4);
-        assert!(USER_ROOT_SLOTS_MAX >= 5);
+        const { assert!(USER_ROOT_SLOTS_MAX >= 5) };
         assert_eq!(
             PhysicsWorld::user_root_entity_id(3),
             USER_ROOT_ENTITY_FIRST + 3
@@ -1695,6 +1937,225 @@ mod tests {
             xf2.position[0].abs() < 1.0 && xf2.position[2].abs() < 1.0,
             "post-sanitize must not fly away, got {:?}",
             xf2.position
+        );
+    }
+
+    #[test]
+    fn host_body_body_contacts_separate_overlapping_boxes() {
+        // P1-2 host: LBVH inequality contacts on (x00ad); boxes must not stay overlapping.
+        let mut world = test_world();
+        world.world.gravity = [0.0, 0.0, 0.0];
+        assert_eq!(world.backend(), SimBackendKind::EpochXpbd);
+
+        let id0 = world.boxes.entity_ids[0];
+        let id1 = world.boxes.entity_ids[1];
+        let r0 = world.entity_row(id0).unwrap().row_id as usize;
+        let r1 = world.entity_row(id1).unwrap().row_id as usize;
+        let half = world.boxes.half_extents[0];
+        for &row in &[r0, r1] {
+            let mask = world.world.curr.readiness[row];
+            world.world.curr.readiness[row] = mask
+                .with_bits(ReadinessMask::DYNAMIC)
+                .without_bits(ReadinessMask::SLEEPING | ReadinessMask::GRABBED);
+            world.world.curr.world_transforms[row].inv_mass = 1.0;
+            world.world.curr.world_transforms[row].frame_delta_xyz = [0.0, 0.0, 0.0];
+        }
+        world.world.curr.world_transforms[r0].position = [-0.1, 1.0, 0.0];
+        world.world.curr.world_transforms[r1].position = [0.1, 1.0, 0.0];
+
+        for _ in 0..40 {
+            world.step();
+        }
+
+        let a = world.world.curr.world_transforms[r0].position;
+        let b = world.world.curr.world_transforms[r1].position;
+        let dx = a[0] - b[0];
+        let dy = a[1] - b[1];
+        let dz = a[2] - b[2];
+        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+        let radius = (3.0_f64 * (half as f64).powi(2)).sqrt();
+        let min_sep = 2.0 * radius;
+        assert!(
+            dist + 1e-3 >= min_sep,
+            "host boxes still overlapping: dist={dist} min_sep={min_sep} a={a:?} b={b:?}"
+        );
+        assert!(a.iter().chain(b.iter()).all(|v| v.is_finite()));
+    }
+
+    fn test_world_mvcc() -> PhysicsWorld {
+        PhysicsWorld::from_entries_with_backend(
+            &demo_entries_for_test(),
+            LocoMode::Noclip,
+            DEFAULT_MOVE_SPEED,
+            SimBackendKind::MvccXpbd,
+        )
+        .expect("demo scene fits one MVCC page")
+    }
+
+    #[test]
+    fn mvcc_backend_steps_and_rejects_nan_ingest() {
+        let mut world = test_world_mvcc();
+        assert_eq!(world.backend(), SimBackendKind::MvccXpbd);
+        assert!(world.mvcc_page().is_some());
+
+        for _ in 0..30 {
+            world.step();
+        }
+        let (x, y, z) = world.moving_translation();
+        assert!(
+            x.is_finite() && y.is_finite() && z.is_finite(),
+            "mvcc_xpbd mesh must stay finite ({x},{y},{z})"
+        );
+
+        let page = world.mvcc_page().unwrap();
+        assert!(
+            page.active_mask.iter().any(|&w| w != 0),
+            "mvcc page should have active entities after step"
+        );
+
+        let nan = KinematicPoseF32::xyz_quat(f32::NAN, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+        assert!(
+            !world.try_ingest_mvcc_kinematic_for_test(0, nan),
+            "NaN kinematic ingest must be rejected"
+        );
+    }
+
+    #[test]
+    fn mvcc_backend_body_body_contacts_separate_boxes() {
+        let mut world = test_world_mvcc();
+        world.world.gravity = [0.0, 0.0, 0.0];
+        if let Some(mvcc) = world.mvcc.as_mut() {
+            mvcc.adapter.set_gravity([0.0, 0.0, 0.0]);
+        }
+
+        let id0 = world.boxes.entity_ids[0];
+        let id1 = world.boxes.entity_ids[1];
+        let r0 = world.entity_row(id0).unwrap().row_id as usize;
+        let r1 = world.entity_row(id1).unwrap().row_id as usize;
+        let half = world.boxes.half_extents[0];
+        for &row in &[r0, r1] {
+            let mask = world.world.curr.readiness[row];
+            world.world.curr.readiness[row] = mask
+                .with_bits(ReadinessMask::DYNAMIC)
+                .without_bits(ReadinessMask::SLEEPING | ReadinessMask::GRABBED);
+            world.world.curr.world_transforms[row].inv_mass = 1.0;
+            world.world.curr.world_transforms[row].frame_delta_xyz = [0.0, 0.0, 0.0];
+        }
+        world.world.curr.world_transforms[r0].position = [-0.1, 1.0, 0.0];
+        world.world.curr.world_transforms[r1].position = [0.1, 1.0, 0.0];
+
+        for _ in 0..40 {
+            world.step();
+        }
+
+        let a = world.world.curr.world_transforms[r0].position;
+        let b = world.world.curr.world_transforms[r1].position;
+        let dx = a[0] - b[0];
+        let dy = a[1] - b[1];
+        let dz = a[2] - b[2];
+        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+        let radius = (3.0_f64 * (half as f64).powi(2)).sqrt();
+        let min_sep = 2.0 * radius;
+        assert!(
+            dist + 1e-3 >= min_sep,
+            "mvcc host boxes still overlapping: dist={dist} min_sep={min_sep}"
+        );
+    }
+
+    #[test]
+    fn mvcc_ground_contact_tick_zeros_vertical_frame_delta() {
+        let mut world = PhysicsWorld::from_entries_with_backend(
+            &demo_entries_for_test(),
+            LocoMode::Walk,
+            DEFAULT_MOVE_SPEED,
+            SimBackendKind::MvccXpbd,
+        )
+        .unwrap();
+        let mesh_id = world.mesh_entity_id().unwrap();
+        let row = world.entity_row(mesh_id).unwrap().row_id as usize;
+        let min_y = GROUND_Y + PHYS_BALL_RADIUS as f64;
+        {
+            let xf = &mut world.world.curr.world_transforms[row];
+            xf.position = [0.0, min_y + 0.02, 0.0];
+            xf.frame_delta_xyz = [0.0, -1.0, 0.0];
+            let mask = world.world.curr.readiness[row];
+            world.world.curr.readiness[row] = mask.without_bits(ReadinessMask::SLEEPING);
+        }
+        world.step();
+        let y_after = world.world.curr.world_transforms[row].position[1];
+        let dy = world.world.curr.world_transforms[row].frame_delta_xyz[1];
+        assert!(
+            (y_after - min_y).abs() < 1e-9,
+            "mvcc contact tick must clamp to ground, y_after={y_after}"
+        );
+        assert!(
+            world.ground_scratch.contains(&(row as u32)),
+            "mvcc contact tick must mark row grounded"
+        );
+        assert!(
+            dy.abs() <= 1e-6,
+            "mvcc vertical frame_delta must be 0, got {dy}"
+        );
+    }
+
+    #[test]
+    fn mvcc_grab_hold_follows_aim_then_drops() {
+        let mut world = test_world_mvcc();
+        for _ in 0..120 {
+            world.step();
+        }
+        let id = 14u32;
+        let (bx, by, bz) = world.box_pose(4).0;
+        let aim0 = (bx - 0.1, by, bz - 0.2);
+        world.apply_grab(0, true, id, aim0);
+        assert_eq!(world.grab_entity_id(0), Some(id));
+        let row = world.entity_row(id).unwrap().row_id as usize;
+        world.step();
+        assert_eq!(
+            world.mvcc_page().unwrap().holder_at(row),
+            0,
+            "page holder must mirror Grab slot 0"
+        );
+        let aim1 = (aim0.0 + 3.0, aim0.1 + 2.5, aim0.2);
+        for _ in 0..10 {
+            world.apply_grab(0, true, id, aim1);
+            world.step();
+        }
+        let (x, y, z) = world.box_pose(4).0;
+        assert!(
+            (x - (bx + 3.0)).abs() < 0.05 && (y - (by + 2.5)).abs() < 0.05 && (z - bz).abs() < 0.05,
+            "mvcc expected grab follow, got ({x},{y},{z})"
+        );
+        world.apply_grab(0, false, 0, aim1);
+        assert!(world.grab_entity_id(0).is_none());
+        world.step();
+        assert_eq!(
+            world.mvcc_page().unwrap().holder_at(row),
+            NO_HOLDER,
+            "release must clear page holder"
+        );
+    }
+
+    #[test]
+    fn mvcc_page_holder_tracks_pass_held_slot() {
+        let mut world = test_world_mvcc();
+        for _ in 0..60 {
+            world.step();
+        }
+        let id = 14u32;
+        let (bx, by, bz) = world.box_pose(4).0;
+        let (x0, y0, z0) = world.user_root_translation(0);
+        world.teleport_user_root(1, (x0 + 0.5, y0, z0));
+        world.apply_grab(0, true, id, (bx, by, bz));
+        let row = world.entity_row(id).unwrap().row_id as usize;
+        world.step();
+        assert_eq!(world.mvcc_page().unwrap().holder_at(row), 0);
+        assert!(world.pass_held(0, 1));
+        world.step();
+        assert_eq!(
+            world.mvcc_page().unwrap().holder_at(row),
+            1,
+            "page holder must follow pass_held to slot 1"
         );
     }
 }
