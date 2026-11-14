@@ -216,6 +216,11 @@ fn solve_one(
     }
     let rest = c.target_distance as f64;
     let c_err = dist - rest;
+    // Inequality contact: only push apart when penetrating (dist < rest).
+    // Equality joints / springs still attract when too far.
+    if c.is_inequality() && c_err >= 0.0 {
+        return;
+    }
     let alpha = (c.compliance as f64) * alpha_scale;
     let denom = wa + wb + alpha;
     if denom == 0.0 {
@@ -264,7 +269,9 @@ pub fn grab_constraint_rows_into(sheet: &EpochSheet, out: &mut Vec<XpbdConstrain
     }
 }
 
-/// Convert overlapping pairs into non-penetration distance constraints (extends `out`).
+/// Convert overlapping pairs into inequality non-penetration constraints (extends `out`).
+///
+/// Separated bodies (`dist >= ra+rb`) are not pulled together (x00a8).
 pub fn contact_constraints_from_lbvh_into(
     sheet: &EpochSheet,
     lbvh: &FlatLbvh,
@@ -279,6 +286,7 @@ pub fn contact_constraints_from_lbvh_into(
             node_a: a,
             node_b: b,
             target_distance: ra + rb,
+            flags: XpbdConstraintRow::FLAG_INEQUALITY,
             ..Default::default()
         });
     }
@@ -721,6 +729,120 @@ mod tests {
         // radius estimate separation should push ball up relative to deep overlap
         assert!(y.is_finite());
         assert!(y > floor_y);
+    }
+
+    #[test]
+    fn contact_never_attracts() {
+        // Two spheres far apart with an inequality contact at rest=1 must not pull together.
+        let mut world = XpbdWorld::new(2);
+        let a = dynamic_at(&mut world.curr, [0.0, 0.0, 0.0]);
+        let b = dynamic_at(&mut world.curr, [5.0, 0.0, 0.0]);
+        sync_prev_capacity(&mut world);
+        world.prev = world.curr.clone();
+        let mut topo = FlatTopology::default();
+        let constraints = [XpbdConstraintRow {
+            node_a: a,
+            node_b: b,
+            target_distance: 1.0,
+            flags: XpbdConstraintRow::FLAG_INEQUALITY,
+            ..Default::default()
+        }];
+        color_constraints(&constraints, &mut topo);
+        for _ in 0..20 {
+            solve_distance_batches(&mut world.curr, &topo, &[], 1.0 / 60.0);
+        }
+        let pa = world.curr.world_transforms[a as usize].position;
+        let pb = world.curr.world_transforms[b as usize].position;
+        let dist =
+            ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2) + (pa[2] - pb[2]).powi(2)).sqrt();
+        assert!(
+            (dist - 5.0).abs() < 1e-6,
+            "inequality must not attract: dist={dist}"
+        );
+    }
+
+    #[test]
+    fn contact_never_attracts_via_lbvh_step() {
+        // Overlapping spheres: LBVH must emit FLAG_INEQUALITY rows, push apart, then stop
+        // (no pull-back once separated).
+        let mut world = XpbdWorld::new(2);
+        world.gravity = [0.0, 0.0, 0.0];
+        world.substeps = 8;
+        let a = dynamic_at(&mut world.curr, [-0.1, 0.0, 0.0]);
+        let b = dynamic_at(&mut world.curr, [0.1, 0.0, 0.0]);
+        let radius = 0.5_f32;
+        world.curr.colliders[a as usize] = ColliderShape {
+            shape_type: ColliderShape::SPHERE,
+            extents: [radius, 0.0, 0.0],
+        };
+        world.curr.colliders[b as usize] = ColliderShape {
+            shape_type: ColliderShape::SPHERE,
+            extents: [radius, 0.0, 0.0],
+        };
+        world.curr.readiness[a as usize] =
+            world.curr.readiness[a as usize].with_bits(ReadinessMask::COLLIDER);
+        world.curr.readiness[b as usize] =
+            world.curr.readiness[b as usize].with_bits(ReadinessMask::COLLIDER);
+        sync_prev_capacity(&mut world);
+        world.prev = world.curr.clone();
+
+        let bounds = SceneBounds {
+            min: [-10.0, -10.0, -10.0],
+            max: [10.0, 10.0, 10.0],
+        };
+        let tree = FlatLbvh::build_from_sheet(&world.curr, bounds);
+        let mut contacts = Vec::new();
+        contact_constraints_from_lbvh_into(&world.curr, &tree, &mut contacts);
+        assert!(
+            !contacts.is_empty(),
+            "overlapping spheres must produce LBVH contact rows"
+        );
+        assert!(
+            contacts.iter().all(|c| c.is_inequality()),
+            "every LBVH contact row must carry FLAG_INEQUALITY"
+        );
+
+        let mut topo = FlatTopology::default();
+        let dt = 1.0 / 60.0;
+        for _ in 0..40 {
+            step(&mut world, &mut topo, &[], &[], Some(bounds), dt);
+        }
+        let pa = world.curr.world_transforms[a as usize].position;
+        let pb = world.curr.world_transforms[b as usize].position;
+        let dist =
+            ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2) + (pa[2] - pb[2]).powi(2)).sqrt();
+        let min_sep = f64::from(radius) * 2.0;
+        assert!(
+            dist + 1e-3 >= min_sep,
+            "must separate overlapping spheres: dist={dist} min_sep={min_sep}"
+        );
+
+        // Place exactly at rest with zero frame_delta; inequality must not pull closer.
+        {
+            let xa = &mut world.curr.world_transforms[a as usize];
+            xa.position = [-f64::from(radius), 0.0, 0.0];
+            xa.frame_delta_xyz = [0.0, 0.0, 0.0];
+            let xb = &mut world.curr.world_transforms[b as usize];
+            xb.position = [f64::from(radius), 0.0, 0.0];
+            xb.frame_delta_xyz = [0.0, 0.0, 0.0];
+        }
+        world.prev = world.curr.clone();
+        for _ in 0..20 {
+            step(&mut world, &mut topo, &[], &[], Some(bounds), dt);
+        }
+        let pa2 = world.curr.world_transforms[a as usize].position;
+        let pb2 = world.curr.world_transforms[b as usize].position;
+        let dist2 =
+            ((pa2[0] - pb2[0]).powi(2) + (pa2[1] - pb2[1]).powi(2) + (pa2[2] - pb2[2]).powi(2))
+                .sqrt();
+        assert!(
+            dist2 + 1e-4 >= min_sep,
+            "resting contact must not attract: dist={dist2} min_sep={min_sep}"
+        );
+        assert!(
+            (dist2 - min_sep).abs() < 1e-3,
+            "resting spheres should stay near rest distance: dist={dist2}"
+        );
     }
 
     #[test]

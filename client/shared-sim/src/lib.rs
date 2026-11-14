@@ -9,7 +9,8 @@
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); CRDT / Zenoh / GPU wiring (client `epoch_view`);
 //! MVCC host/app wiring / dirty-delta codec (x0024; Phase 2/3; not V_ack/XOR);
-//! cross-arch determinism (Q2). SoA inertia SIMD building block is in [`mvcc`] (x00a5; not on tick path yet).
+//! cross-arch determinism (Q2). MVCC gate x00a6–x00a9 (layout/CoW/Directory/inequality/publish)
+//! is in [`mvcc`]; SoA inertia SIMD (x00a5) is not on the tick path yet.
 
 #![forbid(unsafe_code)]
 

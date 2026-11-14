@@ -8,6 +8,8 @@
 //! unit tests share this crate root; a thinner `alchemy-room-token` extract is a
 //! future option if fuzz CI cost or the public surface becomes painful.
 
+#![forbid(unsafe_code)]
+
 pub mod intent_rate;
 pub mod metrics;
 pub mod room_aead;

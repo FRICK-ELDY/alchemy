@@ -5,6 +5,8 @@
 //! optional Relay allocate (`RELAY_ALLOCATE_URL`); world-issued mtls via `EphemeralMtlsIdentity`.
 //! Non-guarantees: endpoint validation beyond string insert.
 
+#![forbid(unsafe_code)]
+
 mod allocate;
 mod ephemeral;
 

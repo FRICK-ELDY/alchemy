@@ -226,7 +226,7 @@ mod tests {
         prev.soa.pos_y[2] = 5.2;
         // Grabbed dynamic.
         curr.set_active(3, true);
-        curr.set_grabbed(3, true);
+        assert!(curr.set_holder(3, 0, 1));
         curr.soa.inv_mass[3] = 1.0;
         curr.soa.pos_x[3] = 9.0;
         prev.set_active(3, true);

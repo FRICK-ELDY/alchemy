@@ -5,6 +5,8 @@
 //! Non-guarantees: GUI/wgpu side effects; cryptographically valid old-seal JWT
 //! matrix (unit-tested in [`manifest_seal`]); WAN transport (see trust-probe WAN mode).
 
+#![forbid(unsafe_code)]
+
 mod gate;
 mod host_attestation;
 mod manifest;

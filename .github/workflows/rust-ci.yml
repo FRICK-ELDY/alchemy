@@ -98,6 +98,69 @@ jobs:
           libx11-dev libxcursor-dev libxi-dev libxrandr-dev
       - run: cargo test --workspace
 
+  # mvcc_xpbd / RCE: crate-root forbid must not regress (app XR intentionally excluded).
+  forbid-unsafe-roots:
+    name: "Rust — forbid(unsafe_code) crate roots"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Grep crate-root forbid
+        run: |
+          set -euo pipefail
+          # Required set (expand when new Safe Rust crates land). `client/app` excluded (OpenXR).
+          files=(
+            protocol/src/lib.rs
+            client/shared-sim/src/lib.rs
+            client/host-server/src/lib.rs
+            client/host-server/src/main.rs
+            client/trust/src/lib.rs
+            client/zenoh-connect/src/lib.rs
+          )
+          for f in "${files[@]}"; do
+            grep -q 'forbid(unsafe_code)' "$f" || { echo "missing forbid in $f"; exit 1; }
+          done
+          # Soft net: any other client/*/src/lib.rs (except app) without forbid fails.
+          while IFS= read -r -d '' f; do
+            case "$f" in
+              client/app/*) continue ;;
+              */fuzz/*) continue ;;
+            esac
+            for known in "${files[@]}"; do
+              if [ "$f" = "$known" ]; then continue 2; fi
+            done
+            if ! grep -q 'forbid(unsafe_code)' "$f"; then
+              echo "missing forbid in $f (add #![forbid(unsafe_code)] or exclude explicitly)"
+              exit 1
+            fi
+          done < <(find client -path '*/src/lib.rs' -print0)
+
+  # Quest priority: shared-sim must compile for aarch64-linux-android (x00a6 / mvcc Phase 1).
+  shared-sim-android-check:
+    name: "Rust — shared-sim aarch64-linux-android"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client -> target
+      - name: cargo check shared-sim (android)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          CC_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
+          AR_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
+        run: cargo check -p alchemy-shared-sim --target aarch64-linux-android
+
   # host cargo-fuzz: `.github/workflows/host-fuzz-ci.yml` (narrow paths).
   # x0068 / P1-1: relay-agent outside client workspace; sync with `make ci-relay`.
   relay-agent-check:

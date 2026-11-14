@@ -76,7 +76,7 @@ impl ColliderShape {
     pub const STATIC_SDF_ATOM: u32 = 4;
 }
 
-/// Unified XPBD constraint row (joint / Grab / IK / spring).
+/// Unified XPBD constraint row (joint / Grab / IK / spring / contact).
 #[repr(C, align(32))]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
 pub struct XpbdConstraintRow {
@@ -88,7 +88,19 @@ pub struct XpbdConstraintRow {
     pub damping: f32,
     pub anchor_offset_a: [f32; 3],
     pub anchor_offset_b: [f32; 3],
-    pub _pad: [u32; 5],
+    /// Bit 0: inequality contact — skip when `dist >= target_distance` (no attract).
+    pub flags: u32,
+    pub _pad: [u32; 4],
+}
+
+impl XpbdConstraintRow {
+    /// Inequality (non-penetration) contact constraint.
+    pub const FLAG_INEQUALITY: u32 = 1;
+
+    #[inline]
+    pub fn is_inequality(self) -> bool {
+        (self.flags & Self::FLAG_INEQUALITY) != 0
+    }
 }
 
 /// High-precision world transform (binary64 position + XPBD state).
