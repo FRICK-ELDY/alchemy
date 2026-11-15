@@ -776,7 +776,7 @@ impl HostLoop {
             }
             let w = self.publish_stats.snapshot_and_reset();
             log::info!(
-                "physics: steps={} coin=({mx:.3},{my:.3},{mz:.3}) {roots}; xpbd barriers={} pubs={} rows={}; delta: frames={} upsert_entities={} skipped_empty={} coalesce={} net_tick={} cell_ok={} cell_fail={}",
+                "physics: steps={} coin=({mx:.3},{my:.3},{mz:.3}) {roots}; xpbd barriers={} pubs={} rows={}; delta: frames={} upsert_entities={} skipped_empty={} coalesce={} net_tick={} cell_ok={} cell_fail={} cell_skip={}",
                 self.physics_steps_logged,
                 self.physics.barrier_ticks,
                 self.physics.publishes,
@@ -788,6 +788,7 @@ impl HostLoop {
                 w.net_tick,
                 w.cell_ok,
                 w.cell_fail,
+                w.cell_skip,
             );
             self.physics_steps_logged = 0;
             self.last_log = Instant::now();

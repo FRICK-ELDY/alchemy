@@ -74,11 +74,11 @@ use alchemy_protocol::wire_crypto::{
     sim_state_entities_finite, verify_frame, verify_sim_state, SigningKey,
 };
 use alchemy_protocol::{
-    frame_cell_key, frame_key, host_control_key, input_buttons, input_key,
-    liveliness_binding_from_key, liveliness_wildcard, manifest_key, presence_key,
-    protocol_pin_matches, sim_state_key, snapshot_key, user_root_slots_from_entries,
-    validate_room_id, InputEvent, LocomotionConfig, LocomotionMode, Message, PresenceState,
-    RenderFrame, SimEntity, SimState, DEFAULT_MOVE_SPEED, PROTOCOL_PIN, USER_ROOT_SLOTS_MAX,
+    frame_key, host_control_key, input_buttons, input_key, liveliness_binding_from_key,
+    liveliness_wildcard, manifest_key, presence_key, protocol_pin_matches, sim_state_key,
+    snapshot_key, user_root_slots_from_entries, validate_room_id, InputEvent, LocomotionConfig,
+    LocomotionMode, Message, PresenceState, RenderFrame, SimEntity, SimState, DEFAULT_MOVE_SPEED,
+    PROTOCOL_PIN, USER_ROOT_SLOTS_MAX,
 };
 use anyhow::{Context, Result};
 use finite::{input_event_is_finite, sanitize_release_velocity};
@@ -776,8 +776,8 @@ fn main() -> Result<()> {
     }
     let manifest_key_expr = manifest_key(&room_id, &wire_cap);
     let frame_key_expr = frame_key(&room_id, &wire_cap);
-    // x00be: origin cell dual-publish (host cell_origin≈0; Room frame remains tick authority).
-    let frame_cell_key_expr = frame_cell_key(&room_id, &wire_cap, 0, 0, 0);
+    // x00c0: `…/frame/cell/{cx}_{cy}_{cz}` publishers are declared on demand per dirty CellId.
+    let frame_cell_interest = format!("{frame_key_expr}/cell/*");
     let input_key_expr = input_key(&room_id, &wire_cap);
     let presence_key_expr = presence_key(&room_id, &wire_cap);
     let snapshot_key_expr = snapshot_key(&room_id, &wire_cap);
@@ -787,7 +787,7 @@ fn main() -> Result<()> {
     let boot_mode = HostBootMode::from_env().map_err(anyhow::Error::msg)?;
 
     log::info!(
-        "host-server x004e starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} boot_mode={boot_mode:?} manifest={manifest_key_expr} frame={frame_key_expr} frame_cell={frame_cell_key_expr} snapshot={snapshot_key_expr} sim_state={sim_state_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} wire_cap_len={} user_root_band={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
+        "host-server x004e starting; protocol_pin={PROTOCOL_PIN} physics_hz={PHYSICS_HZ} net_hz={NET_HZ} boot_mode={boot_mode:?} manifest={manifest_key_expr} frame={frame_key_expr} frame_cell={frame_cell_interest} snapshot={snapshot_key_expr} sim_state={sim_state_key_expr} input={input_key_expr} presence={presence_key_expr} liveliness={liveliness_key_expr} host_control={host_control_key_expr}({host_control_mode}) world={world_url} auth={auth_url} room={room_id} wire_cap_len={} user_root_band={USER_ROOT_ENTITY_FIRST}..{} presence_ttl_secs={}",
         wire_cap.len(),
         USER_ROOT_ENTITY_FIRST + USER_ROOT_SLOTS_MAX as u32 - 1,
         PRESENCE_SLOT_TTL.as_secs()
@@ -931,10 +931,6 @@ fn main() -> Result<()> {
         .declare_publisher(frame_key_expr)
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_publisher frame failed: {e}"))?;
-    let frame_cell_pub = session
-        .declare_publisher(frame_cell_key_expr)
-        .wait()
-        .map_err(|e| anyhow::anyhow!("declare_publisher frame_cell failed: {e}"))?;
 
     let mut empty_presence = PresenceState {
         revision: 0,
@@ -1038,7 +1034,8 @@ fn main() -> Result<()> {
         manifest_pub,
         presence_pub,
         frame_pub,
-        frame_cell_pub,
+        session: session.clone(),
+        wire_cap: wire_cap.clone(),
         snapshot_cache: Arc::clone(&snapshot_cache),
         host_key: host_signing_key.clone(),
         room_id: room_id.clone(),

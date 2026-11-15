@@ -324,7 +324,7 @@ pub const LOCAL_ROOM_KEY: [u8; wire_aead::ROOM_KEY_LEN] = *b"alchemy-local-room-
 /// Default Zenoh key for local room frames (high-frequency pose delta).
 pub const FRAME_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/frame";
 
-/// Local dual-publish cell frame at origin cell `0_0_0` (x00be Spatial Interest).
+/// Local origin cell frame key `…/frame/cell/0_0_0` (x00be; x00c0 publishes per dirty cell).
 pub const FRAME_CELL_KEY_LOCAL_ORIGIN: &str =
     "alchemy/dev/room/local/localdevwirecap00000001/frame/cell/0_0_0";
 
@@ -727,12 +727,48 @@ pub enum FrameTickDecision {
 /// Monotonic forward only: `tick <= prev` → [`FrameTickDecision::DropStale`].
 /// Host uses `wrapping_add` after each **publish**, but u64 wrap is not handled here
 /// (would look like a huge rewind → DropStale until Manifest/snapshot resets `last`).
+///
+/// Cell interest frames use this strict gate. Room frames under Spatial Interest 併読
+/// use [`decide_room_frame_tick`] so a late Room can override a partial cell same tick.
 pub fn decide_frame_tick(last: Option<u64>, tick: u64, max_gap: u64) -> FrameTickDecision {
     let Some(prev) = last else {
         return FrameTickDecision::Apply;
     };
     if tick <= prev {
         return FrameTickDecision::DropStale;
+    }
+    let advance = tick - prev;
+    if advance <= max_gap {
+        FrameTickDecision::Apply
+    } else {
+        FrameTickDecision::ResyncSnapshot
+    }
+}
+
+/// Room `…/frame` tick gate under Spatial Interest 併読 (x00c0).
+///
+/// Same as [`decide_frame_tick`], except `tick == prev` **Applies** when the previous
+/// commit was a partial cell (`last_from_room == false`), so Room full dirty + removes
+/// can override. When `last_from_room` is already true, same tick stays [`DropStale`]
+/// (duplicate Room / snapshot-stamped tick regression guard · x0024).
+pub fn decide_room_frame_tick(
+    last: Option<u64>,
+    tick: u64,
+    max_gap: u64,
+    last_from_room: bool,
+) -> FrameTickDecision {
+    let Some(prev) = last else {
+        return FrameTickDecision::Apply;
+    };
+    if tick < prev {
+        return FrameTickDecision::DropStale;
+    }
+    if tick == prev {
+        return if last_from_room {
+            FrameTickDecision::DropStale
+        } else {
+            FrameTickDecision::Apply
+        };
     }
     let advance = tick - prev;
     if advance <= max_gap {
@@ -1440,6 +1476,27 @@ mod tests {
         assert_eq!(
             decide_frame_tick(Some(10), 13, 2),
             FrameTickDecision::ResyncSnapshot
+        );
+    }
+
+    /// x00c0: Room may re-apply same tick only when previous commit was partial cell.
+    #[test]
+    fn decide_room_frame_tick_overrides_partial_cell() {
+        assert_eq!(
+            decide_room_frame_tick(Some(10), 10, FRAME_TICK_GAP_RESYNC, false),
+            FrameTickDecision::Apply
+        );
+        assert_eq!(
+            decide_room_frame_tick(Some(10), 10, FRAME_TICK_GAP_RESYNC, true),
+            FrameTickDecision::DropStale
+        );
+        assert_eq!(
+            decide_room_frame_tick(Some(10), 9, FRAME_TICK_GAP_RESYNC, false),
+            FrameTickDecision::DropStale
+        );
+        assert_eq!(
+            decide_room_frame_tick(Some(10), 11, FRAME_TICK_GAP_RESYNC, true),
+            FrameTickDecision::Apply
         );
     }
 }

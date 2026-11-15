@@ -11,15 +11,19 @@
 //! release) so the steady path does not `Vec::with_capacity` each net tick.
 //! `put` failure on Room `…/frame` is fail-closed via `process::exit(78)` (same
 //! severity as former main-loop `?`, without returning to physics).
-//! x00be: after a successful Room frame put, the same sealed bytes are soft-put to
-//! `…/frame/cell/0_0_0` (dual-publish); cell put failure is logged + counted and
-//! does **not** kill the Room path.
+//! x00c0: after a successful Room frame put, dirty upserts are bucketed by
+//! [`alchemy_shared_sim::mvcc::CellId`] and each non-empty cell is soft-put as a
+//! **separately sealed** `…/frame/cell/{cx}_{cy}_{cz}` frame (same `net_tick`).
+//! Cell puts omit `removes` (Room remains authority); cell seal/put failure and LRU
+//! eviction are logged + counted and do **not** kill the Room path.
 //! Non-guarantees: rkyv/bytemuck wire; Prometheus; backpressure that stalls physics;
 //! draining pending jobs / joining the worker on `stop()` (process exit may drop
 //! in-flight puts); Manifest logical (non-bytes) jobs — sealed bytes pass through;
 //! zero-alloc encode/AEAD/Zenoh; pooling of `removes` / upsert `Entity` vecs;
-//! cell put reachability; multi-cell publish; client cell subscription.
+//! zero-clone cell upsert packing (cell path still clones `Entity` for sign/seal);
+//! cell put reachability; cell exit removes; client default cell-only sub.
 
+use alchemy_protocol::frame_cell_key;
 use alchemy_protocol::wire_aead::AeadKind;
 use alchemy_protocol::wire_crypto::{sign_frame, sign_presence, SigningKey};
 use alchemy_protocol::{Entity, Message, PresenceState, RenderFrame};
@@ -30,7 +34,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use zenoh::Wait;
 
-use alchemy_shared_sim::mvcc::BITMASK_WORDS;
+use alchemy_shared_sim::mvcc::{CellId, BITMASK_WORDS};
+
+/// Max cached cell-frame publishers (x00c0). Overflow: declare the new cell, then **LRU-evict**.
+pub const CELL_PUBLISHER_CACHE_MAX: usize = 64;
 
 use crate::pose_delta;
 use crate::wire_tick;
@@ -426,15 +433,17 @@ pub struct PublishStats {
     pub empty_delta_frames: AtomicU64,
     pub coalesce_frames: AtomicU64,
     pub net_tick: AtomicU64,
-    /// Successful dual-puts to `…/frame/cell/0_0_0` (x00be).
+    /// Successful soft-puts to `…/frame/cell/…` (x00c0 multi-cell).
     pub cell_publishes: AtomicU64,
-    /// Soft-fail count for cell dual-publish (Room path still advanced).
+    /// Soft-fail count for cell put (Room path still advanced).
     pub cell_publish_failures: AtomicU64,
+    /// LRU evictions when publisher cache is at [`CELL_PUBLISHER_CACHE_MAX`] (x00c0).
+    pub cell_publish_skips: AtomicU64,
     /// In-flight dirty masks to OR back on the physics thread after empty/fail put (x00b1).
     pub wire_dirty_restores: Mutex<Vec<[u64; BITMASK_WORDS]>>,
 }
 
-/// 1s window snapshot from [`PublishStats::snapshot_and_reset`] (x00be adds cell dual-publish).
+/// 1s window snapshot from [`PublishStats::snapshot_and_reset`] (x00c0 multi-cell).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PublishStatsWindow {
     pub publishes: u64,
@@ -445,6 +454,7 @@ pub struct PublishStatsWindow {
     pub net_tick: u64,
     pub cell_ok: u64,
     pub cell_fail: u64,
+    pub cell_skip: u64,
 }
 
 impl PublishStats {
@@ -457,6 +467,7 @@ impl PublishStats {
             net_tick: self.net_tick.load(Ordering::Relaxed),
             cell_ok: self.cell_publishes.swap(0, Ordering::Relaxed),
             cell_fail: self.cell_publish_failures.swap(0, Ordering::Relaxed),
+            cell_skip: self.cell_publish_skips.swap(0, Ordering::Relaxed),
         }
     }
 }
@@ -470,14 +481,152 @@ pub struct NetworkWorkerConfig {
     pub manifest_pub: zenoh::pubsub::Publisher<'static>,
     pub presence_pub: zenoh::pubsub::Publisher<'static>,
     pub frame_pub: zenoh::pubsub::Publisher<'static>,
-    /// Origin cell dual-publish (`…/frame/cell/0_0_0` · x00be). Soft-fail only.
-    pub frame_cell_pub: zenoh::pubsub::Publisher<'static>,
+    /// Zenoh session for on-demand cell publishers (x00c0).
+    pub session: zenoh::Session,
+    /// Room wire_cap for [`frame_cell_key`].
+    pub wire_cap: String,
     pub snapshot_cache: Arc<Mutex<RenderFrame>>,
     pub host_key: SigningKey,
     /// Room id for AEAD AAD (x0069).
     pub room_id: String,
     /// Shared Room AEAD keys (current + prev grace · x007e).
     pub room_aead: host_server::room_aead::SharedRoomAead,
+}
+
+/// One cached cell publisher + last-use stamp for clock LRU (x00c0).
+struct CellPublisherEntry {
+    pub_: zenoh::pubsub::Publisher<'static>,
+    last_used: u64,
+}
+
+/// Pure LRU pick used by [`CellPublisherCache::evict_lru`] (Zenoh-free · x00c0).
+fn pick_lru_victim<'a>(entries: impl IntoIterator<Item = (&'a [i32; 3], u64)>) -> Option<[i32; 3]> {
+    entries
+        .into_iter()
+        .min_by_key(|(_, last_used)| *last_used)
+        .map(|(cell, _)| *cell)
+}
+
+/// Evicts needed after a **successful** declare before insert (`len` → at most `cap - 1`).
+fn lru_evicts_before_insert(current_len: usize, cap: usize) -> usize {
+    if cap == 0 {
+        return current_len;
+    }
+    current_len.saturating_sub(cap - 1)
+}
+
+/// Cached cell-frame publishers with LRU eviction at [`CELL_PUBLISHER_CACHE_MAX`] (x00c0).
+///
+/// Cap is **concurrent active cell publishers**, not lifetime unique cells. Declare
+/// succeeds first; only then is an LRU victim dropped if at capacity (declare failure
+/// never shrinks the cache). Touch is O(1) via a monotonic clock stamp.
+struct CellPublisherCache {
+    session: zenoh::Session,
+    room_id: String,
+    wire_cap: String,
+    pubs: HashMap<[i32; 3], CellPublisherEntry>,
+    /// Monotonic stamp; bumped on every successful touch / insert.
+    use_clock: u64,
+    /// Concurrent publisher cap (production: [`CELL_PUBLISHER_CACHE_MAX`]).
+    cap: usize,
+}
+
+impl CellPublisherCache {
+    fn new(session: zenoh::Session, room_id: String, wire_cap: String) -> Self {
+        Self::with_cap(session, room_id, wire_cap, CELL_PUBLISHER_CACHE_MAX)
+    }
+
+    fn with_cap(session: zenoh::Session, room_id: String, wire_cap: String, cap: usize) -> Self {
+        Self {
+            session,
+            room_id,
+            wire_cap,
+            pubs: HashMap::new(),
+            use_clock: 0,
+            cap: cap.max(1),
+        }
+    }
+
+    fn touch(&mut self, cell: [i32; 3]) {
+        self.use_clock = self.use_clock.wrapping_add(1);
+        if let Some(entry) = self.pubs.get_mut(&cell) {
+            entry.last_used = self.use_clock;
+        }
+    }
+
+    /// Drop the least-recently used entry (O(n), n ≤ cap; rare path).
+    fn evict_lru(&mut self, stats: &PublishStats) {
+        let Some(victim) = pick_lru_victim(self.pubs.iter().map(|(k, e)| (k, e.last_used))) else {
+            return;
+        };
+        self.pubs.remove(&victim);
+        stats.cell_publish_skips.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Ready publisher, or `None` on declare failure (caller counts fail).
+    /// At capacity: declare first, then LRU-evict to make room, then insert.
+    fn publisher_for(
+        &mut self,
+        cell: [i32; 3],
+        stats: &PublishStats,
+    ) -> Option<&zenoh::pubsub::Publisher<'static>> {
+        if self.pubs.contains_key(&cell) {
+            self.touch(cell);
+            return self.pubs.get(&cell).map(|e| &e.pub_);
+        }
+        let key = frame_cell_key(&self.room_id, &self.wire_cap, cell[0], cell[1], cell[2]);
+        let pub_ = match self.session.declare_publisher(key).wait() {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!(
+                    "frame_cell declare_publisher failed for {}_{}_{}: {e}",
+                    cell[0],
+                    cell[1],
+                    cell[2]
+                );
+                stats.cell_publish_failures.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+        };
+        for _ in 0..lru_evicts_before_insert(self.pubs.len(), self.cap) {
+            self.evict_lru(stats);
+        }
+        self.use_clock = self.use_clock.wrapping_add(1);
+        self.pubs.insert(
+            cell,
+            CellPublisherEntry {
+                pub_,
+                last_used: self.use_clock,
+            },
+        );
+        self.pubs.get(&cell).map(|e| &e.pub_)
+    }
+}
+
+/// Index dirty upserts by delivery cell (`CellId` / `CELL_SIZE_M=64` center origin · x00c0).
+///
+/// Guarantees: empty input → empty map; indices refer into the caller's slice (no Entity clone).
+/// Non-guarantees: stable iteration order; cell-exit removes.
+pub fn bucket_upsert_indices_by_cell(upserts: &[Entity]) -> HashMap<[i32; 3], Vec<usize>> {
+    let mut buckets: HashMap<[i32; 3], Vec<usize>> = HashMap::new();
+    for (i, e) in upserts.iter().enumerate() {
+        let cell = CellId::from_world_f64(e.x, e.y, e.z).0;
+        buckets.entry(cell).or_default().push(i);
+    }
+    buckets
+}
+
+/// Test helper: materialize [`bucket_upsert_indices_by_cell`] into owned Entities.
+#[cfg(test)]
+fn bucket_upserts_by_cell(upserts: &[Entity]) -> HashMap<[i32; 3], Vec<Entity>> {
+    let indices = bucket_upsert_indices_by_cell(upserts);
+    indices
+        .into_iter()
+        .map(|(cell, idxs)| {
+            let ents = idxs.into_iter().map(|i| upserts[i]).collect();
+            (cell, ents)
+        })
+        .collect()
 }
 
 fn to_entity(id: u32, pose: Pose) -> Entity {
@@ -540,10 +689,10 @@ fn put_or_die(label: &str, pub_: &zenoh::pubsub::Publisher<'_>, bytes: Vec<u8>) 
     }
 }
 
-/// Soft put for Spatial Interest cell dual-publish (x00be). Does not exit the process.
+/// Soft put for Spatial Interest cell frame (x00be/x00c0). Does not exit the process.
 fn put_soft(label: &str, pub_: &zenoh::pubsub::Publisher<'_>, bytes: Vec<u8>) -> bool {
     if let Err(e) = pub_.put(bytes).wait() {
-        log::warn!("{label} dual-publish failed (Room path kept): {e}");
+        log::warn!("{label} soft-put failed (Room path kept): {e}");
         return false;
     }
     true
@@ -560,6 +709,22 @@ fn seal_or_die(
         Err(e) => {
             log::error!("AEAD seal {kind:?} failed: {e}");
             std::process::exit(78);
+        }
+    }
+}
+
+/// Soft seal for cell frames after Room put succeeded (x00c0). Never exits the process.
+fn seal_soft(
+    kind: AeadKind,
+    room_id: &str,
+    room_aead: &host_server::room_aead::SharedRoomAead,
+    plaintext: Vec<u8>,
+) -> Option<Vec<u8>> {
+    match host_server::room_aead::seal_shared(room_aead, room_id, kind, &plaintext) {
+        Ok(env) => Some(env),
+        Err(e) => {
+            log::warn!("AEAD seal {kind:?} soft-failed (Room path kept): {e}");
+            None
         }
     }
 }
@@ -673,7 +838,7 @@ impl WorkerState {
     fn put_signed_frame(
         &mut self,
         frame_pub: &zenoh::pubsub::Publisher<'_>,
-        frame_cell_pub: &zenoh::pubsub::Publisher<'_>,
+        cell_pubs: &mut CellPublisherCache,
         key: &SigningKey,
         room_id: &str,
         room_aead: &host_server::room_aead::SharedRoomAead,
@@ -686,8 +851,11 @@ impl WorkerState {
         scene_rev: u64,
     ) {
         let upsert_len = upserts.len() as u64;
+        // Index buckets before moving upserts into the Room frame (x00c0).
+        let cell_buckets = bucket_upsert_indices_by_cell(&upserts);
+        let tick = self.net_tick;
         let mut frame = RenderFrame {
-            tick: self.net_tick,
+            tick,
             host_time_ms,
             upserts,
             removes,
@@ -699,14 +867,44 @@ impl WorkerState {
         };
         sign_frame(key, &mut frame);
         let env = seal_or_die(AeadKind::Frame, room_id, room_aead, frame.encode_to_vec());
-        // Room frame is tick authority: fail-closed before dual-publish (x00be).
-        let cell_env = env.clone();
+        // Room frame is tick authority: fail-closed before cell soft-puts (x00be/x00c0).
         put_or_die("frame", frame_pub, env);
-        if put_soft("frame_cell", frame_cell_pub, cell_env) {
-            stats.cell_publishes.fetch_add(1, Ordering::Relaxed);
-        } else {
-            stats.cell_publish_failures.fetch_add(1, Ordering::Relaxed);
+
+        // Cell path: separately sealed per-cell dirty; no removes / no acked watermark
+        // (Room carries those; client applies pose upserts only on cell interest).
+        for (cell, idxs) in cell_buckets {
+            let Some(cell_pub) = cell_pubs.publisher_for(cell, stats) else {
+                continue;
+            };
+            let cell_upserts: Vec<Entity> = idxs.iter().map(|&i| frame.upserts[i]).collect();
+            let mut cell_frame = RenderFrame {
+                tick,
+                host_time_ms,
+                upserts: cell_upserts,
+                removes: vec![],
+                host_sig: vec![],
+                sim_tick,
+                redundancy: 0,
+                acked_intent_seq: vec![],
+                scene_rev,
+            };
+            sign_frame(key, &mut cell_frame);
+            let Some(cell_env) = seal_soft(
+                AeadKind::Frame,
+                room_id,
+                room_aead,
+                cell_frame.encode_to_vec(),
+            ) else {
+                stats.cell_publish_failures.fetch_add(1, Ordering::Relaxed);
+                continue;
+            };
+            if put_soft("frame_cell", cell_pub, cell_env) {
+                stats.cell_publishes.fetch_add(1, Ordering::Relaxed);
+            } else {
+                stats.cell_publish_failures.fetch_add(1, Ordering::Relaxed);
+            }
         }
+
         stats
             .upsert_entities
             .fetch_add(upsert_len, Ordering::Relaxed);
@@ -720,7 +918,7 @@ impl WorkerState {
     fn handle_frame(
         &mut self,
         frame_pub: &zenoh::pubsub::Publisher<'_>,
-        frame_cell_pub: &zenoh::pubsub::Publisher<'_>,
+        cell_pubs: &mut CellPublisherCache,
         key: &SigningKey,
         room_id: &str,
         room_aead: &host_server::room_aead::SharedRoomAead,
@@ -774,7 +972,7 @@ impl WorkerState {
             let remove_ids = removes.clone();
             self.put_signed_frame(
                 frame_pub,
-                frame_cell_pub,
+                cell_pubs,
                 key,
                 room_id,
                 room_aead,
@@ -880,7 +1078,7 @@ impl WorkerState {
         let remove_ids = removes.clone();
         self.put_signed_frame(
             frame_pub,
-            frame_cell_pub,
+            cell_pubs,
             key,
             room_id,
             room_aead,
@@ -947,12 +1145,14 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
                 manifest_pub,
                 presence_pub,
                 frame_pub,
-                frame_cell_pub,
+                session,
+                wire_cap,
                 snapshot_cache,
                 host_key,
                 room_id,
                 room_aead,
             } = config;
+            let mut cell_pubs = CellPublisherCache::new(session, room_id.clone(), wire_cap);
             let mut state = WorkerState {
                 last_sent: HashMap::new(),
                 net_tick: 0,
@@ -961,7 +1161,7 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
                 deferred_catchup: false,
             };
             log::info!(
-                "network worker ready (Zenoh put off physics thread; AEAD on; cell dual-publish x00be)"
+                "network worker ready (Zenoh put off physics thread; AEAD on; cell dirty filter x00c0)"
             );
             while let Some((frame, presence, manifest)) = hub_w.take_batch() {
                 if let Some(job) = manifest {
@@ -973,7 +1173,7 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
                 if let Some(sample) = frame {
                     state.handle_frame(
                         &frame_pub,
-                        &frame_cell_pub,
+                        &mut cell_pubs,
                         &host_key,
                         &room_id,
                         &room_aead,
@@ -995,13 +1195,14 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
 mod tests {
     use super::*;
 
-    /// x00be: 1s window swaps cell dual-publish counters with Room delta stats.
+    /// x00c0: 1s window swaps cell soft-put / skip counters with Room delta stats.
     #[test]
     fn snapshot_and_reset_includes_cell_window() {
         let stats = PublishStats::default();
         stats.publishes.store(3, Ordering::Relaxed);
         stats.cell_publishes.store(2, Ordering::Relaxed);
         stats.cell_publish_failures.store(1, Ordering::Relaxed);
+        stats.cell_publish_skips.store(4, Ordering::Relaxed);
         stats.net_tick.store(9, Ordering::Relaxed);
         let w = stats.snapshot_and_reset();
         assert_eq!(
@@ -1014,12 +1215,184 @@ mod tests {
                 net_tick: 9,
                 cell_ok: 2,
                 cell_fail: 1,
+                cell_skip: 4,
             }
         );
         assert_eq!(stats.publishes.load(Ordering::Relaxed), 0);
         assert_eq!(stats.cell_publishes.load(Ordering::Relaxed), 0);
         assert_eq!(stats.cell_publish_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.cell_publish_skips.load(Ordering::Relaxed), 0);
         assert_eq!(stats.net_tick.load(Ordering::Relaxed), 9);
+    }
+
+    #[test]
+    fn pick_lru_victim_selects_oldest_stamp() {
+        let stamps = [([0, 0, 0], 1u64), ([1, 0, 0], 5u64), ([2, 0, 0], 3u64)];
+        assert_eq!(
+            pick_lru_victim(stamps.iter().map(|(c, t)| (c, *t))),
+            Some([0, 0, 0])
+        );
+        assert_eq!(pick_lru_victim(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn lru_evicts_before_insert_matches_declare_then_evict() {
+        assert_eq!(lru_evicts_before_insert(0, 64), 0);
+        assert_eq!(lru_evicts_before_insert(63, 64), 0);
+        assert_eq!(lru_evicts_before_insert(64, 64), 1);
+        assert_eq!(lru_evicts_before_insert(65, 64), 2);
+        // Failed declare never reaches this helper (no shrink).
+    }
+
+    /// Exercises [`CellPublisherCache::evict_lru`] via declare-then-evict with cap=2.
+    #[test]
+    fn cell_publisher_cache_declare_then_evicts_lru() {
+        use alchemy_protocol::LOCAL_WIRE_CAP;
+        use zenoh::Config;
+        use zenoh::Wait;
+
+        let mut config = Config::default();
+        config.insert_json5("mode", r#""peer""#).expect("mode");
+        config
+            .insert_json5("listen/endpoints", r#"["tcp/127.0.0.1:0"]"#)
+            .expect("listen");
+        config
+            .insert_json5("scouting/multicast/enabled", "false")
+            .expect("scouting");
+        let session = zenoh::open(config).wait().expect("zenoh open");
+        let stats = PublishStats::default();
+        let mut cache =
+            CellPublisherCache::with_cap(session, "local".into(), LOCAL_WIRE_CAP.into(), 2);
+
+        assert!(cache.publisher_for([0, 0, 0], &stats).is_some());
+        assert!(cache.publisher_for([1, 0, 0], &stats).is_some());
+        assert_eq!(cache.pubs.len(), 2);
+        assert_eq!(stats.cell_publish_skips.load(Ordering::Relaxed), 0);
+
+        // Touch [1,0,0] so [0,0,0] is LRU; third declare must evict [0,0,0] after success.
+        cache.touch([1, 0, 0]);
+        assert!(cache.publisher_for([2, 0, 0], &stats).is_some());
+        assert_eq!(cache.pubs.len(), 2);
+        assert!(!cache.pubs.contains_key(&[0, 0, 0]));
+        assert!(cache.pubs.contains_key(&[1, 0, 0]));
+        assert!(cache.pubs.contains_key(&[2, 0, 0]));
+        assert_eq!(stats.cell_publish_skips.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn bucket_upsert_indices_match_entity_buckets() {
+        let a = alchemy_protocol::entity_trs(
+            1,
+            0.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        );
+        let b = alchemy_protocol::entity_trs(
+            2,
+            64.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        );
+        let upserts = [a, b];
+        let idxs = bucket_upsert_indices_by_cell(&upserts);
+        assert_eq!(idxs.get(&[0, 0, 0]).map(Vec::as_slice), Some(&[0][..]));
+        assert_eq!(idxs.get(&[1, 0, 0]).map(Vec::as_slice), Some(&[1][..]));
+        assert!(bucket_upsert_indices_by_cell(&[]).is_empty());
+    }
+
+    /// x00c0: center-origin cell boundaries match shared-sim `CellId`.
+    #[test]
+    fn bucket_upserts_by_cell_respects_boundaries() {
+        let origin = alchemy_protocol::entity_trs(
+            1,
+            31.9,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        );
+        let next = alchemy_protocol::entity_trs(
+            2,
+            32.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        );
+        let neg = alchemy_protocol::entity_trs(
+            3,
+            -32.1,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        );
+        let buckets = bucket_upserts_by_cell(&[origin, next, neg]);
+        assert_eq!(buckets.len(), 3);
+        assert_eq!(buckets.get(&[0, 0, 0]).map(|v| v.len()), Some(1));
+        assert_eq!(buckets.get(&[0, 0, 0]).map(|v| v[0].id), Some(1));
+        assert_eq!(buckets.get(&[1, 0, 0]).map(|v| v[0].id), Some(2));
+        assert_eq!(buckets.get(&[-1, 0, 0]).map(|v| v[0].id), Some(3));
+        assert!(bucket_upserts_by_cell(&[]).is_empty());
+    }
+
+    /// x00c0: Room path keeps the full upsert list; bucketing is a separate view.
+    #[test]
+    fn bucket_upserts_by_cell_does_not_drop_room_entities() {
+        let a = alchemy_protocol::entity_trs(
+            10,
+            0.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        );
+        let b = alchemy_protocol::entity_trs(
+            11,
+            100.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        );
+        let room = vec![a, b];
+        let buckets = bucket_upserts_by_cell(&room);
+        let bucketed: usize = buckets.values().map(|v| v.len()).sum();
+        assert_eq!(room.len(), 2);
+        assert_eq!(bucketed, 2);
+        assert_eq!(buckets.len(), 2);
     }
 
     /// x00be: Room tick authority key and origin cell dual-publish key stay distinct.

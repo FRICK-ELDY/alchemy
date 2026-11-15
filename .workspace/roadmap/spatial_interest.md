@@ -1,6 +1,6 @@
 # Alchemy — 配信の空間インデックス（Spatial Interest）正本
 
-* **種別**: 規模本線の仕様正本。実装第一波は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)（キー契約 + ACL + dual-publish）。第二波は [x00bf](slices/x00bf-client-near-cell-frame-sub.md)（client 近傍セル opt-in 併読）
+* **種別**: 規模本線の仕様正本。実装第一波は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)（キー契約 + ACL + dual-publish）。第二波は [x00bf](slices/x00bf-client-near-cell-frame-sub.md)（client 近傍セル opt-in 併読）。第三波は [x00c0](slices/x00c0-host-cell-dirty-filter.md)（host セル別 dirty / 複数セル soft-put）
 * **改善計画上の位置**: [improvement-plan-2026-11-12.md](../0_doc/evaluation/improvement-plan-2026-11-12.md) **P3-7**
 * **品質本線（物理・状態）**: [mvcc_xpbd.md](mvcc_xpbd.md) Phase 1–3（dirty デルタ・SoA ページが前提）
 * **現行配送契約**: [protocol/peer-delivery.md](../../protocol/peer-delivery.md)（x0024）· [architecture/client.md](../0_doc/architecture/client.md) · [architecture/protocol.md](../0_doc/architecture/protocol.md)
@@ -56,7 +56,7 @@
 | | 音声・メッシュ・アニメ予算の本仕様化（別予算・非保証） |
 | | verifier Spot-Check / billing / market（独立） |
 
-保証表の追随は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md) で開始し、[x00bf](slices/x00bf-client-near-cell-frame-sub.md) で opt-in 併読まで更新（[protocol.md](../0_doc/architecture/protocol.md) · [client.md](../0_doc/architecture/client.md) · [peer-delivery.md](../../protocol/peer-delivery.md)）。既定購読切替・LOD は後続スライスで更新する。
+保証表の追随は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md) で開始し、[x00bf](slices/x00bf-client-near-cell-frame-sub.md) で opt-in 併読、[x00c0](slices/x00c0-host-cell-dirty-filter.md) で host セル別 dirty まで更新（[protocol.md](../0_doc/architecture/protocol.md) · [client.md](../0_doc/architecture/client.md) · [peer-delivery.md](../../protocol/peer-delivery.md)）。既定購読切替・LOD は後続スライスで更新する。
 
 ---
 
@@ -81,10 +81,12 @@
 3. Room 全体 `…/frame` は **互換・tick 正本として残す**（x00be: host dual-publish；client 既定は当面 Room 購読のまま）。`…/snapshot` はセル分割しない（欠落再同期の正本）。
 4. **x0067**: ACL は `…/frame/cell/*` を **明示**（`frame/**` 一括禁止）。**AEAD AAD** はキー式非束縛のまま（x0069 据え置き）。
 5. delivery-class（latest / snapshot / best-effort）の語彙は [peer-delivery.md](../../protocol/peer-delivery.md) を継承し、「frame = latest・欠落は Room snapshot」を維持する。
-6. **x00bf**: client は `ALCHEMY_CELL_FRAME=1` のとき origin Moore 近傍（3³）の cell キーを Room と**併読**。既定購読切替・自位置追従・帯域削減は後続。
+6. **x00bf**: client は `ALCHEMY_CELL_FRAME=1` のとき origin Moore 近傍（3³）の cell キーを Room と**併読**。既定購読切替・自位置追従は後続。
+7. **x00c0**: host は dirty upsert を `CellId` でバケットし、非空セルへ**セル別密封**で soft-put（seal/put soft-fail・publisher LRU 64）。Room は全文維持。**併読時**は `decide_room_frame_tick` で同一 tick の部分 cell 適用を Room が上書きできる。セル退出 remove・既定切替は後続。
 
 実装第一波: [x00be-spatial-interest-cell-frame-foundation.md](slices/x00be-spatial-interest-cell-frame-foundation.md)。  
-実装第二波: [x00bf-client-near-cell-frame-sub.md](slices/x00bf-client-near-cell-frame-sub.md)。
+実装第二波: [x00bf-client-near-cell-frame-sub.md](slices/x00bf-client-near-cell-frame-sub.md)。  
+実装第三波: [x00c0-host-cell-dirty-filter.md](slices/x00c0-host-cell-dirty-filter.md)。
 
 ---
 
@@ -138,7 +140,7 @@
 | 作業 | 条件 |
 |:---|:---|
 | **本ファイル（アウトライン正本）** | いつでも。MVCC Phase と**並走可** |
-| **実装スライス群** | **MVCC Phase 3 DoD Green 後**。第一波 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)（キー契約 + ACL + dual-publish）。第二波 [x00bf](slices/x00bf-client-near-cell-frame-sub.md)（client opt-in 近傍併読）。既定切替・LOD は後続 |
+| **実装スライス群** | **MVCC Phase 3 DoD Green 後**。第一波 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)（キー契約 + ACL + dual-publish）。第二波 [x00bf](slices/x00bf-client-near-cell-frame-sub.md)（client opt-in 近傍併読）。第三波 [x00c0](slices/x00c0-host-cell-dirty-filter.md)（host セル別 dirty）。既定切替・LOD は後続 |
 
 ---
 
