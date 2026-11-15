@@ -1,24 +1,22 @@
-//! Inventory take-out spawn control plane (x006d / x0081 / x0082 / x0098 / x009e / x00b5).
+//! Inventory take-out spawn control plane (x006d / x0081 / x0098 / x00b5 / x00b9).
 //!
 //! Guarantees: Zenoh `…/inventory/spawn` is **Room AEAD** (`AeadKind::InventorySpawn`);
 //! after open, session Ed25519 + SessionTable Dual auth (**`role=host` ∧ `sub` == host Token
-//! sub** **or** **`sub` == `owner_sub`** from shared scene); world HTTP append uses **host**
-//! Token, PoP, SpawnTicket, and **packed scene revision CAS** against **`…/overlay/entries`**
-//! (x009e / x00b5 — session_overlay; dormant で破棄。canonical writer は不要). Client auth JWT
-//! never on the bus; physics only applies a ready `SceneEntry` (and shared scene / re-seal
-//! flag). Order mirrors Intent: evaluate (no seq) → rate → commit seq → HTTP (unbound /
-//! non-owner guest cannot burn shared rate).
+//! sub** **or** **`sub` == `owner_sub`** from shared scene); **x00b9**: host-local entity id +
+//! pending SpawnTicket (no live overlay CAS); physics applies ready `SceneEntry` + local
+//! shared scene + reseal. Persistence is explicit Save. Order mirrors Intent: evaluate →
+//! rate → commit seq → local Ready (unbound / non-owner guest cannot burn shared rate).
 //!
 //! Non-guarantees: Invite / arbitrary-guest ACL; put-back; Intent path;
-//! distributed TX / **HTTP failure after `control_seq` commit** (seq stays advanced);
-//! evaluate→rate→commit のあいだに host→guest 降格が挟まると **rate だけ消費して commit 失敗**
-//! しうる（Intent と同じく許容・窓は狭い）；`owner_sub` 未取得時の owner 経路;
-//! overlay→canonical Save/merge（セッションまたぎの inventory 永続）。
+//! crash durability of unsaved pending; evaluate→rate→commit のあいだに host→guest 降格が
+//! 挟まると **rate だけ消費して commit 失敗**しうる；`owner_sub` 未取得時の owner 経路;
+//! **`control_seq` は local apply 前に commit 済み** — inbox / physics 失敗でも seq は進む
+//! （edit lane と同契約）。
 
 use alchemy_protocol::control_plane::{self, ControlPose};
 use alchemy_protocol::wire_aead::{self, AeadKind};
 use alchemy_protocol::wire_crypto::PUBLIC_KEY_LENGTH;
-use alchemy_protocol::{inventory_spawn_key, SceneEntry};
+use alchemy_protocol::{inventory_spawn_key, EditProposal, SceneEntry};
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use serde::Deserialize;
@@ -29,16 +27,17 @@ use std::thread;
 use zenoh::Wait;
 
 use crate::control_rate::SharedControlRate;
-use host_server::room_token::{
-    append_room_scene_entry, install_shared_scene_if_newer, RoomScene, SharedHostHttpAuth,
-};
+use crate::live_edit::SharedLiveEdit;
+use host_server::room_token::{append_local_scene_entry, RoomScene, SharedHostHttpAuth};
 use host_server::session::SessionTable;
 
-/// Ready for physics: world already appended; apply XPBD mesh row + shared scene + reseal.
+/// Ready for physics: host-local entry (+ ticket for Save); apply XPBD + local scene + reseal.
+/// `edit_proposal`: `Some` when from `…/edit` — tip/Commit deferred until physics-ok (x00b9).
 #[derive(Debug, Clone)]
 pub struct ReadySpawn {
     pub entry: SceneEntry,
-    pub scene: RoomScene,
+    pub spawn_ticket: String,
+    pub edit_proposal: Option<EditProposal>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,17 +141,17 @@ fn decode_b64(field: &str, value: &str) -> Result<Vec<u8>> {
         .with_context(|| format!("{field} base64url"))
 }
 
-/// Subscribe → AEAD open → session verify → world HTTP append → enqueue for physics.
+/// Subscribe → AEAD open → session verify → host-local Ready → enqueue for physics.
 #[allow(clippy::too_many_arguments)] // wire + shared_scene wiring stays flat at the listener edge
 pub fn spawn_listener(
     session: zenoh::Session,
     room_id: &str,
     wire_cap: &str,
     room_aead: host_server::room_aead::SharedRoomAead,
-    world_url: String,
     sessions: Arc<Mutex<SessionTable>>,
     http_auth: SharedHostHttpAuth,
     shared_scene: Arc<RwLock<RoomScene>>,
+    live_edit: SharedLiveEdit,
     tx: Sender<ReadySpawn>,
     control_rate: Arc<Mutex<SharedControlRate>>,
 ) -> Result<()> {
@@ -168,7 +167,7 @@ pub fn spawn_listener(
         .spawn(move || {
             let _session = session;
             log::info!(
-                "subscribed to {key} (x0081 inventory spawn, session sig; shared rate x00b2)"
+                "subscribed to {key} (x0081 inventory spawn, session sig; shared rate x00b2; x00b9 local)"
             );
             while let Ok(sample) = subscriber.recv() {
                 let bytes = sample.payload().to_bytes();
@@ -176,14 +175,22 @@ pub fn spawn_listener(
                     bytes.as_ref(),
                     &room_aead,
                     &room_id,
-                    &world_url,
                     &sessions,
                     &http_auth,
                     &shared_scene,
+                    &live_edit,
                     &control_rate,
                 ) {
                     Ok(ready) => {
-                        let _ = tx.send(ready);
+                        let entity_id = ready.entry.entity_id;
+                        if tx.send(ready).is_err() {
+                            if let Ok(mut led) = live_edit.lock() {
+                                led.release_reserved(entity_id);
+                            }
+                            log::warn!(
+                                "inventory spawn inbox closed; released reserved entity_id={entity_id}"
+                            );
+                        }
                     }
                     Err(err) => log::warn!("inventory spawn rejected: {err:#}"),
                 }
@@ -194,15 +201,15 @@ pub fn spawn_listener(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)] // HTTP CAS path needs auth + shared_scene beside rate
+#[allow(clippy::too_many_arguments)]
 fn process_sample(
     envelope: &[u8],
     room_aead: &host_server::room_aead::SharedRoomAead,
     room_id: &str,
-    world_url: &str,
     sessions: &Arc<Mutex<SessionTable>>,
     http_auth: &SharedHostHttpAuth,
     shared_scene: &Arc<RwLock<RoomScene>>,
+    live_edit: &SharedLiveEdit,
     control_rate: &Arc<Mutex<SharedControlRate>>,
 ) -> Result<ReadySpawn> {
     wire_aead::check_aead_envelope_bytes(AeadKind::InventorySpawn, envelope.len())
@@ -281,41 +288,56 @@ fn process_sample(
         }
     }
 
-    let (scene, entry) = append_room_scene_entry(
-        world_url,
-        room_id,
-        &auth.token,
-        &auth.pop_key,
-        shared_scene,
-        &blake3,
-        &parsed.spawn_ticket,
-        parsed.x,
-        parsed.y,
-        parsed.z,
-        parsed.qx,
-        parsed.qy,
-        parsed.qz,
-        parsed.qw,
-        parsed.sx,
-        parsed.sy,
-        parsed.sz,
-    )
-    .context("world scene append")?;
+    let entity_id = {
+        let scene = shared_scene
+            .read()
+            .map_err(|_| anyhow!("shared scene RwLock poisoned"))?;
+        let mut led = live_edit
+            .lock()
+            .map_err(|_| anyhow!("LiveEditLedger poisoned"))?;
+        led.alloc_entity_id(&scene.entries)
+    };
+    let mut entry = SceneEntry {
+        entity_id,
+        blake3,
+        x: parsed.x,
+        y: parsed.y,
+        z: parsed.z,
+        half_extent: 0.0,
+        flags: 0,
+        r: 0.85,
+        g: 0.85,
+        b: 0.9,
+        a: 1.0,
+        qx: parsed.qx,
+        qy: parsed.qy,
+        qz: parsed.qz,
+        qw: parsed.qw,
+        sx: parsed.sx,
+        sy: parsed.sy,
+        sz: parsed.sz,
+        parent_entity_id: 0,
+    };
+    alchemy_protocol::normalize_scene_entry_trs(&mut entry);
 
-    Ok(ReadySpawn { entry, scene })
+    Ok(ReadySpawn {
+        entry,
+        spawn_ticket: parsed.spawn_ticket,
+        edit_proposal: None,
+    })
 }
 
 /// Outcome of applying a ready spawn on the physics thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApplyOutcome {
     pub entity_id: u32,
-    /// False when `ready.scene.revision` was not strictly newer than shared (stale race).
+    /// False when local shared scene rejected the append (duplicate id/blake3).
     pub scene_applied: bool,
     /// False when Manifest/PlaceRead path succeeded but XPBD/sim refused the collider.
     pub physics_ok: bool,
 }
 
-/// Apply a ready spawn on the physics thread (no HTTP).
+/// Apply a ready spawn on the physics thread (no HTTP; x00b9 local scene).
 pub fn apply_ready_spawn(
     ready: ReadySpawn,
     shared_scene: &Arc<RwLock<RoomScene>>,
@@ -324,7 +346,7 @@ pub fn apply_ready_spawn(
 ) -> Result<ApplyOutcome> {
     let entity_id = ready.entry.entity_id;
     let entry = ready.entry.clone();
-    let scene_applied = install_shared_scene_if_newer(shared_scene, ready.scene)?;
+    let scene_applied = append_local_scene_entry(shared_scene, entry.clone())?;
     if !scene_applied {
         return Ok(ApplyOutcome {
             entity_id,
@@ -381,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_ready_spawn_monotonic() {
+    fn apply_ready_spawn_local_append() {
         let shared = Arc::new(RwLock::new(empty_scene(5)));
         let force = AtomicBool::new(false);
         let ready = ReadySpawn {
@@ -406,10 +428,13 @@ mod tests {
                 sz: 1.0,
                 parent_entity_id: 0,
             },
-            scene: empty_scene(4),
+            spawn_ticket: "t.jwt".into(),
+            edit_proposal: None,
         };
         let out = apply_ready_spawn(ready, &shared, &force, |_| true).unwrap();
-        assert!(!out.scene_applied);
-        assert!(!force.load(Ordering::SeqCst));
+        assert!(out.scene_applied);
+        assert!(force.load(Ordering::SeqCst));
+        assert_eq!(shared.read().unwrap().entries.len(), 1);
+        assert_eq!(shared.read().unwrap().revision, 5);
     }
 }

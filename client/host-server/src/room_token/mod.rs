@@ -47,9 +47,9 @@ pub use credential_worker::{
     write_snapshot_on_success, CredentialWorkerConfig, HostPublishSnapshot,
 };
 pub use room_scene::{
-    append_room_scene_entry, delete_room_scene_entry, fetch_room_scene,
-    install_shared_scene_if_newer, save_overlay_to_canonical, RoomScene, SceneFieldPatch,
-    SceneParentPatch, SceneSaveError, SceneSavePatches,
+    append_local_scene_entry, append_room_scene_entry, delete_room_scene_entry, fetch_room_scene,
+    install_shared_scene_if_newer, remove_local_scene_entry, save_overlay_to_canonical, RoomScene,
+    SceneFieldPatch, SceneParentPatch, SceneSaveError, SceneSavePatches, SceneSpawnPatch,
 };
 pub use seal_cache::{fetch_manifest_seal, ManifestSealCache};
 pub use timing::{

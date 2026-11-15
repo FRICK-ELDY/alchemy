@@ -1,17 +1,21 @@
-//! Deterministic edit lane (`…/edit`) — Spawn/Despawn + live Reparent/SetField + Save (x00b2–x00b7).
+//! Deterministic edit lane (`…/edit`) — Spawn/Despawn + live Reparent/SetField + Save (x00b2–x00b9).
 //!
 //! Guarantees: AEAD `EditProposal` → session Ed25519 → Dual-auth / shared control rate /
 //! `control_seq`; single op.
-//! Spawn/Despawn: overlay CAS then inbox; **tip + accept Commit after inbox send**
-//! (send fail → reject `APPLY`, tip unchanged; VCS debt remains overlay CAS).
+//! Spawn/Despawn (x00b9): host-local id + pending ticket/despawn (no live overlay CAS);
+//! inbox enqueue only here; **tip + accept Commit after physics/local apply in HostLoop**
+//! (inbox closed / apply fail → reject `APPLY` + `release_reserved`, tip unchanged).
 //! Reparent/SetField: optimistic ledger mirrors only; **tip + accept Commit after**
 //! FrameBridge queue **and** barrier — never rewind tip; queue/barrier/inbox fail →
 //! reject `APPLY`.
-//! Save (x00b7/x00b8): world overlay→canonical CAS + live parent/SetField patches;
+//! Save (x00b7–x00b9): world packed CAS folds pending spawns/despawns + parent/SetField;
 //! install shared scene + `force_reseal` when packed revision advances; **tip unchanged**;
 //! accept Commit with current tip.
 //!
-//! Non-guarantees: multi-op batch; Undo UI; old inventory key removal; Spatial VCS.
+//! Non-guarantees: multi-op batch; Undo UI; old inventory key removal; Spatial VCS;
+//! crash durability of unsaved pending;
+//! **`control_seq` is committed before physics/apply** — later HostLoop `APPLY` reject
+//! still leaves seq advanced (same window as inventory HTTP-era; wider now that tip waits).
 
 use alchemy_protocol::edit_op::Op;
 use alchemy_protocol::wire_aead::{self, AeadKind};
@@ -20,7 +24,7 @@ use alchemy_protocol::wire_crypto::{
 };
 use alchemy_protocol::{
     decode_color_rgba, decode_flags, edit_reject, field_value_hash, known_field_id, EditCommit,
-    EditProposal, EditReparent, EditSetField, EditSpawn, Message,
+    EditProposal, EditReparent, EditSetField, EditSpawn, Message, SceneEntry,
 };
 use anyhow::{anyhow, Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,9 +39,8 @@ use crate::inventory_spawn::ReadySpawn;
 use crate::live_edit::{current_field_value, ReadyLiveEdit, SharedLiveEdit};
 use crate::room_aead::{self, SharedRoomAead};
 use crate::room_token::{
-    append_room_scene_entry, delete_room_scene_entry, install_shared_scene_if_newer,
-    save_overlay_to_canonical, RoomScene, SceneFieldPatch, SceneParentPatch, SceneSaveError,
-    SceneSavePatches, SharedHostHttpAuth,
+    install_shared_scene_if_newer, save_overlay_to_canonical, RoomScene, SceneFieldPatch,
+    SceneParentPatch, SceneSaveError, SceneSavePatches, SceneSpawnPatch, SharedHostHttpAuth,
 };
 use crate::session::SessionTable;
 
@@ -110,28 +113,16 @@ pub fn edit_listener(
                     &control_rate,
                     &force_reseal,
                 ) {
-                    Ok((None, Some(ReadyEdit::Spawn { ready, proposal }))) => {
-                        if spawn_tx.send(ready).is_ok() {
+                    Ok((None, Some(ReadyEdit::Spawn { mut ready, proposal }))) => {
+                        // Tip/Commit deferred to HostLoop after physics-ok (x00b9).
+                        let entity_id = ready.entry.entity_id;
+                        ready.edit_proposal = Some(proposal.clone());
+                        if spawn_tx.send(ready).is_err() {
                             let tip = match live_edit.lock() {
-                                Ok(mut led) => led.bump_tip(),
-                                Err(_) => {
-                                    log::error!(
-                                        "LiveEditLedger poisoned after spawn send; aborting host"
-                                    );
-                                    std::process::exit(78);
+                                Ok(mut led) => {
+                                    led.release_reserved(entity_id);
+                                    led.tip
                                 }
-                            };
-                            publish_commit(
-                                &session,
-                                &key,
-                                &room_aead,
-                                &room_id,
-                                &host_key,
-                                accept_commit(&proposal, tip),
-                            );
-                        } else {
-                            let tip = match live_edit.lock() {
-                                Ok(g) => g.tip,
                                 Err(_) => {
                                     log::error!(
                                         "LiveEditLedger poisoned on spawn inbox closed; aborting host"
@@ -148,30 +139,14 @@ pub fn edit_listener(
                                 reject_commit(&proposal, edit_reject::APPLY, tip),
                             );
                             log::warn!(
-                                "edit accept: spawn inbox closed after CAS (reject APPLY; overlay kept; tip unchanged)"
+                                "edit spawn inbox closed (reject APPLY + release_reserved; tip unchanged)"
                             );
                         }
                     }
-                    Ok((None, Some(ReadyEdit::Despawn { ready, proposal }))) => {
-                        if despawn_tx.send(ready).is_ok() {
-                            let tip = match live_edit.lock() {
-                                Ok(mut led) => led.bump_tip(),
-                                Err(_) => {
-                                    log::error!(
-                                        "LiveEditLedger poisoned after despawn send; aborting host"
-                                    );
-                                    std::process::exit(78);
-                                }
-                            };
-                            publish_commit(
-                                &session,
-                                &key,
-                                &room_aead,
-                                &room_id,
-                                &host_key,
-                                accept_commit(&proposal, tip),
-                            );
-                        } else {
+                    Ok((None, Some(ReadyEdit::Despawn { mut ready, proposal }))) => {
+                        // Tip/Commit deferred to HostLoop after local apply-ok (x00b9).
+                        ready.edit_proposal = Some(proposal.clone());
+                        if despawn_tx.send(ready).is_err() {
                             let tip = match live_edit.lock() {
                                 Ok(g) => g.tip,
                                 Err(_) => {
@@ -190,7 +165,7 @@ pub fn edit_listener(
                                 reject_commit(&proposal, edit_reject::APPLY, tip),
                             );
                             log::warn!(
-                                "edit accept: despawn inbox closed after CAS (reject APPLY; overlay kept; tip unchanged)"
+                                "edit despawn inbox closed (reject APPLY; tip unchanged)"
                             );
                         }
                     }
@@ -239,7 +214,9 @@ pub fn edit_listener(
                         log::warn!("edit live accept must not carry Commit before barrier");
                     }
                     Ok((Some(_), Some(ReadyEdit::Spawn { .. } | ReadyEdit::Despawn { .. }))) => {
-                        log::warn!("edit spawn/despawn must not pre-build Commit before inbox send");
+                        log::warn!(
+                            "edit spawn/despawn must not pre-build Commit before HostLoop apply"
+                        );
                     }
                     Err(err) => {
                         log::warn!("edit proposal dropped without EditCommit: {err:#}");
@@ -389,26 +366,8 @@ fn process_proposal(
     }
 
     match op {
-        OpKind::Spawn(spawn) => apply_spawn(
-            &proposal,
-            &spawn,
-            room_id,
-            world_url,
-            &auth.token,
-            &auth.pop_key,
-            shared_scene,
-            live_edit,
-        ),
-        OpKind::Despawn(entity_id) => apply_despawn(
-            &proposal,
-            entity_id,
-            room_id,
-            world_url,
-            &auth.token,
-            &auth.pop_key,
-            shared_scene,
-            live_edit,
-        ),
+        OpKind::Spawn(spawn) => apply_spawn(&proposal, &spawn, shared_scene, live_edit),
+        OpKind::Despawn(entity_id) => apply_despawn(&proposal, entity_id, shared_scene, live_edit),
         OpKind::Reparent(r) => apply_reparent(&proposal, r, live_edit),
         OpKind::SetField(f) => apply_set_field(&proposal, f, live_edit),
         OpKind::Save => apply_save(
@@ -452,89 +411,91 @@ fn spawn_payload_ok(spawn: &EditSpawn) -> bool {
     pose.iter().all(|v| v.is_finite()) && spawn.sx > 0.0 && spawn.sy > 0.0 && spawn.sz > 0.0
 }
 
-#[allow(clippy::too_many_arguments)]
 fn apply_spawn(
     proposal: &EditProposal,
     spawn: &EditSpawn,
-    room_id: &str,
-    world_url: &str,
-    token: &str,
-    pop_key: &SigningKey,
     shared_scene: &Arc<RwLock<RoomScene>>,
     live_edit: &SharedLiveEdit,
 ) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
     let blake3 = spawn.blake3.to_ascii_lowercase();
-    match append_room_scene_entry(
-        world_url,
-        room_id,
-        token,
-        pop_key,
-        shared_scene,
-        &blake3,
-        &spawn.spawn_ticket,
-        spawn.x,
-        spawn.y,
-        spawn.z,
-        spawn.qx,
-        spawn.qy,
-        spawn.qz,
-        spawn.qw,
-        spawn.sx,
-        spawn.sy,
-        spawn.sz,
-    ) {
-        Ok((scene, entry)) => {
-            // Overlay CAS done (VCS debt). Tip+Commit only after inbox send succeeds.
-            // Ledger entity row lands on physics success (HostLoop).
-            Ok((
-                None,
-                Some(ReadyEdit::Spawn {
-                    ready: ReadySpawn { entry, scene },
-                    proposal: proposal.clone(),
-                }),
-            ))
-        }
-        Err(_) => {
-            let tip = live_edit
-                .lock()
-                .map_err(|_| anyhow!("LiveEditLedger poisoned"))?
-                .tip;
-            Ok((Some(reject_commit(proposal, edit_reject::WORLD, tip)), None))
-        }
-    }
+    let entity_id = {
+        let scene = shared_scene
+            .read()
+            .map_err(|_| anyhow!("shared scene RwLock poisoned"))?;
+        let mut led = live_edit
+            .lock()
+            .map_err(|_| anyhow!("LiveEditLedger poisoned"))?;
+        led.alloc_entity_id(&scene.entries)
+    };
+    let mut entry = SceneEntry {
+        entity_id,
+        blake3,
+        x: spawn.x,
+        y: spawn.y,
+        z: spawn.z,
+        half_extent: 0.0,
+        flags: 0,
+        r: 0.85,
+        g: 0.85,
+        b: 0.9,
+        a: 1.0,
+        qx: spawn.qx,
+        qy: spawn.qy,
+        qz: spawn.qz,
+        qw: spawn.qw,
+        sx: spawn.sx,
+        sy: spawn.sy,
+        sz: spawn.sz,
+        parent_entity_id: 0,
+    };
+    alchemy_protocol::normalize_scene_entry_trs(&mut entry);
+    // Tip/Commit + ledger/pending after physics-ok in HostLoop (x00b9).
+    Ok((
+        None,
+        Some(ReadyEdit::Spawn {
+            ready: ReadySpawn {
+                entry,
+                spawn_ticket: spawn.spawn_ticket.clone(),
+                edit_proposal: None,
+            },
+            proposal: proposal.clone(),
+        }),
+    ))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn apply_despawn(
     proposal: &EditProposal,
     entity_id: u32,
-    room_id: &str,
-    world_url: &str,
-    token: &str,
-    pop_key: &SigningKey,
     shared_scene: &Arc<RwLock<RoomScene>>,
     live_edit: &SharedLiveEdit,
 ) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
-    match delete_room_scene_entry(world_url, room_id, token, pop_key, shared_scene, entity_id) {
-        Ok(scene) => {
-            // Overlay CAS done (VCS debt). Tip+Commit only after inbox send succeeds.
-            // Ledger despawn on physics success only (HostLoop).
-            Ok((
-                None,
-                Some(ReadyEdit::Despawn {
-                    ready: ReadyDespawn { entity_id, scene },
-                    proposal: proposal.clone(),
-                }),
-            ))
-        }
-        Err(_) => {
-            let tip = live_edit
-                .lock()
-                .map_err(|_| anyhow!("LiveEditLedger poisoned"))?
-                .tip;
-            Ok((Some(reject_commit(proposal, edit_reject::WORLD, tip)), None))
-        }
+    let tip = live_edit
+        .lock()
+        .map_err(|_| anyhow!("LiveEditLedger poisoned"))?
+        .tip;
+    let present = shared_scene
+        .read()
+        .map_err(|_| anyhow!("shared scene RwLock poisoned"))?
+        .entries
+        .iter()
+        .any(|e| e.entity_id == entity_id);
+    if !present {
+        return Ok((
+            Some(reject_commit(proposal, edit_reject::PAYLOAD, tip)),
+            None,
+        ));
     }
+    // Tip/Commit + ledger after local apply-ok in HostLoop (x00b9).
+    Ok((
+        None,
+        Some(ReadyEdit::Despawn {
+            ready: ReadyDespawn {
+                entity_id,
+                edit_proposal: None,
+            },
+            proposal: proposal.clone(),
+        }),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -563,6 +524,9 @@ fn apply_save(
             if install_shared_scene_if_newer(shared_scene, scene)? {
                 force_reseal.store(true, Ordering::SeqCst);
             }
+            if let Ok(mut led) = live_edit.lock() {
+                led.clear_save_pending();
+            }
             // Live tip is independent of packed world revision (x00b7).
             Ok((Some(accept_commit(proposal, tip)), None))
         }
@@ -577,7 +541,7 @@ fn apply_save(
         Err(SceneSaveError::ParentCycle) => {
             Ok((Some(reject_commit(proposal, edit_reject::CYCLE, tip)), None))
         }
-        Err(SceneSaveError::InvalidEntry) => Ok((
+        Err(SceneSaveError::InvalidEntry) | Err(SceneSaveError::DuplicateBlake3) => Ok((
             Some(reject_commit(proposal, edit_reject::PAYLOAD, tip)),
             None,
         )),
@@ -587,7 +551,7 @@ fn apply_save(
     }
 }
 
-/// Diff live ledger against shared scene so empty Save stays idempotent (x00b8).
+/// Diff live ledger against shared scene so empty Save stays idempotent (x00b8 / x00b9).
 fn save_patches_from_ledger(
     led: &crate::live_edit::LiveEditLedger,
     scene: &RoomScene,
@@ -600,8 +564,36 @@ fn save_patches_from_ledger(
 
     let mut parents = Vec::new();
     let mut fields = Vec::new();
+    let mut spawns = Vec::new();
+
+    for pending in led.pending_spawns.values() {
+        let eid = pending.entry.entity_id;
+        let mut entry = pending.entry.clone();
+        entry.parent_entity_id = led.parent_of(eid);
+        if let Some(&flags) = led.flags.get(&eid) {
+            entry.flags = flags;
+        }
+        if let Some(&color) = led.colors.get(&eid) {
+            entry.r = color[0];
+            entry.g = color[1];
+            entry.b = color[2];
+            entry.a = color[3];
+        }
+        if let Some(blake3) = led.blake3.get(&eid) {
+            entry.blake3 = blake3.clone();
+        }
+        spawns.push(SceneSpawnPatch {
+            entry,
+            spawn_ticket: pending.spawn_ticket.clone(),
+        });
+    }
 
     for &eid in &led.entities {
+        // Pending spawns carry full entry in `spawns`; skip parent/field diffs for them
+        // (already folded into the spawn payload above).
+        if led.pending_spawns.contains_key(&eid) {
+            continue;
+        }
         let canon = by_id.get(&eid);
         let live_parent = led.parent_of(eid);
         let canon_parent = canon.map(|e| e.parent_entity_id).unwrap_or(0);
@@ -656,7 +648,15 @@ fn save_patches_from_ledger(
         }
     }
 
-    SceneSavePatches { parents, fields }
+    let mut despawns: Vec<u32> = led.pending_despawns.iter().copied().collect();
+    despawns.sort_unstable();
+
+    SceneSavePatches {
+        parents,
+        fields,
+        spawns,
+        despawns,
+    }
 }
 
 fn apply_reparent(

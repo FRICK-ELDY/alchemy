@@ -30,12 +30,14 @@ defmodule World.Rooms do
   durable-clears them.
   **x00a2**: scene/overlay CAS enforces SceneBudget (≤ protocol manifest entries/bytes) and
   composed (canon ∥ overlay) entry cap on **both** canonical and overlay mutate paths.
-  **x00b7 / x00b8**: `save_overlay_to_canonical/4` merges overlay into canonical (entity_id kept),
-  optionally folds live `parents` / `fields` patches, and clears overlay in one packed CAS;
-  empty overlay + empty patches is idempotent. HTTP requires active host **and** scene writer.
+  **x00b7 / x00b8 / x00b9**: `save_overlay_to_canonical/4` merges overlay into canonical
+  (entity_id kept), applies optional `spawns` / `despawns` (host-allocated ids; no remap) and
+  live `parents` / `fields` patches, and clears overlay in one packed CAS; empty overlay +
+  empty patches is idempotent. HTTP requires active host **and** scene writer; SpawnTicket
+  for Save `spawns` is authorized by the HTTP layer before CAS.
   Non-guarantees: full UGC editor; multi-node replication; Postgres (swap path documented);
-  Save-time detection of entity_id collisions between canon and overlay (append id bands differ);
-  live Reparent/SetField CAS (host tip only until Save);
+  entity_id remap on Save collision (reject instead);
+  live Reparent/SetField / Spawn CAS (host tip only until Save);
   signed HostDelegation JWT;
   relation notify retry queue; already-issued Room Token JWT revocation (TTL; new epoch AEAD closed);
   grace durability across world restart; Room physical DELETE (and quota decrement);
@@ -571,10 +573,11 @@ defmodule World.Rooms do
          {:ok, current_overlay} <- scene_revision(overlay),
          :ok <- match_expected_revision(current_canon, expected_canonical_revision),
          :ok <- match_expected_revision(current_overlay, expected_overlay_revision),
-         {:ok, parents, fields} <- normalize_save_patches(patches) do
+         {:ok, parents, fields, spawns, despawns} <- normalize_save_patches(patches) do
       overlay_entries = scene_entries(overlay)
 
-      if overlay_entries == [] and parents == [] and fields == [] do
+      if overlay_entries == [] and parents == [] and fields == [] and spawns == [] and
+           despawns == [] do
         compose_room_scene(room)
       else
         commit_save_canonical(
@@ -583,6 +586,8 @@ defmodule World.Rooms do
           overlay_entries,
           parents,
           fields,
+          spawns,
+          despawns,
           expected_canonical_revision,
           expected_overlay_revision
         )
@@ -598,6 +603,8 @@ defmodule World.Rooms do
          overlay_entries,
          parents,
          fields,
+         spawns,
+         despawns,
          expected_canonical_revision,
          expected_overlay_revision
        ) do
@@ -605,8 +612,10 @@ defmodule World.Rooms do
          :ok <- ensure_revision_headroom(expected_overlay_revision),
          {:ok, merged} <-
            build_merged_canonical_scene(scene, overlay_entries, expected_canonical_revision),
-         {:ok, patched_entries} <-
-           apply_save_patches(scene_entries(merged), parents, fields),
+         # x00b9: despawn before spawn so same-blake3 replace in one Save works.
+         {:ok, after_despawns} <- apply_save_despawns(scene_entries(merged), despawns),
+         {:ok, after_spawns} <- apply_save_spawns(after_despawns, spawns),
+         {:ok, patched_entries} <- apply_save_patches(after_spawns, parents, fields),
          next_scene = Map.put(merged, "entries", patched_entries),
          :ok <-
            cas_set_scene_and_cleared_overlay(
@@ -623,10 +632,14 @@ defmodule World.Rooms do
   defp normalize_save_patches(patches) when is_map(patches) do
     parents_raw = Map.get(patches, "parents") || Map.get(patches, :parents) || []
     fields_raw = Map.get(patches, "fields") || Map.get(patches, :fields) || []
+    spawns_raw = Map.get(patches, "spawns") || Map.get(patches, :spawns) || []
+    despawns_raw = Map.get(patches, "despawns") || Map.get(patches, :despawns) || []
 
     with {:ok, parents} <- normalize_parent_patches(parents_raw),
-         {:ok, fields} <- normalize_field_patches(fields_raw) do
-      {:ok, parents, fields}
+         {:ok, fields} <- normalize_field_patches(fields_raw),
+         {:ok, spawns} <- normalize_spawn_patches(spawns_raw),
+         {:ok, despawns} <- normalize_despawn_patches(despawns_raw) do
+      {:ok, parents, fields, spawns, despawns}
     end
   end
 
@@ -672,6 +685,132 @@ defmodule World.Rooms do
   end
 
   defp normalize_field_patch(_), do: {:error, :invalid_entry}
+
+  # x00b9: host-allocated entity_id kept (no remap); collision → :invalid_entry at apply.
+  defp normalize_spawn_patches(list) when is_list(list) do
+    list
+    |> Enum.reduce_while({:ok, []}, fn item, acc ->
+      accumulate_normalized_patch(item, acc, &normalize_save_spawn_entry/1)
+    end)
+    |> finish_patch_acc()
+  end
+
+  defp normalize_spawn_patches(_), do: {:error, :invalid_entry}
+
+  defp normalize_save_spawn_entry(item) when is_map(item) do
+    with {:ok, entity_id} <- parse_patch_u32(item, "entity_id", :entity_id),
+         :ok <- reject_user_root_spawn_id(entity_id),
+         {:ok, base} <- normalize_mesh_entry(item),
+         {:ok, flags} <- optional_spawn_u32(item, "flags", :flags, 0),
+         {:ok, parent_entity_id} <-
+           optional_spawn_u32(item, "parent_entity_id", :parent_entity_id, 0) do
+      {:ok,
+       base
+       |> Map.put("entity_id", entity_id)
+       |> Map.put("flags", flags)
+       |> Map.put("parent_entity_id", parent_entity_id)
+       |> Map.put("r", entry_float(item, "r", :r, base["r"]))
+       |> Map.put("g", entry_float(item, "g", :g, base["g"]))
+       |> Map.put("b", entry_float(item, "b", :b, base["b"]))
+       |> Map.put("a", entry_float(item, "a", :a, base["a"]))}
+    end
+  end
+
+  defp normalize_save_spawn_entry(_), do: {:error, :invalid_entry}
+
+  defp reject_user_root_spawn_id(entity_id) do
+    if World.Protocol.user_root_band?(entity_id) do
+      {:error, :invalid_entry}
+    else
+      :ok
+    end
+  end
+
+  defp optional_spawn_u32(item, str_key, atom_key, default) do
+    case patch_map_get(item, str_key, atom_key) do
+      :absent -> {:ok, default}
+      v -> parse_u32_value(v)
+    end
+  end
+
+  defp normalize_despawn_patches(list) when is_list(list) do
+    list
+    |> Enum.reduce_while({:ok, []}, fn item, acc ->
+      case normalize_despawn_id(item) do
+        {:ok, eid} ->
+          {:ok, ids} = acc
+          {:cont, {:ok, [eid | ids]}}
+
+        {:error, _} = err ->
+          {:halt, err}
+      end
+    end)
+    |> finish_patch_acc()
+  end
+
+  defp normalize_despawn_patches(_), do: {:error, :invalid_entry}
+
+  defp normalize_despawn_id(v) when is_integer(v), do: parse_u32_value(v)
+
+  defp normalize_despawn_id(item) when is_map(item) do
+    parse_patch_u32(item, "entity_id", :entity_id)
+  end
+
+  defp normalize_despawn_id(_), do: {:error, :invalid_entry}
+
+  defp apply_save_spawns(entries, []), do: {:ok, entries}
+
+  defp apply_save_spawns(entries, spawns) when is_list(entries) and is_list(spawns) do
+    # Accumulate with prepend on a reversed base → O(n); final reverse restores order.
+    # Parent must already exist in acc (prior entries or earlier spawns in this batch).
+    case Enum.reduce_while(spawns, {:ok, Enum.reverse(entries)}, fn spawn, {:ok, acc} ->
+           eid = spawn["entity_id"]
+           blake3 = spawn["blake3"]
+           parent = spawn["parent_entity_id"] || 0
+
+           cond do
+             Enum.any?(acc, &entry_entity_id_eq?(&1, eid)) ->
+               {:halt, {:error, :invalid_entry}}
+
+             Enum.any?(acc, fn e -> entry_string(e, "blake3") == blake3 end) ->
+               {:halt, {:error, :duplicate_blake3}}
+
+             parent != 0 and is_nil(Enum.find(acc, &entry_entity_id_eq?(&1, parent))) ->
+               {:halt, {:error, :invalid_entry}}
+
+             true ->
+               {:cont, {:ok, [spawn | acc]}}
+           end
+         end) do
+      {:ok, rev} -> {:ok, Enum.reverse(rev)}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp apply_save_despawns(entries, []), do: {:ok, entries}
+
+  defp apply_save_despawns(entries, despawns) when is_list(entries) and is_list(despawns) do
+    Enum.reduce_while(despawns, {:ok, entries}, fn eid, {:ok, acc} ->
+      case remove_mesh_entry_by_id(acc, eid) do
+        {:ok, rest} -> {:cont, {:ok, rest}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  # Save-time despawn: same match rules as delete_mesh_entry, no revision bump.
+  defp remove_mesh_entry_by_id(entries, entity_id) do
+    case Enum.split_with(entries, fn e -> entry_entity_id(e) == entity_id end) do
+      {[], _} ->
+        {:error, :invalid_entry}
+
+      {[target], rest} ->
+        if mesh_blake3?(target), do: {:ok, rest}, else: {:error, :invalid_entry}
+
+      {_dupes, _rest} ->
+        {:error, :invalid_entry}
+    end
+  end
 
   defp accumulate_normalized_patch(item, {:ok, acc}, normalize_fun) do
     case normalize_fun.(item) do

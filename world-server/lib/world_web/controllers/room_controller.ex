@@ -1021,13 +1021,17 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
-  x00b7: merge session_overlay into canonical scene and clear overlay (host Room Token +
-  active host + owner/editor scene writer).
+  x00b7 / x00b8 / x00b9: merge session_overlay into canonical, fold optional
+  `spawns` / `despawns` / `parents` / `fields`, clear overlay (host Room Token +
+  active host + owner/editor scene writer). SpawnTicket for each spawn is claimed
+  here before packed CAS (x00b5 ownership; live overlay append no longer required).
 
-  Body: `%{"expected_revision" => packed int}`. Empty overlay is idempotent.
-  Returned scene is **composed**.
+  Body: `%{"expected_revision" => packed int, "spawns"?, "despawns"?, "parents"?, "fields"?}`.
+  Empty overlay + empty patches is idempotent. Returned scene is **composed**.
   """
   def create_scene_save(conn, %{"room_id" => room_id} = params) do
+    spawns_raw = Map.get(params, "spawns") || []
+
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
          :ok <- require_host_token(claims, room_id),
@@ -1037,13 +1041,15 @@ defmodule WorldWeb.RoomController do
          :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
          {:ok, packed} <- ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
          {:ok, canon_exp, overlay_exp} <- Rooms.unpack_revision(packed),
+         {:ok, claimed} <- authorize_save_spawns(spawns_raw, room_id),
          patches = %{
            "parents" => Map.get(params, "parents") || [],
-           "fields" => Map.get(params, "fields") || []
+           "fields" => Map.get(params, "fields") || [],
+           "spawns" => strip_spawn_tickets(spawns_raw),
+           "despawns" => Map.get(params, "despawns") || []
          },
-         {:ok, scene} <-
-           Rooms.save_overlay_to_canonical(room_id, canon_exp, overlay_exp, patches) do
-      json(conn, Map.put(scene, "room_id", room_id))
+         result <- Rooms.save_overlay_to_canonical(room_id, canon_exp, overlay_exp, patches) do
+      render_scene_save_result(conn, room_id, claimed, result)
     else
       {:error, :missing_bearer} ->
         conn
@@ -1077,6 +1083,12 @@ defmodule WorldWeb.RoomController do
         conn
         |> put_status(:conflict)
         |> json(%{error: "host_lease_conflict"})
+
+      {:error, :spawn_ticket_required} ->
+        conn |> put_status(:forbidden) |> json(%{error: "spawn_ticket_required"})
+
+      {:error, :spawn_ticket_invalid} ->
+        conn |> put_status(:forbidden) |> json(%{error: "spawn_ticket_invalid"})
 
       {:error, reason} ->
         render_scene_entry_error(conn, reason, :scene_save)
@@ -1804,11 +1816,62 @@ defmodule WorldWeb.RoomController do
     World.SpawnTicket.authorize_and_claim(ticket, room_id, blake3 || "")
   end
 
+  # x00b9: claim every Save spawn ticket before packed CAS; release only on CAS conflict.
+  defp authorize_save_spawns(spawns, room_id) when is_list(spawns) do
+    Enum.reduce_while(spawns, {:ok, []}, fn spawn, {:ok, acc} ->
+      {entry, ticket} = split_spawn_ticket_entry(spawn_as_params(spawn))
+
+      case authorize_spawn_ticket(ticket, room_id, Map.get(entry, "blake3")) do
+        {:ok, claims} ->
+          blake3 = Map.get(entry, "blake3") || Map.get(entry, :blake3) || ""
+          {:cont, {:ok, [{claims, blake3} | acc]}}
+
+        {:error, _} = err ->
+          Enum.each(acc, fn {c, b} -> release_spawn_claim(c, b) end)
+          {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp authorize_save_spawns(_, _), do: {:error, :invalid_entry}
+
+  defp spawn_as_params(spawn) when is_map(spawn), do: spawn
+  defp spawn_as_params(_), do: %{}
+
+  defp strip_spawn_tickets(spawns) when is_list(spawns) do
+    Enum.map(spawns, fn spawn ->
+      {entry, _ticket} = split_spawn_ticket_entry(spawn_as_params(spawn))
+      entry
+    end)
+  end
+
   defp release_spawn_claim(%{"jti" => jti}, blake3) when is_binary(jti) and is_binary(blake3) do
     World.SpawnTicket.release_claim(jti, blake3)
   end
 
   defp release_spawn_claim(_, _), do: :ok
+
+  defp release_save_spawn_claims(claimed) when is_list(claimed) do
+    Enum.each(claimed, fn {claims, blake3} -> release_spawn_claim(claims, blake3) end)
+  end
+
+  defp render_scene_save_result(conn, room_id, _claimed, {:ok, scene}) do
+    json(conn, Map.put(scene, "room_id", room_id))
+  end
+
+  defp render_scene_save_result(conn, _room_id, claimed, {:error, :scene_revision_conflict}) do
+    release_save_spawn_claims(claimed)
+    render_scene_entry_error(conn, :scene_revision_conflict, :scene_save)
+  end
+
+  defp render_scene_save_result(conn, _room_id, _claimed, {:error, reason}) do
+    # Non-CAS failures burn claimed tickets (same fail-closed policy as overlay append).
+    render_scene_entry_error(conn, reason, :scene_save)
+  end
 
   # x00b5: only CAS conflict releases claim (host retry). Other failures burn
   # `(jti,blake3)` — fail-closed; client must re-take_out / re-issue.
