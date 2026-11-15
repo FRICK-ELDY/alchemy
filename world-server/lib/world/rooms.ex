@@ -573,57 +573,56 @@ defmodule World.Rooms do
          {:ok, current_overlay} <- scene_revision(overlay),
          :ok <- match_expected_revision(current_canon, expected_canonical_revision),
          :ok <- match_expected_revision(current_overlay, expected_overlay_revision),
-         {:ok, parents, fields, spawns, despawns} <- normalize_save_patches(patches) do
-      overlay_entries = scene_entries(overlay)
-
-      if overlay_entries == [] and parents == [] and fields == [] and spawns == [] and
-           despawns == [] do
-        compose_room_scene(room)
-      else
-        commit_save_canonical(
-          room_id,
-          room.scene,
-          overlay_entries,
-          parents,
-          fields,
-          spawns,
-          despawns,
-          expected_canonical_revision,
-          expected_overlay_revision
-        )
-      end
+         {:ok, normalized} <- normalize_save_patches(patches) do
+      maybe_commit_save_canonical(
+        room_id,
+        room,
+        overlay,
+        normalized,
+        expected_canonical_revision,
+        expected_overlay_revision
+      )
     end
   end
 
   def save_overlay_to_canonical(_, _, _, _), do: {:error, :invalid_room_id}
 
-  defp commit_save_canonical(
-         room_id,
-         scene,
-         overlay_entries,
-         parents,
-         fields,
-         spawns,
-         despawns,
-         expected_canonical_revision,
-         expected_overlay_revision
-       ) do
-    with :ok <- ensure_revision_headroom(expected_canonical_revision),
-         :ok <- ensure_revision_headroom(expected_overlay_revision),
-         {:ok, merged} <-
-           build_merged_canonical_scene(scene, overlay_entries, expected_canonical_revision),
+  defp maybe_commit_save_canonical(room_id, room, overlay, normalized, canon_exp, overlay_exp) do
+    overlay_entries = scene_entries(overlay)
+
+    if empty_save_fold?(overlay_entries, normalized) do
+      compose_room_scene(room)
+    else
+      commit_save_canonical(room_id, room.scene, overlay_entries, normalized, %{
+        canon: canon_exp,
+        overlay: overlay_exp
+      })
+    end
+  end
+
+  defp empty_save_fold?(overlay_entries, %{
+         parents: parents,
+         fields: fields,
+         spawns: spawns,
+         despawns: despawns
+       }) do
+    overlay_entries == [] and parents == [] and fields == [] and spawns == [] and despawns == []
+  end
+
+  # patches + expected packed to keep arity ≤ 8 (Credo).
+  defp commit_save_canonical(room_id, scene, overlay_entries, patches, expected) do
+    %{parents: parents, fields: fields, spawns: spawns, despawns: despawns} = patches
+    %{canon: canon_exp, overlay: overlay_exp} = expected
+
+    with :ok <- ensure_revision_headroom(canon_exp),
+         :ok <- ensure_revision_headroom(overlay_exp),
+         {:ok, merged} <- build_merged_canonical_scene(scene, overlay_entries, canon_exp),
          # x00b9: despawn before spawn so same-blake3 replace in one Save works.
          {:ok, after_despawns} <- apply_save_despawns(scene_entries(merged), despawns),
          {:ok, after_spawns} <- apply_save_spawns(after_despawns, spawns),
          {:ok, patched_entries} <- apply_save_patches(after_spawns, parents, fields),
          next_scene = Map.put(merged, "entries", patched_entries),
-         :ok <-
-           cas_set_scene_and_cleared_overlay(
-             room_id,
-             expected_canonical_revision,
-             expected_overlay_revision,
-             next_scene
-           ),
+         :ok <- cas_set_scene_and_cleared_overlay(room_id, canon_exp, overlay_exp, next_scene),
          {:ok, fresh} <- fetch_room(room_id) do
       compose_room_scene(fresh)
     end
@@ -639,7 +638,7 @@ defmodule World.Rooms do
          {:ok, fields} <- normalize_field_patches(fields_raw),
          {:ok, spawns} <- normalize_spawn_patches(spawns_raw),
          {:ok, despawns} <- normalize_despawn_patches(despawns_raw) do
-      {:ok, parents, fields, spawns, despawns}
+      {:ok, %{parents: parents, fields: fields, spawns: spawns, despawns: despawns}}
     end
   end
 
@@ -761,29 +760,38 @@ defmodule World.Rooms do
   defp apply_save_spawns(entries, []), do: {:ok, entries}
 
   defp apply_save_spawns(entries, spawns) when is_list(entries) and is_list(spawns) do
-    # Accumulate with prepend on a reversed base → O(n); final reverse restores order.
-    # Parent must already exist in acc (prior entries or earlier spawns in this batch).
-    case Enum.reduce_while(spawns, {:ok, Enum.reverse(entries)}, fn spawn, {:ok, acc} ->
-           eid = spawn["entity_id"]
-           blake3 = spawn["blake3"]
-           parent = spawn["parent_entity_id"] || 0
-
-           cond do
-             Enum.any?(acc, &entry_entity_id_eq?(&1, eid)) ->
-               {:halt, {:error, :invalid_entry}}
-
-             Enum.any?(acc, fn e -> entry_string(e, "blake3") == blake3 end) ->
-               {:halt, {:error, :duplicate_blake3}}
-
-             parent != 0 and is_nil(Enum.find(acc, &entry_entity_id_eq?(&1, parent))) ->
-               {:halt, {:error, :invalid_entry}}
-
-             true ->
-               {:cont, {:ok, [spawn | acc]}}
-           end
-         end) do
+    # Prepend on reversed base → O(n); final reverse restores order.
+    case Enum.reduce_while(spawns, {:ok, Enum.reverse(entries)}, &append_save_spawn/2) do
       {:ok, rev} -> {:ok, Enum.reverse(rev)}
       {:error, _} = err -> err
+    end
+  end
+
+  defp append_save_spawn(spawn, {:ok, acc}) do
+    case reject_save_spawn_conflict(spawn, acc) do
+      :ok -> {:cont, {:ok, [spawn | acc]}}
+      {:error, _} = err -> {:halt, err}
+    end
+  end
+
+  # Parent must already exist in acc (prior entries or earlier spawns in this batch).
+  defp reject_save_spawn_conflict(spawn, acc) do
+    eid = spawn["entity_id"]
+    blake3 = spawn["blake3"]
+    parent = spawn["parent_entity_id"] || 0
+
+    cond do
+      Enum.any?(acc, &entry_entity_id_eq?(&1, eid)) ->
+        {:error, :invalid_entry}
+
+      Enum.any?(acc, fn e -> entry_string(e, "blake3") == blake3 end) ->
+        {:error, :duplicate_blake3}
+
+      parent != 0 and is_nil(Enum.find(acc, &entry_entity_id_eq?(&1, parent))) ->
+        {:error, :invalid_entry}
+
+      true ->
+        :ok
     end
   end
 

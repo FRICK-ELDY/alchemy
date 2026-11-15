@@ -1818,26 +1818,27 @@ defmodule WorldWeb.RoomController do
 
   # x00b9: claim every Save spawn ticket before packed CAS; release only on CAS conflict.
   defp authorize_save_spawns(spawns, room_id) when is_list(spawns) do
-    Enum.reduce_while(spawns, {:ok, []}, fn spawn, {:ok, acc} ->
-      {entry, ticket} = split_spawn_ticket_entry(spawn_as_params(spawn))
-
-      case authorize_spawn_ticket(ticket, room_id, Map.get(entry, "blake3")) do
-        {:ok, claims} ->
-          blake3 = Map.get(entry, "blake3") || Map.get(entry, :blake3) || ""
-          {:cont, {:ok, [{claims, blake3} | acc]}}
-
-        {:error, _} = err ->
-          Enum.each(acc, fn {c, b} -> release_spawn_claim(c, b) end)
-          {:halt, err}
-      end
-    end)
-    |> case do
+    case Enum.reduce_while(spawns, {:ok, []}, &authorize_one_save_spawn(&1, &2, room_id)) do
       {:ok, acc} -> {:ok, Enum.reverse(acc)}
       {:error, _} = err -> err
     end
   end
 
   defp authorize_save_spawns(_, _), do: {:error, :invalid_entry}
+
+  defp authorize_one_save_spawn(spawn, {:ok, acc}, room_id) do
+    {entry, ticket} = split_spawn_ticket_entry(spawn_as_params(spawn))
+    blake3 = Map.get(entry, "blake3") || Map.get(entry, :blake3) || ""
+
+    case authorize_spawn_ticket(ticket, room_id, blake3) do
+      {:ok, claims} ->
+        {:cont, {:ok, [{claims, blake3} | acc]}}
+
+      {:error, _} = err ->
+        release_save_spawn_claims(acc)
+        {:halt, err}
+    end
+  end
 
   defp spawn_as_params(spawn) when is_map(spawn), do: spawn
   defp spawn_as_params(_), do: %{}
