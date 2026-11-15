@@ -76,7 +76,7 @@
 
 正本: [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md)（レビュー反映の詳細・未決 Q1–Q8 は同書 §6 / [review_proposal](../../roadmap/mvcc_xpbd_review_proposal.md)）。**大規模 CCU / 1000 人はここに書かない**（→ P3-7）。
 
-**現状（2026-11-15）**: Phase 1–2 + Phase 3 dirty 30Hz + 確定レーン x00b2/x00b3 **done**；明示 Save [x00b7](../../roadmap/slices/x00b7-overlay-canonical-save.md)/[x00b8](../../roadmap/slices/x00b8-save-parent-setfield-persist.md)；Spawn 即 CAS 見直し [x00b9](../../roadmap/slices/x00b9-spawn-without-live-cas.md) **done**；Room タブ器 [x00b6](../../roadmap/slices/x00b6-dash-room-tab.md)。残り: Spatial Interest / Spatial VCS。
+**現状（2026-11-15）**: Phase 1–2 + Phase 3 dirty 30Hz + 確定レーン x00b2/x00b3 **done**；明示 Save [x00b7](../../roadmap/slices/x00b7-overlay-canonical-save.md)/[x00b8](../../roadmap/slices/x00b8-save-parent-setfield-persist.md)；Spawn 即 CAS 見直し [x00b9](../../roadmap/slices/x00b9-spawn-without-live-cas.md) **done**；Room タブ器 [x00b6](../../roadmap/slices/x00b6-dash-room-tab.md)；Spatial Lens 個人パネル [x00ba](../../roadmap/slices/x00ba-spatial-lens-uber-sdf.md)–[x00bd](../../roadmap/slices/x00bd-spatial-panel-hit-stickiness.md) **done**。残り: Spatial Interest / Spatial VCS / WorldRoot Lens。
 
 | Phase | 内容 | 吸収する ID | 着手条件 |
 |:---|:---|:---|:---|

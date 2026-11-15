@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）。例外: **非 hex 採番の訂正のみ**（例: 誤 `x00ag` → 正 [`x00b0`](slices/x00b0-phase3-sim-state.md)；`0-9a-f` 外の桁は ID として無効）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x00ba`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x00be`**）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -235,12 +235,16 @@ depends_on: [x0006]
 | x00b7 | — | done | overlay→canonical 明示 Save（Room Save Changes） | [x00b7-overlay-canonical-save.md](slices/x00b7-overlay-canonical-save.md) |
 | x00b8 | — | done | Save 時 parent / SetField 永続（A） | [x00b8-save-parent-setfield-persist.md](slices/x00b8-save-parent-setfield-persist.md) |
 | x00b9 | — | done | Spawn 即 CAS 見直し（C） | [x00b9-spawn-without-live-cas.md](slices/x00b9-spawn-without-live-cas.md) |
+| x00ba | — | done | Spatial Lens Uber-SDF / GpuUiPrim 最小 | [x00ba-spatial-lens-uber-sdf.md](slices/x00ba-spatial-lens-uber-sdf.md) |
+| x00bb | — | done | Spatial Hierarchy Lens（空間板） | [x00bb-spatial-hierarchy-lens.md](slices/x00bb-spatial-hierarchy-lens.md) |
+| x00bc | — | done | Spatial Inspector Zero-String | [x00bc-spatial-inspector-lens.md](slices/x00bc-spatial-inspector-lens.md) |
+| x00bd | — | done | 板ヒット + Stickiness 最小 | [x00bd-spatial-panel-hit-stickiness.md](slices/x00bd-spatial-panel-hit-stickiness.md) |
 
-**現在の次:** 次空き **`x00ba`**（Spatial VCS / Save As / Undo UI 等）。[x00b9](slices/x00b9-spawn-without-live-cas.md) **done**。[x00b8](slices/x00b8-save-parent-setfield-persist.md) **done**。[x00b7](slices/x00b7-overlay-canonical-save.md) **done**。並行候補: VCS 本体（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md)）。**品質本線** · Spot-Check 保留（Q2）。
+**現在の次:** 次空き **`x00be`**（Spatial Interest / Spatial VCS / Save As / Undo UI / WorldRoot Lens 同期 等）。Spatial Lens 個人パネル [x00ba](slices/x00ba-spatial-lens-uber-sdf.md)–[x00bd](slices/x00bd-spatial-panel-hit-stickiness.md) **done**。[x00b9](slices/x00b9-spawn-without-live-cas.md) **done**。並行候補: VCS 本体（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md)）。**品質本線** · Spot-Check 保留（Q2）。
 **規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；実装は MVCC Phase 3 後。1000 人は horizon）。
 旧メモ **P3-7（BLAKE3 ストリーミング）** は **CI が完了しなくなるためマージしない**（現行 P3-7 Spatial Interest とは別物）。Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 
-次の空き番号は **`x00ba`**（Interest 実装用に予約しない）。
+次の空き番号は **`x00be`**（Interest 実装用に予約しない）。
 
 ## 関連
 
