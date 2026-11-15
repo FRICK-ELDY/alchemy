@@ -6,7 +6,7 @@
 * **本線の役割**: **品質本線**（近傍物理・ゼロアロ・handover 速度・補間）。同一 Room の大規模 CCU（1000 人 horizon）は規模本線 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**）
 * **関連スライス**: `x0020` (Desktop 正本), `x0039` (`ManifestSeal`), `x0053` (体感並行補間), `x0067` (Zenoh 非対称 ACL), `x0068` (短命 mTLS), `x0069` (Room 鍵 AEAD), `x0024`（frame tick 連番 + 欠落時 snapshot）
 * **レビュー取り込み**: [mvcc_xpbd_review_proposal.md](mvcc_xpbd_review_proposal.md)（2026-11-13）の P0/P1 を本版に反映。未決事項は §6
-* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜dirty 30Hz（x00ad–[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)）+ 確定レーン土台 [x00b2](slices/x00b2-phase3-edit-lane-foundation.md) **done** + ライブ Reparent/SetField [x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md)（案 B / VCS 前提）。残り: 明示 Save · Spawn 即 CAS 見直し · Spatial Interest。
+* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜dirty 30Hz（x00ad–[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)）+ 確定レーン土台 [x00b2](slices/x00b2-phase3-edit-lane-foundation.md) **done** + ライブ Reparent/SetField [x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md)（案 B / VCS 前提）+ Room タブ器 [x00b6](slices/x00b6-dash-room-tab.md)。残り: 明示 Save · Spawn 即 CAS 見直し · Spatial Interest。
 * **最優先規約**: 全 Rust クレートにおいて `#![forbid(unsafe_code)]` を**クレート直下（`lib.rs` / 該当 `main.rs`）**に宣言し、既存の `./.scripts/ci.sh rust`・`./.scripts/ci.sh protocol`・`make smoke-desktop-handthrough` を常に Green に保つこと。差分配信の用語は **dirty 合成 + x0024 snapshot**（`V_ack` / 「XOR デルタ」は使わない）。
 
 ---
@@ -596,7 +596,7 @@ flowchart LR
 
 **DoD に含めないもの**: 同一 Room の大規模 CCU・フルメッシュ解除・interest キー族。それらは [spatial_interest.md](spatial_interest.md) のマイルストーン（32→64→128、1000 は horizon）が担当する。
 
-**現状**: Phase 1–2 + Phase 3 着手〜dirty 30Hz + 確定レーン（x00a3–[x00b2](slices/x00b2-phase3-edit-lane-foundation.md) + [x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md) ライブ ops）。次は明示 Save / Spawn 即 CAS 見直し（VCS）。
+**現状**: Phase 1–2 + Phase 3 着手〜dirty 30Hz + 確定レーン（x00a3–[x00b2](slices/x00b2-phase3-edit-lane-foundation.md) + [x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md) ライブ ops）+ [x00b6](slices/x00b6-dash-room-tab.md) Room タブ器。次は明示 Save / Spawn 即 CAS 見直し（VCS）。
 
 ### Phase 1: 既存 `shared-sim` の進化とヘッドレス決定論テスト（host/app 本線は触らない）
 
@@ -634,7 +634,7 @@ flowchart LR
 * **[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)** — host dirty 30Hz 本番切替 — **done**。
 * **[x00b2](slices/x00b2-phase3-edit-lane-foundation.md)** — 確定レーン土台（`…/edit` + Spawn/Despawn）— **done**。
 * **[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md)** — ライブ Reparent/SetField + FrameBridge + snapshot `scene_rev`（案 B）— **done**。
-* 後続（次空き `x00b6`〜）: 明示 Save · Spawn 即 CAS 見直し（VCS 負債）。`x00b4` / `x00b5` は assets 所有権の穴塞ぎ（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §14.4）に使用済み。
+* 後続（次空き `x00b7`〜）: 明示 Save · Spawn 即 CAS 見直し（VCS 負債）。Room タブ器は [x00b6](slices/x00b6-dash-room-tab.md) **done**（Save 本体は後続）。`x00b4` / `x00b5` は assets 所有権の穴塞ぎ（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §14.4）に使用済み。
 
 1. **作業内容**:
    * `ALCHEMY_SIM_BACKEND=mvcc_xpbd|epoch_xpbd` で切替可能な権威ループ。Ingress 検疫 → Fork/`make_mut` → XPBD（**接触オン＝`bounds: Some`**）→ 階層 → Commit。ここで P1-2 の host 配線を閉じる（**→ x00ad**）。

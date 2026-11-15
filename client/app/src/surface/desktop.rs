@@ -406,6 +406,11 @@ fn clear_worlds_session_shell(ui: &mut SystemUi) {
     ui.state.end_session_enter();
     // Drop peer bit so Leave/Logout can push in_session=false (XR Inventory unblocks).
     ui.state.in_session_peer = false;
+    // Room tab is in-session only (x00b6).
+    if ui.state.tab == DashTab::Room {
+        ui.state.tab = DashTab::Home;
+        ui.state.room_sub_tab = crate::system_ui::RoomSubTab::Settings;
+    }
     ui.mark_dash_chrome_dirty();
 }
 
@@ -1774,13 +1779,14 @@ impl ApplicationHandler for App {
                             "Host connection lost — wait for return or Leave".into();
                         self.ui.state.home_status =
                             "Host connection lost — wait for return or Leave".into();
-                        // Inventory is Live-only (x007f): stall → Waiting drops Inventory/Home/
-                        // Worlds to Home so the session shell is visible. Settings may stay.
+                        // Inventory is Live-only (x007f): stall → Waiting opens Room so
+                        // Leave / host CTA stay reachable (x00b6). Settings may stay.
                         if matches!(
                             self.ui.state.tab,
-                            DashTab::Inventory | DashTab::Home | DashTab::Worlds
+                            DashTab::Inventory | DashTab::Home | DashTab::Worlds | DashTab::Room
                         ) {
-                            self.ui.state.tab = DashTab::Home;
+                            self.ui.state.tab = DashTab::Room;
+                            self.ui.state.room_sub_tab = crate::system_ui::RoomSubTab::Settings;
                         }
                         self.ui.state.shell = OnboardingShell::Dash;
                         self.ui.state.open = true;

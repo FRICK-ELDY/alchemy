@@ -35,6 +35,8 @@ pub enum FacetId {
     Settings,
     /// Inventory take-out (x006d).
     Inventory,
+    /// In-room Room tab (x00b6).
+    Room,
     /// Worlds catalog (x007c).
     Worlds,
     /// Exit tab body + exit actions. **Pinned** — cannot be removed.
@@ -52,6 +54,7 @@ impl FacetId {
             Self::Home => "Home",
             Self::Settings => "Settings",
             Self::Inventory => "Inventory",
+            Self::Room => "Room",
             Self::Worlds => "Worlds",
             Self::Exit => "Exit",
         }
@@ -62,9 +65,10 @@ impl FacetId {
 pub const OFFICIAL_DEFAULT_FACETS: &[FacetId] = &[
     FacetId::Chrome,
     FacetId::Home,
-    // Worlds Facet widgets remain for session shell; no bottom tab.
+    // Worlds Facet widgets remain for enter overlay / catalog; no bottom tab.
     FacetId::Worlds,
     FacetId::Inventory,
+    FacetId::Room,
     FacetId::Settings,
     FacetId::Exit,
 ];
@@ -114,6 +118,14 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::SceneMeshRow1
         | WidgetId::SceneMeshRow2
         | WidgetId::SceneMeshRow3 => FacetId::Inventory,
+        WidgetId::TabRoom
+        | WidgetId::RoomSubSettings
+        | WidgetId::RoomSubUsers
+        | WidgetId::RoomSubPermissions
+        | WidgetId::WorldsLeave
+        | WidgetId::WorldsRejoin
+        | WidgetId::WorldsHostRescue
+        | WidgetId::WorldsTakeover => FacetId::Room,
         WidgetId::TabWorlds
         | WidgetId::WorldsRefresh
         | WidgetId::WorldsFilterAll
@@ -121,10 +133,6 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::WorldsCreate
         | WidgetId::WorldsJoinGuest
         | WidgetId::WorldsHostRoom
-        | WidgetId::WorldsLeave
-        | WidgetId::WorldsRejoin
-        | WidgetId::WorldsHostRescue
-        | WidgetId::WorldsTakeover
         | WidgetId::SessionEnterBlocker
         | WidgetId::SessionEnterCancel
         | WidgetId::WorldsRow0
@@ -218,8 +226,17 @@ mod tests {
     fn official_set_contains_home_and_pinned_exit() {
         let set = DashRoot::official_facets();
         assert!(set.contains(&FacetId::Home));
+        assert!(set.contains(&FacetId::Room));
         assert!(set.contains(&FacetId::Exit));
         assert!(set.iter().any(|f| f.pinned()));
+    }
+
+    #[test]
+    fn room_widgets_map_to_room_facet() {
+        assert_eq!(facet_of(WidgetId::TabRoom), FacetId::Room);
+        assert_eq!(facet_of(WidgetId::RoomSubSettings), FacetId::Room);
+        assert_eq!(facet_of(WidgetId::WorldsLeave), FacetId::Room);
+        assert_eq!(FacetId::Room.label(), "Room");
     }
 
     #[test]

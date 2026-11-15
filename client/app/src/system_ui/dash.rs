@@ -1,6 +1,6 @@
 //! Official default Facet set layout (x000f + x0018 Home + x0037 create panel).
 //!
-//! Facets: Chrome (top) · Home · Settings · Exit (Pinned). Button colors react to hover/press.
+//! Facets: Chrome (top) · Home · Inventory · Room · Settings · Exit (Pinned).
 //! Home holds account / create-world form strings only — no auth/world HTTP here.
 //! Create panel visuals are placeholders (swap later).
 //! Onboarding shell: Step1 operator → Step2 auth → MainHub (Participation | Organizing).
@@ -68,8 +68,19 @@ pub enum DashTab {
     Settings,
     /// Inventory take-out (x006d).
     Inventory,
+    /// In-room Room tab (x00b6).
+    Room,
     /// Legacy / Join waiting shell carrier (no bottom tab; catalog is MainHub).
     Worlds,
+}
+
+/// Room tab sub-menus (Resonite Session-like; x00b6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RoomSubTab {
+    #[default]
+    Settings,
+    Users,
+    Permissions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,6 +216,8 @@ pub struct DashState {
     pub session_enter_seen_manifest: bool,
     /// Last enter-wait detail / heartbeat log.
     pub session_enter_last_detail_at: Option<std::time::Instant>,
+    /// Room tab sub-menu (local; not mirrored Desktop↔XR · x00b6).
+    pub room_sub_tab: RoomSubTab,
     /// Settings body scroll offset (px); content above bottom tabs is clipped.
     pub settings_scroll: f32,
     /// Tape / Bitmask X-Ray panel text (local; not mirrored Desktop↔XR).
@@ -287,6 +300,7 @@ impl Default for DashState {
             worlds_seen_frame_tick: None,
             worlds_last_frame_at: None,
             worlds_in_room: false,
+            room_sub_tab: RoomSubTab::Settings,
             worlds_key_stale: false,
             session_enter_active: false,
             session_enter_progress: 0.0,
@@ -497,11 +511,37 @@ impl SharedDashLogic {
         if s.open != self.open {
             s.open = self.open;
         }
+        // Session flags before tab gates: XR must see peer `in_session` /
+        // `inventory_live` in the same chrome update as `tab=Room|Inventory`
+        // (x007f / x00b6). Desktop never latches peer bits into `*_peer`.
+        if s.home_session_actions_enabled {
+            if s.in_session_peer {
+                s.in_session_peer = false;
+                changed = true;
+            }
+            if s.inventory_live_peer {
+                s.inventory_live_peer = false;
+                changed = true;
+            }
+        } else {
+            if s.in_session_peer != self.in_session {
+                s.in_session_peer = self.in_session;
+                changed = true;
+            }
+            if s.inventory_live_peer != self.inventory_live {
+                s.inventory_live_peer = self.inventory_live;
+                changed = true;
+            }
+        }
         // Live Inventory (x007f): peer Inventory tab is allowed when not blocked.
+        // Room (x00b6): peer Room tab only when in-session.
         let peer_inventory = self.tab == DashTab::Inventory;
+        let peer_room = self.tab == DashTab::Room;
         if s.tab != self.tab {
             if s.inventory_blocked() && peer_inventory {
                 // keep local tab (Home/Settings/Exit) while Waiting / KeyStale / etc.
+            } else if !s.room_tab_allowed() && peer_room {
+                // keep local tab while not in a room.
             } else {
                 s.tab = self.tab;
             }
@@ -536,27 +576,6 @@ impl SharedDashLogic {
         if s.server_operator != self.server_operator {
             s.server_operator = self.server_operator;
             changed = true;
-        }
-        // Desktop owns worlds_* — never latch peer in_session into in_session_peer (CAS miss heal).
-        // XR only: mirror Desktop-authored in_session / inventory_live for Inventory gate (x007f).
-        if s.home_session_actions_enabled {
-            if s.in_session_peer {
-                s.in_session_peer = false;
-                changed = true;
-            }
-            if s.inventory_live_peer {
-                s.inventory_live_peer = false;
-                changed = true;
-            }
-        } else {
-            if s.in_session_peer != self.in_session {
-                s.in_session_peer = self.in_session;
-                changed = true;
-            }
-            if s.inventory_live_peer != self.inventory_live {
-                s.inventory_live_peer = self.inventory_live;
-                changed = true;
-            }
         }
         if layout_changed || !s.open {
             s.hover = None;
@@ -1014,6 +1033,16 @@ impl DashState {
         }
     }
 
+    /// Room tab allowed while in a room session (Waiting / Live / KeyStale / Entering · x00b6).
+    /// Desktop: local `worlds_*`. XR: Desktop-authored `in_session` via `in_session_peer`.
+    pub fn room_tab_allowed(&self) -> bool {
+        if self.home_session_actions_enabled {
+            self.session_shell_active()
+        } else {
+            self.in_session_peer
+        }
+    }
+
     /// Value written to SharedDashLogic.in_session for Desktop↔XR chrome sync.
     pub fn in_session_for_store(&self) -> bool {
         dash_in_session_for_store(self)
@@ -1190,15 +1219,14 @@ fn rebuild_session_shell(
     cw: f32,
     _ch: f32,
 ) {
-    tree.push_label(Rect::new(cx, cy0, cw, 22.0), "Session", TEXT, 2.0);
     tree.push_label(
-        Rect::new(cx, cy0 + 24.0, cw, 16.0),
+        Rect::new(cx, cy0, cw, 16.0),
         format!("room {}", state.home_room_id),
         MUTED,
         1.0,
     );
 
-    let mut y = cy0 + 52.0;
+    let mut y = cy0 + 28.0;
     let btn_h = 36.0;
     let gap = 10.0;
 
@@ -1321,6 +1349,86 @@ fn rebuild_session_shell(
 
     if !state.worlds_status.is_empty() {
         tree.push_label(Rect::new(cx, y, cw, 20.0), &state.worlds_status, MUTED, 1.0);
+        y += 24.0;
+    }
+
+    // Save Changes stub (explicit Save is a later slice; not hit-tested).
+    let save = Rect::new(cx, y + 8.0, 180.0, 36.0);
+    tree.push_rect(save, Color::rgba(0.18, 0.18, 0.20, 0.85));
+    tree.push_label(
+        Rect::new(save.x + 12.0, save.y + 10.0, 156.0, 16.0),
+        "Save Changes",
+        MUTED,
+        1.1,
+    );
+    tree.push_label(
+        Rect::new(cx, save.y + 42.0, cw, 32.0),
+        "Save Changes — coming later (explicit Save / VCS).",
+        MUTED,
+        1.0,
+    );
+}
+
+/// Room tab body: Settings / Users / Permissions sub-menus (x00b6).
+fn rebuild_room(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32, cw: f32, ch: f32) {
+    tree.push_label(Rect::new(cx, cy0, cw, 22.0), "Room", TEXT, 2.0);
+
+    let sub_y = cy0 + 28.0;
+    let sub_h = 32.0;
+    let gap = 8.0;
+    let sub_w = ((cw - gap * 2.0) / 3.0).max(80.0);
+    // First sub labeled "Session" (not "Settings") so it does not collide with
+    // the personal Settings bottom tab (x00b6).
+    let subs = [
+        (RoomSubTab::Settings, WidgetId::RoomSubSettings, "Session"),
+        (RoomSubTab::Users, WidgetId::RoomSubUsers, "Users"),
+        (
+            RoomSubTab::Permissions,
+            WidgetId::RoomSubPermissions,
+            "Permissions",
+        ),
+    ];
+    for (i, (sub, id, label)) in subs.iter().enumerate() {
+        let x = cx + (sub_w + gap) * i as f32;
+        let r = Rect::new(x, sub_y, sub_w, sub_h);
+        let active = state.room_sub_tab == *sub;
+        let base = if active {
+            Color::rgba(0.18, 0.32, 0.36, 0.95)
+        } else {
+            BTN
+        };
+        tree.push_rect(r, state.interact(*id, base));
+        tree.push_label(
+            Rect::new(r.x + 8.0, r.y + 8.0, r.w - 16.0, 16.0),
+            *label,
+            TEXT,
+            1.1,
+        );
+        tree.register_hit(*id, r);
+    }
+
+    let body_y = sub_y + sub_h + 16.0;
+    let body_h = (cy0 + ch - body_y).max(40.0);
+    match state.room_sub_tab {
+        RoomSubTab::Settings => {
+            rebuild_session_shell(tree, state, cx, body_y, cw, body_h);
+        }
+        RoomSubTab::Users => {
+            tree.push_label(
+                Rect::new(cx, body_y, cw, 40.0),
+                "Users — participant list and moderation coming later.",
+                MUTED,
+                1.1,
+            );
+        }
+        RoomSubTab::Permissions => {
+            tree.push_label(
+                Rect::new(cx, body_y, cw, 40.0),
+                "Permissions — editor roles (editor_subs) coming later.",
+                MUTED,
+                1.1,
+            );
+        }
     }
 }
 
@@ -2534,10 +2642,16 @@ fn rebuild_main_hub_organizing(
     tree.register_hit(WidgetId::MainHubCreateWorld, create);
 }
 
-pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
+pub fn rebuild(tree: &mut LayoutTree, state: &mut DashState) {
     tree.clear();
     if !state.open {
         return;
+    }
+    // Single heal site for stale Room (x00b6). Desktop↔XR chrome dirty is
+    // SystemUi::rebuild's job — this path only keeps body + bottom highlight aligned.
+    if state.tab == DashTab::Room && !state.room_tab_allowed() {
+        state.tab = DashTab::Home;
+        state.room_sub_tab = RoomSubTab::Settings;
     }
 
     let w = state.canvas_w.max(1.0);
@@ -2698,22 +2812,36 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
             }
             OnboardingShell::Dash => {}
         }
-    } else if state.session_shell_active() && matches!(state.tab, DashTab::Home | DashTab::Worlds) {
-        // In-room shell on Home/Worlds only. Inventory is Live-unlocked (x007f) and
-        // must render `rebuild_inventory` — not the session Leave/status panel.
-        // Settings/Exit stay reachable (Server Operator / quit).
-        rebuild_session_shell(tree, state, cx, cy0, cw, ch);
     } else {
         match state.tab {
             DashTab::Home => {
                 rebuild_home(tree, state, cx, cy0, cw, ch, false);
+                if state.session_shell_active() {
+                    tree.push_label(
+                        Rect::new(cx, cy0 + ch - 28.0, cw, 20.0),
+                        "In room — open the Room tab for Leave / host controls.",
+                        MUTED,
+                        1.0,
+                    );
+                }
             }
             // Legacy tab value after Join — treat as Home until Leave clears session.
             DashTab::Worlds => {
                 rebuild_home(tree, state, cx, cy0, cw, ch, false);
+                if state.session_shell_active() {
+                    tree.push_label(
+                        Rect::new(cx, cy0 + ch - 28.0, cw, 20.0),
+                        "In room — open the Room tab for Leave / host controls.",
+                        MUTED,
+                        1.0,
+                    );
+                }
             }
             DashTab::Inventory => {
                 rebuild_inventory(tree, state, cx, cy0, cw, ch);
+            }
+            DashTab::Room => {
+                rebuild_room(tree, state, cx, cy0, cw, ch);
             }
             // Pinned Exit Facet body — single Exit (Exit Client only abolished).
             DashTab::Exit => {
@@ -2765,9 +2893,9 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
         tree.clip = None;
         tree.push_rect(Rect::new(0.0, by, w, BOTTOM_H), BAR);
 
-        let tab_w = 76.0;
-        let gap = 10.0;
-        let tabs_total = tab_w * 4.0 + gap * 3.0;
+        let tab_w = 72.0;
+        let gap = 8.0;
+        let tabs_total = tab_w * 5.0 + gap * 4.0;
         let tab0_x = (w - tabs_total) * 0.5;
 
         let draw_tab = |tree: &mut LayoutTree,
@@ -2825,6 +2953,16 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
             tree,
             state,
             tab0_x + (tab_w + gap) * 2.0,
+            DashTab::Room,
+            WidgetId::TabRoom,
+            "sync",
+            FacetId::Room.label(),
+            Color::rgba(0.16, 0.28, 0.30, 0.95),
+        );
+        draw_tab(
+            tree,
+            state,
+            tab0_x + (tab_w + gap) * 3.0,
             DashTab::Settings,
             WidgetId::TabSettings,
             "settings",
@@ -2834,7 +2972,7 @@ pub fn rebuild(tree: &mut LayoutTree, state: &DashState) {
         draw_tab(
             tree,
             state,
-            tab0_x + (tab_w + gap) * 3.0,
+            tab0_x + (tab_w + gap) * 4.0,
             DashTab::Exit,
             WidgetId::TabExit,
             "power",
@@ -3201,7 +3339,7 @@ mod tests {
     #[test]
     fn open_exit_tab_has_exit_hits() {
         let mut tree = LayoutTree::default();
-        let state = DashState {
+        let mut state = DashState {
             open: true,
             shell: OnboardingShell::Dash,
             tab: DashTab::Exit,
@@ -3209,7 +3347,7 @@ mod tests {
             canvas_h: 540.0,
             ..Default::default()
         };
-        rebuild(&mut tree, &state);
+        rebuild(&mut tree, &mut state);
         assert!(tree
             .hits
             .iter()
@@ -3221,7 +3359,7 @@ mod tests {
     #[test]
     fn open_home_tab_has_submit() {
         let mut tree = LayoutTree::default();
-        let state = DashState {
+        let mut state = DashState {
             open: true,
             shell: OnboardingShell::Dash,
             tab: DashTab::Home,
@@ -3229,7 +3367,7 @@ mod tests {
             canvas_h: 540.0,
             ..Default::default()
         };
-        rebuild(&mut tree, &state);
+        rebuild(&mut tree, &mut state);
         assert!(tree.hits.iter().any(|(id, _)| *id == WidgetId::HomeSubmit));
         assert!(tree.hits.iter().any(|(id, _)| *id == WidgetId::TabHome));
     }
@@ -3237,7 +3375,7 @@ mod tests {
     #[test]
     fn logged_in_hub_points_to_worlds_not_join() {
         let mut tree = LayoutTree::default();
-        let state = DashState {
+        let mut state = DashState {
             open: true,
             shell: OnboardingShell::Dash,
             tab: DashTab::Home,
@@ -3246,7 +3384,7 @@ mod tests {
             home_logged_in_as: Some("alice".into()),
             ..Default::default()
         };
-        rebuild(&mut tree, &state);
+        rebuild(&mut tree, &mut state);
         assert!(tree
             .hits
             .iter()
@@ -3274,7 +3412,7 @@ mod tests {
             ..Default::default()
         };
         state.settings_scroll = state.settings_max_scroll();
-        rebuild(&mut tree, &state);
+        rebuild(&mut tree, &mut state);
         assert!(tree
             .hits
             .iter()
@@ -3307,7 +3445,7 @@ mod tests {
             ..Default::default()
         };
         state.settings_scroll = state.settings_max_scroll();
-        rebuild(&mut tree, &state);
+        rebuild(&mut tree, &mut state);
         assert!(tree
             .hits
             .iter()
@@ -3325,7 +3463,7 @@ mod tests {
     #[test]
     fn settings_advanced_room_id_not_editable_when_signed_out() {
         let mut tree = LayoutTree::default();
-        let state = DashState {
+        let mut state = DashState {
             open: true,
             shell: OnboardingShell::Dash,
             tab: DashTab::Settings,
@@ -3334,7 +3472,7 @@ mod tests {
             home_logged_in_as: None,
             ..Default::default()
         };
-        rebuild(&mut tree, &state);
+        rebuild(&mut tree, &mut state);
         assert!(!tree
             .hits
             .iter()
@@ -3344,7 +3482,7 @@ mod tests {
     #[test]
     fn create_panel_has_all_access_levels_and_start_at_default_canvas() {
         let mut tree = LayoutTree::default();
-        let state = DashState {
+        let mut state = DashState {
             open: true,
             shell: OnboardingShell::Dash,
             tab: DashTab::Home,
@@ -3355,7 +3493,7 @@ mod tests {
             home_access_level: AccessLevel::Friends,
             ..Default::default()
         };
-        rebuild(&mut tree, &state);
+        rebuild(&mut tree, &mut state);
         assert!(tree
             .hits
             .iter()
@@ -3377,7 +3515,7 @@ mod tests {
     #[test]
     fn create_panel_xr_omits_start_hit() {
         let mut tree = LayoutTree::default();
-        let state = DashState {
+        let mut state = DashState {
             open: true,
             shell: OnboardingShell::Dash,
             tab: DashTab::Home,
@@ -3388,7 +3526,7 @@ mod tests {
             home_session_actions_enabled: false,
             ..Default::default()
         };
-        rebuild(&mut tree, &state);
+        rebuild(&mut tree, &mut state);
         assert!(!tree
             .hits
             .iter()
@@ -3413,9 +3551,52 @@ mod tests {
     #[test]
     fn closed_has_no_hits() {
         let mut tree = LayoutTree::default();
-        rebuild(&mut tree, &DashState::default());
+        let mut closed = DashState::default();
+        rebuild(&mut tree, &mut closed);
         assert!(tree.hits.is_empty());
         assert!(tree.draws.is_empty());
+    }
+
+    #[test]
+    fn rebuild_heals_stale_room_tab_highlight() {
+        let mut tree = LayoutTree::default();
+        let mut state = DashState {
+            open: true,
+            shell: OnboardingShell::Dash,
+            tab: DashTab::Room,
+            canvas_w: 960.0,
+            canvas_h: 540.0,
+            ..Default::default()
+        };
+        rebuild(&mut tree, &mut state);
+        assert_eq!(state.tab, DashTab::Home);
+        assert_eq!(state.room_sub_tab, RoomSubTab::Settings);
+        let home_hit = tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::TabHome)
+            .map(|(_, r)| *r)
+            .expect("TabHome");
+        let room_hit = tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::TabRoom)
+            .map(|(_, r)| *r)
+            .expect("TabRoom");
+        // Selected tabs get a background rect; healed Home should, stale Room must not.
+        assert!(
+            tree.draws
+                .iter()
+                .any(|d| { matches!(d, DrawCmd::Rect { rect, .. } if *rect == home_hit) }),
+            "Home tab should show active highlight after heal"
+        );
+        assert!(
+            !tree
+                .draws
+                .iter()
+                .any(|d| { matches!(d, DrawCmd::Rect { rect, .. } if *rect == room_hit) }),
+            "Room tab must not keep active highlight after heal"
+        );
     }
 
     #[test]
@@ -3432,7 +3613,7 @@ mod tests {
             ..Default::default()
         };
         state.refresh_hotswitch_label();
-        rebuild(&mut tree, &state);
+        rebuild(&mut tree, &mut state);
         assert!(tree
             .hits
             .iter()
@@ -3444,7 +3625,7 @@ mod tests {
 
     #[test]
     fn settings_tab_shows_max_speed() {
-        let state = DashState {
+        let mut state = DashState {
             open: true,
             shell: OnboardingShell::Dash,
             tab: DashTab::Settings,
@@ -3459,7 +3640,7 @@ mod tests {
         assert!(state.turn_mode_label.contains("Snap"));
         assert!(state.snap_degrees_label.contains("30"));
         let mut tree = LayoutTree::default();
-        rebuild(&mut tree, &state);
+        rebuild(&mut tree, &mut state);
         assert!(tree.draws.len() > 5);
         assert!(tree
             .hits
@@ -3496,7 +3677,7 @@ mod tests {
             canvas_h: 540.0,
             ..Default::default()
         };
-        rebuild(&mut tree, &state);
+        rebuild(&mut tree, &mut state);
         let id = WidgetId::ExitClientAndHost;
         let hit_r = tree
             .hits
@@ -3512,7 +3693,7 @@ mod tests {
         };
         let color_before = color_at(&tree).expect("button rect");
         state.hover = Some(id);
-        rebuild(&mut tree, &state);
+        rebuild(&mut tree, &mut state);
         let color_after = color_at(&tree).expect("hovered button rect");
         assert!(
             color_after.r > color_before.r || color_after.g > color_before.g,
@@ -3600,5 +3781,105 @@ mod tests {
         assert_eq!(s.tab, DashTab::Settings);
         assert!(s.hover.is_none());
         assert!(s.pressed.is_none());
+    }
+
+    #[test]
+    fn xr_apply_chrome_accepts_room_with_in_session_same_update() {
+        // Regression (x00b6): tab=Room + in_session=true in one chrome update must
+        // not reject Room because local in_session_peer was still false.
+        let logic = SharedDashLogic {
+            open: true,
+            tab: DashTab::Room,
+            shell: OnboardingShell::Dash,
+            in_session: true,
+            inventory_live: false,
+            ..Default::default()
+        };
+        let mut xr = DashState {
+            open: true,
+            tab: DashTab::Home,
+            shell: OnboardingShell::Dash,
+            home_session_actions_enabled: false,
+            in_session_peer: false,
+            inventory_live_peer: false,
+            ..Default::default()
+        };
+        logic.apply_chrome_to(&mut xr);
+        assert!(xr.in_session_peer);
+        assert_eq!(xr.tab, DashTab::Room);
+    }
+
+    #[test]
+    fn xr_apply_chrome_rejects_room_without_in_session() {
+        let logic = SharedDashLogic {
+            open: true,
+            tab: DashTab::Room,
+            shell: OnboardingShell::Dash,
+            in_session: false,
+            ..Default::default()
+        };
+        let mut xr = DashState {
+            open: true,
+            tab: DashTab::Home,
+            shell: OnboardingShell::Dash,
+            home_session_actions_enabled: false,
+            in_session_peer: false,
+            ..Default::default()
+        };
+        logic.apply_chrome_to(&mut xr);
+        assert!(!xr.in_session_peer);
+        assert_eq!(xr.tab, DashTab::Home);
+    }
+
+    #[test]
+    fn xr_apply_chrome_accepts_inventory_when_live_same_update() {
+        let logic = SharedDashLogic {
+            open: true,
+            tab: DashTab::Inventory,
+            shell: OnboardingShell::Dash,
+            in_session: true,
+            inventory_live: true,
+            ..Default::default()
+        };
+        let mut xr = DashState {
+            open: true,
+            tab: DashTab::Home,
+            shell: OnboardingShell::Dash,
+            home_session_actions_enabled: false,
+            in_session_peer: true,
+            inventory_live_peer: false,
+            ..Default::default()
+        };
+        assert!(xr.inventory_blocked());
+        logic.apply_chrome_to(&mut xr);
+        assert!(xr.inventory_live_peer);
+        assert!(!xr.inventory_blocked());
+        assert_eq!(xr.tab, DashTab::Inventory);
+    }
+
+    #[test]
+    fn xr_apply_chrome_accepts_inventory_from_idle_same_update() {
+        // Same shape as Room: both peer flags false → in_session+live+Inventory.
+        let logic = SharedDashLogic {
+            open: true,
+            tab: DashTab::Inventory,
+            shell: OnboardingShell::Dash,
+            in_session: true,
+            inventory_live: true,
+            ..Default::default()
+        };
+        let mut xr = DashState {
+            open: true,
+            tab: DashTab::Home,
+            shell: OnboardingShell::Dash,
+            home_session_actions_enabled: false,
+            in_session_peer: false,
+            inventory_live_peer: false,
+            ..Default::default()
+        };
+        logic.apply_chrome_to(&mut xr);
+        assert!(xr.in_session_peer);
+        assert!(xr.inventory_live_peer);
+        assert_eq!(xr.tab, DashTab::Inventory);
     }
 }
