@@ -2,16 +2,17 @@ syntax = "proto3";
 
 package alchemy.edit;
 
-// Deterministic edit lane (mvcc_xpbd §4.7 / x00b2).
+// Deterministic edit lane (mvcc_xpbd §4.7 / x00b2–x00b3).
 // Client puts EditProposal on …/edit (AeadKind::EditProposal).
 // Host puts EditCommit on the same key (AeadKind::EditCommit).
-// x00b2 guarantees Spawn + Despawn only; Reparent/SetField are later slices.
+// x00b3: Reparent/SetField are live-only (host live_scene_rev); no overlay CAS.
+// Spawn/Despawn may still CAS overlay (VCS debt) but Commit.scene_rev is live tip.
 
 message EditProposal {
   bytes session_pub = 1;
   uint64 control_seq = 2;
-  // Overlay packed revision the proposer last observed via EditCommit (0 = none yet).
-  // Same space as EditCommit.scene_rev / RoomScene.revision — not Manifest revision.
+  // Last observed host live_scene_rev via EditCommit (0 = none yet).
+  // Not overlay packed revision (x00b3); optimistic locks are per-op.
   uint64 base_scene_rev = 3;
   // Client-chosen id for commit correlation.
   uint64 op_id = 4;
@@ -26,6 +27,8 @@ message EditOp {
   oneof op {
     EditSpawn spawn = 1;
     EditDespawn despawn = 2;
+    EditReparent reparent = 3;
+    EditSetField set_field = 4;
   }
 }
 
@@ -48,8 +51,25 @@ message EditDespawn {
   uint32 entity_id = 1;
 }
 
+message EditReparent {
+  uint32 child_entity_id = 1;
+  // 0 = world root. Optimistic lock on current parent.
+  uint32 expected_parent_entity_id = 2;
+  // 0 = world root.
+  uint32 new_parent_entity_id = 3;
+}
+
+message EditSetField {
+  uint32 entity_id = 1;
+  // See alchemy_protocol::edit_field_id.
+  uint32 field_id = 2;
+  bytes value = 3;
+  // BLAKE3-256 of the current field encoding (optimistic lock).
+  bytes expected_value_hash = 4;
+}
+
 message EditCommit {
-  // Host-assigned monotonic live scene_rev (accept only). Reject keeps prior.
+  // Host live_scene_rev (accept only). Reject keeps prior tip.
   uint64 scene_rev = 1;
   uint64 op_id = 2;
   bytes author_session_pub = 3;

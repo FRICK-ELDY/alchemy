@@ -333,8 +333,8 @@ pub struct SharedState {
     pub host_pub: Mutex<Option<Vec<u8>>>,
     /// Last accepted Manifest `(host_generation, revision)` watermark (x003a).
     pub manifest_gen_rev: Mutex<Option<alchemy_protocol::generation_gate::GenRev>>,
-    /// Monotonic tip of **accepted** `EditCommit.scene_rev` (overlay packed; x00b2).
-    /// Used as `EditProposal.base_scene_rev` — not Manifest revision; rejects do not update.
+    /// Monotonic tip of **accepted** `EditCommit.scene_rev` (host live tip; x00b3).
+    /// Used as `EditProposal.base_scene_rev` — not overlay/Manifest revision; rejects do not update.
     pub last_edit_scene_rev: Mutex<Option<u64>>,
     /// Last accepted Manifest `world_seal` for PlaceRead issuance (x006c).
     pub last_world_seal: Mutex<Option<String>>,

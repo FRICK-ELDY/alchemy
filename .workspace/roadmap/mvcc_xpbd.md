@@ -6,7 +6,7 @@
 * **本線の役割**: **品質本線**（近傍物理・ゼロアロ・handover 速度・補間）。同一 Room の大規模 CCU（1000 人 horizon）は規模本線 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**）
 * **関連スライス**: `x0020` (Desktop 正本), `x0039` (`ManifestSeal`), `x0053` (体感並行補間), `x0067` (Zenoh 非対称 ACL), `x0068` (短命 mTLS), `x0069` (Room 鍵 AEAD), `x0024`（frame tick 連番 + 欠落時 snapshot）
 * **レビュー取り込み**: [mvcc_xpbd_review_proposal.md](mvcc_xpbd_review_proposal.md)（2026-11-13）の P0/P1 を本版に反映。未決事項は §6
-* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜dirty 30Hz（x00ad–[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)）+ 確定レーン土台 [x00b2](slices/x00b2-phase3-edit-lane-foundation.md) **done**。残り: `x00b3`〜（Reparent/SetField 等）。
+* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜dirty 30Hz（x00ad–[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)）+ 確定レーン土台 [x00b2](slices/x00b2-phase3-edit-lane-foundation.md) **done** + ライブ Reparent/SetField [x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md)（案 B / VCS 前提）。残り: 明示 Save · Spawn 即 CAS 見直し · Spatial Interest。
 * **最優先規約**: 全 Rust クレートにおいて `#![forbid(unsafe_code)]` を**クレート直下（`lib.rs` / 該当 `main.rs`）**に宣言し、既存の `./.scripts/ci.sh rust`・`./.scripts/ci.sh protocol`・`make smoke-desktop-handthrough` を常に Green に保つこと。差分配信の用語は **dirty 合成 + x0024 snapshot**（`V_ack` / 「XOR デルタ」は使わない）。
 
 ---
@@ -23,10 +23,10 @@ P0 closed
   → Phase 3 PROTOCOL_PIN x00af✓
   → Phase 3 sim_state x00b0✓
   → Phase 3 dirty 30Hz 本番 x00b1✓
-  → Phase 3 残り（確定レーン並走）
-    → 規模本線: spatial_interest.md（P3-7；アウトライン並走可・実装は Phase 3 後）
+  → Phase 3 確定レーン x00b2（Spawn/Despawn）+ x00b3（ライブ Reparent/SetField）
+    → 明示 Save / Spawn 即 CAS 見直し（VCS）→ 規模本線 spatial_interest（P3-7）
 P1-6 / P2（vault・UI/docs/CI）は並走可。P3-1 / P3-3 以降は独立。
-確定レーン（§4.7）の設計確定は今、実装は Phase 3 と並走可（inventory 一般化）。
+確定レーン: ライブ tip と永続 Save を分離（§4.7 / Q3）。Spawn 即 overlay CAS は移行期の例外（VCS 負債）。
 ```
 
 | ゲート | 条件 | 破ってはならないこと |
@@ -543,25 +543,27 @@ fn cs_interpolate_entities(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 ### 4.7 確定レーン（構造変更・inventory の一般化）
 
-60Hz 物理ページは「毎ティックの姿勢」だけを扱う。**生成・削除・親子・プロパティ編集**（VR 内創作）は別レーンで「提案 → 検証 → 確定」する。既存の inventory spawn/despawn（Room AEAD・署名・レート・`control_seq`・overlay revision CAS）を一般化する。設計確定は今（P0）、実装は Phase 3 と並走可。
+60Hz 物理ページは「毎ティックの姿勢」だけを扱う。**生成・削除・親子・プロパティ編集**（VR 内創作）は別レーンで「提案 → 検証 → 確定」する。既存の inventory spawn/despawn（Room AEAD・署名・レート・`control_seq`）を一般化する。
+
+**VCS 前提（案 B / x00b3）**: `EditCommit.scene_rev` は host の **`live_scene_rev`（セッション working-tree tip）**。永続（overlay / canonical / Spatial VCS）は **明示 Save** のときだけ進む（Git の commit）。Spawn/Despawn の即 overlay CAS は移行期の例外（VCS 負債・後続で見直す）。
 
 ```mermaid
 flowchart LR
     UI["VR 操作"] --> Gate["検疫・認証"]
     Gate --> Val["検証（操作ごとの前提条件）"]
-    Val -->|OK| Seq["scene_rev +1"]
+    Val -->|OK| Seq["live_scene_rev +1"]
     Seq --> Bridge["FrameBridge（次ティック境界で適用）"]
     Bridge --> Phys["60Hz 物理ページ"]
     Seq -->|EditCommit| Client
     Val -->|NG+理由| Client
-    Seq -.->|保存が必要な編集のみ| Overlay["world overlay CAS"]
+    Seq -.->|明示 Save のみ| Persist["world / Spatial VCS"]
 ```
 
 * 競合は `base_scene_rev` 一括拒否ではなく、`Reparent { expected_parent }` / `SetField { expected_value_hash }` など**操作対象ごとの楽観ロック**（関係ない編集は並走可）。
-* `EditCommit` は latest の `frame` に混ぜず、連番 `scene_rev`。欠けたら snapshot（x0024 と同じ考え方）。snapshot に `scene_rev` を含める。
+* `EditCommit` は latest の `frame` に混ぜず、連番 `live_scene_rev`。欠けたら snapshot（x0024 と同じ考え方）。snapshot に `scene_rev` を含める（x00b3）。
 * 物理ページは「生成＝空き local」「削除＝active 下ろし」「親子＝トポロジ再構築フラグ」だけ知り、編集の意味は持たない。
 * Undo は逆操作の提案＋前提条件（今の親が自分の `to` のままのときだけ）。掴み所有は holder（§4.3）で tick 内決定・frame 返却、保存不要。
-* 権威分担は §6 Q3（案: ライブ確定順は host、永続は world overlay）。
+* 権威分担は §6 Q3（ライブ順 = host tip、永続 = 明示 Save）。
 
 ### 4.8 ホスト状態の引き継ぎ（`…/sim_state`）
 
@@ -594,7 +596,7 @@ flowchart LR
 
 **DoD に含めないもの**: 同一 Room の大規模 CCU・フルメッシュ解除・interest キー族。それらは [spatial_interest.md](spatial_interest.md) のマイルストーン（32→64→128、1000 は horizon）が担当する。
 
-**現状**: Phase 1–2 + Phase 3 着手〜dirty 30Hz + 確定レーン土台（x00a3–[x00b2](slices/x00b2-phase3-edit-lane-foundation.md)）まで **コード完了**。実装本線の次は `x00b3`（Reparent/SetField + FrameBridge）。
+**現状**: Phase 1–2 + Phase 3 着手〜dirty 30Hz + 確定レーン（x00a3–[x00b2](slices/x00b2-phase3-edit-lane-foundation.md) + [x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md) ライブ ops）。次は明示 Save / Spawn 即 CAS 見直し（VCS）。
 
 ### Phase 1: 既存 `shared-sim` の進化とヘッドレス決定論テスト（host/app 本線は触らない）
 
@@ -631,7 +633,8 @@ flowchart LR
 * **[x00b0](slices/x00b0-phase3-sim-state.md)** — `…/sim_state` 計画的 handover + crash fail-closed — **done**。
 * **[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)** — host dirty 30Hz 本番切替 — **done**。
 * **[x00b2](slices/x00b2-phase3-edit-lane-foundation.md)** — 確定レーン土台（`…/edit` + Spawn/Despawn）— **done**。
-* 後続（次空き `x00b3`〜）: Reparent/SetField + FrameBridge · snapshot `scene_rev`。
+* **[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md)** — ライブ Reparent/SetField + FrameBridge + snapshot `scene_rev`（案 B）— **done**。
+* 後続（次空き `x00b4`〜）: 明示 Save · Spawn 即 CAS 見直し（VCS 負債）。
 
 1. **作業内容**:
    * `ALCHEMY_SIM_BACKEND=mvcc_xpbd|epoch_xpbd` で切替可能な権威ループ。Ingress 検疫 → Fork/`make_mut` → XPBD（**接触オン＝`bounds: Some`**）→ 階層 → Commit。ここで P1-2 の host 配線を閉じる（**→ x00ad**）。
@@ -679,7 +682,7 @@ Phase 3 DoD Green の後（アウトライン整備は並走可）、配信の�
 |:---|:---|:---|
 | Q1 | handover は計画的＝`sim_state` 丸渡し、突然落ち＝§4.8 でよいか | **採用済み**。crash: last-good 優先；unknown+snapshot 不可なら物理・frame 非起動（lease 有無問わず）。全候補失敗時の回復は再 nominate／owner claim。1 frame は速度 0 |
 | Q2 | Spot-Check は再シミュレーションか | 未決。決まるまで決定論 DoD は同一アーキ内ビット一致 |
-| Q3 | 確定レーンの権威は host か world か | 暫定: ライブ順は host、永続は world overlay（inventory 同型） |
+| Q3 | 確定レーンの権威は host か world か | **案 B 採用（x00b3）**: ライブ順 = host `live_scene_rev`；永続 = 明示 Save（overlay/canonical/VCS）。Spawn 即 overlay CAS は移行期の例外 |
 | Q4 | alloc 計測（テスト専用クレートの `unsafe` vs `dhat` 等） | 人承認待ち。本番 `forbid` は維持 |
 | Q5 | `glam` / `wide` を shared-sim に入れるか | **承認済み＋x00a5 配線済み**。`glam`（`bytemuck`+`libm`）＝幾何；`wide`＝SoA 慣性 Safe SIMD（スカラー参照＋ビット一致テスト）。拘束ソルバー SIMD は未着手 |
 | Q6 | 冗長デルタ窓 K | まず K=1 で欠落計測。K=2 は Quest Wi-Fi データ後 |

@@ -39,7 +39,7 @@ pub use tape::{
 pub use topology::FlatTopology;
 
 pub use slot_graph::{ReparentError, SlotGraph};
-pub use slot_undo::{SlotTransition, SlotUndoStack};
+pub use slot_undo::{SlotTransition, SlotUndoStack, UndoError};
 
 /// Max Grab start / client pick / hold aim·offset distance (meters).
 /// Host `finite` (start gate + hold clamp x0041) + client `world_hit`.

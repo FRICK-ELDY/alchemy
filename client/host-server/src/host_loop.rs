@@ -220,6 +220,11 @@ pub(crate) struct HostLoop {
     publish_snapshot: Arc<RwLock<HostPublishSnapshot>>,
     spawn_inbox: SpawnInbox,
     despawn_inbox: DespawnInbox,
+    live_inbox: crate::live_edit::LiveEditInbox,
+    live_edit: crate::live_edit::SharedLiveEdit,
+    /// Queued this tick; tip/Commit after barrier Ok (None in unit tests).
+    live_commit: Option<crate::live_edit::LiveCommitPublisher>,
+    live_awaiting_barrier: Vec<crate::live_edit::ReadyLiveEdit>,
     shared_scene: Arc<RwLock<RoomScene>>,
     force_reseal: Arc<AtomicBool>,
     dt: f32,
@@ -260,6 +265,10 @@ pub(crate) struct HostLoopParts {
     pub publish_snapshot: Arc<RwLock<HostPublishSnapshot>>,
     pub spawn_inbox: SpawnInbox,
     pub despawn_inbox: DespawnInbox,
+    pub live_inbox: crate::live_edit::LiveEditInbox,
+    pub live_edit: crate::live_edit::SharedLiveEdit,
+    /// Production: `Some(publisher)`. Unit tests may leave `None` (no reject/accept put).
+    pub live_commit: Option<crate::live_edit::LiveCommitPublisher>,
     pub shared_scene: Arc<RwLock<RoomScene>>,
     pub force_reseal: Arc<AtomicBool>,
     pub dt: f32,
@@ -288,6 +297,10 @@ impl HostLoop {
             publish_snapshot: parts.publish_snapshot,
             spawn_inbox: parts.spawn_inbox,
             despawn_inbox: parts.despawn_inbox,
+            live_inbox: parts.live_inbox,
+            live_edit: parts.live_edit,
+            live_commit: parts.live_commit,
+            live_awaiting_barrier: Vec::new(),
             shared_scene: parts.shared_scene,
             force_reseal: parts.force_reseal,
             dt: parts.dt,
@@ -331,19 +344,38 @@ impl HostLoop {
         }
         if let Some(ready) = self.spawn_inbox.try_recv() {
             let blake3 = ready.entry.blake3.clone();
+            let entry_flags = ready.entry.flags;
+            let entry_color = [
+                ready.entry.r,
+                ready.entry.g,
+                ready.entry.b,
+                if ready.entry.a == 0.0 {
+                    1.0
+                } else {
+                    ready.entry.a
+                },
+            ];
+            let entry_id = ready.entry.entity_id;
+            let entry_blake3 = ready.entry.blake3.clone();
             match inventory_spawn::apply_ready_spawn(
                 ready,
                 &self.shared_scene,
                 &self.force_reseal,
                 |entry| self.physics.spawn_mesh_entry(entry),
             ) {
-                Ok(out) if out.scene_applied && out.physics_ok => log::info!(
-                    "inventory spawn applied entity_id={} blake3={} (xpbd+scene+reseal)",
-                    out.entity_id,
-                    &blake3[..8.min(blake3.len())]
-                ),
+                Ok(out) if out.scene_applied && out.physics_ok => {
+                    // Shared spawn inbox (inventory + edit-lane): ledger only after physics.
+                    if let Ok(mut led) = self.live_edit.lock() {
+                        led.note_spawn(entry_id, entry_flags, entry_color, entry_blake3);
+                    }
+                    log::info!(
+                        "spawn applied entity_id={} blake3={} (xpbd+scene+reseal)",
+                        out.entity_id,
+                        &blake3[..8.min(blake3.len())]
+                    );
+                }
                 Ok(out) if out.scene_applied => log::warn!(
-                    "inventory spawn scene+reseal only entity_id={} blake3={} (xpbd refused; physics may need host restart)",
+                    "spawn scene+reseal only entity_id={} blake3={} (xpbd refused; no ledger note)",
                     out.entity_id,
                     &blake3[..8.min(blake3.len())]
                 ),
@@ -364,14 +396,21 @@ impl HostLoop {
                 &self.force_reseal,
                 |id| self.physics.despawn_mesh_entity(id),
             ) {
-                Ok(out) if out.scene_applied && out.physics_ok => log::info!(
-                    "inventory despawn applied entity_id={} (xpbd+scene+reseal)",
-                    out.entity_id
-                ),
-                Ok(out) if out.scene_applied => log::warn!(
-                    "inventory despawn scene+reseal only entity_id={} (xpbd miss; physics may need host restart)",
-                    out.entity_id
-                ),
+                Ok(out) if out.scene_applied && out.physics_ok => {
+                    if let Ok(mut led) = self.live_edit.lock() {
+                        led.note_despawn(entity_id);
+                    }
+                    log::info!(
+                        "despawn applied entity_id={} (xpbd+scene+reseal)",
+                        out.entity_id
+                    );
+                }
+                Ok(out) if out.scene_applied => {
+                    log::warn!(
+                        "despawn scene+reseal only entity_id={} (xpbd miss; ledger kept until physics)",
+                        out.entity_id
+                    );
+                }
                 Ok(out) => log::warn!(
                     "inventory despawn stale revision skipped entity_id={}",
                     out.entity_id
@@ -379,6 +418,45 @@ impl HostLoop {
                 Err(err) => {
                     log::warn!("inventory despawn apply failed entity_id={entity_id}: {err:#}")
                 }
+            }
+        }
+
+        // x00b3: drain live Ready → FrameBridge. Tip/Commit only after barrier Ok.
+        const LIVE_EDIT_DRAIN_MAX: usize = 8;
+        debug_assert!(self.live_awaiting_barrier.is_empty());
+        self.live_awaiting_barrier.clear();
+        for ready in self.live_inbox.try_recv_n(LIVE_EDIT_DRAIN_MAX) {
+            let queue_ok = match &ready {
+                crate::live_edit::ReadyLiveEdit::Reparent { op, .. } => self
+                    .physics
+                    .queue_live_reparent(op.child_entity_id, op.new_parent_entity_id),
+                crate::live_edit::ReadyLiveEdit::SetField { op, .. } => self
+                    .physics
+                    .queue_live_set_field(op.entity_id, op.field_id, &op.value),
+            };
+            if let Err(e) = queue_ok {
+                let tip = match self.live_edit.lock() {
+                    Ok(mut led) => {
+                        led.rollback_mirrors(&ready);
+                        led.tip
+                    }
+                    Err(_) => {
+                        log::error!("LiveEditLedger poisoned on queue fail; aborting host");
+                        std::process::exit(78);
+                    }
+                };
+                if let Some(pubber) = self.live_commit.as_ref() {
+                    pubber.publish_reject(
+                        ready.proposal(),
+                        alchemy_protocol::edit_reject::APPLY,
+                        tip,
+                    );
+                }
+                log::warn!(
+                    "live edit queue failed ({e}); rolled back mirrors + reject APPLY (tip={tip})"
+                );
+            } else {
+                self.live_awaiting_barrier.push(ready);
             }
         }
 
@@ -499,7 +577,49 @@ impl HostLoop {
                 (overlay.aim_x, overlay.aim_y, overlay.aim_z),
             );
         }
-        self.physics.step_dt(self.dt);
+        let barrier_ok = self.physics.step_dt(self.dt).is_ok();
+        let awaiting = std::mem::take(&mut self.live_awaiting_barrier);
+        if barrier_ok {
+            let mut led = match self.live_edit.lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    log::error!("LiveEditLedger poisoned after live barrier Ok; aborting host");
+                    std::process::exit(78);
+                }
+            };
+            for ready in awaiting {
+                let tip = led.bump_tip();
+                if let Some(pubber) = self.live_commit.as_ref() {
+                    pubber.publish_accept(ready.proposal(), tip);
+                }
+            }
+        } else if !awaiting.is_empty() {
+            let tip = match self.live_edit.lock() {
+                Ok(mut led) => {
+                    for ready in &awaiting {
+                        led.rollback_mirrors(ready);
+                    }
+                    led.tip
+                }
+                Err(_) => {
+                    log::error!("LiveEditLedger poisoned on barrier fail; aborting host");
+                    std::process::exit(78);
+                }
+            };
+            if let Some(pubber) = self.live_commit.as_ref() {
+                for ready in &awaiting {
+                    pubber.publish_reject(
+                        ready.proposal(),
+                        alchemy_protocol::edit_reject::APPLY,
+                        tip,
+                    );
+                }
+            }
+            log::warn!(
+                "live edit barrier failed; rolled back {} mirror(s) + reject APPLY (tip={tip})",
+                awaiting.len()
+            );
+        }
         self.physics_steps = self.physics_steps.wrapping_add(1);
         self.physics_steps_logged += 1;
 
@@ -523,6 +643,7 @@ impl HostLoop {
                     acked_intent_seq: self.last_wire_acked.clone(),
                     dirty_authored: false,
                     dirty_inflight_mask: None,
+                    scene_rev: self.live_edit.lock().map(|g| g.tip).unwrap_or(0),
                 })
             {
                 self.publish_stats
@@ -556,6 +677,7 @@ impl HostLoop {
         self.last_wire_sim_tick = self.physics_steps;
         let acked_intent_seq = self.last_wire_acked.clone();
 
+        let live_tip = self.live_edit.lock().map(|g| g.tip).unwrap_or(0);
         if self.outbound.submit_frame(FrameSample {
             poses: all_poses,
             removes: remove_ids,
@@ -567,6 +689,7 @@ impl HostLoop {
             acked_intent_seq,
             dirty_authored,
             dirty_inflight_mask,
+            scene_rev: live_tip,
         }) {
             self.publish_stats
                 .coalesce_frames
@@ -692,6 +815,9 @@ mod tests {
             })),
             spawn_inbox: SpawnInbox::empty_for_test(),
             despawn_inbox: DespawnInbox::empty_for_test(),
+            live_inbox: crate::live_edit::LiveEditInbox::empty_for_test(),
+            live_edit: crate::live_edit::new_shared_live_edit(),
+            live_commit: None,
             shared_scene: Arc::new(RwLock::new(RoomScene {
                 revision: 1,
                 entries,

@@ -512,6 +512,15 @@ impl EpochSheet {
         self.dirty_summary_words[wi] |= 1u64 << bi;
     }
 
+    /// Clear one row's dirty bit (barrier compensation after a rolled-back patch).
+    #[inline]
+    pub fn clear_dirty_row(&mut self, row_id: u32) {
+        let (wi, bi) = word_bit(row_id);
+        if wi < self.dirty_summary_words.len() {
+            self.dirty_summary_words[wi] &= !(1u64 << bi);
+        }
+    }
+
     pub fn clear_dirty(&mut self) {
         self.dirty_summary_words.fill(0);
     }

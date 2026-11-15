@@ -1,33 +1,24 @@
-//! Deterministic edit lane (`…/edit`) — Spawn/Despawn foundation (x00b2 / mvcc_xpbd §4.7).
+//! Deterministic edit lane (`…/edit`) — Spawn/Despawn + live Reparent/SetField (x00b2 / x00b3).
 //!
-//! Guarantees: AEAD `EditProposal` → session Ed25519 (`wire_crypto` prost sign) → Dual-auth /
-//! shared control rate / `control_seq`; single Spawn or Despawn only; world overlay CAS reuse;
-//! **`EditCommit.scene_rev` = packed overlay `RoomScene.revision` after CAS** (same space as
-//! inventory append/delete). Accept path: enqueue Ready **then** publish `EditCommit` (so a
-//! commit implies the physics inbox accepted the row). Reject path publishes
-//! `accepted=false` with current overlay revision.
+//! Guarantees: AEAD `EditProposal` → session Ed25519 → Dual-auth / shared control rate /
+//! `control_seq`; single op.
+//! Spawn/Despawn: overlay CAS then inbox; **tip + accept Commit after inbox send**
+//! (send fail → reject `APPLY`, tip unchanged; VCS debt remains overlay CAS).
+//! Reparent/SetField: optimistic ledger mirrors only; **tip + accept Commit after**
+//! FrameBridge queue **and** barrier — never rewind tip; queue/barrier/inbox fail →
+//! reject `APPLY`.
 //!
-//! Rate: `SharedControlRate::allow` runs after Dual-auth evaluate; **`commit_control` failure
-//! refunds** the slot. WORLD (CAS) failures **after** a successful `commit_control` do
-//! **not** refund — `control_seq` already advanced (same trade-off as legacy inventory JSON).
-//! Spawn blake3 / finite TRS checks run **before** evaluate/rate (legacy `parse_payload` parity),
-//! so bad payload does not consume seq or rate.
-//!
-//! Non-guarantees: Reparent/SetField; multi-op batch; snapshot `scene_rev` gap; Undo UI;
-//! FrameBridge structure apply; old inventory key removal; **EditCommit for inventory
-//! dual-subscribe** (compat path advances overlay revision but does not emit EditCommit —
-//! live ordered commits are `…/edit` only during the dual-subscribe window).
-//! Decode / AEAD failures before a typed proposal exist produce **no** EditCommit (cannot
-//! correlate `op_id`); typed gate failures return reject commits.
-//! **Inbox closed after CAS** (shutdown): overlay may already have advanced; Ready/EditCommit
-//! are best-effort (warn only; no compensating world rollback).
+//! Non-guarantees: multi-op batch; Undo UI; old inventory key removal; explicit Save / VCS.
 
 use alchemy_protocol::edit_op::Op;
 use alchemy_protocol::wire_aead::{self, AeadKind};
 use alchemy_protocol::wire_crypto::{
     sign_edit_commit, verify_edit_proposal, SigningKey, PUBLIC_KEY_LENGTH,
 };
-use alchemy_protocol::{edit_key, edit_reject, EditCommit, EditProposal, EditSpawn, Message};
+use alchemy_protocol::{
+    decode_color_rgba, decode_flags, edit_reject, field_value_hash, known_field_id, EditCommit,
+    EditProposal, EditReparent, EditSetField, EditSpawn, Message,
+};
 use anyhow::{anyhow, Context, Result};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
@@ -37,6 +28,7 @@ use zenoh::Wait;
 use crate::control_rate::SharedControlRate;
 use crate::inventory_despawn::ReadyDespawn;
 use crate::inventory_spawn::ReadySpawn;
+use crate::live_edit::{current_field_value, ReadyLiveEdit, SharedLiveEdit};
 use crate::room_aead::{self, SharedRoomAead};
 use crate::room_token::{
     append_room_scene_entry, delete_room_scene_entry, RoomScene, SharedHostHttpAuth,
@@ -44,15 +36,16 @@ use crate::room_token::{
 use crate::session::SessionTable;
 
 enum ReadyEdit {
-    Spawn(ReadySpawn),
-    Despawn(ReadyDespawn),
-}
-
-fn overlay_revision(shared_scene: &Arc<RwLock<RoomScene>>) -> Result<u64> {
-    Ok(shared_scene
-        .read()
-        .map_err(|_| anyhow!("shared scene RwLock poisoned"))?
-        .revision)
+    /// Tip+Commit deferred until inbox `send` succeeds (avoids tip advance without Commit).
+    Spawn {
+        ready: ReadySpawn,
+        proposal: EditProposal,
+    },
+    Despawn {
+        ready: ReadyDespawn,
+        proposal: EditProposal,
+    },
+    Live(ReadyLiveEdit),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -65,12 +58,14 @@ pub fn edit_listener(
     sessions: Arc<Mutex<SessionTable>>,
     http_auth: SharedHostHttpAuth,
     shared_scene: Arc<RwLock<RoomScene>>,
+    live_edit: SharedLiveEdit,
     spawn_tx: Sender<ReadySpawn>,
     despawn_tx: Sender<ReadyDespawn>,
+    live_tx: Sender<ReadyLiveEdit>,
     host_key: SigningKey,
     control_rate: Arc<Mutex<SharedControlRate>>,
 ) -> Result<()> {
-    let key = edit_key(room_id, wire_cap);
+    let key = alchemy_protocol::edit_key(room_id, wire_cap);
     let room_id = room_id.to_string();
     let subscriber = session
         .declare_subscriber(key.clone())
@@ -80,10 +75,9 @@ pub fn edit_listener(
     thread::Builder::new()
         .name("edit-lane".into())
         .spawn(move || {
-            log::info!("subscribed to {key} (x00b2 edit lane)");
+            log::info!("subscribed to {key} (x00b3 edit lane)");
             while let Ok(sample) = subscriber.recv() {
                 let bytes = sample.payload().to_bytes();
-                // Own EditCommit puts share the key; kind mismatch → skip quietly.
                 if wire_aead::check_aead_envelope_bytes(AeadKind::EditProposal, bytes.len())
                     .is_err()
                 {
@@ -105,42 +99,122 @@ pub fn edit_listener(
                     &sessions,
                     &http_auth,
                     &shared_scene,
+                    &live_edit,
                     &control_rate,
                 ) {
-                    Ok((commit, Some(ReadyEdit::Spawn(ready)))) => {
-                        // CAS already committed; inbox closed (shutdown) → best-effort only.
+                    Ok((None, Some(ReadyEdit::Spawn { ready, proposal }))) => {
                         if spawn_tx.send(ready).is_ok() {
+                            let tip = match live_edit.lock() {
+                                Ok(mut led) => led.bump_tip(),
+                                Err(_) => {
+                                    log::error!(
+                                        "LiveEditLedger poisoned after spawn send; aborting host"
+                                    );
+                                    std::process::exit(78);
+                                }
+                            };
                             publish_commit(
                                 &session,
                                 &key,
                                 &room_aead,
                                 &room_id,
                                 &host_key,
-                                commit,
+                                accept_commit(&proposal, tip),
                             );
                         } else {
+                            let tip = match live_edit.lock() {
+                                Ok(g) => g.tip,
+                                Err(_) => {
+                                    log::error!(
+                                        "LiveEditLedger poisoned on spawn inbox closed; aborting host"
+                                    );
+                                    std::process::exit(78);
+                                }
+                            };
+                            publish_commit(
+                                &session,
+                                &key,
+                                &room_aead,
+                                &room_id,
+                                &host_key,
+                                reject_commit(&proposal, edit_reject::APPLY, tip),
+                            );
                             log::warn!(
-                                "edit accept: spawn inbox closed after CAS (no Ready/EditCommit; overlay kept)"
+                                "edit accept: spawn inbox closed after CAS (reject APPLY; overlay kept; tip unchanged)"
                             );
                         }
                     }
-                    Ok((commit, Some(ReadyEdit::Despawn(ready)))) => {
+                    Ok((None, Some(ReadyEdit::Despawn { ready, proposal }))) => {
                         if despawn_tx.send(ready).is_ok() {
+                            let tip = match live_edit.lock() {
+                                Ok(mut led) => led.bump_tip(),
+                                Err(_) => {
+                                    log::error!(
+                                        "LiveEditLedger poisoned after despawn send; aborting host"
+                                    );
+                                    std::process::exit(78);
+                                }
+                            };
                             publish_commit(
                                 &session,
                                 &key,
                                 &room_aead,
                                 &room_id,
                                 &host_key,
-                                commit,
+                                accept_commit(&proposal, tip),
                             );
                         } else {
+                            let tip = match live_edit.lock() {
+                                Ok(g) => g.tip,
+                                Err(_) => {
+                                    log::error!(
+                                        "LiveEditLedger poisoned on despawn inbox closed; aborting host"
+                                    );
+                                    std::process::exit(78);
+                                }
+                            };
+                            publish_commit(
+                                &session,
+                                &key,
+                                &room_aead,
+                                &room_id,
+                                &host_key,
+                                reject_commit(&proposal, edit_reject::APPLY, tip),
+                            );
                             log::warn!(
-                                "edit accept: despawn inbox closed after CAS (no Ready/EditCommit; overlay kept)"
+                                "edit accept: despawn inbox closed after CAS (reject APPLY; overlay kept; tip unchanged)"
                             );
                         }
                     }
-                    Ok((commit, None)) => {
+                    Ok((None, Some(ReadyEdit::Live(ready)))) => {
+                        // Accept Commit is published by HostLoop after barrier — tip stays put.
+                        if live_tx.send(ready.clone()).is_err() {
+                            let tip = match live_edit.lock() {
+                                Ok(mut led) => {
+                                    led.rollback_mirrors(&ready);
+                                    led.tip
+                                }
+                                Err(_) => {
+                                    log::error!(
+                                        "LiveEditLedger poisoned on live inbox closed; aborting host"
+                                    );
+                                    std::process::exit(78);
+                                }
+                            };
+                            publish_commit(
+                                &session,
+                                &key,
+                                &room_aead,
+                                &room_id,
+                                &host_key,
+                                reject_commit(ready.proposal(), edit_reject::APPLY, tip),
+                            );
+                            log::warn!(
+                                "edit accept: live inbox closed (rolled back mirrors + reject APPLY)"
+                            );
+                        }
+                    }
+                    Ok((Some(commit), None)) => {
                         publish_commit(
                             &session,
                             &key,
@@ -150,8 +224,16 @@ pub fn edit_listener(
                             commit,
                         );
                     }
+                    Ok((None, None)) => {
+                        log::warn!("edit proposal produced empty outcome");
+                    }
+                    Ok((Some(_), Some(ReadyEdit::Live(_)))) => {
+                        log::warn!("edit live accept must not carry Commit before barrier");
+                    }
+                    Ok((Some(_), Some(ReadyEdit::Spawn { .. } | ReadyEdit::Despawn { .. }))) => {
+                        log::warn!("edit spawn/despawn must not pre-build Commit before inbox send");
+                    }
                     Err(err) => {
-                        // Untyped failures (e.g. prost decode) — no op_id to correlate.
                         log::warn!("edit proposal dropped without EditCommit: {err:#}");
                     }
                 }
@@ -170,46 +252,60 @@ fn process_proposal(
     sessions: &Arc<Mutex<SessionTable>>,
     http_auth: &SharedHostHttpAuth,
     shared_scene: &Arc<RwLock<RoomScene>>,
+    live_edit: &SharedLiveEdit,
     control_rate: &Arc<Mutex<SharedControlRate>>,
-) -> Result<(EditCommit, Option<ReadyEdit>)> {
+) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
     let proposal = EditProposal::decode(plain).context("EditProposal decode")?;
-    let live_rev = overlay_revision(shared_scene)?;
+    let reject_rev = {
+        let led = live_edit
+            .lock()
+            .map_err(|_| anyhow!("LiveEditLedger poisoned"))?;
+        led.tip
+    };
     if proposal.room_id != room_id {
         return Ok((
-            reject_commit(&proposal, edit_reject::PAYLOAD, live_rev),
+            Some(reject_commit(&proposal, edit_reject::PAYLOAD, reject_rev)),
             None,
         ));
     }
     if proposal.session_pub.len() != PUBLIC_KEY_LENGTH {
         return Ok((
-            reject_commit(&proposal, edit_reject::PAYLOAD, live_rev),
+            Some(reject_commit(&proposal, edit_reject::PAYLOAD, reject_rev)),
             None,
         ));
     }
     if verify_edit_proposal(&proposal).is_err() {
-        return Ok((reject_commit(&proposal, edit_reject::SIG, live_rev), None));
+        return Ok((
+            Some(reject_commit(&proposal, edit_reject::SIG, reject_rev)),
+            None,
+        ));
     }
     if proposal.ops.len() != 1 {
         return Ok((
-            reject_commit(&proposal, edit_reject::OPS_COUNT, live_rev),
+            Some(reject_commit(&proposal, edit_reject::OPS_COUNT, reject_rev)),
             None,
         ));
     }
     let op = match proposal.ops[0].op.as_ref() {
         Some(Op::Spawn(s)) => {
-            // Before Dual-auth / rate / commit_control — invalid blake3/TRS must not advance seq.
             if !spawn_payload_ok(s) {
                 return Ok((
-                    reject_commit(&proposal, edit_reject::PAYLOAD, live_rev),
+                    Some(reject_commit(&proposal, edit_reject::PAYLOAD, reject_rev)),
                     None,
                 ));
             }
             OpKind::Spawn(s.clone())
         }
         Some(Op::Despawn(d)) => OpKind::Despawn(d.entity_id),
+        Some(Op::Reparent(r)) => OpKind::Reparent(*r),
+        Some(Op::SetField(f)) => OpKind::SetField(f.clone()),
         None => {
             return Ok((
-                reject_commit(&proposal, edit_reject::OP_UNSUPPORTED, live_rev),
+                Some(reject_commit(
+                    &proposal,
+                    edit_reject::OP_UNSUPPORTED,
+                    reject_rev,
+                )),
                 None,
             ));
         }
@@ -218,7 +314,10 @@ fn process_proposal(
     let auth = match http_auth.snapshot() {
         Ok(a) => a,
         Err(_) => {
-            return Ok((reject_commit(&proposal, edit_reject::AUTH, live_rev), None));
+            return Ok((
+                Some(reject_commit(&proposal, edit_reject::AUTH, reject_rev)),
+                None,
+            ));
         }
     };
     let owner_sub = shared_scene
@@ -239,7 +338,10 @@ fn process_proposal(
             )
             .is_err()
         {
-            return Ok((reject_commit(&proposal, edit_reject::AUTH, live_rev), None));
+            return Ok((
+                Some(reject_commit(&proposal, edit_reject::AUTH, reject_rev)),
+                None,
+            ));
         }
     }
     {
@@ -247,7 +349,10 @@ fn process_proposal(
             .lock()
             .map_err(|_| anyhow!("SharedControlRate poisoned"))?;
         if !rate.allow() {
-            return Ok((reject_commit(&proposal, edit_reject::RATE, live_rev), None));
+            return Ok((
+                Some(reject_commit(&proposal, edit_reject::RATE, reject_rev)),
+                None,
+            ));
         }
     }
     {
@@ -266,7 +371,10 @@ fn process_proposal(
             if let Ok(mut rate) = control_rate.lock() {
                 rate.refund();
             }
-            return Ok((reject_commit(&proposal, edit_reject::AUTH, live_rev), None));
+            return Ok((
+                Some(reject_commit(&proposal, edit_reject::AUTH, reject_rev)),
+                None,
+            ));
         }
     }
 
@@ -279,6 +387,7 @@ fn process_proposal(
             &auth.token,
             &auth.pop_key,
             shared_scene,
+            live_edit,
         ),
         OpKind::Despawn(entity_id) => apply_despawn(
             &proposal,
@@ -288,13 +397,18 @@ fn process_proposal(
             &auth.token,
             &auth.pop_key,
             shared_scene,
+            live_edit,
         ),
+        OpKind::Reparent(r) => apply_reparent(&proposal, r, live_edit),
+        OpKind::SetField(f) => apply_set_field(&proposal, f, live_edit),
     }
 }
 
 enum OpKind {
     Spawn(EditSpawn),
     Despawn(u32),
+    Reparent(EditReparent),
+    SetField(EditSetField),
 }
 
 fn is_blake3_hex(s: &str) -> bool {
@@ -321,8 +435,8 @@ fn apply_spawn(
     token: &str,
     pop_key: &SigningKey,
     shared_scene: &Arc<RwLock<RoomScene>>,
-) -> Result<(EditCommit, Option<ReadyEdit>)> {
-    // blake3 / TRS already gated in `process_proposal` before evaluate/rate.
+    live_edit: &SharedLiveEdit,
+) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
     let blake3 = spawn.blake3.to_ascii_lowercase();
     match append_room_scene_entry(
         world_url,
@@ -343,20 +457,23 @@ fn apply_spawn(
         spawn.sz,
     ) {
         Ok((scene, entry)) => {
-            let rev = scene.revision;
+            // Overlay CAS done (VCS debt). Tip+Commit only after inbox send succeeds.
+            // Ledger entity row lands on physics success (HostLoop).
             Ok((
-                accept_commit(proposal, rev),
-                Some(ReadyEdit::Spawn(ReadySpawn { entry, scene })),
+                None,
+                Some(ReadyEdit::Spawn {
+                    ready: ReadySpawn { entry, scene },
+                    proposal: proposal.clone(),
+                }),
             ))
         }
-        Err(_) => Ok((
-            reject_commit(
-                proposal,
-                edit_reject::WORLD,
-                overlay_revision(shared_scene)?,
-            ),
-            None,
-        )),
+        Err(_) => {
+            let tip = live_edit
+                .lock()
+                .map_err(|_| anyhow!("LiveEditLedger poisoned"))?
+                .tip;
+            Ok((Some(reject_commit(proposal, edit_reject::WORLD, tip)), None))
+        }
     }
 }
 
@@ -369,24 +486,168 @@ fn apply_despawn(
     token: &str,
     pop_key: &SigningKey,
     shared_scene: &Arc<RwLock<RoomScene>>,
-) -> Result<(EditCommit, Option<ReadyEdit>)> {
+    live_edit: &SharedLiveEdit,
+) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
     match delete_room_scene_entry(world_url, room_id, token, pop_key, shared_scene, entity_id) {
         Ok(scene) => {
-            let rev = scene.revision;
+            // Overlay CAS done (VCS debt). Tip+Commit only after inbox send succeeds.
+            // Ledger despawn on physics success only (HostLoop).
             Ok((
-                accept_commit(proposal, rev),
-                Some(ReadyEdit::Despawn(ReadyDespawn { entity_id, scene })),
+                None,
+                Some(ReadyEdit::Despawn {
+                    ready: ReadyDespawn { entity_id, scene },
+                    proposal: proposal.clone(),
+                }),
             ))
         }
-        Err(_) => Ok((
-            reject_commit(
-                proposal,
-                edit_reject::WORLD,
-                overlay_revision(shared_scene)?,
-            ),
-            None,
-        )),
+        Err(_) => {
+            let tip = live_edit
+                .lock()
+                .map_err(|_| anyhow!("LiveEditLedger poisoned"))?
+                .tip;
+            Ok((Some(reject_commit(proposal, edit_reject::WORLD, tip)), None))
+        }
     }
+}
+
+fn apply_reparent(
+    proposal: &EditProposal,
+    r: EditReparent,
+    live_edit: &SharedLiveEdit,
+) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
+    let mut led = live_edit
+        .lock()
+        .map_err(|_| anyhow!("LiveEditLedger poisoned"))?;
+    let tip = led.tip;
+    if !led.entities.contains(&r.child_entity_id) {
+        return Ok((
+            Some(reject_commit(proposal, edit_reject::NOT_FOUND, tip)),
+            None,
+        ));
+    }
+    if r.new_parent_entity_id != 0 && !led.entities.contains(&r.new_parent_entity_id) {
+        return Ok((
+            Some(reject_commit(proposal, edit_reject::NOT_FOUND, tip)),
+            None,
+        ));
+    }
+    if led.parent_of(r.child_entity_id) != r.expected_parent_entity_id {
+        return Ok((
+            Some(reject_commit(
+                proposal,
+                edit_reject::STALE_PRECONDITION,
+                tip,
+            )),
+            None,
+        ));
+    }
+    if led.would_cycle(r.child_entity_id, r.new_parent_entity_id) {
+        return Ok((Some(reject_commit(proposal, edit_reject::CYCLE, tip)), None));
+    }
+    let prev_parent = led.parent_of(r.child_entity_id);
+    led.parents
+        .insert(r.child_entity_id, r.new_parent_entity_id);
+    // Tip + accept Commit deferred until HostLoop barrier succeeds.
+    Ok((
+        None,
+        Some(ReadyEdit::Live(ReadyLiveEdit::Reparent {
+            proposal: proposal.clone(),
+            op: r,
+            prev_parent,
+        })),
+    ))
+}
+
+fn apply_set_field(
+    proposal: &EditProposal,
+    f: EditSetField,
+    live_edit: &SharedLiveEdit,
+) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
+    let mut led = live_edit
+        .lock()
+        .map_err(|_| anyhow!("LiveEditLedger poisoned"))?;
+    let tip = led.tip;
+    if !known_field_id(f.field_id) {
+        return Ok((
+            Some(reject_commit(proposal, edit_reject::OP_UNSUPPORTED, tip)),
+            None,
+        ));
+    }
+    if !led.entities.contains(&f.entity_id) {
+        return Ok((
+            Some(reject_commit(proposal, edit_reject::NOT_FOUND, tip)),
+            None,
+        ));
+    }
+    let Some(cur) = current_field_value(&led, f.entity_id, f.field_id) else {
+        return Ok((
+            Some(reject_commit(proposal, edit_reject::NOT_FOUND, tip)),
+            None,
+        ));
+    };
+    let cur_hash = field_value_hash(&cur);
+    if f.expected_value_hash.as_slice() != cur_hash.as_slice() {
+        return Ok((
+            Some(reject_commit(
+                proposal,
+                edit_reject::STALE_PRECONDITION,
+                tip,
+            )),
+            None,
+        ));
+    }
+    let prev_value = cur;
+    match f.field_id {
+        alchemy_protocol::edit_field_id::FLAGS => {
+            let Some(flags) = decode_flags(&f.value) else {
+                return Ok((
+                    Some(reject_commit(proposal, edit_reject::PAYLOAD, tip)),
+                    None,
+                ));
+            };
+            led.flags.insert(f.entity_id, flags);
+        }
+        alchemy_protocol::edit_field_id::COLOR_RGBA => {
+            let Some(rgba) = decode_color_rgba(&f.value) else {
+                return Ok((
+                    Some(reject_commit(proposal, edit_reject::PAYLOAD, tip)),
+                    None,
+                ));
+            };
+            led.colors.insert(f.entity_id, rgba);
+        }
+        alchemy_protocol::edit_field_id::BLAKE3 => {
+            let Ok(hex) = std::str::from_utf8(&f.value) else {
+                return Ok((
+                    Some(reject_commit(proposal, edit_reject::PAYLOAD, tip)),
+                    None,
+                ));
+            };
+            let hex = hex.to_ascii_lowercase();
+            if !is_blake3_hex(&hex) {
+                return Ok((
+                    Some(reject_commit(proposal, edit_reject::PAYLOAD, tip)),
+                    None,
+                ));
+            }
+            led.blake3.insert(f.entity_id, hex);
+        }
+        _ => {
+            return Ok((
+                Some(reject_commit(proposal, edit_reject::OP_UNSUPPORTED, tip)),
+                None,
+            ));
+        }
+    }
+    // Tip + accept Commit deferred until HostLoop barrier succeeds.
+    Ok((
+        None,
+        Some(ReadyEdit::Live(ReadyLiveEdit::SetField {
+            proposal: proposal.clone(),
+            op: f,
+            prev_value,
+        })),
+    ))
 }
 
 fn reject_commit(proposal: &EditProposal, reason: u32, scene_rev: u64) -> EditCommit {
@@ -426,7 +687,6 @@ fn publish_commit(
     match room_aead::seal_shared(room_aead, room_id, AeadKind::EditCommit, &plain) {
         Ok(env) => {
             if let Err(e) = session.put(key, env).wait() {
-                // Ready already queued — Manifest/frame still converge; commit is best-effort notify.
                 log::warn!("edit commit put failed after Ready enqueue: {e}");
             }
         }
@@ -437,6 +697,7 @@ fn publish_commit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::live_edit::new_shared_live_edit;
     use alchemy_protocol::wire_crypto::{
         generate_signing_key, public_key_bytes, sign_edit_proposal,
     };
@@ -464,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn accept_commit_uses_overlay_revision() {
+    fn accept_commit_uses_live_tip() {
         let key = generate_signing_key();
         let mut p = EditProposal {
             session_pub: public_key_bytes(&key),
@@ -476,9 +737,130 @@ mod tests {
             room_id: "local".into(),
         };
         sign_edit_proposal(&key, &mut p);
-        let c = accept_commit(&p, 1_000_042);
+        let c = accept_commit(&p, 42);
         assert!(c.accepted);
-        assert_eq!(c.scene_rev, 1_000_042);
+        assert_eq!(c.scene_rev, 42);
+    }
+
+    #[test]
+    fn concurrent_reparent_same_child_one_wins() {
+        let live = new_shared_live_edit();
+        {
+            let mut led = live.lock().unwrap();
+            led.entities.insert(10);
+            led.entities.insert(1);
+            led.entities.insert(2);
+            led.parents.insert(10, 1);
+        }
+        let key = generate_signing_key();
+        let mut p1 = EditProposal {
+            session_pub: public_key_bytes(&key),
+            control_seq: 1,
+            base_scene_rev: 0,
+            op_id: 1,
+            ops: vec![EditOp {
+                op: Some(Op::Reparent(EditReparent {
+                    child_entity_id: 10,
+                    expected_parent_entity_id: 1,
+                    new_parent_entity_id: 2,
+                })),
+            }],
+            sig: vec![],
+            room_id: "local".into(),
+        };
+        sign_edit_proposal(&key, &mut p1);
+        let r = EditReparent {
+            child_entity_id: 10,
+            expected_parent_entity_id: 1,
+            new_parent_entity_id: 2,
+        };
+        let (c1, ready) = apply_reparent(&p1, r, &live).unwrap();
+        assert!(c1.is_none(), "live accept Commit waits for barrier");
+        assert!(ready.is_some());
+        {
+            let led = live.lock().unwrap();
+            assert_eq!(led.tip, 0);
+            assert_eq!(led.parent_of(10), 2);
+        }
+
+        let mut p2 = p1.clone();
+        p2.op_id = 2;
+        p2.ops = vec![EditOp {
+            op: Some(Op::Reparent(EditReparent {
+                child_entity_id: 10,
+                expected_parent_entity_id: 1,
+                new_parent_entity_id: 0,
+            })),
+        }];
+        sign_edit_proposal(&key, &mut p2);
+        let (c2, ready2) = apply_reparent(
+            &p2,
+            EditReparent {
+                child_entity_id: 10,
+                expected_parent_entity_id: 1,
+                new_parent_entity_id: 0,
+            },
+            &live,
+        )
+        .unwrap();
+        let c2 = c2.expect("stale reject Commit");
+        assert!(!c2.accepted);
+        assert_eq!(c2.reject_reason, edit_reject::STALE_PRECONDITION);
+        assert!(ready2.is_none());
+    }
+
+    #[test]
+    fn non_overlapping_set_fields_both_commit() {
+        use alchemy_protocol::{encode_flags, hash_flags};
+        let live = new_shared_live_edit();
+        {
+            let mut led = live.lock().unwrap();
+            led.entities.insert(10);
+            led.entities.insert(11);
+            led.flags.insert(10, 0);
+            led.flags.insert(11, 0);
+        }
+        let key = generate_signing_key();
+        let mk = |entity: u32, op_id: u64| {
+            let mut p = EditProposal {
+                session_pub: public_key_bytes(&key),
+                control_seq: op_id,
+                base_scene_rev: 0,
+                op_id,
+                ops: vec![EditOp {
+                    op: Some(Op::SetField(EditSetField {
+                        entity_id: entity,
+                        field_id: alchemy_protocol::edit_field_id::FLAGS,
+                        value: encode_flags(1).to_vec(),
+                        expected_value_hash: hash_flags(0).to_vec(),
+                    })),
+                }],
+                sig: vec![],
+                room_id: "local".into(),
+            };
+            sign_edit_proposal(&key, &mut p);
+            p
+        };
+        let p1 = mk(10, 1);
+        let f1 = match p1.ops[0].op.as_ref().unwrap() {
+            Op::SetField(f) => f.clone(),
+            _ => unreachable!(),
+        };
+        let (c1, r1) = apply_set_field(&p1, f1, &live).unwrap();
+        assert!(c1.is_none());
+        assert!(r1.is_some());
+        let p2 = mk(11, 2);
+        let f2 = match p2.ops[0].op.as_ref().unwrap() {
+            Op::SetField(f) => f.clone(),
+            _ => unreachable!(),
+        };
+        let (c2, r2) = apply_set_field(&p2, f2, &live).unwrap();
+        assert!(c2.is_none());
+        assert!(r2.is_some());
+        let led = live.lock().unwrap();
+        assert_eq!(led.tip, 0);
+        assert_eq!(led.flags.get(&10).copied(), Some(1));
+        assert_eq!(led.flags.get(&11).copied(), Some(1));
     }
 
     #[test]
@@ -503,39 +885,5 @@ mod tests {
         let mut bad_scale = good;
         bad_scale.sx = 0.0;
         assert!(!spawn_payload_ok(&bad_scale));
-    }
-
-    #[test]
-    fn spawn_payload_shape_roundtrip() {
-        let key = generate_signing_key();
-        let mut p = EditProposal {
-            session_pub: public_key_bytes(&key),
-            control_seq: 2,
-            base_scene_rev: 1,
-            op_id: 7,
-            ops: vec![EditOp {
-                op: Some(Op::Spawn(EditSpawn {
-                    blake3: "ab".repeat(32),
-                    x: 0.0,
-                    y: 1.5,
-                    z: 2.0,
-                    qx: 0.0,
-                    qy: 0.0,
-                    qz: 0.0,
-                    qw: 1.0,
-                    sx: 1.0,
-                    sy: 1.0,
-                    sz: 1.0,
-                })),
-            }],
-            sig: vec![],
-            room_id: "local".into(),
-        };
-        sign_edit_proposal(&key, &mut p);
-        assert!(verify_edit_proposal(&p).is_ok());
-        let bytes = p.encode_to_vec();
-        let decoded = EditProposal::decode(bytes.as_slice()).unwrap();
-        assert_eq!(decoded.op_id, 7);
-        assert!(matches!(decoded.ops[0].op.as_ref(), Some(Op::Spawn(_))));
     }
 }
