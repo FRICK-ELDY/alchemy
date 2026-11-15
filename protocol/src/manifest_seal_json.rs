@@ -199,6 +199,9 @@ mod tests {
     fn parent_entity_id_affects_seal_blake3() {
         let a = blake3_hex_from_json_str(&seal_json(1), true).expect("hash a");
         let b = blake3_hex_from_json_str(&seal_json(0), true).expect("hash b");
-        assert_ne!(a, b, "SceneEntry.parent_entity_id must be in ManifestSeal (x00b8)");
+        assert_ne!(
+            a, b,
+            "SceneEntry.parent_entity_id must be in ManifestSeal (x00b8)"
+        );
     }
 }

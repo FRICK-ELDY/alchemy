@@ -577,9 +577,10 @@ fn apply_save(
         Err(SceneSaveError::ParentCycle) => {
             Ok((Some(reject_commit(proposal, edit_reject::CYCLE, tip)), None))
         }
-        Err(SceneSaveError::InvalidEntry) => {
-            Ok((Some(reject_commit(proposal, edit_reject::PAYLOAD, tip)), None))
-        }
+        Err(SceneSaveError::InvalidEntry) => Ok((
+            Some(reject_commit(proposal, edit_reject::PAYLOAD, tip)),
+            None,
+        )),
         Err(SceneSaveError::Other(_)) => {
             Ok((Some(reject_commit(proposal, edit_reject::WORLD, tip)), None))
         }
