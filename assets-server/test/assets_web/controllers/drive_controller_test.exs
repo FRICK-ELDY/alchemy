@@ -121,13 +121,13 @@ defmodule AssetsWeb.DriveControllerTest do
   end
 
   test "put_back saves single-child prefab", %{conn: conn, signer: signer} do
-    blake3 = String.duplicate("a", 64)
+    {:ok, mesh, _} = Blobs.upload(@sub_a, "putback-mesh", "application/octet-stream")
 
     body = %{
       name: "putback-item",
       payload: %{
         schema_version: 1,
-        children: [%{local_id: "mesh_0", blake3: blake3}]
+        children: [%{local_id: "mesh_0", blake3: mesh.blake3}]
       }
     }
 
@@ -149,12 +149,12 @@ defmodule AssetsWeb.DriveControllerTest do
   end
 
   test "put_back upserts same name", %{conn: conn, signer: signer} do
-    blake3_a = String.duplicate("a", 64)
-    blake3_b = String.duplicate("b", 64)
+    {:ok, mesh_a, _} = Blobs.upload(@sub_a, "putback-a", "application/octet-stream")
+    {:ok, mesh_b, _} = Blobs.upload(@sub_a, "putback-b", "application/octet-stream")
 
     body1 = %{
       name: "shared-putback",
-      payload: %{schema_version: 1, children: [%{local_id: "c0", blake3: blake3_a}]}
+      payload: %{schema_version: 1, children: [%{local_id: "c0", blake3: mesh_a.blake3}]}
     }
 
     conn1 =
@@ -167,7 +167,7 @@ defmodule AssetsWeb.DriveControllerTest do
 
     body2 = %{
       name: "shared-putback",
-      payload: %{schema_version: 1, children: [%{local_id: "c1", blake3: blake3_b}]}
+      payload: %{schema_version: 1, children: [%{local_id: "c1", blake3: mesh_b.blake3}]}
     }
 
     conn2 =
@@ -179,6 +179,31 @@ defmodule AssetsWeb.DriveControllerTest do
     assert %{"node" => %{"node_id" => id2, "blake3" => b2}} = json_response(conn2, 200)
     assert id1 == id2
     assert b1 != b2
+  end
+
+  test "put_back missing child grant is 403 no_grant (x00b4)", %{conn: conn, signer: signer} do
+    before = Blobs.quota(@sub_a)
+    fake = String.duplicate("a", 64)
+
+    body = %{
+      name: "stolen-hash",
+      payload: %{
+        schema_version: 1,
+        children: [%{local_id: "mesh_0", blake3: fake}]
+      }
+    }
+
+    conn =
+      conn
+      |> TestAuthHelpers.put_auth(signer, @sub_a)
+      |> put_req_header("content-type", "application/json")
+      |> post("/api/v1/drive/put_back", Jason.encode!(body))
+
+    assert %{"error" => "no_grant"} = json_response(conn, 403)
+
+    after_q = Blobs.quota(@sub_a)
+    assert after_q.used_bytes == before.used_bytes
+    assert after_q.reserved_bytes == before.reserved_bytes
   end
 
   test "put_back without name is 422", %{conn: conn, signer: signer} do

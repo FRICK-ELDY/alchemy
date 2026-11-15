@@ -229,10 +229,10 @@ depends_on: [x0006]
 | x00b1 | — | done | Phase 3: host dirty 30Hz 本番切替（`WireDirtyAccumulator`） | [x00b1-phase3-dirty-30hz-cutover.md](slices/x00b1-phase3-dirty-30hz-cutover.md) |
 | x00b2 | — | done | Phase 3: 確定レーン土台（`…/edit` + Spawn/Despawn 一般化） | [x00b2-phase3-edit-lane-foundation.md](slices/x00b2-phase3-edit-lane-foundation.md) |
 | x00b3 | — | done | Phase 3: ライブ Reparent/SetField + FrameBridge（VCS 案 B） | [x00b3-phase3-edit-ops-live-bridge.md](slices/x00b3-phase3-edit-ops-live-bridge.md) |
-| x00b4 | — | planned | 保存時の子 Grant 必須化（save_prefab / create_prefab_node / promote_prefab / ItemRef repo_rev） | [x00b4-prefab-child-grant-required.md](slices/x00b4-prefab-child-grant-required.md) |
+| x00b4 | — | done | 保存時の子 Grant 必須化（save_prefab / create_prefab_node / promote_prefab / ItemRef repo_rev） | [x00b4-prefab-child-grant-required.md](slices/x00b4-prefab-child-grant-required.md) |
 | x00b5 | — | planned | 配置時の所有権バインド（SpawnTicket: assets 発行 → world 検証） | [x00b5-spawn-ticket-ownership-binding.md](slices/x00b5-spawn-ticket-ownership-binding.md) |
 
-**現在の次:** 所有権の穴塞ぎ [x00b4](slices/x00b4-prefab-child-grant-required.md) → [x00b5](slices/x00b5-spawn-ticket-ownership-binding.md)（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §14.4 · VCS 本体より先行）。並行候補: 明示 Save / Spawn 即 CAS 見直し（VCS 負債 · 未採番）。[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md) **done**。**品質本線** · Spot-Check 保留（Q2）。
+**現在の次:** 所有権の穴塞ぎ [x00b5](slices/x00b5-spawn-ticket-ownership-binding.md)（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §14.4 · VCS 本体より先行）。[x00b4](slices/x00b4-prefab-child-grant-required.md) **done**。並行候補: 明示 Save / Spawn 即 CAS 見直し（VCS 負債 · 未採番）。[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md) **done**。**品質本線** · Spot-Check 保留（Q2）。
 **規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；実装は MVCC Phase 3 後。1000 人は horizon）。
 旧メモ **P3-7（BLAKE3 ストリーミング）** は **CI が完了しなくなるためマージしない**（現行 P3-7 Spatial Interest とは別物）。Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 

@@ -80,9 +80,10 @@ defmodule Assets.DriveTest do
     assert length(reloaded.children) == 2
   end
 
-  test "prefab take_out fails when child grant missing" do
+  test "save_prefab rejects when child grant missing (x00b4)" do
     assert {:ok, mesh_a, _} = Blobs.upload(@sub_a, "mesh-a2", "text/plain")
     fake_child = String.duplicate("c", 64)
+    before = Blobs.quota(@sub_a)
 
     {:ok, payload} =
       Payload.new(1, [
@@ -90,7 +91,29 @@ defmodule Assets.DriveTest do
         %{local_id: "bad", blake3: fake_child, trs: nil}
       ])
 
-    assert {:ok, node} = Drive.save_prefab(@sub_a, "MissingChildGrant", payload)
+    assert {:error, :no_grant} = Drive.save_prefab(@sub_a, "MissingChildGrant", payload)
+    after_q = Blobs.quota(@sub_a)
+    assert after_q.used_bytes == before.used_bytes
+    assert after_q.reserved_bytes == before.reserved_bytes
+  end
+
+  test "take_out fails when child grant removed after save (x007f defense)" do
+    assert {:ok, mesh_a, _} = Blobs.upload(@sub_a, "mesh-a3", "text/plain")
+    assert {:ok, mesh_b, _} = Blobs.upload(@sub_a, "mesh-b3", "text/plain")
+
+    {:ok, payload} =
+      Payload.new(1, [
+        %{local_id: "ok", blake3: mesh_a.blake3, trs: nil},
+        %{local_id: "later", blake3: mesh_b.blake3, trs: nil}
+      ])
+
+    assert {:ok, node} = Drive.save_prefab(@sub_a, "RevokeChildGrant", payload)
+
+    grant =
+      Assets.Repo.get_by!(Assets.Blobs.BlobGrant, grantee_sub: @sub_a, blake3: mesh_b.blake3)
+
+    {:ok, _} = Assets.Repo.delete(grant)
+
     assert {:error, :no_grant} = Drive.resolve_for_take_out(@sub_a, node.node_id)
   end
 

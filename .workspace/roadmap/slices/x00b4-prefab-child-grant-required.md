@@ -1,6 +1,6 @@
 # x00b4 — 保存時の子 Grant 必須化（Prefab / Vcs ツリーの全入口）
 
-> **ID:** `x00b4` · **slug:** `prefab-child-grant-required` · **status:** `planned` · **area:** `[assets, docs]` · **depends_on:** `[x0060, x0062, x0063, x007f]`  
+> **ID:** `x00b4` · **slug:** `prefab-child-grant-required` · **status:** `done` · **area:** `[assets, docs]` · **depends_on:** `[x0060, x0062, x0063, x007f]`  
 > **優先度:** [assets-vcs-draft.md](../../0_doc/architecture/assets-vcs-draft.md) §14.4 対策 2（VCS 本体より先行・assets のみで閉じる）  
 > **後続:** [x00b5](x00b5-spawn-ticket-ownership-binding.md)（配置時の所有権バインド）
 
@@ -22,15 +22,15 @@
 
 ---
 
-## 現状の入口と穴
+## 入口（実装後）
 
 | 入口 | 子 Grant の確認 | 備考 |
 |:---|:---|:---|
-| `Drive.save_prefab/4`（HTTP `POST /api/v1/drive/put_back`） | **なし** | moduledoc に「意図的な穴」と明記 |
-| `Drive.create_prefab_node/4` | **なし**（payload blob の Grant のみ） | HTTP 未公開 |
-| `Vcs.promote_prefab/2` | **なし** | HTTP 未公開 |
-| `ItemRef.resolve/2`（`repo_rev`） | **なし**（リポジトリのオーナー判定のみ） | HTTP 未公開 |
-| `Drive.resolve_for_take_out/2` | あり（x007f） | 現時点で漏れが無いのはここで拒否しているため |
+| `Drive.save_prefab/4`（HTTP `POST /api/v1/drive/put_back`） | **あり**（upload 前） | 不足 → `:no_grant` / HTTP 403；Quota・CAS 非消費 |
+| `Drive.create_prefab_node/4` | **あり**（payload Grant → CAS → 子） | 不正 payload → `:invalid_prefab`；HTTP 未公開 |
+| `Vcs.promote_prefab/2` | **あり**（昇格 TX 内） | 不足 → rollback `:no_grant`；HTTP 未公開 |
+| `ItemRef.resolve/2`（`repo_rev`） | **あり**（ツリー decode 後） | 不足 → `:no_grant`；HTTP 未公開 |
+| `Drive.resolve_for_take_out/2` | あり（x007f） | 多層防御として維持 |
 
 ---
 
@@ -79,9 +79,9 @@
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
 | 0 | Slice + roadmap + assets-vcs-draft §14.4 | **done** |
-| 1 | 子 Grant 判定の共通化 + `save_prefab` / HTTP `put_back` | planned |
-| 2 | `create_prefab_node` / `promote_prefab` / `ItemRef` `repo_rev` | planned |
-| 3 | テストの前提修正・新規テスト・moduledoc / assets-server.md | planned |
+| 1 | 子 Grant 判定の共通化 + `save_prefab` / HTTP `put_back` | **done** |
+| 2 | `create_prefab_node` / `promote_prefab` / `ItemRef` `repo_rev` | **done** |
+| 3 | テストの前提修正・新規テスト・moduledoc / assets-server.md | **done** |
 
 ---
 

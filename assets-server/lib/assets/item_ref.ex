@@ -9,15 +9,17 @@ defmodule Assets.ItemRef do
 
   Guarantees:
   - resolve/2 checks auth_sub is owner or has BlobGrant for blake3 variant.
-  - resolve/2 checks auth_sub is VcsRepo owner for repo_rev variant.
+  - resolve/2 checks auth_sub is VcsRepo owner for repo_rev variant, then every
+    tree child BlobGrant (x00b4). Missing child → `:no_grant`.
   - Existing blake3-only paths remain unmodified (no regression).
   - Invalid rev → {:error, :not_found}. No-grant → {:error, :no_grant}.
+  - Corrupt / undecodable Commit.tree_json → {:error, {:corrupt_tree, reason}}.
 
   Non-guarantees: public repo sharing, multi-owner grants, PROTOCOL_PIN bump
   (ItemRef is not on-wire yet; bump required before placing on wire per x0055).
   """
 
-  alias Assets.Blobs.BlobGrant
+  alias Assets.Blobs
   alias Assets.Prefab.Payload
   alias Assets.Repo
   alias Assets.Vcs.Commit
@@ -34,33 +36,36 @@ defmodule Assets.ItemRef do
   Resolve an ItemRef to a list of blake3 refs that auth_sub is permitted to use.
 
   For :blake3 — checks BlobGrant for auth_sub.
-  For :repo_rev — checks VcsRepo ownership, resolves rev to a commit, returns tree children blobs.
+  For :repo_rev — checks VcsRepo ownership, resolves rev to a commit, asserts
+  every tree child Grant (x00b4), returns tree children blobs.
 
   Returns {:ok, [%{blake3: String.t()}]} on success.
   """
   @spec resolve(t(), String.t()) ::
           {:ok, [%{blake3: String.t()}]}
-          | {:error, :not_found | :no_grant | :invalid_rev | term()}
+          | {:error,
+             :not_found
+             | :no_grant
+             | :invalid_rev
+             | :invalid_item_ref
+             | {:corrupt_tree, term()}
+             | term()}
   def resolve({:blake3, blake3}, auth_sub)
       when is_binary(blake3) and byte_size(blake3) == 64 and is_binary(auth_sub) do
-    case Repo.get_by(BlobGrant, grantee_sub: auth_sub, blake3: blake3) do
-      %BlobGrant{} -> {:ok, [%{blake3: blake3}]}
-      nil -> {:error, :no_grant}
+    case Blobs.assert_grant(auth_sub, blake3) do
+      :ok -> {:ok, [%{blake3: blake3}]}
+      {:error, :no_grant} = err -> err
     end
   end
 
   def resolve({:repo_rev, repo_id, rev}, auth_sub)
       when is_binary(repo_id) and is_binary(rev) and is_binary(auth_sub) do
     with {:ok, repo} <- fetch_repo_as_owner(repo_id, auth_sub),
-         {:ok, commit} <- resolve_rev(repo, rev) do
-      case Payload.from_json(commit.tree_json) do
-        {:ok, payload} ->
-          blobs = Enum.map(payload.children, &%{blake3: &1.blake3})
-          {:ok, blobs}
-
-        {:error, reason} ->
-          {:error, {:corrupt_tree, reason}}
-      end
+         {:ok, commit} <- resolve_rev(repo, rev),
+         {:ok, payload} <- decode_tree(commit.tree_json),
+         :ok <- Blobs.assert_child_grants(auth_sub, payload.children) do
+      blobs = Enum.map(payload.children, &%{blake3: &1.blake3})
+      {:ok, blobs}
     end
   end
 
@@ -69,6 +74,13 @@ defmodule Assets.ItemRef do
   # ---------------------------------------------------------------------------
   # Private
   # ---------------------------------------------------------------------------
+
+  defp decode_tree(tree_json) do
+    case Payload.from_json(tree_json) do
+      {:ok, payload} -> {:ok, payload}
+      {:error, reason} -> {:error, {:corrupt_tree, reason}}
+    end
+  end
 
   defp fetch_repo_as_owner(repo_id, auth_sub) do
     case Repo.get(VcsRepo, repo_id) do

@@ -15,6 +15,9 @@ defmodule Assets.Blobs do
   `application/octet-stream` + nosniff (x008b). Inventory path
   (`POST /api/v1/inventory/blobs`) is an HTTP-boundary alias that uses the same
   upload (x0054 / x006f).
+
+  Prefab / Vcs child Grant checks (x007f / x00b4) go through `assert_grant/2` and
+  `assert_child_grants/2` — shared by Drive, Vcs, and ItemRef.
   """
 
   require Logger
@@ -39,6 +42,50 @@ defmodule Assets.Blobs do
   def blake3_hex(data) when is_binary(data) do
     Assets.Blake3.hash_hex(data)
   end
+
+  @doc """
+  Assert that `grantee_sub` holds a BlobGrant for `blake3`.
+
+  Used by Drive / Vcs / ItemRef for payload and Prefab child checks (x007f / x00b4).
+  """
+  @spec assert_grant(String.t(), String.t()) :: :ok | {:error, :no_grant}
+  def assert_grant(grantee_sub, blake3)
+      when is_binary(grantee_sub) and is_binary(blake3) do
+    case Repo.get_by(BlobGrant, grantee_sub: grantee_sub, blake3: blake3) do
+      %BlobGrant{} -> :ok
+      nil -> {:error, :no_grant}
+    end
+  end
+
+  @doc """
+  Assert BlobGrant for every Prefab / Vcs child blake3 (x00b4 / x007f).
+
+  `children` are maps with a `:blake3` / `"blake3"` key (e.g. `Payload` children).
+  Empty list succeeds (no children → nothing to authorize). First missing Grant
+  or malformed child short-circuits with `{:error, :no_grant}` (fail-closed).
+  """
+  @spec assert_child_grants(String.t(), [map()]) :: :ok | {:error, :no_grant}
+  def assert_child_grants(_grantee_sub, []), do: :ok
+
+  def assert_child_grants(grantee_sub, children) when is_list(children) do
+    Enum.reduce_while(children, :ok, fn child, :ok ->
+      case grant_for_child(grantee_sub, child) do
+        :ok -> {:cont, :ok}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp grant_for_child(grantee_sub, child) do
+    case child_blake3(child) do
+      {:ok, blake3} -> assert_grant(grantee_sub, blake3)
+      :error -> {:error, :no_grant}
+    end
+  end
+
+  defp child_blake3(%{blake3: blake3}) when is_binary(blake3), do: {:ok, blake3}
+  defp child_blake3(%{"blake3" => blake3}) when is_binary(blake3), do: {:ok, blake3}
+  defp child_blake3(_), do: :error
 
   @doc """
   Upload bytes. Always issues an `:owned` BlobGrant for `owner_sub`.

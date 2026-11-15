@@ -11,7 +11,14 @@ defmodule Assets.DriveTakeOutTest do
   @sub_a "cccccccc-cccc-cccc-cccc-cccccccccccc"
   @sub_b "dddddddd-dddd-dddd-dddd-dddddddddddd"
 
-  @blake3 String.duplicate("a", 64)
+  # ---------------------------------------------------------------------------
+  # Helpers
+  # ---------------------------------------------------------------------------
+
+  defp upload_child(owner_sub, label) do
+    {:ok, mesh, _} = Blobs.upload(owner_sub, "take-out-#{label}", "application/octet-stream")
+    mesh
+  end
 
   # ---------------------------------------------------------------------------
   # x005f — resolve_for_take_out
@@ -45,7 +52,7 @@ defmodule Assets.DriveTakeOutTest do
   end
 
   test "resolve_for_take_out for prefab expands child mesh (x007f)" do
-    {:ok, mesh, _} = Blobs.upload(@sub_a, "mesh-child", "application/octet-stream")
+    mesh = upload_child(@sub_a, "mesh-child")
 
     {:ok, payload} =
       Payload.new(1, [%{local_id: "m0", blake3: mesh.blake3, trs: nil}])
@@ -65,7 +72,8 @@ defmodule Assets.DriveTakeOutTest do
   # ---------------------------------------------------------------------------
 
   test "save_prefab creates DriveNode(kind=prefab) with validated payload" do
-    {:ok, payload} = Payload.new(1, [%{local_id: "c0", blake3: @blake3, trs: nil}])
+    mesh = upload_child(@sub_a, "weapon-child")
+    {:ok, payload} = Payload.new(1, [%{local_id: "c0", blake3: mesh.blake3, trs: nil}])
     assert {:ok, node} = Drive.save_prefab(@sub_a, "weapon-prefab", payload)
 
     assert node.kind == "prefab"
@@ -75,11 +83,13 @@ defmodule Assets.DriveTakeOutTest do
   end
 
   test "save_prefab upserts on same name+owner+parent" do
-    {:ok, p1} = Payload.new(1, [%{local_id: "c0", blake3: @blake3, trs: nil}])
+    mesh_a = upload_child(@sub_a, "upsert-a")
+    mesh_b = upload_child(@sub_a, "upsert-b")
+
+    {:ok, p1} = Payload.new(1, [%{local_id: "c0", blake3: mesh_a.blake3, trs: nil}])
     {:ok, node1} = Drive.save_prefab(@sub_a, "shared-name", p1)
 
-    blake3b = String.duplicate("b", 64)
-    {:ok, p2} = Payload.new(1, [%{local_id: "c1", blake3: blake3b, trs: nil}])
+    {:ok, p2} = Payload.new(1, [%{local_id: "c1", blake3: mesh_b.blake3, trs: nil}])
     {:ok, node2} = Drive.save_prefab(@sub_a, "shared-name", p2)
 
     # Same node_id (upsert)
@@ -91,10 +101,11 @@ defmodule Assets.DriveTakeOutTest do
   test "duplicate prefab insert surfaces as changeset unique (not ConstraintError)" do
     alias Assets.Drive.Node
 
-    {:ok, payload} = Payload.new(1, [%{local_id: "c0", blake3: @blake3, trs: nil}])
+    mesh = upload_child(@sub_a, "uniq-child")
+    {:ok, payload} = Payload.new(1, [%{local_id: "c0", blake3: mesh.blake3, trs: nil}])
     {:ok, existing} = Drive.save_prefab(@sub_a, "uniq-prefab", payload)
 
-    other_blake3 = String.duplicate("d", 64)
+    other = upload_child(@sub_a, "uniq-other")
 
     cs =
       Node.changeset(%Node{}, %{
@@ -103,7 +114,7 @@ defmodule Assets.DriveTakeOutTest do
         parent_id: nil,
         kind: "prefab",
         name: "uniq-prefab",
-        blake3: other_blake3
+        blake3: other.blake3
       })
 
     # Must be Changeset error (ecto_sqlite3 name mapped), never raise ConstraintError.
@@ -115,7 +126,7 @@ defmodule Assets.DriveTakeOutTest do
            end)
 
     # save_prefab still updates the existing row via find/upsert.
-    {:ok, p2} = Payload.new(1, [%{local_id: "c1", blake3: other_blake3, trs: nil}])
+    {:ok, p2} = Payload.new(1, [%{local_id: "c1", blake3: other.blake3, trs: nil}])
     assert {:ok, updated} = Drive.save_prefab(@sub_a, "uniq-prefab", p2)
     assert updated.node_id == existing.node_id
     assert updated.blake3 != existing.blake3
@@ -141,16 +152,31 @@ defmodule Assets.DriveTakeOutTest do
     assert {:error, :forbidden} = Drive.save_prefab(@sub_a, "bad", payload, other_folder.node_id)
   end
 
+  test "save_prefab rejects missing child grant without consuming quota (x00b4)" do
+    fake = String.duplicate("a", 64)
+    before = Blobs.quota(@sub_a)
+    {:ok, payload} = Payload.new(1, [%{local_id: "c0", blake3: fake, trs: nil}])
+
+    assert {:error, :no_grant} = Drive.save_prefab(@sub_a, "no-child-grant", payload)
+
+    after_q = Blobs.quota(@sub_a)
+    assert after_q.used_bytes == before.used_bytes
+    assert after_q.reserved_bytes == before.reserved_bytes
+  end
+
   # ---------------------------------------------------------------------------
   # x0061 — put-back → reload → take-out roundtrip
   # ---------------------------------------------------------------------------
 
   test "save_prefab → reload → Payload.from_json roundtrip preserves logical tree (x0061)" do
+    mesh_0 = upload_child(@sub_a, "roundtrip-0")
+    mesh_1 = upload_child(@sub_a, "roundtrip-1")
+
     children = [
-      %{local_id: "mesh_0", blake3: @blake3, trs: nil},
+      %{local_id: "mesh_0", blake3: mesh_0.blake3, trs: nil},
       %{
         local_id: "mesh_1",
-        blake3: String.duplicate("c", 64),
+        blake3: mesh_1.blake3,
         trs: %{
           translation: [1.0, 2.0, 3.0],
           rotation: [0.0, 0.0, 0.0, 1.0],
@@ -175,14 +201,15 @@ defmodule Assets.DriveTakeOutTest do
     assert length(decoded.children) == 2
     [c0, c1] = decoded.children
     assert c0.local_id == "mesh_0"
-    assert c0.blake3 == @blake3
+    assert c0.blake3 == mesh_0.blake3
     assert is_nil(c0.trs)
     assert c1.local_id == "mesh_1"
     assert c1.trs.translation == [1.0, 2.0, 3.0]
   end
 
   test "no-grant user cannot take out owner's prefab (x0061 — Grant persists across reload)" do
-    {:ok, payload} = Payload.new(1, [%{local_id: "c0", blake3: @blake3, trs: nil}])
+    mesh = upload_child(@sub_a, "private-child")
+    {:ok, payload} = Payload.new(1, [%{local_id: "c0", blake3: mesh.blake3, trs: nil}])
     {:ok, node} = Drive.save_prefab(@sub_a, "private", payload)
 
     # sub_b sees not_found because Drive.get_node is owner-only
