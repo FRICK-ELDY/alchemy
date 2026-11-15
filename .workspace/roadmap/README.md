@@ -234,12 +234,13 @@ depends_on: [x0006]
 | x00b6 | — | done | Dash Room タブ（薄い B: Settings/Users/Permissions 枠） | [x00b6-dash-room-tab.md](slices/x00b6-dash-room-tab.md) |
 | x00b7 | — | done | overlay→canonical 明示 Save（Room Save Changes） | [x00b7-overlay-canonical-save.md](slices/x00b7-overlay-canonical-save.md) |
 | x00b8 | — | done | Save 時 parent / SetField 永続（A） | [x00b8-save-parent-setfield-persist.md](slices/x00b8-save-parent-setfield-persist.md) |
+| x00b9 | — | planned | Spawn 即 CAS 見直し（C） | [x00b9-spawn-without-live-cas.md](slices/x00b9-spawn-without-live-cas.md) |
 
-**現在の次:** [x00b8](slices/x00b8-save-parent-setfield-persist.md) **done**（Save 時 parent/SetField）。並行候補: Spawn 即 CAS 見直し（C · 未採番 `x00b9`〜）；VCS 本体（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md)）。[x00b7](slices/x00b7-overlay-canonical-save.md) **done**。[x00b6](slices/x00b6-dash-room-tab.md) **done**。[x00b5](slices/x00b5-spawn-ticket-ownership-binding.md) **done**。[x00b4](slices/x00b4-prefab-child-grant-required.md) **done**。[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md) **done**。**品質本線** · Spot-Check 保留（Q2）。
+**現在の次:** [x00b9](slices/x00b9-spawn-without-live-cas.md) **planned**（Spawn 即 CAS 見直し · C）。[x00b8](slices/x00b8-save-parent-setfield-persist.md) **done**。[x00b7](slices/x00b7-overlay-canonical-save.md) **done**。並行候補: VCS 本体（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md)）。**品質本線** · Spot-Check 保留（Q2）。
 **規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；実装は MVCC Phase 3 後。1000 人は horizon）。
 旧メモ **P3-7（BLAKE3 ストリーミング）** は **CI が完了しなくなるためマージしない**（現行 P3-7 Spatial Interest とは別物）。Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 
-次の空き番号は **`x00b9`**（Interest 実装用に予約しない）。
+次の空き番号は **`x00ba`**（Interest 実装用に予約しない）。
 
 ## 関連
 

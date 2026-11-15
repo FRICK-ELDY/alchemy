@@ -2,7 +2,7 @@
 
 > **ID:** `x00b8` · **slug:** `save-parent-setfield-persist` · **status:** `done` · **area:** `[protocol, world, host, docs]` · **depends_on:** `[x00b7, x00b3]`  
 > **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) §4.7 案 B の非対称解消（箱は残る・親子は消える）  
-> **後続:** Spawn 即 CAS 見直し（C）· Save As / Copy · Spatial VCS · Undo UI
+> **後続:** [x00b9](x00b9-spawn-without-live-cas.md) Spawn 即 CAS 見直し（C）· Save As / Copy · Spatial VCS · Undo UI
 
 目標: **Save 時のみ**、host live ledger の parent / flags / color / blake3 を canonical scene に折り込む。Reparent/SetField のライブ都度 world CAS はしない（x00b3 案 B 維持）。
 
