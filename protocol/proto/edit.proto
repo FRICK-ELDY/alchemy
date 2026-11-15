@@ -6,6 +6,7 @@ package alchemy.edit;
 // Client puts EditProposal on …/edit (AeadKind::EditProposal).
 // Host puts EditCommit on the same key (AeadKind::EditCommit).
 // x00b3: Reparent/SetField are live-only (host live_scene_rev); no overlay CAS.
+// x00b8: EditSave folds live parent / SetField mirrors into canonical scene.
 // Spawn/Despawn may still CAS overlay (VCS debt) but Commit.scene_rev is live tip.
 // x00b7: Save merges overlay→canonical; Commit.scene_rev tip is unchanged.
 

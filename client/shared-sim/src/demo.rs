@@ -57,6 +57,7 @@ pub fn demo_scene_entries() -> Vec<SceneEntry> {
             sx: ENTITY_SCALE_ONE[0],
             sy: ENTITY_SCALE_ONE[1],
             sz: ENTITY_SCALE_ONE[2],
+            parent_entity_id: 0,
         };
         normalize_scene_entry_trs(&mut e);
         e
@@ -91,6 +92,7 @@ pub fn demo_scene_entries() -> Vec<SceneEntry> {
             sx: ENTITY_SCALE_ONE[0],
             sy: ENTITY_SCALE_ONE[1],
             sz: ENTITY_SCALE_ONE[2],
+            parent_entity_id: 0,
         };
         normalize_scene_entry_trs(&mut e);
         e
@@ -143,6 +145,7 @@ pub fn demo_scene_entries() -> Vec<SceneEntry> {
             sx,
             sy,
             sz,
+            parent_entity_id: 0,
         };
         normalize_scene_entry_trs(&mut e);
         e

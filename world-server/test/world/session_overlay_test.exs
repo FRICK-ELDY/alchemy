@@ -294,4 +294,92 @@ defmodule World.SessionOverlayTest do
     assert {:error, :scene_revision_conflict} =
              Rooms.save_overlay_to_canonical(room_id, canon0, overlay0)
   end
+
+  test "save_overlay_to_canonical applies parent and field patches (x00b8)" do
+    assert {:ok, room_id, _, _} = Rooms.create("ov-save-patches", @owner)
+    assert {:ok, _} = Rooms.activate_as_host(room_id, @owner)
+    assert {:ok, composed0} = Rooms.composed_scene(room_id)
+    assert {:ok, canon0, overlay0} = Rooms.unpack_revision(composed0["revision"])
+
+    [a, b | _] = composed0["entries"]
+    a_id = a["entity_id"]
+    b_id = b["entity_id"]
+
+    assert {:ok, after_save} =
+             Rooms.save_overlay_to_canonical(room_id, canon0, overlay0, %{
+               "parents" => [%{"entity_id" => a_id, "parent_entity_id" => b_id}],
+               "fields" => [
+                 %{
+                   "entity_id" => a_id,
+                   "r" => 1.0,
+                   "g" => 0.0,
+                   "b" => 0.0,
+                   "a" => 1.0,
+                   "flags" => 1
+                 }
+               ]
+             })
+
+    entry = Enum.find(after_save["entries"], &(&1["entity_id"] == a_id))
+    assert entry["parent_entity_id"] == b_id
+    assert entry["r"] == 1.0
+    assert entry["g"] == 0.0
+    assert entry["flags"] == 1
+    assert after_save["revision"] != composed0["revision"]
+
+    assert {:ok, _} = Rooms.handover(room_id, @owner, nil)
+    assert {:ok, after_dormant} = Rooms.composed_scene(room_id)
+    kept = Enum.find(after_dormant["entries"], &(&1["entity_id"] == a_id))
+    assert kept["parent_entity_id"] == b_id
+    assert kept["r"] == 1.0
+  end
+
+  test "save_overlay_to_canonical rejects parent cycle (x00b8)" do
+    assert {:ok, room_id, _, _} = Rooms.create("ov-save-cycle", @owner)
+    assert {:ok, _} = Rooms.activate_as_host(room_id, @owner)
+    assert {:ok, composed0} = Rooms.composed_scene(room_id)
+    assert {:ok, canon0, overlay0} = Rooms.unpack_revision(composed0["revision"])
+
+    [a, b | _] = composed0["entries"]
+    a_id = a["entity_id"]
+    b_id = b["entity_id"]
+
+    assert {:error, :parent_cycle} =
+             Rooms.save_overlay_to_canonical(room_id, canon0, overlay0, %{
+               "parents" => [
+                 %{"entity_id" => a_id, "parent_entity_id" => b_id},
+                 %{"entity_id" => b_id, "parent_entity_id" => a_id}
+               ]
+             })
+  end
+
+  test "save_overlay_to_canonical rejects unknown entity_id patch (x00b8)" do
+    assert {:ok, room_id, _, _} = Rooms.create("ov-save-unknown", @owner)
+    assert {:ok, _} = Rooms.activate_as_host(room_id, @owner)
+    assert {:ok, composed0} = Rooms.composed_scene(room_id)
+    assert {:ok, canon0, overlay0} = Rooms.unpack_revision(composed0["revision"])
+
+    assert {:error, :invalid_entry} =
+             Rooms.save_overlay_to_canonical(room_id, canon0, overlay0, %{
+               "parents" => [%{"entity_id" => 9_999_999, "parent_entity_id" => 0}]
+             })
+  end
+
+  test "save_overlay_to_canonical rejects invalid field values (x00b8)" do
+    assert {:ok, room_id, _, _} = Rooms.create("ov-save-bad-field", @owner)
+    assert {:ok, _} = Rooms.activate_as_host(room_id, @owner)
+    assert {:ok, composed0} = Rooms.composed_scene(room_id)
+    assert {:ok, canon0, overlay0} = Rooms.unpack_revision(composed0["revision"])
+    eid = hd(composed0["entries"])["entity_id"]
+
+    assert {:error, :invalid_entry} =
+             Rooms.save_overlay_to_canonical(room_id, canon0, overlay0, %{
+               "fields" => [%{"entity_id" => eid, "flags" => -1, "r" => 1.0}]
+             })
+
+    assert {:error, :invalid_entry} =
+             Rooms.save_overlay_to_canonical(room_id, canon0, overlay0, %{
+               "fields" => [%{"entity_id" => eid, "blake3" => "not-hex"}]
+             })
+  end
 end

@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）。例外: **非 hex 採番の訂正のみ**（例: 誤 `x00ag` → 正 [`x00b0`](slices/x00b0-phase3-sim-state.md)；`0-9a-f` 外の桁は ID として無効）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x00b8`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x00b9`**）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -233,12 +233,13 @@ depends_on: [x0006]
 | x00b5 | — | done | 配置時の所有権バインド（SpawnTicket: assets 発行 → world 検証） | [x00b5-spawn-ticket-ownership-binding.md](slices/x00b5-spawn-ticket-ownership-binding.md) |
 | x00b6 | — | done | Dash Room タブ（薄い B: Settings/Users/Permissions 枠） | [x00b6-dash-room-tab.md](slices/x00b6-dash-room-tab.md) |
 | x00b7 | — | done | overlay→canonical 明示 Save（Room Save Changes） | [x00b7-overlay-canonical-save.md](slices/x00b7-overlay-canonical-save.md) |
+| x00b8 | — | done | Save 時 parent / SetField 永続（A） | [x00b8-save-parent-setfield-persist.md](slices/x00b8-save-parent-setfield-persist.md) |
 
-**現在の次:** [x00b7](slices/x00b7-overlay-canonical-save.md) **done**（overlay Save）。並行候補: 親子/SetField 永続（A）· Spawn 即 CAS 見直し（C · 未採番 `x00b8`〜）；VCS 本体（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md)）。[x00b6](slices/x00b6-dash-room-tab.md) **done**。[x00b5](slices/x00b5-spawn-ticket-ownership-binding.md) **done**。[x00b4](slices/x00b4-prefab-child-grant-required.md) **done**。[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md) **done**。**品質本線** · Spot-Check 保留（Q2）。
+**現在の次:** [x00b8](slices/x00b8-save-parent-setfield-persist.md) **done**（Save 時 parent/SetField）。並行候補: Spawn 即 CAS 見直し（C · 未採番 `x00b9`〜）；VCS 本体（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md)）。[x00b7](slices/x00b7-overlay-canonical-save.md) **done**。[x00b6](slices/x00b6-dash-room-tab.md) **done**。[x00b5](slices/x00b5-spawn-ticket-ownership-binding.md) **done**。[x00b4](slices/x00b4-prefab-child-grant-required.md) **done**。[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md) **done**。**品質本線** · Spot-Check 保留（Q2）。
 **規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；実装は MVCC Phase 3 後。1000 人は horizon）。
 旧メモ **P3-7（BLAKE3 ストリーミング）** は **CI が完了しなくなるためマージしない**（現行 P3-7 Spatial Interest とは別物）。Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 
-次の空き番号は **`x00b8`**（Interest 実装用に予約しない）。
+次の空き番号は **`x00b9`**（Interest 実装用に予約しない）。
 
 ## 関連
 

@@ -153,6 +153,8 @@ fn note_save_commit(shared: &SharedState, commit: &EditCommit, accepted: bool) {
                 "forbidden — active host must be scene writer (owner/editor)".into()
             }
             alchemy_protocol::edit_reject::SAVE_CONFLICT => "conflict — try Save again".into(),
+            alchemy_protocol::edit_reject::CYCLE => "cycle — parent loop rejected".into(),
+            alchemy_protocol::edit_reject::PAYLOAD => "invalid save patch".into(),
             alchemy_protocol::edit_reject::WORLD => "save failed — try again".into(),
             alchemy_protocol::edit_reject::AUTH => "forbidden — not authorized".into(),
             other => format!("save rejected (reason={other})"),

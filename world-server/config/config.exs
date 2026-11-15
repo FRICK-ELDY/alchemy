@@ -26,7 +26,7 @@ config :world,
   room_token_private_key_path: "priv/room_jwt_private.pem",
   room_token_generate_key_on_startup: true,
   # Must match alchemy-protocol `PROTOCOL_PIN` (ManifestSeal hash input · x0039 / x004e).
-  protocol_pin: "alchemy-protocol/0.24.0-x00b7",
+  protocol_pin: "alchemy-protocol/0.24.0-x00b8",
   # x00b5 SpawnTicket: verify assets-issued JWTs (JWKS fetch; issuer must match assets).
   assets_jwks_url: "http://127.0.0.1:4004/.well-known/jwks.json",
   assets_jwks_fetch_on_start: false,

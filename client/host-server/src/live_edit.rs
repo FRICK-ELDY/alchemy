@@ -71,6 +71,8 @@ impl LiveEditLedger {
         true
     }
 
+    /// Record a newly spawned entity. Preserves an existing live parent if already set
+    /// (`or_insert(0)` — does not clobber a prior Reparent on re-note).
     pub fn note_spawn(&mut self, entity_id: u32, flags: u32, color: [f32; 4], blake3: String) {
         self.entities.insert(entity_id);
         self.flags.insert(entity_id, flags);
@@ -79,6 +81,24 @@ impl LiveEditLedger {
             self.blake3.insert(entity_id, blake3);
         }
         self.parents.entry(entity_id).or_insert(0);
+    }
+
+    /// Seed or overwrite mirrors including creative parent (x00b8 boot / scene install).
+    pub fn note_spawn_with_parent(
+        &mut self,
+        entity_id: u32,
+        parent_entity_id: u32,
+        flags: u32,
+        color: [f32; 4],
+        blake3: String,
+    ) {
+        self.entities.insert(entity_id);
+        self.flags.insert(entity_id, flags);
+        self.colors.insert(entity_id, color);
+        if !blake3.is_empty() {
+            self.blake3.insert(entity_id, blake3);
+        }
+        self.parents.insert(entity_id, parent_entity_id);
     }
 
     pub fn note_despawn(&mut self, entity_id: u32) {

@@ -20,7 +20,7 @@ defmodule World.DemoSceneVector do
   @host_pub_hex String.duplicate("11", 32)
   @host_attestation "x0079-demo-scene-vector-attestation"
   # alchemy_protocol::demo_scene_vector::DEMO_SCENE_VECTOR_BLAKE3
-  @blake3 "373d2a32599fe53c91af28245f663894aa03b7701ffb554ec1f52ce1ac1043f6"
+  @blake3 "bda471db4db28ccedc55082144b1545249a2d0671491b159c520c9c428036e43"
 
   @doc "Fixed room_id for the shared vector."
   @spec room_id() :: String.t()

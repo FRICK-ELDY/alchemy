@@ -7,8 +7,9 @@
 //! Reparent/SetField: optimistic ledger mirrors only; **tip + accept Commit after**
 //! FrameBridge queue **and** barrier — never rewind tip; queue/barrier/inbox fail →
 //! reject `APPLY`.
-//! Save (x00b7): world overlay→canonical CAS; install shared scene + `force_reseal` when
-//! packed revision advances; **tip unchanged**; accept Commit with current tip.
+//! Save (x00b7/x00b8): world overlay→canonical CAS + live parent/SetField patches;
+//! install shared scene + `force_reseal` when packed revision advances; **tip unchanged**;
+//! accept Commit with current tip.
 //!
 //! Non-guarantees: multi-op batch; Undo UI; old inventory key removal; Spatial VCS.
 
@@ -35,7 +36,8 @@ use crate::live_edit::{current_field_value, ReadyLiveEdit, SharedLiveEdit};
 use crate::room_aead::{self, SharedRoomAead};
 use crate::room_token::{
     append_room_scene_entry, delete_room_scene_entry, install_shared_scene_if_newer,
-    save_overlay_to_canonical, RoomScene, SharedHostHttpAuth,
+    save_overlay_to_canonical, RoomScene, SceneFieldPatch, SceneParentPatch, SceneSaveError,
+    SceneSavePatches, SharedHostHttpAuth,
 };
 use crate::session::SessionTable;
 
@@ -546,11 +548,16 @@ fn apply_save(
     live_edit: &SharedLiveEdit,
     force_reseal: &AtomicBool,
 ) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
-    let tip = live_edit
-        .lock()
-        .map_err(|_| anyhow!("LiveEditLedger poisoned"))?
-        .tip;
-    match save_overlay_to_canonical(world_url, room_id, token, pop_key, shared_scene) {
+    let (tip, patches) = {
+        let led = live_edit
+            .lock()
+            .map_err(|_| anyhow!("LiveEditLedger poisoned"))?;
+        let scene = shared_scene
+            .read()
+            .map_err(|_| anyhow!("shared scene RwLock poisoned"))?;
+        (led.tip, save_patches_from_ledger(&led, &scene))
+    };
+    match save_overlay_to_canonical(world_url, room_id, token, pop_key, shared_scene, &patches) {
         Ok(scene) => {
             // Packed revision may advance while composed entries stay equal (overlay→canon).
             if install_shared_scene_if_newer(shared_scene, scene)? {
@@ -559,18 +566,96 @@ fn apply_save(
             // Live tip is independent of packed world revision (x00b7).
             Ok((Some(accept_commit(proposal, tip)), None))
         }
-        Err(err) => {
-            let msg = format!("{err:#}");
-            let reason = if msg.contains("scene_writer_forbidden") {
-                edit_reject::SAVE_FORBIDDEN
-            } else if msg.contains("CAS exhausted") || msg.contains("scene_revision_conflict") {
-                edit_reject::SAVE_CONFLICT
-            } else {
-                edit_reject::WORLD
-            };
-            Ok((Some(reject_commit(proposal, reason, tip)), None))
+        Err(SceneSaveError::Forbidden) => Ok((
+            Some(reject_commit(proposal, edit_reject::SAVE_FORBIDDEN, tip)),
+            None,
+        )),
+        Err(SceneSaveError::Conflict) => Ok((
+            Some(reject_commit(proposal, edit_reject::SAVE_CONFLICT, tip)),
+            None,
+        )),
+        Err(SceneSaveError::ParentCycle) => {
+            Ok((Some(reject_commit(proposal, edit_reject::CYCLE, tip)), None))
+        }
+        Err(SceneSaveError::InvalidEntry) => {
+            Ok((Some(reject_commit(proposal, edit_reject::PAYLOAD, tip)), None))
+        }
+        Err(SceneSaveError::Other(_)) => {
+            Ok((Some(reject_commit(proposal, edit_reject::WORLD, tip)), None))
         }
     }
+}
+
+/// Diff live ledger against shared scene so empty Save stays idempotent (x00b8).
+fn save_patches_from_ledger(
+    led: &crate::live_edit::LiveEditLedger,
+    scene: &RoomScene,
+) -> SceneSavePatches {
+    let mut by_id: std::collections::HashMap<u32, &alchemy_protocol::SceneEntry> =
+        std::collections::HashMap::with_capacity(scene.entries.len());
+    for e in &scene.entries {
+        by_id.insert(e.entity_id, e);
+    }
+
+    let mut parents = Vec::new();
+    let mut fields = Vec::new();
+
+    for &eid in &led.entities {
+        let canon = by_id.get(&eid);
+        let live_parent = led.parent_of(eid);
+        let canon_parent = canon.map(|e| e.parent_entity_id).unwrap_or(0);
+        if live_parent != canon_parent {
+            parents.push(SceneParentPatch {
+                entity_id: eid,
+                parent_entity_id: live_parent,
+            });
+        }
+
+        let mut field = SceneFieldPatch {
+            entity_id: eid,
+            flags: None,
+            r: None,
+            g: None,
+            b: None,
+            a: None,
+            blake3: None,
+        };
+        let mut dirty = false;
+
+        if let Some(&live_flags) = led.flags.get(&eid) {
+            let canon_flags = canon.map(|e| e.flags).unwrap_or(0);
+            if live_flags != canon_flags {
+                field.flags = Some(live_flags);
+                dirty = true;
+            }
+        }
+        if let Some(&live_color) = led.colors.get(&eid) {
+            let (cr, cg, cb, ca) = match canon {
+                Some(e) => (e.r, e.g, e.b, if e.a == 0.0 { 1.0 } else { e.a }),
+                None => (0.0, 0.0, 0.0, 1.0),
+            };
+            if live_color != [cr, cg, cb, ca] {
+                field.r = Some(live_color[0]);
+                field.g = Some(live_color[1]);
+                field.b = Some(live_color[2]);
+                field.a = Some(live_color[3]);
+                dirty = true;
+            }
+        }
+        if let Some(live_blake3) = led.blake3.get(&eid) {
+            let canon_blake3 = canon.map(|e| e.blake3.as_str()).unwrap_or("");
+            if live_blake3 != canon_blake3 {
+                field.blake3 = Some(live_blake3.clone());
+                dirty = true;
+            }
+        }
+
+        if dirty {
+            fields.push(field);
+        }
+    }
+
+    SceneSavePatches { parents, fields }
 }
 
 fn apply_reparent(

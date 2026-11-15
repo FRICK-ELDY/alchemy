@@ -58,6 +58,9 @@ message SceneEntry {
   double sx = 16;
   double sy = 17;
   double sz = 18;
+  // Parent entity id for creative hierarchy (x00b8). 0 = world root.
+  // Live Reparent (x00b3) is host-only until Save folds this into the ledger.
+  uint32 parent_entity_id = 19;
 }
 
 // Active locomotion mode for users in this room (world content definition).

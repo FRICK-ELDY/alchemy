@@ -1037,7 +1037,12 @@ defmodule WorldWeb.RoomController do
          :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
          {:ok, packed} <- ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
          {:ok, canon_exp, overlay_exp} <- Rooms.unpack_revision(packed),
-         {:ok, scene} <- Rooms.save_overlay_to_canonical(room_id, canon_exp, overlay_exp) do
+         patches = %{
+           "parents" => Map.get(params, "parents") || [],
+           "fields" => Map.get(params, "fields") || []
+         },
+         {:ok, scene} <-
+           Rooms.save_overlay_to_canonical(room_id, canon_exp, overlay_exp, patches) do
       json(conn, Map.put(scene, "room_id", room_id))
     else
       {:error, :missing_bearer} ->
@@ -1890,6 +1895,9 @@ defmodule WorldWeb.RoomController do
 
   defp render_scene_entry_error(conn, :invalid_entry, _),
     do: conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_entry"})
+
+  defp render_scene_entry_error(conn, :parent_cycle, _),
+    do: conn |> put_status(:unprocessable_entity) |> json(%{error: "parent_cycle"})
 
   defp render_scene_entry_error(conn, :duplicate_blake3, _),
     do: conn |> put_status(:conflict) |> json(%{error: "duplicate_blake3"})

@@ -30,11 +30,12 @@ defmodule World.Rooms do
   durable-clears them.
   **x00a2**: scene/overlay CAS enforces SceneBudget (≤ protocol manifest entries/bytes) and
   composed (canon ∥ overlay) entry cap on **both** canonical and overlay mutate paths.
-  **x00b7**: `save_overlay_to_canonical/3` merges overlay entries into canonical (entity_id kept)
-  and clears overlay in one packed CAS; empty overlay is idempotent. HTTP requires active host
-  **and** scene writer (same gate as canonical mutate).
+  **x00b7 / x00b8**: `save_overlay_to_canonical/4` merges overlay into canonical (entity_id kept),
+  optionally folds live `parents` / `fields` patches, and clears overlay in one packed CAS;
+  empty overlay + empty patches is idempotent. HTTP requires active host **and** scene writer.
   Non-guarantees: full UGC editor; multi-node replication; Postgres (swap path documented);
   Save-time detection of entity_id collisions between canon and overlay (append id bands differ);
+  live Reparent/SetField CAS (host tip only until Save);
   signed HostDelegation JWT;
   relation notify retry queue; already-issued Room Token JWT revocation (TTL; new epoch AEAD closed);
   grace durability across world restart; Room physical DELETE (and quota decrement);
@@ -510,14 +511,44 @@ defmodule World.Rooms do
   **Auth:** not checked here. Callers must authorize active_host + scene writer
   (HTTP: `ensure_active_host` + `ensure_scene_writer`).
 
-  Keeps overlay `entity_id`s. Empty overlay is idempotent (returns composed, no rev bump).
-  Atomic packed CAS updates both columns. Returns **composed** scene.
+  Keeps overlay `entity_id`s. Empty overlay **and** empty patches is idempotent
+  (returns composed, no rev bump). Non-empty `parents` / `fields` always CAS-write
+  (x00b8). Atomic packed CAS updates both columns. Returns **composed** scene.
   """
   @spec save_overlay_to_canonical(room_id(), non_neg_integer(), non_neg_integer()) ::
           {:ok, map()}
           | {:error,
              :invalid_room_id
              | :not_found
+             | :invalid_entry
+             | :parent_cycle
+             | :scene_revision_conflict
+             | :invalid_scene_revision
+             | :invalid_revision
+             | :scene_entries_exceeded
+             | :scene_bytes_exceeded
+             | storage_error()}
+  def save_overlay_to_canonical(room_id, expected_canonical_revision, expected_overlay_revision)
+      when is_binary(room_id) and is_integer(expected_canonical_revision) and
+             expected_canonical_revision >= 0 and is_integer(expected_overlay_revision) and
+             expected_overlay_revision >= 0 do
+    save_overlay_to_canonical(
+      room_id,
+      expected_canonical_revision,
+      expected_overlay_revision,
+      %{}
+    )
+  end
+
+  def save_overlay_to_canonical(_, _, _), do: {:error, :invalid_room_id}
+
+  @spec save_overlay_to_canonical(room_id(), non_neg_integer(), non_neg_integer(), map()) ::
+          {:ok, map()}
+          | {:error,
+             :invalid_room_id
+             | :not_found
+             | :invalid_entry
+             | :parent_cycle
              | :scene_revision_conflict
              | :invalid_scene_revision
              | :invalid_revision
@@ -527,47 +558,56 @@ defmodule World.Rooms do
   def save_overlay_to_canonical(
         room_id,
         expected_canonical_revision,
-        expected_overlay_revision
+        expected_overlay_revision,
+        patches
       )
       when is_binary(room_id) and is_integer(expected_canonical_revision) and
              expected_canonical_revision >= 0 and is_integer(expected_overlay_revision) and
-             expected_overlay_revision >= 0 do
+             expected_overlay_revision >= 0 and is_map(patches) do
     with :ok <- validate_room_id(room_id),
          {:ok, %Room{} = room} <- fetch_room(room_id),
          {:ok, overlay} <- require_overlay(room.session_overlay),
          {:ok, current_canon} <- scene_revision(room.scene),
          {:ok, current_overlay} <- scene_revision(overlay),
          :ok <- match_expected_revision(current_canon, expected_canonical_revision),
-         :ok <- match_expected_revision(current_overlay, expected_overlay_revision) do
-      case scene_entries(overlay) do
-        [] ->
-          compose_room_scene(room)
+         :ok <- match_expected_revision(current_overlay, expected_overlay_revision),
+         {:ok, parents, fields} <- normalize_save_patches(patches) do
+      overlay_entries = scene_entries(overlay)
 
-        overlay_entries ->
-          merge_overlay_into_canonical(
-            room_id,
-            room.scene,
-            overlay_entries,
-            expected_canonical_revision,
-            expected_overlay_revision
-          )
+      if overlay_entries == [] and parents == [] and fields == [] do
+        compose_room_scene(room)
+      else
+        commit_save_canonical(
+          room_id,
+          room.scene,
+          overlay_entries,
+          parents,
+          fields,
+          expected_canonical_revision,
+          expected_overlay_revision
+        )
       end
     end
   end
 
-  def save_overlay_to_canonical(_, _, _), do: {:error, :invalid_room_id}
+  def save_overlay_to_canonical(_, _, _, _), do: {:error, :invalid_room_id}
 
-  defp merge_overlay_into_canonical(
+  defp commit_save_canonical(
          room_id,
          scene,
          overlay_entries,
+         parents,
+         fields,
          expected_canonical_revision,
          expected_overlay_revision
        ) do
     with :ok <- ensure_revision_headroom(expected_canonical_revision),
          :ok <- ensure_revision_headroom(expected_overlay_revision),
-         {:ok, next_scene} <-
+         {:ok, merged} <-
            build_merged_canonical_scene(scene, overlay_entries, expected_canonical_revision),
+         {:ok, patched_entries} <-
+           apply_save_patches(scene_entries(merged), parents, fields),
+         next_scene = Map.put(merged, "entries", patched_entries),
          :ok <-
            cas_set_scene_and_cleared_overlay(
              room_id,
@@ -577,6 +617,279 @@ defmodule World.Rooms do
            ),
          {:ok, fresh} <- fetch_room(room_id) do
       compose_room_scene(fresh)
+    end
+  end
+
+  defp normalize_save_patches(patches) when is_map(patches) do
+    parents_raw = Map.get(patches, "parents") || Map.get(patches, :parents) || []
+    fields_raw = Map.get(patches, "fields") || Map.get(patches, :fields) || []
+
+    with {:ok, parents} <- normalize_parent_patches(parents_raw),
+         {:ok, fields} <- normalize_field_patches(fields_raw) do
+      {:ok, parents, fields}
+    end
+  end
+
+  defp normalize_parent_patches(list) when is_list(list) do
+    list
+    |> Enum.reduce_while({:ok, []}, fn item, acc ->
+      accumulate_normalized_patch(item, acc, &normalize_parent_patch/1)
+    end)
+    |> finish_patch_acc()
+  end
+
+  defp normalize_parent_patches(_), do: {:error, :invalid_entry}
+
+  defp normalize_parent_patch(item) when is_map(item) do
+    with {:ok, entity_id} <- parse_patch_u32(item, "entity_id", :entity_id),
+         {:ok, parent_entity_id} <-
+           parse_patch_u32(item, "parent_entity_id", :parent_entity_id) do
+      {:ok, %{entity_id: entity_id, parent_entity_id: parent_entity_id}}
+    end
+  end
+
+  defp normalize_parent_patch(_), do: {:error, :invalid_entry}
+
+  defp normalize_field_patches(list) when is_list(list) do
+    list
+    |> Enum.reduce_while({:ok, []}, fn item, acc ->
+      accumulate_normalized_patch(item, acc, &normalize_field_patch/1)
+    end)
+    |> finish_patch_acc()
+  end
+
+  defp normalize_field_patches(_), do: {:error, :invalid_entry}
+
+  defp normalize_field_patch(item) when is_map(item) do
+    with {:ok, entity_id} <- parse_patch_u32(item, "entity_id", :entity_id),
+         {:ok, patch} <- put_optional_field_keys(%{entity_id: entity_id}, item) do
+      if map_size(patch) == 1 do
+        {:error, :invalid_entry}
+      else
+        {:ok, patch}
+      end
+    end
+  end
+
+  defp normalize_field_patch(_), do: {:error, :invalid_entry}
+
+  defp accumulate_normalized_patch(item, {:ok, acc}, normalize_fun) do
+    case normalize_fun.(item) do
+      {:ok, patch} -> {:cont, {:ok, [patch | acc]}}
+      {:error, _} = err -> {:halt, err}
+    end
+  end
+
+  defp finish_patch_acc({:ok, acc}), do: {:ok, Enum.reverse(acc)}
+  defp finish_patch_acc({:error, _} = err), do: err
+
+  defp put_optional_field_keys(patch, item) do
+    with {:ok, patch} <- maybe_put_patch_u32(patch, item, "flags", :flags),
+         {:ok, patch} <- maybe_put_patch_float(patch, item, "r", :r),
+         {:ok, patch} <- maybe_put_patch_float(patch, item, "g", :g),
+         {:ok, patch} <- maybe_put_patch_float(patch, item, "b", :b),
+         {:ok, patch} <- maybe_put_patch_float(patch, item, "a", :a) do
+      maybe_put_patch_blake3(patch, item)
+    end
+  end
+
+  # Present-but-invalid keys → `:invalid_entry` (do not silently drop).
+  defp maybe_put_patch_u32(patch, item, str_key, atom_key) do
+    case patch_map_get(item, str_key, atom_key) do
+      :absent ->
+        {:ok, patch}
+
+      v ->
+        case parse_u32_value(v) do
+          {:ok, n} -> {:ok, Map.put(patch, atom_key, n)}
+          {:error, _} -> {:error, :invalid_entry}
+        end
+    end
+  end
+
+  defp maybe_put_patch_float(patch, item, str_key, atom_key) do
+    case patch_map_get(item, str_key, atom_key) do
+      :absent -> {:ok, patch}
+      v when is_number(v) -> {:ok, Map.put(patch, atom_key, v * 1.0)}
+      _ -> {:error, :invalid_entry}
+    end
+  end
+
+  defp maybe_put_patch_blake3(patch, item) do
+    case patch_map_get(item, "blake3", :blake3) do
+      :absent ->
+        {:ok, patch}
+
+      blake3 when is_binary(blake3) and byte_size(blake3) == 64 ->
+        lower = String.downcase(blake3)
+
+        if Regex.match?(~r/^[0-9a-f]{64}$/, lower) do
+          {:ok, Map.put(patch, :blake3, lower)}
+        else
+          {:error, :invalid_entry}
+        end
+
+      _ ->
+        {:error, :invalid_entry}
+    end
+  end
+
+  defp patch_map_get(item, str_key, atom_key) when is_map(item) do
+    case Map.fetch(item, str_key) do
+      {:ok, v} ->
+        v
+
+      :error ->
+        case Map.fetch(item, atom_key) do
+          {:ok, v} -> v
+          :error -> :absent
+        end
+    end
+  end
+
+  defp parse_patch_u32(item, str_key, atom_key) do
+    case Map.get(item, str_key) || Map.get(item, atom_key) do
+      nil -> {:error, :invalid_entry}
+      v -> parse_u32_value(v)
+    end
+  end
+
+  defp parse_u32_value(v) when is_integer(v) and v >= 0 and v <= 0xFFFFFFFF, do: {:ok, v}
+  defp parse_u32_value(_), do: {:error, :invalid_entry}
+
+  defp apply_save_patches(entries, parents, fields) when is_list(entries) do
+    with {:ok, after_parents} <- apply_parent_patches(entries, parents),
+         {:ok, after_fields} <- apply_field_patches(after_parents, fields),
+         :ok <- reject_parent_cycles(after_fields) do
+      {:ok, after_fields}
+    end
+  end
+
+  defp apply_parent_patches(entries, []), do: {:ok, entries}
+
+  defp apply_parent_patches(entries, parents) do
+    Enum.reduce_while(parents, {:ok, entries}, fn %{entity_id: eid, parent_entity_id: pid},
+                                                  {:ok, acc} ->
+      case patch_entry_parent(acc, eid, pid) do
+        {:ok, next} -> {:cont, {:ok, next}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp patch_entry_parent(entries, entity_id, parent_entity_id) do
+    case Enum.find_index(entries, &entry_entity_id_eq?(&1, entity_id)) do
+      nil ->
+        {:error, :invalid_entry}
+
+      idx ->
+        if parent_entity_id != 0 and
+             is_nil(Enum.find(entries, &entry_entity_id_eq?(&1, parent_entity_id))) do
+          {:error, :invalid_entry}
+        else
+          entry = Enum.at(entries, idx)
+          updated = put_entry_value(entry, "parent_entity_id", parent_entity_id)
+          {:ok, List.replace_at(entries, idx, updated)}
+        end
+    end
+  end
+
+  defp apply_field_patches(entries, []), do: {:ok, entries}
+
+  defp apply_field_patches(entries, fields) do
+    Enum.reduce_while(fields, {:ok, entries}, fn patch, {:ok, acc} ->
+      case patch_entry_fields(acc, patch) do
+        {:ok, next} -> {:cont, {:ok, next}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp patch_entry_fields(entries, %{entity_id: entity_id} = patch) do
+    case Enum.find_index(entries, &entry_entity_id_eq?(&1, entity_id)) do
+      nil ->
+        {:error, :invalid_entry}
+
+      idx ->
+        entry =
+          Enum.at(entries, idx)
+          |> maybe_put_entry_key(patch, :flags, "flags")
+          |> maybe_put_entry_key(patch, :r, "r")
+          |> maybe_put_entry_key(patch, :g, "g")
+          |> maybe_put_entry_key(patch, :b, "b")
+          |> maybe_put_entry_key(patch, :a, "a")
+          |> maybe_put_entry_key(patch, :blake3, "blake3")
+
+        {:ok, List.replace_at(entries, idx, entry)}
+    end
+  end
+
+  defp maybe_put_entry_key(entry, patch, atom_key, str_key) do
+    case Map.fetch(patch, atom_key) do
+      {:ok, v} -> put_entry_value(entry, str_key, v)
+      :error -> entry
+    end
+  end
+
+  defp put_entry_value(entry, key, value) when is_map(entry) do
+    atom = String.to_existing_atom(key)
+
+    cond do
+      Map.has_key?(entry, key) -> Map.put(entry, key, value)
+      Map.has_key?(entry, atom) -> Map.put(entry, atom, value)
+      true -> Map.put(entry, key, value)
+    end
+  rescue
+    ArgumentError -> Map.put(entry, key, value)
+  end
+
+  defp entry_entity_id_eq?(entry, entity_id) when is_map(entry) do
+    case Map.get(entry, "entity_id") || Map.get(entry, :entity_id) do
+      ^entity_id -> true
+      _ -> false
+    end
+  end
+
+  defp entry_entity_id_eq?(_, _), do: false
+
+  defp entry_parent_id(entry) when is_map(entry) do
+    case Map.get(entry, "parent_entity_id") || Map.get(entry, :parent_entity_id) do
+      n when is_integer(n) and n >= 0 -> n
+      _ -> 0
+    end
+  end
+
+  defp reject_parent_cycles(entries) when is_list(entries) do
+    parent_of =
+      Map.new(entries, fn e ->
+        eid = Map.get(e, "entity_id") || Map.get(e, :entity_id)
+        {eid, entry_parent_id(e)}
+      end)
+
+    ids = MapSet.new(Map.keys(parent_of))
+
+    Enum.reduce_while(Map.keys(parent_of), :ok, fn eid, :ok ->
+      case walk_parent_chain(parent_of, eid, ids, MapSet.new()) do
+        :ok -> {:cont, :ok}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp walk_parent_chain(_parent_of, 0, _ids, _seen), do: :ok
+
+  defp walk_parent_chain(parent_of, entity_id, ids, seen) do
+    cond do
+      MapSet.member?(seen, entity_id) ->
+        {:error, :parent_cycle}
+
+      not MapSet.member?(ids, entity_id) ->
+        # Dangling non-zero parent already rejected at patch time; treat as cycle-safe stop.
+        :ok
+
+      true ->
+        parent = Map.get(parent_of, entity_id, 0)
+        walk_parent_chain(parent_of, parent, ids, MapSet.put(seen, entity_id))
     end
   end
 
@@ -965,7 +1278,8 @@ defmodule World.Rooms do
            "b" => entry_float(entry, "b", :b, 0.9),
            "a" => entry_float(entry, "a", :a, 1.0),
            "half_extent" => 0.0,
-           "flags" => 0
+           "flags" => 0,
+           "parent_entity_id" => 0
          }}
     end
   end

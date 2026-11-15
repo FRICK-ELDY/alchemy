@@ -854,7 +854,7 @@ fn main() -> Result<()> {
     let (despawn_tx, despawn_inbox) = inventory_despawn::DespawnInbox::pair();
     let (live_tx, live_inbox) = live_edit::LiveEditInbox::pair();
     let live_edit = live_edit::new_shared_live_edit();
-    // Seed working-tree mirrors from composed scene (parents default root).
+    // Seed working-tree mirrors from composed scene (parent / flags / color / blake3 · x00b8).
     {
         let scene = shared_scene
             .read()
@@ -863,8 +863,9 @@ fn main() -> Result<()> {
             .lock()
             .map_err(|_| anyhow::anyhow!("LiveEditLedger poisoned"))?;
         for e in &scene.entries {
-            led.note_spawn(
+            led.note_spawn_with_parent(
                 e.entity_id,
+                e.parent_entity_id,
                 e.flags,
                 [e.r, e.g, e.b, if e.a == 0.0 { 1.0 } else { e.a }],
                 e.blake3.clone(),

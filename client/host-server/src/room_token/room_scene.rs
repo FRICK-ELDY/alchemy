@@ -64,6 +64,9 @@ struct SceneEntryJson {
     sy: f64,
     #[serde(default)]
     sz: f64,
+    /// Creative hierarchy parent (x00b8). 0 / omitted = world root.
+    #[serde(default)]
+    parent_entity_id: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +123,7 @@ fn scene_from_response(parsed: SceneResponseJson) -> RoomScene {
                 sx: e.sx,
                 sy: e.sy,
                 sz: e.sz,
+                parent_entity_id: e.parent_entity_id,
             };
             alchemy_protocol::normalize_scene_entry_trs(&mut entry);
             entry
@@ -523,15 +527,76 @@ enum CasAttempt {
     Other(anyhow::Error),
 }
 
-fn is_scene_writer_forbidden(body: &str) -> bool {
-    serde_json::from_str::<SceneErrorJson>(body)
-        .map(|e| e.error == "scene_writer_forbidden")
-        .unwrap_or(false)
+/// Typed Save failure for EditCommit mapping (x00b7 / x00b8).
+#[derive(Debug)]
+pub enum SceneSaveError {
+    Forbidden,
+    /// Packed revision conflict after CAS retries exhausted (or single attempt).
+    Conflict,
+    ParentCycle,
+    InvalidEntry,
+    Other(anyhow::Error),
 }
 
-/// x00b7: merge session_overlay into canonical and clear overlay (packed CAS).
+impl std::fmt::Display for SceneSaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Forbidden => write!(f, "scene_writer_forbidden"),
+            Self::Conflict => write!(f, "scene_revision_conflict"),
+            Self::ParentCycle => write!(f, "parent_cycle"),
+            Self::InvalidEntry => write!(f, "invalid_entry"),
+            Self::Other(err) => write!(f, "{err:#}"),
+        }
+    }
+}
+
+impl std::error::Error for SceneSaveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Other(err) => Some(err.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+fn is_scene_writer_forbidden(body: &str) -> bool {
+    scene_error_code(body).as_deref() == Some("scene_writer_forbidden")
+}
+
+fn scene_error_code(body: &str) -> Option<String> {
+    serde_json::from_str::<SceneErrorJson>(body)
+        .ok()
+        .map(|e| e.error)
+}
+
+/// Live parent / SetField deltas folded into Save (x00b8). Empty = overlay-only merge.
+#[derive(Debug, Clone, Default)]
+pub struct SceneSavePatches {
+    pub parents: Vec<SceneParentPatch>,
+    pub fields: Vec<SceneFieldPatch>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SceneParentPatch {
+    pub entity_id: u32,
+    pub parent_entity_id: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct SceneFieldPatch {
+    pub entity_id: u32,
+    pub flags: Option<u32>,
+    pub r: Option<f32>,
+    pub g: Option<f32>,
+    pub b: Option<f32>,
+    pub a: Option<f32>,
+    pub blake3: Option<String>,
+}
+
+/// x00b7 / x00b8: merge session_overlay into canonical, apply optional parent/field
+/// patches, clear overlay (one packed CAS).
 ///
-/// Returns composed scene. Empty overlay is idempotent (same packed revision).
+/// Returns composed scene. Empty overlay **and** empty patches is idempotent.
 /// Retries on `scene_revision_conflict` only.
 pub fn save_overlay_to_canonical(
     world_url: &str,
@@ -539,33 +604,32 @@ pub fn save_overlay_to_canonical(
     host_room_token: &str,
     pop_key: &SigningKey,
     shared_scene: &Arc<RwLock<RoomScene>>,
-) -> Result<RoomScene> {
-    let mut expected = shared_revision(shared_scene)?;
+    patches: &SceneSavePatches,
+) -> std::result::Result<RoomScene, SceneSaveError> {
+    let mut expected = shared_revision(shared_scene).map_err(SceneSaveError::Other)?;
     for attempt in 1..=MAX_SCENE_CAS_ATTEMPTS {
-        match save_overlay_to_canonical_once(world_url, room_id, host_room_token, pop_key, expected)
-        {
+        match save_overlay_to_canonical_once(
+            world_url,
+            room_id,
+            host_room_token,
+            pop_key,
+            expected,
+            patches,
+        ) {
             Ok(scene) => return Ok(scene),
-            Err(CasAttempt::Conflict) if attempt < MAX_SCENE_CAS_ATTEMPTS => {
+            Err(SceneSaveError::Conflict) if attempt < MAX_SCENE_CAS_ATTEMPTS => {
                 cas_backoff(attempt);
                 expected = fetch_expected_revision(world_url, room_id, host_room_token, pop_key)
-                    .with_context(|| {
-                        format!("scene save CAS refetch after conflict (attempt {attempt})")
+                    .map_err(|e| {
+                        SceneSaveError::Other(e.context(format!(
+                            "scene save CAS refetch after conflict (attempt {attempt})"
+                        )))
                     })?;
             }
-            Err(CasAttempt::Conflict) => {
-                return Err(anyhow!(
-                    "scene save CAS exhausted after {MAX_SCENE_CAS_ATTEMPTS} attempts"
-                ));
-            }
-            Err(CasAttempt::Forbidden) => {
-                return Err(anyhow!("scene_writer_forbidden"));
-            }
-            Err(CasAttempt::Other(err)) => return Err(err),
+            Err(err) => return Err(err),
         }
     }
-    Err(anyhow!(
-        "scene save CAS exhausted after {MAX_SCENE_CAS_ATTEMPTS} attempts"
-    ))
+    Err(SceneSaveError::Conflict)
 }
 
 fn save_overlay_to_canonical_once(
@@ -574,15 +638,55 @@ fn save_overlay_to_canonical_once(
     host_room_token: &str,
     pop_key: &SigningKey,
     expected_revision: u64,
-) -> std::result::Result<RoomScene, CasAttempt> {
+    patches: &SceneSavePatches,
+) -> std::result::Result<RoomScene, SceneSaveError> {
     let base = world_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/rooms/{room_id}/scene/save");
     let path = request_path(&url);
     let authz = format!("Bearer {host_room_token}");
+    let parents: Vec<serde_json::Value> = patches
+        .parents
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "entity_id": p.entity_id,
+                "parent_entity_id": p.parent_entity_id,
+            })
+        })
+        .collect();
+    let fields: Vec<serde_json::Value> = patches
+        .fields
+        .iter()
+        .map(|f| {
+            let mut m = serde_json::Map::new();
+            m.insert("entity_id".into(), serde_json::json!(f.entity_id));
+            if let Some(flags) = f.flags {
+                m.insert("flags".into(), serde_json::json!(flags));
+            }
+            if let Some(r) = f.r {
+                m.insert("r".into(), serde_json::json!(r));
+            }
+            if let Some(g) = f.g {
+                m.insert("g".into(), serde_json::json!(g));
+            }
+            if let Some(b) = f.b {
+                m.insert("b".into(), serde_json::json!(b));
+            }
+            if let Some(a) = f.a {
+                m.insert("a".into(), serde_json::json!(a));
+            }
+            if let Some(ref blake3) = f.blake3 {
+                m.insert("blake3".into(), serde_json::json!(blake3));
+            }
+            serde_json::Value::Object(m)
+        })
+        .collect();
     let raw = serde_json::to_vec(&serde_json::json!({
         "expected_revision": expected_revision,
+        "parents": parents,
+        "fields": fields,
     }))
-    .map_err(|e| CasAttempt::Other(anyhow!("encode scene save body: {e:#}")))?;
+    .map_err(|e| SceneSaveError::Other(anyhow!("encode scene save body: {e:#}")))?;
     let req = with_pop(
         credential_agent()
             .post(&url)
@@ -597,7 +701,7 @@ fn save_overlay_to_canonical_once(
         Ok(resp) => {
             let parsed: SceneResponseJson = resp
                 .into_json()
-                .map_err(|e| CasAttempt::Other(anyhow!("parse scene save: {e:#}")))?;
+                .map_err(|e| SceneSaveError::Other(anyhow!("parse scene save: {e:#}")))?;
             let mut scene = scene_from_response(parsed);
             scene.owner_sub = None;
             Ok(scene)
@@ -605,16 +709,24 @@ fn save_overlay_to_canonical_once(
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();
             if code == 409 && is_scene_revision_conflict(&body) {
-                Err(CasAttempt::Conflict)
+                Err(SceneSaveError::Conflict)
             } else if code == 403 && is_scene_writer_forbidden(&body) {
-                Err(CasAttempt::Forbidden)
+                Err(SceneSaveError::Forbidden)
+            } else if code == 422 {
+                match scene_error_code(&body).as_deref() {
+                    Some("parent_cycle") => Err(SceneSaveError::ParentCycle),
+                    Some("invalid_entry") => Err(SceneSaveError::InvalidEntry),
+                    _ => Err(SceneSaveError::Other(anyhow!(
+                        "scene save failed status={code} body={body}"
+                    ))),
+                }
             } else {
-                Err(CasAttempt::Other(anyhow!(
+                Err(SceneSaveError::Other(anyhow!(
                     "scene save failed status={code} body={body}"
                 )))
             }
         }
-        Err(err) => Err(CasAttempt::Other(anyhow!(
+        Err(err) => Err(SceneSaveError::Other(anyhow!(
             "scene save request failed: {err:#}"
         ))),
     }
