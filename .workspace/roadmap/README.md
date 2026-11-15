@@ -240,12 +240,13 @@ depends_on: [x0006]
 | x00bc | — | done | Spatial Inspector Zero-String | [x00bc-spatial-inspector-lens.md](slices/x00bc-spatial-inspector-lens.md) |
 | x00bd | — | done | 板ヒット + Stickiness 最小 | [x00bd-spatial-panel-hit-stickiness.md](slices/x00bd-spatial-panel-hit-stickiness.md) |
 | x00be | — | done | Spatial Interest: cell frame 契約 + dual-publish 基盤 | [x00be-spatial-interest-cell-frame-foundation.md](slices/x00be-spatial-interest-cell-frame-foundation.md) |
+| x00bf | — | done | Spatial Interest: client 近傍セル購読（opt-in / 併読） | [x00bf-client-near-cell-frame-sub.md](slices/x00bf-client-near-cell-frame-sub.md) |
 
-**現在の次:** 次空き **`x00bf`**（Interest 購読切替 / Spatial VCS / Save As / Undo UI / WorldRoot Lens 同期 等）。[x00be](slices/x00be-spatial-interest-cell-frame-foundation.md) **done**。Spatial Lens 個人パネル [x00ba](slices/x00ba-spatial-lens-uber-sdf.md)–[x00bd](slices/x00bd-spatial-panel-hit-stickiness.md) **done**。[x00b9](slices/x00b9-spawn-without-live-cas.md) **done**。並行候補: VCS 本体（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md)）。**品質本線** · Spot-Check 保留（Q2）。
-**規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；第一波 x00be **done**。1000 人は horizon）。
+**現在の次:** 次空き **`x00c0`**（Room frame 依存縮小 / セル別 dirty / 自位置追従 / Spatial VCS / Save As / Undo UI / WorldRoot Lens 同期 等）。[x00bf](slices/x00bf-client-near-cell-frame-sub.md) **done**。[x00be](slices/x00be-spatial-interest-cell-frame-foundation.md) **done**。Spatial Lens 個人パネル [x00ba](slices/x00ba-spatial-lens-uber-sdf.md)–[x00bd](slices/x00bd-spatial-panel-hit-stickiness.md) **done**。[x00b9](slices/x00b9-spawn-without-live-cas.md) **done**。並行候補: VCS 本体（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md)）。**品質本線** · Spot-Check 保留（Q2）。
+**規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；x00be/x00bf **done**。1000 人は horizon）。
 旧メモ **P3-7（BLAKE3 ストリーミング）** は **CI が完了しなくなるためマージしない**（現行 P3-7 Spatial Interest とは別物）。Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 
-次の空き番号は **`x00bf`**。
+次の空き番号は **`x00c0`**。
 
 ## 関連
 

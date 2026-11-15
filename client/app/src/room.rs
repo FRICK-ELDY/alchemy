@@ -9,6 +9,7 @@
 //! - Intent Ed25519 session minted before guest Room Token fetch so `cnf.spk` matches bind
 //!   `session_pub` (x003e)
 //! - `ensure_room_bus` idempotent via `room_bus_started`; spawn failure clears the flag
+//! - Room `…/frame` always subscribed; `ALCHEMY_CELL_FRAME=1` adds origin Moore cell 併読 (x00bf)
 //! - Reopen after join only when `mtls_reopen_pending` or session was dropped (x0068)
 //! - While `room_bus_started`, soft refresh skips CSR and disk PEM rewrite (Token / epoch
 //!   only). PEMs apply on next open / Leave→Join / `mtls_reopen` — mid-flight reopen is
@@ -35,14 +36,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use alchemy_protocol::wire_aead::AeadKind;
-use alchemy_protocol::{edit_key, frame_key, input_key, manifest_key, presence_key, Message};
+use alchemy_protocol::{
+    cell_frame_sub_enabled, edit_key, frame_cell_interest_keyexpr, frame_key, input_key,
+    manifest_key, moore_neighborhood_cells, presence_key, Message, CELL_FRAME_SUB_ENV,
+};
 use anyhow::{Context, Result};
 use zenoh::Wait;
 
 use crate::assets_fetch::{load_auth_mesh, try_place_read_for_mesh, AuthMeshLoad};
 use crate::auth;
 use crate::bus::edit::spawn_edit_commit_subscriber;
-use crate::bus::frame::spawn_frame_subscriber;
+use crate::bus::frame::{spawn_frame_subscriber, FrameSubKind};
 use crate::bus::input::spawn_input_publisher;
 use crate::bus::liveliness::declare_room_alive;
 use crate::bus::manifest::spawn_manifest_subscriber;
@@ -424,7 +428,29 @@ pub(crate) fn ensure_room_bus(
             Arc::clone(&shared.host_attest),
         )?;
         spawn_presence_subscriber(session.clone(), presence_key_expr, Arc::clone(shared))?;
-        spawn_frame_subscriber(session.clone(), frame_key_expr, Arc::clone(shared))?;
+        // Room `…/frame` remains tick authority / default path (x00be / x00bf).
+        spawn_frame_subscriber(
+            session.clone(),
+            frame_key_expr,
+            Arc::clone(shared),
+            FrameSubKind::Room,
+        )?;
+        // x00bf: opt-in near-cell 併読. Center is origin (host dual-publishes `0_0_0` today);
+        // player-following resubscribe is a later slice.
+        // Hot-path: same sealed bytes as Room are AEAD/sig/decoded again while 併読 is on.
+        if cell_frame_sub_enabled() {
+            let near = moore_neighborhood_cells(0, 0, 0);
+            let cell_key_expr = frame_cell_interest_keyexpr(room_id.as_ref(), &wire_cap, &near);
+            spawn_frame_subscriber(
+                session.clone(),
+                cell_key_expr,
+                Arc::clone(shared),
+                FrameSubKind::CellInterest,
+            )?;
+            log::info!(
+                "{CELL_FRAME_SUB_ENV}=1: also subscribed origin Moore neighborhood cell frames (併読; Room frame kept; cell gap→snapshot off)"
+            );
+        }
         spawn_edit_commit_subscriber(session.clone(), edit_key_expr, Arc::clone(shared))?;
         spawn_input_publisher(session.clone(), input_key_expr, Arc::clone(shared))?;
         log::info!("room Zenoh bus started (wire_cap_len={})", wire_cap.len());

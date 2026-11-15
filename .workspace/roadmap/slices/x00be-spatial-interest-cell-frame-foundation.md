@@ -2,7 +2,7 @@
 
 > **ID:** `x00be` · **slug:** `spatial-interest-cell-frame-foundation` · **status:** `done` · **area:** `[protocol, relay, host, docs]` · **depends_on:** `[x00b1]`  
 > **優先度:** [spatial_interest.md](../spatial_interest.md) 実装第一波（P3-7）  
-> **後続:** client 近傍セル購読 · セル別 dirty フィルタ · avatar LOD · G1/G2 実測（次空き `x00bf`〜）
+> **後続:** [x00bf](x00bf-client-near-cell-frame-sub.md) client 近傍セル opt-in 併読（**done**）· セル別 dirty フィルタ · avatar LOD · G1/G2 実測（次空き `x00c0`〜）
 
 目標: 規模本線の **セル修飾 frame キー契約（方向 A）** を固定し、WAN ACL 明示許可と host の dual-publish（Room `…/frame` 維持＋`…/frame/cell/0_0_0`）まで配線する。client 既定購読・LOD・フルメッシュ廃止は後続。
 
