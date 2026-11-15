@@ -32,6 +32,10 @@ config :assets,
   world_jwks_url: "http://127.0.0.1:9/.well-known/jwks.json",
   world_jwks_fetch_on_start: false,
   world_base_url: nil,
+  spawn_ticket_private_key_path: "priv/test_spawn_ticket_private.pem",
+  spawn_ticket_generate_key_on_startup: true,
+  spawn_ticket_ttl_seconds: 60,
+  spawn_ticket_max_blake3s: 32,
   max_upload_bytes: 10_000,
   # x008d: small pool so ExUnit exercises multi-Port without spawning many OS procs
   blake3_hash_partitions: 2

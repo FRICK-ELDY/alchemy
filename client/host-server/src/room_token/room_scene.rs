@@ -260,6 +260,7 @@ pub fn append_room_scene_entry(
     pop_key: &SigningKey,
     shared_scene: &Arc<RwLock<RoomScene>>,
     blake3: &str,
+    spawn_ticket: &str,
     x: f64,
     y: f64,
     z: f64,
@@ -274,6 +275,9 @@ pub fn append_room_scene_entry(
     if !is_blake3_hex(blake3) {
         return Err(anyhow!("invalid blake3 for scene append"));
     }
+    if spawn_ticket.is_empty() {
+        return Err(anyhow!("spawn_ticket required for scene append"));
+    }
     let mut expected = shared_revision(shared_scene)?;
     for attempt in 1..=MAX_SCENE_CAS_ATTEMPTS {
         match append_room_scene_entry_once(
@@ -283,6 +287,7 @@ pub fn append_room_scene_entry(
             pop_key,
             expected,
             blake3,
+            spawn_ticket,
             x,
             y,
             z,
@@ -323,6 +328,7 @@ fn append_room_scene_entry_once(
     pop_key: &SigningKey,
     expected_revision: u64,
     blake3: &str,
+    spawn_ticket: &str,
     x: f64,
     y: f64,
     z: f64,
@@ -341,6 +347,7 @@ fn append_room_scene_entry_once(
     let authz = format!("Bearer {host_room_token}");
     let raw = serde_json::to_vec(&serde_json::json!({
         "blake3": blake3,
+        "spawn_ticket": spawn_ticket,
         "expected_revision": expected_revision,
         "x": x,
         "y": y,

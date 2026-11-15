@@ -173,6 +173,7 @@ impl IntentSession {
         base_scene_rev: u64,
         blake3_hex: &str,
         pose: ControlPose,
+        spawn_ticket: &str,
     ) -> EditProposal {
         self.control_seq = self.control_seq.saturating_add(1);
         let blake3 = blake3_hex.to_ascii_lowercase();
@@ -194,6 +195,7 @@ impl IntentSession {
                     sx: pose[7],
                     sy: pose[8],
                     sz: pose[9],
+                    spawn_ticket: spawn_ticket.to_string(),
                 })),
             }],
             sig: vec![],

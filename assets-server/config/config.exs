@@ -39,6 +39,12 @@ config :assets,
   place_hashes_ttl_floor_ms: 300_000,
   place_read_verify_ttl_ms: 5_000,
   place_read_verify_cache_max: 4_096,
+  # x00b5 SpawnTicket (RS256; separate from Origin Cert Ed25519).
+  spawn_ticket_issuer: "alchemy-assets",
+  spawn_ticket_ttl_seconds: 60,
+  spawn_ticket_max_blake3s: 32,
+  spawn_ticket_private_key_path: "priv/spawn_ticket_private.pem",
+  spawn_ticket_generate_key_on_startup: true,
   max_upload_bytes: 100_000_000,
   # x0075 / x008d: blake3-hash Port pool (nil bin = PATH / BLAKE3_HASH_BIN / test_helper).
   # Partitions: NOT set here — mix release would bake build-host schedulers_online.

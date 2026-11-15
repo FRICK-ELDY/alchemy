@@ -632,7 +632,7 @@ host-server はユーザーの PC で動くので、改造されている前提�
 
 | 優先 | 対策 | 防ぐもの | 現状 |
 |:---|:---|:---|:---|
-| 1 | **配置時の所有権バインド**: take_out 時に assets-server が短命の署名付きチケット（SpawnTicket: `sub`・`room_id`・blake3 一覧・`jti`・数十秒の `exp`）を発行する。world-server は scene / overlay への追記時にチケットを検証する（assets の公開鍵で署名検証、`room_id` の一致、`sub` が部屋の参加者であること、blake3 がチケットに含まれること、`jti` は 1 回限り） | 「hash を知っているだけ」で読み取り権を得ること。現状は active host（overlay）や scene writer（canonical）が任意の blake3 を追記でき、seal 後は PlaceRead で部屋の参加者全員が読める。改造した host-server なら、別の部屋で見かけた他人の有料アイテムの hash を自分の部屋に置いて読み出せる | **未実装（現行の穴）** → [x00b5](../../roadmap/slices/x00b5-spawn-ticket-ownership-binding.md)。`World.Rooms.append_overlay_entry/4` / `append_scene_entry/4` は blake3 の形式と重複しか見ていない。PlaceRead の `extra_blake3` 無効化は「take-out ownership binding」までの暫定措置として既に入っている |
+| 1 | **配置時の所有権バインド**: take_out 時に assets-server が短命の署名付きチケット（SpawnTicket: `sub`・`room_id`・blake3 一覧・`jti`・数十秒の `exp`）を発行する。world-server は scene / overlay への追記時にチケットを検証する（assets の公開鍵で署名検証、`room_id` の一致、`sub` が部屋の参加者であること、blake3 がチケットに含まれること、`jti` は 1 回限り） | 「hash を知っているだけ」で読み取り権を得ること（改造 host が他人の hash を自分の部屋に置いて PlaceRead で読む経路） | **実装済み**（[x00b5](../../roadmap/slices/x00b5-spawn-ticket-ownership-binding.md)）。`extra_blake3` は無効のまま（配置はチケット経路） |
 | 2 | **保存時の子 Grant 必須化**: `save_prefab` / `create_prefab_node` / `promote_prefab` / `ItemRef` `repo_rev` で、子の blob すべてに Grant を要求する | 部屋で見かけた他人の hash を自分の Drive やリポジトリに保存し、後の経路（VcsRepo の take_out など）で読み取り権に化けること | **実装済み**（[x00b4](../../roadmap/slices/x00b4-prefab-child-grant-required.md)）。判定は `Assets.Blobs.assert_child_grants/2`。take_out 側の子 Grant 検証（x007f）は多層防御として残す |
 | 3 | push 時の Grant 検証（§7.1）、`:purchased` だけの blob を public に出さない（§9.4・§13）、原産地台帳で他人の販売ロック済み blob を「新しいオリジナル」として受理しない（脅威モデル①） | 公式経路での複製・再配布・偽の原産地主張 | 本設計で実現 |
 | 4 | **大量取得の抑制**: assets-server の GET に `sub` 単位の量と頻度の上限、PlaceRead の発行に `sub` 単位の上限を設ける（既存の x0071 / x0084 は IP と Room Token の `jti` 単位） | 多数の部屋を巡回して自動で収集すること | 一部（PlaceRead 発行のレート制限のみ） |
@@ -643,7 +643,7 @@ host-server はユーザーの PC で動くので、改造されている前提�
 
 - ワールド制作者が canonical scene にメッシュを置くときも、同じチケットを使う（制作者は自分の blob に `:owned` Grant を持つ）。
 - 将来 private リポジトリの Release をワールドとして公開するときは、assets-server がタグの blob 集合をまとめて証明するチケットを発行する形に広げる。
-- チケットを要求するのは新しい追記だけにする。既存の scene（DemoScene など）の扱いはスライスで決める。
+- チケットを要求するのは新しい追記だけにする。既存の scene（DemoScene など）は遡及検査しない（x00b5 Phase 0）。
 
 受け入れるトレードオフ（防がない）:
 
@@ -729,6 +729,6 @@ VCS 本体（ID は着手時に採番）:
 - 未ログインでの public 閲覧を将来許すか
 - 他人のコミットや blob を含む Release を market に出品できるか（market 側のポリシー。assets-server は事実を返すだけ）
 - E2E 暗号化（§14.1）を将来検討するか
-- SpawnTicket の詳細（参加者判定・鍵・既存 scene の扱いなど）は [x00b5](../../roadmap/slices/x00b5-spawn-ticket-ownership-binding.md) の Phase 0 で決める
+- SpawnTicket の詳細（参加者判定・鍵・既存 scene の扱いなど）は [x00b5](../../roadmap/slices/x00b5-spawn-ticket-ownership-binding.md) で確定・実装済み
 
 ← [assets-server.md](assets-server.md) · [assets-server-draft.md](assets-server-draft.md)

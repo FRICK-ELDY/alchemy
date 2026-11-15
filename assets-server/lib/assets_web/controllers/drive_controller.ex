@@ -1,10 +1,11 @@
 defmodule AssetsWeb.DriveController do
   @moduledoc """
-  Personal Drive HTTP surface (x006d / x006e / x007f / x00b4).
+  Personal Drive HTTP surface (x006d / x006e / x007f / x00b4 / x00b5).
 
   Guarantees: owner-only list + take_out + put_back wrapping `Assets.Drive`.
   Prefab take_out expands Payload children (blake3 + local_id + optional trs).
   put_back missing child Grant → 403 `no_grant` (x00b4).
+  take_out with `room_id` bundles a SpawnTicket covering returned blake3s (x00b5).
   Non-guarantees: folder / vcs_repo take-out UX; host multi-child spawn.
   """
 
@@ -14,6 +15,7 @@ defmodule AssetsWeb.DriveController do
 
   alias Assets.Drive
   alias Assets.Prefab.Payload
+  alias Assets.SpawnTicket
 
   # Single-child put-back is tiny; headroom for a few TRS children without Plug.Parsers.
   @json_body_limit 16_384
@@ -35,39 +37,9 @@ defmodule AssetsWeb.DriveController do
   def take_out(conn, _params) do
     # Endpoint has no Plug.Parsers (raw blob PUT). Decode a small JSON body here.
     with {:ok, body, conn} <- read_json_body(conn),
-         {:ok, node_id} <- fetch_node_id(body) do
-      case Drive.resolve_for_take_out(conn.assigns.auth_sub, node_id) do
-        {:ok, %{node: node, blobs: blobs}} ->
-          json(conn, %{
-            node: node_json(node),
-            blobs: Enum.map(blobs, &blob_ref_json/1)
-          })
-
-        {:error, :not_found} ->
-          conn
-          |> put_status(:not_found)
-          |> json(%{error: "not_found"})
-
-        {:error, :no_grant} ->
-          conn
-          |> put_status(:forbidden)
-          |> json(%{error: "no_grant"})
-
-        {:error, :unsupported_kind} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "unsupported_kind"})
-
-        {:error, :invalid_prefab} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "invalid_prefab"})
-
-        {:error, :cas_missing} ->
-          conn
-          |> put_status(:not_found)
-          |> json(%{error: "cas_missing"})
-      end
+         {:ok, node_id} <- fetch_node_id(body),
+         room_id <- optional_room_id(body) do
+      render_take_out(conn, conn.assigns.auth_sub, node_id, room_id)
     else
       {:error, :node_id_required} ->
         conn
@@ -78,6 +50,53 @@ defmodule AssetsWeb.DriveController do
         conn
         |> put_status(:bad_request)
         |> json(%{error: "invalid_json"})
+    end
+  end
+
+  defp render_take_out(conn, sub, node_id, room_id) do
+    case Drive.resolve_for_take_out(sub, node_id) do
+      {:ok, %{node: node, blobs: blobs}} ->
+        render_take_out_ok(conn, sub, room_id, node, blobs)
+
+      {:error, :not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "not_found"})
+
+      {:error, :no_grant} ->
+        conn |> put_status(:forbidden) |> json(%{error: "no_grant"})
+
+      {:error, :unsupported_kind} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "unsupported_kind"})
+
+      {:error, :invalid_prefab} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_prefab"})
+
+      {:error, :cas_missing} ->
+        conn |> put_status(:not_found) |> json(%{error: "cas_missing"})
+    end
+  end
+
+  defp render_take_out_ok(conn, sub, room_id, node, blobs) do
+    base = %{
+      node: node_json(node),
+      blobs: Enum.map(blobs, &blob_ref_json/1)
+    }
+
+    case maybe_spawn_ticket(sub, room_id, blobs) do
+      {:ok, nil} ->
+        json(conn, base)
+
+      {:ok, token, ttl} ->
+        json(conn, Map.merge(base, %{spawn_ticket: token, expires_in: ttl}))
+
+      {:error, :invalid_room_id} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_room_id"})
+
+      {:error, :blake3s_exceeded} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "blake3s_exceeded"})
+
+      {:error, reason} ->
+        Logger.warning("take_out spawn_ticket_failed: #{inspect(reason)}")
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "spawn_ticket_failed"})
     end
   end
 
@@ -161,6 +180,20 @@ defmodule AssetsWeb.DriveController do
 
   defp fetch_node_id(%{"node_id" => id}) when is_binary(id) and id != "", do: {:ok, id}
   defp fetch_node_id(_), do: {:error, :node_id_required}
+
+  defp optional_room_id(%{"room_id" => id}) when is_binary(id) and id != "", do: id
+  defp optional_room_id(_), do: nil
+
+  defp maybe_spawn_ticket(_sub, nil, _blobs), do: {:ok, nil}
+
+  defp maybe_spawn_ticket(sub, room_id, blobs) do
+    blake3s = Enum.map(blobs, & &1.blake3)
+    # Defense in depth: re-check Grant even though resolve_for_take_out already did.
+    case SpawnTicket.issue_for_grantee(sub, room_id, blake3s) do
+      {:ok, token, ttl} -> {:ok, token, ttl}
+      {:error, _} = err -> err
+    end
+  end
 
   defp fetch_name(%{"name" => name}) when is_binary(name) do
     trimmed = String.trim(name)

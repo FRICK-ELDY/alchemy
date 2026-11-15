@@ -17,10 +17,13 @@ defmodule AssetsWeb.Router do
     get "/drive/nodes", DriveController, :index
     post "/drive/take_out", DriveController, :take_out
     post "/drive/put_back", DriveController, :put_back
+    # x00b5: Grant-backed SpawnTicket for world scene/overlay append.
+    post "/spawn_tickets", SpawnTicketController, :create
   end
 
   scope "/", AssetsWeb do
     get "/health", HealthController, :index
     get "/ready", HealthController, :ready
+    get "/.well-known/jwks.json", JwksController, :index
   end
 end

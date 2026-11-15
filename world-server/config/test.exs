@@ -24,6 +24,10 @@ config :world,
   auth_jwks_url: "http://127.0.0.1:9/.well-known/jwks.json",
   # Tests install JWKS via World.Auth.Jwks.install_test_jwks!/2.
   auth_jwks_fetch_on_start: false,
+  assets_jwks_url: "http://127.0.0.1:9/.well-known/jwks.json",
+  # Tests install JWKS via World.Assets.Jwks.install_test_jwks!/2.
+  assets_jwks_fetch_on_start: false,
+  assets_jwt_issuer: "alchemy-assets",
   auth_access_mode: :stub,
   auth_access_stub: fn _owner, _viewer, _vis -> false end,
   auth_internal_token: "dev-internal-token",

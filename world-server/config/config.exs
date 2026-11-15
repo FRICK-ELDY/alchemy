@@ -26,7 +26,11 @@ config :world,
   room_token_private_key_path: "priv/room_jwt_private.pem",
   room_token_generate_key_on_startup: true,
   # Must match alchemy-protocol `PROTOCOL_PIN` (ManifestSeal hash input · x0039 / x004e).
-  protocol_pin: "alchemy-protocol/0.23.0-x00b3",
+  protocol_pin: "alchemy-protocol/0.24.0-x00b5",
+  # x00b5 SpawnTicket: verify assets-issued JWTs (JWKS fetch; issuer must match assets).
+  assets_jwks_url: "http://127.0.0.1:4004/.well-known/jwks.json",
+  assets_jwks_fetch_on_start: false,
+  assets_jwt_issuer: "alchemy-assets",
   # x0075 / x008d: manifest-seal-hash Port pool (path set in test_helper / env / PATH).
   # Partitions: NOT set here — mix release would bake build-host schedulers_online.
   # Resolved at boot in runtime.exs (or test.exs); Application falls back if unset.

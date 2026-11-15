@@ -45,6 +45,8 @@ message EditSpawn {
   double sx = 9;
   double sy = 10;
   double sz = 11;
+  // x00b5: assets-issued SpawnTicket JWT (same ticket may cover multiple blake3s).
+  string spawn_ticket = 12;
 }
 
 message EditDespawn {

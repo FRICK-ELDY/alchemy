@@ -59,6 +59,19 @@ if url = System.get_env("AUTH_JWKS_URL") do
   config :world, auth_jwks_url: url
 end
 
+# x00b5 SpawnTicket verification against assets JWKS.
+if url = System.get_env("ASSETS_JWKS_URL") do
+  config :world, assets_jwks_url: url
+end
+
+if System.get_env("ASSETS_JWKS_FETCH_ON_START") in ~w(true 1) do
+  config :world, assets_jwks_fetch_on_start: true
+end
+
+if iss = System.get_env("ASSETS_JWT_ISSUER") do
+  config :world, assets_jwt_issuer: iss
+end
+
 # x0066: client CA for ephemeral mTLS (PEM inline or file paths). Never log these.
 if pem = System.get_env("MTLS_CA_CERT_PEM") do
   config :world, mtls_ca_cert_pem: pem

@@ -396,6 +396,7 @@ mod tests {
                     sx: 1.0,
                     sy: 1.0,
                     sz: 1.0,
+                    spawn_ticket: "test.spawn.ticket".into(),
                 })),
             }],
             sig: vec![],

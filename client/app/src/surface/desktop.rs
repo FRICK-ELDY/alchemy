@@ -2551,13 +2551,19 @@ fn run_paced_inventory_take_out(
     room_key_epoch: u64,
     node_id: &str,
 ) -> String {
-    let blobs = match crate::inventory::take_out_blobs(assets, access, node_id) {
-        Ok((_node, blobs)) => blobs,
-        Err(err) => {
-            log::warn!("inventory take_out: {err:#}");
-            return format!("take_out failed: {err:#}");
-        }
-    };
+    let (blobs, spawn_ticket) =
+        match crate::inventory::take_out_blobs(assets, access, node_id, Some(room_id)) {
+            Ok((_node, blobs, ticket)) => {
+                let Some(ticket) = ticket.filter(|t| !t.is_empty()) else {
+                    return "take_out missing spawn_ticket".into();
+                };
+                (blobs, ticket)
+            }
+            Err(err) => {
+                log::warn!("inventory take_out: {err:#}");
+                return format!("take_out failed: {err:#}");
+            }
+        };
     let total = blobs.len();
     if total == 0 {
         return "take_out returned 0 blobs".into();
@@ -2613,6 +2619,7 @@ fn run_paced_inventory_take_out(
                 base_scene_rev,
                 &blob.blake3,
                 [x, y, z, qx, qy, qz, qw, sx, sy, sz],
+                &spawn_ticket,
             )
         };
         match crate::inventory::publish_edit_proposal(

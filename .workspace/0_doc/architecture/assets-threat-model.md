@@ -47,8 +47,8 @@
 
 | | 内容 |
 |:---|:---|
-| **現状の防御** | 同一 owner の再 PUT は自 `BlobRef` で `:existing`（Quota 非加算）。別 owner は実バイト再送で自 ref + Quota（owner 付け替えなし・x003f）。hash-only 登録 API は無い。GET は常時 BlobGrant または PlaceRead（x006c）— Grant 経路では **hash を知るだけでは読めない**。部屋配布済み scene hash は PlaceRead カバーで読める（部屋外秘密性は非保証）。**ただし** active host（overlay）/ scene writer（canonical）は任意の blake3 を scene に追記でき（`World.Rooms` は形式と重複のみ検証）、seal 後は PlaceRead で部屋参加者が読める — 改造した host なら hash 知識を読み取り権に変換できる（配置時の所有権バインド未実装） |
-| **目標の防御** | (1) **Proof of Possession**: 既存 hash でも別 vault が `:owned` を得るには実バイト再送＋サーバ側 blake3 再計算、またはチャンク範囲 PoP を必須にする。(2) **先願原産地ロック**: Origin Cert / `is_locked_by_sale` 付き hash は、`parent_origin_id` なしの「新規オリジナル」Commit・署名を DB で拒否。(3) 頂点ずらし等は出品時 **3D 指紋（pgvector 等）** で隔離（Optional ワーカー）。(4) **配置時の所有権バインド**: assets が take_out 時に発行する短命 SpawnTicket（Grant 保有の証明）なしの scene / overlay 追記を world で拒否（[assets-vcs-draft.md](assets-vcs-draft.md) §14.4 · [x00b5](../../roadmap/slices/x00b5-spawn-ticket-ownership-binding.md)） |
+| **現状の防御** | 同一 owner の再 PUT は自 `BlobRef` で `:existing`（Quota 非加算）。別 owner は実バイト再送で自 ref + Quota（owner 付け替えなし・x003f）。hash-only 登録 API は無い。GET は常時 BlobGrant または PlaceRead（x006c）— Grant 経路では **hash を知るだけでは読めない**。部屋配布済み scene hash は PlaceRead カバーで読める（部屋外秘密性は非保証）。**配置時の所有権バインド（x00b5）**: scene / overlay 追記は assets 署名の短命 SpawnTicket 必須（Grant 保有証明・`room_id` 縛り・`(jti,blake3)` 1 回限り）。チケット無し・不正は 403。`extra_blake3` は無効のまま |
+| **目標の防御** | (1) **Proof of Possession**: 既存 hash でも別 vault が `:owned` を得るには実バイト再送＋サーバ側 blake3 再計算、またはチャンク範囲 PoP を必須にする。(2) **先願原産地ロック**: Origin Cert / `is_locked_by_sale` 付き hash は、`parent_origin_id` なしの「新規オリジナル」Commit・署名を DB で拒否。(3) 頂点ずらし等は出品時 **3D 指紋（pgvector 等）** で隔離（Optional ワーカー）。(4) ~~配置時の所有権バインド~~ → **現状の防御へ昇格**（x00b5 done） |
 | **保証しない** | hash 秘匿そのもの（部屋内配布で hash は見える）。指紋照合の完全再現率 |
 
 ### ② 並列リクエストによる Quota 突破（TOCTOU）と R2 課金爆弾

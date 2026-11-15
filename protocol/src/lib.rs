@@ -67,7 +67,7 @@ pub use edit_field::{
 ///        Intent `release_v*` / `release_w*` (throw apply still host-local).
 /// x00b2: `EditProposal` / `EditCommit` on `…/edit` (Spawn/Despawn ops).
 /// x00b3: Reparent/SetField + `RenderFrame.scene_rev`; Commit tip = host live_scene_rev.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.23.0-x00b3";
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.24.0-x00b5";
 
 /// `EditCommit.reject_reason` codes (x00b2 / x00b3).
 pub mod edit_reject {
