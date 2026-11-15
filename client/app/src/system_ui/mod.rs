@@ -25,7 +25,7 @@ mod layout;
 pub use dash::SharedDashLogic;
 pub use dash::{
     access_level_from_widget, fresh_create_room_id, DashState, DashTab, HomeField, HomeMode,
-    MainHubTab, OnboardingShell, SharedDashStore, SESSION_NAME_MAX,
+    MainHubTab, OnboardingShell, RoomSubTab, SharedDashStore, SESSION_NAME_MAX,
 };
 pub use gpu::UiGpu;
 pub use inventory_peer::{
@@ -264,6 +264,7 @@ impl SystemUi {
         let mut changed = false;
         if !self.dash_chrome_dirty && store.chrome_revision != self.dash_chrome_rev {
             let peer_inventory = store.logic.tab == DashTab::Inventory;
+            let peer_room = store.logic.tab == DashTab::Room;
             changed |= store.logic.apply_chrome_to(&mut self.state);
             self.dash_chrome_rev = store.chrome_revision;
             // Reject Companion Inventory while Desktop session is live — push Home back.
@@ -271,6 +272,10 @@ impl SystemUi {
                 && self.state.inventory_blocked()
                 && self.state.tab != DashTab::Inventory
             {
+                self.mark_dash_chrome_dirty();
+            }
+            // Reject Companion Room while Desktop is not in a room (x00b6).
+            if peer_room && !self.state.room_tab_allowed() && self.state.tab != DashTab::Room {
                 self.mark_dash_chrome_dirty();
             }
         }
@@ -483,7 +488,14 @@ impl SystemUi {
     }
 
     pub fn rebuild(&mut self) {
-        rebuild(&mut self.tree, &self.state);
+        // Heal itself lives in dash::rebuild; we only notice stale Room so
+        // Desktop↔XR chrome sync gets a dirty push (x00b6).
+        let stale_room = self.state.tab == DashTab::Room && !self.state.room_tab_allowed();
+        rebuild(&mut self.tree, &mut self.state);
+        if stale_room {
+            debug_assert_eq!(self.state.tab, DashTab::Home);
+            self.mark_dash_chrome_dirty();
+        }
         if let Some(gpu) = self.gpu.as_mut() {
             gpu.mark_dirty();
         }
@@ -546,6 +558,38 @@ impl SystemUi {
                 self.rebuild();
                 // Desktop syncs Manifest scene mesh list without Drive HTTP (x006e).
                 UiAction::InventoryOpen
+            }
+            WidgetId::TabRoom => {
+                if !self.state.room_tab_allowed() {
+                    self.state.worlds_status = "Join a room to open Room".into();
+                    self.state.home_status = "Join a room to open Room".into();
+                    self.mark_dash_form_dirty();
+                    self.rebuild();
+                    return UiAction::None;
+                }
+                self.clear_settings_room_focus();
+                self.state.shell = OnboardingShell::Dash;
+                self.state.tab = DashTab::Room;
+                // Always land on Session sub so Leave / host CTA are visible.
+                self.state.room_sub_tab = RoomSubTab::Settings;
+                self.mark_dash_chrome_dirty();
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::RoomSubSettings => {
+                self.state.room_sub_tab = RoomSubTab::Settings;
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::RoomSubUsers => {
+                self.state.room_sub_tab = RoomSubTab::Users;
+                self.rebuild();
+                UiAction::None
+            }
+            WidgetId::RoomSubPermissions => {
+                self.state.room_sub_tab = RoomSubTab::Permissions;
+                self.rebuild();
+                UiAction::None
             }
             WidgetId::WorldsRefresh => UiAction::WorldsRefresh,
             // Catalog UI removed; filter/row ids kept for WidgetId exhaustiveness only.
@@ -695,7 +739,7 @@ impl SystemUi {
             }
             WidgetId::TabHome => {
                 self.clear_settings_room_focus();
-                // In-room: Home returns to Session shell (not MainHub catalog).
+                // In-room: stay on Dash Home (hint to use Room tab); do not open MainHub.
                 if self.state.session_shell_active() {
                     self.state.shell = OnboardingShell::Dash;
                     self.state.tab = DashTab::Home;
@@ -1061,7 +1105,7 @@ impl SystemUi {
             WidgetId::HomeStartSession | WidgetId::SettingsStartSession => {
                 if self.state.session_shell_active() {
                     self.state.home_status =
-                        "Leave session from Home before Advanced Start / Join".into();
+                        "Leave room from the Room tab before Advanced Start / Join".into();
                     self.mark_dash_form_dirty();
                     self.rebuild();
                     UiAction::None
@@ -1083,7 +1127,7 @@ impl SystemUi {
             WidgetId::HomeJoinRoom | WidgetId::SettingsJoinRoom => {
                 if self.state.session_shell_active() {
                     self.state.home_status =
-                        "Leave session from Home before Advanced Start / Join".into();
+                        "Leave room from the Room tab before Advanced Start / Join".into();
                     self.mark_dash_form_dirty();
                     self.rebuild();
                     UiAction::None
@@ -1642,6 +1686,13 @@ mod tests {
             .hits
             .iter()
             .any(|(id, _)| *id == WidgetId::TabInventory));
+        assert!(ui.tree.hits.iter().any(|(id, _)| *id == WidgetId::TabRoom));
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::TabSettings));
+        assert!(ui.tree.hits.iter().any(|(id, _)| *id == WidgetId::TabExit));
     }
 
     #[test]
@@ -1649,7 +1700,8 @@ mod tests {
         let mut ui = SystemUi::new();
         ui.state.open = true;
         ui.state.shell = OnboardingShell::Dash;
-        ui.state.tab = DashTab::Home;
+        ui.state.tab = DashTab::Room;
+        ui.state.room_sub_tab = RoomSubTab::Settings;
         ui.state.home_logged_in_as = Some("alice".into());
         ui.state.worlds_in_room = true;
         ui.state.worlds_waiting_host = true;
@@ -1666,6 +1718,95 @@ mod tests {
             .hits
             .iter()
             .any(|(id, _)| *id == WidgetId::TabWorlds));
+    }
+
+    #[test]
+    fn room_tab_blocked_when_not_in_room() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::Dash;
+        ui.state.tab = DashTab::Home;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        let rect = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::TabRoom)
+            .map(|(_, r)| *r)
+            .expect("room tab");
+        let action = ui.on_click(rect.x + 1.0, rect.y + 1.0);
+        assert_eq!(action, UiAction::None);
+        assert_eq!(ui.state.tab, DashTab::Home);
+        assert!(ui.state.home_status.contains("Join a room to open Room"));
+    }
+
+    #[test]
+    fn rebuild_heals_stale_room_tab_to_home() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::Dash;
+        ui.state.tab = DashTab::Room;
+        ui.state.room_sub_tab = RoomSubTab::Users;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        assert_eq!(ui.state.tab, DashTab::Home);
+        assert_eq!(ui.state.room_sub_tab, RoomSubTab::Settings);
+        assert!(ui.dash_chrome_dirty);
+    }
+
+    #[test]
+    fn room_tab_opens_when_in_room_and_subtabs_switch() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::Dash;
+        ui.state.tab = DashTab::Home;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.worlds_in_room = true;
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        let room = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::TabRoom)
+            .map(|(_, r)| *r)
+            .expect("room tab");
+        assert_eq!(ui.on_click(room.x + 1.0, room.y + 1.0), UiAction::None);
+        assert_eq!(ui.state.tab, DashTab::Room);
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::WorldsLeave));
+        let users = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::RoomSubUsers)
+            .map(|(_, r)| *r)
+            .expect("users sub");
+        assert_eq!(ui.on_click(users.x + 1.0, users.y + 1.0), UiAction::None);
+        assert_eq!(ui.state.room_sub_tab, RoomSubTab::Users);
+        assert!(!ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::WorldsLeave));
+        let perms = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::RoomSubPermissions)
+            .map(|(_, r)| *r)
+            .expect("permissions sub");
+        assert_eq!(ui.on_click(perms.x + 1.0, perms.y + 1.0), UiAction::None);
+        assert_eq!(ui.state.room_sub_tab, RoomSubTab::Permissions);
     }
 
     #[test]
@@ -1760,7 +1901,8 @@ mod tests {
         let mut ui = SystemUi::new();
         ui.state.open = true;
         ui.state.shell = OnboardingShell::Dash;
-        ui.state.tab = DashTab::Home;
+        ui.state.tab = DashTab::Room;
+        ui.state.room_sub_tab = RoomSubTab::Settings;
         ui.state.home_logged_in_as = Some("alice".into());
         ui.state.worlds_in_room = true;
         ui.state.worlds_waiting_host = true;
@@ -1780,7 +1922,8 @@ mod tests {
         assert_eq!(ui.state.tab, DashTab::Home);
         assert!(ui.state.session_shell_active());
         ui.rebuild();
-        assert!(ui
+        // Leave lives on Room tab now (x00b6); Home keeps Dash shell (no MainHub).
+        assert!(!ui
             .tree
             .hits
             .iter()
@@ -1790,6 +1933,13 @@ mod tests {
             .hits
             .iter()
             .any(|(id, _)| *id == WidgetId::MainHubRefresh));
+        ui.state.tab = DashTab::Room;
+        ui.rebuild();
+        assert!(ui
+            .tree
+            .hits
+            .iter()
+            .any(|(id, _)| *id == WidgetId::WorldsLeave));
     }
 
     #[test]
@@ -1797,7 +1947,8 @@ mod tests {
         let mut ui = SystemUi::new();
         ui.state.open = true;
         ui.state.shell = OnboardingShell::Dash;
-        ui.state.tab = DashTab::Home;
+        ui.state.tab = DashTab::Room;
+        ui.state.room_sub_tab = RoomSubTab::Settings;
         ui.state.home_logged_in_as = Some("alice".into());
         ui.state.worlds_in_room = true;
         ui.state.worlds_waiting_host = true;
@@ -1855,6 +2006,9 @@ mod tests {
             UiAction::ServerOperatorChanged
         );
         assert!(ui.state.server_operator);
+        ui.state.tab = DashTab::Room;
+        ui.state.room_sub_tab = RoomSubTab::Settings;
+        ui.rebuild();
         assert!(ui.tree.draws.iter().any(|d| {
             matches!(
                 d,
@@ -1862,8 +2016,6 @@ mod tests {
                     if text.contains("Host this room now")
             )
         }));
-        ui.state.tab = DashTab::Home;
-        ui.rebuild();
         assert!(ui
             .tree
             .hits

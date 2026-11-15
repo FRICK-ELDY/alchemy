@@ -794,6 +794,11 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                             ui.state.worlds_status.clear();
                             ui.state.in_session_peer = false;
                             ui.state.inventory_live_peer = false;
+                            // Match Desktop clear_worlds_session_shell (x00b6).
+                            if ui.state.tab == crate::system_ui::DashTab::Room {
+                                ui.state.tab = crate::system_ui::DashTab::Home;
+                            }
+                            ui.state.room_sub_tab = crate::system_ui::RoomSubTab::Settings;
                             ui.state.home_logged_in_as = None;
                             ui.state.home_create_open = false;
                             ui.state.shell = crate::system_ui::OnboardingShell::Step1Operator;

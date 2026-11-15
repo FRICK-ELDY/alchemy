@@ -24,6 +24,14 @@ pub enum WidgetId {
     TabSettings,
     /// Inventory take-out / put-back (x006d / x006e).
     TabInventory,
+    /// In-room Room tab (x00b6).
+    TabRoom,
+    /// Room sub: Settings (session shell + Save stub).
+    RoomSubSettings,
+    /// Room sub: Users placeholder.
+    RoomSubUsers,
+    /// Room sub: Permissions placeholder.
+    RoomSubPermissions,
     /// Worlds catalog (x007c).
     TabWorlds,
     InventoryRefresh,
