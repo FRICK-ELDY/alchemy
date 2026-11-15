@@ -4,7 +4,7 @@ defmodule Assets.PlaceRead do
 
   Guarantees: `typ=place_read` / `aud=alchemy-assets-place-read`; `sub` must match
   the assets auth JWT subject; allowlist = seal-time scene hashes only
-  (`extra_blake3` must be empty — disabled until take-out ownership binding).
+  (`extra_blake3` must be empty — ownership bind is SpawnTicket on append · x00b5).
   Non-guarantees: issuing PlaceRead (world only); GET default capability flip (案 B).
   """
 

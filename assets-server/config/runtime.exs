@@ -107,6 +107,19 @@ if config_env() != :test do
     config :assets, place_hashes_ttl_ms: String.to_integer(ttl)
   end
 
+  # x00b5 SpawnTicket signing key (separate from Origin Cert).
+  if key_path = System.get_env("SPAWN_TICKET_PRIVATE_KEY_PATH") do
+    config :assets, spawn_ticket_private_key_path: key_path
+  end
+
+  if System.get_env("SPAWN_TICKET_GENERATE_KEY") in ~w(true 1) do
+    config :assets, spawn_ticket_generate_key_on_startup: true
+  end
+
+  if iss = System.get_env("SPAWN_TICKET_ISSUER") do
+    config :assets, spawn_ticket_issuer: iss
+  end
+
   if System.get_env("BIND_ALL") in ~w(true 1) do
     config :assets, AssetsWeb.Endpoint,
       http: [ip: {0, 0, 0, 0}, port: port],

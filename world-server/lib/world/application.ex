@@ -9,6 +9,8 @@ defmodule World.Application do
   def start(_type, _args) do
     World.Metrics.ensure_table()
     RoomKeyGrace.ensure_table()
+    World.RoomParticipants.ensure_table!()
+    World.SpawnTicket.ensure_consume_table!()
 
     children =
       [
@@ -18,6 +20,7 @@ defmodule World.Application do
         {Phoenix.PubSub, name: World.PubSub},
         World.Token.Keys,
         World.Auth.Jwks,
+        World.Assets.Jwks,
         World.PlaceHashes,
         # x007e: periodic room_key rotate (ROOM_KEY_ROTATE_HOURS; 0 = off)
         World.Rooms.RoomKeyRotator,

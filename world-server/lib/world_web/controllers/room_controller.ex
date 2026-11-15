@@ -945,16 +945,15 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
-  x006d / x0082 / x009d / x009e: append one mesh SceneEntry (host Room Token + active ledger
-  host + owner/editor scene writer).
+  x006d / x0082 / x009d / x009e / x00b5: append one mesh SceneEntry (host Room Token + active
+  ledger host + owner/editor scene writer + assets SpawnTicket).
 
-  Body: `%{"blake3" => 64-hex, "expected_revision" => packed int, optional pose/color}`.
-  Assigns `entity_id`, atomic packed CAS. Returned scene is **composed** (seal input).
+  Body: `%{"blake3" => 64-hex, "expected_revision" => packed int, "spawn_ticket" => jwt,
+  optional pose/color}`. Assigns `entity_id`, atomic packed CAS. Returned scene is
+  **composed** (seal input).
   """
   def create_scene_entry(conn, %{"room_id" => room_id} = params) do
-    entry =
-      (Map.get(params, "entry") || Map.drop(params, ["room_id"]))
-      |> Map.drop(["expected_revision", :expected_revision])
+    {entry, spawn_ticket} = split_spawn_ticket_entry(params)
 
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
@@ -965,10 +964,17 @@ defmodule WorldWeb.RoomController do
          :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
          {:ok, packed} <- ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
          {:ok, canon_exp, overlay_exp} <- Rooms.unpack_revision(packed),
-         {:ok, _raw} <- Rooms.append_scene_entry(room_id, entry, canon_exp, overlay_exp),
-         {:ok, scene} <- Rooms.composed_scene(room_id) do
-      json(conn, Map.put(scene, "room_id", room_id))
+         {:ok, ticket_claims} <-
+           authorize_spawn_ticket(spawn_ticket, room_id, Map.get(entry, "blake3")),
+         result <- Rooms.append_scene_entry(room_id, entry, canon_exp, overlay_exp) do
+      render_scene_append_result(conn, room_id, entry, ticket_claims, result)
     else
+      {:error, :spawn_ticket_required} ->
+        conn |> put_status(:forbidden) |> json(%{error: "spawn_ticket_required"})
+
+      {:error, :spawn_ticket_invalid} ->
+        conn |> put_status(:forbidden) |> json(%{error: "spawn_ticket_invalid"})
+
       {:error, :missing_bearer} ->
         conn
         |> put_status(:unauthorized)
@@ -1003,56 +1009,8 @@ defmodule WorldWeb.RoomController do
         |> put_status(:conflict)
         |> json(%{error: "host_lease_conflict"})
 
-      {:error, :invalid_revision} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: "invalid_revision"})
-
-      {:error, :scene_revision_conflict} ->
-        conn
-        |> put_status(:conflict)
-        |> json(%{error: "scene_revision_conflict"})
-
-      {:error, :scene_entries_exceeded} ->
-        scene_budget_exceeded(conn)
-
-      {:error, :scene_bytes_exceeded} ->
-        scene_budget_exceeded(conn)
-
-      {:error, :invalid_scene_revision} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{error: "invalid_scene_revision"})
-
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "room_not_found"})
-
-      {:error, :invalid_entry} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: "invalid_entry"})
-
-      {:error, :duplicate_blake3} ->
-        conn
-        |> put_status(:conflict)
-        |> json(%{error: "duplicate_blake3"})
-
-      {:error, :invalid_room_id} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: "invalid_room_id"})
-
-      {:error, :storage_error} ->
-        storage_unavailable(conn)
-
       {:error, reason} ->
-        Logger.warning("invalid Room Token (scene entry path): #{inspect(reason)}")
-
-        conn
-        |> put_status(:unauthorized)
-        |> json(%{error: "invalid_room_token"})
+        render_scene_entry_error(conn, reason, :scene_entry)
     end
   end
 
@@ -1176,13 +1134,11 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
-  x009e: append one mesh entry to session_overlay (active host; no scene writer required).
-  Atomic packed CAS on canonical + overlay revisions.
+  x009e / x00b5: append one mesh entry to session_overlay (active host + SpawnTicket;
+  no scene writer required). Atomic packed CAS on canonical + overlay revisions.
   """
   def create_overlay_entry(conn, %{"room_id" => room_id} = params) do
-    entry =
-      (Map.get(params, "entry") || Map.drop(params, ["room_id"]))
-      |> Map.drop(["expected_revision", :expected_revision])
+    {entry, spawn_ticket} = split_spawn_ticket_entry(params)
 
     with {:ok, bearer} <- fetch_bearer(conn),
          {:ok, claims} <- Token.verify(bearer),
@@ -1192,60 +1148,19 @@ defmodule WorldWeb.RoomController do
          :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
          {:ok, packed} <- ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
          {:ok, canon_exp, overlay_exp} <- Rooms.unpack_revision(packed),
-         {:ok, scene} <- Rooms.append_overlay_entry(room_id, entry, canon_exp, overlay_exp) do
-      json(conn, Map.put(scene, "room_id", room_id))
+         {:ok, ticket_claims} <-
+           authorize_spawn_ticket(spawn_ticket, room_id, Map.get(entry, "blake3")),
+         result <- Rooms.append_overlay_entry(room_id, entry, canon_exp, overlay_exp) do
+      render_overlay_append_result(conn, room_id, entry, ticket_claims, result)
     else
-      {:error, :missing_bearer} ->
-        conn |> put_status(:unauthorized) |> json(%{error: "missing_room_token"})
+      {:error, :spawn_ticket_required} ->
+        conn |> put_status(:forbidden) |> json(%{error: "spawn_ticket_required"})
 
-      {:error, :pop_required} ->
-        pop_unauthorized(conn)
-
-      {:error, :not_host_token} ->
-        conn |> put_status(:forbidden) |> json(%{error: "host_role_required"})
-
-      {:error, :room_mismatch} ->
-        conn |> put_status(:forbidden) |> json(%{error: "room_id_mismatch"})
-
-      {:error, :forbidden_host} ->
-        conn |> put_status(:forbidden) |> json(%{error: "host_role_forbidden"})
-
-      {:error, :conflict} ->
-        conn |> put_status(:conflict) |> json(%{error: "host_lease_conflict"})
-
-      {:error, :invalid_revision} ->
-        conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_revision"})
-
-      {:error, :scene_revision_conflict} ->
-        conn |> put_status(:conflict) |> json(%{error: "scene_revision_conflict"})
-
-      {:error, :scene_entries_exceeded} ->
-        scene_budget_exceeded(conn)
-
-      {:error, :scene_bytes_exceeded} ->
-        scene_budget_exceeded(conn)
-
-      {:error, :invalid_scene_revision} ->
-        conn |> put_status(:internal_server_error) |> json(%{error: "invalid_scene_revision"})
-
-      {:error, :not_found} ->
-        conn |> put_status(:not_found) |> json(%{error: "room_not_found"})
-
-      {:error, :invalid_entry} ->
-        conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_entry"})
-
-      {:error, :duplicate_blake3} ->
-        conn |> put_status(:conflict) |> json(%{error: "duplicate_blake3"})
-
-      {:error, :invalid_room_id} ->
-        conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_room_id"})
-
-      {:error, :storage_error} ->
-        storage_unavailable(conn)
+      {:error, :spawn_ticket_invalid} ->
+        conn |> put_status(:forbidden) |> json(%{error: "spawn_ticket_invalid"})
 
       {:error, reason} ->
-        Logger.warning("invalid Room Token (overlay entry path): #{inspect(reason)}")
-        conn |> put_status(:unauthorized) |> json(%{error: "invalid_room_token"})
+        render_scene_entry_error(conn, reason, :overlay_entry)
     end
   end
 
@@ -1800,5 +1715,134 @@ defmodule WorldWeb.RoomController do
     conn
     |> put_status(:service_unavailable)
     |> json(%{error: "storage_unavailable"})
+  end
+
+  # x00b5: strip SpawnTicket from scene/overlay append body before Rooms normalize.
+  defp split_spawn_ticket_entry(params) do
+    raw = Map.get(params, "entry") || Map.drop(params, ["room_id"])
+
+    ticket =
+      Map.get(raw, "spawn_ticket") || Map.get(raw, :spawn_ticket) ||
+        Map.get(params, "spawn_ticket") || Map.get(params, :spawn_ticket)
+
+    entry =
+      raw
+      |> Map.drop([
+        "expected_revision",
+        :expected_revision,
+        "spawn_ticket",
+        :spawn_ticket
+      ])
+
+    {entry, ticket}
+  end
+
+  defp authorize_spawn_ticket(ticket, room_id, blake3) do
+    World.SpawnTicket.authorize_and_claim(ticket, room_id, blake3 || "")
+  end
+
+  defp release_spawn_claim(%{"jti" => jti}, blake3) when is_binary(jti) and is_binary(blake3) do
+    World.SpawnTicket.release_claim(jti, blake3)
+  end
+
+  defp release_spawn_claim(_, _), do: :ok
+
+  # x00b5: only CAS conflict releases claim (host retry). Other failures burn
+  # `(jti,blake3)` — fail-closed; client must re-take_out / re-issue.
+  defp render_scene_append_result(conn, room_id, _entry, _ticket_claims, {:ok, _raw}) do
+    case Rooms.composed_scene(room_id) do
+      {:ok, scene} -> json(conn, Map.put(scene, "room_id", room_id))
+      {:error, reason} -> render_scene_entry_error(conn, reason)
+    end
+  end
+
+  defp render_scene_append_result(
+         conn,
+         _room_id,
+         entry,
+         ticket_claims,
+         {:error, :scene_revision_conflict}
+       ) do
+    release_spawn_claim(ticket_claims, Map.get(entry, "blake3"))
+    render_scene_entry_error(conn, :scene_revision_conflict)
+  end
+
+  defp render_scene_append_result(conn, _room_id, _entry, _ticket_claims, {:error, reason}) do
+    render_scene_entry_error(conn, reason)
+  end
+
+  defp render_overlay_append_result(conn, room_id, _entry, _ticket_claims, {:ok, scene}) do
+    json(conn, Map.put(scene, "room_id", room_id))
+  end
+
+  defp render_overlay_append_result(
+         conn,
+         _room_id,
+         entry,
+         ticket_claims,
+         {:error, :scene_revision_conflict}
+       ) do
+    release_spawn_claim(ticket_claims, Map.get(entry, "blake3"))
+    render_scene_entry_error(conn, :scene_revision_conflict, :overlay_entry)
+  end
+
+  defp render_overlay_append_result(conn, _room_id, _entry, _ticket_claims, {:error, reason}) do
+    render_scene_entry_error(conn, reason, :overlay_entry)
+  end
+
+  defp render_scene_entry_error(conn, reason, log_ctx \\ :scene_entry)
+
+  defp render_scene_entry_error(conn, :missing_bearer, _),
+    do: conn |> put_status(:unauthorized) |> json(%{error: "missing_room_token"})
+
+  defp render_scene_entry_error(conn, :pop_required, _) do
+    pop_unauthorized(conn)
+  end
+
+  defp render_scene_entry_error(conn, :not_host_token, _),
+    do: conn |> put_status(:forbidden) |> json(%{error: "host_role_required"})
+
+  defp render_scene_entry_error(conn, :room_mismatch, _),
+    do: conn |> put_status(:forbidden) |> json(%{error: "room_id_mismatch"})
+
+  defp render_scene_entry_error(conn, :forbidden_host, _),
+    do: conn |> put_status(:forbidden) |> json(%{error: "host_role_forbidden"})
+
+  defp render_scene_entry_error(conn, :forbidden_scene_writer, _),
+    do: conn |> put_status(:forbidden) |> json(%{error: "scene_writer_forbidden"})
+
+  defp render_scene_entry_error(conn, :conflict, _),
+    do: conn |> put_status(:conflict) |> json(%{error: "host_lease_conflict"})
+
+  defp render_scene_entry_error(conn, :invalid_revision, _),
+    do: conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_revision"})
+
+  defp render_scene_entry_error(conn, :scene_revision_conflict, _),
+    do: conn |> put_status(:conflict) |> json(%{error: "scene_revision_conflict"})
+
+  defp render_scene_entry_error(conn, :scene_entries_exceeded, _), do: scene_budget_exceeded(conn)
+
+  defp render_scene_entry_error(conn, :scene_bytes_exceeded, _), do: scene_budget_exceeded(conn)
+
+  defp render_scene_entry_error(conn, :invalid_scene_revision, _),
+    do: conn |> put_status(:internal_server_error) |> json(%{error: "invalid_scene_revision"})
+
+  defp render_scene_entry_error(conn, :not_found, _),
+    do: conn |> put_status(:not_found) |> json(%{error: "room_not_found"})
+
+  defp render_scene_entry_error(conn, :invalid_entry, _),
+    do: conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_entry"})
+
+  defp render_scene_entry_error(conn, :duplicate_blake3, _),
+    do: conn |> put_status(:conflict) |> json(%{error: "duplicate_blake3"})
+
+  defp render_scene_entry_error(conn, :invalid_room_id, _),
+    do: conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_room_id"})
+
+  defp render_scene_entry_error(conn, :storage_error, _), do: storage_unavailable(conn)
+
+  defp render_scene_entry_error(conn, reason, log_ctx) do
+    Logger.warning("invalid Room Token (#{log_ctx} path): #{inspect(reason)}")
+    conn |> put_status(:unauthorized) |> json(%{error: "invalid_room_token"})
   end
 end

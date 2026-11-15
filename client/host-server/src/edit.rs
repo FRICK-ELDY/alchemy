@@ -419,6 +419,11 @@ fn spawn_payload_ok(spawn: &EditSpawn) -> bool {
     if !is_blake3_hex(&spawn.blake3) {
         return false;
     }
+    if spawn.spawn_ticket.is_empty()
+        || spawn.spawn_ticket.len() > alchemy_protocol::decode_limits::MAX_JWT_STRING_BYTES
+    {
+        return false;
+    }
     let pose = [
         spawn.x, spawn.y, spawn.z, spawn.qx, spawn.qy, spawn.qz, spawn.qw, spawn.sx, spawn.sy,
         spawn.sz,
@@ -445,6 +450,7 @@ fn apply_spawn(
         pop_key,
         shared_scene,
         &blake3,
+        &spawn.spawn_ticket,
         spawn.x,
         spawn.y,
         spawn.z,
@@ -877,6 +883,7 @@ mod tests {
             sx: 1.0,
             sy: 1.0,
             sz: 1.0,
+            spawn_ticket: "test.spawn.ticket".into(),
         };
         assert!(spawn_payload_ok(&good));
         let mut short = good.clone();

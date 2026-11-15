@@ -7,11 +7,13 @@ defmodule WorldWeb.RoomControllerTest do
   @seal_partitioner World.ManifestSealHash.Partitioner
   alias World.Rooms.Room
   alias World.TestAuthHelpers
+  alias World.TestSpawnTicketHelpers
   alias World.Token.Keys, as: TokenKeys
 
   setup do
     %{signer: signer} = TestAuthHelpers.install_test_auth!()
-    %{signer: signer}
+    %{signer: spawn_signer} = TestSpawnTicketHelpers.install_test_assets_jwks!()
+    %{signer: signer, spawn_signer: spawn_signer}
   end
 
   # x003e: every Room Token request must carry session_pub (base64url 32B).
@@ -22,6 +24,19 @@ defmodule WorldWeb.RoomControllerTest do
       :session_pub,
       Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
     )
+  end
+
+  defp with_spawn_ticket(body, spawn_signer, sub, room_id) do
+    blake3 = body[:blake3] || body["blake3"]
+
+    ticket =
+      TestSpawnTicketHelpers.spawn_ticket(spawn_signer,
+        sub: sub,
+        room_id: room_id,
+        blake3s: [blake3]
+      )
+
+    Map.put(body, :spawn_ticket, ticket)
   end
 
   test "rejects room create without auth", %{conn: conn} do
@@ -1496,7 +1511,8 @@ defmodule WorldWeb.RoomControllerTest do
   # x007b: DELETE …/scene/entries/:entity_id HTTP contract
   test "delete_scene_entry removes mesh for host and maps guest/invalid/not_mesh", %{
     conn: conn,
-    signer: signer
+    signer: signer,
+    spawn_signer: spawn_signer
   } do
     owner = "22222222-2222-2222-2222-222222222222"
     guest = "33333333-3333-3333-3333-333333333333"
@@ -1530,6 +1546,7 @@ defmodule WorldWeb.RoomControllerTest do
       |> json_response(200)
 
     # x0082: POST append CAS contract (missing / stale expected_revision).
+    # invalid_revision fails before SpawnTicket authorize — no ticket needed.
     assert %{"error" => "invalid_revision"} =
              build_conn()
              |> TestAuthHelpers.post_host_json(
@@ -1546,7 +1563,12 @@ defmodule WorldWeb.RoomControllerTest do
                host_token,
                priv,
                "/api/v1/rooms/#{room}/scene/entries",
-               %{blake3: blake3, expected_revision: base_scene["revision"] + 1}
+               with_spawn_ticket(
+                 %{blake3: blake3, expected_revision: base_scene["revision"] + 1},
+                 spawn_signer,
+                 owner,
+                 room
+               )
              )
              |> json_response(409)
 
@@ -1556,7 +1578,12 @@ defmodule WorldWeb.RoomControllerTest do
         host_token,
         priv,
         "/api/v1/rooms/#{room}/scene/entries",
-        %{blake3: blake3, x: 1.0, y: 1.0, z: 1.0, expected_revision: base_scene["revision"]}
+        with_spawn_ticket(
+          %{blake3: blake3, x: 1.0, y: 1.0, z: 1.0, expected_revision: base_scene["revision"]},
+          spawn_signer,
+          owner,
+          room
+        )
       )
       |> json_response(200)
 
@@ -1639,7 +1666,8 @@ defmodule WorldWeb.RoomControllerTest do
 
   test "scene append/delete map corrupt revision to 500 invalid_scene_revision (x0082)", %{
     conn: conn,
-    signer: signer
+    signer: signer,
+    spawn_signer: spawn_signer
   } do
     owner = "44444444-4444-4444-4444-444444444444"
     room = "scene-corrupt-rev-http"
@@ -1672,7 +1700,12 @@ defmodule WorldWeb.RoomControllerTest do
                host_token,
                priv,
                "/api/v1/rooms/#{room}/scene/entries",
-               %{blake3: blake3, expected_revision: packed}
+               with_spawn_ticket(
+                 %{blake3: blake3, expected_revision: packed},
+                 spawn_signer,
+                 owner,
+                 room
+               )
              )
              |> json_response(500)
 
@@ -1842,7 +1875,8 @@ defmodule WorldWeb.RoomControllerTest do
 
   test "editor active host may append and delete canonical scene (x009d)", %{
     conn: conn,
-    signer: signer
+    signer: signer,
+    spawn_signer: spawn_signer
   } do
     owner = "f6f6f6f6-f6f6-f6f6-f6f6-f6f6f6f6f6f6"
     editor = "a7a7a7a7-a7a7-a7a7-a7a7-a7a7a7a7a7a7"
@@ -1885,7 +1919,12 @@ defmodule WorldWeb.RoomControllerTest do
         host_token,
         priv,
         "/api/v1/rooms/#{room}/scene/entries",
-        %{blake3: blake3, expected_revision: scene["revision"]}
+        with_spawn_ticket(
+          %{blake3: blake3, expected_revision: scene["revision"]},
+          spawn_signer,
+          editor,
+          room
+        )
       )
       |> json_response(200)
 
@@ -1909,7 +1948,8 @@ defmodule WorldWeb.RoomControllerTest do
 
   test "takeover host cannot append or delete canonical scene (x009d)", %{
     conn: conn,
-    signer: signer
+    signer: signer,
+    spawn_signer: spawn_signer
   } do
     owner = "a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1"
     guest = "b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2"
@@ -1945,7 +1985,12 @@ defmodule WorldWeb.RoomControllerTest do
         owner_host_token,
         owner_priv,
         "/api/v1/rooms/#{room}/scene/entries",
-        %{blake3: blake3, expected_revision: owner_scene["revision"]}
+        with_spawn_ticket(
+          %{blake3: blake3, expected_revision: owner_scene["revision"]},
+          spawn_signer,
+          owner,
+          room
+        )
       )
       |> json_response(200)
 
@@ -1982,6 +2027,7 @@ defmodule WorldWeb.RoomControllerTest do
       |> TestAuthHelpers.get_host(host_token, guest_priv, "/api/v1/rooms/#{room}/scene")
       |> json_response(200)
 
+    # scene_writer_forbidden fails before SpawnTicket authorize — no ticket needed.
     assert %{"error" => "scene_writer_forbidden"} =
              build_conn()
              |> TestAuthHelpers.post_host_json(
@@ -2000,7 +2046,12 @@ defmodule WorldWeb.RoomControllerTest do
         host_token,
         guest_priv,
         "/api/v1/rooms/#{room}/overlay/entries",
-        %{blake3: overlay_blake3, expected_revision: scene["revision"]}
+        with_spawn_ticket(
+          %{blake3: overlay_blake3, expected_revision: scene["revision"]},
+          spawn_signer,
+          guest,
+          room
+        )
       )
       |> json_response(200)
 
@@ -2175,7 +2226,11 @@ defmodule WorldWeb.RoomControllerTest do
     assert new_key != old_key
   end
 
-  test "scene append over entry budget returns 413 (x00a2)", %{conn: conn, signer: signer} do
+  test "scene append over entry budget returns 413 (x00a2)", %{
+    conn: conn,
+    signer: signer,
+    spawn_signer: spawn_signer
+  } do
     owner = "f0f0f0f0-f0f0-f0f0-f0f0-f0f0f0f0f0f0"
     {pub, priv} = TestAuthHelpers.session_keypair()
     room = "budget-http"
@@ -2225,12 +2280,270 @@ defmodule WorldWeb.RoomControllerTest do
                host_token,
                priv,
                "/api/v1/rooms/#{room}/scene/entries",
-               %{
-                 blake3: String.duplicate("cd", 32),
-                 expected_revision: packed
-               }
+               with_spawn_ticket(
+                 %{
+                   blake3: String.duplicate("cd", 32),
+                   expected_revision: packed
+                 },
+                 spawn_signer,
+                 owner,
+                 room
+               )
              )
              |> json_response(413)
+  end
+
+  test "overlay append without spawn_ticket returns 403 spawn_ticket_required (x00b5)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "c5c5c5c5-c5c5-c5c5-c5c5-c5c5c5c5c5c5"
+    room = "overlay-ticket-req"
+    blake3 = String.duplicate("ab", 32)
+    {pub, priv} = TestAuthHelpers.session_keypair()
+
+    assert %{"room_id" => ^room} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: room, visibility: "public"})
+             |> json_response(201)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post(
+        "/api/v1/rooms/#{room}/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(pub)})
+      )
+      |> json_response(200)
+
+    scene =
+      build_conn()
+      |> TestAuthHelpers.get_host(host_token, priv, "/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
+    assert %{"error" => "spawn_ticket_required"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/overlay/entries",
+               %{blake3: blake3, expected_revision: scene["revision"]}
+             )
+             |> json_response(403)
+  end
+
+  test "scene append without spawn_ticket returns 403 spawn_ticket_required (x00b5)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "d5d5d5d5-d5d5-d5d5-d5d5-d5d5d5d5d5d5"
+    room = "scene-ticket-req"
+    blake3 = String.duplicate("cd", 32)
+    {pub, priv} = TestAuthHelpers.session_keypair()
+
+    assert %{"room_id" => ^room} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: room, visibility: "public"})
+             |> json_response(201)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post(
+        "/api/v1/rooms/#{room}/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(pub)})
+      )
+      |> json_response(200)
+
+    scene =
+      build_conn()
+      |> TestAuthHelpers.get_host(host_token, priv, "/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
+    assert %{"error" => "spawn_ticket_required"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/scene/entries",
+               %{blake3: blake3, expected_revision: scene["revision"]}
+             )
+             |> json_response(403)
+  end
+
+  test "overlay rejects wrong-room / reused / foreign blake3 spawn tickets (x00b5)", %{
+    conn: conn,
+    signer: signer,
+    spawn_signer: spawn_signer
+  } do
+    owner = "e5e5e5e5-e5e5-e5e5-e5e5-e5e5e5e5e5e5"
+    room = "overlay-ticket-inv"
+    blake3 = String.duplicate("11", 32)
+    other_blake3 = String.duplicate("22", 32)
+    {pub, priv} = TestAuthHelpers.session_keypair()
+
+    assert %{"room_id" => ^room} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: room, visibility: "public"})
+             |> json_response(201)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post(
+        "/api/v1/rooms/#{room}/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(pub)})
+      )
+      |> json_response(200)
+
+    scene =
+      build_conn()
+      |> TestAuthHelpers.get_host(host_token, priv, "/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
+    wrong_room =
+      TestSpawnTicketHelpers.spawn_ticket(spawn_signer,
+        sub: owner,
+        room_id: "other-room",
+        blake3s: [blake3]
+      )
+
+    assert %{"error" => "spawn_ticket_invalid"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/overlay/entries",
+               %{
+                 blake3: blake3,
+                 expected_revision: scene["revision"],
+                 spawn_ticket: wrong_room
+               }
+             )
+             |> json_response(403)
+
+    foreign =
+      TestSpawnTicketHelpers.spawn_ticket(spawn_signer,
+        sub: owner,
+        room_id: room,
+        blake3s: [other_blake3]
+      )
+
+    assert %{"error" => "spawn_ticket_invalid"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/overlay/entries",
+               %{
+                 blake3: blake3,
+                 expected_revision: scene["revision"],
+                 spawn_ticket: foreign
+               }
+             )
+             |> json_response(403)
+
+    ticket =
+      TestSpawnTicketHelpers.spawn_ticket(spawn_signer,
+        sub: owner,
+        room_id: room,
+        blake3s: [blake3]
+      )
+
+    assert %{"entries" => _} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/overlay/entries",
+               %{
+                 blake3: blake3,
+                 expected_revision: scene["revision"],
+                 spawn_ticket: ticket
+               }
+             )
+             |> json_response(200)
+
+    scene2 =
+      build_conn()
+      |> TestAuthHelpers.get_host(host_token, priv, "/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
+    # Same (jti,blake3) reuse after successful consume → invalid.
+    assert %{"error" => "spawn_ticket_invalid"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/overlay/entries",
+               %{
+                 blake3: blake3,
+                 expected_revision: scene2["revision"],
+                 spawn_ticket: ticket
+               }
+             )
+             |> json_response(403)
+  end
+
+  test "overlay accepts editor ticket via editor_subs without editor Room Token (x00b5)", %{
+    conn: conn,
+    signer: signer,
+    spawn_signer: spawn_signer
+  } do
+    owner = "f5f5f5f5-f5f5-f5f5-f5f5-f5f5f5f5f5f5"
+    editor = "a6a6a6a6-a6a6-a6a6-a6a6-a6a6a6a6a6a6"
+    room = "overlay-editor-role"
+    blake3 = String.duplicate("33", 32)
+    {pub, priv} = TestAuthHelpers.session_keypair()
+
+    assert %{"room_id" => ^room} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: room, visibility: "public"})
+             |> json_response(201)
+
+    assert :ok = World.Rooms.set_editor_subs(room, owner, [editor])
+
+    # Owner host Token only — editor never gets Token.generate / ledger note.
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post(
+        "/api/v1/rooms/#{room}/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(pub)})
+      )
+      |> json_response(200)
+
+    scene =
+      build_conn()
+      |> TestAuthHelpers.get_host(host_token, priv, "/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
+    ticket =
+      TestSpawnTicketHelpers.spawn_ticket(spawn_signer,
+        sub: editor,
+        room_id: room,
+        blake3s: [blake3]
+      )
+
+    assert %{"entries" => entries} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/overlay/entries",
+               %{
+                 blake3: blake3,
+                 expected_revision: scene["revision"],
+                 spawn_ticket: ticket
+               }
+             )
+             |> json_response(200)
+
+    assert Enum.any?(entries, fn e -> e["blake3"] == blake3 end)
   end
 
   test "relation_changed rotates social rooms owned by either party (x00a0)", %{

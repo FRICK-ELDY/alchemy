@@ -102,12 +102,20 @@ defmodule World.Rooms do
            create_with_owner_quota(room_id, owner_sub, vis) do
       {:ok, id, stored, wire_cap}
     else
-      {:error, :invalid_room_id} = err -> err
-      {:error, :invalid_visibility} = err -> err
-      {:error, :owner_room_cap_exceeded} = err -> err
-      {:error, :already_exists} = err -> err
-      {:error, :storage_error} = err -> err
-      {:error, error} -> map_create_error(error)
+      {:error, :invalid_room_id} = err ->
+        err
+
+      {:error, :invalid_visibility} = err ->
+        err
+
+      {:error, :owner_room_cap_exceeded} = err ->
+        err
+
+      {:error, :already_exists} = err ->
+        err
+
+      {:error, :storage_error} = err ->
+        err
     end
   end
 
@@ -217,12 +225,21 @@ defmodule World.Rooms do
   def ensure_scene_writer(_, _), do: {:error, :invalid_room_id}
 
   defp authorize_editor_sub(%Room{} = room, sub) do
-    if sub in decode_editor_subs(room.editor_subs) do
+    if sub in editor_subs(room) do
       :ok
     else
       {:error, :forbidden_scene_writer}
     end
   end
+
+  @doc """
+  Decoded `editor_subs` list from the JSON text column (x009d / x00b5).
+
+  Guarantees: same decode as `ensure_scene_writer/2`. Never returns the raw JSON string.
+  """
+  @spec editor_subs(Room.t() | term()) :: [owner_sub()]
+  def editor_subs(%Room{editor_subs: raw}), do: decode_editor_subs(raw)
+  def editor_subs(_), do: []
 
   @doc """
   x009d Phase 2: owner replaces `editor_subs` (Builder list). Empty list = owner-only writers.

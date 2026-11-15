@@ -1,18 +1,18 @@
 # x00b5 — 配置時の所有権バインド（SpawnTicket）
 
-> **ID:** `x00b5` · **slug:** `spawn-ticket-ownership-binding` · **status:** `planned` · **area:** `[assets, world, host, client, protocol, docs]` · **depends_on:** `[x006b, x007f, x009d, x009e, x00b2]`  
+> **ID:** `x00b5` · **slug:** `spawn-ticket-ownership-binding` · **status:** `done` · **area:** `[assets, world, host, client, protocol, docs]` · **depends_on:** `[x006b, x007f, x009d, x009e, x00b2]`  
 > **優先度:** [assets-vcs-draft.md](../../0_doc/architecture/assets-vcs-draft.md) §14.4 対策 1（現行の穴。[x00b4](x00b4-prefab-child-grant-required.md) の後に着手）  
 > **関連:** [assets-threat-model.md](../../0_doc/architecture/assets-threat-model.md) ① 目標の防御 (4)
 
 目標: scene / overlay への blake3 追記を、assets-server が署名した短命の SpawnTicket（「部屋の参加者がその blob の Grant を持つ」ことの証明）がある場合にだけ world-server が受理する。改造したローカル host-server が「hash を知っている」だけで、PlaceRead 経由の読み取り権を得る経路を閉じる。
 
-根拠: [assets-vcs-draft.md](../../0_doc/architecture/assets-vcs-draft.md) §14.3–§14.4 · PlaceRead の `extra_blake3` 無効化は「take-out ownership binding」までの暫定措置（`Assets.PlaceRead` moduledoc）
+根拠: [assets-vcs-draft.md](../../0_doc/architecture/assets-vcs-draft.md) §14.3–§14.4 · PlaceRead の `extra_blake3` 無効化は「take-out ownership binding」までの暫定措置（`Assets.PlaceRead` moduledoc）— 本スライス後も `extra_blake3` は無効のまま（配置はチケット経路）。
 
 ---
 
-## 現状の穴
+## 現状の穴（実施前）
 
-| 経路 | 現状の検証 |
+| 経路 | 実施前の検証 |
 |:---|:---|
 | `POST …/overlay/entries`（`RoomController.create_overlay_entry`） | host Room Token + PoP + active host。blake3 は `World.Rooms.append_overlay_entry/4` で形式と重複のみ |
 | `POST …/scene/entries`（`RoomController.create_scene_entry`） | 上記 + scene writer（`owner_sub` ∪ `editor_subs`・x009d）。blake3 は形式と重複のみ |
@@ -35,27 +35,22 @@
 
 ---
 
-## 設計の骨子（Phase 0 で確定する）
+## 設計確定（Phase 0）
 
-| 項目 | 案 |
+| 項目 | 決定 |
 |:---|:---|
-| 発行者 | assets-server。take_out 応答に同梱（`room_id` 指定時）。ワールド制作者が自分の blob を canonical に置くための単体発行 API も用意する（Grant を確認して発行） |
-| クレーム | `typ=spawn_ticket` / `aud=alchemy-world-spawn` / `iss` / `sub`（take_out したユーザー）/ `room_id` / `blake3s`（上限あり）/ `jti` / `iat` / `exp` |
-| 署名と公開鍵 | 既存依存（Joken / JOSE）の範囲でアルゴリズムを選ぶ。assets に JWKS を公開し、world は既存の JWKS 取得（auth と同型）で検証する。**新規依存は入れない**（必要になったら人に回す） |
-| 受け渡し | client → host: `EditSpawn` にチケットのフィールドを追加（`PROTOCOL_PIN` 更新）。host → world: overlay / scene の POST 本文に同梱 |
-| world の検証 | 署名・`typ` / `aud` / `iss` / `exp`、`room_id` がパスと一致、blake3 がチケットに含まれる、`sub` が部屋の参加者、`(jti, blake3)` が未使用 |
-| 複数子の Prefab | 1 枚のチケットで複数の blake3 を許し、消費は `(jti, blake3)` 単位にする（子ごとに POST が分かれるため） |
-| エラー | 403 `spawn_ticket_required` / `spawn_ticket_invalid`（詳細はログにも出しすぎない） |
-
----
-
-## 未決（Phase 0）
-
-- `sub` が部屋の参加者であることの判定方法（Room Token の発行記録・presence・host Token 経由の申告のどれを根拠にするか）
-- 署名アルゴリズムと鍵の置き場所（Origin Cert 鍵とは分離する前提）
-- 既存 scene（DemoScene や既存 canonical）の扱い。新規追記のみを対象とするか、移行期間を設けるか
-- private リポジトリの Release をワールドとして公開する将来形（タグの blob 集合をまとめて証明するチケット）との整合
-- チケット上限（`blake3s` の最大数・`exp`）と、x0071 / x0084 のレート制限との関係
+| 発行者 | assets-server。`POST /api/v1/drive/take_out` に `room_id` 指定時に同梱。単体 `POST /api/v1/spawn_tickets`（Grant 確認後発行） |
+| クレーム | `typ=spawn_ticket` / `aud=alchemy-world-spawn` / `iss=alchemy-assets` / `sub` / `room_id` / `blake3s`（最大 32）/ `jti` / `iat` / `exp`（TTL 60s） |
+| 署名と公開鍵 | **RS256**（既存 Joken/JOSE）。`Assets.SpawnTicket.Keys`（Origin Cert Ed25519 と分離）。`GET assets/.well-known/jwks.json`。world は `World.Assets.Jwks` で取得 |
+| 受け渡し | client → host: `EditSpawn.spawn_ticket`（`PROTOCOL_PIN` = `alchemy-protocol/0.24.0-x00b5`）。host → world: overlay / scene POST 本文に `spawn_ticket` |
+| world の検証 | 署名・typ/aud/iss/exp、`room_id` 一致、blake3 ∈ チケット、`sub` が参加者、`(jti, blake3)` 未使用。consume ETS はチケット `exp` を保持し期限後に間隔 prune（TTL 延長でも再利用窓を開けない）。**CAS conflict 時のみ** claim 解放（他の追記失敗は焼いて再 take_out 必須 = fail-closed） |
+| 参加者の `editor_subs` | JSON 列を `Rooms.editor_subs/1`（`ensure_scene_writer` と同デコード）で読む。`List.wrap(raw)` は使わない |
+| 参加者根拠 | Room Token 発行台帳（`World.RoomParticipants`・`Token.generate` で note）**OR** room の `owner_sub` ∪ `editor_subs` ∪ `active_host_sub`。Presence / host 申告は使わない |
+| 既存 scene | **新規追記のみ** fail-closed。DemoScene / 既存 canonical は遡及しない |
+| 複数子 Prefab | 1 枚のチケットで複数 blake3。消費は `(jti, blake3)` 単位 |
+| エラー | 403 `spawn_ticket_required` / `spawn_ticket_invalid`（詳細はログ抑制） |
+| private Release 将来形 | 本スライスでは take_out + 単体発行まで。タグ一括チケットは未実装 |
+| レート | world は既存 `host_scene`。assets 発行専用レートは未追加（x0071 系とは別軸） |
 
 ---
 
@@ -63,11 +58,11 @@
 
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
-| 0 | 設計確定（上の未決）+ Slice / roadmap | Slice のみ **done** |
-| 1 | assets: 鍵・JWKS・チケット発行（take_out 同梱 + 単体発行 API） | planned |
-| 2 | world: overlay / scene 追記時の検証、`(jti, blake3)` 消費、エラー応答 | planned |
-| 3 | protocol / host / client: `EditSpawn` へのチケット追加（`PROTOCOL_PIN`）、host の POST 同梱 | planned |
-| 4 | 回帰・e2e・文書（world-server.md / assets-server.md / 脅威モデル ① を「現状の防御」へ昇格） | planned |
+| 0 | 設計確定（上の未決）+ Slice / roadmap | **done** |
+| 1 | assets: 鍵・JWKS・チケット発行（take_out 同梱 + 単体発行 API） | **done** |
+| 2 | world: overlay / scene 追記時の検証、`(jti, blake3)` 消費、エラー応答 | **done** |
+| 3 | protocol / host / client: `EditSpawn` へのチケット追加（`PROTOCOL_PIN`）、host の POST 同梱 | **done** |
+| 4 | 回帰・e2e・文書（world-server.md / assets-server.md / 脅威モデル ① を「現状の防御」へ昇格） | **done** |
 
 ---
 

@@ -1,13 +1,14 @@
-//! Inventory take-out / put-back / despawn client helpers (x006d / x006e / x007b / x007f / x0081 / x0098 / x00b2).
+//! Inventory take-out / put-back / despawn client helpers (x006d / x006e / x007b / x007f / x0081 / x0098 / x00b2 / x00b5).
 //!
 //! Guarantees: Drive list / take_out / put_back over assets HTTP; spawn/despawn put on
 //! Zenoh `…/edit` as session-signed `EditProposal` (Room AEAD · x00b2); no Drive node_id
 //! on the wire to host. Owner may use guest Room Token + Intent bind; host Dual-auth
 //! accepts `owner_sub` or host-role (x0098). Put-back is Bearer→assets only (no Zenoh);
 //! Despawn removes the room entity via host. Prefab take_out expands children (x007f);
-//! client `session.put`s each blake3 sequentially. Desktop paces puts under host
-//! `SharedControlRate` (8/10s across edit + legacy inventory) on an auth/inventory
-//! worker (not the UI loop); status reports `spawn put N/M` (Zenoh success ≠ host accept).
+//! client `session.put`s each blake3 sequentially with the take_out SpawnTicket (x00b5).
+//! Desktop paces puts under host `SharedControlRate` (8/10s across edit + legacy inventory)
+//! on an auth/inventory worker (not the UI loop); status reports `spawn put N/M`
+//! (Zenoh success ≠ host accept).
 //! Non-guarantees: atomic multi-spawn rollback; XR-direct HTTP/Zenoh; put-back+despawn TX.
 
 use alchemy_protocol::wire_aead::{self, AeadKind};
@@ -36,6 +37,9 @@ struct NodesResponse {
 struct TakeOutResponse {
     node: DriveNodeDto,
     blobs: Vec<TakeOutBlob>,
+    /// Present when take_out body included `room_id` (x00b5).
+    #[serde(default)]
+    spawn_ticket: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -73,16 +77,22 @@ pub fn list_drive_nodes(assets_url: &str, access_token: &str) -> Result<Vec<Driv
     }
 }
 
-/// Resolve take-out for a blob or prefab node (x006d / x007f).
+/// Resolve take-out for a blob or prefab node (x006d / x007f / x00b5).
+///
+/// When `room_id` is `Some`, assets returns a SpawnTicket covering all blake3s.
 pub fn take_out_blobs(
     assets_url: &str,
     access_token: &str,
     node_id: &str,
-) -> Result<(DriveNodeDto, Vec<TakeOutBlob>)> {
+    room_id: Option<&str>,
+) -> Result<(DriveNodeDto, Vec<TakeOutBlob>, Option<String>)> {
     let base = assets_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/drive/take_out");
     let authz = format!("Bearer {access_token}");
-    let body = json!({ "node_id": node_id });
+    let body = match room_id {
+        Some(rid) if !rid.is_empty() => json!({ "node_id": node_id, "room_id": rid }),
+        _ => json!({ "node_id": node_id }),
+    };
     match ureq::agent()
         .post(&url)
         .set("authorization", &authz)
@@ -102,7 +112,13 @@ pub fn take_out_blobs(
             if parsed.blobs.is_empty() {
                 return Err(anyhow!("take_out returned no blobs"));
             }
-            Ok((parsed.node, parsed.blobs))
+            if room_id.is_some() {
+                match parsed.spawn_ticket.as_deref() {
+                    Some(t) if !t.is_empty() => {}
+                    _ => return Err(anyhow!("take_out missing spawn_ticket for room placement")),
+                }
+            }
+            Ok((parsed.node, parsed.blobs, parsed.spawn_ticket))
         }
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();

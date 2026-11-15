@@ -29,8 +29,13 @@ defmodule World.Token do
       }
 
       case Joken.generate_and_sign(token_config(), extra, Keys.signer()) do
-        {:ok, token, _claims} -> {:ok, token, jti, ttl}
-        {:error, reason} -> {:error, reason}
+        {:ok, token, claims} ->
+          # x00b5: ledger for SpawnTicket participant checks (ETS; lost on restart).
+          World.RoomParticipants.note(room_id, sub, Map.get(claims, "exp", 0))
+          {:ok, token, jti, ttl}
+
+        {:error, reason} ->
+          {:error, reason}
       end
     else
       {:error, :invalid_role}

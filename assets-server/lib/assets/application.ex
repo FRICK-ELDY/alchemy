@@ -19,6 +19,7 @@ defmodule Assets.Application do
         {Phoenix.PubSub, name: Assets.PubSub},
         Assets.Auth.Jwks,
         Assets.World.Jwks,
+        Assets.SpawnTicket.Keys,
         Assets.PlaceHashCache,
         # x0075 / x008d: blake3-hash Port pool (PartitionSupervisor; no poolboy).
         # Partitions from runtime.exs / test.exs; fallback only if key unset.

@@ -1,13 +1,13 @@
-//! Inventory take-out spawn control plane (x006d / x0081 / x0082 / x0098 / x009e).
+//! Inventory take-out spawn control plane (x006d / x0081 / x0082 / x0098 / x009e / x00b5).
 //!
 //! Guarantees: Zenoh `…/inventory/spawn` is **Room AEAD** (`AeadKind::InventorySpawn`);
 //! after open, session Ed25519 + SessionTable Dual auth (**`role=host` ∧ `sub` == host Token
 //! sub** **or** **`sub` == `owner_sub`** from shared scene); world HTTP append uses **host**
-//! Token, PoP, and **packed scene revision CAS** against **`…/overlay/entries`** (x009e —
-//! session_overlay; dormant で破棄。canonical writer は不要). Client JWT never on the bus;
-//! physics only applies a ready `SceneEntry` (and shared scene / re-seal flag). Order mirrors
-//! Intent: evaluate (no seq) → rate → commit seq → HTTP (unbound / non-owner guest cannot burn
-//! shared rate).
+//! Token, PoP, SpawnTicket, and **packed scene revision CAS** against **`…/overlay/entries`**
+//! (x009e / x00b5 — session_overlay; dormant で破棄。canonical writer は不要). Client auth JWT
+//! never on the bus; physics only applies a ready `SceneEntry` (and shared scene / re-seal
+//! flag). Order mirrors Intent: evaluate (no seq) → rate → commit seq → HTTP (unbound /
+//! non-owner guest cannot burn shared rate).
 //!
 //! Non-guarantees: Invite / arbitrary-guest ACL; put-back; Intent path;
 //! distributed TX / **HTTP failure after `control_seq` commit** (seq stays advanced);
@@ -67,6 +67,9 @@ struct SpawnPayloadJson {
     sy: f64,
     #[serde(default = "default_one")]
     sz: f64,
+    /// x00b5: assets SpawnTicket JWT (required for world overlay append).
+    #[serde(default)]
+    spawn_ticket: String,
 }
 
 fn default_y() -> f64 {
@@ -218,6 +221,13 @@ fn process_sample(
         parsed.sy, parsed.sz,
     ];
     let blake3 = parsed.blake3.to_ascii_lowercase();
+    // x00b5: reject empty/oversized ticket before Dual-auth / rate / seq commit
+    // (mirrors edit.rs `spawn_payload_ok`; avoids burning control_seq on bad tickets).
+    if parsed.spawn_ticket.is_empty()
+        || parsed.spawn_ticket.len() > alchemy_protocol::decode_limits::MAX_JWT_STRING_BYTES
+    {
+        return Err(anyhow!("spawn_ticket required or too large"));
+    }
     control_plane::verify_spawn(
         &session_pub,
         room_id,
@@ -278,6 +288,7 @@ fn process_sample(
         &auth.pop_key,
         shared_scene,
         &blake3,
+        &parsed.spawn_ticket,
         parsed.x,
         parsed.y,
         parsed.z,
@@ -359,9 +370,14 @@ mod tests {
         );
         assert!(parse_payload(bad_scale.as_bytes()).is_err());
         let ok = format!(
-            r#"{{"session_pub":"x","control_seq":1,"control_sig":"y","blake3":"{good_b3}"}}"#
+            r#"{{"session_pub":"x","control_seq":1,"control_sig":"y","blake3":"{good_b3}","spawn_ticket":"t.jwt"}}"#
         );
         assert!(parse_payload(ok.as_bytes()).is_ok());
+        let missing_ticket = format!(
+            r#"{{"session_pub":"x","control_seq":1,"control_sig":"y","blake3":"{good_b3}"}}"#
+        );
+        // Deserializes; apply path rejects empty spawn_ticket before Dual-auth / rate / seq.
+        assert!(parse_payload(missing_ticket.as_bytes()).is_ok());
     }
 
     #[test]

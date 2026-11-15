@@ -1,7 +1,7 @@
 # assets-server
 
 > **正本コード**: [`assets-server/`](../../../assets-server/)  
-> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳）+ **x0054**（inventory PUT 経路）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x0096**（Origin Cert v1 tree/content hash）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）+ **x006e**（Drive HTTP put_back）+ **x006f**（CasObject.access 列廃止）+ **x0074**（reserved reaper / orphan CAS GC）+ **x0075**（BLAKE3 常駐 Port）+ **x008d**（BLAKE3 Port プール）+ **x007f**（prefab take_out 多子展開）+ **x0086**（test hermetic: reaper/GC off + CAS tmp_dir）+ **x008b**（`/ready` + GET octet-stream/nosniff）  
+> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳）+ **x0054**（inventory PUT 経路）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x0096**（Origin Cert v1 tree/content hash）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）+ **x006e**（Drive HTTP put_back）+ **x006f**（CasObject.access 列廃止）+ **x0074**（reserved reaper / orphan CAS GC）+ **x0075**（BLAKE3 常駐 Port）+ **x008d**（BLAKE3 Port プール）+ **x007f**（prefab take_out 多子展開）+ **x0086**（test hermetic: reaper/GC off + CAS tmp_dir）+ **x008b**（`/ready` + GET octet-stream/nosniff）+ **x00b5**（SpawnTicket 発行・JWKS）  
 
 > **目標たたき台**: [assets-server-draft.md](assets-server-draft.md)（5 層全体）  
 > **脅威（手口×対策）**: [assets-threat-model.md](assets-threat-model.md)
@@ -27,7 +27,7 @@
 | `CasObject`（物理・所有者なし・size/mime のみ）と `BlobRef`（owner×blake3）を分離（x003f / x006f） | StorageVault / `:purchased` / `:mail_temp` |
 | PUT finalize で uploader に `:owned` `BlobGrant`（x004f） | room スコープ grant・Manifest 連動付与以外の Grant 種別 |
 | `POST /api/v1/inventory/blobs` は inventory 用パス契約（x0054）。中身は通常 PUT と同じ（常に owned Grant・x006f） | DriveNode / Prefab / Vault 表・client UI |
-| Drive `take_out`（x007f）: blob → 単一 blake3；prefab → Payload 子 mesh（`blake3`+`local_id`+任意 `trs`）。payload + 各子に Grant。欠落は全体 `:no_grant`。`save_prefab` / `create_prefab_node` / `promote_prefab` / `ItemRef` `repo_rev` も子 Grant 必須（x00b4；拒否時 Quota/CAS 非消費；HTTP put_back は 403 `no_grant`） | folder / vcs_repo take-out；payload blake3 を blobs に載せる；host 一括 spawn |
+| Drive `take_out`（x007f / x00b5）: blob → 単一 blake3；prefab → Payload 子 mesh（`blake3`+`local_id`+任意 `trs`）。payload + 各子に Grant。欠落は全体 `:no_grant`。`room_id` 指定時は SpawnTicket 同梱（RS256・Origin Cert 鍵と分離）。単体 `POST /api/v1/spawn_tickets`。`save_prefab` / `create_prefab_node` / `promote_prefab` / `ItemRef` `repo_rev` も子 Grant 必須（x00b4；拒否時 Quota/CAS 非消費；HTTP put_back は 403 `no_grant`） | folder / vcs_repo take-out；payload blake3 を blobs に載せる；host 一括 spawn；鍵ローテーション自動化 |
 | 同一 blake3 を `/blobs` と `/inventory/blobs` から別 owner が PUT しても共存（x006f） | mime/size 先勝ちの変更；CasObject あり・refcount=0 の GC |
 | local GET は常に `application/octet-stream` + `nosniff`（x008b） | S3 オブジェクト側 Content-Type の強制；表示用 mime のサーバー配信 |
 | PUT: `quota_reservations` + `reserved_bytes` 予約 → TX 外 CAS put → used 振替。失敗時は**予約解放のみ**（compensate は CAS 非削除＝並行同一 hash 安全）（x003f / x0074） | Oban・署名 URL 直 PUT；S3 バケット全 listing |
@@ -81,8 +81,10 @@ PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。`x-alchemy-b
 | POST | `/api/v1/inventory/blobs` | Bearer | インベントリ用パス（x0054）。中身は通常 PUT と同じ（x006f） |
 | GET | `/api/v1/blobs/:blake3` | Bearer（任意 `x-alchemy-place-read`） | 常時 Grant **または** PlaceRead カバー（x006c）。local: 200 `application/octet-stream` + `nosniff`（CasObject.mime は Content-Type に使わない・x008b）/ s3: 302 |
 | GET | `/api/v1/drive/nodes` | Bearer | owner Drive 一覧（`parent_id` 任意・x006d） |
-| POST | `/api/v1/drive/take_out` | Bearer + JSON `{node_id}` | blob: 単一 blake3；prefab: 子 mesh 列（`blake3`+`local_id`+任意 `trs`・x007f）。host には node_id を渡さない |
+| POST | `/api/v1/drive/take_out` | Bearer + JSON `{node_id, room_id?}` | blob: 単一 blake3；prefab: 子 mesh 列（`blake3`+`local_id`+任意 `trs`・x007f）。`room_id` 指定時は `spawn_ticket` + `expires_in`（x00b5）。host には node_id を渡さない |
 | POST | `/api/v1/drive/put_back` | Bearer + JSON `{name, payload, parent_id?}` | Prefab.Payload 検証 → `save_prefab`（x006e；部屋 entity は変更しない） |
+| POST | `/api/v1/spawn_tickets` | Bearer + JSON `{room_id, blake3s}` | Grant 確認後 SpawnTicket 発行（x00b5） |
+| GET | `/.well-known/jwks.json` | なし | SpawnTicket RS256 公開鍵（秘密鍵は出さない・x00b5） |
 | GET | `/api/v1/quota` | Bearer | `{used_bytes, reserved_bytes, limit_bytes}`（自 `auth_sub`） |
 
 ## 最小オブジェクトモデル

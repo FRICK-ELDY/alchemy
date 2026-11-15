@@ -5,9 +5,9 @@ defmodule World.PlaceRead do
   Guarantees: same world JWKS as Room Tokens; distinct `aud` / `typ`; seal-linked
   `(room_id, revision, host_generation, manifest_blake3)`; **PlaceRead `exp` equals
   the verified ManifestSeal absolute unix `exp`** (same endpoint as seal / allowlist).
-  Non-guarantees: `extra_blake3` authorization (disabled until take-out binds ownership /
-  in-room presence); embedding full scene hash lists in the JWT; federated auto-mirror;
-  immediate revoke on leave (TTL only); surviving world restart without re-seal.
+  Non-guarantees: `extra_blake3` authorization (still disabled — placement uses SpawnTicket /
+  x00b5 instead of extra hashes); embedding full scene hash lists in the JWT; federated
+  auto-mirror; immediate revoke on leave (TTL only); surviving world restart without re-seal.
   """
 
   alias World.Token.Keys

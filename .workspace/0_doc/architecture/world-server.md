@@ -15,7 +15,7 @@
 | `GET /api/v1/rooms` カタログ（見える Room のみ・秘密なし・x007c）。**x0080**: 非 mine は `state=active`+未期限切れ lease のみ；`?mine=1` は dormant 定義も可。要約に `state` / `active_host_sub` | Frame 到達保証；`room_key` / `wire_cap` の一覧同梱 |
 | `owner_sub`（永続）と `active_host_sub`（計算ホスト）の分離。`POST …/handover` / `POST …/takeover`（CAS）/ host lease 失効で昇格・休止。Host Token は active_host または dormant からの owner 再開に限定（x0080） | 偽 Zenoh Notice 単独での Host Token；pose/grab のシームレス継承；Room 行の物理 DELETE |
 | canonical scene 書き込み（`POST/DELETE …/scene/entries`）は **active_host かつ** `owner_sub` ∪ `editor_subs`（x009d）。非 writer → 403 `scene_writer_forbidden`。`Rooms.set_editor_subs/3` は owner のみ | Dash Permissions UI；Moderator ロール；overlay→canonical Save/merge |
-| `session_overlay`（x009e）: active host が `POST/DELETE …/overlay/entries`（**atomic packed CAS**）。GET/seal/PlaceHashes は **composed**。dormant / lease expire / takeover / expired activate / nominate で entries 破棄 + overlay rev bump（self-renew は保持） | セッションまたぎの inventory 永続 |
+| `session_overlay`（x009e / x00b5）: active host が `POST/DELETE …/overlay/entries`（**atomic packed CAS**）。POST 追記は assets SpawnTicket 必須（403 `spawn_ticket_required` / `spawn_ticket_invalid`）。GET/seal/PlaceHashes は **composed**。dormant / lease expire / takeover / expired activate / nominate で entries 破棄 + overlay rev bump（self-renew は保持） | セッションまたぎの inventory 永続；参加者台帳の永続化 |
 | takeover は visibility に加え **owner ∪ `eligible_host_subs`**（空 = owner のみ・x009e）。`PUT …/eligible_hosts` で owner 設定。非 eligible → 403 `takeover_forbidden` | 署名付き HostDelegation JWT |
 | handover 二段階（x00a1）: `POST …/handover` は candidate 記録 + **dormant**（lease なし）。`POST …/handover/accept` で CAS して active+lease。null target → dormant + candidate クリア。pending 中の再 `handover(other)` は **candidate 差し替え**（cancel 不要）。**未期限切れ candidate 中は owner Host Token claim / takeover による横取り不可**（cancel は `handover(null)`；期限切れは projection + sweeper で消える） | Presence / Server Operator の world 検証；accept TTL 長寿命永続 |
 | 短命 Room Token（RS256）の発行（**`cnf.spk` = session_pub・x003e**） | Friendship 正本（auth）。Token 前に S2S 照会；`jkt` 互換 |
@@ -84,10 +84,10 @@ Token **応答 JSON**（JWT 外・同梱）: `wire_cap`（ルーティング）�
 | POST | `/api/v1/rooms/:room_id/host_keys` | Bearer（**host Room Token**）+ PoP（x0081） | HostAttestation 発行（`host_pub` base64url・`host_generation`・x0025 / x003a） |
 | POST | `/api/v1/rooms/:room_id/manifest_seal` | Bearer（**host Room Token**）+ PoP（x0081） | ManifestSeal 発行（`revision` + `host_generation` + `manifest_blake3` + `host_attestation`；canonical 照合・x0039 / x003a） |
 | GET | `/api/v1/rooms/:room_id/scene` | Bearer（**host Room Token**）+ PoP（x0081） | DemoScene `{ revision, entries, locomotion, owner_sub, room_id }`（x0027 / x0098） |
-| POST | `/api/v1/rooms/:room_id/scene/entries` | Bearer（**host Room Token**）+ PoP（x0081）+ **owner/editor**（x009d） | canonical mesh 追記 + **packed `expected_revision` CAS**（x006d / x0082 / x009e）。非 writer → 403 `scene_writer_forbidden` |
+| POST | `/api/v1/rooms/:room_id/scene/entries` | Bearer（**host Room Token**）+ PoP（x0081）+ **owner/editor**（x009d）+ **SpawnTicket**（x00b5） | canonical mesh 追記 + **packed `expected_revision` CAS**（x006d / x0082 / x009e）。非 writer → 403 `scene_writer_forbidden`；チケット欠落/不正 → 403 |
 | DELETE | `/api/v1/rooms/:room_id/scene/entries/:entity_id` | Bearer（**host Room Token**）+ PoP（x0081）+ **owner/editor**（x009d） | canonical mesh 削除 + packed CAS（x007b / x0082 / x009e；blake3 必須） |
 | PUT | `/api/v1/rooms/:room_id/eligible_hosts` | Bearer（auth JWT）+ owner | `eligible_host_subs` 置換（x009e；空 = owner-only takeover） |
-| POST | `/api/v1/rooms/:room_id/overlay/entries` | Bearer（**host Room Token**）+ PoP（x0081） | session_overlay mesh 追記 + **atomic** packed CAS（x009e）。active_host のみ（writer 不要） |
+| POST | `/api/v1/rooms/:room_id/overlay/entries` | Bearer（**host Room Token**）+ PoP（x0081）+ **SpawnTicket**（x00b5） | session_overlay mesh 追記 + **atomic** packed CAS（x009e）。active_host のみ（writer 不要）。チケット必須 |
 | DELETE | `/api/v1/rooms/:room_id/overlay/entries/:entity_id` | Bearer（**host Room Token**）+ PoP（x0081） | session_overlay mesh 削除 + atomic packed CAS（x009e） |
 | POST | `/api/v1/rooms/:room_id/place_read` | Bearer（**Room Token**） | PlaceRead 発行（`world_seal` 必須・`extra_blake3` 無効・x006b） |
 | GET | `/api/v1/rooms/:room_id/place_hashes` | Bearer（**PlaceRead**） | seal 時固定の scene blake3s（x006b） |

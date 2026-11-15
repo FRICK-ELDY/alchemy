@@ -36,6 +36,10 @@ assets-server/priv/cas/
 assets-server/priv/cas_test/
 assets-server/priv/*.sqlite3
 assets-server/priv/*.sqlite3-*
+assets-server/priv/spawn_ticket_private.pem
+assets-server/priv/spawn_ticket_public.pem
+assets-server/priv/test_spawn_ticket_private.pem
+assets-server/priv/test_spawn_ticket_public.pem
 assets-server/.env
 
 # prod compose env (x001e)
