@@ -382,4 +382,99 @@ defmodule World.SessionOverlayTest do
                "fields" => [%{"entity_id" => eid, "blake3" => "not-hex"}]
              })
   end
+
+  test "save_overlay_to_canonical applies spawns and despawns (x00b9)" do
+    assert {:ok, room_id, _, _} = Rooms.create("ov-save-spawn", @owner)
+    assert {:ok, _} = Rooms.activate_as_host(room_id, @owner)
+    assert {:ok, composed0} = Rooms.composed_scene(room_id)
+    assert {:ok, canon0, overlay0} = Rooms.unpack_revision(composed0["revision"])
+    canon_count0 = length(composed0["entries"])
+    existing_id = hd(composed0["entries"])["entity_id"]
+    new_id = 50_000
+
+    assert {:ok, after_spawn} =
+             Rooms.save_overlay_to_canonical(room_id, canon0, overlay0, %{
+               "spawns" => [
+                 %{
+                   "entity_id" => new_id,
+                   "blake3" => @blake3,
+                   "x" => 1.0,
+                   "y" => 2.0,
+                   "z" => 3.0
+                 }
+               ]
+             })
+
+    assert length(after_spawn["entries"]) == canon_count0 + 1
+    spawned = Enum.find(after_spawn["entries"], &(&1["entity_id"] == new_id))
+    assert spawned["blake3"] == @blake3
+    assert spawned["x"] == 1.0
+
+    assert {:ok, canon1, overlay1} = Rooms.unpack_revision(after_spawn["revision"])
+
+    assert {:error, :invalid_entry} =
+             Rooms.save_overlay_to_canonical(room_id, canon1, overlay1, %{
+               "spawns" => [%{"entity_id" => new_id, "blake3" => String.duplicate("bb", 32)}]
+             })
+
+    assert {:ok, after_despawn} =
+             Rooms.save_overlay_to_canonical(room_id, canon1, overlay1, %{
+               "despawns" => [existing_id]
+             })
+
+    refute Enum.any?(after_despawn["entries"], &(&1["entity_id"] == existing_id))
+    assert Enum.any?(after_despawn["entries"], &(&1["entity_id"] == new_id))
+
+    assert {:ok, _} = Rooms.handover(room_id, @owner, nil)
+    assert {:ok, after_dormant} = Rooms.composed_scene(room_id)
+    assert Enum.any?(after_dormant["entries"], &(&1["entity_id"] == new_id))
+    refute Enum.any?(after_dormant["entries"], &(&1["entity_id"] == existing_id))
+  end
+
+  test "save_overlay_to_canonical despawn then spawn same blake3 replace (x00b9)" do
+    assert {:ok, room_id, _, _} = Rooms.create("ov-save-replace", @owner)
+    assert {:ok, _} = Rooms.activate_as_host(room_id, @owner)
+    assert {:ok, composed0} = Rooms.composed_scene(room_id)
+    assert {:ok, canon0, overlay0} = Rooms.unpack_revision(composed0["revision"])
+
+    assert {:ok, with_mesh} =
+             Rooms.save_overlay_to_canonical(room_id, canon0, overlay0, %{
+               "spawns" => [%{"entity_id" => 50_100, "blake3" => @blake3}]
+             })
+
+    assert {:ok, canon1, overlay1} = Rooms.unpack_revision(with_mesh["revision"])
+    old_id = 50_100
+    new_id = 50_101
+
+    assert {:ok, replaced} =
+             Rooms.save_overlay_to_canonical(room_id, canon1, overlay1, %{
+               "despawns" => [old_id],
+               "spawns" => [%{"entity_id" => new_id, "blake3" => @blake3, "x" => 9.0}]
+             })
+
+    refute Enum.any?(replaced["entries"], &(&1["entity_id"] == old_id))
+    kept = Enum.find(replaced["entries"], &(&1["entity_id"] == new_id))
+    assert kept["blake3"] == @blake3
+    assert kept["x"] == 9.0
+  end
+
+  test "save_overlay_to_canonical rejects spawn with missing parent (x00b9)" do
+    assert {:ok, room_id, _, _} = Rooms.create("ov-save-dangling-parent", @owner)
+    assert {:ok, _} = Rooms.activate_as_host(room_id, @owner)
+    assert {:ok, composed0} = Rooms.composed_scene(room_id)
+    assert {:ok, canon0, overlay0} = Rooms.unpack_revision(composed0["revision"])
+    parent_id = hd(composed0["entries"])["entity_id"]
+
+    assert {:error, :invalid_entry} =
+             Rooms.save_overlay_to_canonical(room_id, canon0, overlay0, %{
+               "despawns" => [parent_id],
+               "spawns" => [
+                 %{
+                   "entity_id" => 50_200,
+                   "blake3" => @blake3,
+                   "parent_entity_id" => parent_id
+                 }
+               ]
+             })
+  end
 end

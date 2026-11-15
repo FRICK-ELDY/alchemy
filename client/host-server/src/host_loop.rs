@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use host_server::intent_rate::IntentRateLimiter;
-use host_server::room_token::{publish_allowed_at, HostPublishSnapshot, RoomScene};
+use host_server::room_token::{
+    publish_allowed_at, remove_local_scene_entry, HostPublishSnapshot, RoomScene,
+};
 use host_server::session::SessionTable;
 
 use alchemy_protocol::SimState;
@@ -357,6 +359,9 @@ impl HostLoop {
             ];
             let entry_id = ready.entry.entity_id;
             let entry_blake3 = ready.entry.blake3.clone();
+            let pending_entry = ready.entry.clone();
+            let spawn_ticket = ready.spawn_ticket.clone();
+            let edit_proposal = ready.edit_proposal.clone();
             match inventory_spawn::apply_ready_spawn(
                 ready,
                 &self.shared_scene,
@@ -364,59 +369,106 @@ impl HostLoop {
                 |entry| self.physics.spawn_mesh_entry(entry),
             ) {
                 Ok(out) if out.scene_applied && out.physics_ok => {
-                    // Shared spawn inbox (inventory + edit-lane): ledger only after physics.
-                    if let Ok(mut led) = self.live_edit.lock() {
-                        led.note_spawn(entry_id, entry_flags, entry_color, entry_blake3);
+                    // Shared spawn inbox (inventory + edit-lane): ledger + pending after physics.
+                    let mut led = match self.live_edit.lock() {
+                        Ok(g) => g,
+                        Err(_) => {
+                            log::error!(
+                                "LiveEditLedger poisoned after spawn apply Ok; aborting host"
+                            );
+                            std::process::exit(78);
+                        }
+                    };
+                    led.note_spawn(entry_id, entry_flags, entry_color, entry_blake3);
+                    led.note_pending_spawn(crate::live_edit::PendingSpawn {
+                        entry: pending_entry,
+                        spawn_ticket,
+                    });
+                    // Tip⇔Commit 一体。publisher 欠落は miswire → fail-closed abort.
+                    if let Some(proposal) = edit_proposal.as_ref() {
+                        let tip = led.bump_tip();
+                        self.require_live_commit().publish_accept(proposal, tip);
                     }
+                    drop(led);
                     log::info!(
-                        "spawn applied entity_id={} blake3={} (xpbd+scene+reseal)",
+                        "spawn applied entity_id={} blake3={} (xpbd+local scene+reseal; x00b9)",
                         out.entity_id,
                         &blake3[..8.min(blake3.len())]
                     );
                 }
-                Ok(out) if out.scene_applied => log::warn!(
-                    "spawn scene+reseal only entity_id={} blake3={} (xpbd refused; no ledger note)",
-                    out.entity_id,
-                    &blake3[..8.min(blake3.len())]
-                ),
-                Ok(out) => log::warn!(
-                    "inventory spawn stale revision skipped entity_id={} blake3={}",
-                    out.entity_id,
-                    &blake3[..8.min(blake3.len())]
-                ),
-                Err(err) => log::warn!("inventory spawn apply failed: {err:#}"),
+                Ok(out) if out.scene_applied => {
+                    let _ = remove_local_scene_entry(&self.shared_scene, entry_id);
+                    self.reject_spawn_apply(entry_id, edit_proposal.as_ref());
+                    log::warn!(
+                        "spawn rolled back entity_id={} blake3={} (xpbd refused; reject APPLY if edit)",
+                        out.entity_id,
+                        &blake3[..8.min(blake3.len())]
+                    );
+                }
+                Ok(out) => {
+                    self.reject_spawn_apply(entry_id, edit_proposal.as_ref());
+                    log::warn!(
+                        "spawn local scene rejected entity_id={} blake3={} (reject APPLY if edit)",
+                        out.entity_id,
+                        &blake3[..8.min(blake3.len())]
+                    );
+                }
+                Err(err) => {
+                    self.reject_spawn_apply(entry_id, edit_proposal.as_ref());
+                    log::warn!("spawn apply failed: {err:#}");
+                }
             }
         }
 
         if let Some(ready) = self.despawn_inbox.try_recv() {
             let entity_id = ready.entity_id;
+            let edit_proposal = ready.edit_proposal.clone();
             match inventory_despawn::apply_ready_despawn(
                 ready,
                 &self.shared_scene,
                 &self.force_reseal,
                 |id| self.physics.despawn_mesh_entity(id),
             ) {
-                Ok(out) if out.scene_applied && out.physics_ok => {
-                    if let Ok(mut led) = self.live_edit.lock() {
-                        led.note_despawn(entity_id);
-                    }
-                    log::info!(
-                        "despawn applied entity_id={} (xpbd+scene+reseal)",
-                        out.entity_id
-                    );
-                }
                 Ok(out) if out.scene_applied => {
+                    // Local scene already dropped the row — fold into pending even if XPBD miss.
+                    let mut led = match self.live_edit.lock() {
+                        Ok(g) => g,
+                        Err(_) => {
+                            log::error!(
+                                "LiveEditLedger poisoned after despawn apply Ok; aborting host"
+                            );
+                            std::process::exit(78);
+                        }
+                    };
+                    led.note_live_despawn(entity_id);
+                    // Tip⇔Commit 一体。publisher 欠落は miswire → fail-closed abort.
+                    if let Some(proposal) = edit_proposal.as_ref() {
+                        let tip = led.bump_tip();
+                        self.require_live_commit().publish_accept(proposal, tip);
+                    }
+                    drop(led);
+                    if out.physics_ok {
+                        log::info!(
+                            "despawn applied entity_id={} (xpbd+local scene+reseal; x00b9)",
+                            out.entity_id
+                        );
+                    } else {
+                        log::warn!(
+                            "despawn entity_id={} local scene ok but xpbd miss; pending recorded",
+                            out.entity_id
+                        );
+                    }
+                }
+                Ok(out) => {
+                    self.reject_edit_apply(edit_proposal.as_ref());
                     log::warn!(
-                        "despawn scene+reseal only entity_id={} (xpbd miss; ledger kept until physics)",
+                        "despawn local scene miss entity_id={} (reject APPLY if edit)",
                         out.entity_id
                     );
                 }
-                Ok(out) => log::warn!(
-                    "inventory despawn stale revision skipped entity_id={}",
-                    out.entity_id
-                ),
                 Err(err) => {
-                    log::warn!("inventory despawn apply failed entity_id={entity_id}: {err:#}")
+                    self.reject_edit_apply(edit_proposal.as_ref());
+                    log::warn!("despawn apply failed entity_id={entity_id}: {err:#}");
                 }
             }
         }
@@ -445,13 +497,11 @@ impl HostLoop {
                         std::process::exit(78);
                     }
                 };
-                if let Some(pubber) = self.live_commit.as_ref() {
-                    pubber.publish_reject(
-                        ready.proposal(),
-                        alchemy_protocol::edit_reject::APPLY,
-                        tip,
-                    );
-                }
+                self.require_live_commit().publish_reject(
+                    ready.proposal(),
+                    alchemy_protocol::edit_reject::APPLY,
+                    tip,
+                );
                 log::warn!(
                     "live edit queue failed ({e}); rolled back mirrors + reject APPLY (tip={tip})"
                 );
@@ -580,16 +630,18 @@ impl HostLoop {
         let barrier_ok = self.physics.step_dt(self.dt).is_ok();
         let awaiting = std::mem::take(&mut self.live_awaiting_barrier);
         if barrier_ok {
-            let mut led = match self.live_edit.lock() {
-                Ok(g) => g,
-                Err(_) => {
-                    log::error!("LiveEditLedger poisoned after live barrier Ok; aborting host");
-                    std::process::exit(78);
-                }
-            };
-            for ready in awaiting {
-                let tip = led.bump_tip();
-                if let Some(pubber) = self.live_commit.as_ref() {
+            if !awaiting.is_empty() {
+                let mut led = match self.live_edit.lock() {
+                    Ok(g) => g,
+                    Err(_) => {
+                        log::error!("LiveEditLedger poisoned after live barrier Ok; aborting host");
+                        std::process::exit(78);
+                    }
+                };
+                // Tip⇔Commit 一体。publisher は Commit を出すときだけ必須。
+                let pubber = self.require_live_commit();
+                for ready in awaiting {
+                    let tip = led.bump_tip();
                     pubber.publish_accept(ready.proposal(), tip);
                 }
             }
@@ -606,14 +658,9 @@ impl HostLoop {
                     std::process::exit(78);
                 }
             };
-            if let Some(pubber) = self.live_commit.as_ref() {
-                for ready in &awaiting {
-                    pubber.publish_reject(
-                        ready.proposal(),
-                        alchemy_protocol::edit_reject::APPLY,
-                        tip,
-                    );
-                }
+            let pubber = self.require_live_commit();
+            for ready in &awaiting {
+                pubber.publish_reject(ready.proposal(), alchemy_protocol::edit_reject::APPLY, tip);
             }
             log::warn!(
                 "live edit barrier failed; rolled back {} mirror(s) + reject APPLY (tip={tip})",
@@ -756,6 +803,60 @@ impl HostLoop {
                 log::error!("sim_state_cache Mutex poisoned; aborting host-server");
                 std::process::exit(78);
             }
+        }
+    }
+
+    /// Production `main` always wires this; missing = miswire → fail-closed abort.
+    fn require_live_commit(&self) -> &crate::live_edit::LiveCommitPublisher {
+        match self.live_commit.as_ref() {
+            Some(pubber) => pubber,
+            None => {
+                log::error!("live_commit publisher missing (miswire); aborting host");
+                std::process::exit(78);
+            }
+        }
+    }
+
+    /// Spawn apply failed: free reserved id + reject edit Commit if this was `…/edit`.
+    fn reject_spawn_apply(
+        &self,
+        entity_id: u32,
+        proposal: Option<&alchemy_protocol::EditProposal>,
+    ) {
+        let tip = match self.live_edit.lock() {
+            Ok(mut led) => {
+                led.release_reserved(entity_id);
+                led.tip
+            }
+            Err(_) => {
+                log::error!("LiveEditLedger poisoned on spawn reject; aborting host");
+                std::process::exit(78);
+            }
+        };
+        if let Some(proposal) = proposal {
+            self.require_live_commit().publish_reject(
+                proposal,
+                alchemy_protocol::edit_reject::APPLY,
+                tip,
+            );
+        }
+    }
+
+    /// Despawn apply failed: reject edit Commit if this was `…/edit` (tip unchanged).
+    fn reject_edit_apply(&self, proposal: Option<&alchemy_protocol::EditProposal>) {
+        let tip = match self.live_edit.lock() {
+            Ok(led) => led.tip,
+            Err(_) => {
+                log::error!("LiveEditLedger poisoned on edit reject; aborting host");
+                std::process::exit(78);
+            }
+        };
+        if let Some(proposal) = proposal {
+            self.require_live_commit().publish_reject(
+                proposal,
+                alchemy_protocol::edit_reject::APPLY,
+                tip,
+            );
         }
     }
 }

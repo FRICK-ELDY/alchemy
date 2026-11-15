@@ -2247,6 +2247,120 @@ defmodule WorldWeb.RoomControllerTest do
              |> json_response(422)
   end
 
+  test "scene/save folds spawns with SpawnTicket and despawns (x00b9)", %{
+    conn: conn,
+    signer: signer,
+    spawn_signer: spawn_signer
+  } do
+    owner = "b9b9b9b9-b9b9-b9b9-b9b9-b9b9b9b9b9b9"
+    room = "scene-save-spawns"
+    blake3 = String.duplicate("cd", 32)
+    {pub, priv} = TestAuthHelpers.session_keypair()
+
+    assert %{"room_id" => ^room} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: room, visibility: "public"})
+             |> json_response(201)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post(
+        "/api/v1/rooms/#{room}/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(pub)})
+      )
+      |> json_response(200)
+
+    scene0 =
+      build_conn()
+      |> TestAuthHelpers.get_host(host_token, priv, "/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
+    existing_id = hd(scene0["entries"])["entity_id"]
+    new_id = 60_001
+    count0 = length(scene0["entries"])
+
+    spawn_body =
+      with_spawn_ticket(
+        %{
+          entity_id: new_id,
+          blake3: blake3,
+          x: 4.0,
+          y: 5.0,
+          z: 6.0,
+          r: 0.2,
+          g: 0.3,
+          b: 0.4,
+          a: 1.0,
+          flags: 1
+        },
+        spawn_signer,
+        owner,
+        room
+      )
+
+    saved =
+      build_conn()
+      |> TestAuthHelpers.post_host_json(
+        host_token,
+        priv,
+        "/api/v1/rooms/#{room}/scene/save",
+        %{
+          expected_revision: scene0["revision"],
+          spawns: [spawn_body],
+          despawns: [existing_id]
+        }
+      )
+      |> json_response(200)
+
+    assert length(saved["entries"]) == count0
+    spawned = Enum.find(saved["entries"], &(&1["entity_id"] == new_id))
+    assert spawned["blake3"] == blake3
+    assert spawned["flags"] == 1
+    assert spawned["r"] == 0.2
+    refute Enum.any?(saved["entries"], &(&1["entity_id"] == existing_id))
+
+    assert %{"error" => "spawn_ticket_required"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/scene/save",
+               %{
+                 expected_revision: saved["revision"],
+                 spawns: [%{entity_id: 60_002, blake3: String.duplicate("ef", 32)}]
+               }
+             )
+             |> json_response(403)
+
+    bad_ticket =
+      TestSpawnTicketHelpers.spawn_ticket(spawn_signer,
+        sub: owner,
+        room_id: "other-room",
+        blake3s: [String.duplicate("ef", 32)]
+      )
+
+    assert %{"error" => "spawn_ticket_invalid"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/scene/save",
+               %{
+                 expected_revision: saved["revision"],
+                 spawns: [
+                   %{
+                     entity_id: 60_002,
+                     blake3: String.duplicate("ef", 32),
+                     spawn_ticket: bad_ticket
+                   }
+                 ]
+               }
+             )
+             |> json_response(403)
+  end
+
   test "handover null dormants session and drops public catalog (x0080)", %{
     conn: conn,
     signer: signer

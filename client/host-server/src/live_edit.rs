@@ -1,13 +1,14 @@
-//! Host live edit ledger + Ready inbox (x00b3 / VCS working-tree tip).
+//! Host live edit ledger + Ready inbox (x00b3 / x00b9 VCS working-tree tip).
 //!
-//! Contract (x00b3):
+//! Contract (x00b3 / x00b9):
 //! - Optimistic ledger mirrors mutate on live accept; **`tip` is NOT bumped** until FrameBridge
-//!   queue **and** barrier succeed.
+//!   queue **and** barrier succeed (Reparent/SetField). Spawn/Despawn tip bumps after inbox send.
 //! - Accept `EditCommit` only after that success (never rewind tip).
 //! - Queue / barrier / inbox failure → `rollback_mirrors` + reject `EditCommit` (`APPLY`);
 //!   tip untouched. Other clients may briefly see STALE on optimistic mirrors (retry OK).
+//! - **x00b9**: Spawn/Despawn are host-local (pending spawns/despawns); world CAS only on Save.
 //!
-//! Non-guarantees: world overlay persistence; Save / Spatial VCS flush.
+//! Non-guarantees: crash durability of unsaved pending; Spatial VCS flush.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -16,11 +17,19 @@ use std::sync::{Arc, Mutex};
 use alchemy_protocol::wire_aead::AeadKind;
 use alchemy_protocol::wire_crypto::{sign_edit_commit, SigningKey};
 use alchemy_protocol::{
-    edit_field_id, EditCommit, EditProposal, EditReparent, EditSetField, Message,
+    edit_field_id, scene_entry_is_user_root, user_root_entity_last, EditCommit, EditProposal,
+    EditReparent, EditSetField, Message, SceneEntry,
 };
 use zenoh::Wait;
 
 use crate::room_aead::{self, SharedRoomAead};
+
+/// Session-local spawn awaiting explicit Save (x00b9); holds SpawnTicket for world verify.
+#[derive(Clone, Debug)]
+pub struct PendingSpawn {
+    pub entry: SceneEntry,
+    pub spawn_ticket: String,
+}
 
 /// Shared live working-tree tip (edit lane + physics).
 #[derive(Debug, Default)]
@@ -33,6 +42,14 @@ pub struct LiveEditLedger {
     pub colors: HashMap<u32, [f32; 4]>,
     pub blake3: HashMap<u32, String>,
     pub entities: HashSet<u32>,
+    /// Unsaved session spawns (Save body `spawns`); ticket kept until Save or local despawn.
+    pub pending_spawns: HashMap<u32, PendingSpawn>,
+    /// Canonical entities hidden live; Save body `despawns` deletes from positive.
+    pub pending_despawns: HashSet<u32>,
+    /// Recycled ids from cancelled session spawns only (not canonical pending_despawns).
+    pub freelist: Vec<u32>,
+    /// Allocated ids not yet in `entities` / scene (concurrent spawn race).
+    pub reserved: HashSet<u32>,
 }
 
 pub type SharedLiveEdit = Arc<Mutex<LiveEditLedger>>;
@@ -112,6 +129,77 @@ impl LiveEditLedger {
                 *p = 0;
             }
         }
+    }
+
+    /// Record a physics-ok session spawn for later Save (x00b9).
+    pub fn note_pending_spawn(&mut self, pending: PendingSpawn) {
+        let eid = pending.entry.entity_id;
+        self.reserved.remove(&eid);
+        self.pending_despawns.remove(&eid);
+        self.pending_spawns.insert(eid, pending);
+    }
+
+    /// Drop a reserved id when spawn never reaches physics-ok (x00b9); return to freelist.
+    pub fn release_reserved(&mut self, entity_id: u32) {
+        if self.reserved.remove(&entity_id) {
+            self.freelist.push(entity_id);
+        }
+    }
+
+    /// Live despawn: drop unsaved spawn, or mark canonical id for Save `despawns`.
+    pub fn note_live_despawn(&mut self, entity_id: u32) {
+        self.reserved.remove(&entity_id);
+        if self.pending_spawns.remove(&entity_id).is_some() {
+            self.freelist.push(entity_id);
+        } else {
+            self.pending_despawns.insert(entity_id);
+        }
+        self.note_despawn(entity_id);
+    }
+
+    /// Clear Save-folded pending after successful world Save.
+    pub fn clear_save_pending(&mut self) {
+        self.pending_spawns.clear();
+        self.pending_despawns.clear();
+    }
+
+    /// Host-local entity id (scene max+1 / freelist; skip user_root + pending_despawns).
+    pub fn alloc_entity_id(&mut self, scene_entries: &[SceneEntry]) -> u32 {
+        while let Some(id) = self.freelist.pop() {
+            if !self.id_in_use(id, scene_entries) && !scene_entry_is_user_root(id) {
+                self.reserved.insert(id);
+                return id;
+            }
+        }
+        let max_content = scene_entries
+            .iter()
+            .map(|e| e.entity_id)
+            .chain(self.entities.iter().copied())
+            .chain(self.pending_despawns.iter().copied())
+            .chain(self.reserved.iter().copied())
+            .filter(|id| !scene_entry_is_user_root(*id))
+            .max()
+            .unwrap_or(0);
+        let mut candidate = max_content.saturating_add(1).max(100);
+        loop {
+            if scene_entry_is_user_root(candidate) {
+                candidate = user_root_entity_last().saturating_add(1);
+                continue;
+            }
+            if self.id_in_use(candidate, scene_entries) {
+                candidate = candidate.saturating_add(1);
+                continue;
+            }
+            self.reserved.insert(candidate);
+            return candidate;
+        }
+    }
+
+    fn id_in_use(&self, id: u32, scene_entries: &[SceneEntry]) -> bool {
+        self.entities.contains(&id)
+            || self.pending_despawns.contains(&id)
+            || self.reserved.contains(&id)
+            || scene_entries.iter().any(|e| e.entity_id == id)
     }
 
     /// Restore mirrors after a live op that never completed barrier (tip unchanged).

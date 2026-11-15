@@ -1,6 +1,6 @@
 # x00b9 — Spawn 即 CAS 見直し（C）
 
-> **ID:** `x00b9` · **slug:** `spawn-without-live-cas` · **status:** `planned` · **area:** `[host, world, client, docs]` · **depends_on:** `[x00b7, x00b8, x00b3, x00b5]`  
+> **ID:** `x00b9` · **slug:** `spawn-without-live-cas` · **status:** `done` · **area:** `[host, world, client, docs]` · **depends_on:** `[x00b7, x00b8, x00b3, x00b5]`  
 > **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) §4.7 VCS 負債の解消（案 B の例外を閉じる）  
 > **後続:** Save As / Copy · Spatial VCS · Undo UI
 
@@ -68,9 +68,9 @@ sequenceDiagram
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
 | 0 | Slice + Open 決定 | **done** |
-| 1 | host: Spawn/Despawn・inventory から overlay CAS 除去 + pending 台帳 | — |
-| 2 | world: Save body `spawns` / `despawns` + ticket 検証点移動 + tests | — |
-| 3 | docs（mvcc §4.7「例外」削除、protocol/world 一言） | — |
+| 1 | host: Spawn/Despawn・inventory から overlay CAS 除去 + pending 台帳 | **done** |
+| 2 | world: Save body `spawns` / `despawns` + ticket 検証点移動 + tests | **done** |
+| 3 | docs（mvcc §4.7「例外」削除、protocol/world 一言） | **done** |
 
 ## 起動確認（DoD）
 

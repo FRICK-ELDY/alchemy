@@ -527,7 +527,7 @@ enum CasAttempt {
     Other(anyhow::Error),
 }
 
-/// Typed Save failure for EditCommit mapping (x00b7 / x00b8).
+/// Typed Save failure for EditCommit mapping (x00b7 / x00b8 / x00b9).
 #[derive(Debug)]
 pub enum SceneSaveError {
     Forbidden,
@@ -535,6 +535,8 @@ pub enum SceneSaveError {
     Conflict,
     ParentCycle,
     InvalidEntry,
+    /// blake3 already present in merged scene (x00b9 spawn fold).
+    DuplicateBlake3,
     Other(anyhow::Error),
 }
 
@@ -545,6 +547,7 @@ impl std::fmt::Display for SceneSaveError {
             Self::Conflict => write!(f, "scene_revision_conflict"),
             Self::ParentCycle => write!(f, "parent_cycle"),
             Self::InvalidEntry => write!(f, "invalid_entry"),
+            Self::DuplicateBlake3 => write!(f, "duplicate_blake3"),
             Self::Other(err) => write!(f, "{err:#}"),
         }
     }
@@ -563,17 +566,30 @@ fn is_scene_writer_forbidden(body: &str) -> bool {
     scene_error_code(body).as_deref() == Some("scene_writer_forbidden")
 }
 
+fn is_spawn_ticket_forbidden(body: &str) -> bool {
+    matches!(
+        scene_error_code(body).as_deref(),
+        Some("spawn_ticket_required" | "spawn_ticket_invalid")
+    )
+}
+
+fn is_duplicate_blake3(body: &str) -> bool {
+    scene_error_code(body).as_deref() == Some("duplicate_blake3")
+}
+
 fn scene_error_code(body: &str) -> Option<String> {
     serde_json::from_str::<SceneErrorJson>(body)
         .ok()
         .map(|e| e.error)
 }
 
-/// Live parent / SetField deltas folded into Save (x00b8). Empty = overlay-only merge.
+/// Live deltas folded into Save (x00b8 / x00b9). Empty = overlay-only merge (or no-op).
 #[derive(Debug, Clone, Default)]
 pub struct SceneSavePatches {
     pub parents: Vec<SceneParentPatch>,
     pub fields: Vec<SceneFieldPatch>,
+    pub spawns: Vec<SceneSpawnPatch>,
+    pub despawns: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -593,8 +609,47 @@ pub struct SceneFieldPatch {
     pub blake3: Option<String>,
 }
 
-/// x00b7 / x00b8: merge session_overlay into canonical, apply optional parent/field
-/// patches, clear overlay (one packed CAS).
+/// Host-local spawn folded into Save (x00b9); world verifies `spawn_ticket`.
+#[derive(Debug, Clone)]
+pub struct SceneSpawnPatch {
+    pub entry: alchemy_protocol::SceneEntry,
+    pub spawn_ticket: String,
+}
+
+/// Append/remove mesh rows on the host working-tree scene without world CAS (x00b9).
+/// Packed `revision` is unchanged; caller must `force_reseal` after apply.
+pub fn append_local_scene_entry(
+    shared: &Arc<RwLock<RoomScene>>,
+    entry: alchemy_protocol::SceneEntry,
+) -> Result<bool> {
+    let mut scene = shared
+        .write()
+        .map_err(|_| anyhow!("shared scene RwLock poisoned"))?;
+    if scene.entries.iter().any(|e| e.entity_id == entry.entity_id) {
+        return Ok(false);
+    }
+    if scene
+        .entries
+        .iter()
+        .any(|e| e.blake3.eq_ignore_ascii_case(&entry.blake3))
+    {
+        return Ok(false);
+    }
+    scene.entries.push(entry);
+    Ok(true)
+}
+
+pub fn remove_local_scene_entry(shared: &Arc<RwLock<RoomScene>>, entity_id: u32) -> Result<bool> {
+    let mut scene = shared
+        .write()
+        .map_err(|_| anyhow!("shared scene RwLock poisoned"))?;
+    let before = scene.entries.len();
+    scene.entries.retain(|e| e.entity_id != entity_id);
+    Ok(scene.entries.len() != before)
+}
+
+/// x00b7 / x00b8 / x00b9: merge session_overlay into canonical, apply optional
+/// spawn/despawn/parent/field patches, clear overlay (one packed CAS).
 ///
 /// Returns composed scene. Empty overlay **and** empty patches is idempotent.
 /// Retries on `scene_revision_conflict` only.
@@ -681,10 +736,45 @@ fn save_overlay_to_canonical_once(
             serde_json::Value::Object(m)
         })
         .collect();
+    let spawns: Vec<serde_json::Value> = patches
+        .spawns
+        .iter()
+        .map(|s| {
+            let e = &s.entry;
+            serde_json::json!({
+                "entity_id": e.entity_id,
+                "blake3": e.blake3,
+                "spawn_ticket": s.spawn_ticket,
+                "x": e.x,
+                "y": e.y,
+                "z": e.z,
+                "qx": e.qx,
+                "qy": e.qy,
+                "qz": e.qz,
+                "qw": e.qw,
+                "sx": e.sx,
+                "sy": e.sy,
+                "sz": e.sz,
+                "r": e.r,
+                "g": e.g,
+                "b": e.b,
+                "a": e.a,
+                "flags": e.flags,
+                "parent_entity_id": e.parent_entity_id,
+            })
+        })
+        .collect();
+    let despawns: Vec<serde_json::Value> = patches
+        .despawns
+        .iter()
+        .map(|id| serde_json::json!(id))
+        .collect();
     let raw = serde_json::to_vec(&serde_json::json!({
         "expected_revision": expected_revision,
         "parents": parents,
         "fields": fields,
+        "spawns": spawns,
+        "despawns": despawns,
     }))
     .map_err(|e| SceneSaveError::Other(anyhow!("encode scene save body: {e:#}")))?;
     let req = with_pop(
@@ -710,7 +800,11 @@ fn save_overlay_to_canonical_once(
             let body = resp.into_string().unwrap_or_default();
             if code == 409 && is_scene_revision_conflict(&body) {
                 Err(SceneSaveError::Conflict)
-            } else if code == 403 && is_scene_writer_forbidden(&body) {
+            } else if code == 409 && is_duplicate_blake3(&body) {
+                Err(SceneSaveError::DuplicateBlake3)
+            } else if code == 403
+                && (is_scene_writer_forbidden(&body) || is_spawn_ticket_forbidden(&body))
+            {
                 Err(SceneSaveError::Forbidden)
             } else if code == 422 {
                 match scene_error_code(&body).as_deref() {

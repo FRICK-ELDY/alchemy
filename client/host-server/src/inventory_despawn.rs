@@ -1,21 +1,23 @@
-//! Inventory scene despawn control plane (x007b / x0081 / x0082 / x0098 / x009e).
+//! Inventory scene despawn control plane (x007b / x0081 / x0098 / x00b9).
 //!
 //! Guarantees: Zenoh `…/inventory/despawn` is **Room AEAD**; session Ed25519 + SessionTable
 //! Dual auth (**`role=host` ∧ `sub` == host Token sub** **or** **`sub` == `owner_sub`**);
-//! world HTTP delete uses host Token, PoP, and **packed revision CAS** against
-//! **`…/overlay/entries/:id`** (x009e session_overlay); physics applies shared scene / re-seal
-//! and best-effort XPBD mesh remove. Order: evaluate → rate → commit seq → HTTP
-//! (unbound / non-owner guest cannot burn shared rate).
+//! **x00b9**: host-local hide / pending despawn (no live overlay CAS); physics applies local
+//! shared scene / re-seal and best-effort XPBD mesh remove. Persistence is explicit Save.
+//! Order: evaluate → rate → commit seq → local Ready (unbound / non-owner guest cannot burn
+//! shared rate).
 //!
 //! Non-guarantees: Invite / arbitrary-guest ACL; put-back coupling; Intent path;
-//! **HTTP failure after `control_seq` commit** (seq stays advanced); evaluate→rate→commit
-//! のあいだの host→guest 降格で rate のみ消費（Intent と同様・許容）；`owner_sub` 未取得時の
-//! owner 経路; overlay→canonical Save/merge。
+//! crash durability of unsaved pending; evaluate→rate→commit のあいだの host→guest 降格で
+//! rate のみ消費；`owner_sub` 未取得時の owner 経路;
+//! **`control_seq` は local apply 前に commit 済み** — inbox / physics 失敗でも seq は進む
+//! （edit lane と同契約）。
 
 use alchemy_protocol::control_plane;
 use alchemy_protocol::inventory_despawn_key;
 use alchemy_protocol::wire_aead::{self, AeadKind};
 use alchemy_protocol::wire_crypto::PUBLIC_KEY_LENGTH;
+use alchemy_protocol::EditProposal;
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use serde::Deserialize;
@@ -26,16 +28,15 @@ use std::thread;
 use zenoh::Wait;
 
 use crate::control_rate::SharedControlRate;
-use host_server::room_token::{
-    delete_room_scene_entry, install_shared_scene_if_newer, RoomScene, SharedHostHttpAuth,
-};
+use host_server::room_token::{remove_local_scene_entry, RoomScene, SharedHostHttpAuth};
 use host_server::session::SessionTable;
 
-/// Ready for physics: world already deleted; apply shared scene + reseal + XPBD remove.
+/// Ready for physics: host-local despawn; apply local scene + reseal + XPBD remove.
+/// `edit_proposal`: `Some` when from `…/edit` — tip/Commit deferred until apply-ok (x00b9).
 #[derive(Debug, Clone)]
 pub struct ReadyDespawn {
     pub entity_id: u32,
-    pub scene: RoomScene,
+    pub edit_proposal: Option<EditProposal>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,14 +85,13 @@ fn decode_b64(field: &str, value: &str) -> Result<Vec<u8>> {
         .with_context(|| format!("{field} base64url"))
 }
 
-/// Subscribe → AEAD open → session verify → world HTTP delete → enqueue for physics.
+/// Subscribe → AEAD open → session verify → host-local Ready → enqueue for physics.
 #[allow(clippy::too_many_arguments)] // wire + shared_scene wiring stays flat at the listener edge
 pub fn despawn_listener(
     session: zenoh::Session,
     room_id: &str,
     wire_cap: &str,
     room_aead: host_server::room_aead::SharedRoomAead,
-    world_url: String,
     sessions: Arc<Mutex<SessionTable>>,
     http_auth: SharedHostHttpAuth,
     shared_scene: Arc<RwLock<RoomScene>>,
@@ -110,7 +110,7 @@ pub fn despawn_listener(
         .spawn(move || {
             let _session = session;
             log::info!(
-                "subscribed to {key} (x0081 inventory despawn, session sig; shared rate x00b2)"
+                "subscribed to {key} (x0081 inventory despawn, session sig; shared rate x00b2; x00b9 local)"
             );
             while let Ok(sample) = subscriber.recv() {
                 let bytes = sample.payload().to_bytes();
@@ -118,7 +118,6 @@ pub fn despawn_listener(
                     bytes.as_ref(),
                     &room_aead,
                     &room_id,
-                    &world_url,
                     &sessions,
                     &http_auth,
                     &shared_scene,
@@ -136,12 +135,11 @@ pub fn despawn_listener(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)] // HTTP CAS path needs auth + shared_scene beside rate
+#[allow(clippy::too_many_arguments)]
 fn process_sample(
     envelope: &[u8],
     room_aead: &host_server::room_aead::SharedRoomAead,
     room_id: &str,
-    world_url: &str,
     sessions: &Arc<Mutex<SessionTable>>,
     http_auth: &SharedHostHttpAuth,
     shared_scene: &Arc<RwLock<RoomScene>>,
@@ -213,19 +211,20 @@ fn process_sample(
         }
     }
 
-    let scene = delete_room_scene_entry(
-        world_url,
-        room_id,
-        &auth.token,
-        &auth.pop_key,
-        shared_scene,
-        parsed.entity_id,
-    )
-    .context("world scene delete")?;
+    // Presence check only — no world CAS (x00b9).
+    let present = shared_scene
+        .read()
+        .map_err(|_| anyhow!("shared scene RwLock poisoned"))?
+        .entries
+        .iter()
+        .any(|e| e.entity_id == parsed.entity_id);
+    if !present {
+        return Err(anyhow!("entity_id not in live scene"));
+    }
 
     Ok(ReadyDespawn {
         entity_id: parsed.entity_id,
-        scene,
+        edit_proposal: None,
     })
 }
 
@@ -237,7 +236,7 @@ pub struct ApplyOutcome {
     pub physics_ok: bool,
 }
 
-/// Apply a ready despawn on the physics thread (no HTTP).
+/// Apply a ready despawn on the physics thread (no HTTP; x00b9 local scene).
 pub fn apply_ready_despawn(
     ready: ReadyDespawn,
     shared_scene: &Arc<RwLock<RoomScene>>,
@@ -245,7 +244,7 @@ pub fn apply_ready_despawn(
     remove_mesh: impl FnOnce(u32) -> bool,
 ) -> Result<ApplyOutcome> {
     let entity_id = ready.entity_id;
-    let scene_applied = install_shared_scene_if_newer(shared_scene, ready.scene)?;
+    let scene_applied = remove_local_scene_entry(shared_scene, entity_id)?;
     if !scene_applied {
         return Ok(ApplyOutcome {
             entity_id,
@@ -283,12 +282,34 @@ mod tests {
     }
 
     #[test]
-    fn apply_ready_despawn_scene_before_physics_and_ok_on_miss() {
-        let shared = Arc::new(RwLock::new(empty_scene(1)));
+    fn apply_ready_despawn_local_remove_and_ok_on_physics_miss() {
+        let mut scene = empty_scene(1);
+        scene.entries.push(alchemy_protocol::SceneEntry {
+            entity_id: 100,
+            blake3: "aa".repeat(32),
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            half_extent: 0.0,
+            flags: 0,
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            qw: 1.0,
+            sx: 1.0,
+            sy: 1.0,
+            sz: 1.0,
+            parent_entity_id: 0,
+        });
+        let shared = Arc::new(RwLock::new(scene));
         let force = AtomicBool::new(false);
         let ready = ReadyDespawn {
             entity_id: 100,
-            scene: empty_scene(2),
+            edit_proposal: None,
         };
         let mut physics_called = false;
         let out = apply_ready_despawn(ready, &shared, &force, |_id| {
@@ -300,16 +321,17 @@ mod tests {
         assert!(!out.physics_ok);
         assert!(physics_called);
         assert!(force.load(Ordering::SeqCst));
-        assert_eq!(shared.read().unwrap().revision, 2);
+        assert!(shared.read().unwrap().entries.is_empty());
+        assert_eq!(shared.read().unwrap().revision, 1);
     }
 
     #[test]
-    fn apply_ready_despawn_skips_stale_revision() {
+    fn apply_ready_despawn_skips_missing_entity() {
         let shared = Arc::new(RwLock::new(empty_scene(5)));
         let force = AtomicBool::new(false);
         let ready = ReadyDespawn {
             entity_id: 100,
-            scene: empty_scene(4),
+            edit_proposal: None,
         };
         let mut physics_called = false;
         let out = apply_ready_despawn(ready, &shared, &force, |_id| {
