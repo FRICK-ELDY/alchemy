@@ -1,6 +1,6 @@
 # Alchemy — 配信の空間インデックス（Spatial Interest）正本
 
-* **種別**: 規模本線の仕様正本（アウトライン）。実装コード・新スライス実行は含まない
+* **種別**: 規模本線の仕様正本。実装第一波は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)（キー契約 + ACL + dual-publish）
 * **改善計画上の位置**: [improvement-plan-2026-11-12.md](../0_doc/evaluation/improvement-plan-2026-11-12.md) **P3-7**
 * **品質本線（物理・状態）**: [mvcc_xpbd.md](mvcc_xpbd.md) Phase 1–3（dirty デルタ・SoA ページが前提）
 * **現行配送契約**: [protocol/peer-delivery.md](../../protocol/peer-delivery.md)（x0024）· [architecture/client.md](../0_doc/architecture/client.md) · [architecture/protocol.md](../0_doc/architecture/protocol.md)
@@ -56,7 +56,7 @@
 | | 音声・メッシュ・アニメ予算の本仕様化（別予算・非保証） |
 | | verifier Spot-Check / billing / market（独立） |
 
-実装スライス着手時に、[protocol.md](../0_doc/architecture/protocol.md) · [client.md](../0_doc/architecture/client.md) · [peer-delivery.md](../../protocol/peer-delivery.md) の保証表を**本契約に合わせて更新**する（本アウトライン作成時点では architecture 本改訂を行わない）。
+保証表の追随は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md) で開始済み（[protocol.md](../0_doc/architecture/protocol.md) · [client.md](../0_doc/architecture/client.md) · [peer-delivery.md](../../protocol/peer-delivery.md)）。購読切替・LOD は後続スライスで更新する。
 
 ---
 
@@ -72,14 +72,17 @@
 
 ---
 
-## 4. キー契約の方向（設計決定）
+## 4. キー契約（実装固定 · x00be）
 
 1. **独自トランスポート禁止**（[mvcc_xpbd.md](mvcc_xpbd.md) 🚫1 と同型）。`relay-server` / `relay-agent` / `wire_cap` ACL / Room AEAD を通す。
-2. 現行 `…/{wire_cap}/frame`（および必要なら `snapshot`）を**即座に廃棄しない**。段階拡張する:
-   - **方向 A**: セル修飾サフィックス（例: `…/frame/cell/{cx}_{cy}_{cz}`）
-   - **方向 B**: cell 別キー族ヘルパを `protocol/` に追加し、Room 全体キーは互換・集約用に残す
-3. **x0067 非対称 ACL** と **AEAD AAD** のキー文字列互換／世代は、**後続実装スライスで契約を固定**する。本正本では具体キー文字列を確定しない（破壊的変更をアウトライン単独で起こさない）。
-4. delivery-class（latest / snapshot / best-effort）の語彙は [peer-delivery.md](../../protocol/peer-delivery.md) を継承し、セル分割後も「frame = latest・欠落は snapshot」を維持する。
+2. **方向 A（確定）**: セル修飾サフィックス  
+   `alchemy/dev/room/{room_id}/{wire_cap}/frame/cell/{cx}_{cy}_{cz}`  
+   セグメントは `format_cell_id_segment`（例: `0_0_0`, `-1_2_0`, `-1_-2_0`）。索引は shared-sim `CellId`（`CELL_SIZE_M=64` center origin）と同系。
+3. Room 全体 `…/frame` は **互換・tick 正本として残す**（x00be: host dual-publish；client 既定は当面 Room 購読のまま）。`…/snapshot` はセル分割しない（欠落再同期の正本）。
+4. **x0067**: ACL は `…/frame/cell/*` を **明示**（`frame/**` 一括禁止）。**AEAD AAD** はキー式非束縛のまま（x0069 据え置き）。
+5. delivery-class（latest / snapshot / best-effort）の語彙は [peer-delivery.md](../../protocol/peer-delivery.md) を継承し、「frame = latest・欠落は Room snapshot」を維持する。
+
+実装第一波: [x00be-spatial-interest-cell-frame-foundation.md](slices/x00be-spatial-interest-cell-frame-foundation.md)。
 
 ---
 
@@ -133,7 +136,7 @@
 | 作業 | 条件 |
 |:---|:---|
 | **本ファイル（アウトライン正本）** | いつでも。MVCC Phase と**並走可** |
-| **実装スライス群**（採番は着手時。`x00a4` は予約しない） | **MVCC Phase 3 DoD Green 後**。protocol / zenoh ACL / client 購読の否定系を含める |
+| **実装スライス群** | **MVCC Phase 3 DoD Green 後**。第一波 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)（キー契約 + ACL + dual-publish）。client 近傍購読・LOD は後続 |
 
 ---
 

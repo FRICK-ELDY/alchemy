@@ -596,7 +596,7 @@ flowchart LR
 
 **DoD に含めないもの**: 同一 Room の大規模 CCU・フルメッシュ解除・interest キー族。それらは [spatial_interest.md](spatial_interest.md) のマイルストーン（32→64→128、1000 は horizon）が担当する。
 
-**現状**: Phase 1–2 + Phase 3 着手〜dirty 30Hz + 確定レーン（x00a3–[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md)）+ Save [x00b7](slices/x00b7-overlay-canonical-save.md)–[x00b9](slices/x00b9-spawn-without-live-cas.md) **done** + [x00b6](slices/x00b6-dash-room-tab.md) Room タブ器。次は Spatial VCS / spatial_interest。
+**現状**: Phase 1–2 + Phase 3 着手〜dirty 30Hz + 確定レーン（x00a3–[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md)）+ Save [x00b7](slices/x00b7-overlay-canonical-save.md)–[x00b9](slices/x00b9-spawn-without-live-cas.md) **done** + [x00b6](slices/x00b6-dash-room-tab.md) Room タブ器 + 規模本線第一波 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md) **done**。次は Interest 購読切替 / Spatial VCS。
 
 ### Phase 1: 既存 `shared-sim` の進化とヘッドレス決定論テスト（host/app 本線は触らない）
 
@@ -634,7 +634,7 @@ flowchart LR
 * **[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)** — host dirty 30Hz 本番切替 — **done**。
 * **[x00b2](slices/x00b2-phase3-edit-lane-foundation.md)** — 確定レーン土台（`…/edit` + Spawn/Despawn）— **done**。
 * **[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md)** — ライブ Reparent/SetField + FrameBridge + snapshot `scene_rev`（案 B）— **done**。
-* 後続: Spatial VCS / Save As / Undo UI / spatial_interest / WorldRoot Lens。Spawn 即 CAS 見直しは [x00b9](slices/x00b9-spawn-without-live-cas.md) **done**。Spatial Lens 個人パネルは [x00ba](slices/x00ba-spatial-lens-uber-sdf.md)–[x00bd](slices/x00bd-spatial-panel-hit-stickiness.md) **done**。親子/SetField 永続は [x00b8](slices/x00b8-save-parent-setfield-persist.md) **done**。overlay→canonical Save は [x00b7](slices/x00b7-overlay-canonical-save.md) **done**。Room タブ器は [x00b6](slices/x00b6-dash-room-tab.md) **done**。`x00b4` / `x00b5` は assets 所有権の穴塞ぎ（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §14.4）に使用済み。次空き **`x00be`**。
+* 後続: Spatial VCS / Save As / Undo UI / spatial_interest 後続 / WorldRoot Lens。Spawn 即 CAS 見直しは [x00b9](slices/x00b9-spawn-without-live-cas.md) **done**。Spatial Lens 個人パネルは [x00ba](slices/x00ba-spatial-lens-uber-sdf.md)–[x00bd](slices/x00bd-spatial-panel-hit-stickiness.md) **done**。親子/SetField 永続は [x00b8](slices/x00b8-save-parent-setfield-persist.md) **done**。overlay→canonical Save は [x00b7](slices/x00b7-overlay-canonical-save.md) **done**。Room タブ器は [x00b6](slices/x00b6-dash-room-tab.md) **done**。`x00b4` / `x00b5` は assets 所有権の穴塞ぎ（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §14.4）に使用済み。規模本線第一波 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)。次空き **`x00bf`**。
 
 1. **作業内容**:
    * `ALCHEMY_SIM_BACKEND=mvcc_xpbd|epoch_xpbd` で切替可能な権威ループ。Ingress 検疫 → Fork/`make_mut` → XPBD（**接触オン＝`bounds: Some`**）→ 階層 → Commit。ここで P1-2 の host 配線を閉じる（**→ x00ad**）。

@@ -774,14 +774,20 @@ impl HostLoop {
             if roots.is_empty() {
                 roots.push_str("user_roots=-");
             }
-            let (publishes, upsert_entities, empty_delta_frames, coalesce, net_tick) =
-                self.publish_stats.snapshot_and_reset();
+            let w = self.publish_stats.snapshot_and_reset();
             log::info!(
-                "physics: steps={} coin=({mx:.3},{my:.3},{mz:.3}) {roots}; xpbd barriers={} pubs={} rows={}; delta: frames={publishes} upsert_entities={upsert_entities} skipped_empty={empty_delta_frames} coalesce={coalesce} net_tick={net_tick}",
+                "physics: steps={} coin=({mx:.3},{my:.3},{mz:.3}) {roots}; xpbd barriers={} pubs={} rows={}; delta: frames={} upsert_entities={} skipped_empty={} coalesce={} net_tick={} cell_ok={} cell_fail={}",
                 self.physics_steps_logged,
                 self.physics.barrier_ticks,
                 self.physics.publishes,
-                self.physics.entity_count()
+                self.physics.entity_count(),
+                w.publishes,
+                w.upsert_entities,
+                w.empty_delta_frames,
+                w.coalesce_frames,
+                w.net_tick,
+                w.cell_ok,
+                w.cell_fail,
             );
             self.physics_steps_logged = 0;
             self.last_log = Instant::now();

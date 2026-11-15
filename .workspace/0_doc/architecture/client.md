@@ -56,7 +56,8 @@
 | `…/{wire_cap}/manifest` | 低（host は 5s 再送で late joiner 補助） | `entity_id → blake3` + `locomotion` |
 | `…/{wire_cap}/presence` | 低（割当・解放変更 + 5s 再送） | `sub → user_root entity`（x0015 / 解放 x0016+x0019） |
 | `…/{wire_cap}/alive/{sub}/{jti}` | liveliness | client token；host は検証済み jti 一致時のみ reclaim（x0022） |
-| `…/{wire_cap}/frame` | 高（動いたものだけ）・**latest デルタ** | 署名付き pose upserts / removes。tick 欠落時は適用せず snapshot（x0023 / x0024） |
+| `…/{wire_cap}/frame` | 高（動いたものだけ）・**latest デルタ** | 署名付き pose upserts / removes。tick 欠落時は適用せず snapshot（x0023 / x0024）。**tick 正本**（x00be も Room 購読が既定） |
+| `…/{wire_cap}/frame/cell/{cx}_{cy}_{cz}` | 高・**latest**（dual-publish） | x00be: host が Room frame と同一密封バイトを origin `0_0_0` へ追加 put。client 既定購読・セル別フィルタは非保証 |
 | `…/{wire_cap}/snapshot` | queryable | late join / 再同期用フル pose（`RenderFrame`・x0023 / x0024） |
 | `…/{wire_cap}/input` | 入力 | session 署名 Intent（Token は bind / refresh 時のみ・x0023） |
 | `…/{wire_cap}/inventory/spawn` | 低 | take-out spawn（Room AEAD + session 署名・x006d / x0081 / x0098 Dual） |
