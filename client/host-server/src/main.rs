@@ -913,6 +913,7 @@ fn main() -> Result<()> {
         live_tx,
         host_signing_key.clone(),
         control_rate,
+        Arc::clone(&force_reseal),
     )
     .context("edit lane listener")?;
 

@@ -1,4 +1,4 @@
-//! Deterministic edit lane (`…/edit`) — Spawn/Despawn + live Reparent/SetField (x00b2 / x00b3).
+//! Deterministic edit lane (`…/edit`) — Spawn/Despawn + live Reparent/SetField + Save (x00b2–x00b7).
 //!
 //! Guarantees: AEAD `EditProposal` → session Ed25519 → Dual-auth / shared control rate /
 //! `control_seq`; single op.
@@ -7,8 +7,10 @@
 //! Reparent/SetField: optimistic ledger mirrors only; **tip + accept Commit after**
 //! FrameBridge queue **and** barrier — never rewind tip; queue/barrier/inbox fail →
 //! reject `APPLY`.
+//! Save (x00b7): world overlay→canonical CAS; install shared scene + `force_reseal` when
+//! packed revision advances; **tip unchanged**; accept Commit with current tip.
 //!
-//! Non-guarantees: multi-op batch; Undo UI; old inventory key removal; explicit Save / VCS.
+//! Non-guarantees: multi-op batch; Undo UI; old inventory key removal; Spatial VCS.
 
 use alchemy_protocol::edit_op::Op;
 use alchemy_protocol::wire_aead::{self, AeadKind};
@@ -20,6 +22,7 @@ use alchemy_protocol::{
     EditProposal, EditReparent, EditSetField, EditSpawn, Message,
 };
 use anyhow::{anyhow, Context, Result};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
@@ -31,7 +34,8 @@ use crate::inventory_spawn::ReadySpawn;
 use crate::live_edit::{current_field_value, ReadyLiveEdit, SharedLiveEdit};
 use crate::room_aead::{self, SharedRoomAead};
 use crate::room_token::{
-    append_room_scene_entry, delete_room_scene_entry, RoomScene, SharedHostHttpAuth,
+    append_room_scene_entry, delete_room_scene_entry, install_shared_scene_if_newer,
+    save_overlay_to_canonical, RoomScene, SharedHostHttpAuth,
 };
 use crate::session::SessionTable;
 
@@ -64,6 +68,7 @@ pub fn edit_listener(
     live_tx: Sender<ReadyLiveEdit>,
     host_key: SigningKey,
     control_rate: Arc<Mutex<SharedControlRate>>,
+    force_reseal: Arc<AtomicBool>,
 ) -> Result<()> {
     let key = alchemy_protocol::edit_key(room_id, wire_cap);
     let room_id = room_id.to_string();
@@ -101,6 +106,7 @@ pub fn edit_listener(
                     &shared_scene,
                     &live_edit,
                     &control_rate,
+                    &force_reseal,
                 ) {
                     Ok((None, Some(ReadyEdit::Spawn { ready, proposal }))) => {
                         if spawn_tx.send(ready).is_ok() {
@@ -254,6 +260,7 @@ fn process_proposal(
     shared_scene: &Arc<RwLock<RoomScene>>,
     live_edit: &SharedLiveEdit,
     control_rate: &Arc<Mutex<SharedControlRate>>,
+    force_reseal: &AtomicBool,
 ) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
     let proposal = EditProposal::decode(plain).context("EditProposal decode")?;
     let reject_rev = {
@@ -299,6 +306,7 @@ fn process_proposal(
         Some(Op::Despawn(d)) => OpKind::Despawn(d.entity_id),
         Some(Op::Reparent(r)) => OpKind::Reparent(*r),
         Some(Op::SetField(f)) => OpKind::SetField(f.clone()),
+        Some(Op::Save(_)) => OpKind::Save,
         None => {
             return Ok((
                 Some(reject_commit(
@@ -401,6 +409,16 @@ fn process_proposal(
         ),
         OpKind::Reparent(r) => apply_reparent(&proposal, r, live_edit),
         OpKind::SetField(f) => apply_set_field(&proposal, f, live_edit),
+        OpKind::Save => apply_save(
+            &proposal,
+            room_id,
+            world_url,
+            &auth.token,
+            &auth.pop_key,
+            shared_scene,
+            live_edit,
+            force_reseal,
+        ),
     }
 }
 
@@ -409,6 +427,7 @@ enum OpKind {
     Despawn(u32),
     Reparent(EditReparent),
     SetField(EditSetField),
+    Save,
 }
 
 fn is_blake3_hex(s: &str) -> bool {
@@ -512,6 +531,44 @@ fn apply_despawn(
                 .map_err(|_| anyhow!("LiveEditLedger poisoned"))?
                 .tip;
             Ok((Some(reject_commit(proposal, edit_reject::WORLD, tip)), None))
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_save(
+    proposal: &EditProposal,
+    room_id: &str,
+    world_url: &str,
+    token: &str,
+    pop_key: &SigningKey,
+    shared_scene: &Arc<RwLock<RoomScene>>,
+    live_edit: &SharedLiveEdit,
+    force_reseal: &AtomicBool,
+) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
+    let tip = live_edit
+        .lock()
+        .map_err(|_| anyhow!("LiveEditLedger poisoned"))?
+        .tip;
+    match save_overlay_to_canonical(world_url, room_id, token, pop_key, shared_scene) {
+        Ok(scene) => {
+            // Packed revision may advance while composed entries stay equal (overlay→canon).
+            if install_shared_scene_if_newer(shared_scene, scene)? {
+                force_reseal.store(true, Ordering::SeqCst);
+            }
+            // Live tip is independent of packed world revision (x00b7).
+            Ok((Some(accept_commit(proposal, tip)), None))
+        }
+        Err(err) => {
+            let msg = format!("{err:#}");
+            let reason = if msg.contains("scene_writer_forbidden") {
+                edit_reject::SAVE_FORBIDDEN
+            } else if msg.contains("CAS exhausted") || msg.contains("scene_revision_conflict") {
+                edit_reject::SAVE_CONFLICT
+            } else {
+                edit_reject::WORLD
+            };
+            Ok((Some(reject_commit(proposal, reason, tip)), None))
         }
     }
 }

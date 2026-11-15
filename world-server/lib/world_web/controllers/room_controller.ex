@@ -1021,6 +1021,64 @@ defmodule WorldWeb.RoomController do
   end
 
   @doc """
+  x00b7: merge session_overlay into canonical scene and clear overlay (host Room Token +
+  active host + owner/editor scene writer).
+
+  Body: `%{"expected_revision" => packed int}`. Empty overlay is idempotent.
+  Returned scene is **composed**.
+  """
+  def create_scene_save(conn, %{"room_id" => room_id} = params) do
+    with {:ok, bearer} <- fetch_bearer(conn),
+         {:ok, claims} <- Token.verify(bearer),
+         :ok <- require_host_token(claims, room_id),
+         :ok <- require_http_pop(conn, claims),
+         :ok <- Rooms.ensure_active_host(room_id, claims["sub"]),
+         :ok <- Rooms.ensure_scene_writer(room_id, claims["sub"]),
+         :ok <- Rooms.renew_host_lease(room_id, claims["sub"]),
+         {:ok, packed} <- ManifestSeal.parse_revision(Map.get(params, "expected_revision")),
+         {:ok, canon_exp, overlay_exp} <- Rooms.unpack_revision(packed),
+         {:ok, scene} <- Rooms.save_overlay_to_canonical(room_id, canon_exp, overlay_exp) do
+      json(conn, Map.put(scene, "room_id", room_id))
+    else
+      {:error, :missing_bearer} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "missing_room_token"})
+
+      {:error, :pop_required} ->
+        pop_unauthorized(conn)
+
+      {:error, :not_host_token} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "host_role_required"})
+
+      {:error, :room_mismatch} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "room_id_mismatch"})
+
+      {:error, :forbidden_host} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "host_role_forbidden"})
+
+      {:error, :forbidden_scene_writer} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "scene_writer_forbidden"})
+
+      {:error, :conflict} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "host_lease_conflict"})
+
+      {:error, reason} ->
+        render_scene_entry_error(conn, reason, :scene_save)
+    end
+  end
+
+  @doc """
   x007b / x0082 / x009d: remove one mesh SceneEntry by entity_id (host Room Token + active
   ledger host + owner/editor scene writer).
 

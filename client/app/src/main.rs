@@ -145,6 +145,8 @@ fn main() -> Result<()> {
         host_pub: Mutex::new(None),
         manifest_gen_rev: Mutex::new(None),
         last_edit_scene_rev: Mutex::new(None),
+        pending_save_op_id: Mutex::new(None),
+        room_save_status: Mutex::new(None),
         last_world_seal: Mutex::new(None),
         presence_gen_rev: Mutex::new(None),
         liveliness: Mutex::new(None),

@@ -827,7 +827,8 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                         | UiAction::InventoryRefresh
                         | UiAction::InventoryTakeOut
                         | UiAction::InventoryPutBack
-                        | UiAction::InventoryDespawn) => {
+                        | UiAction::InventoryDespawn
+                        | UiAction::RoomSaveChanges) => {
                             enqueue_inventory_peer(&mut ui, &shared, action);
                         }
                         UiAction::HotswitchAutoChanged => {
@@ -939,6 +940,7 @@ fn enqueue_inventory_peer(ui: &mut SystemUi, shared: &SharedState, action: UiAct
             };
             vec![InventoryPeerRequest::Despawn { entity_id }]
         }
+        UiAction::RoomSaveChanges => vec![InventoryPeerRequest::RoomSaveChanges],
         _ => return,
     };
     match shared.inventory_peer_actions.lock() {

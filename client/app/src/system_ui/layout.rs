@@ -32,6 +32,8 @@ pub enum WidgetId {
     RoomSubUsers,
     /// Room sub: Permissions placeholder.
     RoomSubPermissions,
+    /// Room → Session: overlay→canonical Save (x00b7).
+    RoomSaveChanges,
     /// Worlds catalog (x007c).
     TabWorlds,
     InventoryRefresh,

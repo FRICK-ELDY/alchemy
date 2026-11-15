@@ -2066,6 +2066,104 @@ defmodule WorldWeb.RoomControllerTest do
                %{expected_revision: scene["revision"]}
              )
              |> json_response(403)
+
+    # Non-writer active host cannot Save overlay→canonical (x00b7).
+    assert %{"error" => "scene_writer_forbidden"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               guest_priv,
+               "/api/v1/rooms/#{room}/scene/save",
+               %{expected_revision: overlaid["revision"]}
+             )
+             |> json_response(403)
+  end
+
+  test "scene/save merges overlay into canonical and clears overlay (x00b7)", %{
+    conn: conn,
+    signer: signer,
+    spawn_signer: spawn_signer
+  } do
+    owner = "b7b7b7b7-b7b7-b7b7-b7b7-b7b7b7b7b7b7"
+    room = "scene-save-merge"
+    blake3 = String.duplicate("ef", 32)
+    {pub, priv} = TestAuthHelpers.session_keypair()
+
+    assert %{"room_id" => ^room} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: room, visibility: "public"})
+             |> json_response(201)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post(
+        "/api/v1/rooms/#{room}/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(pub)})
+      )
+      |> json_response(200)
+
+    scene0 =
+      build_conn()
+      |> TestAuthHelpers.get_host(host_token, priv, "/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
+    overlaid =
+      build_conn()
+      |> TestAuthHelpers.post_host_json(
+        host_token,
+        priv,
+        "/api/v1/rooms/#{room}/overlay/entries",
+        with_spawn_ticket(
+          %{blake3: blake3, expected_revision: scene0["revision"]},
+          spawn_signer,
+          owner,
+          room
+        )
+      )
+      |> json_response(200)
+
+    assert Enum.any?(overlaid["entries"], fn e -> e["blake3"] == blake3 end)
+    entry_count = length(overlaid["entries"])
+
+    saved =
+      build_conn()
+      |> TestAuthHelpers.post_host_json(
+        host_token,
+        priv,
+        "/api/v1/rooms/#{room}/scene/save",
+        %{expected_revision: overlaid["revision"]}
+      )
+      |> json_response(200)
+
+    assert length(saved["entries"]) == entry_count
+    assert Enum.any?(saved["entries"], fn e -> e["blake3"] == blake3 end)
+    assert saved["revision"] > overlaid["revision"]
+
+    # Empty overlay Save is idempotent.
+    again =
+      build_conn()
+      |> TestAuthHelpers.post_host_json(
+        host_token,
+        priv,
+        "/api/v1/rooms/#{room}/scene/save",
+        %{expected_revision: saved["revision"]}
+      )
+      |> json_response(200)
+
+    assert again["revision"] == saved["revision"]
+
+    # Stale packed revision → 409.
+    assert %{"error" => "scene_revision_conflict"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/scene/save",
+               %{expected_revision: overlaid["revision"]}
+             )
+             |> json_response(409)
   end
 
   test "handover null dormants session and drops public catalog (x0080)", %{

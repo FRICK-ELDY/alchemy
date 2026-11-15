@@ -687,6 +687,7 @@ impl SystemUi {
             WidgetId::InventoryTakeOut => UiAction::InventoryTakeOut,
             WidgetId::InventoryPutBack => UiAction::InventoryPutBack,
             WidgetId::InventoryDespawn => UiAction::InventoryDespawn,
+            WidgetId::RoomSaveChanges => UiAction::RoomSaveChanges,
             WidgetId::InventoryRow0
             | WidgetId::InventoryRow1
             | WidgetId::InventoryRow2
@@ -1477,6 +1478,8 @@ pub enum UiAction {
     WorldsLeave,
     /// Worlds: KeyStale Rejoin (Leave → Join same room · x007e).
     WorldsRejoin,
+    /// Room → Session: merge session_overlay into canonical (x00b7).
+    RoomSaveChanges,
     /// Hierarchy scroll / row select: surface pull_hierarchy + pull_epoch_xray → rebuild.
     HierarchyRelayout,
     /// Toggle collapse for `row_id` on EpochViewState, then same as HierarchyRelayout.

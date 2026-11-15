@@ -52,6 +52,8 @@ defmodule WorldWeb.Router do
     post "/rooms/:room_id/scene/entries", RoomController, :create_scene_entry
     # x007b: owner/editor remove canonical mesh.
     delete "/rooms/:room_id/scene/entries/:entity_id", RoomController, :delete_scene_entry
+    # x00b7: owner/editor merge session_overlay into canonical + clear overlay.
+    post "/rooms/:room_id/scene/save", RoomController, :create_scene_save
     # x009e: active-host temporary overlay (inventory / session props).
     post "/rooms/:room_id/overlay/entries", RoomController, :create_overlay_entry
     delete "/rooms/:room_id/overlay/entries/:entity_id", RoomController, :delete_overlay_entry

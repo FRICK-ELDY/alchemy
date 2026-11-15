@@ -22,6 +22,8 @@ pub enum InventoryPeerRequest {
     Despawn {
         entity_id: u32,
     },
+    /// Room → Session Save Changes (x00b7); Desktop puts `EditSave`.
+    RoomSaveChanges,
 }
 
 /// Desktop → XR snapshot of Drive rows + status (scene meshes stay on SharedState).

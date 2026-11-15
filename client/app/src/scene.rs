@@ -336,6 +336,10 @@ pub struct SharedState {
     /// Monotonic tip of **accepted** `EditCommit.scene_rev` (host live tip; x00b3).
     /// Used as `EditProposal.base_scene_rev` — not overlay/Manifest revision; rejects do not update.
     pub last_edit_scene_rev: Mutex<Option<u64>>,
+    /// Pending Room Save `EditProposal.op_id` awaiting `EditCommit` (x00b7).
+    pub pending_save_op_id: Mutex<Option<u64>>,
+    /// Latest Save status for Dash (`saved` / `forbidden` / `conflict` / …).
+    pub room_save_status: Mutex<Option<String>>,
     /// Last accepted Manifest `world_seal` for PlaceRead issuance (x006c).
     pub last_world_seal: Mutex<Option<String>>,
     /// Last accepted Presence watermark (x003a); generation must match Manifest.
@@ -1112,6 +1116,12 @@ impl SharedState {
         }
         if let Ok(mut edit_rev) = self.last_edit_scene_rev.lock() {
             *edit_rev = None;
+        }
+        if let Ok(mut pending) = self.pending_save_op_id.lock() {
+            *pending = None;
+        }
+        if let Ok(mut save_st) = self.room_save_status.lock() {
+            *save_st = None;
         }
         if let Ok(mut seal) = self.last_world_seal.lock() {
             *seal = None;
