@@ -3,7 +3,7 @@
 > **ステータス**: **draft** — 目標アーキテクチャのたたき台。実装正本ではない。  
 > **現行正本**: [assets-server.md](assets-server.md)（GET = 案 B / x006c。Grant または PlaceRead）  
 > **動機**: 正本の先にある **StorageVault / 5 層 + 外部境界** の目標像。課金・市場連動は改善計画の billing / market 帯（評価版で ID が変わりうる）  
-> **関連**: [trust-boundary.md](trust-boundary.md)、[assets-threat-model.md](assets-threat-model.md)（手口×対策）、[overview.md](overview.md)
+> **関連**: [trust-boundary.md](trust-boundary.md)、[assets-threat-model.md](assets-threat-model.md)（手口×対策）、[overview.md](overview.md)、[assets-vcs-draft.md](assets-vcs-draft.md)（第4層 Vcs: ローカル → push → PR・公開範囲・market 境界）
 
 ---
 
