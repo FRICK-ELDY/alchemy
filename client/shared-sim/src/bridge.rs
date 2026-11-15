@@ -176,7 +176,7 @@ impl FrameBridge {
     }
 
     /// Apply pending parents only if bake succeeds; on failure restore prior topology.
-    pub(crate) fn apply_reparent(&mut self, topo: &mut FlatTopology) -> Result<(), BridgeError> {
+    pub fn apply_reparent(&mut self, topo: &mut FlatTopology) -> Result<(), BridgeError> {
         let Some(parents) = self.pending_parents.take() else {
             return topo.rebuild().map_err(BridgeError::Topology);
         };

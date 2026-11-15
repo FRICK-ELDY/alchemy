@@ -42,6 +42,7 @@ pub use prost::Message;
 pub mod control_plane;
 pub mod decode_limits;
 pub mod demo_scene_vector;
+pub mod edit_field;
 pub mod generation_gate;
 pub mod host_ipc;
 pub mod http_pop;
@@ -52,6 +53,11 @@ pub mod sim_capability;
 pub mod wire_aead;
 pub mod wire_crypto;
 
+pub use edit_field::{
+    decode_color_rgba, decode_flags, encode_color_rgba, encode_flags, field_value_hash,
+    hash_blake3_hex, hash_color_rgba, hash_flags, known_field_id,
+};
+
 /// Bump when `proto/` has an incompatible wire change.
 ///
 /// x0069: Zenoh payloads are Room-key AEAD envelopes (incompatible with x004e plain protobuf peers).
@@ -60,9 +66,10 @@ pub mod wire_crypto;
 /// x00af: `RenderFrame.sim_tick` / `redundancy` / `acked_intent_seq`; `Entity.holder`;
 ///        Intent `release_v*` / `release_w*` (throw apply still host-local).
 /// x00b2: `EditProposal` / `EditCommit` on `…/edit` (Spawn/Despawn ops).
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.22.0-x00b2";
+/// x00b3: Reparent/SetField + `RenderFrame.scene_rev`; Commit tip = host live_scene_rev.
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.23.0-x00b3";
 
-/// `EditCommit.reject_reason` codes (x00b2).
+/// `EditCommit.reject_reason` codes (x00b2 / x00b3).
 pub mod edit_reject {
     pub const NONE: u32 = 0;
     pub const AUTH: u32 = 1;
@@ -72,6 +79,23 @@ pub mod edit_reject {
     pub const OPS_COUNT: u32 = 5;
     pub const PAYLOAD: u32 = 6;
     pub const WORLD: u32 = 7;
+    /// Optimistic lock failed (`expected_parent` / `expected_value_hash`).
+    pub const STALE_PRECONDITION: u32 = 8;
+    pub const NOT_FOUND: u32 = 9;
+    pub const CYCLE: u32 = 10;
+    /// Ready delivery / FrameBridge queue / tick-barrier apply failed
+    /// (mirrors rolled back when applicable; tip unchanged).
+    pub const APPLY: u32 = 11;
+}
+
+/// `EditSetField.field_id` (x00b3). Value encodings are little-endian / UTF-8 as noted.
+pub mod edit_field_id {
+    /// `u32` LE flags (`SceneEntry.flags` / live mirror).
+    pub const FLAGS: u32 = 1;
+    /// 4×`f32` LE = RGBA.
+    pub const COLOR_RGBA: u32 = 2;
+    /// 64-char lowercase hex blake3 (UTF-8), same as `SceneEntry.blake3`.
+    pub const BLAKE3: u32 = 3;
 }
 
 /// Wire `Entity.holder`: nobody holds the entity.
@@ -690,6 +714,7 @@ mod tests {
             sim_tick: 84,
             redundancy: 0,
             acked_intent_seq: vec![3, 0, 7],
+            scene_rev: 11,
         };
         let bytes = frame.encode_to_vec();
         let decoded = RenderFrame::decode(bytes.as_slice()).expect("decode");
@@ -697,6 +722,7 @@ mod tests {
         assert_eq!(decoded.sim_tick, 84);
         assert_eq!(decoded.redundancy, 0);
         assert_eq!(decoded.acked_intent_seq, vec![3, 0, 7]);
+        assert_eq!(decoded.scene_rev, 11);
         assert_eq!(decoded.upserts.len(), 1);
         assert!((decoded.upserts[0].x - 1.5).abs() < f64::EPSILON);
         assert!((decoded.upserts[0].qw - 0.7071067811865476).abs() < 1e-9);

@@ -49,6 +49,7 @@ mod host_ipc;
 mod host_loop;
 mod inventory_despawn;
 mod inventory_spawn;
+mod live_edit;
 mod network_worker;
 mod pose_delta;
 mod presence;
@@ -347,6 +348,7 @@ fn spawn_input_gate(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_snapshot_queryable(
     session: zenoh::Session,
     snapshot_key_expr: String,
@@ -355,6 +357,7 @@ fn spawn_snapshot_queryable(
     host_key: SigningKey,
     room_id: String,
     room_aead: room_aead::SharedRoomAead,
+    live_edit: live_edit::SharedLiveEdit,
 ) -> Result<()> {
     let queryable = session
         .declare_queryable(snapshot_key_expr.clone())
@@ -384,6 +387,10 @@ fn spawn_snapshot_queryable(
                         log::warn!("snapshot reply_err failed: {err}");
                     }
                     continue;
+                }
+                // x00b3: stamp live tip so EditCommit gaps can resync watermark.
+                if let Ok(led) = live_edit.lock() {
+                    frame.scene_rev = led.tip;
                 }
                 sign_frame(&host_key, &mut frame);
                 let key = snapshot_key_expr.clone();
@@ -845,6 +852,25 @@ fn main() -> Result<()> {
     let http_auth: SharedHostHttpAuth = creds.http_auth.clone();
     let (spawn_tx, spawn_inbox) = inventory_spawn::SpawnInbox::pair();
     let (despawn_tx, despawn_inbox) = inventory_despawn::DespawnInbox::pair();
+    let (live_tx, live_inbox) = live_edit::LiveEditInbox::pair();
+    let live_edit = live_edit::new_shared_live_edit();
+    // Seed working-tree mirrors from composed scene (parents default root).
+    {
+        let scene = shared_scene
+            .read()
+            .map_err(|_| anyhow::anyhow!("shared scene RwLock poisoned"))?;
+        let mut led = live_edit
+            .lock()
+            .map_err(|_| anyhow::anyhow!("LiveEditLedger poisoned"))?;
+        for e in &scene.entries {
+            led.note_spawn(
+                e.entity_id,
+                e.flags,
+                [e.r, e.g, e.b, if e.a == 0.0 { 1.0 } else { e.a }],
+                e.blake3.clone(),
+            );
+        }
+    }
     let control_rate = control_rate::SharedControlRate::new_shared();
     inventory_spawn::spawn_listener(
         session.clone(),
@@ -881,8 +907,10 @@ fn main() -> Result<()> {
         Arc::clone(&sessions),
         http_auth,
         Arc::clone(&shared_scene),
+        Arc::clone(&live_edit),
         spawn_tx,
         despawn_tx,
+        live_tx,
         host_signing_key.clone(),
         control_rate,
     )
@@ -1130,6 +1158,7 @@ fn main() -> Result<()> {
         host_signing_key.clone(),
         room_id.clone(),
         Arc::clone(&room_aead),
+        Arc::clone(&live_edit),
     )?;
     spawn_sim_state_queryable(
         session.clone(),
@@ -1144,6 +1173,13 @@ fn main() -> Result<()> {
     let physics_period = Duration::from_nanos(1_000_000_000 / PHYSICS_HZ);
     let dt = 1.0 / PHYSICS_HZ as f32;
     let mut next_physics = Instant::now();
+    let live_commit = Some(live_edit::LiveCommitPublisher::new(
+        session.clone(),
+        alchemy_protocol::edit_key(&room_id, &wire_cap),
+        room_id.clone(),
+        Arc::clone(&room_aead),
+        host_signing_key.clone(),
+    ));
     let mut host = HostLoop::new(HostLoopParts {
         physics,
         outbound: Arc::clone(&outbound),
@@ -1154,6 +1190,9 @@ fn main() -> Result<()> {
         publish_snapshot: Arc::clone(&publish_snapshot),
         spawn_inbox,
         despawn_inbox,
+        live_inbox,
+        live_edit: Arc::clone(&live_edit),
+        live_commit,
         shared_scene: Arc::clone(&shared_scene),
         force_reseal: Arc::clone(&force_reseal),
         dt,

@@ -1,10 +1,10 @@
-//! EditCommit subscriber (x00b2).
+//! EditCommit subscriber (x00b2 / x00b3).
 //!
 //! Guarantees: AEAD open as `EditCommit` → decode → **`host_pub` required** (fail-closed,
-//! same as Frame/Presence) → verify `host_sig` → log accept/reject. Does not apply scene
-//! locally (host Ready path + Manifest/frame remain physics/scene truth).
+//! same as Frame/Presence) → verify `host_sig` → update live tip watermark on accept.
+//! On accept tip gap (`scene_rev > last+1`) → `fetch_snapshot` and adopt snapshot `scene_rev`.
 //!
-//! Non-guarantees: Undo UI; predictive apply; snapshot `scene_rev` gap recovery.
+//! Non-guarantees: Undo UI; predictive local apply of Reparent/SetField; full offline VCS.
 
 use alchemy_protocol::wire_aead::AeadKind;
 use alchemy_protocol::wire_crypto::verify_edit_commit;
@@ -12,11 +12,15 @@ use alchemy_protocol::{EditCommit, Message};
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, Instant};
 use zenoh::bytes::ZBytes;
 use zenoh::Wait;
 
+use super::frame::fetch_snapshot;
 use super::wire::open_zenoh_payload;
 use crate::scene::SharedState;
+
+const EDIT_GAP_SNAPSHOT_COOLDOWN: Duration = Duration::from_millis(500);
 
 /// Subscribe to `…/edit` and decode host `EditCommit` envelopes (proposals ignored via AEAD kind).
 pub fn spawn_edit_commit_subscriber(
@@ -29,12 +33,11 @@ pub fn spawn_edit_commit_subscriber(
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_subscriber edit failed: {e}"))?;
 
-    drop(session);
-
     thread::Builder::new()
         .name("zenoh-edit-commit".into())
         .spawn(move || {
-            log::info!("subscribed to {key} (x00b2 EditCommit)");
+            log::info!("subscribed to {key} (x00b3 EditCommit)");
+            let mut gap_cooldown_until = Instant::now();
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = match open_zenoh_payload(&shared, AeadKind::EditCommit, &bytes) {
@@ -54,7 +57,28 @@ pub fn spawn_edit_commit_subscriber(
                     continue;
                 }
                 if commit.accepted {
-                    // Tip watermark: accept only, monotonic max (reject.scene_rev can lag CAS tip).
+                    let gap = edit_scene_rev_gap(&shared, commit.scene_rev);
+                    if gap {
+                        let now = Instant::now();
+                        if now >= gap_cooldown_until {
+                            gap_cooldown_until = now + EDIT_GAP_SNAPSHOT_COOLDOWN;
+                            let room_id = shared.get_room_id();
+                            if let Some(wire_cap) = shared.wire_cap() {
+                                log::info!(
+                                    "EditCommit gap tip={} → snapshot resync",
+                                    commit.scene_rev
+                                );
+                                let _ = fetch_snapshot(
+                                    &session,
+                                    room_id.as_ref(),
+                                    wire_cap.as_ref(),
+                                    &shared,
+                                );
+                                // Watermark may already be advanced by fetch_snapshot;
+                                // still fold this commit tip.
+                            }
+                        }
+                    }
                     if let Ok(mut slot) = shared.last_edit_scene_rev.lock() {
                         let next = match *slot {
                             Some(prev) => prev.max(commit.scene_rev),
@@ -68,8 +92,15 @@ pub fn spawn_edit_commit_subscriber(
                         commit.scene_rev
                     );
                 } else {
+                    // APPLY = Ready/queue/barrier fail (tip unchanged) → immediate retry OK.
+                    // STALE_PRECONDITION → refresh expected_* / snapshot before retry.
+                    let hint = match commit.reject_reason {
+                        alchemy_protocol::edit_reject::APPLY => "apply_fail_retry_ok",
+                        alchemy_protocol::edit_reject::STALE_PRECONDITION => "stale_refresh_first",
+                        _ => "other",
+                    };
                     log::info!(
-                        "EditCommit rejected op_id={} reason={} scene_rev={}",
+                        "EditCommit rejected op_id={} reason={} scene_rev={} hint={hint}",
                         commit.op_id,
                         commit.reject_reason,
                         commit.scene_rev
@@ -79,4 +110,42 @@ pub fn spawn_edit_commit_subscriber(
         })
         .context("spawn edit-commit thread")?;
     Ok(())
+}
+
+/// True when `tip` skips at least one live_scene_rev after `prev` (0/None = no tip yet).
+pub(crate) fn edit_scene_rev_gap_from_prev(prev: Option<u64>, tip: u64) -> bool {
+    match prev {
+        Some(p) => tip > p.saturating_add(1),
+        None => tip > 1,
+    }
+}
+
+fn edit_scene_rev_gap(shared: &SharedState, tip: u64) -> bool {
+    let Ok(slot) = shared.last_edit_scene_rev.lock() else {
+        return false;
+    };
+    edit_scene_rev_gap_from_prev(*slot, tip)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::edit_scene_rev_gap_from_prev;
+    use std::sync::Mutex;
+
+    #[test]
+    fn scene_rev_gap_triggers_when_skipping() {
+        assert!(edit_scene_rev_gap_from_prev(None, 2));
+        assert!(!edit_scene_rev_gap_from_prev(None, 1));
+        assert!(!edit_scene_rev_gap_from_prev(Some(5), 6));
+        assert!(edit_scene_rev_gap_from_prev(Some(5), 7));
+    }
+
+    #[test]
+    fn watermark_max_is_monotonic() {
+        let slot = Mutex::new(Some(3u64));
+        let tip = 5u64;
+        let mut g = slot.lock().unwrap();
+        *g = Some(g.unwrap().max(tip));
+        assert_eq!(*g, Some(5));
+    }
 }

@@ -1,13 +1,23 @@
-//! Per-operator session undo/redo for Slot reparent transitions (x005b).
+//! Per-operator session undo/redo for Slot reparent transitions (x005b / x00b3).
 //!
 //! Guarantees: reverse/reapply last reparent recorded for an operator stack;
-//! stack cap with drop-oldest on overflow; failed reparent leaves stacks unchanged.
+//! stack cap with drop-oldest on overflow; failed reparent leaves stacks unchanged;
+//! [`SlotUndoStack::undo_checked`] refuses when current parent ≠ recorded `to` (Stale).
 //! Non-guarantees: persistence across leave; undoing another operator's moves;
 //! physics velocity restore; host/UI wiring (library peel only).
 
 use std::collections::VecDeque;
 
 use crate::slot_graph::{ReparentError, SlotGraph};
+
+/// Undo precondition failure (x00b3 / mvcc_xpbd §4.7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UndoError {
+    /// Another operator changed the parent after our transition.
+    Stale,
+    /// Underlying [`SlotGraph::reparent`] rejected the inverse.
+    Reparent(ReparentError),
+}
 
 /// One reversible reparent (`child` moved from `from` → `to`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +81,34 @@ impl SlotUndoStack {
             Err(e) => {
                 self.undo.push_back(t);
                 Err(e)
+            }
+        }
+    }
+
+    /// Undo only if `graph.parent(child)` still equals the transition's `to`.
+    ///
+    /// On [`UndoError::Stale`] the transition is **popped and discarded** (does not rewrite
+    /// another operator's parent). Undo UI must treat that as "lost stack entry", not as
+    /// "stack unchanged".
+    pub fn undo_checked(
+        &mut self,
+        graph: &mut SlotGraph,
+    ) -> Result<Option<SlotTransition>, UndoError> {
+        let Some(t) = self.undo.pop_back() else {
+            return Ok(None);
+        };
+        if graph.parent(t.child) != t.to {
+            return Err(UndoError::Stale);
+        }
+        let inv = t.inverse();
+        match graph.reparent(inv.child, inv.to) {
+            Ok(()) => {
+                self.redo.push_back(t);
+                Ok(Some(inv))
+            }
+            Err(e) => {
+                self.undo.push_back(t);
+                Err(UndoError::Reparent(e))
             }
         }
     }
@@ -147,6 +185,23 @@ mod tests {
         let u = stack.undo(&mut g).unwrap().unwrap();
         assert_eq!(u.child, 2);
         assert!(stack.undo(&mut g).unwrap().is_none());
+    }
+
+    #[test]
+    fn undo_checked_stale_after_foreign_reparent() {
+        let mut g = SlotGraph::new();
+        let mut stack = SlotUndoStack::new(8);
+        g.reparent(10, Some(1)).unwrap();
+        stack.push(SlotTransition {
+            child: 10,
+            from: None,
+            to: Some(1),
+        });
+        // Foreign move: parent is no longer `to`.
+        g.reparent(10, Some(2)).unwrap();
+        assert_eq!(stack.undo_checked(&mut g), Err(UndoError::Stale));
+        assert_eq!(g.parent(10), Some(2));
+        assert!(stack.undo.is_empty());
     }
 
     #[test]

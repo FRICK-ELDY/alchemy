@@ -2,8 +2,8 @@
 //!
 //! Guarantees: bind Intent carries Room Token until enough successful puts; steady
 //! Intents are Ed25519-signed thereafter. Room Token must be issued for this
-//! session_pub (`cnf.spk`, x003e). Edit-lane Spawn/Despawn (and legacy inventory JSON
-//! helpers) reuse the same key with a separate `control_seq` — no Room Token on Zenoh.
+//! session_pub (`cnf.spk`, x003e). Edit-lane Spawn/Despawn/Reparent/SetField (and legacy
+//! inventory JSON helpers) reuse the same key with a separate `control_seq` — no Room Token on Zenoh.
 //! Non-guarantees: host acceptance ack (Zenoh put ≠ verify); key persistence across restart.
 
 use alchemy_protocol::control_plane::{self, ControlPose};
@@ -166,7 +166,7 @@ impl IntentSession {
 
     /// Build a signed `EditProposal` Spawn (x00b2; advances `control_seq`).
     ///
-    /// `base_scene_rev` must be the last observed overlay `EditCommit.scene_rev` (or 0).
+    /// `base_scene_rev` must be the last observed host live `EditCommit.scene_rev` (or 0).
     pub fn sign_edit_spawn(
         &mut self,
         room_id: &str,
@@ -218,6 +218,66 @@ impl IntentSession {
             op_id: self.control_seq,
             ops: vec![EditOp {
                 op: Some(Op::Despawn(EditDespawn { entity_id })),
+            }],
+            sig: vec![],
+            room_id: room_id.to_string(),
+        };
+        sign_edit_proposal(&self.key, &mut proposal);
+        proposal
+    }
+
+    /// Build a signed `EditProposal` Reparent (x00b3; advances `control_seq`).
+    pub fn sign_edit_reparent(
+        &mut self,
+        room_id: &str,
+        base_scene_rev: u64,
+        child_entity_id: u32,
+        expected_parent_entity_id: u32,
+        new_parent_entity_id: u32,
+    ) -> EditProposal {
+        self.control_seq = self.control_seq.saturating_add(1);
+        let mut proposal = EditProposal {
+            session_pub: public_key_bytes(&self.key),
+            control_seq: self.control_seq,
+            base_scene_rev,
+            op_id: self.control_seq,
+            ops: vec![EditOp {
+                op: Some(Op::Reparent(alchemy_protocol::EditReparent {
+                    child_entity_id,
+                    expected_parent_entity_id,
+                    new_parent_entity_id,
+                })),
+            }],
+            sig: vec![],
+            room_id: room_id.to_string(),
+        };
+        sign_edit_proposal(&self.key, &mut proposal);
+        proposal
+    }
+
+    /// Build a signed `EditProposal` SetField (x00b3; advances `control_seq`).
+    pub fn sign_edit_set_field(
+        &mut self,
+        room_id: &str,
+        base_scene_rev: u64,
+        entity_id: u32,
+        field_id: u32,
+        value: Vec<u8>,
+        expected_value_hash: Vec<u8>,
+    ) -> EditProposal {
+        self.control_seq = self.control_seq.saturating_add(1);
+        let mut proposal = EditProposal {
+            session_pub: public_key_bytes(&self.key),
+            control_seq: self.control_seq,
+            base_scene_rev,
+            op_id: self.control_seq,
+            ops: vec![EditOp {
+                op: Some(Op::SetField(alchemy_protocol::EditSetField {
+                    entity_id,
+                    field_id,
+                    value,
+                    expected_value_hash,
+                })),
             }],
             sig: vec![],
             room_id: room_id.to_string(),

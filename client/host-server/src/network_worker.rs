@@ -96,6 +96,8 @@ pub struct FrameSample {
     pub dirty_authored: bool,
     /// Bits detached from acc at pack (x00b1): restore on empty/fail, discard on success.
     pub dirty_inflight_mask: Option<[u64; BITMASK_WORDS]>,
+    /// Host live_scene_rev tip (x00b3); stamped onto `RenderFrame.scene_rev`.
+    pub scene_rev: u64,
 }
 
 /// In-flight pose scratches: physics fill + hub pending + worker handle_frame.
@@ -190,6 +192,7 @@ pub fn coalesce_frame(prev: FrameSample, next: FrameSample, pool: &PoseScratchPo
             acked_intent_seq: prev.acked_intent_seq,
             dirty_authored: prev.dirty_authored,
             dirty_inflight_mask,
+            scene_rev: prev.scene_rev.max(next.scene_rev),
         };
     }
 
@@ -208,6 +211,7 @@ pub fn coalesce_frame(prev: FrameSample, next: FrameSample, pool: &PoseScratchPo
             acked_intent_seq: next.acked_intent_seq,
             dirty_authored: true,
             dirty_inflight_mask,
+            scene_rev: prev.scene_rev.max(next.scene_rev),
         };
     }
 
@@ -225,6 +229,7 @@ pub fn coalesce_frame(prev: FrameSample, next: FrameSample, pool: &PoseScratchPo
         acked_intent_seq: next.acked_intent_seq,
         dirty_authored: next.dirty_authored,
         dirty_inflight_mask,
+        scene_rev: prev.scene_rev.max(next.scene_rev),
     }
 }
 
@@ -613,6 +618,7 @@ impl WorkerState {
         sim_tick: u64,
         acked_intent_seq: &[u64],
         poses: &[(u32, Pose)],
+        scene_rev: u64,
     ) {
         let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
         cache.tick = tick;
@@ -620,6 +626,7 @@ impl WorkerState {
         cache.sim_tick = sim_tick;
         cache.redundancy = 0;
         cache.acked_intent_seq = acked_intent_seq.to_vec();
+        cache.scene_rev = scene_rev;
         cache.upserts = poses
             .iter()
             .map(|(id, pose)| to_entity(*id, *pose))
@@ -641,6 +648,7 @@ impl WorkerState {
         host_time_ms: u64,
         sim_tick: u64,
         acked_intent_seq: Vec<u64>,
+        scene_rev: u64,
     ) {
         let upsert_len = upserts.len() as u64;
         let mut frame = RenderFrame {
@@ -652,6 +660,7 @@ impl WorkerState {
             sim_tick,
             redundancy: 0,
             acked_intent_seq,
+            scene_rev,
         };
         sign_frame(key, &mut frame);
         let env = seal_or_die(AeadKind::Frame, room_id, room_aead, frame.encode_to_vec());
@@ -688,6 +697,7 @@ impl WorkerState {
             acked_intent_seq,
             dirty_authored,
             dirty_inflight_mask,
+            scene_rev,
         } = sample;
         // Drop returns the scratch even on early return (x0095).
         let pose_return = PoseScratchReturn { hub, poses };
@@ -715,6 +725,7 @@ impl WorkerState {
                 c.host_time_ms = host_time_ms;
                 c.sim_tick = sim_tick;
                 c.acked_intent_seq = acked_intent_seq.clone();
+                c.scene_rev = scene_rev;
                 c.host_sig.clear();
             }
             let remove_ids = removes.clone();
@@ -729,6 +740,7 @@ impl WorkerState {
                 host_time_ms,
                 sim_tick,
                 acked_intent_seq,
+                scene_rev,
             );
             for id in &removes {
                 self.last_sent.remove(id);
@@ -750,6 +762,7 @@ impl WorkerState {
                     sim_tick,
                     &acked_intent_seq,
                     poses,
+                    scene_rev,
                 );
             } else {
                 // No published tick yet — warm poses only; leave tick untouched.
@@ -757,6 +770,7 @@ impl WorkerState {
                 c.host_time_ms = host_time_ms;
                 c.sim_tick = sim_tick;
                 c.acked_intent_seq = acked_intent_seq;
+                c.scene_rev = scene_rev;
                 c.upserts = poses
                     .iter()
                     .map(|(id, pose)| to_entity(*id, *pose))
@@ -804,6 +818,7 @@ impl WorkerState {
                     sim_tick,
                     &acked_intent_seq,
                     poses,
+                    scene_rev,
                 );
             }
             return;
@@ -816,6 +831,7 @@ impl WorkerState {
             sim_tick,
             &acked_intent_seq,
             poses,
+            scene_rev,
         );
         let remove_ids = removes.clone();
         self.put_signed_frame(
@@ -829,6 +845,7 @@ impl WorkerState {
             host_time_ms,
             sim_tick,
             acked_intent_seq,
+            scene_rev,
         );
         // Success: drop inflight mask without restore — bits stay detached from acc.
         // Re-dirties absorbed after pack remain in acc (detach only removed the packed set).
@@ -978,6 +995,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         }));
         assert!(hub.submit_frame(FrameSample {
             poses: b_poses,
@@ -990,6 +1008,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         }));
         let mut g = hub.pending.lock().unwrap();
         let f = g.frame.take().unwrap();
@@ -1025,6 +1044,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: true,
             dirty_inflight_mask: Some(mask_a),
+            scene_rev: 0,
         };
         let next = FrameSample {
             poses: scratch_one(
@@ -1044,6 +1064,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: true,
             dirty_inflight_mask: Some(mask_b),
+            scene_rev: 0,
         };
         let merged = coalesce_frame(prev, next, &pool);
         assert!(merged.dirty_authored);
@@ -1077,6 +1098,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: true,
             dirty_inflight_mask: Some([1u64 << 0; BITMASK_WORDS]),
+            scene_rev: 0,
         };
         let next = FrameSample {
             poses: scratch_one(
@@ -1096,6 +1118,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: true,
             dirty_inflight_mask: Some([1u64 << 1; BITMASK_WORDS]),
+            scene_rev: 0,
         };
         let merged = coalesce_frame(prev, next, &pool);
         assert_eq!(merged.poses.len(), 1);
@@ -1120,6 +1143,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: true,
             dirty_inflight_mask: Some(mask),
+            scene_rev: 0,
         };
         let next = FrameSample {
             poses: scratch_one(
@@ -1139,6 +1163,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         };
         let merged = coalesce_frame(prev, next, &pool);
         assert!(!merged.dirty_authored);
@@ -1169,6 +1194,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         };
         let net = FrameSample {
             poses: scratch_one(
@@ -1188,6 +1214,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         };
         let m = coalesce_frame(mid, net, &pool);
         assert_eq!(m.removes, vec![3, 5, 7]);
@@ -1218,6 +1245,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         };
         let mid = FrameSample {
             poses: vec![],
@@ -1230,6 +1258,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         };
         let m = coalesce_frame(net, mid, &pool);
         assert!(!m.removes_only);
@@ -1296,6 +1325,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         };
         let b = FrameSample {
             poses: vec![],
@@ -1308,6 +1338,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         };
         let m = coalesce_frame(a, b, &pool);
         assert!(m.removes_only);
@@ -1337,6 +1368,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         };
         let later = FrameSample {
             poses: scratch_one(
@@ -1357,6 +1389,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         };
         let m = coalesce_frame(catchup, later, &pool);
         assert!(
@@ -1387,6 +1420,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         }));
         // One scratch still pending; free list keeps the other startup scratches (POOLED-1).
         assert_eq!(hub.pose_pool.free_len(), POSE_SCRATCH_POOLED - 1);
@@ -1410,6 +1444,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         }));
         // Coalesce released `a` into free; pending still holds `b` → free_len == POOLED-1.
         assert_eq!(hub.pose_pool.free_len(), POSE_SCRATCH_POOLED - 1);
@@ -1487,6 +1522,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         }));
         assert_eq!(hub.pose_pool.free_len(), before);
         let mut g = hub.pending.lock().unwrap();
@@ -1514,6 +1550,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         }));
         let mut poses = hub.acquire_poses();
         poses.push((
@@ -1534,6 +1571,7 @@ mod tests {
             acked_intent_seq: vec![],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         }));
         let mut g = hub.pending.lock().unwrap();
         let f = g.frame.take().unwrap();
@@ -1595,6 +1633,7 @@ mod tests {
             acked_intent_seq: vec![7, 0, 3],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         };
         let mid = FrameSample {
             poses: vec![],
@@ -1608,6 +1647,7 @@ mod tests {
             acked_intent_seq: vec![9, 1, 4],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         };
         let m = coalesce_frame(net, mid, &pool);
         assert_eq!(m.sim_tick, 40, "sim_tick stays with prior pose sample");
@@ -1634,6 +1674,7 @@ mod tests {
             acked_intent_seq: vec![1],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         };
         let b = FrameSample {
             poses: scratch_one(
@@ -1653,6 +1694,7 @@ mod tests {
             acked_intent_seq: vec![9],
             dirty_authored: false,
             dirty_inflight_mask: None,
+            scene_rev: 0,
         };
         let m = coalesce_frame(a, b, &pool);
         assert_eq!(m.sim_tick, 12);

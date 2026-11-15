@@ -76,7 +76,7 @@
 
 正本: [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md)（レビュー反映の詳細・未決 Q1–Q8 は同書 §6 / [review_proposal](../../roadmap/mvcc_xpbd_review_proposal.md)）。**大規模 CCU / 1000 人はここに書かない**（→ P3-7）。
 
-**現状（2026-11-15）**: Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜dirty 30Hz（[x00ad](../../roadmap/slices/x00ad-phase3-host-sim-backend.md)–[x00b1](../../roadmap/slices/x00b1-phase3-dirty-30hz-cutover.md)）+ 確定レーン土台 [x00b2](../../roadmap/slices/x00b2-phase3-edit-lane-foundation.md) **done**（**P1-2 host closed**）。残り: `x00b3`〜（Reparent/SetField 等）。
+**現状（2026-11-15）**: Phase 1–2 + Phase 3 dirty 30Hz + 確定レーン土台 x00b2 **done**；ライブ Reparent/SetField [x00b3](../../roadmap/slices/x00b3-phase3-edit-ops-live-bridge.md)（案 B / VCS）。残り: 明示 Save · Spawn 即 CAS 見直し。
 
 | Phase | 内容 | 吸収する ID | 着手条件 |
 |:---|:---|:---|:---|

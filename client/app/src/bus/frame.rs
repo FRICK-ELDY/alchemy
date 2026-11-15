@@ -242,11 +242,22 @@ pub(crate) fn fetch_snapshot(
                                     log::warn!("drop snapshot: {err}");
                                     continue;
                                 }
+                                let snap_scene_rev = frame.scene_rev;
                                 if apply_frame(shared, frame, /* replace */ true)
                                     == ApplyFrameOutcome::Applied
                                 {
                                     log::info!("snapshot applied from {key}");
                                     applied = true;
+                                    // x00b3: fold live tip so EditCommit gaps converge.
+                                    if snap_scene_rev != 0 {
+                                        if let Ok(mut slot) = shared.last_edit_scene_rev.lock() {
+                                            let next = match *slot {
+                                                Some(prev) => prev.max(snap_scene_rev),
+                                                None => snap_scene_rev,
+                                            };
+                                            *slot = Some(next);
+                                        }
+                                    }
                                 }
                             }
                             Err(err) => log::warn!("snapshot decode failed: {err}"),

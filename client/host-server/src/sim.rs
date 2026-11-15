@@ -40,8 +40,8 @@ use alchemy_shared_sim::spatial::SceneBounds;
 use alchemy_shared_sim::xpbd::{self, XpbdWorld};
 use alchemy_shared_sim::{
     classify_scene_entry, scene_entry_color_rgba, ColliderShape, EntityKind, EpochSheet,
-    EpochSnapshotPair, FlatTopology, NodeHandle, ReadinessMask, SlotGraph, WorldTransformf64,
-    PHYS_BALL_RADIUS,
+    EpochSnapshotPair, FlatTopology, FrameBridge, NodeHandle, PendingPatch, ReadinessMask,
+    SlotGraph, WorldTransformf64, PHYS_BALL_RADIUS,
 };
 
 use crate::network_worker::Pose;
@@ -120,6 +120,8 @@ struct ActiveGrab {
 pub struct PhysicsWorld {
     world: XpbdWorld,
     topo: FlatTopology,
+    /// Structural edits queued to the next tick boundary (x00b3).
+    frame_bridge: FrameBridge,
     snapshots: EpochSnapshotPair,
     entity_rows: HashMap<u32, NodeHandle>,
     meshes: Vec<u32>,
@@ -130,6 +132,12 @@ pub struct PhysicsWorld {
     scales: HashMap<u32, [f32; 3]>,
     pub boxes: CuboidBoxes,
     colors: HashMap<u32, (f32, f32, f32, f32)>,
+    /// `SceneEntry.flags` mirror (x00b3 SetField FLAGS). **Not** [`ReadinessMask`].
+    scene_flags: HashMap<u32, u32>,
+    /// COLOR_RGBA deferred to tick barrier (tape has no color column; still next-tick).
+    pending_colors: Vec<(u32, [f32; 4])>,
+    /// FLAGS deferred to tick barrier (scene_flags + box grabbable mirror).
+    pending_flags: Vec<(u32, u32)>,
     loco_mode: LocoMode,
     move_speed: f32,
     grabs: [Option<ActiveGrab>; USER_ROOT_SLOTS_MAX],
@@ -164,6 +172,54 @@ pub struct PhysicsWorld {
 /// inside `Option<HostMvccState>` made this ~80KiB+ and overflowed Windows main.
 const PHYSICS_WORLD_STACK_BUDGET: usize = 8 * 1024;
 const _: () = assert!(std::mem::size_of::<PhysicsWorld>() < PHYSICS_WORLD_STACK_BUDGET);
+
+fn parse_blake3_hex32(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let hi = from_hex_nibble(chunk[0])?;
+        let lo = from_hex_nibble(chunk[1])?;
+        out[i] = (hi << 4) | lo;
+    }
+    Some(out)
+}
+
+fn from_hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Pre-patch snapshot of `asset_atoms` for live `SetAssetAtom` (only patch kind live queues).
+fn backup_live_asset_atoms(sheet: &EpochSheet, patches: &[PendingPatch]) -> Vec<(u32, [u8; 32])> {
+    let mut out = Vec::new();
+    for patch in patches {
+        if let PendingPatch::SetAssetAtom { row_id, .. } = *patch {
+            let idx = row_id as usize;
+            if idx < sheet.asset_atoms.len() {
+                out.push((row_id, sheet.asset_atoms[idx]));
+            }
+        }
+    }
+    out
+}
+
+fn restore_live_asset_atoms(sheet: &mut EpochSheet, backup: &[(u32, [u8; 32])], epoch_before: u64) {
+    for &(row_id, atom) in backup {
+        let idx = row_id as usize;
+        if idx < sheet.asset_atoms.len() {
+            sheet.asset_atoms[idx] = atom;
+        }
+        sheet.clear_dirty_row(row_id);
+    }
+    // `apply_patches` bumps epoch even when some patches Err — rewind with the atoms.
+    sheet.epoch_id = epoch_before;
+}
 
 fn entry_quat_xyzw(entry: &SceneEntry) -> [f32; 4] {
     let [qx, qy, qz, qw] = scene_entry_quat_xyzw(entry);
@@ -226,6 +282,7 @@ impl PhysicsWorld {
         let slots = user_root_slots_from_entries(entries).map_err(|e| e.to_string())?;
 
         let mut colors = HashMap::new();
+        let mut scene_flags: HashMap<u32, u32> = HashMap::new();
         let mut scales: HashMap<u32, [f32; 3]> = HashMap::new();
         let mut boxes = CuboidBoxes::empty();
         let mut meshes: Vec<u32> = Vec::new();
@@ -240,6 +297,7 @@ impl PhysicsWorld {
 
         for entry in entries {
             colors.insert(entry.entity_id, scene_entry_color_rgba(entry));
+            scene_flags.insert(entry.entity_id, entry.flags);
             scales.insert(entry.entity_id, entry_scale_f32(entry));
             let rot = entry_quat_xyzw(entry);
             let scale = entry_scale_f32(entry);
@@ -385,6 +443,7 @@ impl PhysicsWorld {
         let mut host = Self {
             world,
             topo: FlatTopology::default(),
+            frame_bridge: FrameBridge::default(),
             snapshots,
             entity_rows,
             meshes,
@@ -395,6 +454,9 @@ impl PhysicsWorld {
             scales,
             boxes,
             colors,
+            scene_flags,
+            pending_colors: Vec::new(),
+            pending_flags: Vec::new(),
             loco_mode,
             move_speed: speed,
             grabs: [None; USER_ROOT_SLOTS_MAX],
@@ -710,6 +772,7 @@ impl PhysicsWorld {
         }
         self.meshes.remove(pos);
         self.colors.remove(&entity_id);
+        self.scene_flags.remove(&entity_id);
         self.scales.remove(&entity_id);
         xpbd::sync_prev_capacity(&mut self.world);
         self.publish_dirty = true;
@@ -744,9 +807,12 @@ impl PhysicsWorld {
             [0.05 * DEFAULT_DT as f32, 0.0, 0.02 * DEFAULT_DT as f32];
         self.colors
             .insert(entry.entity_id, scene_entry_color_rgba(entry));
+        self.scene_flags.insert(entry.entity_id, entry.flags);
         self.scales.insert(entry.entity_id, entry_scale_f32(entry));
         self.entity_rows.insert(entry.entity_id, handle);
         self.meshes.push(entry.entity_id);
+        // Grow topo with new roots; do not wipe existing creative parents.
+        self.ensure_topo_len();
         self.publish_dirty = true;
         true
     }
@@ -908,15 +974,219 @@ impl PhysicsWorld {
     /// One fixed 60Hz XPBD tick + Prev/Curr publish (unit tests; production uses [`Self::step_dt`]).
     #[cfg(test)]
     pub fn step(&mut self) {
-        self.step_dt(DEFAULT_DT as f32);
+        let _ = self.step_dt(DEFAULT_DT as f32);
     }
 
-    pub fn step_dt(&mut self, dt: f32) {
+    /// Grow/shrink `topo.parent_of` to sheet length **without wiping** existing parents.
+    /// New rows become world roots (`u32::MAX`). Never replaces the whole vec with `flat_roots`
+    /// when length already differs after spawn (that discarded creative Reparents).
+    fn ensure_topo_len(&mut self) {
+        let n = self.world.curr.len();
+        let cur = self.topo.parent_of.len();
+        if cur == n {
+            return;
+        }
+        if cur == 0 {
+            self.topo = FlatTopology::flat_roots(n);
+            return;
+        }
+        if cur < n {
+            self.topo.parent_of.resize(n, u32::MAX);
+            if let Err(e) = self.topo.rebuild() {
+                log::warn!("topo rebuild after grow failed: {e:?}");
+            }
+            return;
+        }
+        // Sheet shorter (tombstones / freelist): truncate only; keep remaining links.
+        self.topo.parent_of.truncate(n);
+        if let Err(e) = self.topo.rebuild() {
+            log::warn!("topo rebuild after shrink failed: {e:?}");
+        }
+    }
+
+    /// Queue a creative reparent for the next tick boundary (entity ids → rows).
+    ///
+    /// Merges into `pending_parents` when already dirty so same-tick drains do not
+    /// overwrite earlier queues from a stale live topo.
+    pub fn queue_live_reparent(
+        &mut self,
+        child_entity: u32,
+        new_parent_entity: u32,
+    ) -> Result<(), &'static str> {
+        self.ensure_topo_len();
+        let child_row = self
+            .entity_rows
+            .get(&child_entity)
+            .map(|h| h.row_id)
+            .ok_or("child missing")?;
+        let parent_row = if new_parent_entity == 0 {
+            u32::MAX
+        } else {
+            self.entity_rows
+                .get(&new_parent_entity)
+                .map(|h| h.row_id)
+                .ok_or("parent missing")?
+        };
+        let mut parents = self
+            .frame_bridge
+            .pending_parents
+            .clone()
+            .unwrap_or_else(|| self.topo.parent_of.clone());
+        if parents.is_empty() {
+            parents = vec![u32::MAX; self.world.curr.len()];
+        }
+        let idx = child_row as usize;
+        if idx >= parents.len() {
+            return Err("child row oob");
+        }
+        parents[idx] = parent_row;
+        self.frame_bridge.queue_reparent(parents);
+        Ok(())
+    }
+
+    /// Queue SetField for the next tick boundary.
+    ///
+    /// FLAGS updates [`Self::scene_flags`] (SceneEntry vocabulary) — **never**
+    /// [`PendingPatch::SetReadiness`] (that would clobber ALLOCATED/DYNAMIC).
+    /// COLOR is tape-external (`colors` HashMap) but still deferred to the barrier
+    /// so it shares the same tick-boundary contract as FLAGS/BLAKE3/Reparent.
+    pub fn queue_live_set_field(
+        &mut self,
+        entity_id: u32,
+        field_id: u32,
+        value: &[u8],
+    ) -> Result<(), &'static str> {
+        let handle = self.entity_rows.get(&entity_id).ok_or("entity missing")?;
+        let row_id = handle.row_id;
+        match field_id {
+            alchemy_protocol::edit_field_id::FLAGS => {
+                // SceneEntry.flags vocabulary only. Cuboid `boxes.grabbable` is updated
+                // at the barrier; mesh grabability is not driven from this path.
+                let flags = alchemy_protocol::decode_flags(value).ok_or("bad flags")?;
+                self.pending_flags.push((entity_id, flags));
+            }
+            alchemy_protocol::edit_field_id::COLOR_RGBA => {
+                let rgba = alchemy_protocol::decode_color_rgba(value).ok_or("bad color")?;
+                self.pending_colors.push((entity_id, rgba));
+            }
+            alchemy_protocol::edit_field_id::BLAKE3 => {
+                let hex = std::str::from_utf8(value).map_err(|_| "bad blake3 utf8")?;
+                let atom = parse_blake3_hex32(hex).ok_or("bad blake3 hex")?;
+                // Live compensation only covers SetAssetAtom — do not queue other kinds here.
+                self.frame_bridge.queue_patch(PendingPatch::SetAssetAtom {
+                    row_id,
+                    blake3: atom,
+                });
+            }
+            _ => return Err("unknown field"),
+        }
+        Ok(())
+    }
+
+    /// Apply pending live edits at the tick boundary with **physical + Commit** atomicity:
+    /// patches (with atom backup) → reparent bake → FLAGS/COLOR.
+    ///
+    /// On any failure: restore mutated physics (asset atoms / dirty / epoch; topo via bake
+    /// backup), abandon remaining pending, return `Err` **without** setting `publish_dirty`.
+    /// Caller rolls back ledger mirrors + reject `APPLY` (tip unchanged).
+    /// FLAGS/COLOR apply only on the success path (never half-applied).
+    pub fn apply_frame_bridge_barrier(&mut self) -> Result<(), &'static str> {
+        self.ensure_topo_len();
+
+        // 1) Patches first so a later reparent failure can restore atoms without leaving
+        //    bake-success + reject (the prior middle state).
+        let patches = std::mem::take(&mut self.frame_bridge.pending);
+        if patches
+            .iter()
+            .any(|p| !matches!(p, PendingPatch::SetAssetAtom { .. }))
+        {
+            self.abandon_live_pending();
+            log::error!("live barrier saw non-SetAssetAtom patch; abandoned pending");
+            return Err("unsupported live patch kind");
+        }
+        let epoch_before = self.world.curr.epoch_id;
+        let atom_backup = backup_live_asset_atoms(&self.world.curr, &patches);
+        let mut touched = false;
+        if !patches.is_empty() {
+            let errs = self.world.curr.apply_patches(&patches);
+            if !errs.is_empty() {
+                restore_live_asset_atoms(&mut self.world.curr, &atom_backup, epoch_before);
+                self.abandon_live_pending();
+                log::warn!(
+                    "live FrameBridge patches failed ({} err(s)); restored atoms/dirty/epoch, barrier Err",
+                    errs.len()
+                );
+                for (i, e) in errs.iter().take(4) {
+                    log::warn!("  patch[{i}]: {e:?}");
+                }
+                return Err("patch apply failed");
+            }
+            touched = true;
+        }
+
+        // 2) Reparent bake (FrameBridge restores topo on bake Err; we still abandon pending).
+        if self.frame_bridge.parents_dirty {
+            match self.frame_bridge.apply_reparent(&mut self.topo) {
+                Ok(()) => {
+                    self.frame_bridge.parents_dirty = false;
+                    touched = true;
+                }
+                Err(_) => {
+                    restore_live_asset_atoms(&mut self.world.curr, &atom_backup, epoch_before);
+                    self.abandon_live_pending();
+                    log::warn!(
+                        "live reparent topology bake failed; restored atoms/dirty/epoch + abandoned pending"
+                    );
+                    return Err("reparent bake failed");
+                }
+            }
+        }
+
+        // 3) Tape-external mirrors — only after patches + reparent both succeeded.
+        let flags = std::mem::take(&mut self.pending_flags);
+        if !flags.is_empty() {
+            touched = true;
+        }
+        for (entity_id, flags) in flags {
+            self.scene_flags.insert(entity_id, flags);
+            if let Some(idx) = self.boxes.entity_ids.iter().position(|&id| id == entity_id) {
+                if let Some(slot) = self.boxes.grabbable.get_mut(idx) {
+                    *slot = scene_entry_grabbable(flags);
+                }
+            }
+        }
+        let colors = std::mem::take(&mut self.pending_colors);
+        if !colors.is_empty() {
+            touched = true;
+        }
+        for (entity_id, rgba) in colors {
+            self.colors
+                .insert(entity_id, (rgba[0], rgba[1], rgba[2], rgba[3]));
+        }
+        // `publish_dirty` only after the whole barrier succeeds (never on fail paths).
+        if touched {
+            self.publish_dirty = true;
+        }
+        Ok(())
+    }
+
+    fn abandon_live_pending(&mut self) {
+        self.frame_bridge.pending_parents = None;
+        self.frame_bridge.parents_dirty = false;
+        self.frame_bridge.pending.clear();
+        self.pending_flags.clear();
+        self.pending_colors.clear();
+    }
+
+    /// Returns `Err` when the FrameBridge reparent barrier fail-closed (physics still stepped).
+    pub fn step_dt(&mut self, dt: f32) -> Result<(), &'static str> {
         let dt = if dt.is_finite() && dt > 0.0 {
             f64::from(dt)
         } else {
             DEFAULT_DT
         };
+
+        let barrier = self.apply_frame_bridge_barrier();
 
         let grab_targets = self.collect_grab_targets();
         xpbd::sync_prev_capacity(&mut self.world);
@@ -963,6 +1233,7 @@ impl PhysicsWorld {
         self.world.curr.clear_dirty();
         self.world.commit_prev_from_curr();
         self.barrier_ticks = self.barrier_ticks.wrapping_add(1);
+        barrier
     }
 
     /// Sync Epoch → page, XPBD+contacts+grabs on page, copy poses back (x00ad bridge).
@@ -2036,6 +2307,188 @@ mod tests {
         assert!(world.slot_graph().is_held_by(id, holder));
         world.release_slot(0);
         assert_eq!(world.slot_graph().parent(id), None);
+    }
+
+    #[test]
+    fn edit_applies_at_tick_boundary() {
+        let mut world = test_world();
+        world.ensure_topo_len();
+        let child = *world.meshes.first().expect("mesh");
+        let parent = world.boxes.entity_ids[0];
+        world
+            .queue_live_reparent(child, parent)
+            .expect("queue reparent");
+        // Queued but not yet applied until step barrier.
+        assert!(
+            world.topo.parent_of.is_empty()
+                || world
+                    .entity_rows
+                    .get(&child)
+                    .map(|h| world.topo.parent_of.get(h.row_id as usize).copied())
+                    .flatten()
+                    != Some(
+                        world
+                            .entity_rows
+                            .get(&parent)
+                            .map(|h| h.row_id)
+                            .unwrap_or(u32::MAX)
+                    )
+        );
+        world.step();
+        let child_row = world.entity_rows.get(&child).unwrap().row_id as usize;
+        let parent_row = world.entity_rows.get(&parent).unwrap().row_id;
+        assert_eq!(world.topo.parent_of[child_row], parent_row);
+    }
+
+    #[test]
+    fn set_field_flags_does_not_clobber_readiness() {
+        use alchemy_protocol::{encode_flags, SCENE_FLAG_GRABBABLE};
+        let mut world = test_world();
+        let id = world.boxes.entity_ids[0];
+        let row = world.entity_rows.get(&id).unwrap().row_id as usize;
+        let before = world.world.curr.readiness[row];
+        assert!(before.0 & ReadinessMask::ALLOCATED != 0);
+        world
+            .queue_live_set_field(id, alchemy_protocol::edit_field_id::FLAGS, &encode_flags(0))
+            .unwrap();
+        world.step();
+        let after = world.world.curr.readiness[row];
+        assert_eq!(
+            after.0 & ReadinessMask::ALLOCATED,
+            before.0 & ReadinessMask::ALLOCATED
+        );
+        assert_eq!(world.scene_flags.get(&id).copied(), Some(0));
+        world
+            .queue_live_set_field(
+                id,
+                alchemy_protocol::edit_field_id::FLAGS,
+                &encode_flags(SCENE_FLAG_GRABBABLE),
+            )
+            .unwrap();
+        world.step();
+        assert_eq!(
+            world.scene_flags.get(&id).copied(),
+            Some(SCENE_FLAG_GRABBABLE)
+        );
+        assert!(world.boxes.grabbable[0]);
+    }
+
+    #[test]
+    fn barrier_patch_fail_restores_atoms_dirty_epoch() {
+        use alchemy_protocol::encode_flags;
+        let mut world = test_world();
+        world.ensure_topo_len();
+        world.publish_dirty = false;
+        let id = *world.meshes.first().expect("mesh");
+        let row = world.entity_rows.get(&id).unwrap().row_id;
+        let atom_before = world.world.curr.asset_atoms[row as usize];
+        let epoch_before = world.world.curr.epoch_id;
+        world
+            .queue_live_set_field(id, alchemy_protocol::edit_field_id::FLAGS, &encode_flags(1))
+            .unwrap();
+        // First patch would succeed; second is OOB → barrier Err + compensate first.
+        world.frame_bridge.queue_patch(PendingPatch::SetAssetAtom {
+            row_id: row,
+            blake3: [0xab; 32],
+        });
+        world.frame_bridge.queue_patch(PendingPatch::SetAssetAtom {
+            row_id: 999_999,
+            blake3: [0xcd; 32],
+        });
+        assert_eq!(
+            world.apply_frame_bridge_barrier().unwrap_err(),
+            "patch apply failed"
+        );
+        assert_eq!(world.world.curr.asset_atoms[row as usize], atom_before);
+        assert_eq!(world.world.curr.epoch_id, epoch_before);
+        assert!(!world.publish_dirty);
+        assert!(world.pending_flags.is_empty());
+        // FLAGS pending abandoned — must not apply the queued value `1`.
+        assert_ne!(world.scene_flags.get(&id).copied(), Some(1));
+        assert!(!world.world.curr.iter_dirty_rows().any(|r| r == row));
+    }
+
+    #[test]
+    fn barrier_reparent_fail_restores_atoms_and_topo() {
+        let mut world = test_world();
+        world.ensure_topo_len();
+        world.publish_dirty = false;
+        let child = *world.meshes.first().expect("mesh");
+        let parent = world.boxes.entity_ids[0];
+        let child_row = world.entity_rows.get(&child).unwrap().row_id;
+        let parent_row = world.entity_rows.get(&parent).unwrap().row_id;
+        let atom_before = world.world.curr.asset_atoms[child_row as usize];
+        let epoch_before = world.world.curr.epoch_id;
+        let topo_before = world.topo.parent_of.clone();
+
+        // Patch applies first; then cyclic reparent fails → atoms+topo restored.
+        world.frame_bridge.queue_patch(PendingPatch::SetAssetAtom {
+            row_id: child_row,
+            blake3: [0x11; 32],
+        });
+        world.queue_live_reparent(child, parent).unwrap();
+        let mut parents = world
+            .frame_bridge
+            .pending_parents
+            .clone()
+            .unwrap_or_else(|| world.topo.parent_of.clone());
+        parents[child_row as usize] = parent_row;
+        parents[parent_row as usize] = child_row;
+        world.frame_bridge.queue_reparent(parents);
+
+        assert_eq!(
+            world.apply_frame_bridge_barrier().unwrap_err(),
+            "reparent bake failed"
+        );
+        assert_eq!(
+            world.world.curr.asset_atoms[child_row as usize],
+            atom_before
+        );
+        assert_eq!(world.world.curr.epoch_id, epoch_before);
+        assert_eq!(world.topo.parent_of, topo_before);
+        assert!(!world.publish_dirty);
+        assert!(!world.frame_bridge.parents_dirty);
+        assert!(world.frame_bridge.pending_parents.is_none());
+    }
+
+    #[test]
+    fn spawn_then_reparent_preserves_topo_across_grow() {
+        use alchemy_protocol::SceneEntry;
+        let mut world = test_world();
+        world.ensure_topo_len();
+        let parent = world.boxes.entity_ids[0];
+        let child = *world.meshes.first().unwrap();
+        world.queue_live_reparent(child, parent).unwrap();
+        world.step();
+        let child_row = world.entity_rows.get(&child).unwrap().row_id as usize;
+        let parent_row = world.entity_rows.get(&parent).unwrap().row_id;
+        assert_eq!(world.topo.parent_of[child_row], parent_row);
+
+        let entry = SceneEntry {
+            entity_id: 100,
+            blake3: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            x: 0.0,
+            y: 2.0,
+            z: 0.0,
+            half_extent: 0.0,
+            flags: 0,
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            qw: 1.0,
+            sx: 1.0,
+            sy: 1.0,
+            sz: 1.0,
+        };
+        assert!(world.spawn_mesh_entry(&entry));
+        world.step();
+        // Creative parent must survive sheet grow + ensure_topo_len.
+        let child_row = world.entity_rows.get(&child).unwrap().row_id as usize;
+        assert_eq!(world.topo.parent_of[child_row], parent_row);
     }
 
     #[test]

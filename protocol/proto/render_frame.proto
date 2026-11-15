@@ -26,6 +26,9 @@ message RenderFrame {
   // Per user_root slot: last Intent `intent_seq` host applied (index = slot).
   // Length 0..USER_ROOT_SLOTS_MAX; absent slots read as 0 (x00af / owned prediction).
   repeated uint64 acked_intent_seq = 8;
+  // Host live_scene_rev tip (x00b3). 0 = unset/legacy. Snapshot carries the same field
+  // so EditCommit gaps can resync watermark (x0024-style).
+  uint64 scene_rev = 9;
 }
 
 message Entity {
