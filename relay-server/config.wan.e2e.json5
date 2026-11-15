@@ -52,6 +52,8 @@
         key_exprs: [
           "alchemy/dev/room/*/*/manifest",
           "alchemy/dev/room/*/*/frame",
+          // x00be Spatial Interest: explicit cell frames (do NOT widen to frame/**)
+          "alchemy/dev/room/*/*/frame/cell/*",
           "alchemy/dev/room/*/*/presence",
           "alchemy/dev/room/*/*/snapshot",
           "alchemy/dev/room/*/*/sim_state",
@@ -114,6 +116,7 @@
           "alchemy/dev/room/*/*/alive/**",
           "alchemy/dev/room/*/*/manifest",
           "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/frame/cell/*",
           "alchemy/dev/room/*/*/presence",
           "alchemy/dev/room/*/*/snapshot",
           "alchemy/dev/room/*/*/sim_state",
@@ -148,6 +151,7 @@
         key_exprs: [
           "alchemy/dev/room/*/*/manifest",
           "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/frame/cell/*",
           "alchemy/dev/room/*/*/presence",
           "alchemy/dev/room/*/*/snapshot",
           "alchemy/dev/room/*/*/edit",
@@ -164,6 +168,7 @@
         key_exprs: [
           "alchemy/dev/room/*/*/manifest",
           "alchemy/dev/room/*/*/frame",
+          "alchemy/dev/room/*/*/frame/cell/*",
           "alchemy/dev/room/*/*/presence",
           "alchemy/dev/room/*/*/snapshot",
           "alchemy/dev/room/*/*/edit",

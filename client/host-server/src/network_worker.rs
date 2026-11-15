@@ -9,12 +9,16 @@
 //! empty-hold / catch-up / 30Hz tick match pre-x0042;
 //! net-tick pose `Vec`s recycle via [`PoseScratchPool`] (acquire → submit → coalesce/worker
 //! release) so the steady path does not `Vec::with_capacity` each net tick.
-//! `put` failure is fail-closed via `process::exit(78)` (same severity as former
-//! main-loop `?`, without returning to physics).
+//! `put` failure on Room `…/frame` is fail-closed via `process::exit(78)` (same
+//! severity as former main-loop `?`, without returning to physics).
+//! x00be: after a successful Room frame put, the same sealed bytes are soft-put to
+//! `…/frame/cell/0_0_0` (dual-publish); cell put failure is logged + counted and
+//! does **not** kill the Room path.
 //! Non-guarantees: rkyv/bytemuck wire; Prometheus; backpressure that stalls physics;
 //! draining pending jobs / joining the worker on `stop()` (process exit may drop
 //! in-flight puts); Manifest logical (non-bytes) jobs — sealed bytes pass through;
-//! zero-alloc encode/AEAD/Zenoh; pooling of `removes` / upsert `Entity` vecs.
+//! zero-alloc encode/AEAD/Zenoh; pooling of `removes` / upsert `Entity` vecs;
+//! cell put reachability; multi-cell publish; client cell subscription.
 
 use alchemy_protocol::wire_aead::AeadKind;
 use alchemy_protocol::wire_crypto::{sign_frame, sign_presence, SigningKey};
@@ -422,19 +426,38 @@ pub struct PublishStats {
     pub empty_delta_frames: AtomicU64,
     pub coalesce_frames: AtomicU64,
     pub net_tick: AtomicU64,
+    /// Successful dual-puts to `…/frame/cell/0_0_0` (x00be).
+    pub cell_publishes: AtomicU64,
+    /// Soft-fail count for cell dual-publish (Room path still advanced).
+    pub cell_publish_failures: AtomicU64,
     /// In-flight dirty masks to OR back on the physics thread after empty/fail put (x00b1).
     pub wire_dirty_restores: Mutex<Vec<[u64; BITMASK_WORDS]>>,
 }
 
+/// 1s window snapshot from [`PublishStats::snapshot_and_reset`] (x00be adds cell dual-publish).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PublishStatsWindow {
+    pub publishes: u64,
+    pub upsert_entities: u64,
+    pub empty_delta_frames: u64,
+    pub coalesce_frames: u64,
+    /// Cumulative net tick (not window-reset).
+    pub net_tick: u64,
+    pub cell_ok: u64,
+    pub cell_fail: u64,
+}
+
 impl PublishStats {
-    pub fn snapshot_and_reset(&self) -> (u64, u64, u64, u64, u64) {
-        (
-            self.publishes.swap(0, Ordering::Relaxed),
-            self.upsert_entities.swap(0, Ordering::Relaxed),
-            self.empty_delta_frames.swap(0, Ordering::Relaxed),
-            self.coalesce_frames.swap(0, Ordering::Relaxed),
-            self.net_tick.load(Ordering::Relaxed),
-        )
+    pub fn snapshot_and_reset(&self) -> PublishStatsWindow {
+        PublishStatsWindow {
+            publishes: self.publishes.swap(0, Ordering::Relaxed),
+            upsert_entities: self.upsert_entities.swap(0, Ordering::Relaxed),
+            empty_delta_frames: self.empty_delta_frames.swap(0, Ordering::Relaxed),
+            coalesce_frames: self.coalesce_frames.swap(0, Ordering::Relaxed),
+            net_tick: self.net_tick.load(Ordering::Relaxed),
+            cell_ok: self.cell_publishes.swap(0, Ordering::Relaxed),
+            cell_fail: self.cell_publish_failures.swap(0, Ordering::Relaxed),
+        }
     }
 }
 
@@ -447,6 +470,8 @@ pub struct NetworkWorkerConfig {
     pub manifest_pub: zenoh::pubsub::Publisher<'static>,
     pub presence_pub: zenoh::pubsub::Publisher<'static>,
     pub frame_pub: zenoh::pubsub::Publisher<'static>,
+    /// Origin cell dual-publish (`…/frame/cell/0_0_0` · x00be). Soft-fail only.
+    pub frame_cell_pub: zenoh::pubsub::Publisher<'static>,
     pub snapshot_cache: Arc<Mutex<RenderFrame>>,
     pub host_key: SigningKey,
     /// Room id for AEAD AAD (x0069).
@@ -513,6 +538,15 @@ fn put_or_die(label: &str, pub_: &zenoh::pubsub::Publisher<'_>, bytes: Vec<u8>) 
         log::error!("{label} publish failed: {e}");
         std::process::exit(78);
     }
+}
+
+/// Soft put for Spatial Interest cell dual-publish (x00be). Does not exit the process.
+fn put_soft(label: &str, pub_: &zenoh::pubsub::Publisher<'_>, bytes: Vec<u8>) -> bool {
+    if let Err(e) = pub_.put(bytes).wait() {
+        log::warn!("{label} dual-publish failed (Room path kept): {e}");
+        return false;
+    }
+    true
 }
 
 fn seal_or_die(
@@ -639,6 +673,7 @@ impl WorkerState {
     fn put_signed_frame(
         &mut self,
         frame_pub: &zenoh::pubsub::Publisher<'_>,
+        frame_cell_pub: &zenoh::pubsub::Publisher<'_>,
         key: &SigningKey,
         room_id: &str,
         room_aead: &host_server::room_aead::SharedRoomAead,
@@ -664,7 +699,14 @@ impl WorkerState {
         };
         sign_frame(key, &mut frame);
         let env = seal_or_die(AeadKind::Frame, room_id, room_aead, frame.encode_to_vec());
+        // Room frame is tick authority: fail-closed before dual-publish (x00be).
+        let cell_env = env.clone();
         put_or_die("frame", frame_pub, env);
+        if put_soft("frame_cell", frame_cell_pub, cell_env) {
+            stats.cell_publishes.fetch_add(1, Ordering::Relaxed);
+        } else {
+            stats.cell_publish_failures.fetch_add(1, Ordering::Relaxed);
+        }
         stats
             .upsert_entities
             .fetch_add(upsert_len, Ordering::Relaxed);
@@ -678,6 +720,7 @@ impl WorkerState {
     fn handle_frame(
         &mut self,
         frame_pub: &zenoh::pubsub::Publisher<'_>,
+        frame_cell_pub: &zenoh::pubsub::Publisher<'_>,
         key: &SigningKey,
         room_id: &str,
         room_aead: &host_server::room_aead::SharedRoomAead,
@@ -731,6 +774,7 @@ impl WorkerState {
             let remove_ids = removes.clone();
             self.put_signed_frame(
                 frame_pub,
+                frame_cell_pub,
                 key,
                 room_id,
                 room_aead,
@@ -836,6 +880,7 @@ impl WorkerState {
         let remove_ids = removes.clone();
         self.put_signed_frame(
             frame_pub,
+            frame_cell_pub,
             key,
             room_id,
             room_aead,
@@ -902,6 +947,7 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
                 manifest_pub,
                 presence_pub,
                 frame_pub,
+                frame_cell_pub,
                 snapshot_cache,
                 host_key,
                 room_id,
@@ -914,7 +960,9 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
                 deferred_removes: Vec::new(),
                 deferred_catchup: false,
             };
-            log::info!("network worker ready (Zenoh put off physics thread; AEAD on)");
+            log::info!(
+                "network worker ready (Zenoh put off physics thread; AEAD on; cell dual-publish x00be)"
+            );
             while let Some((frame, presence, manifest)) = hub_w.take_batch() {
                 if let Some(job) = manifest {
                     state.handle_manifest(&manifest_pub, &room_id, &room_aead, job);
@@ -925,6 +973,7 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
                 if let Some(sample) = frame {
                     state.handle_frame(
                         &frame_pub,
+                        &frame_cell_pub,
                         &host_key,
                         &room_id,
                         &room_aead,
@@ -945,6 +994,87 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// x00be: 1s window swaps cell dual-publish counters with Room delta stats.
+    #[test]
+    fn snapshot_and_reset_includes_cell_window() {
+        let stats = PublishStats::default();
+        stats.publishes.store(3, Ordering::Relaxed);
+        stats.cell_publishes.store(2, Ordering::Relaxed);
+        stats.cell_publish_failures.store(1, Ordering::Relaxed);
+        stats.net_tick.store(9, Ordering::Relaxed);
+        let w = stats.snapshot_and_reset();
+        assert_eq!(
+            w,
+            PublishStatsWindow {
+                publishes: 3,
+                upsert_entities: 0,
+                empty_delta_frames: 0,
+                coalesce_frames: 0,
+                net_tick: 9,
+                cell_ok: 2,
+                cell_fail: 1,
+            }
+        );
+        assert_eq!(stats.publishes.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.cell_publishes.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.cell_publish_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.net_tick.load(Ordering::Relaxed), 9);
+    }
+
+    /// x00be: Room tick authority key and origin cell dual-publish key stay distinct.
+    #[test]
+    fn origin_cell_frame_key_is_distinct_from_room_frame() {
+        use alchemy_protocol::{
+            frame_cell_key, frame_key, FRAME_CELL_KEY_LOCAL_ORIGIN, LOCAL_WIRE_CAP,
+        };
+        let room = frame_key("local", LOCAL_WIRE_CAP);
+        let cell = frame_cell_key("local", LOCAL_WIRE_CAP, 0, 0, 0);
+        assert_eq!(cell, FRAME_CELL_KEY_LOCAL_ORIGIN);
+        assert_ne!(room, cell);
+        assert!(cell.ends_with("/frame/cell/0_0_0"));
+        assert!(!cell.contains("/frame/**"));
+    }
+
+    /// x00be: WAN ACL must list `frame/cell/*` explicitly on the four interest paths
+    /// (never widen Room `…/frame` to `…/frame/**`).
+    #[test]
+    fn wan_acl_lists_explicit_frame_cell_keys() {
+        let roots = [
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../relay-server/config.wan.json5"
+            ),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../relay-server/config.wan.e2e.json5"
+            ),
+        ];
+        let cell = "alchemy/dev/room/*/*/frame/cell/*";
+        let forbidden = "alchemy/dev/room/*/*/frame/**";
+        let required_rules = [
+            "host-put-sim",
+            "host-egress-declare",
+            "guest-sub-sim",
+            "guest-egress-sim",
+        ];
+        for path in roots {
+            let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+            assert!(
+                !text.contains(forbidden),
+                "{path} must not widen frame to frame/**"
+            );
+            let cell_count = text.matches(cell).count();
+            assert!(
+                cell_count >= required_rules.len(),
+                "{path}: expected ≥{} `{cell}` rows, got {cell_count}",
+                required_rules.len()
+            );
+            for rule in required_rules {
+                assert!(text.contains(rule), "{path}: missing ACL rule id {rule}");
+            }
+        }
+    }
 
     #[test]
     fn catchup_synthesizes_removes_and_full_upserts() {

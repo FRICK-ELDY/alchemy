@@ -324,6 +324,10 @@ pub const LOCAL_ROOM_KEY: [u8; wire_aead::ROOM_KEY_LEN] = *b"alchemy-local-room-
 /// Default Zenoh key for local room frames (high-frequency pose delta).
 pub const FRAME_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/frame";
 
+/// Local dual-publish cell frame at origin cell `0_0_0` (x00be Spatial Interest).
+pub const FRAME_CELL_KEY_LOCAL_ORIGIN: &str =
+    "alchemy/dev/room/local/localdevwirecap00000001/frame/cell/0_0_0";
+
 /// Default Zenoh key for local room inputs.
 pub const INPUT_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/input";
 
@@ -481,6 +485,100 @@ fn room_prefix(room_id: &str, wire_cap: &str) -> String {
 /// Build a frame key (caller should [`validate_room_id`] + [`validate_wire_cap`]).
 pub fn frame_key(room_id: &str, wire_cap: &str) -> String {
     format!("{}/frame", room_prefix(room_id, wire_cap))
+}
+
+/// Why [`parse_cell_id_segment`] rejected a value (x00be).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellIdSegmentError {
+    Empty,
+    ContainsSlash,
+    WrongPartCount,
+    InvalidInteger,
+}
+
+impl std::fmt::Display for CellIdSegmentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "cell id segment must not be empty"),
+            Self::ContainsSlash => write!(f, "cell id segment must not contain '/'"),
+            Self::WrongPartCount => write!(f, "cell id segment must be cx_cy_cz"),
+            Self::InvalidInteger => write!(f, "cell id axis must be a signed decimal integer"),
+        }
+    }
+}
+
+impl std::error::Error for CellIdSegmentError {}
+
+/// Format a cell id as one Zenoh key segment (`cx_cy_cz`, e.g. `0_0_0`, `-1_-2_0`).
+///
+/// Same integer axes as shared-sim `CellId` (`CELL_SIZE_M=64` center origin); this crate
+/// only formats indices and does not convert world coordinates.
+pub fn format_cell_id_segment(cx: i32, cy: i32, cz: i32) -> String {
+    format!("{cx}_{cy}_{cz}")
+}
+
+fn parse_i32_prefix(s: &str) -> Result<(i32, &str), CellIdSegmentError> {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return Err(CellIdSegmentError::InvalidInteger);
+    }
+    let mut i = 0;
+    if bytes[0] == b'-' {
+        i = 1;
+        if i >= bytes.len() {
+            return Err(CellIdSegmentError::InvalidInteger);
+        }
+    }
+    let digit_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == digit_start {
+        return Err(CellIdSegmentError::InvalidInteger);
+    }
+    let n = s[..i]
+        .parse::<i32>()
+        .map_err(|_| CellIdSegmentError::InvalidInteger)?;
+    Ok((n, &s[i..]))
+}
+
+/// Parse a cell id segment produced by [`format_cell_id_segment`].
+///
+/// Guarantees: exactly three signed decimal axes separated by `_` (supports negatives
+/// such as `-1_-2_0`). Rejects `/`, empty parts, and trailing junk.
+pub fn parse_cell_id_segment(s: &str) -> Result<[i32; 3], CellIdSegmentError> {
+    if s.is_empty() {
+        return Err(CellIdSegmentError::Empty);
+    }
+    if s.contains('/') {
+        return Err(CellIdSegmentError::ContainsSlash);
+    }
+    let mut vals = [0i32; 3];
+    let mut rest = s;
+    for (i, slot) in vals.iter_mut().enumerate() {
+        let (n, next) = parse_i32_prefix(rest)?;
+        *slot = n;
+        if i < 2 {
+            rest = next
+                .strip_prefix('_')
+                .ok_or(CellIdSegmentError::WrongPartCount)?;
+        } else if !next.is_empty() {
+            return Err(CellIdSegmentError::WrongPartCount);
+        }
+    }
+    Ok(vals)
+}
+
+/// Build a cell-scoped frame key (x00be Spatial Interest · direction A).
+///
+/// Room [`frame_key`] remains the tick authority / compatibility path. Caller should
+/// [`validate_room_id`] + [`validate_wire_cap`].
+pub fn frame_cell_key(room_id: &str, wire_cap: &str, cx: i32, cy: i32, cz: i32) -> String {
+    format!(
+        "{}/frame/cell/{}",
+        room_prefix(room_id, wire_cap),
+        format_cell_id_segment(cx, cy, cz)
+    )
 }
 
 /// Build an input key (caller should [`validate_room_id`] + [`validate_wire_cap`]).
@@ -991,9 +1089,55 @@ mod tests {
     }
 
     #[test]
+    fn cell_id_segment_roundtrip_and_negatives() {
+        assert_eq!(format_cell_id_segment(0, 0, 0), "0_0_0");
+        assert_eq!(format_cell_id_segment(-1, 2, 0), "-1_2_0");
+        assert_eq!(format_cell_id_segment(-1, -2, 0), "-1_-2_0");
+        assert_eq!(parse_cell_id_segment("0_0_0").unwrap(), [0, 0, 0]);
+        assert_eq!(parse_cell_id_segment("-1_2_0").unwrap(), [-1, 2, 0]);
+        assert_eq!(parse_cell_id_segment("-1_-2_0").unwrap(), [-1, -2, 0]);
+        assert_eq!(
+            parse_cell_id_segment("").unwrap_err(),
+            CellIdSegmentError::Empty
+        );
+        assert_eq!(
+            parse_cell_id_segment("0/0/0").unwrap_err(),
+            CellIdSegmentError::ContainsSlash
+        );
+        assert_eq!(
+            parse_cell_id_segment("0_0").unwrap_err(),
+            CellIdSegmentError::WrongPartCount
+        );
+        assert_eq!(
+            parse_cell_id_segment("0_0_0_1").unwrap_err(),
+            CellIdSegmentError::WrongPartCount
+        );
+        assert_eq!(
+            parse_cell_id_segment("a_0_0").unwrap_err(),
+            CellIdSegmentError::InvalidInteger
+        );
+        assert_eq!(
+            parse_cell_id_segment("_0_0").unwrap_err(),
+            CellIdSegmentError::InvalidInteger
+        );
+    }
+
+    #[test]
     fn key_helpers() {
         let cap = LOCAL_WIRE_CAP;
         assert_eq!(frame_key("local", cap), FRAME_KEY_LOCAL);
+        assert_eq!(
+            frame_cell_key("local", cap, 0, 0, 0),
+            FRAME_CELL_KEY_LOCAL_ORIGIN
+        );
+        assert_ne!(
+            frame_cell_key("local", cap, 0, 0, 0),
+            frame_key("local", cap)
+        );
+        assert_eq!(
+            frame_cell_key("alpha", cap, -1, -2, 3),
+            format!("alchemy/dev/room/alpha/{cap}/frame/cell/-1_-2_3")
+        );
         assert_eq!(input_key("local", cap), INPUT_KEY_LOCAL);
         assert_eq!(manifest_key("local", cap), MANIFEST_KEY_LOCAL);
         assert_eq!(host_control_key("local", cap), HOST_CONTROL_KEY_LOCAL);

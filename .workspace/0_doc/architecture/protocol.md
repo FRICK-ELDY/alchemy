@@ -92,14 +92,15 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 
 ## キー式ヘルパ（x0017 + x0022 liveliness + x0023 snapshot + x004e wire_cap + x006d/x007b inventory）
 
-式: `alchemy/dev/room/{room_id}/{wire_cap}/{manifest|frame|input|presence|host_control|snapshot|sim_state|edit|inventory/spawn|inventory/despawn|alive/{sub}/{jti}}`。  
+式: `alchemy/dev/room/{room_id}/{wire_cap}/{manifest|frame|frame/cell/{cx}_{cy}_{cz}|input|presence|host_control|snapshot|sim_state|edit|inventory/spawn|inventory/despawn|alive/{sub}/{jti}}`。  
 `*_KEY_LOCAL` は `room_id=local` + fixture `LOCAL_WIRE_CAP` の別名。host/client は `ROOM_ID` + Token の `wire_cap` を `validate_*` してから `*_key` で declare する。
 
 | 定数 / 関数 | 既定 |
 |:---|:---|
 | `LOCAL_WIRE_CAP` | fixture cap（実 room は world 発行） |
 | `MANIFEST_KEY_LOCAL` / `manifest_key(room_id, wire_cap)` | `…/local/{LOCAL_WIRE_CAP}/manifest` |
-| `FRAME_KEY_LOCAL` / `frame_key(room_id, wire_cap)` | `…/frame` |
+| `FRAME_KEY_LOCAL` / `frame_key(room_id, wire_cap)` | `…/frame`（tick 正本） |
+| `FRAME_CELL_KEY_LOCAL_ORIGIN` / `frame_cell_key` / `format_cell_id_segment` | `…/frame/cell/{cx}_{cy}_{cz}`（x00be dual-publish；購読分割は後続） |
 | `INPUT_KEY_LOCAL` / `input_key(room_id, wire_cap)` | `…/input` |
 | `PRESENCE_KEY_LOCAL` / `presence_key(room_id, wire_cap)` | `…/presence` |
 | `SNAPSHOT_KEY_LOCAL` / `snapshot_key(room_id, wire_cap)` | `…/snapshot` |
