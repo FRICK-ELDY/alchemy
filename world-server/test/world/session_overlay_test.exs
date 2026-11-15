@@ -238,4 +238,60 @@ defmodule World.SessionOverlayTest do
     assert {0, 1} = Rooms.expire_due_host_leases()
     assert {:ok, %{state: "active"}} = Rooms.get(room_id)
   end
+
+  test "save_overlay_to_canonical merges entries and clears overlay (x00b7)" do
+    assert {:ok, room_id, _, _} = Rooms.create("ov-save-1", @owner)
+    assert {:ok, _} = Rooms.activate_as_host(room_id, @owner)
+    assert {:ok, composed0} = Rooms.composed_scene(room_id)
+    assert {:ok, canon0, overlay0} = Rooms.unpack_revision(composed0["revision"])
+    canon_count0 = length(composed0["entries"])
+
+    assert {:ok, composed1} =
+             Rooms.append_overlay_entry(room_id, %{"blake3" => @blake3}, canon0, overlay0)
+
+    assert Enum.any?(composed1["entries"], fn e -> e["blake3"] == @blake3 end)
+    assert {:ok, ^canon0, overlay1} = Rooms.unpack_revision(composed1["revision"])
+
+    overlay_entity =
+      Enum.find(composed1["entries"], fn e -> e["blake3"] == @blake3 end)["entity_id"]
+
+    assert {:ok, after_save} = Rooms.save_overlay_to_canonical(room_id, canon0, overlay1)
+    assert Enum.any?(after_save["entries"], fn e -> e["blake3"] == @blake3 end)
+    assert length(after_save["entries"]) == canon_count0 + 1
+    assert {:ok, canon1, overlay_after} = Rooms.unpack_revision(after_save["revision"])
+    assert canon1 == canon0 + 1
+    assert overlay_after == overlay1 + 1
+
+    # Overlay clear + dormant would not drop the saved mesh.
+    assert {:ok, _} = Rooms.handover(room_id, @owner, nil)
+    assert {:ok, after_dormant} = Rooms.composed_scene(room_id)
+
+    assert Enum.any?(after_dormant["entries"], fn e ->
+             e["blake3"] == @blake3 and e["entity_id"] == overlay_entity
+           end)
+  end
+
+  test "save_overlay_to_canonical empty overlay is idempotent (x00b7)" do
+    assert {:ok, room_id, _, _} = Rooms.create("ov-save-empty", @owner)
+    assert {:ok, _} = Rooms.activate_as_host(room_id, @owner)
+    assert {:ok, composed0} = Rooms.composed_scene(room_id)
+    assert {:ok, canon0, overlay0} = Rooms.unpack_revision(composed0["revision"])
+
+    assert {:ok, again} = Rooms.save_overlay_to_canonical(room_id, canon0, overlay0)
+    assert again["revision"] == composed0["revision"]
+    assert {:ok, ^canon0, ^overlay0} = Rooms.unpack_revision(again["revision"])
+  end
+
+  test "save_overlay_to_canonical CAS conflict on stale revision (x00b7)" do
+    assert {:ok, room_id, _, _} = Rooms.create("ov-save-cas", @owner)
+    assert {:ok, _} = Rooms.activate_as_host(room_id, @owner)
+    assert {:ok, composed0} = Rooms.composed_scene(room_id)
+    assert {:ok, canon0, overlay0} = Rooms.unpack_revision(composed0["revision"])
+
+    assert {:ok, _} =
+             Rooms.append_overlay_entry(room_id, %{"blake3" => @blake3}, canon0, overlay0)
+
+    assert {:error, :scene_revision_conflict} =
+             Rooms.save_overlay_to_canonical(room_id, canon0, overlay0)
+  end
 end

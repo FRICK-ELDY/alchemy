@@ -86,6 +86,7 @@ pub fn spawn_edit_commit_subscriber(
                         };
                         *slot = Some(next);
                     }
+                    note_save_commit(&shared, &commit, true);
                     log::info!(
                         "EditCommit accepted op_id={} scene_rev={}",
                         commit.op_id,
@@ -97,8 +98,11 @@ pub fn spawn_edit_commit_subscriber(
                     let hint = match commit.reject_reason {
                         alchemy_protocol::edit_reject::APPLY => "apply_fail_retry_ok",
                         alchemy_protocol::edit_reject::STALE_PRECONDITION => "stale_refresh_first",
+                        alchemy_protocol::edit_reject::SAVE_FORBIDDEN => "save_forbidden",
+                        alchemy_protocol::edit_reject::SAVE_CONFLICT => "save_conflict",
                         _ => "other",
                     };
+                    note_save_commit(&shared, &commit, false);
                     log::info!(
                         "EditCommit rejected op_id={} reason={} scene_rev={} hint={hint}",
                         commit.op_id,
@@ -125,6 +129,46 @@ fn edit_scene_rev_gap(shared: &SharedState, tip: u64) -> bool {
         return false;
     };
     edit_scene_rev_gap_from_prev(*slot, tip)
+}
+
+/// If `commit.op_id` matches a pending Room Save, publish Dash status (x00b7).
+///
+/// Writes status first, then compare-and-clears `pending_save_op_id` only while it still
+/// equals `commit.op_id`. Status lock failure leaves pending set so busy stays (no
+/// silent unlock to a stuck `saving…` with pending already cleared).
+fn note_save_commit(shared: &SharedState, commit: &EditCommit, accepted: bool) {
+    let matches = match shared.pending_save_op_id.lock() {
+        Ok(g) => *g == Some(commit.op_id),
+        Err(_) => return,
+    };
+    if !matches {
+        return;
+    }
+
+    let status = if accepted {
+        "saved".to_string()
+    } else {
+        match commit.reject_reason {
+            alchemy_protocol::edit_reject::SAVE_FORBIDDEN => {
+                "forbidden — active host must be scene writer (owner/editor)".into()
+            }
+            alchemy_protocol::edit_reject::SAVE_CONFLICT => "conflict — try Save again".into(),
+            alchemy_protocol::edit_reject::WORLD => "save failed — try again".into(),
+            alchemy_protocol::edit_reject::AUTH => "forbidden — not authorized".into(),
+            other => format!("save rejected (reason={other})"),
+        }
+    };
+    let Ok(mut slot) = shared.room_save_status.lock() else {
+        return;
+    };
+    *slot = Some(status);
+    drop(slot);
+
+    if let Ok(mut pending) = shared.pending_save_op_id.lock() {
+        if *pending == Some(commit.op_id) {
+            *pending = None;
+        }
+    }
 }
 
 #[cfg(test)]

@@ -312,6 +312,9 @@ pub fn append_room_scene_entry(
                     "scene append CAS exhausted after {MAX_SCENE_CAS_ATTEMPTS} attempts"
                 ));
             }
+            Err(CasAttempt::Forbidden) => {
+                return Err(anyhow!("scene_writer_forbidden"));
+            }
             Err(CasAttempt::Other(err)) => return Err(err),
         }
     }
@@ -394,6 +397,8 @@ fn append_room_scene_entry_once(
             let body = resp.into_string().unwrap_or_default();
             if code == 409 && is_scene_revision_conflict(&body) {
                 Err(CasAttempt::Conflict)
+            } else if code == 403 && is_scene_writer_forbidden(&body) {
+                Err(CasAttempt::Forbidden)
             } else {
                 Err(CasAttempt::Other(anyhow!(
                     "overlay append failed status={code} body={body}"
@@ -439,6 +444,9 @@ pub fn delete_room_scene_entry(
                 return Err(anyhow!(
                     "scene delete CAS exhausted after {MAX_SCENE_CAS_ATTEMPTS} attempts"
                 ));
+            }
+            Err(CasAttempt::Forbidden) => {
+                return Err(anyhow!("scene_writer_forbidden"));
             }
             Err(CasAttempt::Other(err)) => return Err(err),
         }
@@ -494,6 +502,8 @@ fn delete_room_scene_entry_once(
             let body = resp.into_string().unwrap_or_default();
             if code == 409 && is_scene_revision_conflict(&body) {
                 Err(CasAttempt::Conflict)
+            } else if code == 403 && is_scene_writer_forbidden(&body) {
+                Err(CasAttempt::Forbidden)
             } else {
                 Err(CasAttempt::Other(anyhow!(
                     "scene delete failed status={code} body={body}"
@@ -508,7 +518,106 @@ fn delete_room_scene_entry_once(
 
 enum CasAttempt {
     Conflict,
+    /// World 403 `scene_writer_forbidden` / host forbidden (x00b7 Save).
+    Forbidden,
     Other(anyhow::Error),
+}
+
+fn is_scene_writer_forbidden(body: &str) -> bool {
+    serde_json::from_str::<SceneErrorJson>(body)
+        .map(|e| e.error == "scene_writer_forbidden")
+        .unwrap_or(false)
+}
+
+/// x00b7: merge session_overlay into canonical and clear overlay (packed CAS).
+///
+/// Returns composed scene. Empty overlay is idempotent (same packed revision).
+/// Retries on `scene_revision_conflict` only.
+pub fn save_overlay_to_canonical(
+    world_url: &str,
+    room_id: &str,
+    host_room_token: &str,
+    pop_key: &SigningKey,
+    shared_scene: &Arc<RwLock<RoomScene>>,
+) -> Result<RoomScene> {
+    let mut expected = shared_revision(shared_scene)?;
+    for attempt in 1..=MAX_SCENE_CAS_ATTEMPTS {
+        match save_overlay_to_canonical_once(world_url, room_id, host_room_token, pop_key, expected)
+        {
+            Ok(scene) => return Ok(scene),
+            Err(CasAttempt::Conflict) if attempt < MAX_SCENE_CAS_ATTEMPTS => {
+                cas_backoff(attempt);
+                expected = fetch_expected_revision(world_url, room_id, host_room_token, pop_key)
+                    .with_context(|| {
+                        format!("scene save CAS refetch after conflict (attempt {attempt})")
+                    })?;
+            }
+            Err(CasAttempt::Conflict) => {
+                return Err(anyhow!(
+                    "scene save CAS exhausted after {MAX_SCENE_CAS_ATTEMPTS} attempts"
+                ));
+            }
+            Err(CasAttempt::Forbidden) => {
+                return Err(anyhow!("scene_writer_forbidden"));
+            }
+            Err(CasAttempt::Other(err)) => return Err(err),
+        }
+    }
+    Err(anyhow!(
+        "scene save CAS exhausted after {MAX_SCENE_CAS_ATTEMPTS} attempts"
+    ))
+}
+
+fn save_overlay_to_canonical_once(
+    world_url: &str,
+    room_id: &str,
+    host_room_token: &str,
+    pop_key: &SigningKey,
+    expected_revision: u64,
+) -> std::result::Result<RoomScene, CasAttempt> {
+    let base = world_url.trim_end_matches('/');
+    let url = format!("{base}/api/v1/rooms/{room_id}/scene/save");
+    let path = request_path(&url);
+    let authz = format!("Bearer {host_room_token}");
+    let raw = serde_json::to_vec(&serde_json::json!({
+        "expected_revision": expected_revision,
+    }))
+    .map_err(|e| CasAttempt::Other(anyhow!("encode scene save body: {e:#}")))?;
+    let req = with_pop(
+        credential_agent()
+            .post(&url)
+            .set("authorization", &authz)
+            .set("content-type", "application/json"),
+        pop_key,
+        "POST",
+        path,
+        &raw,
+    );
+    match req.send(raw.as_slice()) {
+        Ok(resp) => {
+            let parsed: SceneResponseJson = resp
+                .into_json()
+                .map_err(|e| CasAttempt::Other(anyhow!("parse scene save: {e:#}")))?;
+            let mut scene = scene_from_response(parsed);
+            scene.owner_sub = None;
+            Ok(scene)
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            if code == 409 && is_scene_revision_conflict(&body) {
+                Err(CasAttempt::Conflict)
+            } else if code == 403 && is_scene_writer_forbidden(&body) {
+                Err(CasAttempt::Forbidden)
+            } else {
+                Err(CasAttempt::Other(anyhow!(
+                    "scene save failed status={code} body={body}"
+                )))
+            }
+        }
+        Err(err) => Err(CasAttempt::Other(anyhow!(
+            "scene save request failed: {err:#}"
+        ))),
+    }
 }
 
 #[cfg(test)]

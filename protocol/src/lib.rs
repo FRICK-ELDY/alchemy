@@ -67,9 +67,10 @@ pub use edit_field::{
 ///        Intent `release_v*` / `release_w*` (throw apply still host-local).
 /// x00b2: `EditProposal` / `EditCommit` on `…/edit` (Spawn/Despawn ops).
 /// x00b3: Reparent/SetField + `RenderFrame.scene_rev`; Commit tip = host live_scene_rev.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.24.0-x00b5";
+/// x00b7: `EditSave` overlay→canonical; Commit tip unchanged on Save.
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.24.0-x00b7";
 
-/// `EditCommit.reject_reason` codes (x00b2 / x00b3).
+/// `EditCommit.reject_reason` codes (x00b2 / x00b3 / x00b7).
 pub mod edit_reject {
     pub const NONE: u32 = 0;
     pub const AUTH: u32 = 1;
@@ -86,6 +87,10 @@ pub mod edit_reject {
     /// Ready delivery / FrameBridge queue / tick-barrier apply failed
     /// (mirrors rolled back when applicable; tip unchanged).
     pub const APPLY: u32 = 11;
+    /// Scene writer forbidden / active-host Save rejected by world (x00b7).
+    pub const SAVE_FORBIDDEN: u32 = 12;
+    /// Save packed CAS exhausted / revision conflict (x00b7).
+    pub const SAVE_CONFLICT: u32 = 13;
 }
 
 /// `EditSetField.field_id` (x00b3). Value encodings are little-endian / UTF-8 as noted.

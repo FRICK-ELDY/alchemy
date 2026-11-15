@@ -2,7 +2,7 @@
 
 > **ID:** `x00b6` · **slug:** `dash-room-tab` · **status:** `done` · **area:** `[client, system_ui, docs]` · **surface:** `[desktop, vr]` · **depends_on:** `[x000f, x007c, x007f]`  
 > **優先度:** 明示 Save（後続）の器。Resonite Session タブ相当を **Room** と呼ぶ  
-> **後続:** 明示 Save（Save Changes）· Users 実データ · Permissions（`editor_subs` HTTP）· visibility 編集 UI
+> **後続:** 明示 Save 本体は [x00b7](x00b7-overlay-canonical-save.md)；Users 実データ · Permissions（`editor_subs` HTTP）· visibility 編集 UI · 親子永続（A）
 
 目標: Dash 下部に英語ラベル **`Room`** タブを追加し、入室中だけ開けるようにする。中身は Settings / Users / Permissions の薄いサブメニュー枠。現行 session shell（Leave / Rejoin / host CTA）を Room → Settings へ移し、Save Changes は disabled プレースホルダのみ。
 

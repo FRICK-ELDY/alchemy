@@ -7,6 +7,7 @@ package alchemy.edit;
 // Host puts EditCommit on the same key (AeadKind::EditCommit).
 // x00b3: Reparent/SetField are live-only (host live_scene_rev); no overlay CAS.
 // Spawn/Despawn may still CAS overlay (VCS debt) but Commit.scene_rev is live tip.
+// x00b7: Save merges overlay→canonical; Commit.scene_rev tip is unchanged.
 
 message EditProposal {
   bytes session_pub = 1;
@@ -29,8 +30,12 @@ message EditOp {
     EditDespawn despawn = 2;
     EditReparent reparent = 3;
     EditSetField set_field = 4;
+    // x00b7: persist session_overlay into canonical scene (empty body).
+    EditSave save = 5;
   }
 }
+
+message EditSave {}
 
 message EditSpawn {
   // Lowercase hex blake3 (64 chars) of the mesh blob.

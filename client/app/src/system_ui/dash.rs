@@ -218,6 +218,11 @@ pub struct DashState {
     pub session_enter_last_detail_at: Option<std::time::Instant>,
     /// Room tab sub-menu (local; not mirrored Desktop↔XR · x00b6).
     pub room_sub_tab: RoomSubTab,
+    /// Soft UI: active host Token present (Desktop authors; XR echoes via chrome · x00b7).
+    /// World still enforces `active_host ∩ scene_writer`.
+    pub room_save_enabled: bool,
+    /// Save Changes status line (saving / saved / forbidden / conflict). Desktop→XR chrome.
+    pub room_save_status: String,
     /// Settings body scroll offset (px); content above bottom tabs is clipped.
     pub settings_scroll: f32,
     /// Tape / Bitmask X-Ray panel text (local; not mirrored Desktop↔XR).
@@ -301,6 +306,8 @@ impl Default for DashState {
             worlds_last_frame_at: None,
             worlds_in_room: false,
             room_sub_tab: RoomSubTab::Settings,
+            room_save_enabled: false,
+            room_save_status: String::new(),
             worlds_key_stale: false,
             session_enter_active: false,
             session_enter_progress: 0.0,
@@ -337,6 +344,7 @@ impl Default for DashState {
 /// derived `hotswitch_label` / `home_password` / `worlds_*` / `in_session_peer` /
 /// `inventory_live_peer`.
 /// Hotswitch auto/suppressed SoT is [`crate::surface::PresentationGate`], not here.
+/// Room Save soft-enable + status are chrome-synced (Desktop authors · x00b7).
 #[derive(Clone, Debug)]
 pub struct SharedDashLogic {
     pub open: bool,
@@ -370,6 +378,10 @@ pub struct SharedDashLogic {
     pub in_session: bool,
     /// Desktop Live (Inventory allowed · x007f). XR echoes into `inventory_live_peer`.
     pub inventory_live: bool,
+    /// Desktop soft Save enable (host Token). XR echoes into `room_save_enabled` (x00b7).
+    pub room_save_enabled: bool,
+    /// Desktop Save status line. XR echoes into `room_save_status` (x00b7).
+    pub room_save_status: String,
 }
 
 impl Default for SharedDashLogic {
@@ -429,6 +441,8 @@ impl SharedDashLogic {
             server_operator: s.server_operator,
             in_session: dash_in_session_for_store(s),
             inventory_live: dash_inventory_live_for_store(s),
+            room_save_enabled: s.room_save_enabled,
+            room_save_status: s.room_save_status.clone(),
         }
     }
 
@@ -445,6 +459,8 @@ impl SharedDashLogic {
             && self.server_operator == s.server_operator
             && self.in_session == dash_in_session_for_store(s)
             && self.inventory_live == dash_inventory_live_for_store(s)
+            && self.room_save_enabled == s.room_save_enabled
+            && self.room_save_status == s.room_save_status
     }
 
     pub fn form_eq(&self, s: &DashState) -> bool {
@@ -481,6 +497,8 @@ impl SharedDashLogic {
         self.server_operator = s.server_operator;
         self.in_session = dash_in_session_for_store(s);
         self.inventory_live = dash_inventory_live_for_store(s);
+        self.room_save_enabled = s.room_save_enabled;
+        self.room_save_status = s.room_save_status.clone();
     }
 
     /// Write form fields only (push path — does not touch chrome / password).
@@ -523,6 +541,7 @@ impl SharedDashLogic {
                 s.inventory_live_peer = false;
                 changed = true;
             }
+            // Desktop owns room_save_*; peer chrome must not overwrite.
         } else {
             if s.in_session_peer != self.in_session {
                 s.in_session_peer = self.in_session;
@@ -530,6 +549,14 @@ impl SharedDashLogic {
             }
             if s.inventory_live_peer != self.inventory_live {
                 s.inventory_live_peer = self.inventory_live;
+                changed = true;
+            }
+            if s.room_save_enabled != self.room_save_enabled {
+                s.room_save_enabled = self.room_save_enabled;
+                changed = true;
+            }
+            if s.room_save_status != self.room_save_status {
+                s.room_save_status = self.room_save_status.clone();
                 changed = true;
             }
         }
@@ -1043,6 +1070,27 @@ impl DashState {
         }
     }
 
+    /// Live session for Save Changes hit (x00b7).
+    /// Same Live gate as Inventory: Desktop `inventory_live_allowed`, XR `inventory_live_peer`
+    /// (Waiting / KeyStale / Entering stay non-hittable on both surfaces).
+    pub fn room_save_live(&self) -> bool {
+        if self.home_session_actions_enabled {
+            self.inventory_live_allowed()
+        } else {
+            self.inventory_live_peer
+        }
+    }
+
+    /// True while a Save put is in flight (debounce · x00b7).
+    pub fn room_save_busy(&self) -> bool {
+        self.room_save_status.starts_with("saving")
+    }
+
+    /// Soft-enabled Save hit target (Live + host Token soft gate + not busy).
+    pub fn room_save_hittable(&self) -> bool {
+        self.room_save_live() && self.room_save_enabled && !self.room_save_busy()
+    }
+
     /// Value written to SharedDashLogic.in_session for Desktop↔XR chrome sync.
     pub fn in_session_for_store(&self) -> bool {
         dash_in_session_for_store(self)
@@ -1352,21 +1400,35 @@ fn rebuild_session_shell(
         y += 24.0;
     }
 
-    // Save Changes stub (explicit Save is a later slice; not hit-tested).
+    // Save Changes: overlay→canonical (x00b7). Desktop + XR (chrome-synced soft enable).
     let save = Rect::new(cx, y + 8.0, 180.0, 36.0);
-    tree.push_rect(save, Color::rgba(0.18, 0.18, 0.20, 0.85));
+    let can_save = state.room_save_hittable();
+    let save_bg = if can_save {
+        state.interact(WidgetId::RoomSaveChanges, ACCENT)
+    } else {
+        Color::rgba(0.18, 0.18, 0.20, 0.85)
+    };
+    let save_fg = if can_save { TEXT } else { MUTED };
+    tree.push_rect(save, save_bg);
     tree.push_label(
         Rect::new(save.x + 12.0, save.y + 10.0, 156.0, 16.0),
         "Save Changes",
-        MUTED,
+        save_fg,
         1.1,
     );
-    tree.push_label(
-        Rect::new(cx, save.y + 42.0, cw, 32.0),
-        "Save Changes — coming later (explicit Save / VCS).",
-        MUTED,
-        1.0,
-    );
+    if can_save {
+        tree.register_hit(WidgetId::RoomSaveChanges, save);
+    }
+    let help = if !state.room_save_status.is_empty() {
+        state.room_save_status.as_str()
+    } else if !state.room_save_live() {
+        "Save Changes — join a Live session first."
+    } else if !state.room_save_enabled {
+        "Save Changes — active host Token required (world also checks scene writer)."
+    } else {
+        "Save Changes — merge session overlay into the room scene."
+    };
+    tree.push_label(Rect::new(cx, save.y + 42.0, cw, 32.0), help, MUTED, 1.0);
 }
 
 /// Room tab body: Settings / Users / Permissions sub-menus (x00b6).
@@ -3881,5 +3943,36 @@ mod tests {
         assert!(xr.in_session_peer);
         assert!(xr.inventory_live_peer);
         assert_eq!(xr.tab, DashTab::Inventory);
+    }
+
+    #[test]
+    fn xr_apply_chrome_echoes_room_save_enable_and_status() {
+        // x00b7: Desktop soft-enable / status must reach XR so Save is hittable.
+        let logic = SharedDashLogic {
+            open: true,
+            tab: DashTab::Room,
+            shell: OnboardingShell::Dash,
+            in_session: true,
+            inventory_live: true,
+            room_save_enabled: true,
+            room_save_status: "saved".into(),
+            ..Default::default()
+        };
+        let mut xr = DashState {
+            open: true,
+            tab: DashTab::Home,
+            shell: OnboardingShell::Dash,
+            home_session_actions_enabled: false,
+            in_session_peer: false,
+            inventory_live_peer: false,
+            room_save_enabled: false,
+            room_save_status: String::new(),
+            ..Default::default()
+        };
+        logic.apply_chrome_to(&mut xr);
+        assert!(xr.inventory_live_peer);
+        assert!(xr.room_save_enabled);
+        assert_eq!(xr.room_save_status, "saved");
+        assert!(xr.room_save_hittable());
     }
 }

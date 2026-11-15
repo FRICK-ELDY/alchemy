@@ -30,8 +30,12 @@ defmodule World.Rooms do
   durable-clears them.
   **x00a2**: scene/overlay CAS enforces SceneBudget (≤ protocol manifest entries/bytes) and
   composed (canon ∥ overlay) entry cap on **both** canonical and overlay mutate paths.
+  **x00b7**: `save_overlay_to_canonical/3` merges overlay entries into canonical (entity_id kept)
+  and clears overlay in one packed CAS; empty overlay is idempotent. HTTP requires active host
+  **and** scene writer (same gate as canonical mutate).
   Non-guarantees: full UGC editor; multi-node replication; Postgres (swap path documented);
-  overlay→canonical Save/merge; signed HostDelegation JWT;
+  Save-time detection of entity_id collisions between canon and overlay (append id bands differ);
+  signed HostDelegation JWT;
   relation notify retry queue; already-issued Room Token JWT revocation (TTL; new epoch AEAD closed);
   grace durability across world restart; Room physical DELETE (and quota decrement);
   user_root / cuboid (empty blake3) despawn;
@@ -501,6 +505,82 @@ defmodule World.Rooms do
   def delete_overlay_entry(_, _, _, _), do: {:error, :invalid_room_id}
 
   @doc """
+  x00b7: merge `session_overlay` entries into canonical `scene` and clear overlay.
+
+  **Auth:** not checked here. Callers must authorize active_host + scene writer
+  (HTTP: `ensure_active_host` + `ensure_scene_writer`).
+
+  Keeps overlay `entity_id`s. Empty overlay is idempotent (returns composed, no rev bump).
+  Atomic packed CAS updates both columns. Returns **composed** scene.
+  """
+  @spec save_overlay_to_canonical(room_id(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, map()}
+          | {:error,
+             :invalid_room_id
+             | :not_found
+             | :scene_revision_conflict
+             | :invalid_scene_revision
+             | :invalid_revision
+             | :scene_entries_exceeded
+             | :scene_bytes_exceeded
+             | storage_error()}
+  def save_overlay_to_canonical(
+        room_id,
+        expected_canonical_revision,
+        expected_overlay_revision
+      )
+      when is_binary(room_id) and is_integer(expected_canonical_revision) and
+             expected_canonical_revision >= 0 and is_integer(expected_overlay_revision) and
+             expected_overlay_revision >= 0 do
+    with :ok <- validate_room_id(room_id),
+         {:ok, %Room{} = room} <- fetch_room(room_id),
+         {:ok, overlay} <- require_overlay(room.session_overlay),
+         {:ok, current_canon} <- scene_revision(room.scene),
+         {:ok, current_overlay} <- scene_revision(overlay),
+         :ok <- match_expected_revision(current_canon, expected_canonical_revision),
+         :ok <- match_expected_revision(current_overlay, expected_overlay_revision) do
+      case scene_entries(overlay) do
+        [] ->
+          compose_room_scene(room)
+
+        overlay_entries ->
+          merge_overlay_into_canonical(
+            room_id,
+            room.scene,
+            overlay_entries,
+            expected_canonical_revision,
+            expected_overlay_revision
+          )
+      end
+    end
+  end
+
+  def save_overlay_to_canonical(_, _, _), do: {:error, :invalid_room_id}
+
+  defp merge_overlay_into_canonical(
+         room_id,
+         scene,
+         overlay_entries,
+         expected_canonical_revision,
+         expected_overlay_revision
+       ) do
+    with :ok <- ensure_revision_headroom(expected_canonical_revision),
+         :ok <- ensure_revision_headroom(expected_overlay_revision),
+         {:ok, next_scene} <-
+           build_merged_canonical_scene(scene, overlay_entries, expected_canonical_revision),
+         :ok <-
+           cas_set_scene_and_cleared_overlay(
+             room_id,
+             expected_canonical_revision,
+             expected_overlay_revision,
+             next_scene
+           ),
+         {:ok, fresh} <- fetch_room(room_id) do
+      compose_room_scene(fresh)
+    end
+  end
+
+  @doc """
   Append one mesh SceneEntry (x006d / x0082 / x009e).
 
   **Auth:** not checked here (x009d). Callers must have already authorized a canonical
@@ -679,6 +759,45 @@ defmodule World.Rooms do
       )
     end
   end
+
+  # x00b7: canonical merge + overlay clear in one packed CAS.
+  defp cas_set_scene_and_cleared_overlay(room_id, expected_canon, expected_overlay, next_scene)
+       when is_binary(room_id) and is_integer(expected_canon) and is_integer(expected_overlay) and
+              is_map(next_scene) do
+    empty_overlay = %{"revision" => expected_overlay + 1, "entries" => []}
+
+    with :ok <- World.SceneBudget.ensure_composed(next_scene, empty_overlay),
+         {:ok, encoded_scene} <- World.SceneBudget.encode_checked(next_scene) do
+      sql = """
+      UPDATE rooms
+      SET scene = ?,
+          session_overlay = #{cleared_overlay_sql()},
+          updated_at = CURRENT_TIMESTAMP
+      WHERE room_id = ?
+        AND CAST(json_extract(scene, '$.revision') AS INTEGER) = ?
+        AND CAST(json_extract(session_overlay, '$.revision') AS INTEGER) = ?
+        AND #{overlay_clear_headroom_sql()}
+      """
+
+      cas_packed_update_result(
+        World.Repo.query(sql, [encoded_scene, room_id, expected_canon, expected_overlay]),
+        room_id,
+        :cas_set_scene_and_cleared_overlay
+      )
+    end
+  end
+
+  defp build_merged_canonical_scene(scene, overlay_entries, expected_revision)
+       when is_map(scene) and is_list(overlay_entries) do
+    {:ok,
+     %{
+       "revision" => expected_revision + 1,
+       "locomotion" => Map.get(scene, "locomotion") || Map.get(scene, :locomotion),
+       "entries" => scene_entries(scene) ++ overlay_entries
+     }}
+  end
+
+  defp build_merged_canonical_scene(_, _, _), do: {:error, :invalid_entry}
 
   defp cas_packed_update_result({:ok, %{num_rows: 1}}, _room_id, _context), do: :ok
 

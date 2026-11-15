@@ -48,7 +48,7 @@ pub use credential_worker::{
 };
 pub use room_scene::{
     append_room_scene_entry, delete_room_scene_entry, fetch_room_scene,
-    install_shared_scene_if_newer, RoomScene,
+    install_shared_scene_if_newer, save_overlay_to_canonical, RoomScene,
 };
 pub use seal_cache::{fetch_manifest_seal, ManifestSealCache};
 pub use timing::{

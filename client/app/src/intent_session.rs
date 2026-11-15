@@ -2,7 +2,7 @@
 //!
 //! Guarantees: bind Intent carries Room Token until enough successful puts; steady
 //! Intents are Ed25519-signed thereafter. Room Token must be issued for this
-//! session_pub (`cnf.spk`, x003e). Edit-lane Spawn/Despawn/Reparent/SetField (and legacy
+//! session_pub (`cnf.spk`, x003e). Edit-lane Spawn/Despawn/Reparent/SetField/Save (and legacy
 //! inventory JSON helpers) reuse the same key with a separate `control_seq` — no Room Token on Zenoh.
 //! Non-guarantees: host acceptance ack (Zenoh put ≠ verify); key persistence across restart.
 
@@ -11,7 +11,7 @@ use alchemy_protocol::edit_op::Op;
 use alchemy_protocol::wire_crypto::{
     generate_signing_key, public_key_bytes, sign_edit_proposal, sign_input, SigningKey,
 };
-use alchemy_protocol::{EditDespawn, EditOp, EditProposal, EditSpawn, InputEvent};
+use alchemy_protocol::{EditDespawn, EditOp, EditProposal, EditSave, EditSpawn, InputEvent};
 use base64::Engine;
 
 /// Successful Zenoh puts that must still include `room_token` after join / refresh.
@@ -280,6 +280,24 @@ impl IntentSession {
                     value,
                     expected_value_hash,
                 })),
+            }],
+            sig: vec![],
+            room_id: room_id.to_string(),
+        };
+        sign_edit_proposal(&self.key, &mut proposal);
+        proposal
+    }
+
+    /// Build a signed `EditProposal` Save (x00b7; advances `control_seq`).
+    pub fn sign_edit_save(&mut self, room_id: &str, base_scene_rev: u64) -> EditProposal {
+        self.control_seq = self.control_seq.saturating_add(1);
+        let mut proposal = EditProposal {
+            session_pub: public_key_bytes(&self.key),
+            control_seq: self.control_seq,
+            base_scene_rev,
+            op_id: self.control_seq,
+            ops: vec![EditOp {
+                op: Some(Op::Save(EditSave {})),
             }],
             sig: vec![],
             room_id: room_id.to_string(),

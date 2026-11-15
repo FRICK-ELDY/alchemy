@@ -122,6 +122,7 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::RoomSubSettings
         | WidgetId::RoomSubUsers
         | WidgetId::RoomSubPermissions
+        | WidgetId::RoomSaveChanges
         | WidgetId::WorldsLeave
         | WidgetId::WorldsRejoin
         | WidgetId::WorldsHostRescue

@@ -634,7 +634,7 @@ flowchart LR
 * **[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)** — host dirty 30Hz 本番切替 — **done**。
 * **[x00b2](slices/x00b2-phase3-edit-lane-foundation.md)** — 確定レーン土台（`…/edit` + Spawn/Despawn）— **done**。
 * **[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md)** — ライブ Reparent/SetField + FrameBridge + snapshot `scene_rev`（案 B）— **done**。
-* 後続（次空き `x00b7`〜）: 明示 Save · Spawn 即 CAS 見直し（VCS 負債）。Room タブ器は [x00b6](slices/x00b6-dash-room-tab.md) **done**（Save 本体は後続）。`x00b4` / `x00b5` は assets 所有権の穴塞ぎ（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §14.4）に使用済み。
+* 後続（次空き `x00b8`〜）: 親子/SetField 永続（A）· Spawn 即 CAS 見直し（C）。overlay→canonical Save は [x00b7](slices/x00b7-overlay-canonical-save.md) **done**。Room タブ器は [x00b6](slices/x00b6-dash-room-tab.md) **done**。`x00b4` / `x00b5` は assets 所有権の穴塞ぎ（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §14.4）に使用済み。
 
 1. **作業内容**:
    * `ALCHEMY_SIM_BACKEND=mvcc_xpbd|epoch_xpbd` で切替可能な権威ループ。Ingress 検疫 → Fork/`make_mut` → XPBD（**接触オン＝`bounds: Some`**）→ 階層 → Commit。ここで P1-2 の host 配線を閉じる（**→ x00ad**）。

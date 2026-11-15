@@ -403,6 +403,8 @@ fn clear_worlds_session_shell(ui: &mut SystemUi) {
     ui.state.worlds_last_frame_at = None;
     ui.state.worlds_in_room = false;
     ui.state.worlds_key_stale = false;
+    ui.state.room_save_enabled = false;
+    ui.state.room_save_status.clear();
     ui.state.end_session_enter();
     // Drop peer bit so Leave/Logout can push in_session=false (XR Inventory unblocks).
     ui.state.in_session_peer = false;
@@ -1717,6 +1719,9 @@ impl ApplicationHandler for App {
                     if poll_session_enter_wait_details(&mut self.ui, &self.shared) {
                         dirty = true;
                     }
+                    if sync_room_save_ui(&mut self.ui, &self.shared) {
+                        dirty = true;
+                    }
                     if let Some(t) = tick {
                         if self.ui.state.worlds_seen_frame_tick != Some(t) {
                             self.ui.state.worlds_seen_frame_tick = Some(t);
@@ -2464,6 +2469,7 @@ fn apply_inventory_peer_request(
             }
             Some(UiAction::InventoryDespawn)
         }
+        InventoryPeerRequest::RoomSaveChanges => Some(UiAction::RoomSaveChanges),
     }
 }
 
@@ -2536,6 +2542,65 @@ fn catalog_owner_sub_for_room(ui: &SystemUi, room_id: &str) -> Option<String> {
         .find(|(id, ..)| id == room_id)
         .map(|(_, _, _, owner)| owner.clone())
         .filter(|s| !s.is_empty())
+}
+
+/// Soft Save gate (x00b7): Live + Intent + **host Room Token**.
+///
+/// World still requires `active_host ∩ scene_writer` on the host HTTP sub — soft UI
+/// cannot see `editor_subs`, so a non-writer compute host may still get `SAVE_FORBIDDEN`.
+fn room_save_gate_status(
+    access: &Option<String>,
+    intent_bind_pending: Option<bool>,
+    host_room_token: &Option<String>,
+) -> Option<&'static str> {
+    match (access.as_ref(), intent_bind_pending) {
+        (None, _) => return Some("sign in required"),
+        (Some(_), None) => return Some("Intent session required (join/bind first)"),
+        (Some(_), Some(true)) => return Some("Intent bind in progress — wait a moment"),
+        _ => {}
+    }
+    let host_role = host_room_token.as_deref().is_some_and(|t| {
+        crate::inventory::room_token_role_unverified(t).as_deref() == Some("host")
+    });
+    if host_role {
+        None
+    } else {
+        Some("active host Token required to Save (scene writer enforced by world)")
+    }
+}
+
+/// Soft Save enable + consume `EditCommit` status from SharedState (x00b7).
+/// Marks chrome dirty so XR echoes enable/status via SharedDashLogic.
+fn sync_room_save_ui(ui: &mut SystemUi, shared: &SharedState) -> bool {
+    let mut dirty = false;
+    let (access, host_room_token) = match shared.auth.lock() {
+        Ok(auth) => (auth.access_token.clone(), auth.host_room_token.clone()),
+        Err(_) => (None, None),
+    };
+    let intent_bind_pending = shared
+        .intent_session
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(|s| s.bind_pending()));
+    // Live gate matches Inventory / XR (`inventory_live_allowed`), not bare `worlds_in_room`.
+    let enabled = ui.state.inventory_live_allowed()
+        && room_save_gate_status(&access, intent_bind_pending, &host_room_token).is_none();
+    if ui.state.room_save_enabled != enabled {
+        ui.state.room_save_enabled = enabled;
+        dirty = true;
+    }
+    if let Ok(mut slot) = shared.room_save_status.lock() {
+        if let Some(status) = slot.take() {
+            if ui.state.room_save_status != status {
+                ui.state.room_save_status = status;
+                dirty = true;
+            }
+        }
+    }
+    if dirty {
+        ui.mark_dash_chrome_dirty();
+    }
+    dirty
 }
 
 /// Host `SpawnRate(8/10s)` — client spaces puts so host does not silently reject.
@@ -3780,6 +3845,112 @@ fn handle_ui_action(
                 }
             }
             publish_inventory_mirror_from_ui(ui, shared);
+            ui.rebuild();
+        }
+        UiAction::RoomSaveChanges => {
+            if !ui.state.inventory_live_allowed() {
+                ui.state.room_save_status = "join a Live session first".into();
+                ui.mark_dash_chrome_dirty();
+                ui.rebuild();
+                return;
+            }
+            if ui.state.room_save_busy() {
+                return;
+            }
+            if shared
+                .pending_save_op_id
+                .lock()
+                .ok()
+                .and_then(|g| *g)
+                .is_some()
+            {
+                ui.state.room_save_status = "saving…".into();
+                ui.mark_dash_chrome_dirty();
+                ui.rebuild();
+                return;
+            }
+            let (access, host_room_token) = {
+                let Ok(auth) = shared.auth.lock() else {
+                    ui.state.room_save_status = "auth lock failed".into();
+                    ui.mark_dash_chrome_dirty();
+                    ui.rebuild();
+                    return;
+                };
+                (auth.access_token.clone(), auth.host_room_token.clone())
+            };
+            let intent_bind_pending = shared
+                .intent_session
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().map(|s| s.bind_pending()));
+            if let Some(msg) = room_save_gate_status(&access, intent_bind_pending, &host_room_token)
+            {
+                ui.state.room_save_enabled = false;
+                ui.state.room_save_status = msg.into();
+                ui.mark_dash_chrome_dirty();
+                ui.rebuild();
+                return;
+            }
+            let Some(session) = zenoh.as_ref() else {
+                ui.state.room_save_status = "zenoh not connected".into();
+                ui.mark_dash_chrome_dirty();
+                ui.rebuild();
+                return;
+            };
+            let Some(wire_cap) = shared.wire_cap() else {
+                ui.state.room_save_status = "no wire_cap".into();
+                ui.mark_dash_chrome_dirty();
+                ui.rebuild();
+                return;
+            };
+            let Some((room_key, room_key_epoch)) = shared.live_room_aead() else {
+                ui.state.room_save_status = "room_key missing".into();
+                ui.mark_dash_chrome_dirty();
+                ui.rebuild();
+                return;
+            };
+            let room_id = shared.get_room_id();
+            let proposal = {
+                let Ok(mut gate) = shared.intent_session.lock() else {
+                    ui.state.room_save_status = "intent_session lock failed".into();
+                    ui.mark_dash_chrome_dirty();
+                    ui.rebuild();
+                    return;
+                };
+                let Some(intent) = gate.as_mut() else {
+                    ui.state.room_save_status = "no Intent session (bind first)".into();
+                    ui.mark_dash_chrome_dirty();
+                    ui.rebuild();
+                    return;
+                };
+                let base_scene_rev = shared
+                    .last_edit_scene_rev
+                    .lock()
+                    .ok()
+                    .and_then(|g| *g)
+                    .unwrap_or(0);
+                intent.sign_edit_save(room_id.as_ref(), base_scene_rev)
+            };
+            let op_id = proposal.op_id;
+            match crate::inventory::publish_edit_proposal(
+                session,
+                room_id.as_ref(),
+                wire_cap.as_ref(),
+                room_key.as_ref(),
+                room_key_epoch,
+                &proposal,
+            ) {
+                Ok(()) => {
+                    if let Ok(mut slot) = shared.pending_save_op_id.lock() {
+                        *slot = Some(op_id);
+                    }
+                    ui.state.room_save_status = "saving…".into();
+                }
+                Err(err) => {
+                    ui.state.room_save_status = format!("save put failed: {err:#}");
+                }
+            }
+            ui.mark_dash_chrome_dirty();
             ui.rebuild();
         }
         UiAction::HierarchyCollapseToggle(row) => {
