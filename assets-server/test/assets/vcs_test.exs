@@ -15,7 +15,6 @@ defmodule Assets.VcsTest do
 
   @sub_a "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
   @sub_b "ffffffff-ffff-ffff-ffff-ffffffffffff"
-  @blake3 String.duplicate("a", 64)
 
   setup do
     # Install cert key for x0065 tests
@@ -65,12 +64,15 @@ defmodule Assets.VcsTest do
   end
 
   test "promote_prefab: Commit tree_json == Prefab payload logical tree" do
+    {:ok, mesh_a, _} = Assets.Blobs.upload(@sub_a, "vcs-mesh-a", "application/octet-stream")
+    {:ok, mesh_b, _} = Assets.Blobs.upload(@sub_a, "vcs-mesh-b", "application/octet-stream")
+
     {:ok, payload} =
       Payload.new(1, [
-        %{local_id: "mesh_a", blake3: @blake3, trs: nil},
+        %{local_id: "mesh_a", blake3: mesh_a.blake3, trs: nil},
         %{
           local_id: "mesh_b",
-          blake3: String.duplicate("b", 64),
+          blake3: mesh_b.blake3,
           trs: %{
             translation: [0.0, 1.0, 0.0],
             rotation: [0.0, 0.0, 0.0, 1.0],
@@ -87,9 +89,54 @@ defmodule Assets.VcsTest do
     assert length(decoded.children) == 2
     [c0, c1] = decoded.children
     assert c0.local_id == "mesh_a"
-    assert c0.blake3 == @blake3
+    assert c0.blake3 == mesh_a.blake3
     assert c1.local_id == "mesh_b"
     assert c1.trs.translation == [0.0, 1.0, 0.0]
+  end
+
+  test "promote_prefab rejects when child grant revoked (x00b4)" do
+    {node, _payload} = build_prefab_node(@sub_a, "revoke-promote")
+
+    {:ok, json} = Assets.CAS.read(node.blake3)
+    {:ok, %Payload{children: [%{blake3: child_blake3} | _]}} = Payload.from_json(json)
+
+    grant =
+      Assets.Repo.get_by!(Assets.Blobs.BlobGrant, grantee_sub: @sub_a, blake3: child_blake3)
+
+    {:ok, _} = Assets.Repo.delete(grant)
+
+    assert {:error, :no_grant} = Vcs.promote_prefab(@sub_a, node.node_id)
+    # Node remains prefab (TX rolled back)
+    assert Drive.get_node(@sub_a, node.node_id).kind == "prefab"
+  end
+
+  test "promote_prefab rejects legacy prefab whose child never had a Grant (x00b4)" do
+    # Bypass save_prefab / create_prefab_node: payload uploaded with a child hash
+    # the owner never held a Grant for (pre-x00b4 / direct insert shape).
+    fake_child = String.duplicate("e", 64)
+
+    json =
+      Jason.encode!(%{
+        schema_version: 1,
+        children: [%{local_id: "ghost", blake3: fake_child}]
+      })
+
+    {:ok, cas, _} = Assets.Blobs.upload(@sub_a, json, "application/json")
+
+    node =
+      Assets.Repo.insert!(
+        Assets.Drive.Node.changeset(%Assets.Drive.Node{}, %{
+          node_id: Ecto.UUID.generate(),
+          owner_sub: @sub_a,
+          parent_id: nil,
+          kind: "prefab",
+          name: "legacy-no-child-grant",
+          blake3: cas.blake3
+        })
+      )
+
+    assert {:error, :no_grant} = Vcs.promote_prefab(@sub_a, node.node_id)
+    assert Drive.get_node(@sub_a, node.node_id).kind == "prefab"
   end
 
   test "promote_prefab rejects non-prefab node" do
@@ -167,6 +214,52 @@ defmodule Assets.VcsTest do
 
     assert {:error, :not_found} =
              ItemRef.resolve({:repo_rev, repo.repo_id, "nonexistent-branch"}, @sub_a)
+  end
+
+  test "ItemRef.resolve {:repo_rev, ...} rejects revoked child grant (x00b4)" do
+    {node, _} = build_prefab_node(@sub_a, "itemref-revoke")
+    {:ok, %{repo: repo, commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    {:ok, json} = Assets.CAS.read(node.blake3)
+    {:ok, %Payload{children: [%{blake3: child_blake3} | _]}} = Payload.from_json(json)
+
+    grant =
+      Assets.Repo.get_by!(Assets.Blobs.BlobGrant, grantee_sub: @sub_a, blake3: child_blake3)
+
+    {:ok, _} = Assets.Repo.delete(grant)
+
+    assert {:error, :no_grant} =
+             ItemRef.resolve({:repo_rev, repo.repo_id, commit.commit_id}, @sub_a)
+  end
+
+  test "ItemRef.resolve {:repo_rev, ...} rejects commit tree with never-granted child (x00b4)" do
+    # Promote a normal (child-mesh) prefab for a valid repo, then insert a Commit
+    # whose tree references a blake3 the owner never held — read-path defense
+    # without relying on revoke.
+    {node, _} = build_prefab_node(@sub_a, "itemref-legacy-base")
+    {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    fake_child = String.duplicate("f", 64)
+
+    tree_json =
+      Jason.encode!(%{
+        schema_version: 1,
+        children: [%{local_id: "ghost", blake3: fake_child}]
+      })
+
+    c2 =
+      Assets.Repo.insert!(
+        Commit.changeset(%Commit{}, %{
+          commit_id: Assets.Vcs.generate_id_for_test(),
+          repo_id: repo.repo_id,
+          parent_commit_id: c1.commit_id,
+          author_sub: @sub_a,
+          tree_json: tree_json
+        })
+      )
+
+    assert {:error, :no_grant} =
+             ItemRef.resolve({:repo_rev, repo.repo_id, c2.commit_id}, @sub_a)
   end
 
   # ---------------------------------------------------------------------------

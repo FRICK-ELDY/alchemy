@@ -27,7 +27,7 @@
 | `CasObject`（物理・所有者なし・size/mime のみ）と `BlobRef`（owner×blake3）を分離（x003f / x006f） | StorageVault / `:purchased` / `:mail_temp` |
 | PUT finalize で uploader に `:owned` `BlobGrant`（x004f） | room スコープ grant・Manifest 連動付与以外の Grant 種別 |
 | `POST /api/v1/inventory/blobs` は inventory 用パス契約（x0054）。中身は通常 PUT と同じ（常に owned Grant・x006f） | DriveNode / Prefab / Vault 表・client UI |
-| Drive `take_out`（x007f）: blob → 単一 blake3；prefab → Payload 子 mesh（`blake3`+`local_id`+任意 `trs`）。payload + 各子に Grant。欠落は全体 `:no_grant` | folder / vcs_repo take-out；payload blake3 を blobs に載せる；host 一括 spawn；`save_prefab` 時の子 Grant 必須化（take_out 側で弾く） |
+| Drive `take_out`（x007f）: blob → 単一 blake3；prefab → Payload 子 mesh（`blake3`+`local_id`+任意 `trs`）。payload + 各子に Grant。欠落は全体 `:no_grant`。`save_prefab` / `create_prefab_node` / `promote_prefab` / `ItemRef` `repo_rev` も子 Grant 必須（x00b4；拒否時 Quota/CAS 非消費；HTTP put_back は 403 `no_grant`） | folder / vcs_repo take-out；payload blake3 を blobs に載せる；host 一括 spawn |
 | 同一 blake3 を `/blobs` と `/inventory/blobs` から別 owner が PUT しても共存（x006f） | mime/size 先勝ちの変更；CasObject あり・refcount=0 の GC |
 | local GET は常に `application/octet-stream` + `nosniff`（x008b） | S3 オブジェクト側 Content-Type の強制；表示用 mime のサーバー配信 |
 | PUT: `quota_reservations` + `reserved_bytes` 予約 → TX 外 CAS put → used 振替。失敗時は**予約解放のみ**（compensate は CAS 非削除＝並行同一 hash 安全）（x003f / x0074） | Oban・署名 URL 直 PUT；S3 バケット全 listing |

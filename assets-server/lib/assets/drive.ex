@@ -1,7 +1,7 @@
 defmodule Assets.Drive do
   @moduledoc """
   Personal Drive CRUD (x005c folder/blob, x005d prefab kind, x005f take-out, x0060 put-back,
-  x006e HTTP put_back, x007f prefab multi-child expand).
+  x006e HTTP put_back, x007f prefab multi-child expand, x00b4 child Grant at save).
 
   Guarantees:
   - Owner-only CRUD for DriveNode (folder / blob / prefab).
@@ -10,14 +10,15 @@ defmodule Assets.Drive do
   - Circular parent chain is rejected (bounded hop walk).
   - resolve_for_take_out/2: blob → single `%{blake3}`; prefab → Payload children
     (`blake3` + `local_id` + optional `trs`) with Grant on payload and every child (x007f).
-  - save_prefab/4 validates Prefab.Payload schema and parent authz before upload (x0060).
-    Child BlobGrants are **not** required at save time; take_out will fail with
-    `:no_grant` until every child Grant exists (intentional gap vs take_out).
+  - save_prefab/4 assumes a validated `%Payload{}`; checks parent authz and **every
+    child BlobGrant** before upload (x0060 / x00b4). Missing child Grant → `:no_grant`
+    with no Quota / CAS consumption. take_out still re-checks (defense in depth).
+  - create_prefab_node/4: payload Grant → CAS read → Payload decode → every child Grant
+    (x00b4). Bad payload → `:invalid_prefab`.
 
   Non-guarantees:
   - Group Vault, sharing, Mail/Comms, Shop, VcsRepo ops (→ Assets.Vcs).
   - folder / vcs_repo take-out; host multi-child spawn.
-  - save_prefab rejecting Grant-less children (deferred; take_out enforces).
   - Compensating delete when upload succeeds but DriveNode upsert fails (CAS bytes +
     quota/Grant may remain; CAS orphan bytes without CasObject are handled by
     Assets.CAS.OrphanGc (x0074), not by Drive delete).
@@ -26,7 +27,6 @@ defmodule Assets.Drive do
   import Ecto.Query
 
   alias Assets.Blobs
-  alias Assets.Blobs.BlobGrant
   alias Assets.CAS
   alias Assets.Drive.Node
   alias Assets.Prefab.Payload
@@ -93,14 +93,16 @@ defmodule Assets.Drive do
 
   @doc """
   Create a prefab leaf pointing at an already-uploaded Prefab payload blob.
-  Owner must already hold a BlobGrant for the payload blake3.
+  Owner must hold a BlobGrant for the payload blake3 **and** every child blake3 (x00b4).
   Use save_prefab/4 to upload-and-link in one call (x0060).
   """
   @spec create_prefab_node(String.t(), String.t(), String.t(), String.t() | nil) ::
-          {:ok, Node.t()} | {:error, Ecto.Changeset.t() | :forbidden | :no_grant | term()}
+          {:ok, Node.t()}
+          | {:error, Ecto.Changeset.t() | :forbidden | :no_grant | :invalid_prefab | term()}
   def create_prefab_node(owner_sub, name, payload_blake3, parent_id \\ nil) do
     with :ok <- maybe_assert_parent_owner(owner_sub, parent_id),
-         :ok <- assert_blob_grant(owner_sub, payload_blake3) do
+         :ok <- assert_blob_grant(owner_sub, payload_blake3),
+         :ok <- assert_prefab_payload_child_grants(owner_sub, payload_blake3) do
       changeset =
         Node.changeset(%Node{}, %{
           node_id: generate_id(),
@@ -216,21 +218,23 @@ defmodule Assets.Drive do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Save a Prefab payload as a DriveNode (x0060 put-back).
+  Save a Prefab payload as a DriveNode (x0060 put-back / x00b4 child Grant).
 
-  Steps:
-  1. Validate payload via Assets.Prefab.Payload (rejects non-finite TRS, bad schema).
-  2. Upload payload JSON via Assets.Blobs (Quota + owned BlobGrant; x006f).
+  Steps (caller already holds a validated `%Payload{}`; HTTP put_back validates first):
+  1. Parent authz + every child BlobGrant (reject before Quota/CAS).
+  2. Encode via `Payload.to_json/1` and upload via Assets.Blobs (Quota + owned Grant; x006f).
   3. Upsert DriveNode(kind=prefab, name=name, blake3=new_blake3).
      If a prefab with the same owner+name+parent already exists, its blake3 is updated.
 
-  Returns {:ok, node} on success.
+  Returns {:ok, node} on success. Missing child Grant → `{:error, :no_grant}`.
   """
   @spec save_prefab(String.t(), String.t(), Payload.t(), String.t() | nil) ::
           {:ok, Node.t()} | {:error, term()}
   def save_prefab(owner_sub, name, %Payload{} = payload, parent_id \\ nil) do
-    # Parent/authz checks before upload so :forbidden does not consume quota or orphan CAS.
+    # Parent/authz + child Grants before upload so :forbidden / :no_grant do not
+    # consume quota or orphan CAS (x00b4).
     with :ok <- maybe_assert_parent_owner(owner_sub, parent_id),
+         :ok <- Blobs.assert_child_grants(owner_sub, payload.children),
          {:ok, json} <- Payload.to_json(payload),
          {:ok, cas_obj, _status} <- Blobs.upload(owner_sub, json, "application/json") do
       upsert_prefab_node(owner_sub, name, cas_obj.blake3, parent_id)
@@ -275,12 +279,33 @@ defmodule Assets.Drive do
     end
   end
 
-  defp assert_blob_grant(owner_sub, blake3) do
-    case Repo.get_by(BlobGrant, grantee_sub: owner_sub, blake3: blake3) do
-      %BlobGrant{} -> :ok
-      nil -> {:error, :no_grant}
-    end
+  defp assert_blob_grant(owner_sub, blake3), do: Blobs.assert_grant(owner_sub, blake3)
+
+  defp assert_prefab_payload_child_grants(owner_sub, payload_blake3) do
+    result =
+      with {:ok, json} <- CAS.read(payload_blake3),
+           {:ok, %Payload{children: children}} <- Payload.from_json(json) do
+        Blobs.assert_child_grants(owner_sub, children)
+      end
+
+    map_prefab_payload_error(result)
   end
+
+  defp map_prefab_payload_error(:ok), do: :ok
+  defp map_prefab_payload_error({:error, :no_grant}), do: {:error, :no_grant}
+  defp map_prefab_payload_error({:error, :not_found}), do: {:error, :invalid_prefab}
+  defp map_prefab_payload_error({:error, :invalid_payload_shape}), do: {:error, :invalid_prefab}
+
+  defp map_prefab_payload_error({:error, {:unsupported_schema_version, _}}),
+    do: {:error, :invalid_prefab}
+
+  defp map_prefab_payload_error({:error, {:invalid_child, _, _}}), do: {:error, :invalid_prefab}
+  # Unknown atoms (incl. transient CAS/S3) → :invalid_prefab. Same tradeoff as
+  # map_prefab_take_out_error/1: ops cannot tell storage 5xx from bad payload here.
+  defp map_prefab_payload_error({:error, reason}) when is_atom(reason),
+    do: {:error, :invalid_prefab}
+
+  defp map_prefab_payload_error({:error, _}), do: {:error, :invalid_prefab}
 
   defp expand_prefab_take_out(owner_sub, %Node{blake3: payload_blake3} = node)
        when is_binary(payload_blake3) do
@@ -288,7 +313,7 @@ defmodule Assets.Drive do
       with :ok <- assert_blob_grant(owner_sub, payload_blake3),
            {:ok, json} <- CAS.read(payload_blake3),
            {:ok, %Payload{children: children}} <- Payload.from_json(json),
-           :ok <- assert_child_grants(owner_sub, children) do
+           :ok <- Blobs.assert_child_grants(owner_sub, children) do
         {:ok, %{node: node, blobs: children_to_take_out_blobs(children)}}
       end
 
@@ -324,17 +349,6 @@ defmodule Assets.Drive do
     do: {:error, :invalid_prefab}
 
   defp map_prefab_take_out_error({:error, _}), do: {:error, :invalid_prefab}
-
-  defp assert_child_grants(_owner_sub, []), do: :ok
-
-  defp assert_child_grants(owner_sub, children) do
-    Enum.reduce_while(children, :ok, fn %{blake3: blake3}, :ok ->
-      case assert_blob_grant(owner_sub, blake3) do
-        :ok -> {:cont, :ok}
-        {:error, _} = err -> {:halt, err}
-      end
-    end)
-  end
 
   defp folder_has_children?(owner_sub, parent_id) do
     Repo.exists?(from(n in Node, where: n.owner_sub == ^owner_sub and n.parent_id == ^parent_id))

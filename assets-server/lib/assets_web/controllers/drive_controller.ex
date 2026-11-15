@@ -1,9 +1,10 @@
 defmodule AssetsWeb.DriveController do
   @moduledoc """
-  Personal Drive HTTP surface (x006d / x006e / x007f).
+  Personal Drive HTTP surface (x006d / x006e / x007f / x00b4).
 
   Guarantees: owner-only list + take_out + put_back wrapping `Assets.Drive`.
   Prefab take_out expands Payload children (blake3 + local_id + optional trs).
+  put_back missing child Grant → 403 `no_grant` (x00b4).
   Non-guarantees: folder / vcs_repo take-out UX; host multi-child spawn.
   """
 
@@ -94,6 +95,11 @@ defmodule AssetsWeb.DriveController do
           conn
           |> put_status(:forbidden)
           |> json(%{error: "forbidden"})
+
+        {:error, :no_grant} ->
+          conn
+          |> put_status(:forbidden)
+          |> json(%{error: "no_grant"})
 
         {:error, :parent_not_folder} ->
           conn

@@ -130,6 +130,28 @@ defmodule Assets.DriveNodeTest do
     assert b3 == cas_obj.blake3
   end
 
+  test "create_prefab_node rejects missing child grant (x00b4)" do
+    fake_child = String.duplicate("c", 64)
+
+    json =
+      Jason.encode!(%{
+        schema_version: 1,
+        children: [%{local_id: "c0", blake3: fake_child}]
+      })
+
+    {:ok, cas_obj, _} = Blobs.upload(@sub_a, json, "application/json")
+
+    assert {:error, :no_grant} =
+             Drive.create_prefab_node(@sub_a, "bad-children", cas_obj.blake3)
+  end
+
+  test "create_prefab_node rejects invalid payload body (x00b4)" do
+    {:ok, cas_obj, _} = Blobs.upload(@sub_a, "not-a-prefab", "application/json")
+
+    assert {:error, :invalid_prefab} =
+             Drive.create_prefab_node(@sub_a, "bad-json", cas_obj.blake3)
+  end
+
   test "folder / blob / prefab coexist under same parent" do
     {:ok, parent} = Drive.create_folder(@sub_a, "Container")
     {:ok, cas_obj, _} = Blobs.upload(@sub_a, "raw-mesh-bytes", "application/octet-stream")

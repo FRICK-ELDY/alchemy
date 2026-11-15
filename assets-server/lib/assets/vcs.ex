@@ -10,8 +10,11 @@ defmodule Assets.Vcs do
   See Assets.ItemRef for repo@rev resolution (x0063).
 
   Guarantees:
-  - promote_prefab: same-owner TX; DriveNode kind→vcs_repo + vcs_repo_id set; initial Commit
-    tree_json == Prefab payload; existing blake3 path still readable.
+  - promote_prefab: same-owner TX; every Prefab **child** BlobGrant re-checked (x00b4);
+    DriveNode kind→vcs_repo + vcs_repo_id set; initial Commit tree_json == Prefab payload;
+    existing blake3 path still readable. Missing child Grant → TX rollback `:no_grant`.
+    Payload blake3 Grant is **not** re-checked here (unlike `create_prefab_node`);
+    owner-only fetch + CAS read are the gate — child Grants are the ownership check.
   - Tag is immutable (advance_branch refused for frozen refs).
   - Cert v1: signed message binds tree_blake3(tree_json) + parent; tampered Commit/Tag
     content or signature, or missing target after issue, fails verify_cert with :tampered
@@ -19,10 +22,12 @@ defmodule Assets.Vcs do
   - Private signing key never logged or returned.
 
   Non-guarantees: non-FF merge, fork, transfer, room-scoped grants, CRDT,
-    CA chain, License Token, offline export schema.
+    CA chain, License Token, offline export schema; payload-blake3 Grant on promote.
   """
 
+  alias Assets.Blobs
   alias Assets.Drive.Node
+  alias Assets.Prefab.Payload
   alias Assets.Repo
   alias Assets.Vcs.Cert
   alias Assets.Vcs.Commit
@@ -45,11 +50,12 @@ defmodule Assets.Vcs do
   """
   @spec promote_prefab(String.t(), String.t()) ::
           {:ok, %{repo: VcsRepo.t(), commit: Commit.t(), node: Node.t()}}
-          | {:error, :not_found | :not_prefab | term()}
+          | {:error, :not_found | :not_prefab | :no_grant | :invalid_prefab | term()}
   def promote_prefab(owner_sub, node_id) do
     Repo.transaction(fn ->
       node = fetch_prefab_for_owner!(owner_sub, node_id)
       tree_json = load_prefab_json!(node)
+      assert_prefab_child_grants!(owner_sub, tree_json)
 
       repo_id = generate_id()
       commit_id = generate_id()
@@ -137,6 +143,19 @@ defmodule Assets.Vcs do
     case Assets.CAS.read(blake3) do
       {:ok, json} -> json
       {:error, reason} -> Repo.rollback({:cas_error, reason})
+    end
+  end
+
+  defp assert_prefab_child_grants!(owner_sub, tree_json) do
+    case Payload.from_json(tree_json) do
+      {:ok, %Payload{children: children}} ->
+        case Blobs.assert_child_grants(owner_sub, children) do
+          :ok -> :ok
+          {:error, :no_grant} -> Repo.rollback(:no_grant)
+        end
+
+      {:error, _} ->
+        Repo.rollback(:invalid_prefab)
     end
   end
 

@@ -28,13 +28,17 @@ defmodule Assets do
     TRS (non-finite NaN/Inf rejected) (x005e)
   - Drive.resolve_for_take_out/2: blob → single blake3; prefab → child mesh expand with
     Grant on payload + every child (x005f / x007f)
-  - Drive.save_prefab/4: Payload validated + uploaded + DriveNode upserted
-    (x0060; invariant: save→reload→from_json round-trip is lossless — x0061)
-  - HTTP `POST /api/v1/drive/put_back` wraps save_prefab for Desktop Inventory (x006e)
+  - Drive.save_prefab/4 / create_prefab_node/4: every child BlobGrant required before
+    upload / link (x00b4); missing → `:no_grant` without Quota/CAS spend; take_out
+    still re-checks. save→reload→from_json round-trip lossless (x0060 / x0061)
+  - HTTP `POST /api/v1/drive/put_back` wraps save_prefab; child Grant miss → 403
+    `no_grant` (x006e / x00b4)
   - Vcs.promote_prefab/2: DriveNode(prefab)→VcsRepo + initial Commit in one TX;
-    Commit.tree_json ≡ Prefab payload; old blake3 path remains readable (x0062)
+    child Grants re-checked (x00b4); Commit.tree_json ≡ Prefab payload; old blake3
+    path remains readable (x0062)
   - ItemRef.resolve/2: {:blake3, hash} and {:repo_rev, repo_id, rev} paths;
-    owner / BlobGrant checked; invalid rev → :not_found (x0063)
+    owner / BlobGrant checked; repo_rev also asserts every tree child Grant (x00b4);
+    invalid rev → :not_found (x0063)
   - Vcs.create_branch/3, create_tag/3, advance_branch/3: Ref CRUD; tags immutable (frozen);
     advance_branch checks fast-forward reachability (x0064)
   - Vcs.issue_cert/3 / verify_cert/1: Ed25519 Origin Cert v1
