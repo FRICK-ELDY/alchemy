@@ -35,6 +35,7 @@ ID は roadmap 規約どおり **`x` + 4桁ゼロ埋め小文字 16進**（`x005
 ## 関連
 
 - 目標像: [assets-server-draft.md](../0_doc/architecture/assets-server-draft.md) · [overview.md](../0_doc/architecture/overview.md) Inventory タブ
+- C+3 の先（ローカルリポジトリ → push → PR → main）: [assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md)
 - 現行 assets: [assets-server.md](../0_doc/architecture/assets-server.md)
 - 現行 host/client: [client.md](../0_doc/architecture/client.md)
 

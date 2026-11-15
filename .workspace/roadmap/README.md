@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）。例外: **非 hex 採番の訂正のみ**（例: 誤 `x00ag` → 正 [`x00b0`](slices/x00b0-phase3-sim-state.md)；`0-9a-f` 外の桁は ID として無効）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x00b4`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x00b6`**）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -229,12 +229,14 @@ depends_on: [x0006]
 | x00b1 | — | done | Phase 3: host dirty 30Hz 本番切替（`WireDirtyAccumulator`） | [x00b1-phase3-dirty-30hz-cutover.md](slices/x00b1-phase3-dirty-30hz-cutover.md) |
 | x00b2 | — | done | Phase 3: 確定レーン土台（`…/edit` + Spawn/Despawn 一般化） | [x00b2-phase3-edit-lane-foundation.md](slices/x00b2-phase3-edit-lane-foundation.md) |
 | x00b3 | — | done | Phase 3: ライブ Reparent/SetField + FrameBridge（VCS 案 B） | [x00b3-phase3-edit-ops-live-bridge.md](slices/x00b3-phase3-edit-ops-live-bridge.md) |
+| x00b4 | — | planned | 保存時の子 Grant 必須化（save_prefab / create_prefab_node / promote_prefab / ItemRef repo_rev） | [x00b4-prefab-child-grant-required.md](slices/x00b4-prefab-child-grant-required.md) |
+| x00b5 | — | planned | 配置時の所有権バインド（SpawnTicket: assets 発行 → world 検証） | [x00b5-spawn-ticket-ownership-binding.md](slices/x00b5-spawn-ticket-ownership-binding.md) |
 
-**現在の次:** 明示 Save / Spawn 即 CAS 見直し（VCS 負債 · 次空き `x00b4`）。[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md) **done**。**品質本線** · Spot-Check 保留（Q2）。
+**現在の次:** 所有権の穴塞ぎ [x00b4](slices/x00b4-prefab-child-grant-required.md) → [x00b5](slices/x00b5-spawn-ticket-ownership-binding.md)（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §14.4 · VCS 本体より先行）。並行候補: 明示 Save / Spawn 即 CAS 見直し（VCS 負債 · 未採番）。[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md) **done**。**品質本線** · Spot-Check 保留（Q2）。
 **規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；実装は MVCC Phase 3 後。1000 人は horizon）。
 旧メモ **P3-7（BLAKE3 ストリーミング）** は **CI が完了しなくなるためマージしない**（現行 P3-7 Spatial Interest とは別物）。Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 
-次の空き番号は **`x00b4`**（Interest 実装用に予約しない）。
+次の空き番号は **`x00b6`**（Interest 実装用に予約しない）。
 
 ## 関連
 
@@ -244,6 +246,7 @@ depends_on: [x0006]
 | [mvcc_xpbd.md](mvcc_xpbd.md) | 品質本線（MVCC×XPBD Phase 1–3） |
 | [spatial_interest.md](spatial_interest.md) | 規模本線（配信の空間インデックス / P3-7） |
 | [inventory-ladder.md](inventory-ladder.md) | インベントリ B+2→C+3 交互ラダー |
+| [assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) | assets VCS 設計たたき台（ローカル → push → PR・公開範囲・market 境界・所有権の防御） |
 | [backlog-priority-2026-11-04.md](backlog-priority-2026-11-04.md) | 未完了帯の優先度ビュー（2026-11-04） |
 | [x006a-zenohex-intro-spec.md](x006a-zenohex-intro-spec.md) | x006a 入力仕様（Adapter / :ring / stub；読み替え注記付き） |
 | [architecture/overview.md](../0_doc/architecture/overview.md) | 目標アーキテクチャ |
