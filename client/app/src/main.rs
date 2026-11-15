@@ -38,6 +38,7 @@ mod render_wgpu;
 mod room;
 mod scene;
 mod sim_jitter;
+mod spatial_lens;
 mod surface;
 mod system_ui;
 mod turn;

@@ -42,12 +42,16 @@ use crate::scene::{
     create_depth_view, create_wgpu_for_window, CameraLook, EntityPose, MoveIntent, SceneGpu,
     SharedState,
 };
+use crate::spatial_lens::{
+    decode_hierarchy_binding, pack_personal_lens, place_in_front_of_eye, row_is_live,
+    scrub_selected_row, HandLaserState, InteractionLaserConfig, SpatialLensGpu, SpatialLensState,
+};
 use crate::surface::hotswitch::DesktopRole;
 use crate::system_ui::{
     rematch_scene_selection, DashTab, InventoryPeerRequest, OnboardingShell, SystemUi, UiAction,
 };
 use crate::world_api;
-use crate::world_hit::{desktop_look_ray, pick_grabbable_desktop};
+use crate::world_hit::{desktop_look_ray, pick_grabbable_desktop, Ray};
 use crate::{bind_room_after_join, close_zenoh, join_room_with_access, leave_room};
 
 /// Radians per pixel (fixed; Settings Facet deferred).
@@ -60,6 +64,8 @@ struct DesktopGpu {
     scene: SceneGpu,
     config: wgpu::SurfaceConfiguration,
     depth_view: wgpu::TextureView,
+    /// Spatial Lens Uber-SDF pipeline (x00ba); personal panels only.
+    spatial_lens: SpatialLensGpu,
 }
 
 impl DesktopGpu {
@@ -68,11 +74,13 @@ impl DesktopGpu {
             create_wgpu_for_window(Arc::clone(&window)).await?;
         let depth_view = create_depth_view(&device, config.width, config.height);
         let scene = SceneGpu::from_device(device, queue, format, mesh, shared)?;
+        let spatial_lens = SpatialLensGpu::new(&scene.device, format)?;
         Ok(Self {
             surface,
             scene,
             config,
             depth_view,
+            spatial_lens,
         })
     }
 
@@ -86,7 +94,14 @@ impl DesktopGpu {
         self.depth_view = create_depth_view(&self.scene.device, width, height);
     }
 
-    fn render(&mut self, ui: &mut SystemUi, highlight_entity: Option<u32>) -> Result<()> {
+    fn render(
+        &mut self,
+        ui: &mut SystemUi,
+        highlight_entity: Option<u32>,
+        lens: &SpatialLensState,
+        lens_headers: &[crate::spatial_lens::GpuPanelHeader],
+        lens_prims: &[crate::spatial_lens::GpuUiPrim],
+    ) -> Result<()> {
         self.scene.maybe_log_pose();
         let eye = self.scene.user_root_pose();
         let look = self.scene.look();
@@ -126,6 +141,23 @@ impl DesktopGpu {
             }),
             highlight_entity,
         );
+
+        if lens.visible {
+            self.spatial_lens.upload(
+                &self.scene.device,
+                &self.scene.queue,
+                lens_headers,
+                lens_prims,
+            );
+            self.spatial_lens.draw(
+                &mut encoder,
+                &self.scene.queue,
+                &frame_view,
+                &self.depth_view,
+                view,
+                proj,
+            );
+        }
 
         if ui.state.open {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -198,6 +230,17 @@ struct App {
     pending_room_bind: Option<PendingRoomBind>,
     /// Set after "Binding…" has been drawn once; [`Self::poll_pending_room_bind`] then runs bind.
     room_bind_progress_painted: bool,
+    /// Personal Spatial Lens (x00ba–x00bd). Toggle with `I`; activate row with `F`.
+    spatial_lens: SpatialLensState,
+    spatial_laser: HandLaserState,
+    spatial_laser_cfg: InteractionLaserConfig,
+    spatial_headers: Vec<crate::spatial_lens::GpuPanelHeader>,
+    spatial_prims: Vec<crate::spatial_lens::GpuUiPrim>,
+    /// Look ray currently intersects the Lens board (blocks world Grab start).
+    spatial_lens_hit_panel: bool,
+    spatial_lens_last_tick: Option<std::time::Instant>,
+    /// `I` open already packed this frame — skip the next tick pack (avoid double walk).
+    spatial_lens_fresh_pack: bool,
 }
 
 /// Success UI after a deferred [`bind_room_after_join`] (one frame of enter overlay).
@@ -1247,6 +1290,89 @@ impl App {
         // Drop prediction override immediately (do not wait for next predict_held_grab(None)).
         self.shared.clear_held_grab_prediction();
     }
+
+    /// Pack Hierarchy/Inspector prims + Stickiness hover (x00bb–x00bd).
+    fn tick_spatial_lens(&mut self) {
+        if !self.spatial_lens.visible {
+            self.spatial_headers.clear();
+            self.spatial_prims.clear();
+            self.spatial_lens.hovered_binding = 0;
+            self.spatial_lens_hit_panel = false;
+            self.spatial_lens_last_tick = None;
+            self.spatial_lens_fresh_pack = false;
+            return;
+        }
+        let now = std::time::Instant::now();
+        let dt = self
+            .spatial_lens_last_tick
+            .map(|t| now.duration_since(t).as_secs_f32())
+            .unwrap_or(1.0 / 60.0)
+            .clamp(1.0 / 240.0, 0.05);
+        self.spatial_lens_last_tick = Some(now);
+
+        scrub_selected_row(&mut self.spatial_lens, &self.shared.epoch);
+        crate::epoch_view::scrub_xray_row(&self.shared.epoch);
+        // Intentional: while Lens holds a live selection, it owns Tape X-Ray
+        // (Settings Hierarchy click also writes xray_row; Lens wins each tick when selected).
+        if let Some(row) = self.spatial_lens.selected_row {
+            self.shared.epoch.set_xray_row(Some(row));
+        }
+
+        let (eye, look) = self.eye_and_look();
+        let ray = desktop_look_ray(eye, look);
+        let dir = [ray.dir.x, ray.dir.y, ray.dir.z];
+        let _ = self
+            .spatial_laser
+            .update_smoothed_direction(dir, &self.spatial_laser_cfg, dt);
+
+        // Pack unless `I` already packed this frame. Hover fill uses prior
+        // `hovered_binding` (1-frame lag by design — avoids a second hierarchy walk).
+        let skip_pack = self.spatial_lens_fresh_pack;
+        self.spatial_lens_fresh_pack = false;
+        if !skip_pack {
+            let _ = pack_personal_lens(
+                &mut self.spatial_lens,
+                &self.shared.epoch,
+                &mut self.spatial_headers,
+                &mut self.spatial_prims,
+            );
+        }
+
+        let smooth_ray = Ray {
+            origin: ray.origin,
+            dir: glam::Vec3::from_array(self.spatial_laser.smoothed_dir).normalize_or_zero(),
+        };
+        let hit =
+            crate::spatial_lens::pick_panel(smooth_ray, &self.spatial_headers, &self.spatial_prims);
+        self.spatial_lens_hit_panel = hit.is_some();
+        let (raw_uv, hovered, rect) = match hit {
+            Some(h) => (h.uv_px, h.binding_id, h.rect_px),
+            None => ([0.0, 0.0], 0, [0.0; 4]),
+        };
+        let trigger = if self.primary_down { 0.5 } else { 0.0 };
+        let (_uv, binding) = self.spatial_laser.apply_stickiness_and_press_lock(
+            raw_uv,
+            hovered,
+            rect,
+            trigger,
+            &self.spatial_laser_cfg,
+            dt,
+        );
+        self.spatial_lens.hovered_binding = binding;
+    }
+
+    /// `F` while lens visible: select hierarchy row under sticky binding.
+    fn activate_spatial_lens_binding(&mut self) {
+        scrub_selected_row(&mut self.spatial_lens, &self.shared.epoch);
+        let binding = self.spatial_lens.hovered_binding;
+        if let Some(row) = decode_hierarchy_binding(binding) {
+            if row_is_live(&self.shared.epoch, row) {
+                self.spatial_lens.selected_row = Some(row);
+                self.shared.epoch.set_xray_row(Some(row));
+                log::info!("spatial_lens select row={row}");
+            }
+        }
+    }
 }
 
 /// Desktop UI latch (x00ab): after reject, block new Grab until the button is released.
@@ -1297,7 +1423,8 @@ impl App {
             return;
         }
         if button {
-            if self.held_grab.is_none() && may_start {
+            // Looking at Spatial Lens board: do not start world Grab through the panel.
+            if self.held_grab.is_none() && may_start && !self.spatial_lens_hit_panel {
                 let (eye, look) = self.eye_and_look();
                 let ray = desktop_look_ray(eye, look);
                 let (boxes, defs) = self.grabbable_boxes();
@@ -1572,6 +1699,34 @@ impl ApplicationHandler for App {
                     };
                     self.ui
                         .on_scroll(self.cursor.0 as f32, self.cursor.1 as f32, dy);
+                } else if self.spatial_lens.visible {
+                    let steps = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => {
+                            if y > 0.0 {
+                                -1isize
+                            } else if y < 0.0 {
+                                1
+                            } else {
+                                0
+                            }
+                        }
+                        MouseScrollDelta::PixelDelta(p) => {
+                            if p.y > 0.0 {
+                                -1
+                            } else if p.y < 0.0 {
+                                1
+                            } else {
+                                0
+                            }
+                        }
+                    };
+                    if steps != 0 {
+                        // Clamp happens inside the next `pack_personal_lens` walk.
+                        let next = self.spatial_lens.hierarchy_scroll as isize + steps;
+                        self.spatial_lens.hierarchy_scroll = next.max(0) as usize;
+                        // Open-frame `fresh_pack` would skip that walk — force a pack next tick.
+                        self.spatial_lens_fresh_pack = false;
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -1630,6 +1785,52 @@ impl ApplicationHandler for App {
                     }
                     if pressed && !event.repeat && code == KeyCode::F8 {
                         self.toggle_hotswitch_manual();
+                    }
+                    if pressed && !event.repeat && code == KeyCode::KeyI && !self.ui.state.open {
+                        self.spatial_lens.visible = !self.spatial_lens.visible;
+                        if self.spatial_lens.visible {
+                            let (eye, look) = self.eye_and_look();
+                            place_in_front_of_eye(&mut self.spatial_lens, eye, look, 1.4);
+                            let ray = desktop_look_ray(eye, look);
+                            self.spatial_laser
+                                .snap_direction([ray.dir.x, ray.dir.y, ray.dir.z]);
+                            scrub_selected_row(&mut self.spatial_lens, &self.shared.epoch);
+                            let _ = pack_personal_lens(
+                                &mut self.spatial_lens,
+                                &self.shared.epoch,
+                                &mut self.spatial_headers,
+                                &mut self.spatial_prims,
+                            );
+                            let smooth_ray = Ray {
+                                origin: ray.origin,
+                                dir: glam::Vec3::from_array(self.spatial_laser.smoothed_dir)
+                                    .normalize_or_zero(),
+                            };
+                            // Same forward as place/snap — Grab gate from real pick, not assumed.
+                            self.spatial_lens_hit_panel = crate::spatial_lens::pick_panel(
+                                smooth_ray,
+                                &self.spatial_headers,
+                                &self.spatial_prims,
+                            )
+                            .is_some();
+                            self.spatial_lens_fresh_pack = true;
+                            self.spatial_lens_last_tick = Some(std::time::Instant::now());
+                        } else {
+                            self.spatial_headers.clear();
+                            self.spatial_prims.clear();
+                            self.spatial_lens_hit_panel = false;
+                            self.spatial_lens_last_tick = None;
+                            self.spatial_lens_fresh_pack = false;
+                        }
+                        log::info!("spatial_lens visible={}", self.spatial_lens.visible);
+                    }
+                    if pressed
+                        && !event.repeat
+                        && code == KeyCode::KeyF
+                        && self.spatial_lens.visible
+                        && !self.ui.state.open
+                    {
+                        self.activate_spatial_lens_binding();
                     }
                     if pressed && !event.repeat && code == KeyCode::Escape {
                         self.ui.toggle();
@@ -1837,6 +2038,8 @@ impl ApplicationHandler for App {
                 self.poll_mtls_reopen();
                 // Freeze display α/PrevCurr before Grab + GPU sync (x0091 同一 α).
                 self.shared.begin_display_frame();
+                // Lens hit before Grab so panel look blocks world pick this frame.
+                self.tick_spatial_lens();
                 if self.owns_input() {
                     self.maintain_look_capture();
                     self.rebuild_intent();
@@ -1850,7 +2053,13 @@ impl ApplicationHandler for App {
                     None
                 };
                 let rendered = if let Some(gpu) = self.gpu.as_mut() {
-                    match gpu.render(&mut self.ui, highlight) {
+                    match gpu.render(
+                        &mut self.ui,
+                        highlight,
+                        &self.spatial_lens,
+                        &self.spatial_headers,
+                        &self.spatial_prims,
+                    ) {
                         Ok(()) => true,
                         Err(err) => {
                             log::error!("render failed: {err:#}");
@@ -4063,6 +4272,14 @@ pub fn run(
         mesh_epoch: 0,
         pending_room_bind: None,
         room_bind_progress_painted: false,
+        spatial_lens: SpatialLensState::default(),
+        spatial_laser: HandLaserState::default(),
+        spatial_laser_cfg: InteractionLaserConfig::default(),
+        spatial_headers: Vec::new(),
+        spatial_prims: Vec::new(),
+        spatial_lens_hit_panel: false,
+        spatial_lens_last_tick: None,
+        spatial_lens_fresh_pack: false,
     };
     // silent / remember-me MainHub entry — same catalog load as LoginOk / RegisterOk.
     if boot_catalog {

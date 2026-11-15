@@ -7,7 +7,8 @@
 //! storage (x0091; full active pack).
 //! Display α / PrevCurr / CPU pose cache are frozen once per display frame
 //! ([`EpochViewState::begin_display_frame`]); Grab/GPU/color/eye share that snap (x0092).
-//! Non-guarantees: full Spatial Lens UI; color on tape; topology-driven draw; TPS/Live camera.
+//! Non-guarantees: WorldRoot Lens sync / Tear-Off; color on tape; topology-driven draw; TPS/Live camera.
+//! Spatial Hierarchy/Inspector personal panels: see `spatial_lens` (x00ba–x00bd).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
