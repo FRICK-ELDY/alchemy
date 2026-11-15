@@ -100,7 +100,7 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 | `LOCAL_WIRE_CAP` | fixture cap（実 room は world 発行） |
 | `MANIFEST_KEY_LOCAL` / `manifest_key(room_id, wire_cap)` | `…/local/{LOCAL_WIRE_CAP}/manifest` |
 | `FRAME_KEY_LOCAL` / `frame_key(room_id, wire_cap)` | `…/frame`（tick 正本） |
-| `FRAME_CELL_KEY_LOCAL_ORIGIN` / `frame_cell_key` / `format_cell_id_segment` | `…/frame/cell/{cx}_{cy}_{cz}`（x00be dual-publish；購読分割は後続） |
+| `FRAME_CELL_KEY_LOCAL_ORIGIN` / `frame_cell_key` / `format_cell_id_segment` / `moore_neighborhood_cells` / `frame_cell_interest_keyexpr` | `…/frame/cell/{cx}_{cy}_{cz}`（x00be dual-publish；**x00bf** opt-in 近傍併読 `ALCHEMY_CELL_FRAME`） |
 | `INPUT_KEY_LOCAL` / `input_key(room_id, wire_cap)` | `…/input` |
 | `PRESENCE_KEY_LOCAL` / `presence_key(room_id, wire_cap)` | `…/presence` |
 | `SNAPSHOT_KEY_LOCAL` / `snapshot_key(room_id, wire_cap)` | `…/snapshot` |

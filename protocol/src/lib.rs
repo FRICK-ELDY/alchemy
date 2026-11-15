@@ -364,19 +364,43 @@ pub const HOST_CONTROL_SHUTDOWN: &[u8] = b"shutdown";
 /// Env var that opts into unauthenticated Zenoh `host_control` (x001e; default off).
 pub const HOST_CONTROL_ZENOH_ENV: &str = "ALCHEMY_HOST_CONTROL";
 
-/// Parse whether Zenoh host_control is enabled from an env value (testable).
-///
-/// Accepted truthy: `1`, `true`, `TRUE`, `yes`, `YES`. Anything else (incl. unset) is off.
-pub fn host_control_zenoh_enabled_from(value: Option<&str>) -> bool {
+/// Env var that opts into near-cell `…/frame/cell/…` subscription alongside Room `…/frame`
+/// (x00bf Spatial Interest; default off — Room frame remains the sole default path).
+pub const CELL_FRAME_SUB_ENV: &str = "ALCHEMY_CELL_FRAME";
+
+/// Moore neighborhood size including the center cell (`3³`).
+pub const MOORE_NEIGHBORHOOD_LEN: usize = 27;
+
+/// Shared truthy parse for Alchemy opt-in env flags (`1` / `true` / `yes`, case variants).
+fn env_flag_enabled_from(value: Option<&str>) -> bool {
     matches!(
         value,
         Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
     )
 }
 
+/// Parse whether Zenoh host_control is enabled from an env value (testable).
+///
+/// Accepted truthy: `1`, `true`, `TRUE`, `yes`, `YES`. Anything else (incl. unset) is off.
+pub fn host_control_zenoh_enabled_from(value: Option<&str>) -> bool {
+    env_flag_enabled_from(value)
+}
+
 /// Read [`HOST_CONTROL_ZENOH_ENV`]; default **false** so WAN peers cannot stop host.
 pub fn host_control_zenoh_enabled() -> bool {
     host_control_zenoh_enabled_from(std::env::var(HOST_CONTROL_ZENOH_ENV).ok().as_deref())
+}
+
+/// Parse whether cell-frame interest subscription is enabled (testable).
+///
+/// Same truthy set as [`host_control_zenoh_enabled_from`]. Default off.
+pub fn cell_frame_sub_enabled_from(value: Option<&str>) -> bool {
+    env_flag_enabled_from(value)
+}
+
+/// Read [`CELL_FRAME_SUB_ENV`]; default **false** so clients keep Room-only frame sub.
+pub fn cell_frame_sub_enabled() -> bool {
+    cell_frame_sub_enabled_from(std::env::var(CELL_FRAME_SUB_ENV).ok().as_deref())
 }
 
 /// Why [`validate_room_id`] rejected a value.
@@ -579,6 +603,51 @@ pub fn frame_cell_key(room_id: &str, wire_cap: &str, cx: i32, cy: i32, cz: i32) 
         room_prefix(room_id, wire_cap),
         format_cell_id_segment(cx, cy, cz)
     )
+}
+
+/// Moore neighborhood of `cx,cy,cz` including the center (`3×3×3` = [`MOORE_NEIGHBORHOOD_LEN`]).
+///
+/// Used by x00bf client interest subscribe. Does not convert world coordinates (indices only).
+/// Axis math uses `saturating_add`; near `i32` extremes neighbors can collide — callers that
+/// build a keyexpr should go through [`frame_cell_interest_keyexpr`] (dedups).
+pub fn moore_neighborhood_cells(cx: i32, cy: i32, cz: i32) -> [[i32; 3]; MOORE_NEIGHBORHOOD_LEN] {
+    let mut out = [[0i32; 3]; MOORE_NEIGHBORHOOD_LEN];
+    let mut i = 0;
+    for dx in -1i32..=1 {
+        for dy in -1i32..=1 {
+            for dz in -1i32..=1 {
+                out[i] = [
+                    cx.saturating_add(dx),
+                    cy.saturating_add(dy),
+                    cz.saturating_add(dz),
+                ];
+                i += 1;
+            }
+        }
+    }
+    debug_assert_eq!(i, MOORE_NEIGHBORHOOD_LEN);
+    out
+}
+
+/// Zenoh keyexpr union of [`frame_cell_key`] for each cell (`a|b|c…`).
+///
+/// Empty `cells` yields an empty string (caller must not declare a subscriber on it).
+/// Duplicate cell indices are emitted once (stable first-seen order).
+pub fn frame_cell_interest_keyexpr(room_id: &str, wire_cap: &str, cells: &[[i32; 3]]) -> String {
+    let mut out = String::new();
+    let mut seen: Vec<[i32; 3]> = Vec::with_capacity(cells.len());
+    for &[cx, cy, cz] in cells {
+        let cell = [cx, cy, cz];
+        if seen.contains(&cell) {
+            continue;
+        }
+        seen.push(cell);
+        if !out.is_empty() {
+            out.push('|');
+        }
+        out.push_str(&frame_cell_key(room_id, wire_cap, cx, cy, cz));
+    }
+    out
 }
 
 /// Build an input key (caller should [`validate_room_id`] + [`validate_wire_cap`]).
@@ -1278,6 +1347,70 @@ mod tests {
         assert!(host_control_zenoh_enabled_from(Some("1")));
         assert!(host_control_zenoh_enabled_from(Some("true")));
         assert!(host_control_zenoh_enabled_from(Some("YES")));
+    }
+
+    #[test]
+    fn cell_frame_sub_defaults_off() {
+        assert!(!cell_frame_sub_enabled_from(None));
+        assert!(!cell_frame_sub_enabled_from(Some("0")));
+        assert!(cell_frame_sub_enabled_from(Some("1")));
+        assert!(cell_frame_sub_enabled_from(Some("true")));
+    }
+
+    #[test]
+    fn moore_neighborhood_includes_center_and_has_27() {
+        let cells = moore_neighborhood_cells(0, 0, 0);
+        assert_eq!(cells.len(), MOORE_NEIGHBORHOOD_LEN);
+        assert!(cells.contains(&[0, 0, 0]));
+        assert!(cells.contains(&[-1, -1, -1]));
+        assert!(cells.contains(&[1, 1, 1]));
+        let mut uniq = cells.to_vec();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq.len(), MOORE_NEIGHBORHOOD_LEN);
+    }
+
+    #[test]
+    fn frame_cell_interest_keyexpr_unions_keys() {
+        let cap = LOCAL_WIRE_CAP;
+        let cells = [[0, 0, 0], [1, 0, 0]];
+        let ke = frame_cell_interest_keyexpr("local", cap, &cells);
+        assert_eq!(
+            ke,
+            format!(
+                "{}|{}",
+                frame_cell_key("local", cap, 0, 0, 0),
+                frame_cell_key("local", cap, 1, 0, 0)
+            )
+        );
+        assert!(!ke.contains("/frame/**"));
+        assert!(ke.contains("/frame/cell/0_0_0"));
+    }
+
+    #[test]
+    fn frame_cell_interest_keyexpr_empty_and_dedup() {
+        let cap = LOCAL_WIRE_CAP;
+        assert_eq!(frame_cell_interest_keyexpr("local", cap, &[]), "");
+        let dup = [[0, 0, 0], [0, 0, 0], [1, 0, 0]];
+        let ke = frame_cell_interest_keyexpr("local", cap, &dup);
+        assert_eq!(
+            ke,
+            format!(
+                "{}|{}",
+                frame_cell_key("local", cap, 0, 0, 0),
+                frame_cell_key("local", cap, 1, 0, 0)
+            )
+        );
+        // saturating edge: neighborhood around i32::MAX collapses; keyexpr stays unique.
+        let edge = moore_neighborhood_cells(i32::MAX, i32::MAX, i32::MAX);
+        let edge_ke = frame_cell_interest_keyexpr("local", cap, &edge);
+        assert!(!edge_ke.is_empty());
+        let mut parts: Vec<&str> = edge_ke.split('|').collect();
+        assert!(parts.len() < MOORE_NEIGHBORHOOD_LEN);
+        let before = parts.len();
+        parts.sort_unstable();
+        parts.dedup();
+        assert_eq!(parts.len(), before);
     }
 
     #[test]

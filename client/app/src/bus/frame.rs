@@ -1,4 +1,4 @@
-//! RenderFrame delta subscriber + snapshot convergence (x0023 / x0024 / x0029).
+//! RenderFrame delta subscriber + snapshot convergence (x0023 / x0024 / x0029 / x00bf).
 //!
 //! Guarantees:
 //! - Frame finite / tick / `host_sig` verified before apply; snapshot requires non-empty `upserts`
@@ -7,9 +7,15 @@
 //! - Snapshot skips the tick gate so a racing delta cannot block convergence
 //! - RenderFrame Entity carries quat + scale; client applies TRS (x0029)
 //! - Class-specific decode byte/count limits and AEAD failure → drop (x003b)
+//! - Same apply path for Room `…/frame` and opt-in cell interest keys (x00bf); duplicate ticks
+//!   from 併読 DropStale via the tick gate
+//! - Cell interest threads do **not** gap→snapshot (Room path owns resync; avoids dual get)
 //!
 //! Non-guarantees: retransmission of missed deltas, reliable-delivery ACK channel, Manifest trust
-//! (see `bus::manifest`; `host_pub` is read, not established here).
+//! (see `bus::manifest`; `host_pub` is read, not established here); cell-only delivery; AOI
+//! bandwidth reduction (Room frame remains default / tick authority).
+//! Hot-path note (x00bf opt-in): Room + origin cell dual-publish means the same sealed bytes
+//! are AEAD-opened / sig-verified / decoded twice per tick while 併読 is on.
 
 use std::sync::Arc;
 use std::thread;
@@ -283,20 +289,47 @@ pub(crate) fn fetch_snapshot(
 /// see `protocol/peer-delivery.md`). Manifest path can still retry independently.
 const SNAPSHOT_GAP_RESYNC_COOLDOWN: Duration = Duration::from_millis(500);
 
+/// Which frame key family a subscriber thread owns (x00bf 併読).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrameSubKind {
+    /// Room `…/frame` — tick authority; gap → Room `…/snapshot`.
+    Room,
+    /// Opt-in cell interest — apply only; never gap→snapshot (avoids dual get with Room).
+    CellInterest,
+}
+
+impl FrameSubKind {
+    fn thread_name(self) -> &'static str {
+        match self {
+            Self::Room => "zenoh-frame",
+            Self::CellInterest => "zenoh-frame-cell",
+        }
+    }
+
+    fn gap_resync(self) -> bool {
+        matches!(self, Self::Room)
+    }
+}
+
 pub(crate) fn spawn_frame_subscriber(
     session: zenoh::Session,
     key: String,
     shared: Arc<SharedState>,
+    kind: FrameSubKind,
 ) -> Result<()> {
     let subscriber = session
         .declare_subscriber(key.clone())
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_subscriber frame failed: {e}"))?;
 
+    let thread_name = kind.thread_name();
+    let gap_resync = kind.gap_resync();
     thread::Builder::new()
-        .name("zenoh-frame".into())
+        .name(thread_name.into())
         .spawn(move || {
-            log::info!("subscribed to {key} (signed delta upserts/removes)");
+            log::info!(
+                "subscribed to {key} (signed delta upserts/removes; kind={kind:?}; gap_resync={gap_resync})"
+            );
             let mut resync_cooldown_until = Instant::now();
             let mut dropped_limits: u64 = 0;
             let mut dropped_aead: u64 = 0;
@@ -327,12 +360,19 @@ pub(crate) fn spawn_frame_subscriber(
                             match apply_frame(&shared, frame, /* replace */ false) {
                                 ApplyFrameOutcome::Applied | ApplyFrameOutcome::Dropped => {}
                                 ApplyFrameOutcome::NeedResync => {
-                                    // x0024: missing deltas are not retransmitted — resync via snapshot.
+                                    // x0024 / x00bf: Room fetches snapshot; cell only logs
+                                    // (same cooldown as Room so dual-publish gaps don't spam).
                                     let now = Instant::now();
                                     if now < resync_cooldown_until {
                                         break 'sample;
                                     }
                                     resync_cooldown_until = now + SNAPSHOT_GAP_RESYNC_COOLDOWN;
+                                    if !gap_resync {
+                                        log::warn!(
+                                            "cell frame NeedResync (tick gap); defer to Room path / Room snapshot (no cell get)"
+                                        );
+                                        break 'sample;
+                                    }
                                     if let Some(cap) = shared.wire_cap() {
                                         let _ = fetch_snapshot(
                                             &session,
@@ -350,7 +390,7 @@ pub(crate) fn spawn_frame_subscriber(
                 if last_gate_log.elapsed() >= GATE_LOG_INTERVAL {
                     if dropped_limits > 0 || dropped_aead > 0 {
                         log::info!(
-                            "frame gate: dropped_limits={dropped_limits} dropped_aead={dropped_aead} (last ~5s)"
+                            "frame gate ({thread_name}): dropped_limits={dropped_limits} dropped_aead={dropped_aead} (last ~5s)"
                         );
                     }
                     dropped_limits = 0;
@@ -475,4 +515,31 @@ mod tests {
     }
 
     // Identity / presence pin / gen-rev unit tables live in alchemy-client-trust (x0070).
+
+    /// x00bf: Moore interest `|` keyexpr must be acceptable to Zenoh `declare_subscriber`.
+    #[test]
+    fn cell_interest_keyexpr_declare_subscriber_ok() {
+        use alchemy_protocol::{
+            frame_cell_interest_keyexpr, moore_neighborhood_cells, LOCAL_WIRE_CAP,
+        };
+        use zenoh::Config;
+        use zenoh::Wait;
+
+        let mut config = Config::default();
+        config.insert_json5("mode", r#""peer""#).expect("mode");
+        config
+            .insert_json5("listen/endpoints", r#"["tcp/127.0.0.1:0"]"#)
+            .expect("listen");
+        config
+            .insert_json5("scouting/multicast/enabled", "false")
+            .expect("scouting");
+        let session = zenoh::open(config).wait().expect("zenoh open");
+        let near = moore_neighborhood_cells(0, 0, 0);
+        let ke = frame_cell_interest_keyexpr("local", LOCAL_WIRE_CAP, &near);
+        assert!(ke.contains('|'));
+        session
+            .declare_subscriber(ke)
+            .wait()
+            .expect("declare_subscriber interest keyexpr");
+    }
 }
