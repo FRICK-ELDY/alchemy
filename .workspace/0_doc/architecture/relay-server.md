@@ -31,7 +31,7 @@ DNS / Let's Encrypt（追加）: [`manual/relay-server-dns.md`](../manual/relay-
 | 用途 | キー |
 |:---|:---|
 | RenderFrame | `alchemy/dev/room/{room_id}/{wire_cap}/frame` |
-| RenderFrame (cell) | `alchemy/dev/room/{room_id}/{wire_cap}/frame/cell/{cx}_{cy}_{cz}`（x00be；ACL は `frame/cell/*` 明示） |
+| RenderFrame (cell) | `alchemy/dev/room/{room_id}/{wire_cap}/frame/cell/{cx}_{cy}_{cz}`（x00be ACL `frame/cell/*` 明示；x00c0 host セル別 dirty soft-put） |
 | InputEvent | `alchemy/dev/room/{room_id}/{wire_cap}/input` |
 | SceneManifest | `alchemy/dev/room/{room_id}/{wire_cap}/manifest` |
 | PresenceState | `alchemy/dev/room/{room_id}/{wire_cap}/presence` |

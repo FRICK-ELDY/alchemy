@@ -2,7 +2,7 @@
 
 > **ID:** `x00be` · **slug:** `spatial-interest-cell-frame-foundation` · **status:** `done` · **area:** `[protocol, relay, host, docs]` · **depends_on:** `[x00b1]`  
 > **優先度:** [spatial_interest.md](../spatial_interest.md) 実装第一波（P3-7）  
-> **後続:** [x00bf](x00bf-client-near-cell-frame-sub.md) client 近傍セル opt-in 併読（**done**）· セル別 dirty フィルタ · avatar LOD · G1/G2 実測（次空き `x00c0`〜）
+> **後続:** [x00bf](x00bf-client-near-cell-frame-sub.md) client 近傍セル opt-in 併読（**done**）· [x00c0](x00c0-host-cell-dirty-filter.md) host セル別 dirty（**done**）· avatar LOD · G1/G2 実測（次空き `x00c1`〜）
 
 目標: 規模本線の **セル修飾 frame キー契約（方向 A）** を固定し、WAN ACL 明示許可と host の dual-publish（Room `…/frame` 維持＋`…/frame/cell/0_0_0`）まで配線する。client 既定購読・LOD・フルメッシュ廃止は後続。
 
@@ -42,8 +42,8 @@
 * セル索引は shared-sim `CellId`（`CELL_SIZE_M=64` center origin）と同系；protocol は **i32 三段の整形のみ**（`shared-sim` 非依存）
 * 負座標は `-1_2_0` 形式；`-1_-2_0` は符号付き整数の逐次 parse（単純 `_` split 禁止）
 * ACL: `alchemy/dev/room/*/*/frame/cell/*`（inventory と同様の明示列挙）
-* host: `NetworkWorkerConfig.frame_cell_pub`；`put_signed_frame` が Room 成功後に soft dual-put
-* 当面 cell は `0_0_0` のみ（host `cell_origin=0` 近傍限定と整合）
+* host（x00be 時点）: `NetworkWorkerConfig.frame_cell_pub`；Room 成功後に origin `0_0_0` soft dual-put
+* **現行（x00c0）**: 単一 `frame_cell_pub` は廃止。`session` + LRU cell publisher キャッシュで非空 `CellId` へセル別密封 soft-put（詳細は [x00c0](x00c0-host-cell-dirty-filter.md)）
 
 ---
 

@@ -265,6 +265,9 @@ impl Uniforms {
 #[derive(Default)]
 pub struct WorldView {
     pub last_frame_tick: Option<u64>,
+    /// True when [`Self::last_frame_tick`] was committed by Room `…/frame` or snapshot (x00c0).
+    /// False after a partial cell apply so same-tick Room may override under 併読.
+    pub last_frame_from_room: bool,
     pub entities: std::collections::HashMap<u32, EntityPose>,
 }
 

@@ -435,9 +435,9 @@ pub(crate) fn ensure_room_bus(
             Arc::clone(shared),
             FrameSubKind::Room,
         )?;
-        // x00bf: opt-in near-cell 併読. Center is origin (host dual-publishes `0_0_0` today);
+        // x00bf: opt-in near-cell 併読. Center is origin (x00c0 host buckets dirty by CellId);
         // player-following resubscribe is a later slice.
-        // Hot-path: same sealed bytes as Room are AEAD/sig/decoded again while 併読 is on.
+        // Hot-path: cell payloads are filtered; Room may re-apply same tick to override (x00c0).
         if cell_frame_sub_enabled() {
             let near = moore_neighborhood_cells(0, 0, 0);
             let cell_key_expr = frame_cell_interest_keyexpr(room_id.as_ref(), &wire_cap, &near);

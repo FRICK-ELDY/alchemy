@@ -7,15 +7,16 @@
 //! - Snapshot skips the tick gate so a racing delta cannot block convergence
 //! - RenderFrame Entity carries quat + scale; client applies TRS (x0029)
 //! - Class-specific decode byte/count limits and AEAD failure → drop (x003b)
-//! - Same apply path for Room `…/frame` and opt-in cell interest keys (x00bf); duplicate ticks
-//!   from 併読 DropStale via the tick gate
+//! - Room and opt-in cell interest share apply crypto; tick gates differ (x00bf / x00c0):
+//!   cell uses strict [`decide_frame_tick`]; Room uses [`decide_room_frame_tick`] so a late
+//!   Room full frame overrides a same-tick partial cell under 併読
 //! - Cell interest threads do **not** gap→snapshot (Room path owns resync; avoids dual get)
 //!
 //! Non-guarantees: retransmission of missed deltas, reliable-delivery ACK channel, Manifest trust
 //! (see `bus::manifest`; `host_pub` is read, not established here); cell-only delivery; AOI
 //! bandwidth reduction (Room frame remains default / tick authority).
-//! Hot-path note (x00bf opt-in): Room + origin cell dual-publish means the same sealed bytes
-//! are AEAD-opened / sig-verified / decoded twice per tick while 併読 is on.
+//! Hot-path note (x00bf opt-in / x00c0): Room + near-cell 併読 may AEAD-open / sig-verify /
+//! decode twice per tick; cell payloads are cell-filtered (Room remains tick authority).
 
 use std::sync::Arc;
 use std::thread;
@@ -25,7 +26,8 @@ use alchemy_protocol::decode_limits::{check_frame, check_payload_bytes, WireClas
 use alchemy_protocol::wire_aead::AeadKind;
 use alchemy_protocol::wire_crypto::{frame_entities_finite, verify_frame};
 use alchemy_protocol::{
-    decide_frame_tick, snapshot_key, FrameTickDecision, Message, RenderFrame, FRAME_TICK_GAP_RESYNC,
+    decide_frame_tick, decide_room_frame_tick, snapshot_key, FrameTickDecision, Message,
+    RenderFrame, FRAME_TICK_GAP_RESYNC,
 };
 use anyhow::{Context, Result};
 use zenoh::bytes::ZBytes;
@@ -48,6 +50,7 @@ enum ApplyFrameOutcome {
 
 /// Apply a tick-gated delta to a [`scene::WorldView`] (no crypto). Snapshot path skips the gate.
 ///
+/// `from_room`: Room `…/frame` / snapshot use Room authority gate; cell interest uses strict.
 /// On [`ApplyFrameOutcome::NeedResync`], the world is left unchanged.
 fn apply_delta_entities(
     world: &mut scene::WorldView,
@@ -55,9 +58,20 @@ fn apply_delta_entities(
     upserts: &[alchemy_protocol::Entity],
     removes: &[u32],
     replace_entities: bool,
+    from_room: bool,
 ) -> ApplyFrameOutcome {
     if !replace_entities {
-        match decide_frame_tick(world.last_frame_tick, tick, FRAME_TICK_GAP_RESYNC) {
+        let decision = if from_room {
+            decide_room_frame_tick(
+                world.last_frame_tick,
+                tick,
+                FRAME_TICK_GAP_RESYNC,
+                world.last_frame_from_room,
+            )
+        } else {
+            decide_frame_tick(world.last_frame_tick, tick, FRAME_TICK_GAP_RESYNC)
+        };
+        match decision {
             FrameTickDecision::DropStale => return ApplyFrameOutcome::Dropped,
             FrameTickDecision::ResyncSnapshot => return ApplyFrameOutcome::NeedResync,
             FrameTickDecision::Apply => {}
@@ -91,6 +105,8 @@ fn apply_delta_entities(
         world.entities.remove(id);
     }
     world.last_frame_tick = Some(tick);
+    // Snapshot and Room commits are Room authority; cell leaves the flag false for override.
+    world.last_frame_from_room = from_room || replace_entities;
     ApplyFrameOutcome::Applied
 }
 
@@ -106,6 +122,7 @@ fn apply_frame(
     shared: &SharedState,
     frame: RenderFrame,
     replace_entities: bool,
+    from_room: bool,
 ) -> ApplyFrameOutcome {
     let host_pub = shared.host_pub.lock().ok().and_then(|g| g.clone());
     let Some(host_pub) = host_pub else {
@@ -142,6 +159,7 @@ fn apply_frame(
         &frame.upserts,
         &frame.removes,
         replace_entities,
+        from_room,
     );
     // TRS-only copy under world lock; mirror after drop (avoid world ↔ epoch lock order).
     let poses_for_epoch = if outcome == ApplyFrameOutcome::Applied {
@@ -249,8 +267,10 @@ pub(crate) fn fetch_snapshot(
                                     continue;
                                 }
                                 let snap_scene_rev = frame.scene_rev;
-                                if apply_frame(shared, frame, /* replace */ true)
-                                    == ApplyFrameOutcome::Applied
+                                if apply_frame(
+                                    shared, frame, /* replace */ true,
+                                    /* from_room */ true,
+                                ) == ApplyFrameOutcome::Applied
                                 {
                                     log::info!("snapshot applied from {key}");
                                     applied = true;
@@ -324,6 +344,7 @@ pub(crate) fn spawn_frame_subscriber(
 
     let thread_name = kind.thread_name();
     let gap_resync = kind.gap_resync();
+    let from_room = matches!(kind, FrameSubKind::Room);
     thread::Builder::new()
         .name(thread_name.into())
         .spawn(move || {
@@ -357,7 +378,7 @@ pub(crate) fn spawn_frame_subscriber(
                                 log::warn!("drop RenderFrame: {err}");
                                 break 'sample;
                             }
-                            match apply_frame(&shared, frame, /* replace */ false) {
+                            match apply_frame(&shared, frame, /* replace */ false, from_room) {
                                 ApplyFrameOutcome::Applied | ApplyFrameOutcome::Dropped => {}
                                 ApplyFrameOutcome::NeedResync => {
                                     // x0024 / x00bf: Room fetches snapshot; cell only logs
@@ -417,6 +438,7 @@ mod tests {
     fn gap_delta_does_not_mutate_entities_and_signals_resync() {
         let mut world = WorldView {
             last_frame_tick: Some(10),
+            last_frame_from_room: true,
             entities: [(
                 1,
                 EntityPose {
@@ -428,7 +450,8 @@ mod tests {
         };
         let before = world.entities.clone();
 
-        let outcome = apply_delta_entities(&mut world, 12, &[sample_entity(1, 9.0)], &[], false);
+        let outcome =
+            apply_delta_entities(&mut world, 12, &[sample_entity(1, 9.0)], &[], false, true);
 
         assert_eq!(outcome, ApplyFrameOutcome::NeedResync);
         assert_eq!(world.last_frame_tick, Some(10));
@@ -439,13 +462,16 @@ mod tests {
     fn consecutive_delta_applies_and_advances_tick() {
         let mut world = WorldView {
             last_frame_tick: Some(10),
+            last_frame_from_room: true,
             entities: Default::default(),
         };
 
-        let outcome = apply_delta_entities(&mut world, 11, &[sample_entity(7, 3.0)], &[], false);
+        let outcome =
+            apply_delta_entities(&mut world, 11, &[sample_entity(7, 3.0)], &[], false, true);
 
         assert_eq!(outcome, ApplyFrameOutcome::Applied);
         assert_eq!(world.last_frame_tick, Some(11));
+        assert!(world.last_frame_from_room);
         assert!((world.entities.get(&7).unwrap().x - 3.0).abs() < f32::EPSILON);
     }
 
@@ -453,6 +479,7 @@ mod tests {
     fn delta_applies_quat_and_scale() {
         let mut world = WorldView {
             last_frame_tick: Some(1),
+            last_frame_from_room: true,
             entities: Default::default(),
         };
         let e = alchemy_protocol::entity_trs(
@@ -468,7 +495,7 @@ mod tests {
             1.0,
         );
 
-        let outcome = apply_delta_entities(&mut world, 2, &[e], &[], false);
+        let outcome = apply_delta_entities(&mut world, 2, &[e], &[], false, true);
 
         assert_eq!(outcome, ApplyFrameOutcome::Applied);
         let p = world.entities.get(&10).unwrap();
@@ -481,13 +508,16 @@ mod tests {
     fn snapshot_replace_skips_tick_gate() {
         let mut world = WorldView {
             last_frame_tick: Some(100),
+            last_frame_from_room: true,
             entities: [(1, EntityPose::default())].into(),
         };
 
-        let outcome = apply_delta_entities(&mut world, 5, &[sample_entity(2, 1.5)], &[], true);
+        let outcome =
+            apply_delta_entities(&mut world, 5, &[sample_entity(2, 1.5)], &[], true, true);
 
         assert_eq!(outcome, ApplyFrameOutcome::Applied);
         assert_eq!(world.last_frame_tick, Some(5));
+        assert!(world.last_frame_from_room);
         assert!(!world.entities.contains_key(&1));
         assert!(world.entities.contains_key(&2));
     }
@@ -498,20 +528,60 @@ mod tests {
     #[test]
     fn after_snapshot_next_published_tick_applies_same_tick_is_stale() {
         let mut world = WorldView::default();
-        let snap = apply_delta_entities(&mut world, 5, &[sample_entity(1, 1.0)], &[], true);
+        let snap = apply_delta_entities(&mut world, 5, &[sample_entity(1, 1.0)], &[], true, true);
         assert_eq!(snap, ApplyFrameOutcome::Applied);
         assert_eq!(world.last_frame_tick, Some(5));
+        assert!(world.last_frame_from_room);
 
         // Wrong host: snapshot.tick == next delta.tick → DropStale, pose stuck.
-        let same = apply_delta_entities(&mut world, 5, &[sample_entity(1, 9.0)], &[], false);
+        let same = apply_delta_entities(&mut world, 5, &[sample_entity(1, 9.0)], &[], false, true);
         assert_eq!(same, ApplyFrameOutcome::Dropped);
         assert!((world.entities.get(&1).unwrap().x - 1.0).abs() < f32::EPSILON);
 
         // Correct host: next publish is last_published+1.
-        let next = apply_delta_entities(&mut world, 6, &[sample_entity(1, 9.0)], &[], false);
+        let next = apply_delta_entities(&mut world, 6, &[sample_entity(1, 9.0)], &[], false, true);
         assert_eq!(next, ApplyFrameOutcome::Applied);
         assert_eq!(world.last_frame_tick, Some(6));
         assert!((world.entities.get(&1).unwrap().x - 9.0).abs() < f32::EPSILON);
+    }
+
+    /// x00c0: cell partial then same-tick Room full must override (併読 race).
+    #[test]
+    fn room_overrides_same_tick_after_partial_cell() {
+        let mut world = WorldView::default();
+        let cell = apply_delta_entities(
+            &mut world,
+            3,
+            &[sample_entity(1, 1.0)],
+            &[],
+            false,
+            /* from_room */ false,
+        );
+        assert_eq!(cell, ApplyFrameOutcome::Applied);
+        assert!(!world.last_frame_from_room);
+        assert!((world.entities.get(&1).unwrap().x - 1.0).abs() < f32::EPSILON);
+
+        let room = apply_delta_entities(
+            &mut world,
+            3,
+            &[sample_entity(1, 9.0), sample_entity(2, 4.0)],
+            &[99],
+            false,
+            /* from_room */ true,
+        );
+        assert_eq!(room, ApplyFrameOutcome::Applied);
+        assert!(world.last_frame_from_room);
+        assert!((world.entities.get(&1).unwrap().x - 9.0).abs() < f32::EPSILON);
+        assert!(world.entities.contains_key(&2));
+
+        // Second Room same tick stays DropStale (x0024).
+        let dup = apply_delta_entities(&mut world, 3, &[sample_entity(1, 0.0)], &[], false, true);
+        assert_eq!(dup, ApplyFrameOutcome::Dropped);
+
+        // Peer cell same tick after Room stays DropStale.
+        let late_cell =
+            apply_delta_entities(&mut world, 3, &[sample_entity(1, 0.0)], &[], false, false);
+        assert_eq!(late_cell, ApplyFrameOutcome::Dropped);
     }
 
     // Identity / presence pin / gen-rev unit tables live in alchemy-client-trust (x0070).
