@@ -76,6 +76,8 @@ pub struct ManifestSealEntryJson {
     pub sy: f64,
     #[serde(default)]
     pub sz: f64,
+    #[serde(default)]
+    pub parent_entity_id: u32,
 }
 
 fn loco_mode(mode: &str, quiet: bool) -> LocomotionMode {
@@ -123,6 +125,7 @@ fn entry_from_json(e: ManifestSealEntryJson) -> SceneEntry {
         sx: e.sx,
         sy: e.sy,
         sz: e.sz,
+        parent_entity_id: e.parent_entity_id,
     };
     normalize_scene_entry_trs(&mut entry);
     entry
@@ -167,4 +170,38 @@ pub fn blake3_hex_from_json_str(raw: &str, quiet: bool) -> Result<String, String
 pub fn blake3_hex_from_json_bytes(raw: &[u8], quiet: bool) -> Result<String, String> {
     let text = std::str::from_utf8(raw).map_err(|e| format!("utf8: {e}"))?;
     blake3_hex_from_json_str(text, quiet)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seal_json(parent: u32) -> String {
+        format!(
+            r#"{{
+              "room_id":"parent-seal",
+              "revision":1,
+              "host_generation":1,
+              "protocol_pin":"{pin}",
+              "host_pub_hex":"1111111111111111111111111111111111111111111111111111111111111111",
+              "host_attestation":"attestation",
+              "entries":[
+                {{"entity_id":1}},
+                {{"entity_id":2,"parent_entity_id":{parent}}}
+              ]
+            }}"#,
+            pin = PROTOCOL_PIN,
+            parent = parent
+        )
+    }
+
+    #[test]
+    fn parent_entity_id_affects_seal_blake3() {
+        let a = blake3_hex_from_json_str(&seal_json(1), true).expect("hash a");
+        let b = blake3_hex_from_json_str(&seal_json(0), true).expect("hash b");
+        assert_ne!(
+            a, b,
+            "SceneEntry.parent_entity_id must be in ManifestSeal (x00b8)"
+        );
+    }
 }

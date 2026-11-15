@@ -2166,6 +2166,87 @@ defmodule WorldWeb.RoomControllerTest do
              |> json_response(409)
   end
 
+  test "scene/save folds parents and fields into canonical (x00b8)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "b8b8b8b8-b8b8-b8b8-b8b8-b8b8b8b8b8b8"
+    room = "scene-save-patches"
+    {pub, priv} = TestAuthHelpers.session_keypair()
+
+    assert %{"room_id" => ^room} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: room, visibility: "public"})
+             |> json_response(201)
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post(
+        "/api/v1/rooms/#{room}/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(pub)})
+      )
+      |> json_response(200)
+
+    scene0 =
+      build_conn()
+      |> TestAuthHelpers.get_host(host_token, priv, "/api/v1/rooms/#{room}/scene")
+      |> json_response(200)
+
+    [a, b | _] = scene0["entries"]
+    a_id = a["entity_id"]
+    b_id = b["entity_id"]
+
+    saved =
+      build_conn()
+      |> TestAuthHelpers.post_host_json(
+        host_token,
+        priv,
+        "/api/v1/rooms/#{room}/scene/save",
+        %{
+          expected_revision: scene0["revision"],
+          parents: [%{entity_id: a_id, parent_entity_id: b_id}],
+          fields: [%{entity_id: a_id, r: 0.1, g: 0.2, b: 0.3, a: 1.0, flags: 2}]
+        }
+      )
+      |> json_response(200)
+
+    entry = Enum.find(saved["entries"], &(&1["entity_id"] == a_id))
+    assert entry["parent_entity_id"] == b_id
+    assert entry["r"] == 0.1
+    assert entry["flags"] == 2
+
+    assert %{"error" => "parent_cycle"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/scene/save",
+               %{
+                 expected_revision: saved["revision"],
+                 parents: [
+                   %{entity_id: a_id, parent_entity_id: b_id},
+                   %{entity_id: b_id, parent_entity_id: a_id}
+                 ]
+               }
+             )
+             |> json_response(422)
+
+    assert %{"error" => "invalid_entry"} =
+             build_conn()
+             |> TestAuthHelpers.post_host_json(
+               host_token,
+               priv,
+               "/api/v1/rooms/#{room}/scene/save",
+               %{
+                 expected_revision: saved["revision"],
+                 parents: [%{entity_id: 9_999_999, parent_entity_id: 0}]
+               }
+             )
+             |> json_response(422)
+  end
+
   test "handover null dormants session and drops public catalog (x0080)", %{
     conn: conn,
     signer: signer

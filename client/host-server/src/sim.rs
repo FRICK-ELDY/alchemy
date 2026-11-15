@@ -226,6 +226,41 @@ fn entry_quat_xyzw(entry: &SceneEntry) -> [f32; 4] {
     [qx as f32, qy as f32, qz as f32, qw as f32]
 }
 
+/// Bake FlatTopology from SceneEntry.parent_entity_id (x00b8 creative boot).
+fn seed_topo_from_scene_parents(
+    entity_rows: &HashMap<u32, NodeHandle>,
+    entries: &[SceneEntry],
+    sheet_len: usize,
+) -> FlatTopology {
+    if sheet_len == 0 {
+        return FlatTopology::default();
+    }
+    let mut parents = vec![u32::MAX; sheet_len];
+    for entry in entries {
+        let Some(child) = entity_rows.get(&entry.entity_id) else {
+            continue;
+        };
+        let idx = child.row_id as usize;
+        if idx >= parents.len() {
+            continue;
+        }
+        parents[idx] = if entry.parent_entity_id == 0 {
+            u32::MAX
+        } else if let Some(parent) = entity_rows.get(&entry.parent_entity_id) {
+            parent.row_id
+        } else {
+            u32::MAX
+        };
+    }
+    match FlatTopology::from_parents(parents) {
+        Ok(topo) => topo,
+        Err(err) => {
+            log::warn!("scene parent topo bake failed: {err:?}; using flat roots");
+            FlatTopology::flat_roots(sheet_len)
+        }
+    }
+}
+
 fn entry_scale_f32(entry: &SceneEntry) -> [f32; 3] {
     let [sx, sy, sz] = scene_entry_scale(entry);
     [sx as f32, sy as f32, sz as f32]
@@ -440,9 +475,12 @@ impl PhysicsWorld {
                 }))
             }
         };
+        // Creative hierarchy from SceneEntry.parent_entity_id (x00b8); fall back to flat roots.
+        let topo = seed_topo_from_scene_parents(&entity_rows, entries, world.curr.len());
+
         let mut host = Self {
             world,
-            topo: FlatTopology::default(),
+            topo,
             frame_bridge: FrameBridge::default(),
             snapshots,
             entity_rows,
@@ -2483,6 +2521,7 @@ mod tests {
             sx: 1.0,
             sy: 1.0,
             sz: 1.0,
+            parent_entity_id: 0,
         };
         assert!(world.spawn_mesh_entry(&entry));
         world.step();
@@ -2605,6 +2644,7 @@ mod tests {
             sx: 1.0,
             sy: 1.0,
             sz: 1.0,
+            parent_entity_id: 0,
         };
         assert!(world.spawn_mesh_entry(&entry));
         assert_eq!(world.mesh_entity_ids().count(), before + 1);

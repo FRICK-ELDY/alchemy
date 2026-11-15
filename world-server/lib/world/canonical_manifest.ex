@@ -118,7 +118,9 @@ defmodule World.CanonicalManifest do
       "qw" => float_field(e, "qw", 0.0),
       "sx" => float_field(e, "sx", 0.0),
       "sy" => float_field(e, "sy", 0.0),
-      "sz" => float_field(e, "sz", 0.0)
+      "sz" => float_field(e, "sz", 0.0),
+      # Creative hierarchy (x00b8). Omitted / invalid → world root (0); sealed with scene.
+      "parent_entity_id" => int_field(e, "parent_entity_id", 0)
     }
   end
 

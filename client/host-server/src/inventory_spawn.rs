@@ -404,6 +404,7 @@ mod tests {
                 sx: 1.0,
                 sy: 1.0,
                 sz: 1.0,
+                parent_entity_id: 0,
             },
             scene: empty_scene(4),
         };

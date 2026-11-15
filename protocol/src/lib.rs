@@ -68,7 +68,8 @@ pub use edit_field::{
 /// x00b2: `EditProposal` / `EditCommit` on `…/edit` (Spawn/Despawn ops).
 /// x00b3: Reparent/SetField + `RenderFrame.scene_rev`; Commit tip = host live_scene_rev.
 /// x00b7: `EditSave` overlay→canonical; Commit tip unchanged on Save.
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.24.0-x00b7";
+/// x00b8: `SceneEntry.parent_entity_id`; Save folds live parent/SetField.
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.24.0-x00b8";
 
 /// `EditCommit.reject_reason` codes (x00b2 / x00b3 / x00b7).
 pub mod edit_reject {
@@ -794,6 +795,7 @@ mod tests {
                     sx: ENTITY_SCALE_ONE[0],
                     sy: ENTITY_SCALE_ONE[1],
                     sz: ENTITY_SCALE_ONE[2],
+                    parent_entity_id: 0,
                 },
                 SceneEntry {
                     entity_id: 10,
@@ -814,6 +816,7 @@ mod tests {
                     sx: 1.5,
                     sy: 1.0,
                     sz: 1.0,
+                    parent_entity_id: 0,
                 },
             ],
             locomotion: Some(LocomotionConfig {

@@ -58,6 +58,49 @@ defmodule World.CanonicalManifestTest do
     # Keep in lockstep with protocol/src/lib.rs `PROTOCOL_PIN` — drift → seal mismatch.
     # x003b decode limits do not bump the pin (wire-compatible).
     assert Application.fetch_env!(:world, :protocol_pin) ==
-             "alchemy-protocol/0.24.0-x00b7"
+             "alchemy-protocol/0.24.0-x00b8"
+  end
+
+  test "seal payload includes parent_entity_id and parent diffs change blake3 (x00b8)" do
+    # CI builds `manifest-seal-hash` before mix test (world-server-ci.yml).
+    # Local: rebuild that binary if this assertion flakes after a proto change.
+    # Hash-diff coverage also lives in alchemy-protocol `parent_entity_id_affects_seal_blake3`.
+    scene_a = %{
+      "revision" => 1,
+      "locomotion" => %{"mode" => "noclip", "move_speed" => 4.0},
+      "entries" => [
+        %{"entity_id" => 1, "blake3" => "", "parent_entity_id" => 0},
+        %{"entity_id" => 2, "blake3" => "", "parent_entity_id" => 1}
+      ]
+    }
+
+    scene_b = put_in(scene_a, ["entries", Access.at(1), "parent_entity_id"], 0)
+
+    payload_a =
+      CanonicalManifest.build_payload(
+        "parent-seal",
+        1,
+        1,
+        scene_a,
+        <<0::256>>,
+        "attestation"
+      )
+
+    payload_b =
+      CanonicalManifest.build_payload(
+        "parent-seal",
+        1,
+        1,
+        scene_b,
+        <<0::256>>,
+        "attestation"
+      )
+
+    assert Enum.at(payload_a["entries"], 1)["parent_entity_id"] == 1
+    assert Enum.at(payload_b["entries"], 1)["parent_entity_id"] == 0
+
+    assert {:ok, blake_a} = World.ManifestSealHash.blake3_hex(payload_a)
+    assert {:ok, blake_b} = World.ManifestSealHash.blake3_hex(payload_b)
+    assert blake_a != blake_b
   end
 end
