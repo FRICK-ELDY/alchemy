@@ -92,7 +92,7 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 
 ## キー式ヘルパ（x0017 + x0022 liveliness + x0023 snapshot + x004e wire_cap + x006d/x007b inventory）
 
-式: `alchemy/dev/room/{room_id}/{wire_cap}/{manifest|frame|frame/cell/{cx}_{cy}_{cz}|input|presence|host_control|snapshot|sim_state|edit|inventory/spawn|inventory/despawn|alive/{sub}/{jti}}`。  
+式: `alchemy/dev/room/{room_id}/{wire_cap}/{manifest|frame|frame/cell/{cx}_{cy}_{cz}|frame/lod/{lx}_{ly}_{lz}|input|presence|host_control|snapshot|sim_state|edit|inventory/spawn|inventory/despawn|alive/{sub}/{jti}}`。  
 `*_KEY_LOCAL` は `room_id=local` + fixture `LOCAL_WIRE_CAP` の別名。host/client は `ROOM_ID` + Token の `wire_cap` を `validate_*` してから `*_key` で declare する。
 
 | 定数 / 関数 | 既定 |
@@ -101,7 +101,8 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 | `MANIFEST_KEY_LOCAL` / `manifest_key(room_id, wire_cap)` | `…/local/{LOCAL_WIRE_CAP}/manifest` |
 | `FRAME_KEY_LOCAL` / `frame_key(room_id, wire_cap)` | `…/frame`（tick 正本） |
 | `FRAME_CELL_KEY_LOCAL_ORIGIN` / `frame_cell_key` / `format_cell_id_segment` / `frame_cell_wildcard_key` / `decide_cell_frame_tick` / `decide_room_frame_tick` / `ROOM_FRAME_SUB_ENV` / `room_frame_sub_enabled*` | `…/frame/cell/{cx}_{cy}_{cz}`（**x00c0/x00c2** host soft-put；**x00c3** 多 cell 合流；**x00c6** 既定購読は per-key Moore；`frame_cell_wildcard_key` は debug/ACL；`ALCHEMY_ROOM_FRAME` で Room オプトアウト） |
-| `moore_neighborhood_cells` / `frame_cell_interest_keyexpr` | Moore 近傍ヘルパ / `|` union（本線外・テスト用；x00c6 本線は per-key ≤27） |
+| `LOD_CELL_STRIDE` / `cell_to_lod_cell` / `frame_lod_key` / `frame_lod_wildcard_key`（**x00c7a**） | `…/frame/lod/{lx}_{ly}_{lz}`（`LodCell = floor_div(CellId, 3)`；中距離 sync LOD · user_root ≤5 Hz；WAN ACL `frame/lod/*` 明示） |
+| `moore_neighborhood_cells` / `frame_cell_interest_keyexpr` | Moore 近傍ヘルパ / `|` union（本線外・テスト用；x00c6 本線は per-key ≤27。lod 購読も同ヘルパを LodCell に適用） |
 | `CELL_FRAME_SUB_ENV` / `cell_frame_sub_enabled*`（**deprecated** · x00c5） | `ALCHEMY_CELL_FRAME`。モード選択には未使用（無視）。Room 退避は `ALCHEMY_ROOM_FRAME`。設定時は client が deprecate warn |
 | `INPUT_KEY_LOCAL` / `input_key(room_id, wire_cap)` | `…/input` |
 | `PRESENCE_KEY_LOCAL` / `presence_key(room_id, wire_cap)` | `…/presence` |

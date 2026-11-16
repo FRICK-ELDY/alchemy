@@ -2,7 +2,7 @@
 
 > **ID:** `x00c6` · **slug:** `spatial-interest-vr-delivery-contract` · **status:** `done` · **area:** `[protocol, client, docs]` · **depends_on:** `[x00c5]`  
 > **優先度:** [spatial_interest.md](../spatial_interest.md) 実装第九波（P3-7 · §5 VR delivery contract）  
-> **後続:** avatar LOD · G1/G2 実測 · host dual-publish 縮小（enter 代替が出来てから）
+> **後続:** [x00c7](x00c7-avatar-sync-lod-mid-band.md) Avatar sync LOD · G1/G2 実測 · host dual-publish 縮小（enter 代替が出来てから）
 
 目標: x00c5 暫定 `…/frame/cell/*` を**既定本線から外し**、近傍帯 Interest・Interest enter 収束・自アバター応答を同一契約として実装する。応急（Room オプトアウト固定・gap 定数の場当たり緩和）は本線修正と呼ばない。
 

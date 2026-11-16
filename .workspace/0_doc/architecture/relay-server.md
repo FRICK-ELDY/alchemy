@@ -32,6 +32,7 @@ DNS / Let's Encrypt（追加）: [`manual/relay-server-dns.md`](../manual/relay-
 |:---|:---|
 | RenderFrame | `alchemy/dev/room/{room_id}/{wire_cap}/frame` |
 | RenderFrame (cell) | `alchemy/dev/room/{room_id}/{wire_cap}/frame/cell/{cx}_{cy}_{cz}`（x00be ACL `frame/cell/*` 明示；x00c0 host セル別 dirty soft-put） |
+| RenderFrame (lod) | `alchemy/dev/room/{room_id}/{wire_cap}/frame/lod/{lx}_{ly}_{lz}`（x00c7 ACL `frame/lod/*` 明示；中距離 sync LOD · user_root ≤5 Hz） |
 | InputEvent | `alchemy/dev/room/{room_id}/{wire_cap}/input` |
 | SceneManifest | `alchemy/dev/room/{room_id}/{wire_cap}/manifest` |
 | PresenceState | `alchemy/dev/room/{room_id}/{wire_cap}/presence` |

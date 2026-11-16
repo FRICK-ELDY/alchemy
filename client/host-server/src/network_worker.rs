@@ -20,28 +20,46 @@
 //! Room still carries full `removes` + `acked_intent_seq` (fail-closed). Cell
 //! seal/put failure and LRU eviction are logged + counted and do **not** kill the
 //! Room path.
+//! x00c7b: after Room success, occupied `user_root` poses from `last_sent` are
+//! bucketed by LodCell (`cell_to_lod_cell` / stride=3) and soft-put to
+//! `…/frame/lod/{lx}_{ly}_{lz}` at ≤5 Hz (wall ≈200 ms) as an **occupied roster**
+//! plus **exit removes** vs `last_lod_ids` (empty LodCell → remove-only). Rate gate
+//! (`last_lod_put_at`) and `last_lod_ids` advance only when at least one lod put
+//! reaches the wire. Lod seal/put / LRU are isolated from cell stats and never
+//! fail-close Room.
 //! Non-guarantees: rkyv/bytemuck wire; Prometheus; backpressure that stalls physics;
 //! draining pending jobs / joining the worker on `stop()` (process exit may drop
 //! in-flight puts); Manifest logical (non-bytes) jobs — sealed bytes pass through;
 //! zero-alloc encode/AEAD/Zenoh; pooling of `removes` / upsert `Entity` vecs;
 //! zero-clone cell upsert packing (cell path still clones `Entity` for sign/seal);
-//! cell put reachability (x00c5 client default is cell mainline); same-tick multi-cell merge.
+//! cell / lod put reachability (x00c5 client default is cell mainline); same-tick multi-cell merge;
+//! lod snapshot; world mesh / Grab on lod keys.
 
 use alchemy_protocol::frame_cell_key;
+use alchemy_protocol::frame_lod_key;
 use alchemy_protocol::wire_aead::AeadKind;
 use alchemy_protocol::wire_crypto::{sign_frame, sign_presence, SigningKey};
-use alchemy_protocol::{Entity, Message, PresenceState, RenderFrame};
+use alchemy_protocol::{
+    cell_to_lod_cell, scene_entry_is_user_root, Entity, Message, PresenceState, RenderFrame,
+};
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 use zenoh::Wait;
 
 use alchemy_shared_sim::mvcc::{CellId, BITMASK_WORDS};
 
 /// Max cached cell-frame publishers (x00c0). Overflow: declare the new cell, then **LRU-evict**.
 pub const CELL_PUBLISHER_CACHE_MAX: usize = 64;
+
+/// Max cached lod-frame publishers (x00c7). Isolated from [`CELL_PUBLISHER_CACHE_MAX`].
+pub const LOD_PUBLISHER_CACHE_MAX: usize = 64;
+
+/// Minimum wall interval between lod soft-put batches (≤5 Hz · x00c7).
+pub const LOD_MIN_INTERVAL: Duration = Duration::from_millis(200);
 
 use crate::pose_delta;
 use crate::wire_tick;
@@ -443,11 +461,17 @@ pub struct PublishStats {
     pub cell_publish_failures: AtomicU64,
     /// LRU evictions when publisher cache is at [`CELL_PUBLISHER_CACHE_MAX`] (x00c0).
     pub cell_publish_skips: AtomicU64,
+    /// Successful soft-puts to `…/frame/lod/…` (x00c7).
+    pub lod_publishes: AtomicU64,
+    /// Soft-fail count for lod put / declare (Room path still advanced).
+    pub lod_publish_failures: AtomicU64,
+    /// LRU evictions when lod publisher cache is at [`LOD_PUBLISHER_CACHE_MAX`] (x00c7).
+    pub lod_publish_skips: AtomicU64,
     /// In-flight dirty masks to OR back on the physics thread after empty/fail put (x00b1).
     pub wire_dirty_restores: Mutex<Vec<[u64; BITMASK_WORDS]>>,
 }
 
-/// 1s window snapshot from [`PublishStats::snapshot_and_reset`] (x00c0 multi-cell).
+/// 1s window snapshot from [`PublishStats::snapshot_and_reset`] (x00c0 multi-cell · x00c7 lod).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PublishStatsWindow {
     pub publishes: u64,
@@ -459,6 +483,9 @@ pub struct PublishStatsWindow {
     pub cell_ok: u64,
     pub cell_fail: u64,
     pub cell_skip: u64,
+    pub lod_ok: u64,
+    pub lod_fail: u64,
+    pub lod_skip: u64,
 }
 
 impl PublishStats {
@@ -472,6 +499,9 @@ impl PublishStats {
             cell_ok: self.cell_publishes.swap(0, Ordering::Relaxed),
             cell_fail: self.cell_publish_failures.swap(0, Ordering::Relaxed),
             cell_skip: self.cell_publish_skips.swap(0, Ordering::Relaxed),
+            lod_ok: self.lod_publishes.swap(0, Ordering::Relaxed),
+            lod_fail: self.lod_publish_failures.swap(0, Ordering::Relaxed),
+            lod_skip: self.lod_publish_skips.swap(0, Ordering::Relaxed),
         }
     }
 }
@@ -605,6 +635,184 @@ impl CellPublisherCache {
         );
         self.pubs.get(&cell).map(|e| &e.pub_)
     }
+}
+
+/// Cached lod-frame publishers with LRU at [`LOD_PUBLISHER_CACHE_MAX`] (x00c7).
+///
+/// Isolated from [`CellPublisherCache`] so cell cap pressure cannot starve mid-band keys.
+struct LodPublisherCache {
+    session: zenoh::Session,
+    room_id: String,
+    wire_cap: String,
+    pubs: HashMap<[i32; 3], CellPublisherEntry>,
+    use_clock: u64,
+    cap: usize,
+}
+
+impl LodPublisherCache {
+    fn new(session: zenoh::Session, room_id: String, wire_cap: String) -> Self {
+        Self::with_cap(session, room_id, wire_cap, LOD_PUBLISHER_CACHE_MAX)
+    }
+
+    fn with_cap(session: zenoh::Session, room_id: String, wire_cap: String, cap: usize) -> Self {
+        Self {
+            session,
+            room_id,
+            wire_cap,
+            pubs: HashMap::new(),
+            use_clock: 0,
+            cap: cap.max(1),
+        }
+    }
+
+    fn touch(&mut self, cell: [i32; 3]) {
+        self.use_clock = self.use_clock.wrapping_add(1);
+        if let Some(entry) = self.pubs.get_mut(&cell) {
+            entry.last_used = self.use_clock;
+        }
+    }
+
+    fn evict_lru(&mut self, stats: &PublishStats) {
+        let Some(victim) = pick_lru_victim(self.pubs.iter().map(|(k, e)| (k, e.last_used))) else {
+            return;
+        };
+        self.pubs.remove(&victim);
+        stats.lod_publish_skips.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn publisher_for(
+        &mut self,
+        lod_cell: [i32; 3],
+        stats: &PublishStats,
+    ) -> Option<&zenoh::pubsub::Publisher<'static>> {
+        if self.pubs.contains_key(&lod_cell) {
+            self.touch(lod_cell);
+            return self.pubs.get(&lod_cell).map(|e| &e.pub_);
+        }
+        let key = frame_lod_key(
+            &self.room_id,
+            &self.wire_cap,
+            lod_cell[0],
+            lod_cell[1],
+            lod_cell[2],
+        );
+        let pub_ = match self.session.declare_publisher(key).wait() {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!(
+                    "frame_lod declare_publisher failed for {}_{}_{}: {e}",
+                    lod_cell[0],
+                    lod_cell[1],
+                    lod_cell[2]
+                );
+                stats.lod_publish_failures.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+        };
+        for _ in 0..lru_evicts_before_insert(self.pubs.len(), self.cap) {
+            self.evict_lru(stats);
+        }
+        self.use_clock = self.use_clock.wrapping_add(1);
+        self.pubs.insert(
+            lod_cell,
+            CellPublisherEntry {
+                pub_,
+                last_used: self.use_clock,
+            },
+        );
+        self.pubs.get(&lod_cell).map(|e| &e.pub_)
+    }
+}
+
+/// Whether a lod soft-put batch may run given the last lod put time (x00c7 · ≤5 Hz).
+pub fn lod_rate_gate_open(last_lod_put_at: Option<Instant>, now: Instant) -> bool {
+    match last_lod_put_at {
+        None => true,
+        Some(t) => now.saturating_duration_since(t) >= LOD_MIN_INTERVAL,
+    }
+}
+
+/// Bucket `user_root` entities by LodCell for mid-band soft-put (x00c7).
+///
+/// Guarantees: non-user_root ids are dropped; LodCell uses fine [`CellId`] then
+/// [`cell_to_lod_cell`]. Non-guarantees: stable map iteration order.
+///
+/// Contract: lod is an **occupied roster per LodCell** at ≤5 Hz (not a dirty delta).
+pub fn bucket_user_roots_by_lod_cell(entities: &[Entity]) -> HashMap<[i32; 3], Vec<Entity>> {
+    let mut buckets: HashMap<[i32; 3], Vec<Entity>> = HashMap::new();
+    for e in entities {
+        if !scene_entry_is_user_root(e.id) {
+            continue;
+        }
+        let fine = CellId::from_world_f64(e.x, e.y, e.z).0;
+        let lod = cell_to_lod_cell(fine[0], fine[1], fine[2]);
+        buckets.entry(lod).or_default().push(*e);
+    }
+    buckets
+}
+
+/// Collect occupied user_root poses from `last_sent`, excluding Room `removes` (x00c7).
+fn collect_lod_user_root_entities(last_sent: &HashMap<u32, Pose>, removes: &[u32]) -> Vec<Entity> {
+    let removed: HashSet<u32> = removes.iter().copied().collect();
+    let mut out = Vec::new();
+    for (&id, pose) in last_sent {
+        if removed.contains(&id) || !scene_entry_is_user_root(id) {
+            continue;
+        }
+        out.push(to_entity(id, *pose));
+    }
+    out
+}
+
+/// Plan lod soft-puts: current occupied roster + exit removes vs last published set (x00c7).
+///
+/// Guarantees: LodCells that become empty emit remove-only puts; ids that left a LodCell
+/// appear in that cell's `removes`. Non-guarantees: stable output order.
+pub fn plan_lod_soft_puts(
+    current_entities: &[Entity],
+    last_lod_ids: &HashMap<[i32; 3], HashSet<u32>>,
+) -> Vec<([i32; 3], Vec<Entity>, Vec<u32>)> {
+    let current_buckets = bucket_user_roots_by_lod_cell(current_entities);
+    let mut current_ids: HashMap<[i32; 3], HashSet<u32>> = HashMap::new();
+    for (cell, ents) in &current_buckets {
+        current_ids.insert(*cell, ents.iter().map(|e| e.id).collect());
+    }
+    let mut cells: HashSet<[i32; 3]> = current_buckets.keys().copied().collect();
+    cells.extend(last_lod_ids.keys().copied());
+    let mut out = Vec::with_capacity(cells.len());
+    for cell in cells {
+        let upserts = current_buckets.get(&cell).cloned().unwrap_or_default();
+        let curr = current_ids.get(&cell);
+        let mut removes = Vec::new();
+        if let Some(prev) = last_lod_ids.get(&cell) {
+            for &id in prev {
+                if !curr.is_some_and(|c| c.contains(&id)) {
+                    removes.push(id);
+                }
+            }
+        }
+        removes.sort_unstable();
+        if upserts.is_empty() && removes.is_empty() {
+            continue;
+        }
+        out.push((cell, upserts, removes));
+    }
+    out
+}
+
+/// Apply a successful lod soft-put into the last-published id map (x00c7).
+///
+/// `upsert_ids` is the full occupied roster for this LodCell (empty → cell cleared).
+pub fn apply_last_lod_ids(
+    last_lod_ids: &mut HashMap<[i32; 3], HashSet<u32>>,
+    lod_cell: [i32; 3],
+    upsert_ids: &[u32],
+) {
+    if upsert_ids.is_empty() {
+        last_lod_ids.remove(&lod_cell);
+        return;
+    }
+    last_lod_ids.insert(lod_cell, upsert_ids.iter().copied().collect());
 }
 
 /// Index dirty upserts by delivery cell (`CellId` / `CELL_SIZE_M=64` center origin · x00c0).
@@ -851,6 +1059,10 @@ struct WorkerState {
     last_wire_cell: HashMap<u32, [i32; 3]>,
     net_tick: u64,
     last_published_tick: Option<u64>,
+    /// Wall clock of last **successful** lod soft-put batch (x00c7 ≤5 Hz).
+    last_lod_put_at: Option<Instant>,
+    /// Last successfully published user_root ids per LodCell (roster / exit removes · x00c7).
+    last_lod_ids: HashMap<[i32; 3], HashSet<u32>>,
     /// Removes / catch-up deferred while `publish_allowed == false` (or mid-net
     /// during an in-flight catch-up). Applied on the next allowed Frame.
     deferred_removes: Vec<u32>,
@@ -921,6 +1133,57 @@ impl WorkerState {
             stats.cell_publishes.fetch_add(1, Ordering::Relaxed);
         } else {
             stats.cell_publish_failures.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn soft_put_lod_frame(
+        lod_pubs: &mut LodPublisherCache,
+        key: &SigningKey,
+        room_id: &str,
+        room_aead: &host_server::room_aead::SharedRoomAead,
+        stats: &PublishStats,
+        lod_cell: [i32; 3],
+        tick: u64,
+        host_time_ms: u64,
+        sim_tick: u64,
+        scene_rev: u64,
+        lod_upserts: Vec<Entity>,
+        lod_removes: Vec<u32>,
+    ) -> bool {
+        if lod_upserts.is_empty() && lod_removes.is_empty() {
+            return false;
+        }
+        let Some(lod_pub) = lod_pubs.publisher_for(lod_cell, stats) else {
+            return false;
+        };
+        let mut lod_frame = RenderFrame {
+            tick,
+            host_time_ms,
+            upserts: lod_upserts,
+            removes: lod_removes,
+            host_sig: vec![],
+            sim_tick,
+            redundancy: 0,
+            acked_intent_seq: vec![],
+            scene_rev,
+        };
+        sign_frame(key, &mut lod_frame);
+        let Some(lod_env) = seal_soft(
+            AeadKind::Frame,
+            room_id,
+            room_aead,
+            lod_frame.encode_to_vec(),
+        ) else {
+            stats.lod_publish_failures.fetch_add(1, Ordering::Relaxed);
+            return false;
+        };
+        if put_soft("frame_lod", lod_pub, lod_env) {
+            stats.lod_publishes.fetch_add(1, Ordering::Relaxed);
+            true
+        } else {
+            stats.lod_publish_failures.fetch_add(1, Ordering::Relaxed);
+            false
         }
     }
 
@@ -1006,6 +1269,7 @@ impl WorkerState {
         &mut self,
         frame_pub: &zenoh::pubsub::Publisher<'_>,
         cell_pubs: &mut CellPublisherCache,
+        lod_pubs: &mut LodPublisherCache,
         key: &SigningKey,
         room_id: &str,
         room_aead: &host_server::room_aead::SharedRoomAead,
@@ -1023,6 +1287,8 @@ impl WorkerState {
             plan_cell_frame_buckets(&upserts, &removes, &self.last_wire_cell);
         let cell_soft_puts =
             materialize_cell_soft_puts(&upserts, cell_upsert_buckets, cell_remove_buckets);
+        // Lod uses last_sent (updated before this call) minus Room removes (x00c7).
+        let lod_entities = collect_lod_user_root_entities(&self.last_sent, &removes);
         let tick = self.net_tick;
         let mut frame = RenderFrame {
             tick,
@@ -1059,6 +1325,39 @@ impl WorkerState {
             );
         }
 
+        // Mid-band lod after Room success (x00c7): occupied roster ≤5 Hz + exit removes.
+        let now = Instant::now();
+        if lod_rate_gate_open(self.last_lod_put_at, now) {
+            let lod_puts = plan_lod_soft_puts(&lod_entities, &self.last_lod_ids);
+            if !lod_puts.is_empty() {
+                let mut any_ok = false;
+                for (lod_cell, lod_upserts, lod_removes) in lod_puts {
+                    let upsert_ids: Vec<u32> = lod_upserts.iter().map(|e| e.id).collect();
+                    if Self::soft_put_lod_frame(
+                        lod_pubs,
+                        key,
+                        room_id,
+                        room_aead,
+                        stats,
+                        lod_cell,
+                        tick,
+                        host_time_ms,
+                        sim_tick,
+                        scene_rev,
+                        lod_upserts,
+                        lod_removes,
+                    ) {
+                        apply_last_lod_ids(&mut self.last_lod_ids, lod_cell, &upsert_ids);
+                        any_ok = true;
+                    }
+                }
+                // Only advance the rate gate when at least one lod put reached the wire.
+                if any_ok {
+                    self.last_lod_put_at = Some(now);
+                }
+            }
+        }
+
         apply_last_wire_cell(&mut self.last_wire_cell, &frame.upserts, &frame.removes);
 
         stats
@@ -1075,6 +1374,7 @@ impl WorkerState {
         &mut self,
         frame_pub: &zenoh::pubsub::Publisher<'_>,
         cell_pubs: &mut CellPublisherCache,
+        lod_pubs: &mut LodPublisherCache,
         key: &SigningKey,
         room_id: &str,
         room_aead: &host_server::room_aead::SharedRoomAead,
@@ -1129,6 +1429,7 @@ impl WorkerState {
             self.put_signed_frame(
                 frame_pub,
                 cell_pubs,
+                lod_pubs,
                 key,
                 room_id,
                 room_aead,
@@ -1235,6 +1536,7 @@ impl WorkerState {
         self.put_signed_frame(
             frame_pub,
             cell_pubs,
+            lod_pubs,
             key,
             room_id,
             room_aead,
@@ -1308,17 +1610,21 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
                 room_id,
                 room_aead,
             } = config;
-            let mut cell_pubs = CellPublisherCache::new(session, room_id.clone(), wire_cap);
+            let mut cell_pubs =
+                CellPublisherCache::new(session.clone(), room_id.clone(), wire_cap.clone());
+            let mut lod_pubs = LodPublisherCache::new(session, room_id.clone(), wire_cap);
             let mut state = WorkerState {
                 last_sent: HashMap::new(),
                 last_wire_cell: HashMap::new(),
                 net_tick: 0,
                 last_published_tick: None,
+                last_lod_put_at: None,
+                last_lod_ids: HashMap::new(),
                 deferred_removes: Vec::new(),
                 deferred_catchup: false,
             };
             log::info!(
-                "network worker ready (Zenoh put off physics thread; AEAD on; cell dirty filter x00c0; cell exit remove x00c2)"
+                "network worker ready (Zenoh put off physics thread; AEAD on; cell dirty filter x00c0; cell exit remove x00c2; lod roster+exit soft-put x00c7)"
             );
             while let Some((frame, presence, manifest)) = hub_w.take_batch() {
                 if let Some(job) = manifest {
@@ -1331,6 +1637,7 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
                     state.handle_frame(
                         &frame_pub,
                         &mut cell_pubs,
+                        &mut lod_pubs,
                         &host_key,
                         &room_id,
                         &room_aead,
@@ -1373,6 +1680,9 @@ mod tests {
                 cell_ok: 2,
                 cell_fail: 1,
                 cell_skip: 4,
+                lod_ok: 0,
+                lod_fail: 0,
+                lod_skip: 0,
             }
         );
         assert_eq!(stats.publishes.load(Ordering::Relaxed), 0);
@@ -1380,6 +1690,107 @@ mod tests {
         assert_eq!(stats.cell_publish_failures.load(Ordering::Relaxed), 0);
         assert_eq!(stats.cell_publish_skips.load(Ordering::Relaxed), 0);
         assert_eq!(stats.net_tick.load(Ordering::Relaxed), 9);
+    }
+
+    #[test]
+    fn snapshot_and_reset_includes_lod_window() {
+        let stats = PublishStats::default();
+        stats.lod_publishes.store(5, Ordering::Relaxed);
+        stats.lod_publish_failures.store(2, Ordering::Relaxed);
+        stats.lod_publish_skips.store(1, Ordering::Relaxed);
+        let w = stats.snapshot_and_reset();
+        assert_eq!(w.lod_ok, 5);
+        assert_eq!(w.lod_fail, 2);
+        assert_eq!(w.lod_skip, 1);
+        assert_eq!(stats.lod_publishes.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn lod_rate_gate_respects_min_interval() {
+        let t0 = Instant::now();
+        assert!(lod_rate_gate_open(None, t0));
+        assert!(!lod_rate_gate_open(Some(t0), t0));
+        assert!(!lod_rate_gate_open(
+            Some(t0),
+            t0 + LOD_MIN_INTERVAL - Duration::from_millis(1)
+        ));
+        assert!(lod_rate_gate_open(Some(t0), t0 + LOD_MIN_INTERVAL));
+    }
+
+    #[test]
+    fn plan_lod_soft_puts_emits_exit_removes_and_empty_cells() {
+        use alchemy_protocol::USER_ROOT_ENTITY_FIRST;
+        let a = alchemy_protocol::entity_trs(
+            USER_ROOT_ENTITY_FIRST,
+            0.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+        );
+        let mut last = HashMap::new();
+        last.insert([0, 0, 0], HashSet::from([USER_ROOT_ENTITY_FIRST]));
+        last.insert([1, 0, 0], HashSet::from([USER_ROOT_ENTITY_FIRST + 1]));
+        // Only A remains at origin; B despawned → LodCell [1,0,0] remove-only.
+        let puts = plan_lod_soft_puts(&[a], &last);
+        let origin = puts.iter().find(|(c, _, _)| *c == [0, 0, 0]).unwrap();
+        assert_eq!(origin.1.len(), 1);
+        assert!(origin.2.is_empty());
+        let far = puts.iter().find(|(c, _, _)| *c == [1, 0, 0]).unwrap();
+        assert!(far.1.is_empty());
+        assert_eq!(far.2, vec![USER_ROOT_ENTITY_FIRST + 1]);
+    }
+
+    #[test]
+    fn bucket_user_roots_by_lod_cell_filters_and_strides() {
+        use alchemy_protocol::USER_ROOT_ENTITY_FIRST;
+        let root = alchemy_protocol::entity_trs(
+            USER_ROOT_ENTITY_FIRST,
+            0.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+        );
+        // Fine cell [3,0,0] → LodCell [1,0,0] (stride 3); world x = 192 → cell 3.
+        let root_far = alchemy_protocol::entity_trs(
+            USER_ROOT_ENTITY_FIRST + 1,
+            192.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+        );
+        let world = alchemy_protocol::entity_trs(
+            42,
+            0.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+        );
+        let buckets = bucket_user_roots_by_lod_cell(&[root, root_far, world]);
+        assert_eq!(buckets.get(&[0, 0, 0]).map(|v| v.len()), Some(1));
+        assert_eq!(buckets[&[0, 0, 0]][0].id, USER_ROOT_ENTITY_FIRST);
+        assert_eq!(buckets.get(&[1, 0, 0]).map(|v| v.len()), Some(1));
+        assert_eq!(buckets[&[1, 0, 0]][0].id, USER_ROOT_ENTITY_FIRST + 1);
+        assert_eq!(buckets.values().map(|v| v.len()).sum::<usize>(), 2);
     }
 
     #[test]
@@ -2103,6 +2514,8 @@ mod tests {
             last_wire_cell: HashMap::new(),
             net_tick: 0,
             last_published_tick: None,
+            last_lod_put_at: None,
+            last_lod_ids: HashMap::new(),
             deferred_removes: Vec::new(),
             deferred_catchup: false,
         };
