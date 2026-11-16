@@ -2,7 +2,7 @@
 
 > **ID:** `x00c0` · **slug:** `host-cell-dirty-filter` · **status:** `done` · **area:** `[host, client, protocol, docs]` · **depends_on:** `[x00bf]`  
 > **優先度:** [spatial_interest.md](../spatial_interest.md) 実装第三波（P3-7）  
-> **後続:** Room `…/frame` 依存の段階縮小 · 自位置追従の購読切替 · セル退出 remove · avatar LOD · G1/G2 実測（次空き `x00c1`〜）
+> **後続:** [x00c1](x00c1-client-cell-follow-resub.md) 自位置追従（**done**）· Room `…/frame` 依存の段階縮小 · セル退出 remove · avatar LOD · G1/G2 実測（次空き `x00c2`〜）
 
 目標: host が dirty upsert を `CellId` でバケットし、非空セルへ `…/frame/cell/{cx}_{cy}_{cz}` を**セル別密封**で soft-put する。Room `…/frame` は tick 正本として全文維持。既定購読切替・フルメッシュ廃止は後続。
 
