@@ -1,4 +1,4 @@
-//! RenderFrame delta subscriber + snapshot convergence (x0023 / x0024 / x0029 / x00bf / x00c1 / x00c3 / x00c4).
+//! RenderFrame delta subscriber + snapshot convergence (x0023 / x0024 / x0029 / x00bf / x00c1 / x00c3 / x00c4 / x00c5).
 //!
 //! Guarantees:
 //! - Frame finite / tick / `host_sig` verified before apply; snapshot requires non-empty `upserts`
@@ -7,26 +7,26 @@
 //! - Snapshot skips the tick gate so a racing delta cannot block convergence
 //! - RenderFrame Entity carries quat + scale; client applies TRS (x0029)
 //! - Class-specific decode byte/count limits and AEAD failure → drop (x003b)
-//! - Default path is Room `…/frame` only. Opt-in (`ALCHEMY_CELL_FRAME`) is **cell mainline**:
-//!   Room `…/frame` is **not** subscribed (x00c4). Exactly one frame subscriber runs; both modes
-//!   share apply crypto; tick gates differ (x00bf / x00c0 / x00c3): cell uses
+//! - Default path is **cell mainline** (x00c5): Room `…/frame` is **not** subscribed.
+//!   `ALCHEMY_ROOM_FRAME=1` opts into Room `…/frame` only. Exactly one frame subscriber runs;
+//!   both modes share apply crypto; tick gates differ (x00bf / x00c0 / x00c3): cell uses
 //!   [`decide_cell_frame_tick`] (same-tick merge); Room uses [`decide_room_frame_tick`]
 //! - Whichever mode is active may gap→Room `…/snapshot` (`gap_resync=true`); there is no
 //!   cell-scoped snapshot
-//! - Opt-in cell interest follows wire `local_user_root` `CellId` with hysteresis and
-//!   resubscribes Moore neighborhood on center change only (x00c1).
-//!   Center is re-evaluated on a ≤250ms deadline even while cell samples keep arriving
+//! - Subscribe key is interim `…/frame/cell/*` via [`alchemy_protocol::frame_cell_wildcard_key`]
+//!   (x00c5; ACL-aligned). Wire `local_user_root` center is still tracked with hysteresis
+//!   (x00c1) for future Moore narrowing; it does **not** change the subscribe key today
 //! - x00c2/x00c3: host may soft-put old-cell removes and new-cell upserts on the **same**
 //!   `net_tick`. Client merges same-tick cell samples (cross-cell upsert guard; within-frame
-//!   remove wins). Room same-tick override remains for the default Room path / unit tests
+//!   remove wins). Room same-tick override remains for the Room opt-out path / unit tests
 //!
 //! Non-guarantees: retransmission of missed deltas, reliable-delivery ACK channel, Manifest trust
-//! (see `bus::manifest`; `host_pub` is read, not established here); cell-only **default** delivery
-//! (still opt-in); host dual-publish stop; Presence-unset follow; cell gap convergence during resub;
-//! opt-in recovery when host cell soft-put fails (Room frame is not subscribed to backfill);
-//! AOI / Moore-exit client prune of far entities (ghost poses may linger after initial snapshot).
-//! Hot-path note (x00c4 opt-in): no Room+cell dual AEAD per tick; cell payloads are cell-filtered.
-//! Snapshot / gap authority remains Room `…/snapshot`.
+//! (see `bus::manifest`; `host_pub` is read, not established here); host dual-publish stop;
+//! Presence-unset follow; cell gap convergence during resub; recovery when host cell soft-put
+//! fails (default Room frame is not subscribed to backfill); AOI / Moore-exit client prune of
+//! far entities (ghost poses may linger after initial snapshot).
+//! Hot-path note (x00c5 default cell): no Room+cell dual AEAD per tick; cell payloads are
+//! cell-filtered. Snapshot / gap authority remains Room `…/snapshot`.
 
 use std::sync::Arc;
 use std::thread;
@@ -36,9 +36,8 @@ use alchemy_protocol::decode_limits::{check_frame, check_payload_bytes, WireClas
 use alchemy_protocol::wire_aead::AeadKind;
 use alchemy_protocol::wire_crypto::{frame_entities_finite, verify_frame};
 use alchemy_protocol::{
-    decide_cell_frame_tick, decide_room_frame_tick, frame_cell_interest_keyexpr,
-    moore_neighborhood_cells, snapshot_key, FrameTickDecision, Message, RenderFrame,
-    FRAME_TICK_GAP_RESYNC,
+    decide_cell_frame_tick, decide_room_frame_tick, frame_cell_wildcard_key, snapshot_key,
+    FrameTickDecision, Message, RenderFrame, FRAME_TICK_GAP_RESYNC,
 };
 use alchemy_shared_sim::mvcc::{CellId, EntityDirectory};
 use anyhow::{Context, Result};
@@ -390,14 +389,17 @@ fn maybe_advance_interest_center(current: CellId, xyz: [f64; 3]) -> CellId {
     }
 }
 
-fn cell_interest_key_for(room_id: &str, wire_cap: &str, center: CellId) -> String {
-    let near = moore_neighborhood_cells(center.0[0], center.0[1], center.0[2]);
-    frame_cell_interest_keyexpr(room_id, wire_cap, &near)
+/// Cell-frame subscribe keyexpr (x00c5 interim → [`frame_cell_wildcard_key`]).
+fn cell_interest_key_for(room_id: &str, wire_cap: &str) -> String {
+    frame_cell_wildcard_key(room_id, wire_cap)
 }
 
 struct FrameGateCounters {
     dropped_limits: u64,
     dropped_aead: u64,
+    applied: u64,
+    dropped_tick: u64,
+    need_resync: u64,
 }
 
 /// Handle one sealed frame sample (AEAD / decode / apply / optional Room gap→snapshot).
@@ -431,8 +433,14 @@ fn handle_frame_sample(
                 return;
             }
             match apply_frame(shared, frame, /* replace */ false, from_room) {
-                ApplyFrameOutcome::Applied | ApplyFrameOutcome::Dropped => {}
+                ApplyFrameOutcome::Applied => {
+                    gates.applied += 1;
+                }
+                ApplyFrameOutcome::Dropped => {
+                    gates.dropped_tick += 1;
+                }
                 ApplyFrameOutcome::NeedResync => {
+                    gates.need_resync += 1;
                     // x0024 / x00c4: active frame path (Room XOR cell) may fetch Room `…/snapshot`.
                     // Cooldown sheds bursty NeedResync (gap storms / snapshot get storms).
                     let now = Instant::now();
@@ -467,15 +475,28 @@ fn maybe_log_frame_gate(
     if last_gate_log.elapsed() < GATE_LOG_INTERVAL {
         return;
     }
-    if gates.dropped_limits > 0 || gates.dropped_aead > 0 {
+    let noisy = gates.dropped_limits > 0 || gates.dropped_aead > 0 || gates.need_resync > 0;
+    if noisy {
         log::info!(
-            "frame gate ({thread_name}): dropped_limits={} dropped_aead={} (last ~5s)",
+            "frame gate ({thread_name}): applied={} dropped_tick={} need_resync={} dropped_limits={} dropped_aead={} (last ~5s)",
+            gates.applied,
+            gates.dropped_tick,
+            gates.need_resync,
             gates.dropped_limits,
             gates.dropped_aead
+        );
+    } else if gates.applied > 0 || gates.dropped_tick > 0 {
+        log::debug!(
+            "frame gate ({thread_name}): applied={} dropped_tick={} (last ~5s)",
+            gates.applied,
+            gates.dropped_tick
         );
     }
     gates.dropped_limits = 0;
     gates.dropped_aead = 0;
+    gates.applied = 0;
+    gates.dropped_tick = 0;
+    gates.need_resync = 0;
     *last_gate_log = Instant::now();
 }
 
@@ -501,6 +522,9 @@ pub(crate) fn spawn_frame_subscriber(
             let mut gates = FrameGateCounters {
                 dropped_limits: 0,
                 dropped_aead: 0,
+                applied: 0,
+                dropped_tick: 0,
+                need_resync: 0,
             };
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
@@ -521,7 +545,10 @@ pub(crate) fn spawn_frame_subscriber(
     Ok(())
 }
 
-/// Opt-in cell mainline: apply + gap→Room snapshot; follow wire pose center (x00bf / x00c1 / x00c4).
+/// Default cell mainline (x00c5): `…/frame/cell/*` + gap→Room snapshot.
+///
+/// Tracks wire-pose interest center with hysteresis for a future Moore rewire; subscribe
+/// key is center-stable ([`frame_cell_wildcard_key`]) so there is no resubscribe path today.
 pub(crate) fn spawn_cell_interest_subscriber(
     session: zenoh::Session,
     room_id: String,
@@ -529,9 +556,9 @@ pub(crate) fn spawn_cell_interest_subscriber(
     shared: Arc<SharedState>,
 ) -> Result<()> {
     let mut center = CellId([0, 0, 0]);
-    let initial_key = cell_interest_key_for(&room_id, &wire_cap, center);
-    let mut subscriber = session
-        .declare_subscriber(initial_key.clone())
+    let key = cell_interest_key_for(&room_id, &wire_cap);
+    let subscriber = session
+        .declare_subscriber(key.clone())
         .wait()
         .map_err(|e| anyhow::anyhow!("declare_subscriber cell interest failed: {e}"))?;
 
@@ -540,15 +567,18 @@ pub(crate) fn spawn_cell_interest_subscriber(
         .name(THREAD_NAME.into())
         .spawn(move || {
             log::info!(
-                "subscribed to {initial_key} (signed delta upserts/removes; kind=CellInterest; gap_resync=true; follow=wire_user_root)"
+                "subscribed to {key} (signed delta upserts/removes; kind=CellInterest; gap_resync=true; interim cell/* wildcard x00c5; track wire_user_root center)"
             );
             let mut resync_cooldown_until = Instant::now();
             let mut gates = FrameGateCounters {
                 dropped_limits: 0,
                 dropped_aead: 0,
+                applied: 0,
+                dropped_tick: 0,
+                need_resync: 0,
             };
             let mut last_gate_log = Instant::now();
-            // Deadline so busy cell traffic cannot starve interest follow (x00c1).
+            // Deadline so busy cell traffic cannot starve interest-center tracking (x00c1).
             let mut next_eval_at = Instant::now() + CELL_INTEREST_POLL;
             loop {
                 let wait = next_eval_at.saturating_duration_since(Instant::now());
@@ -566,7 +596,9 @@ pub(crate) fn spawn_cell_interest_subscriber(
                         );
                         maybe_log_frame_gate(THREAD_NAME, &mut last_gate_log, &mut gates);
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        maybe_log_frame_gate(THREAD_NAME, &mut last_gate_log, &mut gates);
+                    }
                     Err(_) => {
                         // Channel closed (session close / undeclare).
                         break;
@@ -579,29 +611,8 @@ pub(crate) fn spawn_cell_interest_subscriber(
                 let Some(xyz) = wire_user_root_xyz(&shared) else {
                     continue;
                 };
-                let next = maybe_advance_interest_center(center, xyz);
-                if next == center {
-                    continue;
-                }
-                let next_key = cell_interest_key_for(&room_id, &wire_cap, next);
-                match session.declare_subscriber(next_key.clone()).wait() {
-                    Ok(next_sub) => {
-                        log::info!(
-                            "cell interest resub center={:?} -> {:?} key={next_key}",
-                            center.0,
-                            next.0
-                        );
-                        drop(subscriber);
-                        subscriber = next_sub;
-                        center = next;
-                    }
-                    Err(err) => {
-                        log::warn!(
-                            "cell interest resub declare failed (keeping {:?}): {err}",
-                            center.0
-                        );
-                    }
-                }
+                // Interim wildcard: keep center for future Moore narrowing only (no resub).
+                center = maybe_advance_interest_center(center, xyz);
             }
         })
         .context("spawn cell interest thread")?;
@@ -837,7 +848,7 @@ mod tests {
         assert!(!world.cell_tick_upsert_guard.contains(&1));
     }
 
-    /// x00c3/x00c4: Room same-tick override API (default Room path / gate regression; not opt-in runtime).
+    /// x00c3/x00c5: Room same-tick override API (Room opt-out / gate regression; not cell-mainline runtime).
     #[test]
     fn room_overrides_same_tick_after_multi_cell_merge() {
         let mut world = WorldView::default();
@@ -881,7 +892,7 @@ mod tests {
         assert!(world.entities.contains_key(&2));
     }
 
-    /// x00c0/x00c4: cell partial then same-tick Room full overrides (gate regression; default Room path).
+    /// x00c0/x00c5: cell partial then same-tick Room full overrides (gate regression; Room opt-out path).
     #[test]
     fn room_overrides_same_tick_after_partial_cell() {
         let mut world = WorldView::default();
@@ -922,7 +933,7 @@ mod tests {
 
     // Identity / presence pin / gen-rev unit tables live in alchemy-client-trust (x0070).
 
-    /// x00bf: Moore interest `|` keyexpr must be acceptable to Zenoh `declare_subscriber`.
+    /// x00c5: `…/frame/cell/*` must be acceptable to Zenoh `declare_subscriber`.
     #[test]
     fn cell_interest_keyexpr_declare_subscriber_ok() {
         use alchemy_protocol::LOCAL_WIRE_CAP;
@@ -938,8 +949,9 @@ mod tests {
             .insert_json5("scouting/multicast/enabled", "false")
             .expect("scouting");
         let session = zenoh::open(config).wait().expect("zenoh open");
-        let ke = cell_interest_key_for("local", LOCAL_WIRE_CAP, CellId([0, 0, 0]));
-        assert!(ke.contains('|'));
+        let ke = cell_interest_key_for("local", LOCAL_WIRE_CAP);
+        assert!(ke.ends_with("/frame/cell/*"));
+        assert!(!ke.contains('|'));
         session
             .declare_subscriber(ke)
             .wait()
@@ -972,17 +984,13 @@ mod tests {
         );
     }
 
-    /// x00c1: Moore keyexpr changes when interest center moves.
+    /// x00c5: wildcard key is center-independent (no resub).
     #[test]
-    fn interest_keyexpr_changes_with_center() {
-        use alchemy_protocol::LOCAL_WIRE_CAP;
+    fn interest_keyexpr_is_wildcard() {
+        use alchemy_protocol::{frame_cell_wildcard_key, LOCAL_WIRE_CAP};
 
-        let k0 = cell_interest_key_for("local", LOCAL_WIRE_CAP, CellId([0, 0, 0]));
-        let k1 = cell_interest_key_for("local", LOCAL_WIRE_CAP, CellId([1, 0, 0]));
-        assert_ne!(k0, k1);
-        assert!(k0.contains("0_0_0"));
-        assert!(k1.contains("1_0_0"));
-        assert!(!k0.contains("/frame/cell/2_0_0"));
-        assert!(k1.contains("/frame/cell/2_0_0"));
+        let ke = cell_interest_key_for("local", LOCAL_WIRE_CAP);
+        assert!(ke.ends_with("/frame/cell/*"));
+        assert_eq!(ke, frame_cell_wildcard_key("local", LOCAL_WIRE_CAP));
     }
 }

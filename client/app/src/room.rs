@@ -9,9 +9,9 @@
 //! - Intent Ed25519 session minted before guest Room Token fetch so `cnf.spk` matches bind
 //!   `session_pub` (x003e)
 //! - `ensure_room_bus` idempotent via `room_bus_started`; spawn failure clears the flag
-//! - Frame subscribe is exclusive (x00c4): default Room `…/frame` only; `ALCHEMY_CELL_FRAME=1`
-//!   starts Moore cell mainline only (Room frame **not** subscribed; follow wire
-//!   `local_user_root` center · x00bf / x00c1; initial origin until Presence)
+//! - Frame subscribe is exclusive (x00c5): default interim `…/frame/cell/*` mainline (Room
+//!   frame **not** subscribed; wire `local_user_root` center tracked for future Moore
+//!   narrowing · x00c1; no resub today). `ALCHEMY_ROOM_FRAME=1` opts into Room `…/frame` only
 //! - Reopen after join only when `mtls_reopen_pending` or session was dropped (x0068)
 //! - While `room_bus_started`, soft refresh skips CSR and disk PEM rewrite (Token / epoch
 //!   only). PEMs apply on next open / Leave→Join / `mtls_reopen` — mid-flight reopen is
@@ -38,9 +38,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use alchemy_protocol::wire_aead::AeadKind;
+#[allow(deprecated)]
+use alchemy_protocol::CELL_FRAME_SUB_ENV;
 use alchemy_protocol::{
-    cell_frame_sub_enabled, edit_key, frame_key, input_key, manifest_key, presence_key, Message,
-    CELL_FRAME_SUB_ENV,
+    edit_key, frame_key, input_key, manifest_key, presence_key, room_frame_sub_enabled, Message,
+    ROOM_FRAME_SUB_ENV,
 };
 use anyhow::{Context, Result};
 use zenoh::Wait;
@@ -430,8 +432,18 @@ pub(crate) fn ensure_room_bus(
             Arc::clone(&shared.host_attest),
         )?;
         spawn_presence_subscriber(session.clone(), presence_key_expr, Arc::clone(shared))?;
-        // x00c4: exclusive frame path (never Room+cell 併読).
-        match frame_subscribe_mode(cell_frame_sub_enabled()) {
+        // x00c5: exclusive frame path (never Room+cell 併読). Default cell; ROOM opt-out.
+        // `ALCHEMY_CELL_FRAME` is ignored for mode; warn so old scripts notice.
+        #[allow(deprecated)]
+        {
+            if std::env::var_os(CELL_FRAME_SUB_ENV).is_some() {
+                log::warn!(
+                    "deprecated: {CELL_FRAME_SUB_ENV} is set but ignored for frame subscribe mode (x00c5); \
+                     default is cell mainline; use {ROOM_FRAME_SUB_ENV}=1 for Room-only"
+                );
+            }
+        }
+        match frame_subscribe_mode(room_frame_sub_enabled()) {
             FrameSubscribeMode::CellMainline => {
                 spawn_cell_interest_subscriber(
                     session.clone(),
@@ -440,12 +452,12 @@ pub(crate) fn ensure_room_bus(
                     Arc::clone(shared),
                 )?;
                 log::info!(
-                    "{CELL_FRAME_SUB_ENV}=1: cell Moore mainline (Room frame not subscribed; gap→Room snapshot on cell; follow wire user_root)"
+                    "cell/* interim mainline (default; Room frame not subscribed; gap→Room snapshot on cell; track wire user_root center; {ROOM_FRAME_SUB_ENV}=1 for Room-only)"
                 );
             }
             FrameSubscribeMode::Room => {
-                // Room `…/frame` remains the default tick path (x00be / x00bf).
                 spawn_frame_subscriber(session.clone(), frame_key_expr, Arc::clone(shared))?;
+                log::info!("{ROOM_FRAME_SUB_ENV}=1: Room frame only (cell mainline opted out)");
             }
         }
         spawn_edit_commit_subscriber(session.clone(), edit_key_expr, Arc::clone(shared))?;
@@ -938,53 +950,55 @@ pub fn leave_room(shared: &SharedState, zenoh: &mut Option<zenoh::Session>) {
     shared.leave_room_local();
 }
 
-/// Which high-frequency frame subscriber [`ensure_room_bus`] starts (x00c4 exclusive).
+/// Which high-frequency frame subscriber [`ensure_room_bus`] starts (x00c5 exclusive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FrameSubscribeMode {
-    /// Default: Room `…/frame` only.
+    /// Opt-out: Room `…/frame` only (`ALCHEMY_ROOM_FRAME=1`).
     Room,
-    /// Opt-in: Moore cell mainline; Room `…/frame` not subscribed.
+    /// Default: interim `…/frame/cell/*` mainline; Room `…/frame` not subscribed.
     CellMainline,
 }
 
-/// Map `ALCHEMY_CELL_FRAME` (parsed) to the exclusive frame subscribe mode.
-pub(crate) fn frame_subscribe_mode(cell_frame_enabled: bool) -> FrameSubscribeMode {
-    if cell_frame_enabled {
-        FrameSubscribeMode::CellMainline
-    } else {
+/// Map `ALCHEMY_ROOM_FRAME` (parsed) to the exclusive frame subscribe mode (x00c5).
+///
+/// `true` → Room-only; `false` / unset → CellMainline.
+pub(crate) fn frame_subscribe_mode(room_frame_enabled: bool) -> FrameSubscribeMode {
+    if room_frame_enabled {
         FrameSubscribeMode::Room
+    } else {
+        FrameSubscribeMode::CellMainline
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{frame_subscribe_mode, FrameSubscribeMode};
-    use alchemy_protocol::cell_frame_sub_enabled_from;
+    use alchemy_protocol::room_frame_sub_enabled_from;
 
     #[test]
-    fn frame_subscribe_mode_defaults_to_room_only() {
-        assert!(!cell_frame_sub_enabled_from(None));
+    fn frame_subscribe_mode_defaults_to_cell_mainline() {
+        assert!(!room_frame_sub_enabled_from(None));
         assert_eq!(
-            frame_subscribe_mode(cell_frame_sub_enabled_from(None)),
-            FrameSubscribeMode::Room
+            frame_subscribe_mode(room_frame_sub_enabled_from(None)),
+            FrameSubscribeMode::CellMainline
         );
         assert_eq!(
-            frame_subscribe_mode(cell_frame_sub_enabled_from(Some("0"))),
-            FrameSubscribeMode::Room
+            frame_subscribe_mode(room_frame_sub_enabled_from(Some("0"))),
+            FrameSubscribeMode::CellMainline
         );
     }
 
     #[test]
-    fn frame_subscribe_mode_opt_in_is_cell_mainline_exclusive() {
+    fn frame_subscribe_mode_room_opt_out_is_exclusive() {
         assert_eq!(
-            frame_subscribe_mode(cell_frame_sub_enabled_from(Some("1"))),
-            FrameSubscribeMode::CellMainline
+            frame_subscribe_mode(room_frame_sub_enabled_from(Some("1"))),
+            FrameSubscribeMode::Room
         );
         assert_eq!(
-            frame_subscribe_mode(cell_frame_sub_enabled_from(Some("true"))),
-            FrameSubscribeMode::CellMainline
+            frame_subscribe_mode(room_frame_sub_enabled_from(Some("true"))),
+            FrameSubscribeMode::Room
         );
-        // XOR: enabling cell never selects Room in the same mode.
-        assert_ne!(frame_subscribe_mode(true), FrameSubscribeMode::Room);
+        // XOR: enabling Room never selects CellMainline in the same mode.
+        assert_ne!(frame_subscribe_mode(true), FrameSubscribeMode::CellMainline);
     }
 }

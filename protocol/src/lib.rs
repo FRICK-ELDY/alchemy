@@ -366,12 +366,24 @@ pub const HOST_CONTROL_SHUTDOWN: &[u8] = b"shutdown";
 /// Env var that opts into unauthenticated Zenoh `host_control` (x001e; default off).
 pub const HOST_CONTROL_ZENOH_ENV: &str = "ALCHEMY_HOST_CONTROL";
 
-/// Env var that opts into near-cell `…/frame/cell/…` as the frame **mainline**
-/// (x00bf / x00c4 Spatial Interest; default off — Room `…/frame` remains the sole default path).
+/// Deprecated env name from x00bf / x00c4 cell-frame opt-in (`ALCHEMY_CELL_FRAME`).
 ///
-/// When enabled, clients subscribe to Moore cell keys only (Room `…/frame` is **not** subscribed);
-/// gap→resync still uses Room `…/snapshot`.
+/// **x00c5:** setting this variable does **not** change frame subscribe mode. Mode is
+/// selected only via [`ROOM_FRAME_SUB_ENV`] (`ALCHEMY_ROOM_FRAME`). Clients may log a
+/// deprecation warning when this env is present. Prefer unset (cell mainline) or
+/// [`ROOM_FRAME_SUB_ENV`] for Room-only opt-out.
+#[deprecated(
+    since = "x00c5",
+    note = "ignored for frame mode; use ALCHEMY_ROOM_FRAME for Room-only opt-out"
+)]
 pub const CELL_FRAME_SUB_ENV: &str = "ALCHEMY_CELL_FRAME";
+
+/// Env var that opts into Room `…/frame` as the exclusive frame path
+/// (x00c5 Spatial Interest; default **off** — Moore cell mainline).
+///
+/// When enabled, clients subscribe to Room `…/frame` only (cell keys are **not** subscribed).
+/// When unset/false, clients use Moore cell mainline; gap→resync still uses Room `…/snapshot`.
+pub const ROOM_FRAME_SUB_ENV: &str = "ALCHEMY_ROOM_FRAME";
 
 /// Moore neighborhood size including the center cell (`3³`).
 pub const MOORE_NEIGHBORHOOD_LEN: usize = 27;
@@ -396,17 +408,41 @@ pub fn host_control_zenoh_enabled() -> bool {
     host_control_zenoh_enabled_from(std::env::var(HOST_CONTROL_ZENOH_ENV).ok().as_deref())
 }
 
-/// Parse whether opt-in cell-frame mainline is enabled (testable).
+/// Parse legacy `ALCHEMY_CELL_FRAME` (testable). **x00c5:** not used for mode selection.
 ///
-/// Same truthy set as [`host_control_zenoh_enabled_from`]. Default off (Room-only).
+/// Same truthy set as [`host_control_zenoh_enabled_from`]. Historical default off.
+#[deprecated(
+    since = "x00c5",
+    note = "ignored for frame mode; use room_frame_sub_enabled_from / ALCHEMY_ROOM_FRAME"
+)]
 pub fn cell_frame_sub_enabled_from(value: Option<&str>) -> bool {
     env_flag_enabled_from(value)
 }
 
-/// Read [`CELL_FRAME_SUB_ENV`]; default **false** so clients keep Room-only frame sub.
-/// When true, cell Moore is the tick mainline (Room frame not subscribed; x00c4).
+/// Read `ALCHEMY_CELL_FRAME`; legacy x00bf/x00c4 API. Prefer [`room_frame_sub_enabled`].
+#[deprecated(
+    since = "x00c5",
+    note = "ignored for frame mode; use room_frame_sub_enabled / ALCHEMY_ROOM_FRAME"
+)]
 pub fn cell_frame_sub_enabled() -> bool {
-    cell_frame_sub_enabled_from(std::env::var(CELL_FRAME_SUB_ENV).ok().as_deref())
+    // Avoid deprecated const / self-call noise; string is the public env name.
+    #[allow(deprecated)]
+    {
+        cell_frame_sub_enabled_from(std::env::var("ALCHEMY_CELL_FRAME").ok().as_deref())
+    }
+}
+
+/// Parse whether Room-frame opt-out is enabled (testable; x00c5).
+///
+/// Same truthy set as [`host_control_zenoh_enabled_from`]. Default off → cell mainline.
+pub fn room_frame_sub_enabled_from(value: Option<&str>) -> bool {
+    env_flag_enabled_from(value)
+}
+
+/// Read [`ROOM_FRAME_SUB_ENV`]; default **false** so clients use Moore cell mainline.
+/// When true, Room `…/frame` is the exclusive tick path (cell not subscribed; x00c5).
+pub fn room_frame_sub_enabled() -> bool {
+    room_frame_sub_enabled_from(std::env::var(ROOM_FRAME_SUB_ENV).ok().as_deref())
 }
 
 /// Why [`validate_room_id`] rejected a value.
@@ -613,9 +649,11 @@ pub fn frame_cell_key(room_id: &str, wire_cap: &str, cx: i32, cy: i32, cz: i32) 
 
 /// Moore neighborhood of `cx,cy,cz` including the center (`3×3×3` = [`MOORE_NEIGHBORHOOD_LEN`]).
 ///
-/// Used by x00bf client interest subscribe. Does not convert world coordinates (indices only).
-/// Axis math uses `saturating_add`; near `i32` extremes neighbors can collide — callers that
-/// build a keyexpr should go through [`frame_cell_interest_keyexpr`] (dedups).
+/// Helper for [`frame_cell_interest_keyexpr`] (Moore `|` union). **x00c5 client subscribe** uses
+/// [`frame_cell_wildcard_key`] instead (interim; see that item). Does not convert world
+/// coordinates (indices only). Axis math uses `saturating_add`; near `i32` extremes neighbors
+/// can collide — callers that build a keyexpr should go through [`frame_cell_interest_keyexpr`]
+/// (dedups).
 pub fn moore_neighborhood_cells(cx: i32, cy: i32, cz: i32) -> [[i32; 3]; MOORE_NEIGHBORHOOD_LEN] {
     let mut out = [[0i32; 3]; MOORE_NEIGHBORHOOD_LEN];
     let mut i = 0;
@@ -639,6 +677,11 @@ pub fn moore_neighborhood_cells(cx: i32, cy: i32, cz: i32) -> [[i32; 3]; MOORE_N
 ///
 /// Empty `cells` yields an empty string (caller must not declare a subscriber on it).
 /// Duplicate cell indices are emitted once (stable first-seen order).
+///
+/// **x00c5:** client mainline subscribe uses [`frame_cell_wildcard_key`] instead. This `|`
+/// helper remains for tests / future Moore interest rewiring. Observed on local peer
+/// (Zenoh 1.10.1, `tcp/127.0.0.1:7447`): long Moore unions (~27 keys) **declare OK** but
+/// delivered **zero** samples (poses froze at join snapshot).
 pub fn frame_cell_interest_keyexpr(room_id: &str, wire_cap: &str, cells: &[[i32; 3]]) -> String {
     let mut out = String::new();
     let mut seen: Vec<[i32; 3]> = Vec::with_capacity(cells.len());
@@ -654,6 +697,16 @@ pub fn frame_cell_interest_keyexpr(room_id: &str, wire_cap: &str, cells: &[[i32;
         out.push_str(&frame_cell_key(room_id, wire_cap, cx, cy, cz));
     }
     out
+}
+
+/// Interim client cell-frame subscribe keyexpr (x00c5): `…/frame/cell/*`.
+///
+/// ACL-aligned single-segment wildcard (same shape as WAN `frame/cell/*`). Replaces Moore
+/// `|` unions for default mainline until union delivery is re-proven on peer/router.
+/// Center-independent — interest follow does not resubscribe. Host still soft-puts only
+/// non-empty cells (dirty-bounded receive).
+pub fn frame_cell_wildcard_key(room_id: &str, wire_cap: &str) -> String {
+    format!("{}/frame/cell/*", room_prefix(room_id, wire_cap))
 }
 
 /// Build an input key (caller should [`validate_room_id`] + [`validate_wire_cap`]).
@@ -751,11 +804,11 @@ pub fn decide_frame_tick(last: Option<u64>, tick: u64, max_gap: u64) -> FrameTic
     }
 }
 
-/// Room `…/frame` tick gate (x00c0; default client path after x00c4).
+/// Room `…/frame` tick gate (x00c0; Room opt-out path after x00c5).
 ///
 /// Introduced for Spatial Interest when Room could override a same-tick partial cell.
-/// Runtime 併読 is gone under opt-in cell mainline (x00c4); this gate still applies on the
-/// **default Room-only** subscribe path and in unit tests.
+/// Runtime 併読 is gone under cell mainline (x00c4/x00c5); this gate still applies when
+/// `ALCHEMY_ROOM_FRAME=1` selects Room-only subscribe, and in unit tests.
 ///
 /// Same as [`decide_frame_tick`], except `tick == prev` **Applies** when the previous
 /// commit was a partial cell (`last_from_room == false`), so Room full dirty + removes
@@ -1421,11 +1474,23 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn cell_frame_sub_defaults_off() {
+        // Legacy API: historical default off; x00c5 mode selection uses room_frame_*.
         assert!(!cell_frame_sub_enabled_from(None));
         assert!(!cell_frame_sub_enabled_from(Some("0")));
         assert!(cell_frame_sub_enabled_from(Some("1")));
         assert!(cell_frame_sub_enabled_from(Some("true")));
+    }
+
+    #[test]
+    fn room_frame_sub_defaults_off() {
+        assert!(!room_frame_sub_enabled_from(None));
+        assert!(!room_frame_sub_enabled_from(Some("0")));
+        assert!(!room_frame_sub_enabled_from(Some("false")));
+        assert!(room_frame_sub_enabled_from(Some("1")));
+        assert!(room_frame_sub_enabled_from(Some("true")));
+        assert!(room_frame_sub_enabled_from(Some("YES")));
     }
 
     #[test]
@@ -1456,6 +1521,16 @@ mod tests {
         );
         assert!(!ke.contains("/frame/**"));
         assert!(ke.contains("/frame/cell/0_0_0"));
+    }
+
+    #[test]
+    fn frame_cell_wildcard_key_is_acl_aligned() {
+        let cap = LOCAL_WIRE_CAP;
+        let ke = frame_cell_wildcard_key("local", cap);
+        assert_eq!(ke, format!("{}/cell/*", frame_key("local", cap)));
+        assert!(ke.ends_with("/frame/cell/*"));
+        assert!(!ke.contains('|'));
+        assert!(!ke.contains("/frame/**"));
     }
 
     #[test]
