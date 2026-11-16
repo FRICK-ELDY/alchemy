@@ -25,15 +25,24 @@
 //!   remove wins). Room same-tick override remains for the Room opt-out path / unit tests
 //! - **x00c6c**: `NeedResync` / snapshot cooldown must not stop MoveIntent publish or owned
 //!   prediction ticks (those run on other threads / input paths; this module only applies wire)
+//! - **x00c7c**: mid-band Avatar sync LOD — LodCell Moore ≤27 on `frame_lod_key`, ≤5 Hz host
+//!   puts. Lod apply does **not** advance `last_frame_tick`. Near wins for the same
+//!   `entity_id`. Near exit prune keeps remote `user_root` still inside lod Moore; lod exit
+//!   prunes only `user_root` outside lod Moore. Epoch reflect uses
+//!   [`crate::epoch_mirror::ingest_applied_world_poses`] (**pose only / jitter untouched**);
+//!   lod `try_recv` drain batches world applies then **one** pose ingest per drain;
+//!   same-tick LodCell samples merge like x00c3 (cross-LodCell upsert guard; within-frame
+//!   upsert∩remove → remove wins); drain sorts frames by ascending `tick` before merge
 //!
 //! Non-guarantees: retransmission of missed deltas, reliable-delivery ACK channel, Manifest trust
 //! (see `bus::manifest`; `host_pub` is read, not established here); host dual-publish stop;
 //! Presence-unset follow; recovery when host cell soft-put fails (default Room frame is not
 //! subscribed to backfill); AOI-exterior continuous visibility; Moore `|` union delivery;
 //! `FRAME_TICK_GAP_RESYNC` relaxation; **AOI-invariant far ghosts** when a host cell remove is
-//! missed (no periodic prune — cleared on next enter / gap→snapshot only).
-//! Hot-path note: receive budget is Moore-bounded (≤27 keys). Snapshot / gap / enter authority
-//! remains Room `…/snapshot`.
+//! missed (no periodic prune — cleared on next enter / gap→snapshot only); lod snapshot;
+//! avatar mesh / bones on lod
+//! Hot-path note: receive budget is Moore-bounded (≤27 cell + ≤27 lod keys). Snapshot / gap /
+//! enter authority remains Room `…/snapshot`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -46,9 +55,9 @@ use alchemy_protocol::decode_limits::{check_frame, check_payload_bytes, WireClas
 use alchemy_protocol::wire_aead::AeadKind;
 use alchemy_protocol::wire_crypto::{frame_entities_finite, verify_frame};
 use alchemy_protocol::{
-    decide_cell_frame_tick, decide_room_frame_tick, frame_cell_key, moore_neighborhood_cells,
-    snapshot_key, FrameTickDecision, Message, RenderFrame, FRAME_TICK_GAP_RESYNC,
-    MOORE_NEIGHBORHOOD_LEN,
+    cell_to_lod_cell, decide_cell_frame_tick, decide_room_frame_tick, frame_cell_key,
+    frame_lod_key, moore_neighborhood_cells, scene_entry_is_user_root, snapshot_key,
+    FrameTickDecision, Message, RenderFrame, FRAME_TICK_GAP_RESYNC, MOORE_NEIGHBORHOOD_LEN,
 };
 use alchemy_shared_sim::mvcc::{CellId, EntityDirectory};
 use anyhow::{Context, Result};
@@ -189,6 +198,8 @@ fn apply_frame(
     // When set on successful snapshot replace: prune Moore-exterior under the same lock
     // (x00c6 Interest exit — no Room-full ghost frame between replace and prune).
     interest_near: Option<&HashSet<[i32; 3]>>,
+    // x00c7c: keep mid-band remote user_roots inside lod Moore across snapshot prune.
+    interest_lod: Option<&HashSet<[i32; 3]>>,
 ) -> ApplyFrameOutcome {
     let host_pub = shared.host_pub.lock().ok().and_then(|g| g.clone());
     let Some(host_pub) = host_pub else {
@@ -230,7 +241,7 @@ fn apply_frame(
     );
     if outcome == ApplyFrameOutcome::Applied && replace_entities {
         if let Some(near) = interest_near {
-            prune_entities_outside_moore(&mut world, near, keep_root);
+            prune_entities_outside_moore(&mut world, near, interest_lod, keep_root);
         }
     }
     // TRS-only copy under world lock; mirror after drop (avoid world ↔ epoch lock order).
@@ -305,13 +316,14 @@ fn apply_frame(
 ///
 /// `interest_near`: when `Some`, Moore-exterior entities are pruned in the **same** world
 /// lock as the replace (x00c6 Interest enter/exit). Pass `None` for Room-only / Manifest paths.
+/// `interest_lod`: x00c7c mid-band keep set for remote user_roots across that prune.
 pub(crate) fn fetch_snapshot(
     session: &zenoh::Session,
     room_id: &str,
     wire_cap: &str,
     shared: &SharedState,
 ) -> bool {
-    fetch_snapshot_interest(session, room_id, wire_cap, shared, None)
+    fetch_snapshot_interest(session, room_id, wire_cap, shared, None, None)
 }
 
 fn fetch_snapshot_interest(
@@ -320,6 +332,7 @@ fn fetch_snapshot_interest(
     wire_cap: &str,
     shared: &SharedState,
     interest_near: Option<&HashSet<[i32; 3]>>,
+    interest_lod: Option<&HashSet<[i32; 3]>>,
 ) -> bool {
     let key = snapshot_key(room_id, wire_cap);
     let mut applied = false;
@@ -358,6 +371,7 @@ fn fetch_snapshot_interest(
                                     /* replace */ true,
                                     /* from_room */ true,
                                     interest_near,
+                                    interest_lod,
                                 ) == ApplyFrameOutcome::Applied
                                 {
                                     log::info!("snapshot applied from {key}");
@@ -432,9 +446,95 @@ fn moore_cell_set(center: CellId) -> HashSet<[i32; 3]> {
         .collect()
 }
 
-/// Drop entity poses whose world cell is outside `near` (keep local user_root). x00c6 exit.
+/// LodCell derived from a fine interest center (x00c7).
+fn lod_center_from_fine(center: CellId) -> [i32; 3] {
+    cell_to_lod_cell(center.0[0], center.0[1], center.0[2])
+}
+
+/// Lod Moore neighborhood as a set (x00c7 mid-band).
+fn moore_lod_set(lod_center: [i32; 3]) -> HashSet<[i32; 3]> {
+    moore_neighborhood_cells(lod_center[0], lod_center[1], lod_center[2])
+        .into_iter()
+        .collect()
+}
+
+/// Drop entity poses outside near Interest; keep local root and mid-band remote roots in lod.
+///
+/// x00c6 exit + x00c7c: world/static outside near are removed; remote `user_root` still inside
+/// `lod` Moore survive so mid-band sync is not wiped by near prune.
 fn prune_entities_outside_moore(
     world: &mut scene::WorldView,
+    near: &HashSet<[i32; 3]>,
+    lod: Option<&HashSet<[i32; 3]>>,
+    keep_id: u32,
+) {
+    world.entities.retain(|id, pose| {
+        if keep_id != LOCAL_USER_ROOT_UNSET && *id == keep_id {
+            return true;
+        }
+        let fine =
+            CellId::from_world_f64(f64::from(pose.x), f64::from(pose.y), f64::from(pose.z)).0;
+        if near.contains(&fine) {
+            return true;
+        }
+        if let Some(lod) = lod {
+            if scene_entry_is_user_root(*id) {
+                let lc = cell_to_lod_cell(fine[0], fine[1], fine[2]);
+                return lod.contains(&lc);
+            }
+        }
+        false
+    });
+}
+
+fn snapshot_world_poses_for_epoch(
+    world: &scene::WorldView,
+) -> HashMap<u32, crate::epoch_mirror::KinematicPose> {
+    world
+        .entities
+        .iter()
+        .map(|(&id, p)| {
+            (
+                id,
+                crate::epoch_mirror::KinematicPose {
+                    x: p.x,
+                    y: p.y,
+                    z: p.z,
+                    qx: p.qx,
+                    qy: p.qy,
+                    qz: p.qz,
+                    qw: p.qw,
+                    sx: p.sx,
+                    sy: p.sy,
+                    sz: p.sz,
+                },
+            )
+        })
+        .collect()
+}
+
+fn prune_shared_outside_moore(
+    shared: &SharedState,
+    near: &HashSet<[i32; 3]>,
+    lod: Option<&HashSet<[i32; 3]>>,
+) {
+    let keep = shared.local_user_root();
+    let (poses, tick) = {
+        let Ok(mut world) = shared.world.lock() else {
+            return;
+        };
+        prune_entities_outside_moore(&mut world, near, lod, keep);
+        let tick = world.last_frame_tick.unwrap_or(0);
+        (snapshot_world_poses_for_epoch(&world), tick)
+    };
+    // Pose-only: AOI prune must not advance near jitter (host_time_ms=0 would collapse α).
+    crate::epoch_mirror::ingest_applied_world_poses(&shared.epoch, &poses, tick);
+}
+
+/// Drop remote `user_root` poses whose LodCell is outside mid-band Interest (x00c7c exit).
+fn prune_lod_user_roots_outside(
+    world: &mut scene::WorldView,
+    lod: &HashSet<[i32; 3]>,
     near: &HashSet<[i32; 3]>,
     keep_id: u32,
 ) {
@@ -442,16 +542,214 @@ fn prune_entities_outside_moore(
         if keep_id != LOCAL_USER_ROOT_UNSET && *id == keep_id {
             return true;
         }
-        let cell = CellId::from_world_f64(f64::from(pose.x), f64::from(pose.y), f64::from(pose.z));
-        near.contains(&cell.0)
+        if !scene_entry_is_user_root(*id) {
+            return true;
+        }
+        let fine =
+            CellId::from_world_f64(f64::from(pose.x), f64::from(pose.y), f64::from(pose.z)).0;
+        if near.contains(&fine) {
+            return true;
+        }
+        let lc = cell_to_lod_cell(fine[0], fine[1], fine[2]);
+        lod.contains(&lc)
     });
 }
 
-fn prune_shared_outside_moore(shared: &SharedState, near: &HashSet<[i32; 3]>) {
+fn prune_shared_lod_outside(
+    shared: &SharedState,
+    lod: &HashSet<[i32; 3]>,
+    near: &HashSet<[i32; 3]>,
+) {
     let keep = shared.local_user_root();
-    if let Ok(mut world) = shared.world.lock() {
-        prune_entities_outside_moore(&mut world, near, keep);
+    let (poses, tick) = {
+        let Ok(mut world) = shared.world.lock() else {
+            return;
+        };
+        prune_lod_user_roots_outside(&mut world, lod, near, keep);
+        let tick = world.last_frame_tick.unwrap_or(0);
+        (snapshot_world_poses_for_epoch(&world), tick)
+    };
+    crate::epoch_mirror::ingest_applied_world_poses(&shared.epoch, &poses, tick);
+}
+
+fn entity_pose_unchanged(existing: &EntityPose, e: &alchemy_protocol::Entity) -> bool {
+    existing.x == e.x as f32
+        && existing.y == e.y as f32
+        && existing.z == e.z as f32
+        && existing.qx == e.qx as f32
+        && existing.qy == e.qy as f32
+        && existing.qz == e.qz as f32
+        && existing.qw == e.qw as f32
+        && existing.sx == e.sx as f32
+        && existing.sy == e.sy as f32
+        && existing.sz == e.sz as f32
+        && existing.r == e.r
+        && existing.g == e.g
+        && existing.b == e.b
+        && existing.a == e.a
+}
+
+fn lod_remove_blocked_by_near(
+    world: &scene::WorldView,
+    id: u32,
+    near: &HashSet<[i32; 3]>,
+    keep_id: u32,
+) -> bool {
+    if keep_id != LOCAL_USER_ROOT_UNSET && id == keep_id {
+        return true;
     }
+    if !scene_entry_is_user_root(id) {
+        return true;
+    }
+    if let Some(existing) = world.entities.get(&id) {
+        let existing_cell = CellId::from_world_f64(
+            f64::from(existing.x),
+            f64::from(existing.y),
+            f64::from(existing.z),
+        )
+        .0;
+        if near.contains(&existing_cell) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Apply mid-band lod upserts/removes without touching frame tick authority (x00c7c).
+///
+/// Near wins: skip ids whose current or incoming fine cell is inside `near`, and never
+/// overwrite / remove local `user_root`. Host lod is an occupied roster + exit removes.
+/// Unchanged roster re-sends do not count as applied (avoids redundant epoch ingest).
+///
+/// Order matches cell (x00c3): upserts first, then removes. When `merge` is true,
+/// same-tick cross-LodCell removes of a guarded id are skipped unless that id is also in
+/// this frame's upserts (within-frame upsert∩remove → remove wins).
+fn apply_lod_delta_entities(
+    world: &mut scene::WorldView,
+    upserts: &[alchemy_protocol::Entity],
+    removes: &[u32],
+    near: &HashSet<[i32; 3]>,
+    keep_id: u32,
+    merge: bool,
+    upsert_guard: &mut HashSet<u32>,
+) -> usize {
+    let mut applied = 0usize;
+    let upsert_ids_this_frame: HashSet<u32> = if merge {
+        upserts.iter().map(|e| e.id).collect()
+    } else {
+        HashSet::new()
+    };
+
+    for e in upserts {
+        if !scene_entry_is_user_root(e.id) {
+            continue;
+        }
+        if keep_id != LOCAL_USER_ROOT_UNSET && e.id == keep_id {
+            continue;
+        }
+        let incoming = CellId::from_world_f64(e.x, e.y, e.z).0;
+        if near.contains(&incoming) {
+            continue;
+        }
+        if let Some(existing) = world.entities.get(&e.id) {
+            let existing_cell = CellId::from_world_f64(
+                f64::from(existing.x),
+                f64::from(existing.y),
+                f64::from(existing.z),
+            )
+            .0;
+            if near.contains(&existing_cell) {
+                continue;
+            }
+            if entity_pose_unchanged(existing, e) {
+                if merge {
+                    upsert_guard.insert(e.id);
+                }
+                continue;
+            }
+        }
+        world.entities.insert(
+            e.id,
+            EntityPose {
+                x: e.x as f32,
+                y: e.y as f32,
+                z: e.z as f32,
+                qx: e.qx as f32,
+                qy: e.qy as f32,
+                qz: e.qz as f32,
+                qw: e.qw as f32,
+                sx: e.sx as f32,
+                sy: e.sy as f32,
+                sz: e.sz as f32,
+                r: e.r,
+                g: e.g,
+                b: e.b,
+                a: e.a,
+            },
+        );
+        if merge {
+            upsert_guard.insert(e.id);
+        }
+        applied += 1;
+    }
+
+    for &id in removes {
+        if lod_remove_blocked_by_near(world, id, near, keep_id) {
+            continue;
+        }
+        // Cross-LodCell (x00c3-equivalent): skip remove when a same-tick upsert already landed.
+        if merge && !upsert_ids_this_frame.contains(&id) && upsert_guard.contains(&id) {
+            continue;
+        }
+        if world.entities.remove(&id).is_some() {
+            if merge {
+                upsert_guard.remove(&id);
+            }
+            applied += 1;
+        }
+    }
+    applied
+}
+
+/// Apply a drain of verified lod frames with same-tick LodCell merge (x00c7c / x00c3).
+///
+/// Frames are sorted by ascending `tick` first so a backlog of multiple host batches
+/// cannot let an older tick overwrite a newer one after `upsert_guard` resets.
+///
+/// Returns `(frames_with_changes, epoch_tick)` where `epoch_tick` is the max tick among
+/// frames that contributed at least one apply (0 if none).
+fn apply_lod_drain_frames(
+    world: &mut scene::WorldView,
+    frames: &mut [RenderFrame],
+    near: &HashSet<[i32; 3]>,
+    keep_id: u32,
+) -> (usize, u64) {
+    frames.sort_by_key(|f| f.tick);
+    let mut upsert_guard: HashSet<u32> = HashSet::new();
+    let mut guard_tick: Option<u64> = None;
+    let mut frames_with_changes = 0usize;
+    let mut epoch_tick = 0u64;
+    for frame in frames.iter() {
+        if guard_tick != Some(frame.tick) {
+            upsert_guard.clear();
+            guard_tick = Some(frame.tick);
+        }
+        let n = apply_lod_delta_entities(
+            world,
+            &frame.upserts,
+            &frame.removes,
+            near,
+            keep_id,
+            true,
+            &mut upsert_guard,
+        );
+        if n == 0 {
+            continue;
+        }
+        frames_with_changes = frames_with_changes.saturating_add(1);
+        epoch_tick = epoch_tick.max(frame.tick);
+    }
+    (frames_with_changes, epoch_tick)
 }
 
 /// Interest-enter snapshot scheduling (x00c6b): rate-limit delays fetch; never drops the need.
@@ -515,6 +813,125 @@ fn sync_moore_cell_subscribers(
     Ok(())
 }
 
+/// Fan-in LodCell Moore subscribers (per-key ≤27 · x00c7c). Separate channel from near cell.
+fn sync_moore_lod_subscribers(
+    session: &zenoh::Session,
+    room_id: &str,
+    wire_cap: &str,
+    lod_center: [i32; 3],
+    tx: &SyncSender<ZBytes>,
+    dropped_backpressure: &Arc<AtomicU64>,
+    subs: &mut HashMap<[i32; 3], zenoh::pubsub::Subscriber<()>>,
+) -> Result<()> {
+    let wanted = moore_lod_set(lod_center);
+    debug_assert!(wanted.len() <= MOORE_NEIGHBORHOOD_LEN);
+    for cell in &wanted {
+        if subs.contains_key(cell) {
+            continue;
+        }
+        let key = frame_lod_key(room_id, wire_cap, cell[0], cell[1], cell[2]);
+        let tx = tx.clone();
+        let dropped_backpressure = Arc::clone(dropped_backpressure);
+        let sub = session
+            .declare_subscriber(key.clone())
+            .callback(move |sample| match tx.try_send(sample.payload().clone()) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    dropped_backpressure.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(TrySendError::Disconnected(_)) => {}
+            })
+            .wait()
+            .map_err(|e| anyhow::anyhow!("declare_subscriber lod {key}: {e}"))?;
+        subs.insert(*cell, sub);
+    }
+    subs.retain(|cell, _| wanted.contains(cell));
+    Ok(())
+}
+
+/// Decode + verify a lod sample (no world mutation · x00c7c).
+fn decode_verified_lod_frame(
+    shared: &SharedState,
+    bytes: &ZBytes,
+    gates: &mut FrameGateCounters,
+) -> Option<RenderFrame> {
+    let payload = match open_zenoh_payload(shared, AeadKind::Frame, bytes) {
+        Ok(pt) => pt,
+        Err(err) => {
+            gates.dropped_aead += 1;
+            log::warn!("drop RenderFrame lod: AEAD: {err}");
+            return None;
+        }
+    };
+    if let Err(err) = check_payload_bytes(WireClass::Frame, payload.len()) {
+        gates.dropped_limits += 1;
+        log::warn!("drop RenderFrame lod: {err}");
+        return None;
+    }
+    let frame = match RenderFrame::decode(payload.as_ref()) {
+        Ok(f) => f,
+        Err(err) => {
+            log::warn!("RenderFrame lod decode failed: {err}");
+            return None;
+        }
+    };
+    if let Err(err) = check_frame(&frame) {
+        gates.dropped_limits += 1;
+        log::warn!("drop RenderFrame lod: {err}");
+        return None;
+    }
+    let host_pub = shared.host_pub.lock().ok().and_then(|g| g.clone());
+    let Some(host_pub) = host_pub else {
+        log::warn!("drop RenderFrame lod: host_pub not yet known from Manifest");
+        return None;
+    };
+    if let Err(err) = verify_frame(&host_pub, &frame) {
+        log::warn!("drop RenderFrame lod: bad host_sig: {err}");
+        return None;
+    }
+    if !frame_entities_finite(&frame) {
+        log::warn!(
+            "drop RenderFrame lod: non-finite entity fields (tick={})",
+            frame.tick
+        );
+        return None;
+    }
+    Some(frame)
+}
+
+/// Drain pending lod samples: apply all under one world lock, then **one** pose-only
+/// epoch ingest (avoids flipping PublishedPair once per LodCell · x00c7c).
+fn drain_lod_samples(
+    shared: &SharedState,
+    lod_rx: &mpsc::Receiver<ZBytes>,
+    near: &HashSet<[i32; 3]>,
+    gates: &mut FrameGateCounters,
+) {
+    let mut frames = Vec::new();
+    while let Ok(bytes) = lod_rx.try_recv() {
+        if let Some(frame) = decode_verified_lod_frame(shared, &bytes, gates) {
+            frames.push(frame);
+        }
+    }
+    if frames.is_empty() {
+        return;
+    }
+    let keep = shared.local_user_root();
+    let (poses_for_epoch, epoch_tick) = {
+        let Ok(mut world) = shared.world.lock() else {
+            log::warn!("drop RenderFrame lod: world lock poisoned/failed");
+            return;
+        };
+        let (changed, epoch_tick) = apply_lod_drain_frames(&mut world, &mut frames, near, keep);
+        if changed == 0 {
+            return;
+        }
+        gates.applied = gates.applied.saturating_add(changed as u64);
+        (snapshot_world_poses_for_epoch(&world), epoch_tick)
+    };
+    crate::epoch_mirror::ingest_applied_world_poses(&shared.epoch, &poses_for_epoch, epoch_tick);
+}
+
 struct FrameGateCounters {
     dropped_limits: u64,
     dropped_aead: u64,
@@ -522,6 +939,7 @@ struct FrameGateCounters {
     dropped_tick: u64,
     need_resync: u64,
     dropped_backpressure: u64,
+    dropped_lod_backpressure: u64,
 }
 
 /// Options for [`handle_frame_sample`] gap→snapshot / Interest prune (keeps arity low).
@@ -530,6 +948,8 @@ struct FrameSampleOpts<'a> {
     gap_resync: bool,
     /// When `Some` and gap→snapshot fires, prune Moore-exterior under the same lock.
     interest_near: Option<&'a HashSet<[i32; 3]>>,
+    /// x00c7c: mid-band keep set paired with `interest_near` on snapshot prune.
+    interest_lod: Option<&'a HashSet<[i32; 3]>>,
     /// Cleared when an interest-scoped Room snapshot applies (enter need already satisfied).
     enter_snapshot_pending: Option<&'a mut bool>,
 }
@@ -547,6 +967,7 @@ fn handle_frame_sample(
         from_room,
         gap_resync,
         interest_near,
+        interest_lod,
         enter_snapshot_pending,
     } = opts;
     let payload = match open_zenoh_payload(shared, AeadKind::Frame, bytes) {
@@ -571,6 +992,7 @@ fn handle_frame_sample(
             }
             match apply_frame(
                 shared, frame, /* replace */ false, from_room, /* interest_near */ None,
+                /* interest_lod */ None,
             ) {
                 ApplyFrameOutcome::Applied => {
                     gates.applied += 1;
@@ -604,6 +1026,7 @@ fn handle_frame_sample(
                             &cap,
                             shared,
                             interest_near,
+                            interest_lod,
                         );
                         // Gap snapshot with Interest prune already converges enter need.
                         clear_enter_pending_after_interest_snapshot(
@@ -641,16 +1064,18 @@ fn maybe_log_frame_gate(
     let noisy = gates.dropped_limits > 0
         || gates.dropped_aead > 0
         || gates.need_resync > 0
-        || gates.dropped_backpressure > 0;
+        || gates.dropped_backpressure > 0
+        || gates.dropped_lod_backpressure > 0;
     if noisy {
         log::info!(
-            "frame gate ({thread_name}): applied={} dropped_tick={} need_resync={} dropped_limits={} dropped_aead={} dropped_backpressure={} (last ~5s)",
+            "frame gate ({thread_name}): applied={} dropped_tick={} need_resync={} dropped_limits={} dropped_aead={} dropped_backpressure={} dropped_lod_backpressure={} (last ~5s)",
             gates.applied,
             gates.dropped_tick,
             gates.need_resync,
             gates.dropped_limits,
             gates.dropped_aead,
-            gates.dropped_backpressure
+            gates.dropped_backpressure,
+            gates.dropped_lod_backpressure
         );
     } else if gates.applied > 0 || gates.dropped_tick > 0 {
         log::debug!(
@@ -665,6 +1090,7 @@ fn maybe_log_frame_gate(
     gates.dropped_tick = 0;
     gates.need_resync = 0;
     gates.dropped_backpressure = 0;
+    gates.dropped_lod_backpressure = 0;
     *last_gate_log = Instant::now();
 }
 
@@ -694,6 +1120,7 @@ pub(crate) fn spawn_frame_subscriber(
                 dropped_tick: 0,
                 need_resync: 0,
                 dropped_backpressure: 0,
+                dropped_lod_backpressure: 0,
             };
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
@@ -706,6 +1133,7 @@ pub(crate) fn spawn_frame_subscriber(
                         from_room: true,
                         gap_resync: true,
                         interest_near: None,
+                        interest_lod: None,
                         enter_snapshot_pending: None,
                     },
                     &mut resync_cooldown_until,
@@ -718,7 +1146,7 @@ pub(crate) fn spawn_frame_subscriber(
     Ok(())
 }
 
-/// Default cell mainline (x00c6): Moore per-key ≤27 + gap/enter→Room snapshot + exit prune.
+/// Default cell mainline (x00c6) + mid-band lod (x00c7c).
 pub(crate) fn spawn_cell_interest_subscriber(
     session: zenoh::Session,
     room_id: String,
@@ -726,10 +1154,14 @@ pub(crate) fn spawn_cell_interest_subscriber(
     shared: Arc<SharedState>,
 ) -> Result<()> {
     let center = CellId([0, 0, 0]);
+    let lod_center0 = lod_center_from_fine(center);
     // Bounded fan-in from ≤27 cell callbacks (no flume dependency; std mpsc).
     let (tx, rx) = mpsc::sync_channel::<ZBytes>(512);
+    let (lod_tx, lod_rx) = mpsc::sync_channel::<ZBytes>(128);
     let dropped_backpressure = Arc::new(AtomicU64::new(0));
+    let lod_dropped_backpressure = Arc::new(AtomicU64::new(0));
     let mut subs: HashMap<[i32; 3], zenoh::pubsub::Subscriber<()>> = HashMap::new();
+    let mut lod_subs: HashMap<[i32; 3], zenoh::pubsub::Subscriber<()>> = HashMap::new();
     sync_moore_cell_subscribers(
         &session,
         &room_id,
@@ -740,22 +1172,38 @@ pub(crate) fn spawn_cell_interest_subscriber(
         &mut subs,
     )
     .context("declare initial Moore cell subscribers")?;
+    sync_moore_lod_subscribers(
+        &session,
+        &room_id,
+        &wire_cap,
+        lod_center0,
+        &lod_tx,
+        &lod_dropped_backpressure,
+        &mut lod_subs,
+    )
+    .context("declare initial Moore lod subscribers")?;
 
     const THREAD_NAME: &str = "zenoh-frame-cell";
     thread::Builder::new()
         .name(THREAD_NAME.into())
         .spawn(move || {
-            // Keep a sender alive so callback clones do not disconnect the channel.
+            // Keep senders alive so callback clones do not disconnect the channels.
             let _tx_keep = tx;
+            let _lod_tx_keep = lod_tx;
             log::info!(
-                "subscribed Moore per-key ≤{MOORE_NEIGHBORHOOD_LEN} cells around {:?} \
-                 (kind=CellInterest; gap_resync=true; enter→Room snapshot deferred-not-dropped; \
-                  exit prune; try_send fan-in; x00c6)",
-                center.0
+                "subscribed Moore per-key ≤{MOORE_NEIGHBORHOOD_LEN} cells around {:?} + \
+                 lod Moore ≤{MOORE_NEIGHBORHOOD_LEN} around {:?} \
+                 (kind=CellInterest+Lod; gap_resync=true; enter→Room snapshot deferred-not-dropped; \
+                  exit prune; try_send fan-in; x00c6/x00c7)",
+                center.0,
+                lod_center0
             );
             let mut center = center;
+            let mut lod_center = lod_center0;
             let mut near_cells = moore_cell_set(center);
+            let mut lod_cells = moore_lod_set(lod_center);
             let mut subs = subs;
+            let mut lod_subs = lod_subs;
             let mut resync_cooldown_until = Instant::now();
             let mut enter_snapshot_pending = false;
             let mut gates = FrameGateCounters {
@@ -765,6 +1213,7 @@ pub(crate) fn spawn_cell_interest_subscriber(
                 dropped_tick: 0,
                 need_resync: 0,
                 dropped_backpressure: 0,
+                dropped_lod_backpressure: 0,
             };
             let mut last_gate_log = Instant::now();
             // Deadline so busy cell traffic cannot starve interest follow (x00c1 / x00c6).
@@ -784,6 +1233,7 @@ pub(crate) fn spawn_cell_interest_subscriber(
                                 from_room: false,
                                 gap_resync: true,
                                 interest_near: Some(&near_cells),
+                                interest_lod: Some(&lod_cells),
                                 enter_snapshot_pending: Some(&mut enter_snapshot_pending),
                             },
                             &mut resync_cooldown_until,
@@ -798,6 +1248,7 @@ pub(crate) fn spawn_cell_interest_subscriber(
                                     from_room: false,
                                     gap_resync: true,
                                     interest_near: Some(&near_cells),
+                                    interest_lod: Some(&lod_cells),
                                     enter_snapshot_pending: Some(&mut enter_snapshot_pending),
                                 },
                                 &mut resync_cooldown_until,
@@ -808,7 +1259,10 @@ pub(crate) fn spawn_cell_interest_subscriber(
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => break,
                 }
+                drain_lod_samples(&shared, &lod_rx, &near_cells, &mut gates);
                 gates.dropped_backpressure += dropped_backpressure.swap(0, Ordering::Relaxed);
+                gates.dropped_lod_backpressure +=
+                    lod_dropped_backpressure.swap(0, Ordering::Relaxed);
                 maybe_log_frame_gate(THREAD_NAME, &mut last_gate_log, &mut gates);
 
                 // Pending enter may become due while idle / under frame traffic.
@@ -827,6 +1281,7 @@ pub(crate) fn spawn_cell_interest_subscriber(
                                 &cap,
                                 &shared,
                                 Some(&near_cells),
+                                Some(&lod_cells),
                             )
                         } else {
                             false
@@ -841,12 +1296,14 @@ pub(crate) fn spawn_cell_interest_subscriber(
                                     from_room: false,
                                     gap_resync: true,
                                     interest_near: Some(&near_cells),
+                                    interest_lod: Some(&lod_cells),
                                     enter_snapshot_pending: Some(&mut enter_snapshot_pending),
                                 },
                                 &mut resync_cooldown_until,
                                 &mut gates,
                             );
                         }
+                        drain_lod_samples(&shared, &lod_rx, &near_cells, &mut gates);
                     }
                 }
 
@@ -892,56 +1349,111 @@ pub(crate) fn spawn_cell_interest_subscriber(
                     } else {
                         near_cells = moore_cell_set(center);
                     }
+                    let first_lod = lod_center_from_fine(center);
+                    match sync_moore_lod_subscribers(
+                        &session,
+                        &room_id,
+                        &wire_cap,
+                        first_lod,
+                        &_lod_tx_keep,
+                        &lod_dropped_backpressure,
+                        &mut lod_subs,
+                    ) {
+                        Ok(()) => {
+                            lod_center = first_lod;
+                            lod_cells = moore_lod_set(lod_center);
+                        }
+                        Err(err) => {
+                            log::warn!("lod interest prime declare failed (will retry): {err}");
+                            continue;
+                        }
+                    }
                     primed_pose = true;
                     // Enter-style converge once Presence has a pose (deferred if cooldown).
                     enter_snapshot_pending = true;
                     // Exit prune immediately so join far-ghosts do not linger until snapshot.
-                    prune_shared_outside_moore(&shared, &near_cells);
+                    prune_shared_outside_moore(&shared, &near_cells, Some(&lod_cells));
                     continue;
                 }
 
                 let next = maybe_advance_interest_center(center, xyz);
-                if next == center {
+                let mut cell_moved = false;
+                let mut entered = 0usize;
+                if next != center {
+                    let new_set = moore_cell_set(next);
+                    entered = new_set.difference(&near_cells).count();
+                    match sync_moore_cell_subscribers(
+                        &session,
+                        &room_id,
+                        &wire_cap,
+                        next,
+                        &_tx_keep,
+                        &dropped_backpressure,
+                        &mut subs,
+                    ) {
+                        Ok(()) => {
+                            log::info!(
+                                "cell interest resub center={:?} -> {:?} entered={entered} subs={}",
+                                center.0,
+                                next.0,
+                                subs.len()
+                            );
+                            center = next;
+                            near_cells = new_set;
+                            cell_moved = true;
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                "cell interest resub declare failed (keeping {:?}): {err}",
+                                center.0
+                            );
+                            continue;
+                        }
+                    }
+                }
+
+                // Lod may lag after a prior declare failure; retry even when fine center is stable.
+                let want_lod = lod_center_from_fine(center);
+                if want_lod != lod_center {
+                    match sync_moore_lod_subscribers(
+                        &session,
+                        &room_id,
+                        &wire_cap,
+                        want_lod,
+                        &_lod_tx_keep,
+                        &lod_dropped_backpressure,
+                        &mut lod_subs,
+                    ) {
+                        Ok(()) => {
+                            log::info!(
+                                "lod interest resub center={:?} -> {:?} subs={}",
+                                lod_center,
+                                want_lod,
+                                lod_subs.len()
+                            );
+                            lod_center = want_lod;
+                            lod_cells = moore_lod_set(lod_center);
+                            prune_shared_lod_outside(&shared, &lod_cells, &near_cells);
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                "lod interest resub declare failed (keeping {:?}; will retry): {err}",
+                                lod_center
+                            );
+                        }
+                    }
+                } else if !cell_moved {
                     continue;
                 }
 
-                let new_set = moore_cell_set(next);
-                let entered = new_set.difference(&near_cells).count();
-
-                match sync_moore_cell_subscribers(
-                    &session,
-                    &room_id,
-                    &wire_cap,
-                    next,
-                    &_tx_keep,
-                    &dropped_backpressure,
-                    &mut subs,
-                ) {
-                    Ok(()) => {
-                        log::info!(
-                            "cell interest resub center={:?} -> {:?} entered={entered} subs={}",
-                            center.0,
-                            next.0,
-                            subs.len()
-                        );
-                        center = next;
-                        near_cells = new_set;
-                    }
-                    Err(err) => {
-                        log::warn!(
-                            "cell interest resub declare failed (keeping {:?}): {err}",
-                            center.0
-                        );
-                        continue;
-                    }
-                }
-
                 // Interest enter (x00c6b): always schedule; top-of-loop flushes when due.
-                if entered > 0 {
+                if cell_moved && entered > 0 {
                     enter_snapshot_pending = true;
                 }
                 // Exit prune for cells we no longer subscribe (do not wait for snapshot).
-                prune_shared_outside_moore(&shared, &near_cells);
+                if cell_moved {
+                    prune_shared_outside_moore(&shared, &near_cells, Some(&lod_cells));
+                }
             }
         })
         .context("spawn cell interest thread")?;
@@ -1378,10 +1890,363 @@ mod tests {
             .into(),
         };
         let near = moore_cell_set(CellId([0, 0, 0]));
-        prune_entities_outside_moore(&mut world, &near, 99);
+        prune_entities_outside_moore(&mut world, &near, None, 99);
         assert!(world.entities.contains_key(&1));
         assert!(!world.entities.contains_key(&2));
         assert!(world.entities.contains_key(&99));
+    }
+
+    /// x00c7c: near prune keeps mid-band remote user_root still inside lod Moore.
+    #[test]
+    fn prune_outside_moore_keeps_lod_user_root() {
+        use alchemy_protocol::USER_ROOT_ENTITY_FIRST;
+        let mid_id = USER_ROOT_ENTITY_FIRST + 1;
+        // Fine cell ~3 → LodCell 1; still inside lod Moore of center 0.
+        let mid_x = 192.0_f32;
+        let mut world = WorldView {
+            last_frame_tick: Some(1),
+            last_frame_from_room: false,
+            cell_tick_upsert_guard: Default::default(),
+            entities: [
+                (
+                    mid_id,
+                    EntityPose {
+                        x: mid_x,
+                        ..Default::default()
+                    },
+                ),
+                (
+                    7,
+                    EntityPose {
+                        x: mid_x,
+                        ..Default::default()
+                    },
+                ),
+            ]
+            .into(),
+        };
+        let near = moore_cell_set(CellId([0, 0, 0]));
+        let lod = moore_lod_set([0, 0, 0]);
+        assert!(!near.contains(&CellId::from_world_f64(f64::from(mid_x), 0.0, 0.0).0));
+        prune_entities_outside_moore(&mut world, &near, Some(&lod), LOCAL_USER_ROOT_UNSET);
+        assert!(world.entities.contains_key(&mid_id));
+        assert!(!world.entities.contains_key(&7));
+    }
+
+    /// x00c7c: lod apply skips entities whose fine cell is in near Interest.
+    #[test]
+    fn apply_lod_skips_near_and_non_user_root() {
+        use alchemy_protocol::USER_ROOT_ENTITY_FIRST;
+        let mut world = WorldView {
+            last_frame_tick: Some(5),
+            last_frame_from_room: false,
+            cell_tick_upsert_guard: Default::default(),
+            entities: Default::default(),
+        };
+        let near = moore_cell_set(CellId([0, 0, 0]));
+        let near_root = alchemy_protocol::entity_trs(
+            USER_ROOT_ENTITY_FIRST,
+            0.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+        );
+        let mid_root = alchemy_protocol::entity_trs(
+            USER_ROOT_ENTITY_FIRST + 1,
+            192.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+        );
+        let world_ent = alchemy_protocol::entity_trs(
+            42,
+            192.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        );
+        let mut guard = HashSet::new();
+        let n = apply_lod_delta_entities(
+            &mut world,
+            &[near_root, mid_root, world_ent],
+            &[],
+            &near,
+            LOCAL_USER_ROOT_UNSET,
+            false,
+            &mut guard,
+        );
+        assert_eq!(n, 1);
+        assert!(!world.entities.contains_key(&USER_ROOT_ENTITY_FIRST));
+        assert!(world.entities.contains_key(&(USER_ROOT_ENTITY_FIRST + 1)));
+        assert!(!world.entities.contains_key(&42));
+        assert_eq!(world.last_frame_tick, Some(5));
+    }
+
+    /// x00c7c: identical roster re-send is not applied (no redundant epoch ingest).
+    #[test]
+    fn apply_lod_skips_unchanged_roster_pose() {
+        use alchemy_protocol::USER_ROOT_ENTITY_FIRST;
+        let mid_id = USER_ROOT_ENTITY_FIRST + 1;
+        let mut world = WorldView {
+            last_frame_tick: Some(3),
+            last_frame_from_room: false,
+            cell_tick_upsert_guard: Default::default(),
+            entities: [(
+                mid_id,
+                EntityPose {
+                    x: 192.0,
+                    y: 0.0,
+                    z: 0.0,
+                    qw: 1.0,
+                    sx: 1.0,
+                    sy: 1.0,
+                    sz: 1.0,
+                    r: 0.0,
+                    g: 1.0,
+                    b: 0.0,
+                    a: 1.0,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+        };
+        let near = moore_cell_set(CellId([0, 0, 0]));
+        let same = alchemy_protocol::entity_trs(
+            mid_id,
+            192.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+        );
+        let mut guard = HashSet::new();
+        let n = apply_lod_delta_entities(
+            &mut world,
+            &[same],
+            &[],
+            &near,
+            LOCAL_USER_ROOT_UNSET,
+            false,
+            &mut guard,
+        );
+        assert_eq!(n, 0);
+        assert!(world.entities.contains_key(&mid_id));
+    }
+
+    /// x00c7c: lod removes clear mid-band user_roots (near / local kept).
+    #[test]
+    fn apply_lod_removes_mid_band_user_root() {
+        use alchemy_protocol::USER_ROOT_ENTITY_FIRST;
+        let mid_id = USER_ROOT_ENTITY_FIRST + 1;
+        let mut world = WorldView {
+            last_frame_tick: Some(3),
+            last_frame_from_room: false,
+            cell_tick_upsert_guard: Default::default(),
+            entities: [(
+                mid_id,
+                EntityPose {
+                    x: 192.0,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+        };
+        let near = moore_cell_set(CellId([0, 0, 0]));
+        let mut guard = HashSet::new();
+        let n = apply_lod_delta_entities(
+            &mut world,
+            &[],
+            &[mid_id],
+            &near,
+            LOCAL_USER_ROOT_UNSET,
+            false,
+            &mut guard,
+        );
+        assert_eq!(n, 1);
+        assert!(!world.entities.contains_key(&mid_id));
+    }
+
+    fn lod_sample_frame(
+        tick: u64,
+        upserts: Vec<alchemy_protocol::Entity>,
+        removes: Vec<u32>,
+    ) -> RenderFrame {
+        RenderFrame {
+            tick,
+            host_time_ms: tick.saturating_mul(200),
+            upserts,
+            removes,
+            host_sig: vec![],
+            sim_tick: tick,
+            redundancy: 0,
+            acked_intent_seq: vec![],
+            scene_rev: 0,
+        }
+    }
+
+    /// x00c7c: same-tick new LodCell upsert then old LodCell remove → entity stays.
+    #[test]
+    fn lod_drain_same_tick_upsert_then_remove_merges() {
+        use alchemy_protocol::USER_ROOT_ENTITY_FIRST;
+        let mid_id = USER_ROOT_ENTITY_FIRST + 1;
+        let mut world = WorldView::default();
+        let near = moore_cell_set(CellId([0, 0, 0]));
+        let moved = alchemy_protocol::entity_trs(
+            mid_id,
+            400.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+        );
+        let mut frames = [
+            lod_sample_frame(5, vec![moved.clone()], vec![]),
+            lod_sample_frame(5, vec![], vec![mid_id]),
+        ];
+        let (changed, epoch_tick) =
+            apply_lod_drain_frames(&mut world, &mut frames, &near, LOCAL_USER_ROOT_UNSET);
+        assert!(changed >= 1);
+        assert_eq!(epoch_tick, 5);
+        assert!((world.entities.get(&mid_id).unwrap().x - 400.0).abs() < f32::EPSILON);
+    }
+
+    /// x00c7c: reverse arrival — old LodCell remove then new LodCell upsert merges.
+    #[test]
+    fn lod_drain_same_tick_remove_then_upsert_merges() {
+        use alchemy_protocol::USER_ROOT_ENTITY_FIRST;
+        let mid_id = USER_ROOT_ENTITY_FIRST + 1;
+        let mut world = WorldView {
+            last_frame_tick: Some(4),
+            last_frame_from_room: false,
+            cell_tick_upsert_guard: Default::default(),
+            entities: [(
+                mid_id,
+                EntityPose {
+                    x: 192.0,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+        };
+        let near = moore_cell_set(CellId([0, 0, 0]));
+        let moved = alchemy_protocol::entity_trs(
+            mid_id,
+            400.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+        );
+        let mut frames = [
+            lod_sample_frame(5, vec![], vec![mid_id]),
+            lod_sample_frame(5, vec![moved], vec![]),
+        ];
+        let (changed, epoch_tick) =
+            apply_lod_drain_frames(&mut world, &mut frames, &near, LOCAL_USER_ROOT_UNSET);
+        assert_eq!(changed, 2);
+        assert_eq!(epoch_tick, 5);
+        assert!((world.entities.get(&mid_id).unwrap().x - 400.0).abs() < f32::EPSILON);
+    }
+
+    /// x00c7c: backlog with newer tick before older — sort keeps newer authoritative.
+    #[test]
+    fn lod_drain_sorts_mixed_ticks_newer_wins() {
+        use alchemy_protocol::USER_ROOT_ENTITY_FIRST;
+        let mid_id = USER_ROOT_ENTITY_FIRST + 1;
+        let mut world = WorldView {
+            last_frame_tick: Some(4),
+            last_frame_from_room: false,
+            cell_tick_upsert_guard: Default::default(),
+            entities: [(
+                mid_id,
+                EntityPose {
+                    // Outside near Moore around origin (cell [3,0,0]).
+                    x: 192.0,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+        };
+        let near = moore_cell_set(CellId([0, 0, 0]));
+        let stale = alchemy_protocol::entity_trs(
+            mid_id,
+            250.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+        );
+        // Arrival order: tick 6 exit, then stale tick 5 upsert. Without ascending sort,
+        // tick 5 would recreate the entity after the newer remove.
+        let mut frames = [
+            lod_sample_frame(6, vec![], vec![mid_id]),
+            lod_sample_frame(5, vec![stale], vec![]),
+        ];
+        let (changed, epoch_tick) =
+            apply_lod_drain_frames(&mut world, &mut frames, &near, LOCAL_USER_ROOT_UNSET);
+        assert!(changed >= 1);
+        assert_eq!(epoch_tick, 6);
+        assert!(
+            !world.entities.contains_key(&mid_id),
+            "newer tick-6 remove must win over stale tick-5 upsert"
+        );
+    }
+
+    /// x00c7c: within a single lod frame, upserts∩removes stays remove-wins.
+    #[test]
+    fn lod_same_frame_upsert_remove_intersection_remove_wins() {
+        use alchemy_protocol::USER_ROOT_ENTITY_FIRST;
+        let mid_id = USER_ROOT_ENTITY_FIRST + 1;
+        let mut world = WorldView::default();
+        let near = moore_cell_set(CellId([0, 0, 0]));
+        let ent = alchemy_protocol::entity_trs(
+            mid_id,
+            192.0,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+        );
+        let mut frames = [lod_sample_frame(1, vec![ent], vec![mid_id])];
+        let (changed, _) =
+            apply_lod_drain_frames(&mut world, &mut frames, &near, LOCAL_USER_ROOT_UNSET);
+        assert_eq!(changed, 1);
+        assert!(!world.entities.contains_key(&mid_id));
     }
 
     /// x00c6b: enter snapshot is deferred under cooldown, never dropped.

@@ -5,8 +5,10 @@
 //! full entity map; freelist row reuse is safe for GPU pack via generation/ABA gate
 //! in [`crate::epoch_view::pack_aligned_gpu_faces`].
 //! After ingest, [`crate::epoch_view::sync_topology_flat_roots`] refreshes Hierarchy
-//! topology (x0094; flat parents only). Also advances MVCC [`PublishedPair`] +
-//! sim-tick jitter (x00aa; net `tick` stands in for `sim_tick` until Phase 3).
+//! topology (x0094; flat parents only). Near Applied Frame also advances MVCC
+//! [`PublishedPair`] + sim-tick jitter (x00aa; net `tick` stands in for `sim_tick`
+//! until Phase 3). Mid-band lod / AOI prune use [`ingest_applied_world_poses`] so
+//! TRS lands in mirror/mvcc **without** advancing the near jitter clock (x00c7).
 //! Non-guarantees: held/Prefab parent sync; color on tape; host ArcSwap sharing;
 //! XPBD. Draw/Grab/eye display TRS is Epoch freeze (`begin_display_frame` / `out`; x0091/x0092);
 //! color channels remain WorldView.
@@ -207,15 +209,37 @@ pub fn epoch_interp_alpha(published_at: Option<Instant>, now: Instant) -> f32 {
     (elapsed.as_secs_f32() / period).clamp(0.0, 1.0)
 }
 
-/// Ingest after WorldView mutation (Applied Frame).
+/// Ingest after WorldView mutation (near Applied Frame).
 ///
 /// `sim_tick` / `host_time_ms` drive x00aa jitter (pass wire `tick` / `host_time_ms`
-/// until proto grows a dedicated `sim_tick`).
+/// until proto grows a dedicated `sim_tick`). Mid-band lod / prune must use
+/// [`ingest_applied_world_poses`] instead — same tick multi-LodCell samples must
+/// not collapse α to 1.0 via `prev_host_time_ms == curr_host_time_ms`.
 pub fn ingest_applied_world(
     epoch: &EpochViewState,
     entities: &HashMap<u32, KinematicPose>,
     sim_tick: u64,
     host_time_ms: u64,
+) {
+    ingest_applied_world_inner(epoch, entities, sim_tick, Some(host_time_ms));
+}
+
+/// Mid-band / AOI prune: update Epoch + MVCC poses without touching sim jitter (x00c7).
+///
+/// Near 30Hz display clock stays owned by cell/Room Applied Frames only.
+pub fn ingest_applied_world_poses(
+    epoch: &EpochViewState,
+    entities: &HashMap<u32, KinematicPose>,
+    sim_tick: u64,
+) {
+    ingest_applied_world_inner(epoch, entities, sim_tick, None);
+}
+
+fn ingest_applied_world_inner(
+    epoch: &EpochViewState,
+    entities: &HashMap<u32, KinematicPose>,
+    sim_tick: u64,
+    host_time_ms: Option<u64>,
 ) {
     let Ok(mut mirror) = epoch.mirror.lock() else {
         log::warn!("epoch mirror lock poisoned; skip ingest");
@@ -229,10 +253,12 @@ pub fn ingest_applied_world(
     } else {
         log::warn!("mvcc mirror lock poisoned; skip mvcc ingest");
     }
-    if let Ok(mut jitter) = epoch.jitter.lock() {
-        jitter.on_publish(sim_tick, host_time_ms, Instant::now());
-    } else {
-        log::warn!("sim jitter lock poisoned; skip jitter publish");
+    if let Some(host_time_ms) = host_time_ms {
+        if let Ok(mut jitter) = epoch.jitter.lock() {
+            jitter.on_publish(sim_tick, host_time_ms, Instant::now());
+        } else {
+            log::warn!("sim jitter lock poisoned; skip jitter publish");
+        }
     }
 
     crate::epoch_view::clear_hierarchy_collapsed_rows(epoch, &collapse_clear);
@@ -368,6 +394,47 @@ mod tests {
             p[0].pos[0], 1.0,
             "ABA reuse must not α-lerp from tombstoned ghost 9.0"
         );
+    }
+
+    /// x00c7: mid-band / prune must update TRS without collapsing near jitter α.
+    #[test]
+    fn mid_band_pose_ingest_does_not_advance_jitter() {
+        let epoch = EpochViewState::new();
+        let mut map = HashMap::new();
+        map.insert(1, pose_at(0.0));
+        ingest_applied_world(&epoch, &map, 10, 1000);
+        map.insert(1, pose_at(1.0));
+        ingest_applied_world(&epoch, &map, 11, 1033);
+
+        {
+            let j = epoch.jitter.lock().unwrap();
+            assert!(j.has_pair());
+            assert_eq!(j.prev_host_time_ms, 1000);
+            assert_eq!(j.curr_host_time_ms, 1033);
+            assert_eq!(j.curr_sim_tick, 11);
+        }
+
+        // Same-tick multi-LodCell style: pose-only ingests must not call on_publish.
+        // (Full ingest with host_time_ms=1033 twice would set prev==curr → α=1.0 always.)
+        map.insert(2, pose_at(192.0));
+        ingest_applied_world_poses(&epoch, &map, 11);
+        map.insert(3, pose_at(384.0));
+        ingest_applied_world_poses(&epoch, &map, 11);
+
+        {
+            let j = epoch.jitter.lock().unwrap();
+            assert_eq!(j.prev_host_time_ms, 1000);
+            assert_eq!(j.curr_host_time_ms, 1033);
+            assert_eq!(j.curr_sim_tick, 11);
+            assert_ne!(
+                j.prev_host_time_ms, j.curr_host_time_ms,
+                "mid-band must not collapse near host-time span"
+            );
+        }
+
+        let faces = epoch.snapshots.load_pair();
+        let row2 = epoch.mirror.lock().unwrap().row_for(2).unwrap().row_id as usize;
+        assert_eq!(faces.curr.world_transforms[row2].position[0], 192.0);
     }
 
     #[test]

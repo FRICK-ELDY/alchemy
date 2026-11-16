@@ -330,6 +330,13 @@ pub const FRAME_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap0000000
 pub const FRAME_CELL_KEY_LOCAL_ORIGIN: &str =
     "alchemy/dev/room/local/localdevwirecap00000001/frame/cell/0_0_0";
 
+/// Fine→LodCell stride for Avatar sync LOD (x00c7). `LodCell ≈ CELL_SIZE_M * stride` metres.
+pub const LOD_CELL_STRIDE: i32 = 3;
+
+/// Local origin lod frame key `…/frame/lod/0_0_0` (x00c7 mid-band sync LOD).
+pub const FRAME_LOD_KEY_LOCAL_ORIGIN: &str =
+    "alchemy/dev/room/local/localdevwirecap00000001/frame/lod/0_0_0";
+
 /// Default Zenoh key for local room inputs.
 pub const INPUT_KEY_LOCAL: &str = "alchemy/dev/room/local/localdevwirecap00000001/input";
 
@@ -704,6 +711,43 @@ pub fn frame_cell_interest_keyexpr(room_id: &str, wire_cap: &str, cells: &[[i32;
 /// debug/計測. Receiving all dirty cells unbounded is incompatible with the VR Interest budget.
 pub fn frame_cell_wildcard_key(room_id: &str, wire_cap: &str) -> String {
     format!("{}/frame/cell/*", room_prefix(room_id, wire_cap))
+}
+
+/// Map a fine `CellId` (`CELL_SIZE_M=64`) to a coarse LodCell (x00c7).
+///
+/// Uses Euclidean (floor) division so negatives stay contiguous:
+/// `cell_to_lod_cell(-1, 0, 0) == [-1, 0, 0]` with [`LOD_CELL_STRIDE`] = 3.
+pub fn cell_to_lod_cell(cx: i32, cy: i32, cz: i32) -> [i32; 3] {
+    [
+        cx.div_euclid(LOD_CELL_STRIDE),
+        cy.div_euclid(LOD_CELL_STRIDE),
+        cz.div_euclid(LOD_CELL_STRIDE),
+    ]
+}
+
+/// Build a lod-scoped frame key (x00c7 Avatar sync LOD · mid band).
+///
+/// Separate from [`frame_cell_key`] so near-band full-rate dirty is not thinned on a shared
+/// key. Caller should [`validate_room_id`] + [`validate_wire_cap`].
+pub fn frame_lod_key(room_id: &str, wire_cap: &str, lx: i32, ly: i32, lz: i32) -> String {
+    format!(
+        "{}/frame/lod/{}",
+        room_prefix(room_id, wire_cap),
+        format_cell_id_segment(lx, ly, lz)
+    )
+}
+
+/// [`frame_lod_key`] for the LodCell covering fine cell `(cx,cy,cz)`.
+pub fn frame_lod_key_from_cell(room_id: &str, wire_cap: &str, cx: i32, cy: i32, cz: i32) -> String {
+    let [lx, ly, lz] = cell_to_lod_cell(cx, cy, cz);
+    frame_lod_key(room_id, wire_cap, lx, ly, lz)
+}
+
+/// ACL-aligned `…/frame/lod/*` keyexpr (WAN ACL shape · x00c7).
+///
+/// Wildcard is for ACL / debug only — client mid-band mainline is LodCell Moore per-key ≤27.
+pub fn frame_lod_wildcard_key(room_id: &str, wire_cap: &str) -> String {
+    format!("{}/frame/lod/*", room_prefix(room_id, wire_cap))
 }
 
 /// Build an input key (caller should [`validate_room_id`] + [`validate_wire_cap`]).
@@ -1328,6 +1372,26 @@ mod tests {
             frame_cell_key("alpha", cap, -1, -2, 3),
             format!("alchemy/dev/room/alpha/{cap}/frame/cell/-1_-2_3")
         );
+        assert_eq!(
+            frame_lod_key("local", cap, 0, 0, 0),
+            FRAME_LOD_KEY_LOCAL_ORIGIN
+        );
+        assert_ne!(
+            frame_lod_key("local", cap, 0, 0, 0),
+            frame_cell_key("local", cap, 0, 0, 0)
+        );
+        assert_eq!(
+            frame_lod_key("alpha", cap, -1, -2, 3),
+            format!("alchemy/dev/room/alpha/{cap}/frame/lod/-1_-2_3")
+        );
+        assert_eq!(
+            frame_lod_key_from_cell("local", cap, 0, 0, 0),
+            FRAME_LOD_KEY_LOCAL_ORIGIN
+        );
+        assert_eq!(
+            frame_lod_key_from_cell("local", cap, 2, 5, -1),
+            frame_lod_key("local", cap, 0, 1, -1)
+        );
         assert_eq!(input_key("local", cap), INPUT_KEY_LOCAL);
         assert_eq!(manifest_key("local", cap), MANIFEST_KEY_LOCAL);
         assert_eq!(host_control_key("local", cap), HOST_CONTROL_KEY_LOCAL);
@@ -1528,6 +1592,38 @@ mod tests {
         assert!(ke.ends_with("/frame/cell/*"));
         assert!(!ke.contains('|'));
         assert!(!ke.contains("/frame/**"));
+    }
+
+    #[test]
+    fn cell_to_lod_cell_stride_and_negatives() {
+        assert_eq!(LOD_CELL_STRIDE, 3);
+        assert_eq!(cell_to_lod_cell(0, 0, 0), [0, 0, 0]);
+        assert_eq!(cell_to_lod_cell(2, 2, 2), [0, 0, 0]);
+        assert_eq!(cell_to_lod_cell(3, 0, 0), [1, 0, 0]);
+        assert_eq!(cell_to_lod_cell(5, -1, 8), [1, -1, 2]);
+        // Floor division: truncating toward zero would wrongly map -1 → 0.
+        assert_eq!(cell_to_lod_cell(-1, 0, 0), [-1, 0, 0]);
+        assert_eq!(cell_to_lod_cell(-3, -4, 0), [-1, -2, 0]);
+        assert_eq!(cell_to_lod_cell(-6, 3, -3), [-2, 1, -1]);
+    }
+
+    #[test]
+    fn frame_lod_wildcard_key_is_acl_aligned() {
+        let cap = LOCAL_WIRE_CAP;
+        let ke = frame_lod_wildcard_key("local", cap);
+        assert_eq!(ke, format!("{}/lod/*", frame_key("local", cap)));
+        assert!(ke.ends_with("/frame/lod/*"));
+        assert!(!ke.contains('|'));
+        assert!(!ke.contains("/frame/**"));
+        assert!(!ke.contains("/frame/cell/"));
+    }
+
+    #[test]
+    fn lod_moore_reuses_neighborhood_helper() {
+        let [lx, ly, lz] = cell_to_lod_cell(4, -2, 7);
+        let cells = moore_neighborhood_cells(lx, ly, lz);
+        assert_eq!(cells.len(), MOORE_NEIGHBORHOOD_LEN);
+        assert!(cells.contains(&[lx, ly, lz]));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Alchemy — 配信の空間インデックス（Spatial Interest）正本
 
-* **種別**: 規模本線の仕様正本。実装第一波は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)（キー契約 + ACL + dual-publish）。第二波は [x00bf](slices/x00bf-client-near-cell-frame-sub.md)（client 近傍セル opt-in 併読）。第三波は [x00c0](slices/x00c0-host-cell-dirty-filter.md)（host セル別 dirty / 複数セル soft-put）。第四波は [x00c1](slices/x00c1-client-cell-follow-resub.md)（自位置追従の cell 購読切替）。第五波は [x00c2](slices/x00c2-cell-exit-remove.md)（セル退出 remove）。第六波は [x00c3](slices/x00c3-multi-cell-same-tick-merge.md)（多 cell 同一 tick 合流）。第七波は [x00c4](slices/x00c4-opt-in-cell-frame-mainline.md)（opt-in cell 本線・Room frame 非購読）。第八波は [x00c5](slices/x00c5-default-cell-frame-mainline.md)（既定 cell 本線・`ALCHEMY_ROOM_FRAME` オプトアウト）。第九波は [x00c6](slices/x00c6-spatial-interest-vr-delivery-contract.md)（VR delivery 契約: Moore per-key · Interest enter 収束 · 自アバター応答）
+* **種別**: 規模本線の仕様正本。実装第一波は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)（キー契約 + ACL + dual-publish）。第二波は [x00bf](slices/x00bf-client-near-cell-frame-sub.md)（client 近傍セル opt-in 併読）。第三波は [x00c0](slices/x00c0-host-cell-dirty-filter.md)（host セル別 dirty / 複数セル soft-put）。第四波は [x00c1](slices/x00c1-client-cell-follow-resub.md)（自位置追従の cell 購読切替）。第五波は [x00c2](slices/x00c2-cell-exit-remove.md)（セル退出 remove）。第六波は [x00c3](slices/x00c3-multi-cell-same-tick-merge.md)（多 cell 同一 tick 合流）。第七波は [x00c4](slices/x00c4-opt-in-cell-frame-mainline.md)（opt-in cell 本線・Room frame 非購読）。第八波は [x00c5](slices/x00c5-default-cell-frame-mainline.md)（既定 cell 本線・`ALCHEMY_ROOM_FRAME` オプトアウト）。第九波は [x00c6](slices/x00c6-spatial-interest-vr-delivery-contract.md)（VR delivery 契約: Moore per-key · Interest enter 収束 · 自アバター応答）。第十波は [x00c7](slices/x00c7-avatar-sync-lod-mid-band.md)（Avatar sync LOD: 中距離 `frame/lod` · 粗い格子）
 * **改善計画上の位置**: [improvement-plan-2026-11-12.md](../0_doc/evaluation/improvement-plan-2026-11-12.md) **P3-7**
 * **品質本線（物理・状態）**: [mvcc_xpbd.md](mvcc_xpbd.md) Phase 1–3（dirty デルタ・SoA ページが前提）
 * **現行配送契約**: [protocol/peer-delivery.md](../../protocol/peer-delivery.md)（x0024）· [architecture/client.md](../0_doc/architecture/client.md) · [architecture/protocol.md](../0_doc/architecture/protocol.md)
@@ -26,6 +26,8 @@
   → 1000 人は horizon（到達保証ではない）
 VR 契約: §5（x00c6）
   → 近傍帯のみ高 Hz + Interest enter 収束 + 自アバター応答
+Avatar sync LOD: §6（x00c7）
+  → 中距離は分離キー frame/lod（粗い格子 · user_root · ≤5Hz）
 ```
 
 ---
@@ -54,16 +56,18 @@ VR 契約: §5（x00c6）
 | **Interest enter**: 近傍に入った実在（静止含む）へ収束し、近づくと**また見える** | AOI 外に居る間の連続可視・軌跡の完全再生 |
 | **Interest exit**: 現行 Moore 外の遠方ゴーストを残さない | cell 別 snapshot キーの新設 |
 | **自アバター応答**: 視点・移動表示は local prediction（x00ab）；NeedResync 中も Intent / 予測を止めない | wire 遅れゼロ（reconcile は権威に収束） |
-| 遠方エンティティは**低頻度 LOD**（間引き / 自由度削減）で届く（LOD スライス後） | 1 host 上での 1000 人**相互** XPBD・全員接触 |
+| 中距離の remote `user_root` は**低頻度 LOD**（`…/frame/lod/…` · ≤5 Hz · user_root のみ）で届く（[x00c7](slices/x00c7-avatar-sync-lod-mid-band.md)） | 1 host 上での 1000 人**相互** XPBD・全員接触 |
 | 既存 Room AEAD（x0069）· wire_cap ルーティング · delivery-class（x0024）を壊さない | 確実配送 ACK / event ID チャネル |
-| 物理ページの空間セルと配信キーの空間単位を**同系**に保つ | `wire_cap` トピック名の秘匿 |
+| 物理ページの空間セルと配信キーの空間単位を**同系**に保つ（lod は同一原点の粗い格子） | `wire_cap` トピック名の秘匿 |
 | 独自トランスポートを新設しない（Zenoh パイプライン維持） | マルチ権威セルの本番移譲・セル間 handover の完成 |
 | | 既定本線としての `…/frame/cell/*`（x00c5 暫定・**契約外**；debug/計測のみ） |
+| | 同一 `frame/cell` キー環拡大での間引き（案 A・本線禁止） |
 | | Zenoh Moore `|` union 配送（x00c5 で declare OK・配送ゼロを観測；本線は per-key ≤27） |
-| | 音声・メッシュ・アニメ予算の本仕様化（別予算・非保証） |
+| | 音声・メッシュ・アニメ・描画 LOD の本仕様化（別予算・非保証） |
+| | lod 専用 snapshot · presence への粗位置混載 |
 | | verifier Spot-Check / billing / market（独立） |
 
-保証表の追随は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)〜[x00c6](slices/x00c6-spatial-interest-vr-delivery-contract.md) まで（VR delivery: Interest 境界 · enter 収束 · 自アバター応答）。[protocol.md](../0_doc/architecture/protocol.md) · [client.md](../0_doc/architecture/client.md) · [peer-delivery.md](../../protocol/peer-delivery.md)。LOD・dual-publish 縮小は後続。
+保証表の追随は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)〜[x00c7](slices/x00c7-avatar-sync-lod-mid-band.md)（VR delivery + Avatar sync LOD 中距離）。[protocol.md](../0_doc/architecture/protocol.md) · [client.md](../0_doc/architecture/client.md) · [peer-delivery.md](../../protocol/peer-delivery.md)。dual-publish 縮小・CCU 天井拡大・描画 LOD は後続。
 
 ---
 
@@ -72,22 +76,23 @@ VR 契約: §5（x00c6）
 | 層 | 単位 | 役割 |
 |:---|:---|:---|
 | 物理（品質本線） | `HotPhysicsPage` + `cell_origin_* : f64`（局所 `f32` ±32 m） | XPBD・MVCC・GPU 転送 |
-| 配信（規模本線） | **同一系のセル ID**（`cell_id: [i32; 3]` または origin から導出） | 購読・publish の interest キー |
+| 配信（規模本線） | **同一系のセル ID**（`cell_id: [i32; 3]` または origin から導出） | 近傍購読・cell publish |
+| 配信 LOD（規模） | **同一原点の粗い LodCell**（`floor_div(cell, LOD_CELL_STRIDE)` · stride=3） | 中距離 sync LOD キー |
 | 権威（当面） | **1 Room = 1 host** | セルは購読分割の単位であり、権威分割の単位ではない |
 
-`cell_origin` を interest の第一級キーに昇格させる。物理ページ設計を捨てて別グリッドを発明しない。
+`cell_origin` を interest の第一級キーに昇格させる。物理ページ設計を捨てて別グリッドを発明しない。lod は別原点を作らず **同一系の stride 集約**に留める。
 
 ---
 
-## 4. キー契約（実装固定 · x00be〜x00c6）
+## 4. キー契約（実装固定 · x00be〜x00c7）
 
 1. **独自トランスポート禁止**（[mvcc_xpbd.md](mvcc_xpbd.md) 🚫1 と同型）。`relay-server` / `relay-agent` / `wire_cap` ACL / Room AEAD を通す。
 2. **方向 A（確定）**: セル修飾サフィックス  
    `alchemy/dev/room/{room_id}/{wire_cap}/frame/cell/{cx}_{cy}_{cz}`  
    セグメントは `format_cell_id_segment`（例: `0_0_0`, `-1_2_0`, `-1_-2_0`）。索引は shared-sim `CellId`（`CELL_SIZE_M=64` center origin）と同系。
 3. Room 全体 `…/frame` は **互換・tick 正本として残す**（x00be: host dual-publish；**x00c5**: client 既定は cell 本線で本キーを**購読しない**；`ALCHEMY_ROOM_FRAME=1` で Room のみへオプトアウト）。`…/snapshot` はセル分割しない（欠落再同期・**Interest enter 収束**の正本）。
-4. **x0067**: ACL は `…/frame/cell/*` を **明示**（`frame/**` 一括禁止）。**AEAD AAD** はキー式非束縛のまま（x0069 据え置き）。
-5. delivery-class（latest / snapshot / best-effort）の語彙は [peer-delivery.md](../../protocol/peer-delivery.md) を継承し、「frame = latest・欠落は Room snapshot」を維持する。
+4. **x0067**: ACL は `…/frame/cell/*` および（x00c7）`…/frame/lod/*` を **明示**（`frame/**` 一括禁止）。**AEAD AAD** はキー式非束縛のまま（x0069 据え置き）。
+5. delivery-class（latest / snapshot / best-effort）の語彙は [peer-delivery.md](../../protocol/peer-delivery.md) を継承し、「frame = latest・欠落は Room snapshot」を維持する。lod も latest（lod 専用 snapshot は作らない）。
 6. **x00bf**: client は（当時）`ALCHEMY_CELL_FRAME=1` のとき origin Moore 近傍（3³）の cell キーを購読開始（初期中心）。歴史的には Room と併読；**x00c4** で opt-in は cell 本線へ；**x00c5** で既定 cell。
 7. **x00c0**: host は dirty upsert を `CellId` でバケットし、非空セルへ**セル別密封**で soft-put（seal/put soft-fail・publisher LRU 64）。Room は全文維持。Room-only 時の同 tick 上書きは `decide_room_frame_tick`（x00c5 以降は `ALCHEMY_ROOM_FRAME=1`）。
 8. **x00c1 / x00c6**: cell 本線時、Presence 割当後の **wire** `local_user_root` 位置で中心 `CellId` を追従（`CELL_HYSTERESIS_M`；**活性時も ≤250ms deadline**）。中心変化で Moore per-key を差分 resub。
@@ -95,7 +100,8 @@ VR 契約: §5（x00c6）
 10. **x00c3**: client cell 経路は `decide_cell_frame_tick` で同一 tick の複数セルを合流適用（跨 cell は upsert guard；単一 frame 交差は remove 勝ち）。境界横断は Room 無しで収束。
 11. **x00c4**: `ALCHEMY_CELL_FRAME=1` 時は Room `…/frame` を**購読せず** cell Moore を tick 本線とする。gap→resync は cell が Room `…/snapshot` を get。当時の既定は Room-only。host dual-publish 維持。
 12. **x00c5**: client 既定は cell 本線（Room frame 非購読）。当時の暫定購読は `…/frame/cell/*`（規模本線と矛盾する interim）。歴史的 Moore `|` union は local peer で declare OK・配送ゼロのため退避。`ALCHEMY_ROOM_FRAME=1` で Room のみ。`ALCHEMY_CELL_FRAME` legacy。host dual-publish 維持。
-13. **x00c6（§5）**: 既定本線を **Moore per-key ≤27 subscriber** に戻す。`cell/*` は debug/計測専用。Interest enter → rate-limited Room snapshot。Interest exit prune。自アバター予測を配送契約へ昇格。dual-publish 停止・LOD は更に後続（enter が Room snapshot に依存するため）。
+13. **x00c6（§5）**: 既定本線を **Moore per-key ≤27 subscriber** に戻す。`cell/*` は debug/計測専用。Interest enter → rate-limited Room snapshot。Interest exit prune。自アバター予測を配送契約へ昇格。dual-publish 停止は更に後続（enter が Room snapshot に依存するため）。
+14. **x00c7（§6）**: 中距離 Avatar sync LOD。キー `…/frame/lod/{lx}_{ly}_{lz}`（`LodCell = floor_div(CellId, 3)`）。host は LodCell ごとの **occupied 名簿 + exit removes** を ≤5 Hz soft-put。client は LodCell Moore ≤27 を購読し **near 優先 apply**；epoch は pose のみ（jitter 非接触）。同一 `frame/cell` 環拡大での間引き（案 A）は本線禁止。描画 LOD・CCU 天井拡大は非対象。
 
 実装第一波: [x00be-spatial-interest-cell-frame-foundation.md](slices/x00be-spatial-interest-cell-frame-foundation.md)。  
 実装第二波: [x00bf-client-near-cell-frame-sub.md](slices/x00bf-client-near-cell-frame-sub.md)。  
@@ -105,7 +111,8 @@ VR 契約: §5（x00c6）
 実装第六波: [x00c3-multi-cell-same-tick-merge.md](slices/x00c3-multi-cell-same-tick-merge.md)。  
 実装第七波: [x00c4-opt-in-cell-frame-mainline.md](slices/x00c4-opt-in-cell-frame-mainline.md)。  
 実装第八波: [x00c5-default-cell-frame-mainline.md](slices/x00c5-default-cell-frame-mainline.md)。  
-実装第九波: [x00c6-spatial-interest-vr-delivery-contract.md](slices/x00c6-spatial-interest-vr-delivery-contract.md)。
+実装第九波: [x00c6-spatial-interest-vr-delivery-contract.md](slices/x00c6-spatial-interest-vr-delivery-contract.md)。  
+実装第十波: [x00c7-avatar-sync-lod-mid-band.md](slices/x00c7-avatar-sync-lod-mid-band.md)。
 
 ---
 
@@ -168,15 +175,46 @@ Moore near cells (≤27) ──delta apply──┘
 
 ---
 
-## 6. Avatar sync LOD
+## 6. Avatar sync LOD（x00c7）
 
-| 帯 | 目安 | 同期内容（目標） |
+規模本線の中距離同期。近傍品質（§5）を落とさず、共有 pub/sub のまま帯域を分ける。実装: [x00c7](slices/x00c7-avatar-sync-lod-mid-band.md)。
+
+### 6.0 決めた方針
+
+| 項目 | 契約 |
+|:---|:---|
+| スコープ | **sync LOD のみ**（描画 GLB / スキン / impostor / ボーンは別予算） |
+| 配送モデル | **キー分離（案 B）** — 近傍 `…/frame/cell/…` と中距離 `…/frame/lod/…` |
+| 中距離格子 | 同一原点 · `LOD_CELL_STRIDE = 3`（≈192 m）· `LodCell = floor_div(CellId, 3)` |
+| 中距離購読 | LodCell 中心 Moore 3³ **per-key ≤27** |
+| ペイロード | 現行 `RenderFrame` / `Entity` · **user_root のみ** · LodCell ごと **occupied 名簿 + exit removes** · ≤5 Hz |
+| 適用優先 | 同一 `entity_id` は **near（cell）が正**。lod は近傍に無い remote user_root 専用 |
+| 表示クロック | lod / AOI prune の epoch 反映は **pose のみ**（sim jitter は near Applied Frame 専用） |
+| 遠方 | lod/cell 追加購読なし。`…/presence` は割当のみ（粗位置を載せない） |
+
+**案 A（同一 `frame/cell` 環拡大＋間引き）を本線にしない理由:** cell キーは視聴者別チャネルではなく空間共有バケットである。近傍クライアントが高 Hz 全文を必要とするキーに間引きを載せられず、購読環だけ広げると受信が増えるだけで sync LOD にならない。
+
+```text
+Near: CellId 64m · Moore ≤27 · full TRS dirty · ~30Hz   (§5)
+Mid:  LodCell stride=3 · Moore ≤27 · user_root only · ≤5Hz
+Far:  no lod/cell subscribe · presence assignment only
+```
+
+| 帯 | 目安 | 同期内容 |
 |:---|:---|:---|
-| 近傍 | 同一セル + 隣接セル（Moore） | フル TRS（必要なら hands）高 Hz・dirty デルタ（§5） |
-| 中距離 | 数セル先 | 間引き Hz・自由度削減（例: root のみ）— **別スライス** |
-| 遠方 | AOI 外 | presence 級（存在・粗位置）または非購読 — **高 Hz 非保証**（§5.2） |
+| 近傍 | 同一セル + 隣接（Moore · 64 m） | フル TRS（必要なら将来 hands）高 Hz・dirty デルタ（§5） |
+| 中距離 | LodCell Moore（≈192 m 格子） | `…/frame/lod/…` · user_root 名簿 + exit removes · ≤5 Hz（x00c7） |
+| 遠方 | mid AOI 外 | 高 Hz 非保証（§5.2）。presence 割当のみ |
 
-音声・アバターメッシュ・表情は**本正本の保証外**（別予算）。物理 Grab / 接触は近傍帯に閉じる（品質本線の XPBD と整合）。
+音声・アバターメッシュ・表情・描画 LOD は**本正本の保証外**（別予算）。物理 Grab / 接触は近傍帯に閉じる（品質本線の XPBD と整合）。lod 専用 snapshot は作らない。Interest enter/exit（Room snapshot）は near のみ。
+
+### 6.1 意図的にやらないこと（本契約）
+
+* 同一 `frame/cell` キーへの間引き載せ（案 A）
+* lod / cell 別 snapshot、presence への粗位置混載
+* `USER_ROOT_SLOTS_MAX` 引き上げ・G2 合格宣言
+* dual-publish 停止の同時実施
+* 描画 LOD と sync LOD の仕様溶融、ボーンの `RenderFrame` 混入
 
 ---
 
@@ -219,7 +257,7 @@ Moore near cells (≤27) ──delta apply──┘
 | 作業 | 条件 |
 |:---|:---|
 | **本ファイル（アウトライン正本）** | いつでも。MVCC Phase と**並走可** |
-| **実装スライス群** | **MVCC Phase 3 DoD Green 後**。第一波 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)〜第九波 [x00c6](slices/x00c6-spatial-interest-vr-delivery-contract.md) **done**。LOD・dual-publish 縮小は後続 |
+| **実装スライス群** | **MVCC Phase 3 DoD Green 後**。第一波 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)〜第十波 [x00c7](slices/x00c7-avatar-sync-lod-mid-band.md) **done**（§5 VR delivery · §6 Avatar sync LOD）。dual-publish 縮小・CCU 天井拡大・G1 実測は後続 |
 
 ---
 
@@ -230,4 +268,5 @@ Moore near cells (≤27) ──delta apply──┘
 * MVCC だけで大規模 CCU を宣言する文書・PR 説明
 * フルメッシュのまま Phase を増やして「スケールした」ことにする
 * 既定本線として `…/frame/cell/*` を規模解決と呼ぶこと（受信量が dirty cell に線形）
+* 同一 `frame/cell` 環拡大を Avatar sync LOD と呼ぶこと（案 A）
 * 本アウトラインだけで architecture 保証表やキーヘルパを破壊的に書き換える（実装スライスで契約固定）

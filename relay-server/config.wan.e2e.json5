@@ -54,6 +54,8 @@
           "alchemy/dev/room/*/*/frame",
           // x00be Spatial Interest: explicit cell frames (do NOT widen to frame/**)
           "alchemy/dev/room/*/*/frame/cell/*",
+          // x00c7 Avatar sync LOD: explicit lod frames (do NOT widen to frame/**)
+          "alchemy/dev/room/*/*/frame/lod/*",
           "alchemy/dev/room/*/*/presence",
           "alchemy/dev/room/*/*/snapshot",
           "alchemy/dev/room/*/*/sim_state",
@@ -117,6 +119,8 @@
           "alchemy/dev/room/*/*/manifest",
           "alchemy/dev/room/*/*/frame",
           "alchemy/dev/room/*/*/frame/cell/*",
+          // x00c7 Avatar sync LOD: explicit lod frames (do NOT widen to frame/**)
+          "alchemy/dev/room/*/*/frame/lod/*",
           "alchemy/dev/room/*/*/presence",
           "alchemy/dev/room/*/*/snapshot",
           "alchemy/dev/room/*/*/sim_state",
@@ -152,6 +156,8 @@
           "alchemy/dev/room/*/*/manifest",
           "alchemy/dev/room/*/*/frame",
           "alchemy/dev/room/*/*/frame/cell/*",
+          // x00c7 Avatar sync LOD: explicit lod frames (do NOT widen to frame/**)
+          "alchemy/dev/room/*/*/frame/lod/*",
           "alchemy/dev/room/*/*/presence",
           "alchemy/dev/room/*/*/snapshot",
           "alchemy/dev/room/*/*/edit",
@@ -169,6 +175,8 @@
           "alchemy/dev/room/*/*/manifest",
           "alchemy/dev/room/*/*/frame",
           "alchemy/dev/room/*/*/frame/cell/*",
+          // x00c7 Avatar sync LOD: explicit lod frames (do NOT widen to frame/**)
+          "alchemy/dev/room/*/*/frame/lod/*",
           "alchemy/dev/room/*/*/presence",
           "alchemy/dev/room/*/*/snapshot",
           "alchemy/dev/room/*/*/edit",
