@@ -14,14 +14,18 @@
 //! x00c0: after a successful Room frame put, dirty upserts are bucketed by
 //! [`alchemy_shared_sim::mvcc::CellId`] and each non-empty cell is soft-put as a
 //! **separately sealed** `…/frame/cell/{cx}_{cy}_{cz}` frame (same `net_tick`).
-//! Cell puts omit `removes` (Room remains authority); cell seal/put failure and LRU
-//! eviction are logged + counted and do **not** kill the Room path.
+//! x00c2: `last_wire_cell` tracks the last published delivery cell per entity; on
+//! cell-boundary cross or Room `removes` / `removes_only`, the **old cell** also
+//! receives a soft-put with cell-scoped `removes` (remove-only cells included).
+//! Room still carries full `removes` + `acked_intent_seq` (fail-closed). Cell
+//! seal/put failure and LRU eviction are logged + counted and do **not** kill the
+//! Room path.
 //! Non-guarantees: rkyv/bytemuck wire; Prometheus; backpressure that stalls physics;
 //! draining pending jobs / joining the worker on `stop()` (process exit may drop
 //! in-flight puts); Manifest logical (non-bytes) jobs — sealed bytes pass through;
 //! zero-alloc encode/AEAD/Zenoh; pooling of `removes` / upsert `Entity` vecs;
 //! zero-clone cell upsert packing (cell path still clones `Entity` for sign/seal);
-//! cell put reachability; cell exit removes; client default cell-only sub.
+//! cell put reachability; client default cell-only sub; same-tick multi-cell merge.
 
 use alchemy_protocol::frame_cell_key;
 use alchemy_protocol::wire_aead::AeadKind;
@@ -605,21 +609,133 @@ impl CellPublisherCache {
 
 /// Index dirty upserts by delivery cell (`CellId` / `CELL_SIZE_M=64` center origin · x00c0).
 ///
-/// Guarantees: empty input → empty map; indices refer into the caller's slice (no Entity clone).
-/// Non-guarantees: stable iteration order; cell-exit removes.
-pub fn bucket_upsert_indices_by_cell(upserts: &[Entity]) -> HashMap<[i32; 3], Vec<usize>> {
+/// Guarantees: empty input → empty map; indices refer into the caller's slice (no Entity clone);
+/// ids in `exclude` are skipped (Room `removes` win over same-tick upserts · x00c2).
+/// Non-guarantees: stable iteration order.
+pub fn bucket_upsert_indices_by_cell(
+    upserts: &[Entity],
+    exclude: &HashSet<u32>,
+) -> HashMap<[i32; 3], Vec<usize>> {
     let mut buckets: HashMap<[i32; 3], Vec<usize>> = HashMap::new();
     for (i, e) in upserts.iter().enumerate() {
+        if exclude.contains(&e.id) {
+            continue;
+        }
         let cell = CellId::from_world_f64(e.x, e.y, e.z).0;
         buckets.entry(cell).or_default().push(i);
     }
     buckets
 }
 
+/// Bucket cell-scoped exit / despawn removes for Spatial Interest (x00c2).
+///
+/// Guarantees: first-seen upsert (no prior cell) yields no remove; same-cell upsert
+/// yields no remove; `old != new` pushes `id` onto the **old** cell; Room `removes`
+/// push onto the last published cell when known; ids in `removed` skip the cross path;
+/// each bucket is sorted unique.
+/// Non-guarantees: stable map iteration order; intermediate cells on long teleports.
+pub fn bucket_cell_exit_removes(
+    upserts: &[Entity],
+    removes: &[u32],
+    last_wire_cell: &HashMap<u32, [i32; 3]>,
+    removed: &HashSet<u32>,
+) -> HashMap<[i32; 3], Vec<u32>> {
+    let mut buckets: HashMap<[i32; 3], Vec<u32>> = HashMap::new();
+    for &id in removes {
+        if let Some(&old) = last_wire_cell.get(&id) {
+            buckets.entry(old).or_default().push(id);
+        }
+    }
+    for e in upserts {
+        if removed.contains(&e.id) {
+            continue;
+        }
+        let new_cell = CellId::from_world_f64(e.x, e.y, e.z).0;
+        if let Some(&old) = last_wire_cell.get(&e.id) {
+            if old != new_cell {
+                buckets.entry(old).or_default().push(e.id);
+            }
+        }
+    }
+    for ids in buckets.values_mut() {
+        ids.sort_unstable();
+        ids.dedup();
+    }
+    buckets
+}
+
+/// Upsert-index buckets + exit-remove id buckets for cell soft-puts (x00c2).
+type CellFrameBuckets = (HashMap<[i32; 3], Vec<usize>>, HashMap<[i32; 3], Vec<u32>>);
+
+/// Plan per-cell soft-put contents after a successful Room frame (x00c0 / x00c2).
+///
+/// Guarantees: ids in Room `removes` are **not** cell-upserted; boundary crosses and
+/// despawns appear as old-cell removes; remove-only cells are included when the remove
+/// bucket is non-empty and the upsert bucket is empty.
+/// Returns `(upsert_index_buckets, remove_id_buckets)` into the caller's `upserts` slice.
+pub fn plan_cell_frame_buckets(
+    upserts: &[Entity],
+    removes: &[u32],
+    last_wire_cell: &HashMap<u32, [i32; 3]>,
+) -> CellFrameBuckets {
+    let removed: HashSet<u32> = removes.iter().copied().collect();
+    let upsert_buckets = bucket_upsert_indices_by_cell(upserts, &removed);
+    let remove_buckets = bucket_cell_exit_removes(upserts, removes, last_wire_cell, &removed);
+    (upsert_buckets, remove_buckets)
+}
+
+/// Materialize planned cell soft-puts in the same consume order as [`WorkerState::put_signed_frame`]
+/// (x00c2): upsert cells first (owning paired removes by move), then leftover remove-only cells.
+///
+/// Guarantees: every non-empty planned bucket appears exactly once; remove-only cells are
+/// preserved when they have no upsert counterpart. Non-guarantees: stable output order.
+pub fn materialize_cell_soft_puts(
+    upserts: &[Entity],
+    upsert_buckets: HashMap<[i32; 3], Vec<usize>>,
+    mut remove_buckets: HashMap<[i32; 3], Vec<u32>>,
+) -> Vec<([i32; 3], Vec<Entity>, Vec<u32>)> {
+    let mut out = Vec::with_capacity(upsert_buckets.len() + remove_buckets.len());
+    for (cell, idxs) in upsert_buckets {
+        let cell_removes = remove_buckets.remove(&cell).unwrap_or_default();
+        let cell_upserts: Vec<Entity> = idxs.iter().map(|&i| upserts[i]).collect();
+        if cell_upserts.is_empty() && cell_removes.is_empty() {
+            continue;
+        }
+        out.push((cell, cell_upserts, cell_removes));
+    }
+    for (cell, cell_removes) in remove_buckets {
+        if cell_removes.is_empty() {
+            continue;
+        }
+        out.push((cell, Vec::new(), cell_removes));
+    }
+    out
+}
+
+/// Update `last_wire_cell` after a successful Room frame put (x00c2).
+///
+/// Order matches client `apply_frame` and host `last_sent` post-put cleanup: upserts
+/// first, then removes (**remove wins** when an id is in both — coalesce of net poses
+/// with a later `removes_only` can produce that intersection).
+fn apply_last_wire_cell(
+    last_wire_cell: &mut HashMap<u32, [i32; 3]>,
+    upserts: &[Entity],
+    removes: &[u32],
+) {
+    for e in upserts {
+        let cell = CellId::from_world_f64(e.x, e.y, e.z).0;
+        last_wire_cell.insert(e.id, cell);
+    }
+    for &id in removes {
+        last_wire_cell.remove(&id);
+    }
+}
+
 /// Test helper: materialize [`bucket_upsert_indices_by_cell`] into owned Entities.
 #[cfg(test)]
 fn bucket_upserts_by_cell(upserts: &[Entity]) -> HashMap<[i32; 3], Vec<Entity>> {
-    let indices = bucket_upsert_indices_by_cell(upserts);
+    let empty = HashSet::new();
+    let indices = bucket_upsert_indices_by_cell(upserts, &empty);
     indices
         .into_iter()
         .map(|(cell, idxs)| {
@@ -731,6 +847,8 @@ fn seal_soft(
 
 struct WorkerState {
     last_sent: HashMap<u32, Pose>,
+    /// Last successfully published delivery cell per entity (x00c2 cell-exit removes).
+    last_wire_cell: HashMap<u32, [i32; 3]>,
     net_tick: u64,
     last_published_tick: Option<u64>,
     /// Removes / catch-up deferred while `publish_allowed == false` (or mid-net
@@ -754,6 +872,55 @@ impl WorkerState {
         if self.deferred_catchup {
             *resume_catchup = true;
             self.deferred_catchup = false;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn soft_put_cell_frame(
+        cell_pubs: &mut CellPublisherCache,
+        key: &SigningKey,
+        room_id: &str,
+        room_aead: &host_server::room_aead::SharedRoomAead,
+        stats: &PublishStats,
+        cell: [i32; 3],
+        tick: u64,
+        host_time_ms: u64,
+        sim_tick: u64,
+        scene_rev: u64,
+        cell_upserts: Vec<Entity>,
+        cell_removes: Vec<u32>,
+    ) {
+        if cell_upserts.is_empty() && cell_removes.is_empty() {
+            return;
+        }
+        let Some(cell_pub) = cell_pubs.publisher_for(cell, stats) else {
+            return;
+        };
+        let mut cell_frame = RenderFrame {
+            tick,
+            host_time_ms,
+            upserts: cell_upserts,
+            removes: cell_removes,
+            host_sig: vec![],
+            sim_tick,
+            redundancy: 0,
+            acked_intent_seq: vec![],
+            scene_rev,
+        };
+        sign_frame(key, &mut cell_frame);
+        let Some(cell_env) = seal_soft(
+            AeadKind::Frame,
+            room_id,
+            room_aead,
+            cell_frame.encode_to_vec(),
+        ) else {
+            stats.cell_publish_failures.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        if put_soft("frame_cell", cell_pub, cell_env) {
+            stats.cell_publishes.fetch_add(1, Ordering::Relaxed);
+        } else {
+            stats.cell_publish_failures.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -851,8 +1018,11 @@ impl WorkerState {
         scene_rev: u64,
     ) {
         let upsert_len = upserts.len() as u64;
-        // Index buckets before moving upserts into the Room frame (x00c0).
-        let cell_buckets = bucket_upsert_indices_by_cell(&upserts);
+        // Plan cell soft-puts before moving into the Room frame (x00c0 / x00c2).
+        let (cell_upsert_buckets, cell_remove_buckets) =
+            plan_cell_frame_buckets(&upserts, &removes, &self.last_wire_cell);
+        let cell_soft_puts =
+            materialize_cell_soft_puts(&upserts, cell_upsert_buckets, cell_remove_buckets);
         let tick = self.net_tick;
         let mut frame = RenderFrame {
             tick,
@@ -870,40 +1040,26 @@ impl WorkerState {
         // Room frame is tick authority: fail-closed before cell soft-puts (x00be/x00c0).
         put_or_die("frame", frame_pub, env);
 
-        // Cell path: separately sealed per-cell dirty; no removes / no acked watermark
-        // (Room carries those; client applies pose upserts only on cell interest).
-        for (cell, idxs) in cell_buckets {
-            let Some(cell_pub) = cell_pubs.publisher_for(cell, stats) else {
-                continue;
-            };
-            let cell_upserts: Vec<Entity> = idxs.iter().map(|&i| frame.upserts[i]).collect();
-            let mut cell_frame = RenderFrame {
-                tick,
-                host_time_ms,
-                upserts: cell_upserts,
-                removes: vec![],
-                host_sig: vec![],
-                sim_tick,
-                redundancy: 0,
-                acked_intent_seq: vec![],
-                scene_rev,
-            };
-            sign_frame(key, &mut cell_frame);
-            let Some(cell_env) = seal_soft(
-                AeadKind::Frame,
+        // Cell path after Room success (x00c2): same order as `materialize_cell_soft_puts`.
+        // `acked_intent_seq` stays on Room only.
+        for (cell, cell_upserts, cell_removes) in cell_soft_puts {
+            Self::soft_put_cell_frame(
+                cell_pubs,
+                key,
                 room_id,
                 room_aead,
-                cell_frame.encode_to_vec(),
-            ) else {
-                stats.cell_publish_failures.fetch_add(1, Ordering::Relaxed);
-                continue;
-            };
-            if put_soft("frame_cell", cell_pub, cell_env) {
-                stats.cell_publishes.fetch_add(1, Ordering::Relaxed);
-            } else {
-                stats.cell_publish_failures.fetch_add(1, Ordering::Relaxed);
-            }
+                stats,
+                cell,
+                tick,
+                host_time_ms,
+                sim_tick,
+                scene_rev,
+                cell_upserts,
+                cell_removes,
+            );
         }
+
+        apply_last_wire_cell(&mut self.last_wire_cell, &frame.upserts, &frame.removes);
 
         stats
             .upsert_entities
@@ -1155,13 +1311,14 @@ pub fn spawn_network_worker(config: NetworkWorkerConfig) -> Result<NetworkWorker
             let mut cell_pubs = CellPublisherCache::new(session, room_id.clone(), wire_cap);
             let mut state = WorkerState {
                 last_sent: HashMap::new(),
+                last_wire_cell: HashMap::new(),
                 net_tick: 0,
                 last_published_tick: None,
                 deferred_removes: Vec::new(),
                 deferred_catchup: false,
             };
             log::info!(
-                "network worker ready (Zenoh put off physics thread; AEAD on; cell dirty filter x00c0)"
+                "network worker ready (Zenoh put off physics thread; AEAD on; cell dirty filter x00c0; cell exit remove x00c2)"
             );
             while let Some((frame, presence, manifest)) = hub_w.take_batch() {
                 if let Some(job) = manifest {
@@ -1306,10 +1463,11 @@ mod tests {
             1.0,
         );
         let upserts = [a, b];
-        let idxs = bucket_upsert_indices_by_cell(&upserts);
+        let empty = HashSet::new();
+        let idxs = bucket_upsert_indices_by_cell(&upserts, &empty);
         assert_eq!(idxs.get(&[0, 0, 0]).map(Vec::as_slice), Some(&[0][..]));
         assert_eq!(idxs.get(&[1, 0, 0]).map(Vec::as_slice), Some(&[1][..]));
-        assert!(bucket_upsert_indices_by_cell(&[]).is_empty());
+        assert!(bucket_upsert_indices_by_cell(&[], &empty).is_empty());
     }
 
     /// x00c0: center-origin cell boundaries match shared-sim `CellId`.
@@ -1393,6 +1551,172 @@ mod tests {
         assert_eq!(room.len(), 2);
         assert_eq!(bucketed, 2);
         assert_eq!(buckets.len(), 2);
+    }
+
+    fn entity_at(id: u32, x: f64, y: f64, z: f64) -> Entity {
+        alchemy_protocol::entity_trs(
+            id,
+            x,
+            y,
+            z,
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        )
+    }
+
+    /// x00c2: crossing 31.9 → 32.0 removes from old cell `0_0_0`.
+    #[test]
+    fn bucket_cell_exit_removes_on_boundary_cross() {
+        let mut last = HashMap::new();
+        last.insert(1, [0, 0, 0]);
+        let upserts = [entity_at(1, 32.0, 0.0, 0.0)];
+        let (upsert_buckets, remove_buckets) = plan_cell_frame_buckets(&upserts, &[], &last);
+        assert_eq!(
+            remove_buckets.get(&[0, 0, 0]).map(Vec::as_slice),
+            Some(&[1][..])
+        );
+        assert_eq!(remove_buckets.len(), 1);
+        assert_eq!(
+            upsert_buckets.get(&[1, 0, 0]).map(Vec::as_slice),
+            Some(&[0][..])
+        );
+    }
+
+    /// x00c2: same-cell dirty upsert yields no exit remove.
+    #[test]
+    fn bucket_cell_exit_removes_empty_on_same_cell() {
+        let mut last = HashMap::new();
+        last.insert(1, [0, 0, 0]);
+        let upserts = [entity_at(1, 10.0, 0.0, 0.0)];
+        let (_u, r) = plan_cell_frame_buckets(&upserts, &[], &last);
+        assert!(r.is_empty());
+    }
+
+    /// x00c2: first upsert (no prior cell) yields no exit remove.
+    #[test]
+    fn bucket_cell_exit_removes_empty_on_first_upsert() {
+        let last = HashMap::new();
+        let upserts = [entity_at(1, 32.0, 0.0, 0.0)];
+        let (_u, r) = plan_cell_frame_buckets(&upserts, &[], &last);
+        assert!(r.is_empty());
+    }
+
+    /// x00c2: Room removes / removes_only map to the last published cell.
+    #[test]
+    fn bucket_cell_exit_removes_on_despawn() {
+        let mut last = HashMap::new();
+        last.insert(7, [1, 0, 0]);
+        last.insert(8, [0, 0, 0]);
+        let (upsert_buckets, remove_buckets) = plan_cell_frame_buckets(&[], &[7], &last);
+        assert!(upsert_buckets.is_empty());
+        assert_eq!(
+            remove_buckets.get(&[1, 0, 0]).map(Vec::as_slice),
+            Some(&[7][..])
+        );
+        assert!(!remove_buckets.contains_key(&[0, 0, 0]));
+    }
+
+    /// x00c2: upserts∩removes → no cell upsert; old cell gets remove-only; map remove-wins.
+    #[test]
+    fn plan_cell_frame_intersection_remove_wins() {
+        let mut last = HashMap::new();
+        last.insert(1, [0, 0, 0]);
+        // Coalesce can leave the same id in both lists (net poses + later removes_only).
+        let upserts = [entity_at(1, 32.0, 0.0, 0.0)];
+        let removes = [1u32];
+        let (upsert_buckets, remove_buckets) = plan_cell_frame_buckets(&upserts, &removes, &last);
+        assert!(
+            upsert_buckets.is_empty(),
+            "despawned id must not soft-put as cell upsert"
+        );
+        assert_eq!(
+            remove_buckets.get(&[0, 0, 0]).map(Vec::as_slice),
+            Some(&[1][..])
+        );
+
+        apply_last_wire_cell(&mut last, &upserts, &removes);
+        assert!(
+            !last.contains_key(&1),
+            "last_wire_cell must match last_sent: remove wins"
+        );
+    }
+
+    /// x00c2 DoD: after Room success, boundary cross materializes old remove + new upsert.
+    #[test]
+    fn materialize_cell_soft_puts_boundary_cross_after_room_plan() {
+        let mut last = HashMap::new();
+        last.insert(1, [0, 0, 0]);
+        let upserts = [entity_at(1, 32.0, 0.0, 0.0)];
+        let (u, r) = plan_cell_frame_buckets(&upserts, &[], &last);
+        let puts = materialize_cell_soft_puts(&upserts, u, r);
+        let old = puts
+            .iter()
+            .find(|(c, _, _)| *c == [0, 0, 0])
+            .expect("old cell");
+        let new = puts
+            .iter()
+            .find(|(c, _, _)| *c == [1, 0, 0])
+            .expect("new cell");
+        assert!(old.1.is_empty(), "old cell is remove-only");
+        assert_eq!(old.2.as_slice(), &[1]);
+        assert_eq!(new.1.len(), 1);
+        assert_eq!(new.1[0].id, 1);
+        assert!(new.2.is_empty());
+        assert_eq!(puts.len(), 2);
+    }
+
+    /// x00c2 DoD: removes_only / despawn materializes last-cell remove-only soft-put.
+    #[test]
+    fn materialize_cell_soft_puts_despawn_remove_only() {
+        let mut last = HashMap::new();
+        last.insert(7, [1, 0, 0]);
+        let (u, r) = plan_cell_frame_buckets(&[], &[7], &last);
+        let puts = materialize_cell_soft_puts(&[], u, r);
+        assert_eq!(puts.len(), 1);
+        assert_eq!(puts[0].0, [1, 0, 0]);
+        assert!(puts[0].1.is_empty());
+        assert_eq!(puts[0].2.as_slice(), &[7]);
+    }
+
+    /// x00c2: apply_last_wire_cell tracks crosses and clears despawns.
+    #[test]
+    fn apply_last_wire_cell_tracks_cross_and_despawn() {
+        let mut last = HashMap::new();
+        apply_last_wire_cell(&mut last, &[entity_at(1, 31.9, 0.0, 0.0)], &[]);
+        assert_eq!(last.get(&1), Some(&[0, 0, 0]));
+
+        apply_last_wire_cell(&mut last, &[entity_at(1, 32.0, 0.0, 0.0)], &[]);
+        assert_eq!(last.get(&1), Some(&[1, 0, 0]));
+
+        apply_last_wire_cell(&mut last, &[], &[1]);
+        assert!(!last.contains_key(&1));
+    }
+
+    /// x00c2: catch-up style full live upsert set + removes aligns the map.
+    #[test]
+    fn apply_last_wire_cell_catchup_rewrites_map() {
+        let mut last = HashMap::new();
+        last.insert(1, [0, 0, 0]);
+        last.insert(2, [1, 0, 0]);
+        last.insert(3, [-1, 0, 0]);
+        // Catch-up upserts = all live; removes = departed (mirrors catchup_after_publish_gate).
+        apply_last_wire_cell(
+            &mut last,
+            &[
+                entity_at(1, 100.0, 0.0, 0.0),
+                entity_at(2, 64.0, 0.0, 0.0),
+                entity_at(4, 0.0, 0.0, 0.0),
+            ],
+            &[3],
+        );
+        assert_eq!(last.get(&1), Some(&[2, 0, 0])); // floor((100+32)/64) = 2
+        assert_eq!(last.get(&2), Some(&[1, 0, 0]));
+        assert!(!last.contains_key(&3));
+        assert_eq!(last.get(&4), Some(&[0, 0, 0]));
     }
 
     /// x00be: Room tick authority key and origin cell dual-publish key stay distinct.
@@ -1776,6 +2100,7 @@ mod tests {
     fn gated_defer_preserves_removes_and_catchup_for_next_allowed() {
         let mut state = WorkerState {
             last_sent: HashMap::new(),
+            last_wire_cell: HashMap::new(),
             net_tick: 0,
             last_published_tick: None,
             deferred_removes: Vec::new(),

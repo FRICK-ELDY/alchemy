@@ -100,7 +100,7 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 | `LOCAL_WIRE_CAP` | fixture cap（実 room は world 発行） |
 | `MANIFEST_KEY_LOCAL` / `manifest_key(room_id, wire_cap)` | `…/local/{LOCAL_WIRE_CAP}/manifest` |
 | `FRAME_KEY_LOCAL` / `frame_key(room_id, wire_cap)` | `…/frame`（tick 正本） |
-| `FRAME_CELL_KEY_LOCAL_ORIGIN` / `frame_cell_key` / `format_cell_id_segment` / `moore_neighborhood_cells` / `frame_cell_interest_keyexpr` | `…/frame/cell/{cx}_{cy}_{cz}`（**x00c0** host セル別 dirty soft-put；**x00bf / x00c1** opt-in 近傍併読＋自位置追従 `ALCHEMY_CELL_FRAME`） |
+| `FRAME_CELL_KEY_LOCAL_ORIGIN` / `frame_cell_key` / `format_cell_id_segment` / `moore_neighborhood_cells` / `frame_cell_interest_keyexpr` | `…/frame/cell/{cx}_{cy}_{cz}`（**x00c0** host セル別 dirty soft-put；**x00c2** 境界横断・despawn 時は旧セルへセルスコープ removes；**x00bf / x00c1** opt-in 近傍併読＋自位置追従 `ALCHEMY_CELL_FRAME`；多 cell 同一 tick 合流は非保証） |
 | `INPUT_KEY_LOCAL` / `input_key(room_id, wire_cap)` | `…/input` |
 | `PRESENCE_KEY_LOCAL` / `presence_key(room_id, wire_cap)` | `…/presence` |
 | `SNAPSHOT_KEY_LOCAL` / `snapshot_key(room_id, wire_cap)` | `…/snapshot` |

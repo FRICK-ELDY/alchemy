@@ -2,7 +2,7 @@
 
 > **ID:** `x00c1` · **slug:** `client-cell-follow-resub` · **status:** `done` · **area:** `[client, docs]` · **depends_on:** `[x00c0]`  
 > **優先度:** [spatial_interest.md](../spatial_interest.md) 実装第四波（P3-7）  
-> **後続:** Room `…/frame` 依存の段階縮小 · セル退出 remove · avatar LOD · G1/G2 実測（次空き `x00c2`〜）
+> **後続:** [x00c2](x00c2-cell-exit-remove.md) セル退出 remove · Room `…/frame` 依存の段階縮小 · avatar LOD · G1/G2 実測（次空き `x00c3`〜）
 
 目標: `ALCHEMY_CELL_FRAME=1` 時の cell frame 購読中心を固定 origin から自位置 `CellId` 追従へ切り替え、中心セル変化時のみ CellInterest を再購読する。Room `…/frame` 併読・gap→snapshot は維持。
 

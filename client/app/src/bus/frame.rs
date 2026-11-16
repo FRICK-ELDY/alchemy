@@ -14,11 +14,15 @@
 //! - Opt-in cell interest follows wire `local_user_root` `CellId` with hysteresis and
 //!   resubscribes Moore neighborhood on center change only (x00c1); Room sub stays put.
 //!   Center is re-evaluated on a ≤250ms deadline even while cell samples keep arriving
+//! - x00c2: host may soft-put old-cell removes and new-cell upserts on the **same**
+//!   `net_tick`. Strict cell tick gate means the later cell sample is DropStale; under
+//!   併読, Room same-tick override is the convergence path (multi-cell merge not guaranteed)
 //!
 //! Non-guarantees: retransmission of missed deltas, reliable-delivery ACK channel, Manifest trust
 //! (see `bus::manifest`; `host_pub` is read, not established here); cell-only delivery; AOI
 //! bandwidth reduction (Room frame remains default / tick authority); Presence-unset follow;
-//! cell gap convergence during resub.
+//! cell gap convergence during resub; same-tick multi-cell merge (old remove may DropStale
+//! until Room / next tick).
 //! Hot-path note (x00bf opt-in / x00c0 / x00c1): Room + near-cell 併読 may AEAD-open / sig-verify /
 //! decode twice per tick; cell payloads are cell-filtered (Room remains tick authority).
 
@@ -678,6 +682,118 @@ mod tests {
         assert_eq!(next, ApplyFrameOutcome::Applied);
         assert_eq!(world.last_frame_tick, Some(6));
         assert!((world.entities.get(&1).unwrap().x - 9.0).abs() < f32::EPSILON);
+    }
+
+    /// x00c2: cell-scoped removes clear entities (host exit/despawn on old cell topic).
+    #[test]
+    fn cell_removes_clear_entities() {
+        let mut world = WorldView::default();
+        assert_eq!(
+            apply_delta_entities(
+                &mut world,
+                1,
+                &[sample_entity(1, 1.0)],
+                &[],
+                false,
+                /* from_room */ false,
+            ),
+            ApplyFrameOutcome::Applied
+        );
+        assert!(world.entities.contains_key(&1));
+        assert_eq!(
+            apply_delta_entities(&mut world, 2, &[], &[1], false, false),
+            ApplyFrameOutcome::Applied
+        );
+        assert!(!world.entities.contains_key(&1));
+        assert!(!world.last_frame_from_room);
+    }
+
+    /// x00c2: same-tick new-cell upsert then old-cell remove → remove DropStale;
+    /// Room same-tick override still converges (併読契約; multi-cell merge 非保証).
+    #[test]
+    fn cell_exit_same_tick_remove_dropstale_room_converges() {
+        let mut world = WorldView::default();
+        // Prior tick: entity visible via cell.
+        assert_eq!(
+            apply_delta_entities(&mut world, 4, &[sample_entity(1, 1.0)], &[], false, false),
+            ApplyFrameOutcome::Applied
+        );
+
+        // Boundary cross tick 5: new cell upsert arrives first.
+        assert_eq!(
+            apply_delta_entities(&mut world, 5, &[sample_entity(1, 32.0)], &[], false, false),
+            ApplyFrameOutcome::Applied
+        );
+        assert!((world.entities.get(&1).unwrap().x - 32.0).abs() < f32::EPSILON);
+
+        // Old cell remove same tick is DropStale under strict cell gate.
+        assert_eq!(
+            apply_delta_entities(&mut world, 5, &[], &[1], false, false),
+            ApplyFrameOutcome::Dropped
+        );
+        assert!(world.entities.contains_key(&1));
+
+        // Room same-tick full frame overrides (may clear via removes or keep live pose).
+        assert_eq!(
+            apply_delta_entities(
+                &mut world,
+                5,
+                &[sample_entity(1, 32.0)],
+                &[],
+                false,
+                /* from_room */ true,
+            ),
+            ApplyFrameOutcome::Applied
+        );
+        assert!(world.last_frame_from_room);
+        assert!((world.entities.get(&1).unwrap().x - 32.0).abs() < f32::EPSILON);
+
+        // Despawn via Room removes on a later tick (Room is remove authority).
+        assert_eq!(
+            apply_delta_entities(&mut world, 6, &[], &[1], false, true),
+            ApplyFrameOutcome::Applied
+        );
+        assert!(!world.entities.contains_key(&1));
+    }
+
+    /// x00c2: reverse arrival — old-cell remove first then new-cell upsert DropStale;
+    /// Room same-tick restore still converges (対称契約).
+    #[test]
+    fn cell_exit_same_tick_upsert_dropstale_room_restores() {
+        let mut world = WorldView::default();
+        assert_eq!(
+            apply_delta_entities(&mut world, 4, &[sample_entity(1, 1.0)], &[], false, false),
+            ApplyFrameOutcome::Applied
+        );
+
+        // Old cell remove arrives first on tick 5 → entity cleared.
+        assert_eq!(
+            apply_delta_entities(&mut world, 5, &[], &[1], false, false),
+            ApplyFrameOutcome::Applied
+        );
+        assert!(!world.entities.contains_key(&1));
+
+        // New cell upsert same tick is DropStale under strict cell gate.
+        assert_eq!(
+            apply_delta_entities(&mut world, 5, &[sample_entity(1, 32.0)], &[], false, false),
+            ApplyFrameOutcome::Dropped
+        );
+        assert!(!world.entities.contains_key(&1));
+
+        // Room same-tick override restores the live pose.
+        assert_eq!(
+            apply_delta_entities(
+                &mut world,
+                5,
+                &[sample_entity(1, 32.0)],
+                &[],
+                false,
+                /* from_room */ true,
+            ),
+            ApplyFrameOutcome::Applied
+        );
+        assert!(world.last_frame_from_room);
+        assert!((world.entities.get(&1).unwrap().x - 32.0).abs() < f32::EPSILON);
     }
 
     /// x00c0: cell partial then same-tick Room full must override (併読 race).
