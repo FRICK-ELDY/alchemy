@@ -29,6 +29,10 @@ path = "src/bin/blake3_hash.rs"
 name = "demo-scene-vector-yaw-bits"
 path = "src/bin/demo_scene_vector_yaw_bits.rs"
 
+[[bin]]
+name = "vcs-object"
+path = "src/bin/vcs_object.rs"
+
 [build-dependencies]
 prost-build = "0.14"
 protoc-bin-vendored = "3"

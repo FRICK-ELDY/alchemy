@@ -23,6 +23,7 @@
 |:---|:---|
 | メタ（CasObject / BlobRef / BlobGrant / QuotaLedger）を SQLite に置く | GLB/KTX2 本体を DB に置く |
 | 不変バイナリを CAS（BLAKE3 キー）に置く。ダイジェストは常駐 `blake3-hash --serve` Port プール（x0075 / **x008d**；`PartitionSupervisor`；既定は **起動ホスト** `schedulers_online` / `BLAKE3_HASH_PARTITIONS`；リクエスト毎 CLI なし） | Folder / Commit（Spatial VCS）・Group Vault；パーティション数超の並列・ストリーミング NIF；release ビルドホスト CPU 数の焼き付き |
+| Spatial VCS オブジェクト形式の **codec のみ**（決定的 CBOR Alchemy プロファイル・`protocol/` `vcs_object` + `vcs-object` バイナリ・x00c8）。サーバ Port プール未配線 | 内容アドレス DB 移行・`promote_prefab` 置換・push / fork / PR（[assets-vcs-draft.md](assets-vcs-draft.md) §18.2+） |
 | `Assets.Vault.personal/1` が Quota と一致する used/reserved/limit を返す（vault_id=`owner_sub` 暫定・x0058） | UUID vault_id 移行・`:read_only`・課金プラン連動 |
 | `CasObject`（物理・所有者なし・size/mime のみ）と `BlobRef`（owner×blake3）を分離（x003f / x006f） | StorageVault / `:purchased` / `:mail_temp` |
 | PUT finalize で uploader に `:owned` `BlobGrant`（x004f） | room スコープ grant・Manifest 連動付与以外の Grant 種別 |

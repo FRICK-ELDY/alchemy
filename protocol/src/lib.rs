@@ -9,6 +9,9 @@
 //! - [`port_framing`] Erlang `{:packet, 4}` helpers for `blake3-hash` / `manifest-seal-hash --serve` (x0075).
 //! - [`manifest_seal_json`] JSON → SceneManifest for `manifest-seal-hash` (x0039 / x0075).
 //! - [`demo_scene_vector`] DemoScene ManifestSeal blake3 **test vector** only (x0079).
+//! - [`vcs_object`] Spatial VCS Tree/Commit deterministic CBOR codec + id (x00c8; **does not bump** pin —
+//!   content-addressed objects, not peer wire).
+//! - [`vcs_object_port`] JSON Port contract for `vcs-object` bin (TRS = f32 LE b64 only).
 //! - [`sim_capability`] role → Intent/HTTP capability bits (x002a; not a wire schema).
 //! - [`item_ref`] CAS spawn pointer draft (`blake3` only; x0055; **does not bump** pin —
 //!   not on Manifest / Frame / Intent yet).
@@ -36,6 +39,7 @@
 //! - Long-running fuzz campaigns (x004c ships short CI smoke + seed corpus only).
 //! - `wire_cap` topic-name secrecy (x0069: confidentiality is Room-key AEAD).
 //! - ItemRef `repo@rev` / spawn execution / wire carriage (x0055 draft only; → x0063+).
+//! - Spatial VCS push / DB / assets Port pool (x00c8 ships codec + `vcs-object` bin only).
 
 #![forbid(unsafe_code)]
 
@@ -52,6 +56,8 @@ pub mod item_ref;
 pub mod manifest_seal_json;
 pub mod port_framing;
 pub mod sim_capability;
+pub mod vcs_object;
+pub mod vcs_object_port;
 pub mod wire_aead;
 pub mod wire_crypto;
 
