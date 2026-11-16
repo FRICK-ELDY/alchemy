@@ -11,8 +11,12 @@ defmodule Assets.Prefab.Payload do
   Future (x0062): VcsTree has the same logical structure — Assets.Prefab.Payload.from_json/1
   decodes both.
 
-  Guarantees: from_json/1 rejects non-finite TRS, wrong schema_version, missing blake3.
-  Non-guarantees: child mesh existence check, semantic TRS normalisation, VcsTree diff.
+  Guarantees: from_json/1 rejects non-finite TRS, wrong schema_version, missing blake3,
+  duplicate `local_id` (x00c9 — VCS merge unit).
+  Non-guarantees: child mesh existence; semantic TRS normalisation; VcsTree diff;
+  **byte-order sorted `local_id`** required by the Rust codec — Payload only
+  enforces uniqueness; `Assets.Vcs.promote_prefab/2` sorts before Port encode.
+  Passing Payload validation alone does **not** mean “VCS-ingest ready” without that sort.
   """
 
   @schema_version 1
@@ -102,8 +106,26 @@ defmodule Assets.Prefab.Payload do
       end
     end)
     |> case do
-      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
-      err -> err
+      {:ok, reversed} ->
+        validated = Enum.reverse(reversed)
+
+        case assert_unique_local_ids(validated) do
+          :ok -> {:ok, validated}
+          err -> err
+        end
+
+      err ->
+        err
+    end
+  end
+
+  defp assert_unique_local_ids(children) do
+    ids = Enum.map(children, & &1.local_id)
+
+    if length(ids) == length(Enum.uniq(ids)) do
+      :ok
+    else
+      {:error, :duplicate_local_id}
     end
   end
 

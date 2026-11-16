@@ -2,20 +2,22 @@ ARG ELIXIR_IMAGE=elixir:1.19-otp-28-alpine
 ARG ALPINE_VERSION=3.23
 ARG RUST_IMAGE=rust:1-alpine
 
-# x0075: permanent blake3-hash Port worker (replaces b3sum).
-FROM ${RUST_IMAGE} AS blake3-hash
+# x0075 / x00c9: permanent Port workers (blake3-hash + vcs-object).
+FROM ${RUST_IMAGE} AS protocol-bins
 RUN apk add --no-cache musl-dev
 WORKDIR /src
 COPY protocol /src/protocol
 WORKDIR /src/protocol
-RUN cargo build --release --bin blake3-hash \
- && cp target/release/blake3-hash /blake3-hash
+RUN cargo build --release --bin blake3-hash --bin vcs-object \
+ && cp target/release/blake3-hash /blake3-hash \
+ && cp target/release/vcs-object /vcs-object
 
 # Build context: repository root (shared/alchemy_auth_client path dep).
 FROM ${ELIXIR_IMAGE} AS dev
 
 RUN apk add --no-cache build-base git wget
-COPY --from=blake3-hash /blake3-hash /usr/local/bin/blake3-hash
+COPY --from=protocol-bins /blake3-hash /usr/local/bin/blake3-hash
+COPY --from=protocol-bins /vcs-object /usr/local/bin/vcs-object
 
 WORKDIR /app
 
@@ -41,7 +43,8 @@ CMD ["mix", "phx.server"]
 FROM ${ELIXIR_IMAGE} AS build
 
 RUN apk add --no-cache build-base git
-COPY --from=blake3-hash /blake3-hash /usr/local/bin/blake3-hash
+COPY --from=protocol-bins /blake3-hash /usr/local/bin/blake3-hash
+COPY --from=protocol-bins /vcs-object /usr/local/bin/vcs-object
 
 WORKDIR /app
 
@@ -68,7 +71,8 @@ RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates su-exec \
  && mkdir -p /data \
  && chown assets:assets /app /data
 
-COPY --from=blake3-hash /blake3-hash /usr/local/bin/blake3-hash
+COPY --from=protocol-bins /blake3-hash /usr/local/bin/blake3-hash
+COPY --from=protocol-bins /vcs-object /usr/local/bin/vcs-object
 
 WORKDIR /app
 

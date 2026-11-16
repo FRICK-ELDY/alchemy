@@ -29,6 +29,14 @@ defmodule Assets.Application do
          partitions: hash_partitions(:assets, :blake3_hash_partitions),
          with_arguments: fn [opts], partition ->
            [Keyword.put(opts, :partition, partition)]
+         end},
+        # x00c9: vcs-object Port pool (JSON encode/verify for Spatial VCS).
+        {PartitionSupervisor,
+         child_spec: {Assets.VcsObject.Worker, []},
+         name: Assets.VcsObject.Partitioner,
+         partitions: hash_partitions(:assets, :vcs_object_partitions),
+         with_arguments: fn [opts], partition ->
+           [Keyword.put(opts, :partition, partition)]
          end}
       ] ++
         maybe_child(

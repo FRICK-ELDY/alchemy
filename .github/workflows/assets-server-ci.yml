@@ -30,16 +30,18 @@ jobs:
       MIX_ENV: test
       # x001e: never pick up accidental ASSETS_CAS_BACKEND=s3 from runner env
       ASSETS_CAS_BACKEND: local
+      # App boots before test_helper; bins must exist at Application.start (x0075 / x00c9).
       BLAKE3_HASH_BIN: ${{ github.workspace }}/protocol/target/release/blake3-hash
+      VCS_OBJECT_BIN: ${{ github.workspace }}/protocol/target/release/vcs-object
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Build blake3-hash
+      - name: Build blake3-hash and vcs-object
         working-directory: protocol
-        run: cargo build --release --bin blake3-hash
+        run: cargo build --release --bin blake3-hash --bin vcs-object
 
       - uses: erlef/setup-beam@v1
         with:

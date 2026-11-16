@@ -51,6 +51,11 @@ config :assets,
   # Resolved at boot in runtime.exs (or test.exs); Application falls back if unset.
   blake3_hash_bin: nil,
   blake3_hash_call_timeout_ms: 30_000,
+  # x00c9: vcs-object Port pool (nil bin = PATH / VCS_OBJECT_BIN / test_helper).
+  vcs_object_bin: nil,
+  vcs_object_call_timeout_ms: 30_000,
+  # 1 MiB object + JSON overhead (matches protocol SERVE_MAX_LEN default).
+  vcs_object_max_len: 1_114_112,
   # OSS default: header-only quarantine. Proprietary pgvector workers inject here.
   quarantine_worker: Assets.Quarantine.HeaderCheckWorker
 

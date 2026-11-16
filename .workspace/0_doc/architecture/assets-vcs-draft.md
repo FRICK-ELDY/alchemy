@@ -688,7 +688,7 @@ host-server はユーザーの PC で動くので、改造されている前提�
 
 | 対象 | 移行 |
 |:---|:---|
-| x0062 の UUID コミット | `promote_prefab` を、内容アドレスのルートコミットを作る処理に置き換える。既存の行は `tree_json` から Tree を作り直して移行する（コミット ID は変わる） |
+| x0062 の UUID コミット | `promote_prefab` を内容アドレスのルートコミット生成に置き換える（**x00c9**）。既存 UUID/`tree_json` 行の in-place 再エンコードは **未実装** — x00c9 は開発/hermetic DB 向け **破壊的 DROP+再作成**（本番 UUID VCS 未出荷前提）。将来本番データがある場合は別 Slice で移行パスを足す |
 | Origin Cert v1 | v2（§11.4）で再発行する。v1 の行は検証専用として残すか削除する |
 | `ItemRef` | `rev` は ref 名かコミットハッシュにする。「オーナーか」のチェックを「読めるか」（§9.1）に変える |
 | `DriveNode(kind=vcs_repo)` の take_out | 現在は非保証。`repo@main` を取り出せるようにする |
@@ -706,8 +706,8 @@ VCS と独立に先行するもの（§14.4。現行の穴を塞ぐので優先�
 VCS 本体（ID は着手時に採番）:
 
 1. オブジェクト形式: `protocol/` に §6 で選んだ形式の codec・厳格デコード・ゴールデンベクタ・Port バイナリ — **[x00c8](../../roadmap/slices/x00c8-vcs-object-codec.md)**
-2. サーバ DB の移行（内容アドレス・parents・generation・objects・repo_commits）と `promote_prefab` の置き換え（次空き `x00c9` 想定）
-3. Origin Cert v2（Authorship / Release、`issued_at_ms`・`kid`）と原産地台帳
+2. サーバ DB の移行（内容アドレス・parents・generation・objects・repo_commits）と `promote_prefab` の置き換え — **[x00c9](../../roadmap/slices/x00c9-vcs-content-addressed.md)**
+3. Origin Cert v2（Authorship / Release、`issued_at_ms`・`kid`）と原産地台帳（次空き `x00ca` 想定）
 4. visibility、RepoRead（GET 認可）、`ItemRef` の読み取り判定、private の 404
 5. push API（negotiate → blob アップロード → push）、サーバ側の検証、ブランチ保護
 6. client のローカルストア（`vcs-store`: init / clone / commit / branch / fetch / push）

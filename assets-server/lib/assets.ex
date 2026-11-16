@@ -33,9 +33,9 @@ defmodule Assets do
     still re-checks. save→reload→from_json round-trip lossless (x0060 / x0061)
   - HTTP `POST /api/v1/drive/put_back` wraps save_prefab; child Grant miss → 403
     `no_grant` (x006e / x00b4)
-  - Vcs.promote_prefab/2: DriveNode(prefab)→VcsRepo + initial Commit in one TX;
-    child Grants re-checked (x00b4); Commit.tree_json ≡ Prefab payload; old blake3
-    path remains readable (x0062)
+  - Vcs.promote_prefab/2: DriveNode(prefab)→VcsRepo + CBOR Tree/Commit + `main`
+    in one TX; child Grants re-checked (x00b4); commit_hash = blake3(Commit bytes)
+    via vcs-object Port (x0062 / x00c9); old prefab blake3 path remains readable
   - ItemRef.resolve/2: {:blake3, hash} and {:repo_rev, repo_id, rev} paths;
     owner / BlobGrant checked; repo_rev also asserts every tree child Grant (x00b4);
     invalid rev → :not_found (x0063)
