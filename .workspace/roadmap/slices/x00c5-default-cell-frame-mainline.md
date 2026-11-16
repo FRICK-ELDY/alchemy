@@ -4,7 +4,9 @@
 > **優先度:** [spatial_interest.md](../spatial_interest.md) 実装第八波（P3-7）  
 > **後続:** avatar LOD · G1/G2 実測 · host dual-publish 縮小 · Moore 外 prune（次空き `x00c6`〜）
 
-目標: client の frame **既定購読**を Moore cell 本線にする（x00c4 の `ALCHEMY_CELL_FRAME=1` 相当）。レガシー Room `…/frame` 全文は **`ALCHEMY_ROOM_FRAME=1`** でオプトアウト購読。gap→resync は引き続き Room `…/snapshot`。host dual-publish・Room キーは維持（受信側の段階縮小の完了）。
+目標: client の frame **既定購読**を cell 本線にする（Room `…/frame` 非購読）。レガシー Room 全文は **`ALCHEMY_ROOM_FRAME=1`** でオプトアウト。gap→resync は Room `…/snapshot`。host dual-publish 維持。
+
+**暫定購読 key**: `…/frame/cell/*`（[`frame_cell_wildcard_key`](../../../protocol/src/lib.rs)）。x00bf–x00c4 の Moore `|` union は local peer で declare OK・配送ゼロを観測したため本スライスでは使わない（再現メモは下）。Moore 再配線は後続。
 
 根拠: [spatial_interest.md](../spatial_interest.md) §4 · [x00c4](x00c4-opt-in-cell-frame-mainline.md) · x0024
 
@@ -27,13 +29,13 @@
 
 | 保証する | 保証しない |
 |:---|:---|
-| 既定（env 未設定）は Moore cell 本線（Room frame **非購読**） | host dual-publish 停止・フルメッシュ廃止 |
+| 既定（env 未設定）は cell 本線（Room frame **非購読**；購読=`…/frame/cell/*`） | host dual-publish 停止・フルメッシュ廃止 |
 | `ALCHEMY_ROOM_FRAME=1` で Room `…/frame` のみ（XOR） | Room `…/frame` キー廃止 |
 | cell `NeedResync` が Room `…/snapshot` を get | cell 別 snapshot / cell put 到達保証 |
 | host dual-publish（Room fail-closed + cell soft-put）維持 | avatar LOD / CCU 天井拡大 |
-| x00c1 follow / x00c3 合流は既定本線でも維持 | Moore / AOI 外の client 側 prune |
+| x00c3 合流；wire center ヒステリシス**追跡**（再購読なし） | Moore `|` union 配送・受信側 interest 縮小（暫定 `cell/*`） |
 | — | `ALCHEMY_CELL_FRAME` による既定制御（legacy・既定決定に使わない） |
-| — | host cell soft-put 失敗時の欠落を Room 購読で補完すること（既定は Room frame 非購読） |
+| — | host cell soft-put 失敗時の欠落を Room 購読で補完；Moore / AOI 外 prune |
 
 ---
 
@@ -43,8 +45,21 @@
 * 優先順位: ROOM truthy → Room；それ以外 → CellMainline
 * `ALCHEMY_CELL_FRAME`（`CELL_FRAME_SUB_ENV`）: 互換 API 残置・既定決定には使わない（`#[deprecated]`；設定時は `ensure_room_bus` が warn）
 * `ensure_room_bus`: `frame_subscribe_mode(room_frame_sub_enabled())` → 排他 spawn
+* cell 購読: `frame_cell_wildcard_key` → `…/frame/cell/*`（中心非依存・再購読なし）
 * cell 経路: `gap_resync=true`（Room snapshot get；セル get なし）
 * host は引き続き Room + cell dual-publish（本スライスでは publish 側を触らない）
+
+### Moore `|` union 配送ゼロ（再現メモ · 戻すときの根拠）
+
+| 項目 | 値 |
+|:---|:---|
+| 観測日 | 2026-11-16 |
+| Zenoh | **1.10.1**（`client/Cargo.lock`） |
+| トポロジ | client peer + local zenohd（`ZENOH_CONNECT=tcp/127.0.0.1:7447`） |
+| OS / bin | Windows · `client/target/debug/client.exe` |
+| 購読 | Moore `|` union（最大 27 · `frame_cell_interest_keyexpr`） |
+| 結果 | `declare_subscriber` **OK**；cell soft-put（host `cell_ok≈30/s`）があるのに client pose が join snapshot のまま（Intent は host 到達） |
+| 回避 | `…/frame/cell/*`（`frame_cell_wildcard_key`）で配送・適用回復 |
 
 ---
 
@@ -60,20 +75,20 @@
 
 ## 完了条件
 
-1. 既定（env 未設定）では Room `…/frame` を購読せず cell Moore のみ購読する
+1. 既定（env 未設定）では Room `…/frame` を購読せず `…/frame/cell/*`（暫定 wildcard）のみ購読する
 2. `ALCHEMY_ROOM_FRAME=1` で Room `…/frame` のみ購読する（cell 非購読）
 3. cell 本線時、tick gap で Room `…/snapshot` を get する
-4. host dual-publish・Room 廃止・LOD は非保証のまま文書化
+4. host dual-publish・Room 廃止・LOD・Moore `|` 配送は非保証のまま文書化
 5. `cargo test -p alchemy-protocol` / client `bus::frame` / client `room::tests`（`frame_subscribe_mode_*`）Green
-6. peer-delivery / architecture / spatial_interest の保証表がコードと一致
+6. peer-delivery / architecture / spatial_interest / trust-boundary の保証表がコードと一致
 
 ---
 
 ## 起動・検証メモ
 
 ```powershell
-# 既定: cell mainline（Room frame not subscribed）
-# 通常どおり client + host；ログに cell Moore mainline が出ること
+# 既定: cell/* interim mainline（Room frame not subscribed）
+# 通常どおり client + host；ログに interim cell/* wildcard / frame/cell/* が出ること
 
 $env:ALCHEMY_ROOM_FRAME = "1"
 # Room …/frame のみ購読に戻ること

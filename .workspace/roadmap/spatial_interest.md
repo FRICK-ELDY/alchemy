@@ -78,16 +78,16 @@
 2. **方向 A（確定）**: セル修飾サフィックス  
    `alchemy/dev/room/{room_id}/{wire_cap}/frame/cell/{cx}_{cy}_{cz}`  
    セグメントは `format_cell_id_segment`（例: `0_0_0`, `-1_2_0`, `-1_-2_0`）。索引は shared-sim `CellId`（`CELL_SIZE_M=64` center origin）と同系。
-3. Room 全体 `…/frame` は **互換・tick 正本として残す**（x00be: host dual-publish；**x00c5**: client 既定は Moore cell 本線で本キーを**購読しない**；`ALCHEMY_ROOM_FRAME=1` で Room のみへオプトアウト）。`…/snapshot` はセル分割しない（欠落再同期の正本）。
+3. Room 全体 `…/frame` は **互換・tick 正本として残す**（x00be: host dual-publish；**x00c5**: client 既定は cell 本線で本キーを**購読しない**；購読 key は暫定 `…/frame/cell/*`；`ALCHEMY_ROOM_FRAME=1` で Room のみへオプトアウト）。`…/snapshot` はセル分割しない（欠落再同期の正本）。
 4. **x0067**: ACL は `…/frame/cell/*` を **明示**（`frame/**` 一括禁止）。**AEAD AAD** はキー式非束縛のまま（x0069 据え置き）。
 5. delivery-class（latest / snapshot / best-effort）の語彙は [peer-delivery.md](../../protocol/peer-delivery.md) を継承し、「frame = latest・欠落は Room snapshot」を維持する。
 6. **x00bf**: client は（当時）`ALCHEMY_CELL_FRAME=1` のとき origin Moore 近傍（3³）の cell キーを購読開始（初期中心）。歴史的には Room と併読；**x00c4** で opt-in は cell 本線へ；**x00c5** で既定 cell。
 7. **x00c0**: host は dirty upsert を `CellId` でバケットし、非空セルへ**セル別密封**で soft-put（seal/put soft-fail・publisher LRU 64）。Room は全文維持。Room-only 時の同 tick 上書きは `decide_room_frame_tick`（x00c5 以降は `ALCHEMY_ROOM_FRAME=1`）。
-8. **x00c1**: cell 本線時、Presence 割当後の **wire** `local_user_root` 位置で中心 `CellId` を追従し、変化時のみ CellInterest を再購読（`CELL_HYSTERESIS_M` でフラップ抑制；**活性時も ≤250ms deadline** で中心再評価し cell 配信に飢えない）。
+8. **x00c1**: cell 本線時、Presence 割当後の **wire** `local_user_root` 位置で中心 `CellId` を追従（`CELL_HYSTERESIS_M`；**活性時も ≤250ms deadline**）。**x00c5 暫定**: 購読 key が `…/frame/cell/*` のため中心変化でも**再購読しない**（中心は将来 Moore 再配線用に追跡）。
 9. **x00c2**: host は `last_wire_cell` で前回配信セルを追跡し、境界横断・Room removes 時に**旧セル**へ remove をセル別密封 soft-put（remove-only セル含む）。Room 全文 removes は維持。
 10. **x00c3**: client cell 経路は `decide_cell_frame_tick` で同一 tick の複数セルを合流適用（跨 cell は upsert guard；単一 frame 交差は remove 勝ち）。境界横断は Room 無しで収束。
 11. **x00c4**: `ALCHEMY_CELL_FRAME=1` 時は Room `…/frame` を**購読せず** cell Moore を tick 本線とする。gap→resync は cell が Room `…/snapshot` を get。当時の既定は Room-only。host dual-publish 維持。
-12. **x00c5**: client 既定は cell Moore 本線（Room frame 非購読）。`ALCHEMY_ROOM_FRAME=1` で Room `…/frame` のみへオプトアウト。`ALCHEMY_CELL_FRAME` は legacy（既定決定に使わない）。gap→Room snapshot。host dual-publish 維持。dual-publish 停止・LOD は後続。
+12. **x00c5**: client 既定は cell 本線（Room frame 非購読）。**暫定購読**は `…/frame/cell/*`（`frame_cell_wildcard_key`）。歴史的 Moore `|` union（最大 27 key）は local peer（Zenoh **1.10.1**・`ZENOH_CONNECT=tcp/127.0.0.1:7447`・client `target/debug`）で **declare OK・配送ゼロ**（Intent は host 到達・client pose が join snapshot のまま）を観測したため退避。Moore 再配線・受信側 interest 縮小の本線化は後続。`ALCHEMY_ROOM_FRAME=1` で Room のみ。`ALCHEMY_CELL_FRAME` legacy。gap→Room snapshot。host dual-publish 維持。dual-publish 停止・LOD は後続。
 
 実装第一波: [x00be-spatial-interest-cell-frame-foundation.md](slices/x00be-spatial-interest-cell-frame-foundation.md)。  
 実装第二波: [x00bf-client-near-cell-frame-sub.md](slices/x00bf-client-near-cell-frame-sub.md)。  

@@ -649,9 +649,11 @@ pub fn frame_cell_key(room_id: &str, wire_cap: &str, cx: i32, cy: i32, cz: i32) 
 
 /// Moore neighborhood of `cx,cy,cz` including the center (`3×3×3` = [`MOORE_NEIGHBORHOOD_LEN`]).
 ///
-/// Used by x00bf client interest subscribe. Does not convert world coordinates (indices only).
-/// Axis math uses `saturating_add`; near `i32` extremes neighbors can collide — callers that
-/// build a keyexpr should go through [`frame_cell_interest_keyexpr`] (dedups).
+/// Helper for [`frame_cell_interest_keyexpr`] (Moore `|` union). **x00c5 client subscribe** uses
+/// [`frame_cell_wildcard_key`] instead (interim; see that item). Does not convert world
+/// coordinates (indices only). Axis math uses `saturating_add`; near `i32` extremes neighbors
+/// can collide — callers that build a keyexpr should go through [`frame_cell_interest_keyexpr`]
+/// (dedups).
 pub fn moore_neighborhood_cells(cx: i32, cy: i32, cz: i32) -> [[i32; 3]; MOORE_NEIGHBORHOOD_LEN] {
     let mut out = [[0i32; 3]; MOORE_NEIGHBORHOOD_LEN];
     let mut i = 0;
@@ -675,6 +677,11 @@ pub fn moore_neighborhood_cells(cx: i32, cy: i32, cz: i32) -> [[i32; 3]; MOORE_N
 ///
 /// Empty `cells` yields an empty string (caller must not declare a subscriber on it).
 /// Duplicate cell indices are emitted once (stable first-seen order).
+///
+/// **x00c5:** client mainline subscribe uses [`frame_cell_wildcard_key`] instead. This `|`
+/// helper remains for tests / future Moore interest rewiring. Observed on local peer
+/// (Zenoh 1.10.1, `tcp/127.0.0.1:7447`): long Moore unions (~27 keys) **declare OK** but
+/// delivered **zero** samples (poses froze at join snapshot).
 pub fn frame_cell_interest_keyexpr(room_id: &str, wire_cap: &str, cells: &[[i32; 3]]) -> String {
     let mut out = String::new();
     let mut seen: Vec<[i32; 3]> = Vec::with_capacity(cells.len());
@@ -690,6 +697,16 @@ pub fn frame_cell_interest_keyexpr(room_id: &str, wire_cap: &str, cells: &[[i32;
         out.push_str(&frame_cell_key(room_id, wire_cap, cx, cy, cz));
     }
     out
+}
+
+/// Interim client cell-frame subscribe keyexpr (x00c5): `…/frame/cell/*`.
+///
+/// ACL-aligned single-segment wildcard (same shape as WAN `frame/cell/*`). Replaces Moore
+/// `|` unions for default mainline until union delivery is re-proven on peer/router.
+/// Center-independent — interest follow does not resubscribe. Host still soft-puts only
+/// non-empty cells (dirty-bounded receive).
+pub fn frame_cell_wildcard_key(room_id: &str, wire_cap: &str) -> String {
+    format!("{}/frame/cell/*", room_prefix(room_id, wire_cap))
 }
 
 /// Build an input key (caller should [`validate_room_id`] + [`validate_wire_cap`]).
@@ -1504,6 +1521,16 @@ mod tests {
         );
         assert!(!ke.contains("/frame/**"));
         assert!(ke.contains("/frame/cell/0_0_0"));
+    }
+
+    #[test]
+    fn frame_cell_wildcard_key_is_acl_aligned() {
+        let cap = LOCAL_WIRE_CAP;
+        let ke = frame_cell_wildcard_key("local", cap);
+        assert_eq!(ke, format!("{}/cell/*", frame_key("local", cap)));
+        assert!(ke.ends_with("/frame/cell/*"));
+        assert!(!ke.contains('|'));
+        assert!(!ke.contains("/frame/**"));
     }
 
     #[test]
