@@ -16,7 +16,8 @@
 //! - [`decode_limits`] class-specific pre/post decode ceilings (x003b; **does not bump** pin —
 //!   local validation, wire-compatible with x003a peers).
 //! - Delivery class table: [`peer-delivery.md`](../peer-delivery.md). Frame tick gap → snapshot
-//!   ([`decide_frame_tick`], [`FRAME_TICK_GAP_RESYNC`]; x0024).
+//!   ([`decide_frame_tick`], [`FRAME_TICK_GAP_RESYNC`]; x0024). Spatial Interest 併読:
+//!   Room [`decide_room_frame_tick`] (x00c0), cell [`decide_cell_frame_tick`] (x00c3).
 //!
 //! # Non-guarantees
 //! - Bit-packing / prediction coding, DrawCommand taxonomy, audio/tracking frames.
@@ -728,8 +729,8 @@ pub enum FrameTickDecision {
 /// Host uses `wrapping_add` after each **publish**, but u64 wrap is not handled here
 /// (would look like a huge rewind → DropStale until Manifest/snapshot resets `last`).
 ///
-/// Cell interest frames use this strict gate. Room frames under Spatial Interest 併読
-/// use [`decide_room_frame_tick`] so a late Room can override a partial cell same tick.
+/// Strict monotonic gate (legacy / non-interest callers). Spatial Interest cell frames
+/// use [`decide_cell_frame_tick`]; Room frames use [`decide_room_frame_tick`].
 pub fn decide_frame_tick(last: Option<u64>, tick: u64, max_gap: u64) -> FrameTickDecision {
     let Some(prev) = last else {
         return FrameTickDecision::Apply;
@@ -752,6 +753,31 @@ pub fn decide_frame_tick(last: Option<u64>, tick: u64, max_gap: u64) -> FrameTic
 /// can override. When `last_from_room` is already true, same tick stays [`DropStale`]
 /// (duplicate Room / snapshot-stamped tick regression guard · x0024).
 pub fn decide_room_frame_tick(
+    last: Option<u64>,
+    tick: u64,
+    max_gap: u64,
+    last_from_room: bool,
+) -> FrameTickDecision {
+    decide_partial_frame_tick(last, tick, max_gap, last_from_room)
+}
+
+/// Cell interest tick gate under Spatial Interest (x00c3).
+///
+/// Same decision shape as [`decide_room_frame_tick`]: `tick == prev` **Applies** when the
+/// previous commit was also a partial cell (`last_from_room == false`), so multiple cell
+/// samples for one `net_tick` can merge. After a Room/snapshot commit (`last_from_room`),
+/// same-tick cell stays [`DropStale`].
+pub fn decide_cell_frame_tick(
+    last: Option<u64>,
+    tick: u64,
+    max_gap: u64,
+    last_from_room: bool,
+) -> FrameTickDecision {
+    decide_partial_frame_tick(last, tick, max_gap, last_from_room)
+}
+
+/// Shared gate for Room override and multi-cell same-tick merge (x00c0 / x00c3).
+fn decide_partial_frame_tick(
     last: Option<u64>,
     tick: u64,
     max_gap: u64,
@@ -1497,6 +1523,31 @@ mod tests {
         assert_eq!(
             decide_room_frame_tick(Some(10), 11, FRAME_TICK_GAP_RESYNC, true),
             FrameTickDecision::Apply
+        );
+    }
+
+    /// x00c3: cell may re-apply same tick when previous commit was also partial cell.
+    #[test]
+    fn decide_cell_frame_tick_merges_partial_cell() {
+        assert_eq!(
+            decide_cell_frame_tick(Some(10), 10, FRAME_TICK_GAP_RESYNC, false),
+            FrameTickDecision::Apply
+        );
+        assert_eq!(
+            decide_cell_frame_tick(Some(10), 10, FRAME_TICK_GAP_RESYNC, true),
+            FrameTickDecision::DropStale
+        );
+        assert_eq!(
+            decide_cell_frame_tick(Some(10), 9, FRAME_TICK_GAP_RESYNC, false),
+            FrameTickDecision::DropStale
+        );
+        assert_eq!(
+            decide_cell_frame_tick(Some(10), 11, FRAME_TICK_GAP_RESYNC, false),
+            FrameTickDecision::Apply
+        );
+        assert_eq!(
+            decide_cell_frame_tick(Some(10), 12, FRAME_TICK_GAP_RESYNC, false),
+            FrameTickDecision::ResyncSnapshot
         );
     }
 }

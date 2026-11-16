@@ -24,7 +24,7 @@ client workspace からは `path = "../protocol"` で依存する（`client` の
 | cargo-fuzz 短時間スモーク（x004c）— Manifest/Frame/Presence/Input checked decode（CI `-max_len=8192`） | 長時間キャンペーン；Windows MSVC libFuzzer；**byte gate 超過は単体テスト** |
 | Scene 分類の薄いヘルパ（`USER_ROOT_ENTITY_FIRST=0x1000_0000` / `USER_ROOT_SLOTS_MAX` DoS 天井 / `scene_entry_is_*`）+ **部屋容量は Manifest entries**（`user_root_slots_from_entries`・x004d / x009b） | 実行側 SoA・Rapier（→ `alchemy-shared-sim` / host-server・x0030）；`USER_ROOT_SLOTS_MAX` 超 |
 | `SceneEntry` の `half_extent` / `flags`（`SCENE_FLAG_GRABBABLE`）/ rgba / **初期 quat+scale**（x0027 / x002c）— 配置・Grab・mesh・初期 TRS の定義正本 | UGC 編集 UI・コライダーの非一様リサイズ |
-| 配送クラス表（[`peer-delivery.md`](../../../protocol/peer-delivery.md)）+ `decide_frame_tick` / `FRAME_TICK_GAP_RESYNC`（x0024） | 確実配送 ACK / event ID チャネル・欠落デルタの再送 |
+| 配送クラス表（[`peer-delivery.md`](../../../protocol/peer-delivery.md)）+ `decide_frame_tick` / `decide_room_frame_tick` / `decide_cell_frame_tick` / `FRAME_TICK_GAP_RESYNC`（x0024 / x00c0 / x00c3） | 確実配送 ACK / event ID チャネル・欠落デルタの再送 |
 | Manifest / frame / presence / host_control / snapshot のキー式ヘルパ + `validate_room_id` + **`wire_cap`（x004e）** | テナント名前空間 `alchemy/tenant/…`；防御の残りは [trust-boundary.md](trust-boundary.md) |
 | `LocomotionConfig`（World 定義の active mode） | モジュール一覧 UI / 抑制ソース |
 | `DEFAULT_MOVE_SPEED`（host / Settings 表示の共有既定） | client 永続設定・仮想キーボード編集 |
@@ -100,7 +100,7 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 | `LOCAL_WIRE_CAP` | fixture cap（実 room は world 発行） |
 | `MANIFEST_KEY_LOCAL` / `manifest_key(room_id, wire_cap)` | `…/local/{LOCAL_WIRE_CAP}/manifest` |
 | `FRAME_KEY_LOCAL` / `frame_key(room_id, wire_cap)` | `…/frame`（tick 正本） |
-| `FRAME_CELL_KEY_LOCAL_ORIGIN` / `frame_cell_key` / `format_cell_id_segment` / `moore_neighborhood_cells` / `frame_cell_interest_keyexpr` | `…/frame/cell/{cx}_{cy}_{cz}`（**x00c0** host セル別 dirty soft-put；**x00c2** 境界横断・despawn 時は旧セルへセルスコープ removes；**x00bf / x00c1** opt-in 近傍併読＋自位置追従 `ALCHEMY_CELL_FRAME`；多 cell 同一 tick 合流は非保証） |
+| `FRAME_CELL_KEY_LOCAL_ORIGIN` / `frame_cell_key` / `format_cell_id_segment` / `moore_neighborhood_cells` / `frame_cell_interest_keyexpr` / `decide_cell_frame_tick` | `…/frame/cell/{cx}_{cy}_{cz}`（**x00c0** host セル別 dirty soft-put；**x00c2** 境界横断・despawn 時は旧セルへセルスコープ removes；**x00bf / x00c1** opt-in 近傍併読＋自位置追従 `ALCHEMY_CELL_FRAME`；**x00c3** 多 cell 同一 tick 合流） |
 | `INPUT_KEY_LOCAL` / `input_key(room_id, wire_cap)` | `…/input` |
 | `PRESENCE_KEY_LOCAL` / `presence_key(room_id, wire_cap)` | `…/presence` |
 | `SNAPSHOT_KEY_LOCAL` / `snapshot_key(room_id, wire_cap)` | `…/snapshot` |
