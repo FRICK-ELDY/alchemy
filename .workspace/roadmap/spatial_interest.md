@@ -1,6 +1,6 @@
 # Alchemy — 配信の空間インデックス（Spatial Interest）正本
 
-* **種別**: 規模本線の仕様正本。実装第一波は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)（キー契約 + ACL + dual-publish）。第二波は [x00bf](slices/x00bf-client-near-cell-frame-sub.md)（client 近傍セル opt-in 併読）。第三波は [x00c0](slices/x00c0-host-cell-dirty-filter.md)（host セル別 dirty / 複数セル soft-put）。第四波は [x00c1](slices/x00c1-client-cell-follow-resub.md)（自位置追従の cell 購読切替）。第五波は [x00c2](slices/x00c2-cell-exit-remove.md)（セル退出 remove）。第六波は [x00c3](slices/x00c3-multi-cell-same-tick-merge.md)（多 cell 同一 tick 合流）
+* **種別**: 規模本線の仕様正本。実装第一波は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)（キー契約 + ACL + dual-publish）。第二波は [x00bf](slices/x00bf-client-near-cell-frame-sub.md)（client 近傍セル opt-in 併読）。第三波は [x00c0](slices/x00c0-host-cell-dirty-filter.md)（host セル別 dirty / 複数セル soft-put）。第四波は [x00c1](slices/x00c1-client-cell-follow-resub.md)（自位置追従の cell 購読切替）。第五波は [x00c2](slices/x00c2-cell-exit-remove.md)（セル退出 remove）。第六波は [x00c3](slices/x00c3-multi-cell-same-tick-merge.md)（多 cell 同一 tick 合流）。第七波は [x00c4](slices/x00c4-opt-in-cell-frame-mainline.md)（opt-in cell 本線・Room frame 非購読）
 * **改善計画上の位置**: [improvement-plan-2026-11-12.md](../0_doc/evaluation/improvement-plan-2026-11-12.md) **P3-7**
 * **品質本線（物理・状態）**: [mvcc_xpbd.md](mvcc_xpbd.md) Phase 1–3（dirty デルタ・SoA ページが前提）
 * **現行配送契約**: [protocol/peer-delivery.md](../../protocol/peer-delivery.md)（x0024）· [architecture/client.md](../0_doc/architecture/client.md) · [architecture/protocol.md](../0_doc/architecture/protocol.md)
@@ -56,7 +56,7 @@
 | | 音声・メッシュ・アニメ予算の本仕様化（別予算・非保証） |
 | | verifier Spot-Check / billing / market（独立） |
 
-保証表の追随は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md) で開始し、[x00bf](slices/x00bf-client-near-cell-frame-sub.md) で opt-in 併読、[x00c0](slices/x00c0-host-cell-dirty-filter.md) で host セル別 dirty、[x00c1](slices/x00c1-client-cell-follow-resub.md) で自位置追従 resub、[x00c2](slices/x00c2-cell-exit-remove.md) でセル退出 remove、[x00c3](slices/x00c3-multi-cell-same-tick-merge.md) で多 cell 同一 tick 合流まで更新（[protocol.md](../0_doc/architecture/protocol.md) · [client.md](../0_doc/architecture/client.md) · [peer-delivery.md](../../protocol/peer-delivery.md)）。既定購読切替・LOD は後続スライスで更新する。
+保証表の追随は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md) で開始し、[x00bf](slices/x00bf-client-near-cell-frame-sub.md) で opt-in 併読、[x00c0](slices/x00c0-host-cell-dirty-filter.md) で host セル別 dirty、[x00c1](slices/x00c1-client-cell-follow-resub.md) で自位置追従 resub、[x00c2](slices/x00c2-cell-exit-remove.md) でセル退出 remove、[x00c3](slices/x00c3-multi-cell-same-tick-merge.md) で多 cell 同一 tick 合流、[x00c4](slices/x00c4-opt-in-cell-frame-mainline.md) で opt-in cell 本線（Room frame 非購読）まで更新（[protocol.md](../0_doc/architecture/protocol.md) · [client.md](../0_doc/architecture/client.md) · [peer-delivery.md](../../protocol/peer-delivery.md)）。既定購読切替・LOD は後続スライスで更新する。
 
 ---
 
@@ -81,18 +81,20 @@
 3. Room 全体 `…/frame` は **互換・tick 正本として残す**（x00be: host dual-publish；client 既定は当面 Room 購読のまま）。`…/snapshot` はセル分割しない（欠落再同期の正本）。
 4. **x0067**: ACL は `…/frame/cell/*` を **明示**（`frame/**` 一括禁止）。**AEAD AAD** はキー式非束縛のまま（x0069 据え置き）。
 5. delivery-class（latest / snapshot / best-effort）の語彙は [peer-delivery.md](../../protocol/peer-delivery.md) を継承し、「frame = latest・欠落は Room snapshot」を維持する。
-6. **x00bf**: client は `ALCHEMY_CELL_FRAME=1` のとき origin Moore 近傍（3³）の cell キーを Room と**併読**（初期中心）。既定購読切替は後続。
-7. **x00c0**: host は dirty upsert を `CellId` でバケットし、非空セルへ**セル別密封**で soft-put（seal/put soft-fail・publisher LRU 64）。Room は全文維持。**併読時**は `decide_room_frame_tick` で同一 tick の部分 cell 適用を Room が上書きできる。既定切替は後続。
-8. **x00c1**: opt-in 時、Presence 割当後の **wire** `local_user_root` 位置で中心 `CellId` を追従し、変化時のみ CellInterest を再購読（`CELL_HYSTERESIS_M` でフラップ抑制；**活性時も ≤250ms deadline** で中心再評価し cell 配信に飢えない）。Room 併読・gap→snapshot は維持。
+6. **x00bf**: client は `ALCHEMY_CELL_FRAME=1` のとき origin Moore 近傍（3³）の cell キーを購読開始（初期中心）。歴史的には Room と併読；**x00c4** で opt-in は cell 本線へ。既定購読切替は後続。
+7. **x00c0**: host は dirty upsert を `CellId` でバケットし、非空セルへ**セル別密封**で soft-put（seal/put soft-fail・publisher LRU 64）。Room は全文維持。既定 Room-only 時の同 tick 上書きは `decide_room_frame_tick`。既定切替は後続。
+8. **x00c1**: opt-in 時、Presence 割当後の **wire** `local_user_root` 位置で中心 `CellId` を追従し、変化時のみ CellInterest を再購読（`CELL_HYSTERESIS_M` でフラップ抑制；**活性時も ≤250ms deadline** で中心再評価し cell 配信に飢えない）。
 9. **x00c2**: host は `last_wire_cell` で前回配信セルを追跡し、境界横断・Room removes 時に**旧セル**へ remove をセル別密封 soft-put（remove-only セル含む）。Room 全文 removes は維持。
-10. **x00c3**: client cell 経路は `decide_cell_frame_tick` で同一 tick の複数セルを合流適用（跨 cell は upsert guard；単一 frame 交差は remove 勝ち）。境界横断は Room 無しで収束。Room 併読・同 tick 上書きは安全網。既定切替は後続。
+10. **x00c3**: client cell 経路は `decide_cell_frame_tick` で同一 tick の複数セルを合流適用（跨 cell は upsert guard；単一 frame 交差は remove 勝ち）。境界横断は Room 無しで収束。
+11. **x00c4**: `ALCHEMY_CELL_FRAME=1` 時は Room `…/frame` を**購読せず** cell Moore を tick 本線とする。gap→resync は cell が Room `…/snapshot` を get。既定は Room-only。host dual-publish 維持。既定 cell 切替・dual-publish 停止は後続。
 
 実装第一波: [x00be-spatial-interest-cell-frame-foundation.md](slices/x00be-spatial-interest-cell-frame-foundation.md)。  
 実装第二波: [x00bf-client-near-cell-frame-sub.md](slices/x00bf-client-near-cell-frame-sub.md)。  
 実装第三波: [x00c0-host-cell-dirty-filter.md](slices/x00c0-host-cell-dirty-filter.md)。  
 実装第四波: [x00c1-client-cell-follow-resub.md](slices/x00c1-client-cell-follow-resub.md)。  
 実装第五波: [x00c2-cell-exit-remove.md](slices/x00c2-cell-exit-remove.md)。  
-実装第六波: [x00c3-multi-cell-same-tick-merge.md](slices/x00c3-multi-cell-same-tick-merge.md)。
+実装第六波: [x00c3-multi-cell-same-tick-merge.md](slices/x00c3-multi-cell-same-tick-merge.md)。  
+実装第七波: [x00c4-opt-in-cell-frame-mainline.md](slices/x00c4-opt-in-cell-frame-mainline.md)。
 
 ---
 
@@ -146,7 +148,7 @@
 | 作業 | 条件 |
 |:---|:---|
 | **本ファイル（アウトライン正本）** | いつでも。MVCC Phase と**並走可** |
-| **実装スライス群** | **MVCC Phase 3 DoD Green 後**。第一波 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)（キー契約 + ACL + dual-publish）。第二波 [x00bf](slices/x00bf-client-near-cell-frame-sub.md)（client opt-in 近傍併読）。第三波 [x00c0](slices/x00c0-host-cell-dirty-filter.md)（host セル別 dirty）。第四波 [x00c1](slices/x00c1-client-cell-follow-resub.md)（自位置追従 resub）。第五波 [x00c2](slices/x00c2-cell-exit-remove.md)（セル退出 remove）。第六波 [x00c3](slices/x00c3-multi-cell-same-tick-merge.md)（多 cell 同一 tick 合流）。既定切替・LOD は後続 |
+| **実装スライス群** | **MVCC Phase 3 DoD Green 後**。第一波 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)（キー契約 + ACL + dual-publish）。第二波 [x00bf](slices/x00bf-client-near-cell-frame-sub.md)（client opt-in 近傍併読）。第三波 [x00c0](slices/x00c0-host-cell-dirty-filter.md)（host セル別 dirty）。第四波 [x00c1](slices/x00c1-client-cell-follow-resub.md)（自位置追従 resub）。第五波 [x00c2](slices/x00c2-cell-exit-remove.md)（セル退出 remove）。第六波 [x00c3](slices/x00c3-multi-cell-same-tick-merge.md)（多 cell 同一 tick 合流）。第七波 [x00c4](slices/x00c4-opt-in-cell-frame-mainline.md)（opt-in cell 本線・Room frame 非購読）。既定切替・LOD は後続 |
 
 ---
 

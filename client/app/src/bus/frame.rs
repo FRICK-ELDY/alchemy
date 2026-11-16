@@ -1,4 +1,4 @@
-//! RenderFrame delta subscriber + snapshot convergence (x0023 / x0024 / x0029 / x00bf / x00c1 / x00c3).
+//! RenderFrame delta subscriber + snapshot convergence (x0023 / x0024 / x0029 / x00bf / x00c1 / x00c3 / x00c4).
 //!
 //! Guarantees:
 //! - Frame finite / tick / `host_sig` verified before apply; snapshot requires non-empty `upserts`
@@ -7,23 +7,26 @@
 //! - Snapshot skips the tick gate so a racing delta cannot block convergence
 //! - RenderFrame Entity carries quat + scale; client applies TRS (x0029)
 //! - Class-specific decode byte/count limits and AEAD failure → drop (x003b)
-//! - Room and opt-in cell interest share apply crypto; tick gates differ (x00bf / x00c0 / x00c3):
-//!   cell uses [`decide_cell_frame_tick`] (same-tick merge when prior was partial cell);
-//!   Room uses [`decide_room_frame_tick`] so a late Room full frame overrides under 併読
-//! - Cell interest threads do **not** gap→snapshot (Room path owns resync; avoids dual get)
+//! - Default path is Room `…/frame` only. Opt-in (`ALCHEMY_CELL_FRAME`) is **cell mainline**:
+//!   Room `…/frame` is **not** subscribed (x00c4). Exactly one frame subscriber runs; both modes
+//!   share apply crypto; tick gates differ (x00bf / x00c0 / x00c3): cell uses
+//!   [`decide_cell_frame_tick`] (same-tick merge); Room uses [`decide_room_frame_tick`]
+//! - Whichever mode is active may gap→Room `…/snapshot` (`gap_resync=true`); there is no
+//!   cell-scoped snapshot
 //! - Opt-in cell interest follows wire `local_user_root` `CellId` with hysteresis and
-//!   resubscribes Moore neighborhood on center change only (x00c1); Room sub stays put.
+//!   resubscribes Moore neighborhood on center change only (x00c1).
 //!   Center is re-evaluated on a ≤250ms deadline even while cell samples keep arriving
 //! - x00c2/x00c3: host may soft-put old-cell removes and new-cell upserts on the **same**
 //!   `net_tick`. Client merges same-tick cell samples (cross-cell upsert guard; within-frame
-//!   remove wins). Room same-tick override remains a safety net under 併読
+//!   remove wins). Room same-tick override remains for the default Room path / unit tests
 //!
 //! Non-guarantees: retransmission of missed deltas, reliable-delivery ACK channel, Manifest trust
-//! (see `bus::manifest`; `host_pub` is read, not established here); cell-only default delivery;
-//! AOI bandwidth reduction (Room frame remains default subscription); Presence-unset follow;
-//! cell gap convergence during resub.
-//! Hot-path note (x00bf opt-in / x00c0 / x00c1): Room + near-cell 併読 may AEAD-open / sig-verify /
-//! decode twice per tick; cell payloads are cell-filtered (Room remains snapshot / gap authority).
+//! (see `bus::manifest`; `host_pub` is read, not established here); cell-only **default** delivery
+//! (still opt-in); host dual-publish stop; Presence-unset follow; cell gap convergence during resub;
+//! opt-in recovery when host cell soft-put fails (Room frame is not subscribed to backfill);
+//! AOI / Moore-exit client prune of far entities (ghost poses may linger after initial snapshot).
+//! Hot-path note (x00c4 opt-in): no Room+cell dual AEAD per tick; cell payloads are cell-filtered.
+//! Snapshot / gap authority remains Room `…/snapshot`.
 
 use std::sync::Arc;
 use std::thread;
@@ -430,16 +433,18 @@ fn handle_frame_sample(
             match apply_frame(shared, frame, /* replace */ false, from_room) {
                 ApplyFrameOutcome::Applied | ApplyFrameOutcome::Dropped => {}
                 ApplyFrameOutcome::NeedResync => {
-                    // x0024 / x00bf: Room fetches snapshot; cell only logs
-                    // (same cooldown as Room so dual-publish gaps don't spam).
+                    // x0024 / x00c4: active frame path (Room XOR cell) may fetch Room `…/snapshot`.
+                    // Cooldown sheds bursty NeedResync (gap storms / snapshot get storms).
                     let now = Instant::now();
                     if now < *resync_cooldown_until {
                         return;
                     }
                     *resync_cooldown_until = now + SNAPSHOT_GAP_RESYNC_COOLDOWN;
+                    // Production callers always pass `gap_resync=true` (Room default + cell
+                    // mainline). `false` is kept as an apply-only API for tests / future paths.
                     if !gap_resync {
                         log::warn!(
-                            "cell frame NeedResync (tick gap); defer to Room path / Room snapshot (no cell get)"
+                            "frame NeedResync (tick gap) with gap_resync=false; skip snapshot get"
                         );
                         return;
                     }
@@ -516,7 +521,7 @@ pub(crate) fn spawn_frame_subscriber(
     Ok(())
 }
 
-/// Opt-in cell interest: apply only; follow wire pose center with Moore resub (x00bf / x00c1).
+/// Opt-in cell mainline: apply + gap→Room snapshot; follow wire pose center (x00bf / x00c1 / x00c4).
 pub(crate) fn spawn_cell_interest_subscriber(
     session: zenoh::Session,
     room_id: String,
@@ -535,7 +540,7 @@ pub(crate) fn spawn_cell_interest_subscriber(
         .name(THREAD_NAME.into())
         .spawn(move || {
             log::info!(
-                "subscribed to {initial_key} (signed delta upserts/removes; kind=CellInterest; gap_resync=false; follow=wire_user_root)"
+                "subscribed to {initial_key} (signed delta upserts/removes; kind=CellInterest; gap_resync=true; follow=wire_user_root)"
             );
             let mut resync_cooldown_until = Instant::now();
             let mut gates = FrameGateCounters {
@@ -555,7 +560,7 @@ pub(crate) fn spawn_cell_interest_subscriber(
                             &session,
                             &bytes,
                             /* from_room */ false,
-                            /* gap_resync */ false,
+                            /* gap_resync */ true,
                             &mut resync_cooldown_until,
                             &mut gates,
                         );
@@ -832,7 +837,7 @@ mod tests {
         assert!(!world.cell_tick_upsert_guard.contains(&1));
     }
 
-    /// x00c3: after multi-cell merge, Room same-tick override still applies and clears guard.
+    /// x00c3/x00c4: Room same-tick override API (default Room path / gate regression; not opt-in runtime).
     #[test]
     fn room_overrides_same_tick_after_multi_cell_merge() {
         let mut world = WorldView::default();
@@ -876,7 +881,7 @@ mod tests {
         assert!(world.entities.contains_key(&2));
     }
 
-    /// x00c0: cell partial then same-tick Room full must override (併読 race).
+    /// x00c0/x00c4: cell partial then same-tick Room full overrides (gate regression; default Room path).
     #[test]
     fn room_overrides_same_tick_after_partial_cell() {
         let mut world = WorldView::default();
