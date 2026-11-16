@@ -2,7 +2,7 @@
 
 > **ID:** `x00c4` · **slug:** `opt-in-cell-frame-mainline` · **status:** `done` · **area:** `[protocol, client, docs]` · **depends_on:** `[x00c3]`  
 > **優先度:** [spatial_interest.md](../spatial_interest.md) 実装第七波（P3-7）  
-> **後続:** 既定 cell 切替 · avatar LOD · G1/G2 実測 · host dual-publish 縮小（次空き `x00c5`〜）
+> **後続:** [x00c5](x00c5-default-cell-frame-mainline.md) 既定 cell 切替 · avatar LOD · G1/G2 実測 · host dual-publish 縮小（次空き `x00c6`〜）
 
 目標: 既定は Room `…/frame` のみのまま、`ALCHEMY_CELL_FRAME=1` 時は **Room `…/frame` を購読せず** 近傍 cell を tick 本線にする。gap→resync は cell 経路が **Room `…/snapshot`** を起動する。host dual-publish・Room キー・既定購読は維持（受信側の段階縮小）。
 

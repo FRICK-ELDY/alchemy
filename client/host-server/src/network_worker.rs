@@ -25,7 +25,7 @@
 //! in-flight puts); Manifest logical (non-bytes) jobs — sealed bytes pass through;
 //! zero-alloc encode/AEAD/Zenoh; pooling of `removes` / upsert `Entity` vecs;
 //! zero-clone cell upsert packing (cell path still clones `Entity` for sign/seal);
-//! cell put reachability; client default cell-only sub; same-tick multi-cell merge.
+//! cell put reachability (x00c5 client default is cell mainline); same-tick multi-cell merge.
 
 use alchemy_protocol::frame_cell_key;
 use alchemy_protocol::wire_aead::AeadKind;

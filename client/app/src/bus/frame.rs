@@ -1,4 +1,4 @@
-//! RenderFrame delta subscriber + snapshot convergence (x0023 / x0024 / x0029 / x00bf / x00c1 / x00c3 / x00c4).
+//! RenderFrame delta subscriber + snapshot convergence (x0023 / x0024 / x0029 / x00bf / x00c1 / x00c3 / x00c4 / x00c5).
 //!
 //! Guarantees:
 //! - Frame finite / tick / `host_sig` verified before apply; snapshot requires non-empty `upserts`
@@ -7,26 +7,26 @@
 //! - Snapshot skips the tick gate so a racing delta cannot block convergence
 //! - RenderFrame Entity carries quat + scale; client applies TRS (x0029)
 //! - Class-specific decode byte/count limits and AEAD failure → drop (x003b)
-//! - Default path is Room `…/frame` only. Opt-in (`ALCHEMY_CELL_FRAME`) is **cell mainline**:
-//!   Room `…/frame` is **not** subscribed (x00c4). Exactly one frame subscriber runs; both modes
-//!   share apply crypto; tick gates differ (x00bf / x00c0 / x00c3): cell uses
+//! - Default path is **cell mainline** (x00c5): Room `…/frame` is **not** subscribed.
+//!   `ALCHEMY_ROOM_FRAME=1` opts into Room `…/frame` only. Exactly one frame subscriber runs;
+//!   both modes share apply crypto; tick gates differ (x00bf / x00c0 / x00c3): cell uses
 //!   [`decide_cell_frame_tick`] (same-tick merge); Room uses [`decide_room_frame_tick`]
 //! - Whichever mode is active may gap→Room `…/snapshot` (`gap_resync=true`); there is no
 //!   cell-scoped snapshot
-//! - Opt-in cell interest follows wire `local_user_root` `CellId` with hysteresis and
+//! - Cell interest follows wire `local_user_root` `CellId` with hysteresis and
 //!   resubscribes Moore neighborhood on center change only (x00c1).
 //!   Center is re-evaluated on a ≤250ms deadline even while cell samples keep arriving
 //! - x00c2/x00c3: host may soft-put old-cell removes and new-cell upserts on the **same**
 //!   `net_tick`. Client merges same-tick cell samples (cross-cell upsert guard; within-frame
-//!   remove wins). Room same-tick override remains for the default Room path / unit tests
+//!   remove wins). Room same-tick override remains for the Room opt-out path / unit tests
 //!
 //! Non-guarantees: retransmission of missed deltas, reliable-delivery ACK channel, Manifest trust
-//! (see `bus::manifest`; `host_pub` is read, not established here); cell-only **default** delivery
-//! (still opt-in); host dual-publish stop; Presence-unset follow; cell gap convergence during resub;
-//! opt-in recovery when host cell soft-put fails (Room frame is not subscribed to backfill);
-//! AOI / Moore-exit client prune of far entities (ghost poses may linger after initial snapshot).
-//! Hot-path note (x00c4 opt-in): no Room+cell dual AEAD per tick; cell payloads are cell-filtered.
-//! Snapshot / gap authority remains Room `…/snapshot`.
+//! (see `bus::manifest`; `host_pub` is read, not established here); host dual-publish stop;
+//! Presence-unset follow; cell gap convergence during resub; recovery when host cell soft-put
+//! fails (default Room frame is not subscribed to backfill); AOI / Moore-exit client prune of
+//! far entities (ghost poses may linger after initial snapshot).
+//! Hot-path note (x00c5 default cell): no Room+cell dual AEAD per tick; cell payloads are
+//! cell-filtered. Snapshot / gap authority remains Room `…/snapshot`.
 
 use std::sync::Arc;
 use std::thread;
@@ -837,7 +837,7 @@ mod tests {
         assert!(!world.cell_tick_upsert_guard.contains(&1));
     }
 
-    /// x00c3/x00c4: Room same-tick override API (default Room path / gate regression; not opt-in runtime).
+    /// x00c3/x00c5: Room same-tick override API (Room opt-out / gate regression; not cell-mainline runtime).
     #[test]
     fn room_overrides_same_tick_after_multi_cell_merge() {
         let mut world = WorldView::default();
@@ -881,7 +881,7 @@ mod tests {
         assert!(world.entities.contains_key(&2));
     }
 
-    /// x00c0/x00c4: cell partial then same-tick Room full overrides (gate regression; default Room path).
+    /// x00c0/x00c5: cell partial then same-tick Room full overrides (gate regression; Room opt-out path).
     #[test]
     fn room_overrides_same_tick_after_partial_cell() {
         let mut world = WorldView::default();

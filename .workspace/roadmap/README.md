@@ -246,12 +246,13 @@ depends_on: [x0006]
 | x00c2 | — | done | Spatial Interest: セル退出 remove（host） | [x00c2-cell-exit-remove.md](slices/x00c2-cell-exit-remove.md) |
 | x00c3 | — | done | Spatial Interest: 多 cell 同一 tick 合流（Room 依存縮小の第一歩） | [x00c3-multi-cell-same-tick-merge.md](slices/x00c3-multi-cell-same-tick-merge.md) |
 | x00c4 | — | done | Spatial Interest: opt-in cell 本線（Room frame 非購読） | [x00c4-opt-in-cell-frame-mainline.md](slices/x00c4-opt-in-cell-frame-mainline.md) |
+| x00c5 | — | done | Spatial Interest: 既定 cell 本線（`ALCHEMY_ROOM_FRAME` オプトアウト） | [x00c5-default-cell-frame-mainline.md](slices/x00c5-default-cell-frame-mainline.md) |
 
-**現在の次:** 次空き **`x00c5`**（既定 cell 切替 / avatar LOD / Spatial VCS / Save As / Undo UI / WorldRoot Lens 同期 等）。[x00c4](slices/x00c4-opt-in-cell-frame-mainline.md) **done**。[x00c3](slices/x00c3-multi-cell-same-tick-merge.md) **done**。[x00c2](slices/x00c2-cell-exit-remove.md) **done**。[x00c1](slices/x00c1-client-cell-follow-resub.md) **done**。[x00c0](slices/x00c0-host-cell-dirty-filter.md) **done**。[x00bf](slices/x00bf-client-near-cell-frame-sub.md) **done**。[x00be](slices/x00be-spatial-interest-cell-frame-foundation.md) **done**。Spatial Lens 個人パネル [x00ba](slices/x00ba-spatial-lens-uber-sdf.md)–[x00bd](slices/x00bd-spatial-panel-hit-stickiness.md) **done**。[x00b9](slices/x00b9-spawn-without-live-cas.md) **done**。並行候補: VCS 本体（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md)）。**品質本線** · Spot-Check 保留（Q2）。
-**規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；x00be/x00bf/x00c0/x00c1/x00c2/x00c3/x00c4 **done**。1000 人は horizon）。
+**現在の次:** 次空き **`x00c6`**（avatar LOD / Spatial VCS / Save As / Undo UI / WorldRoot Lens 同期 / host dual-publish 縮小 等）。[x00c5](slices/x00c5-default-cell-frame-mainline.md) **done**。[x00c4](slices/x00c4-opt-in-cell-frame-mainline.md) **done**。[x00c3](slices/x00c3-multi-cell-same-tick-merge.md) **done**。[x00c2](slices/x00c2-cell-exit-remove.md) **done**。[x00c1](slices/x00c1-client-cell-follow-resub.md) **done**。[x00c0](slices/x00c0-host-cell-dirty-filter.md) **done**。[x00bf](slices/x00bf-client-near-cell-frame-sub.md) **done**。[x00be](slices/x00be-spatial-interest-cell-frame-foundation.md) **done**。Spatial Lens 個人パネル [x00ba](slices/x00ba-spatial-lens-uber-sdf.md)–[x00bd](slices/x00bd-spatial-panel-hit-stickiness.md) **done**。[x00b9](slices/x00b9-spawn-without-live-cas.md) **done**。並行候補: VCS 本体（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md)）。**品質本線** · Spot-Check 保留（Q2）。
+**規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；x00be/x00bf/x00c0/x00c1/x00c2/x00c3/x00c4/x00c5 **done**。1000 人は horizon）。
 旧メモ **P3-7（BLAKE3 ストリーミング）** は **CI が完了しなくなるためマージしない**（現行 P3-7 Spatial Interest とは別物）。Room 上限の best-effort 導入は x0071、厳密化は x0097 **done**。
 
-次の空き番号は **`x00c5`**。
+次の空き番号は **`x00c6`**。
 
 ## 関連
 
