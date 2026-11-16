@@ -39,6 +39,8 @@ config :assets,
   place_hashes_ttl_floor_ms: 300_000,
   place_read_verify_ttl_ms: 5_000,
   place_read_verify_cache_max: 4_096,
+  # x00ca Origin Cert v2 Ed25519 kid (keys injected at runtime / test).
+  cert_signing_kid: "default",
   # x00b5 SpawnTicket (RS256; separate from Origin Cert Ed25519).
   spawn_ticket_issuer: "alchemy-assets",
   spawn_ticket_ttl_seconds: 60,

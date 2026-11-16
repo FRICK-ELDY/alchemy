@@ -1,8 +1,8 @@
 # assets VCS 設計たたき台（ローカルリポジトリ → push → Pull Request → main）
 
-> **ステータス**: **draft** — 目標設計のたたき台。実装正本ではない（codec のみ [x00c8](../../roadmap/slices/x00c8-vcs-object-codec.md) **done**）  
+> **ステータス**: **draft** — 目標設計のたたき台。実装正本ではない（codec [x00c8](../../roadmap/slices/x00c8-vcs-object-codec.md) / 内容アドレス [x00c9](../../roadmap/slices/x00c9-vcs-content-addressed.md) / Cert v2+origins [x00ca](../../roadmap/slices/x00ca-origin-cert-v2-origins.md) **done**）  
 > **スコープ**: アイテム（Prefab）先行。ワールドは後続  
-> **現行正本**: [assets-server.md](assets-server.md)（Vcs 薄皮 x0062–x0065・Origin Cert v1 x0096・codec x00c8）  
+> **現行正本**: [assets-server.md](assets-server.md)（Vcs 薄皮 x0062–x0065・codec x00c8・内容アドレス x00c9・**Origin Cert v2 + 原産地台帳 x00ca**。v1/x0096 は廃止）  
 > **関連**: [assets-server-draft.md](assets-server-draft.md)（5 層目標像）· [assets-threat-model.md](assets-threat-model.md)（手口×対策）· [mvcc_xpbd.md](../../roadmap/mvcc_xpbd.md) §4.7（ライブ tip / 明示 Save）· [inventory-ladder.md](../../roadmap/inventory-ladder.md)  
 > **ライセンス階層**: `assets-server` / `client` = MPL-2.0。オブジェクト形式（codec）= `protocol/`（Apache-2.0）。`market-server` = BSL-1.1（本書は境界だけを書く）
 
@@ -689,7 +689,7 @@ host-server はユーザーの PC で動くので、改造されている前提�
 | 対象 | 移行 |
 |:---|:---|
 | x0062 の UUID コミット | `promote_prefab` を内容アドレスのルートコミット生成に置き換える（**x00c9**）。既存 UUID/`tree_json` 行の in-place 再エンコードは **未実装** — x00c9 は開発/hermetic DB 向け **破壊的 DROP+再作成**（本番 UUID VCS 未出荷前提）。将来本番データがある場合は別 Slice で移行パスを足す |
-| Origin Cert v1 | v2（§11.4）で再発行する。v1 の行は検証専用として残すか削除する |
+| Origin Cert v1 | **x00ca** で v2 のみ発行・検証。v1 行は移行時 DELETE（互換検証なし） |
 | `ItemRef` | `rev` は ref 名かコミットハッシュにする。「オーナーか」のチェックを「読めるか」（§9.1）に変える |
 | `DriveNode(kind=vcs_repo)` の take_out | 現在は非保証。`repo@main` を取り出せるようにする |
 | `Prefab.Payload` | `local_id` の一意性検証を追加する（§5.2） |
@@ -707,7 +707,7 @@ VCS 本体（ID は着手時に採番）:
 
 1. オブジェクト形式: `protocol/` に §6 で選んだ形式の codec・厳格デコード・ゴールデンベクタ・Port バイナリ — **[x00c8](../../roadmap/slices/x00c8-vcs-object-codec.md)**
 2. サーバ DB の移行（内容アドレス・parents・generation・objects・repo_commits）と `promote_prefab` の置き換え — **[x00c9](../../roadmap/slices/x00c9-vcs-content-addressed.md)**
-3. Origin Cert v2（Authorship / Release、`issued_at_ms`・`kid`）と原産地台帳（次空き `x00ca` 想定）
+3. Origin Cert v2（Authorship / Release、`issued_at_ms`・`kid`）と原産地台帳 — **[x00ca](../../roadmap/slices/x00ca-origin-cert-v2-origins.md)**
 4. visibility、RepoRead（GET 認可）、`ItemRef` の読み取り判定、private の 404
 5. push API（negotiate → blob アップロード → push）、サーバ側の検証、ブランチ保護
 6. client のローカルストア（`vcs-store`: init / clone / commit / branch / fetch / push）

@@ -2,7 +2,7 @@
 
 > **ID:** `x00c9` · **slug:** `vcs-content-addressed` · **status:** `done` · **area:** `[assets, protocol, docs]` · **depends_on:** `[x00c8, x0062, x0064, x0096, x0075, x008d]`  
 > **優先度:** [assets-vcs-draft.md](../../0_doc/architecture/assets-vcs-draft.md) §18.2  
-> **後続:** Origin Cert v2 / visibility / push（§18.3+）
+> **後続:** [x00ca](x00ca-origin-cert-v2-origins.md) Origin Cert v2 + 原産地台帳（§18.3）；visibility / push（§18.4+）
 
 目標: assets-server に `vcs-object` Port を配線し、VCS を内容アドレス（Tree/Commit blake3）へ移行する。`promote_prefab` が正規 CBOR を書き、ItemRef / branch / Cert v1 が新 ID で動く。
 

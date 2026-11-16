@@ -1,7 +1,7 @@
 # assets-server
 
 > **正本コード**: [`assets-server/`](../../../assets-server/)  
-> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳）+ **x0054**（inventory PUT 経路）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x0096**（Origin Cert v1 tree/content hash）+ **x00c9**（VCS 内容アドレス DB + vcs-object Port + promote→CBOR Tree/Commit）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）+ **x006e**（Drive HTTP put_back）+ **x006f**（CasObject.access 列廃止）+ **x0074**（reserved reaper / orphan CAS GC）+ **x0075**（BLAKE3 常駐 Port）+ **x008d**（BLAKE3 Port プール）+ **x007f**（prefab take_out 多子展開）+ **x0086**（test hermetic: reaper/GC off + CAS tmp_dir）+ **x008b**（`/ready` + GET octet-stream/nosniff）+ **x00b5**（SpawnTicket 発行・JWKS）  
+> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳）+ **x0054**（inventory PUT 経路）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x0096**（Origin Cert v1 tree/content hash）+ **x00c9**（VCS 内容アドレス DB + vcs-object Port + promote→CBOR Tree/Commit）+ **x00ca**（Origin Cert v2 Authorship/Release + `vcs_blob_origins`）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）+ **x006e**（Drive HTTP put_back）+ **x006f**（CasObject.access 列廃止）+ **x0074**（reserved reaper / orphan CAS GC）+ **x0075**（BLAKE3 常駐 Port）+ **x008d**（BLAKE3 Port プール）+ **x007f**（prefab take_out 多子展開）+ **x0086**（test hermetic: reaper/GC off + CAS tmp_dir）+ **x008b**（`/ready` + GET octet-stream/nosniff）+ **x00b5**（SpawnTicket 発行・JWKS）  
 
 > **目標たたき台**: [assets-server-draft.md](assets-server-draft.md)（5 層全体）  
 > **脅威（手口×対策）**: [assets-threat-model.md](assets-threat-model.md)
@@ -23,7 +23,7 @@
 |:---|:---|
 | メタ（CasObject / BlobRef / BlobGrant / QuotaLedger）を SQLite に置く | GLB/KTX2 本体を DB に置く |
 | 不変バイナリを CAS（BLAKE3 キー）に置く。ダイジェストは常駐 `blake3-hash --serve` Port プール（x0075 / **x008d**；`PartitionSupervisor`；既定は **起動ホスト** `schedulers_online` / `BLAKE3_HASH_PARTITIONS`；リクエスト毎 CLI なし） | Folder / Commit（Spatial VCS）・Group Vault；パーティション数超の並列・ストリーミング NIF；release ビルドホスト CPU 数の焼き付き |
-| Spatial VCS: 決定的 CBOR codec（x00c8）+ assets `vcs-object` Port プール + 内容アドレス DB（`vcs_objects` / `commit_hash`）+ `promote_prefab`→Tree/Commit/`main`（**x00c9** / [assets-vcs-draft.md](assets-vcs-draft.md) §18.2） | Origin Cert v2・visibility / RepoRead・push / fork / PR（§18.3+）；client `vcs-store` |
+| Spatial VCS: 決定的 CBOR codec（x00c8）+ assets `vcs-object` Port プール + 内容アドレス DB（`vcs_objects` / `commit_hash`）+ `promote_prefab`→Tree/Commit/`main`（**x00c9**）+ Origin Cert v2 Authorship/Release + `vcs_blob_origins`（**x00ca** / [assets-vcs-draft.md](assets-vcs-draft.md) §18.3） | visibility / RepoRead・push / fork / PR（§18.4+）；client `vcs-store`；販売ロック拒否・market 照合 |
 | `Assets.Vault.personal/1` が Quota と一致する used/reserved/limit を返す（vault_id=`owner_sub` 暫定・x0058） | UUID vault_id 移行・`:read_only`・課金プラン連動 |
 | `CasObject`（物理・所有者なし・size/mime のみ）と `BlobRef`（owner×blake3）を分離（x003f / x006f） | StorageVault / `:purchased` / `:mail_temp` |
 | PUT finalize で uploader に `:owned` `BlobGrant`（x004f） | room スコープ grant・Manifest 連動付与以外の Grant 種別 |
@@ -102,9 +102,10 @@ PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。`x-alchemy-b
 | DriveNode | `node_id` UUID PK + `owner_sub` + `parent_id` nullable + `kind`（folder/blob/prefab/vcs_repo）+ `name` + `blake3` nullable + `vcs_repo_id` nullable（x005c/x005d） |
 | Prefab.Payload | JSON スキーマ（schema_version=1 + children[{local_id, blake3, trs?}]）+ 非有限 TRS 拒否（x005e） |
 | VcsRepo | `repo_id` UUID PK + `owner_sub` + `node_id` nullable（x0062） |
-| VcsCommit | `commit_id` + `repo_id` + `author_sub` + `tree_json`（不変・x0062） |
-| VcsRef | `ref_id` + `repo_id` + `name` + `kind`（branch/tag）+ `commit_id` + `is_frozen`（Tag は true、x0064） |
-| VcsCert | `cert_id` + `subject_sub` + `target_kind` + `target_id` + `target_hash` + `signature`（Ed25519・不変・x0065）。署名メッセージ v1: `v1\|kind\|id\|sub\|tree_blake3\|parent`（x0096；`sub` に `\|` 不可）。旧 `kind:id:sub` 行は verify 不能 → **再発行**。verify で対象 Commit/Tag 消失は `:tampered`（fail-closed） |
+| VcsCommit | `commit_hash` PK + `tree_hash` + `generation` + `author_sub` + `created_at_ms` + `message`（内容アドレス・x00c9） |
+| VcsRef | `ref_id` + `repo_id` + `name` + `kind`（branch/tag）+ `commit_hash` + `is_frozen`（Tag は true、x0064 / x00c9） |
+| VcsCert | `cert_id` + `subject_sub` + `cert_kind`（commit/release）+ `target_id`（commit_hash）+ `repo_id`/`tag_name`（release）+ `issued_at_ms` + `kid` + `message_version` + `target_hash` + `signature`（Ed25519・x00ca）。Authorship は commit あたり 1 行（subject=`Commit.author_sub`）；Release は repo+tag あたり 1 行（owner・tag 束縛）。署名は TX 外。オフライン検証は明示 pub key（省略時は現行鍵；`kid` ルックアップなし）。v1 廃止 |
+| VcsBlobOrigin | `blake3` PK + `first_commit_hash` + `author_sub` + `first_seen_at`（先願 1 行・x00ca） |
 | ItemRef | 型: `{:blake3, hex}` \| `{:repo_rev, repo_id, rev}`。`Assets.ItemRef.resolve/2` でブロブ参照解決（x0063） |
 
 ```mermaid
@@ -141,5 +142,5 @@ bash .scripts/smoke-assets-glb.sh   # Coin fixture → CAS
 - カスタムドメイン / CDN キャッシュ本配信
 - 署名付き Upload（client → R2 直 PUT）— Content-Length 固定署名を必須に
 - Ash、pgvector
-- Origin Cert 鍵管理本番化（秘密鍵を secrets manager から注入。`cert_signing_priv_key` は runtime config のみ）。x0096 導入後は旧形式 cert を再発行すること（自動移行なし）
-- VcsRepo 共有・fork・Transfer（現在 owner-only）
+- Origin Cert 鍵管理本番化（秘密鍵を secrets manager から注入。`cert_signing_priv_key` / `cert_signing_kid` は runtime config のみ）。v1→v2 自動再署名なし（x00ca で v1 廃止）
+- VcsRepo 共有・fork・Transfer（現在 owner-only）；販売ロック拒否・market 出品照合

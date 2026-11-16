@@ -1,17 +1,19 @@
 defmodule Assets.VcsTest do
   @moduledoc """
   Tests for x0062/x00c9 (promote_prefab content-addressed), x0063 (ItemRef),
-  x0064 (Branch/Tag), x0065 / x0096 (Origin Cert v1 over commit_hash).
+  x0064 (Branch/Tag), x00ca (Origin Cert v2 + blob origins).
   """
   use Assets.DataCase, async: false, cas: true
+
+  import Ecto.Query, only: [from: 2]
 
   alias Assets.Drive
   alias Assets.ItemRef
   alias Assets.Prefab.Payload
   alias Assets.Vcs
+  alias Assets.Vcs.BlobOrigin
   alias Assets.Vcs.Cert
   alias Assets.Vcs.Commit
-  alias Assets.Vcs.CommitParent
   alias Assets.Vcs.Object
   alias Assets.Vcs.Ref, as: VcsRef
   alias Assets.VcsObject
@@ -491,41 +493,157 @@ defmodule Assets.VcsTest do
   end
 
   # ---------------------------------------------------------------------------
-  # x0065 / x0096 / x00c9 — Origin Cert (v1 content-bound)
+  # x00ca — Origin Cert v2 + blob origins
   # ---------------------------------------------------------------------------
 
-  test "issue_cert creates cert for a commit_hash" do
-    {node, _} = build_prefab_node(@sub_a)
-    {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
-
-    assert {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", commit.commit_hash)
-    assert cert.subject_sub == @sub_a
-    assert cert.target_kind == "commit"
-    assert cert.target_id == commit.commit_hash
-    assert byte_size(cert.cert_id) > 0
-    assert byte_size(cert.signature) > 0
-    refute Map.has_key?(cert, :private_key)
-
-    tree_blake3 = Cert.tree_blake3(commit)
-    assert tree_blake3 == commit.tree_hash
-
-    message = Cert.canonical_message("commit", commit.commit_hash, @sub_a, tree_blake3, "")
-    assert String.starts_with?(message, "v1|")
-    assert cert.target_hash == Assets.Blake3.hash_hex(message)
+  defp authorship_cert!(commit_hash) do
+    case Cert.get_authorship(commit_hash) do
+      %Cert{} = cert -> cert
+      nil -> flunk("expected Authorship cert for #{commit_hash}")
+    end
   end
 
-  test "verify_cert returns :ok for a valid cert" do
+  defp release_cert!(repo_id, tag_name) do
+    case Cert.get_release(repo_id, tag_name) do
+      %Cert{} = cert -> cert
+      nil -> flunk("expected Release cert for #{repo_id}/#{tag_name}")
+    end
+  end
+
+  defp authorship_count(commit_hash) do
+    Assets.Repo.aggregate(
+      from(c in Cert, where: c.cert_kind == "commit" and c.target_id == ^commit_hash),
+      :count
+    )
+  end
+
+  test "promote_prefab issues Authorship cert v2 with issued_at_ms and kid" do
+    Application.put_env(:assets, :vcs_test_issued_at_ms, 1_700_000_000_000)
+    {node, _} = build_prefab_node(@sub_a)
+
+    assert {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    cert = authorship_cert!(commit.commit_hash)
+    assert cert.subject_sub == @sub_a
+    assert cert.cert_kind == "commit"
+    assert cert.target_id == commit.commit_hash
+    assert cert.issued_at_ms == 1_700_000_000_000
+    assert cert.kid == "default"
+    assert cert.message_version == "v2"
+    refute Map.has_key?(cert, :private_key)
+
+    message =
+      Cert.authorship_message(commit.commit_hash, @sub_a, cert.issued_at_ms, cert.kid)
+
+    assert message ==
+             "v2|commit|#{commit.commit_hash}|#{@sub_a}|#{cert.issued_at_ms}|#{cert.kid}"
+
+    assert cert.target_hash == Assets.Blake3.hash_hex(message)
+    assert :ok = Vcs.verify_cert(cert.cert_id)
+
+    assert :ok =
+             Cert.verify_offline_authorship(
+               commit.commit_hash,
+               @sub_a,
+               cert.issued_at_ms,
+               cert.kid,
+               cert.signature
+             )
+  after
+    Application.delete_env(:assets, :vcs_test_issued_at_ms)
+  end
+
+  test "promote_prefab records blob origins for child meshes" do
+    {node, payload} = build_prefab_node(@sub_a)
+    child_blake3 = hd(payload.children).blake3 |> String.downcase()
+
+    assert {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    origin = Assets.Repo.get!(BlobOrigin, child_blake3)
+    assert origin.first_commit_hash == commit.commit_hash
+    assert origin.author_sub == @sub_a
+    assert %DateTime{} = origin.first_seen_at
+  end
+
+  test "blob origins keep first author on later promote of same blake3" do
+    {node_a, payload} = build_prefab_node(@sub_a, "origin-a")
+    child_blake3 = hd(payload.children).blake3 |> String.downcase()
+    {:ok, %{commit: c1}} = Vcs.promote_prefab(@sub_a, node_a.node_id)
+
+    # Re-upload same bytes under another owner → same blake3, new prefab node.
+    {:ok, mesh_bytes} = Assets.CAS.read(child_blake3)
+
+    assert {:ok, mesh_b, _} =
+             Assets.Blobs.upload(@sub_b, mesh_bytes, "application/octet-stream")
+
+    assert mesh_b.blake3 == child_blake3
+
+    {:ok, payload_b} =
+      Payload.new(1, [%{local_id: "c0", blake3: child_blake3, trs: nil}])
+
+    {:ok, node_b} = Drive.save_prefab(@sub_b, "origin-b", payload_b)
+    assert {:ok, %{commit: c2}} = Vcs.promote_prefab(@sub_b, node_b.node_id)
+    assert c2.commit_hash != c1.commit_hash
+
+    origin = Assets.Repo.get!(BlobOrigin, child_blake3)
+    assert origin.author_sub == @sub_a
+    assert origin.first_commit_hash == c1.commit_hash
+  end
+
+  test "create_tag issues Release cert for repo owner" do
+    Application.put_env(:assets, :vcs_test_issued_at_ms, 1_700_000_000_100)
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{repo: repo, commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    assert {:ok, _tag} = Vcs.create_tag(repo.repo_id, "v1.0", commit.commit_hash)
+
+    cert = release_cert!(repo.repo_id, "v1.0")
+    assert cert.subject_sub == @sub_a
+    assert cert.cert_kind == "release"
+    assert cert.target_id == commit.commit_hash
+    assert cert.repo_id == repo.repo_id
+    assert cert.tag_name == "v1.0"
+    assert cert.issued_at_ms == 1_700_000_000_100
+    assert cert.kid == "default"
+
+    message =
+      Cert.release_message(
+        repo.repo_id,
+        "v1.0",
+        commit.commit_hash,
+        @sub_a,
+        cert.issued_at_ms,
+        cert.kid
+      )
+
+    assert cert.target_hash == Assets.Blake3.hash_hex(message)
+    assert :ok = Vcs.verify_cert(cert.cert_id)
+
+    assert :ok =
+             Cert.verify_offline_release(
+               repo.repo_id,
+               "v1.0",
+               commit.commit_hash,
+               @sub_a,
+               cert.issued_at_ms,
+               cert.kid,
+               cert.signature
+             )
+  after
+    Application.delete_env(:assets, :vcs_test_issued_at_ms)
+  end
+
+  test "verify_cert returns :ok for promote Authorship" do
     {node, _} = build_prefab_node(@sub_a)
     {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
-    {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", commit.commit_hash)
-
+    cert = authorship_cert!(commit.commit_hash)
     assert :ok = Vcs.verify_cert(cert.cert_id)
   end
 
   test "verify_cert returns :tampered when signature is modified" do
     {node, _} = build_prefab_node(@sub_a)
     {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
-    {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", commit.commit_hash)
+    cert = authorship_cert!(commit.commit_hash)
 
     Assets.Repo.update_all(
       from(c in Cert, where: c.cert_id == ^cert.cert_id),
@@ -538,7 +656,7 @@ defmodule Assets.VcsTest do
   test "verify_cert returns :tampered for corrupt Base64 signature" do
     {node, _} = build_prefab_node(@sub_a)
     {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
-    {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", commit.commit_hash)
+    cert = authorship_cert!(commit.commit_hash)
 
     Assets.Repo.update_all(
       from(c in Cert, where: c.cert_id == ^cert.cert_id),
@@ -551,7 +669,7 @@ defmodule Assets.VcsTest do
   test "verify_cert returns :tampered when target_hash is altered" do
     {node, _} = build_prefab_node(@sub_a)
     {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
-    {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", commit.commit_hash)
+    cert = authorship_cert!(commit.commit_hash)
 
     Assets.Repo.update_all(
       from(c in Cert, where: c.cert_id == ^cert.cert_id),
@@ -561,140 +679,229 @@ defmodule Assets.VcsTest do
     assert {:error, :tampered} = Vcs.verify_cert(cert.cert_id)
   end
 
-  test "verify_cert returns :tampered when Commit tree_hash changes after issue" do
+  test "verify_cert returns :tampered when issued_at_ms is altered" do
     {node, _} = build_prefab_node(@sub_a)
     {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
-    {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", commit.commit_hash)
+    cert = authorship_cert!(commit.commit_hash)
 
     Assets.Repo.update_all(
-      from(c in Commit, where: c.commit_hash == ^commit.commit_hash),
-      set: [tree_hash: String.duplicate("a", 64)]
+      from(c in Cert, where: c.cert_id == ^cert.cert_id),
+      set: [issued_at_ms: cert.issued_at_ms + 1]
     )
 
     assert {:error, :tampered} = Vcs.verify_cert(cert.cert_id)
   end
 
-  test "verify_cert returns :tampered when parent row changes after issue" do
-    {node, _} = build_prefab_node(@sub_a)
-    {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
-
-    c2 = encode_child_commit!(repo.repo_id, c1)
-    {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", c2.commit_hash)
-
-    Assets.Repo.delete_all(from(p in CommitParent, where: p.commit_hash == ^c2.commit_hash))
-
-    assert {:error, :tampered} = Vcs.verify_cert(cert.cert_id)
-  end
-
-  test "verify_cert returns :tampered when Commit is deleted after issue" do
+  test "Authorship remains valid after Commit row is deleted (offline fields)" do
     {node, _} = build_prefab_node(@sub_a)
     {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
-    {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", commit.commit_hash)
+    cert = authorship_cert!(commit.commit_hash)
 
     Assets.Repo.delete_all(from(c in Commit, where: c.commit_hash == ^commit.commit_hash))
 
-    assert {:error, :tampered} = Vcs.verify_cert(cert.cert_id)
+    assert :ok = Vcs.verify_cert(cert.cert_id)
+
+    assert :ok =
+             Cert.verify_offline_authorship(
+               commit.commit_hash,
+               @sub_a,
+               cert.issued_at_ms,
+               cert.kid,
+               cert.signature
+             )
   end
 
-  test "canonical_message v1 binds tree object hash and parent commit_hash" do
+  test "issue_authorship for child commit binds v2 message" do
     {node, _} = build_prefab_node(@sub_a)
     {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
 
     c2 = encode_child_commit!(repo.repo_id, c1)
-    {:ok, cert} = Vcs.issue_cert(@sub_a, "commit", c2.commit_hash)
-    tree_blake3 = Cert.tree_blake3(c2)
+    assert {:ok, cert} = Vcs.issue_authorship(@sub_a, c2.commit_hash)
 
     message =
-      Cert.canonical_message(
-        "commit",
-        c2.commit_hash,
-        @sub_a,
-        tree_blake3,
-        c1.commit_hash
-      )
+      Cert.authorship_message(c2.commit_hash, @sub_a, cert.issued_at_ms, cert.kid)
 
-    assert message ==
-             "v1|commit|#{c2.commit_hash}|#{@sub_a}|#{tree_blake3}|#{c1.commit_hash}"
-
+    assert String.starts_with?(message, "v2|commit|")
     assert cert.target_hash == Assets.Blake3.hash_hex(message)
     assert :ok = Vcs.verify_cert(cert.cert_id)
+  end
+
+  test "re-promote of same commit_hash keeps a single Authorship row" do
+    Application.put_env(:assets, :vcs_test_created_at_ms, 1_700_000_000_200)
+    Application.put_env(:assets, :vcs_test_issued_at_ms, 1_700_000_000_201)
+
+    {node1, payload} = build_prefab_node(@sub_a, "same-a")
+    assert {:ok, %{commit: c1}} = Vcs.promote_prefab(@sub_a, node1.node_id)
+    first = authorship_cert!(c1.commit_hash)
+    assert authorship_count(c1.commit_hash) == 1
+
+    # Same child blake3 + author + created_at_ms → same commit_hash.
+    child_blake3 = hd(payload.children).blake3
+
+    {:ok, payload2} =
+      Payload.new(1, [%{local_id: "c0", blake3: child_blake3, trs: nil}])
+
+    {:ok, node2} = Drive.save_prefab(@sub_a, "same-b", payload2)
+    assert {:ok, %{commit: c2}} = Vcs.promote_prefab(@sub_a, node2.node_id)
+    assert c2.commit_hash == c1.commit_hash
+
+    assert authorship_count(c1.commit_hash) == 1
+    second = authorship_cert!(c1.commit_hash)
+    assert second.cert_id == first.cert_id
+    assert second.issued_at_ms == first.issued_at_ms
+  after
+    Application.delete_env(:assets, :vcs_test_created_at_ms)
+    Application.delete_env(:assets, :vcs_test_issued_at_ms)
+  end
+
+  test "issue_authorship is idempotent and rejects foreign author_sub" do
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    first = authorship_cert!(commit.commit_hash)
+
+    assert {:ok, again} = Vcs.issue_authorship(@sub_a, commit.commit_hash)
+    assert again.cert_id == first.cert_id
+    assert authorship_count(commit.commit_hash) == 1
+
+    assert {:error, :author_mismatch} =
+             Vcs.issue_authorship(@sub_b, commit.commit_hash)
+  end
+
+  test "prepare_authorship_unless_present returns :cert_conflict on subject mismatch" do
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    _ = authorship_cert!(commit.commit_hash)
+
+    # Existing row subject is @sub_a; asking with a different subject is a conflict
+    # (distinct from public issue_* which fails earlier with :author_mismatch).
+    assert {:error, :cert_conflict} =
+             Cert.prepare_authorship_unless_present(@sub_b, commit.commit_hash)
+  end
+
+  test "issue_release rejects non-owner and missing tag" do
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{repo: repo, commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    assert {:error, :not_found} =
+             Vcs.issue_release(@sub_a, repo.repo_id, "missing", commit.commit_hash)
+
+    assert {:ok, _} = Vcs.create_tag(repo.repo_id, "v2.0", commit.commit_hash)
+    first = release_cert!(repo.repo_id, "v2.0")
+
+    assert {:ok, again} =
+             Vcs.issue_release(@sub_a, repo.repo_id, "v2.0", commit.commit_hash)
+
+    assert again.cert_id == first.cert_id
+
+    assert {:error, :owner_mismatch} =
+             Vcs.issue_release(@sub_b, repo.repo_id, "v2.0", commit.commit_hash)
+
+    c2 = encode_child_commit!(repo.repo_id, commit)
+
+    assert {:error, :commit_mismatch} =
+             Vcs.issue_release(@sub_a, repo.repo_id, "v2.0", c2.commit_hash)
+  end
+
+  test "prepare_release_unless_present returns :cert_conflict on subject mismatch" do
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{repo: repo, commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    assert {:ok, _} = Vcs.create_tag(repo.repo_id, "v3.0", commit.commit_hash)
+    _ = release_cert!(repo.repo_id, "v3.0")
+
+    assert {:error, :cert_conflict} =
+             Cert.prepare_release_unless_present(
+               @sub_b,
+               repo.repo_id,
+               "v3.0",
+               commit.commit_hash
+             )
+  end
+
+  test "BlobOrigin changeset downcases blake3 hex" do
+    {node, payload} = build_prefab_node(@sub_a)
+    {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    lower = hd(payload.children).blake3 |> String.downcase()
+    upper = String.upcase(lower)
+
+    # Direct insert with uppercase collapses to the same PK as promote's origin.
+    cs =
+      BlobOrigin.changeset(%BlobOrigin{}, %{
+        blake3: upper,
+        first_commit_hash: commit.commit_hash,
+        author_sub: @sub_b,
+        first_seen_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+      })
+
+    assert Ecto.Changeset.get_change(cs, :blake3) == lower
+
+    assert {:ok, _} =
+             Assets.Repo.insert(cs, on_conflict: :nothing, conflict_target: :blake3)
+
+    origin = Assets.Repo.get!(BlobOrigin, lower)
+    assert origin.blake3 == lower
+    assert origin.author_sub == @sub_a
+  end
+
+  test "verify_offline_authorship accepts explicit public key" do
+    {node, _} = build_prefab_node(@sub_a)
+    {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    cert = authorship_cert!(commit.commit_hash)
+    pub = Application.get_env(:assets, :cert_signing_pub_key)
+
+    assert :ok =
+             Cert.verify_offline_authorship(
+               commit.commit_hash,
+               @sub_a,
+               cert.issued_at_ms,
+               cert.kid,
+               cert.signature,
+               pub
+             )
+
+    assert {:error, :tampered} =
+             Cert.verify_offline_authorship(
+               commit.commit_hash,
+               @sub_a,
+               cert.issued_at_ms,
+               cert.kid,
+               cert.signature,
+               Base.encode64(:crypto.strong_rand_bytes(32))
+             )
   end
 
   test "verify_cert returns :not_found for unknown cert_id" do
     assert {:error, :not_found} = Vcs.verify_cert("00000000-0000-0000-0000-000000000001")
   end
 
-  test "issue_cert for tag kind binds tagged commit tree" do
-    {node, _} = build_prefab_node(@sub_a)
-    {:ok, %{repo: repo, commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
-    {:ok, tag} = Vcs.create_tag(repo.repo_id, "v1.0", commit.commit_hash)
-
-    assert {:ok, cert} = Vcs.issue_cert(@sub_a, "tag", tag.ref_id)
-    assert :ok = Vcs.verify_cert(cert.cert_id)
-
-    tree_blake3 = Cert.tree_blake3(commit)
-
-    message =
-      Cert.canonical_message("tag", tag.ref_id, @sub_a, tree_blake3, "")
-
-    assert cert.target_hash == Assets.Blake3.hash_hex(message)
-  end
-
-  test "issue_cert returns :not_found for unknown commit" do
+  test "issue_authorship returns :not_found for unknown commit" do
     assert {:error, :not_found} =
-             Vcs.issue_cert(@sub_a, "commit", String.duplicate("0", 64))
+             Vcs.issue_authorship(@sub_a, String.duplicate("0", 64))
   end
 
-  test "issue_cert returns :not_found for unknown tag" do
+  test "issue_release returns :not_found for unknown commit" do
     assert {:error, :not_found} =
-             Vcs.issue_cert(@sub_a, "tag", "00000000-0000-0000-0000-000000000001")
+             Vcs.issue_release(@sub_a, "repo", "v1", String.duplicate("0", 64))
   end
 
-  test "issue_cert returns :not_found when tag points at missing commit" do
-    {node, _} = build_prefab_node(@sub_a)
-    {:ok, %{repo: repo, commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
-    {:ok, tag} = Vcs.create_tag(repo.repo_id, "dangling", commit.commit_hash)
-
-    Assets.Repo.delete_all(from(c in Commit, where: c.commit_hash == ^commit.commit_hash))
-
-    assert {:error, :not_found} = Vcs.issue_cert(@sub_a, "tag", tag.ref_id)
-  end
-
-  test "verify_cert returns :tampered when tag points at missing commit" do
-    {node, _} = build_prefab_node(@sub_a)
-    {:ok, %{repo: repo, commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
-    {:ok, tag} = Vcs.create_tag(repo.repo_id, "later-dangling", commit.commit_hash)
-    {:ok, cert} = Vcs.issue_cert(@sub_a, "tag", tag.ref_id)
-
-    Assets.Repo.delete_all(from(c in Commit, where: c.commit_hash == ^commit.commit_hash))
-
-    assert {:error, :tampered} = Vcs.verify_cert(cert.cert_id)
-  end
-
-  test "issue_cert rejects subject_sub containing pipe" do
+  test "issue_authorship rejects subject_sub containing pipe" do
     {node, _} = build_prefab_node(@sub_a)
     {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
 
     assert {:error, :invalid_subject_sub} =
-             Vcs.issue_cert("evil|sub", "commit", commit.commit_hash)
+             Vcs.issue_authorship("evil|sub", commit.commit_hash)
   end
 
-  test "issue_cert rejects non-binary subject_sub" do
+  test "issue_authorship rejects non-binary subject_sub" do
     {node, _} = build_prefab_node(@sub_a)
     {:ok, %{commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
 
     assert {:error, :invalid_subject_sub} =
-             Vcs.issue_cert(nil, "commit", commit.commit_hash)
+             Vcs.issue_authorship(nil, commit.commit_hash)
   end
 
-  test "canonical_message raises when subject_sub contains pipe" do
+  test "authorship_message raises when subject_sub contains pipe" do
     assert_raise ArgumentError, fn ->
-      Cert.canonical_message("commit", "id", "evil|sub", String.duplicate("a", 64), "")
+      Cert.authorship_message(String.duplicate("a", 64), "evil|sub", 0, "default")
     end
-  end
-
-  test "issue_cert rejects unknown target_kind" do
-    assert {:error, {:invalid_target_kind, "unknown"}} =
-             Vcs.issue_cert(@sub_a, "unknown", "some-id")
   end
 end
