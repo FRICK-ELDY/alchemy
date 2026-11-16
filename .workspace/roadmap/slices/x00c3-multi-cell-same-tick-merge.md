@@ -2,9 +2,9 @@
 
 > **ID:** `x00c3` · **slug:** `multi-cell-same-tick-merge` · **status:** `done` · **area:** `[protocol, client, docs]` · **depends_on:** `[x00c2]`  
 > **優先度:** [spatial_interest.md](../spatial_interest.md) 実装第六波（P3-7）  
-> **後続:** Room `…/frame` 購読の段階縮小（既定 cell 切替）· avatar LOD · G1/G2 実測（次空き `x00c4`〜）
+> **後続:** [x00c4](x00c4-opt-in-cell-frame-mainline.md) opt-in cell 本線（**done**）· 既定 cell 切替 · avatar LOD · G1/G2 実測（次空き `x00c5`〜）
 
-目標: opt-in cell 経路で同一 `net_tick` の複数セル frame を**合流適用**し、境界横断（新セル upsert + 旧セル remove）が **Room 同 tick 上書き無し**でも収束するようにする。Room 併読・dual-publish・既定購読は維持（意味的依存の解除が第一歩）。
+目標: opt-in cell 経路で同一 `net_tick` の複数セル frame を**合流適用**し、境界横断（新セル upsert + 旧セル remove）が **Room 同 tick 上書き無し**でも収束するようにする。**本スライス当時**は Room 併読・dual-publish・既定購読を維持（意味的依存の解除が第一歩）。client 購読の排他（opt-in cell 本線）は後続 [x00c4](x00c4-opt-in-cell-frame-mainline.md)。
 
 根拠: [spatial_interest.md](../spatial_interest.md) §4 · [x00c2](x00c2-cell-exit-remove.md) · x0024
 

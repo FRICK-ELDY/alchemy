@@ -16,8 +16,9 @@
 //! - [`decode_limits`] class-specific pre/post decode ceilings (x003b; **does not bump** pin —
 //!   local validation, wire-compatible with x003a peers).
 //! - Delivery class table: [`peer-delivery.md`](../peer-delivery.md). Frame tick gap → snapshot
-//!   ([`decide_frame_tick`], [`FRAME_TICK_GAP_RESYNC`]; x0024). Spatial Interest 併読:
-//!   Room [`decide_room_frame_tick`] (x00c0), cell [`decide_cell_frame_tick`] (x00c3).
+//!   ([`decide_frame_tick`], [`FRAME_TICK_GAP_RESYNC`]; x0024). Spatial Interest tick gates:
+//!   Room [`decide_room_frame_tick`] (x00c0; default client path), cell [`decide_cell_frame_tick`]
+//!   (x00c3; opt-in cell mainline · x00c4 — Room `…/frame` not subscribed when enabled).
 //!
 //! # Non-guarantees
 //! - Bit-packing / prediction coding, DrawCommand taxonomy, audio/tracking frames.
@@ -365,8 +366,11 @@ pub const HOST_CONTROL_SHUTDOWN: &[u8] = b"shutdown";
 /// Env var that opts into unauthenticated Zenoh `host_control` (x001e; default off).
 pub const HOST_CONTROL_ZENOH_ENV: &str = "ALCHEMY_HOST_CONTROL";
 
-/// Env var that opts into near-cell `…/frame/cell/…` subscription alongside Room `…/frame`
-/// (x00bf Spatial Interest; default off — Room frame remains the sole default path).
+/// Env var that opts into near-cell `…/frame/cell/…` as the frame **mainline**
+/// (x00bf / x00c4 Spatial Interest; default off — Room `…/frame` remains the sole default path).
+///
+/// When enabled, clients subscribe to Moore cell keys only (Room `…/frame` is **not** subscribed);
+/// gap→resync still uses Room `…/snapshot`.
 pub const CELL_FRAME_SUB_ENV: &str = "ALCHEMY_CELL_FRAME";
 
 /// Moore neighborhood size including the center cell (`3³`).
@@ -392,14 +396,15 @@ pub fn host_control_zenoh_enabled() -> bool {
     host_control_zenoh_enabled_from(std::env::var(HOST_CONTROL_ZENOH_ENV).ok().as_deref())
 }
 
-/// Parse whether cell-frame interest subscription is enabled (testable).
+/// Parse whether opt-in cell-frame mainline is enabled (testable).
 ///
-/// Same truthy set as [`host_control_zenoh_enabled_from`]. Default off.
+/// Same truthy set as [`host_control_zenoh_enabled_from`]. Default off (Room-only).
 pub fn cell_frame_sub_enabled_from(value: Option<&str>) -> bool {
     env_flag_enabled_from(value)
 }
 
 /// Read [`CELL_FRAME_SUB_ENV`]; default **false** so clients keep Room-only frame sub.
+/// When true, cell Moore is the tick mainline (Room frame not subscribed; x00c4).
 pub fn cell_frame_sub_enabled() -> bool {
     cell_frame_sub_enabled_from(std::env::var(CELL_FRAME_SUB_ENV).ok().as_deref())
 }
@@ -746,7 +751,11 @@ pub fn decide_frame_tick(last: Option<u64>, tick: u64, max_gap: u64) -> FrameTic
     }
 }
 
-/// Room `…/frame` tick gate under Spatial Interest 併読 (x00c0).
+/// Room `…/frame` tick gate (x00c0; default client path after x00c4).
+///
+/// Introduced for Spatial Interest when Room could override a same-tick partial cell.
+/// Runtime 併読 is gone under opt-in cell mainline (x00c4); this gate still applies on the
+/// **default Room-only** subscribe path and in unit tests.
 ///
 /// Same as [`decide_frame_tick`], except `tick == prev` **Applies** when the previous
 /// commit was a partial cell (`last_from_room == false`), so Room full dirty + removes

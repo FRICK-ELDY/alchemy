@@ -56,8 +56,8 @@
 | `…/{wire_cap}/manifest` | 低（host は 5s 再送で late joiner 補助） | `entity_id → blake3` + `locomotion` |
 | `…/{wire_cap}/presence` | 低（割当・解放変更 + 5s 再送） | `sub → user_root entity`（x0015 / 解放 x0016+x0019） |
 | `…/{wire_cap}/alive/{sub}/{jti}` | liveliness | client token；host は検証済み jti 一致時のみ reclaim（x0022） |
-| `…/{wire_cap}/frame` | 高（動いたものだけ）・**latest デルタ** | 署名付き pose upserts / removes。tick 欠落時は適用せず snapshot（x0023 / x0024）。**tick 正本**（x00be も Room 購読が既定） |
-| `…/{wire_cap}/frame/cell/{cx}_{cy}_{cz}` | 高・**latest**（セル別 dirty） | **x00c0 / x00c2**: host が dirty upsert を `CellId` でバケットし非空セルへセル別密封 soft-put（Room は全文・tick 正本）。**x00c2**: 境界横断・despawn 時は旧セルへセルスコープ removes も soft-put。**x00bf / x00c1**: `ALCHEMY_CELL_FRAME=1` で Moore 近傍を Room と**併読**（初期 origin；Presence 後 wire `local_user_root` 中心追従・ヒステリシス再購読）。**x00c3**: 同一 tick 多 cell 合流（`decide_cell_frame_tick` + upsert guard；境界横断は Room 無しで収束；Room 同 tick 上書きは安全網）。既定購読切替は非保証 |
+| `…/{wire_cap}/frame` | 高（動いたものだけ）・**latest デルタ** | 署名付き pose upserts / removes。tick 欠落時は適用せず snapshot（x0023 / x0024）。host dual-publish の tick 正本キー。**client 既定購読**（x00be）；`ALCHEMY_CELL_FRAME=1` 時は非購読（x00c4） |
+| `…/{wire_cap}/frame/cell/{cx}_{cy}_{cz}` | 高・**latest**（セル別 dirty） | **x00c0 / x00c2**: host が dirty upsert を `CellId` でバケットし非空セルへセル別密封 soft-put（Room は全文・host tick 正本）。**x00c2**: 境界横断・despawn 時は旧セルへセルスコープ removes も soft-put。**x00bf / x00c1 / x00c4**: `ALCHEMY_CELL_FRAME=1` で Moore 近傍を **tick 本線**（Room `…/frame` 非購読；初期 origin；Presence 後 wire `local_user_root` 中心追従・ヒステリシス再購読；gap→Room snapshot は cell 起動）。**x00c3**: 同一 tick 多 cell 合流（`decide_cell_frame_tick` + upsert guard；境界横断は Room 無しで収束）。既定は Room-only；既定 cell 切替は非保証 |
 | `…/{wire_cap}/snapshot` | queryable | late join / 再同期用フル pose（`RenderFrame`・x0023 / x0024） |
 | `…/{wire_cap}/input` | 入力 | session 署名 Intent（Token は bind / refresh 時のみ・x0023） |
 | `…/{wire_cap}/inventory/spawn` | 低 | take-out spawn（Room AEAD + session 署名・x006d / x0081 / x0098 Dual） |
@@ -94,7 +94,7 @@
 - 詳細: [`client/fixtures/README.md`](../../../client/fixtures/README.md)
 - Icons: [`client/app/assets/icons/README.md`](../../../client/app/assets/icons/README.md)
 
-環境変数: `ASSETS_URL`（既定 `:4004`）、任意 `ROOM_ID`（既定 `local`・Zenoh キーと Room Token に反映・x0017）、任意 `ZENOH_CONNECT`（既定 `tcp/127.0.0.1:7447`）、任意 `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（設定時は Home UI をスキップしてサイレント **login のみ**・部屋 Join は MainHub・x0018/x007c。**release では seed 既定なし**・x001e）、任意 `ALCHEMY_HOST_BIN`（HostSupervisor 子の実バイナリ。未設定時は隣接 `host-server` または `cargo run`）、任意 `ALCHEMY_FORCE_DESKTOP=1`、任意 `ALCHEMY_HOTSWITCH=0`（x0053 auto 初期 OFF・F8 は有効）、任意 `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`、任意 `ALCHEMY_CELL_FRAME=1`（x00bf/x00c1: 近傍 cell frame を Room と併読・自位置中心追従；既定オフ）。host 側のみ任意 `ALCHEMY_HOST_CONTROL=1`（Zenoh shutdown opt-in）・`ALCHEMY_BLOB_BLAKE3`（canonical ManifestSeal と非互換・拒否用途）。  
+環境変数: `ASSETS_URL`（既定 `:4004`）、任意 `ROOM_ID`（既定 `local`・Zenoh キーと Room Token に反映・x0017）、任意 `ZENOH_CONNECT`（既定 `tcp/127.0.0.1:7447`）、任意 `AUTH_USER` / `AUTH_PASSWORD` / `ALCHEMY_AUTH_TOKEN`（設定時は Home UI をスキップしてサイレント **login のみ**・部屋 Join は MainHub・x0018/x007c。**release では seed 既定なし**・x001e）、任意 `ALCHEMY_HOST_BIN`（HostSupervisor 子の実バイナリ。未設定時は隣接 `host-server` または `cargo run`）、任意 `ALCHEMY_FORCE_DESKTOP=1`、任意 `ALCHEMY_HOTSWITCH=0`（x0053 auto 初期 OFF・F8 は有効）、任意 `ALCHEMY_OPENXR_LOADER` / `STEAM_PATH`、任意 `ALCHEMY_CELL_FRAME=1`（x00bf/x00c1/x00c4: 近傍 cell frame を tick 本線・Room frame 非購読・自位置中心追従・gap→Room snapshot；既定オフ）。host 側のみ任意 `ALCHEMY_HOST_CONTROL=1`（Zenoh shutdown opt-in）・`ALCHEMY_BLOB_BLAKE3`（canonical ManifestSeal と非互換・拒否用途）。  
 未設定時は Desktop で Step1/Step2 → login/register → **MainHub**（Participation / Organizing）。自動入室しない。
 
 ## 関連
