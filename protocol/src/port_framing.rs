@@ -1,8 +1,9 @@
-//! Length-prefixed Port framing for Elixir `{:packet, 4}` workers (x0075).
+//! Length-prefixed Port framing for Elixir `{:packet, 4}` workers (x0075 / x00c8).
 //!
 //! # Guarantees
 //! - u32 big-endian length prefix, then that many payload bytes (Erlang Port packet 4).
 //! - Soft oversize / empty responses stay process-alive when callers use [`ServeReply`].
+//! - [`ServeReply::OkBytes`] for non-hex success bodies (e.g. `vcs-object` JSON).
 //!
 //! # Non-guarantees
 //! - Concurrent clients on one stdin; request multiplexing; streaming hash API.
@@ -37,10 +38,15 @@ impl std::fmt::Display for FramingError {
     }
 }
 
-/// Success = 64-byte ASCII hex; soft error = `e` + reason (Port stays alive).
+/// Success = 64-byte ASCII hex **or** raw OK bytes (e.g. JSON); soft error = `!` + reason.
+///
+/// Callers distinguish: first byte `!` → soft error; else success payload
+/// (`blake3-hash` / `manifest-seal-hash` → 64 hex; `vcs-object` → JSON).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServeReply {
     Hex([u8; 64]),
+    /// Success body written as-is (must not start with [`SOFT_ERR_PREFIX`]).
+    OkBytes(Vec<u8>),
     SoftError(String),
 }
 
@@ -53,6 +59,14 @@ impl ServeReply {
         let mut buf = [0u8; 64];
         buf.copy_from_slice(down.as_bytes());
         Ok(Self::Hex(buf))
+    }
+
+    pub fn ok_bytes(bytes: impl Into<Vec<u8>>) -> Result<Self, String> {
+        let buf = bytes.into();
+        if buf.first() == Some(&SOFT_ERR_PREFIX) {
+            return Err("ok payload must not start with soft-error prefix".into());
+        }
+        Ok(Self::OkBytes(buf))
     }
 
     pub fn soft_error(reason: impl Into<String>) -> Self {
@@ -68,6 +82,7 @@ impl ServeReply {
     pub fn as_bytes(&self) -> Vec<u8> {
         match self {
             Self::Hex(h) => h.to_vec(),
+            Self::OkBytes(b) => b.clone(),
             Self::SoftError(msg) => {
                 let mut out = Vec::with_capacity(1 + msg.len());
                 out.push(SOFT_ERR_PREFIX);
@@ -165,6 +180,9 @@ mod tests {
         assert_eq!(ok.as_bytes().len(), 64);
         let err = ServeReply::soft_error("bad");
         assert_eq!(err.as_bytes(), b"!bad");
+        let json = ServeReply::ok_bytes(br#"{"ok":true}"#.to_vec()).unwrap();
+        assert_eq!(json.as_bytes(), br#"{"ok":true}"#);
+        assert!(ServeReply::ok_bytes(vec![SOFT_ERR_PREFIX]).is_err());
     }
 
     #[test]

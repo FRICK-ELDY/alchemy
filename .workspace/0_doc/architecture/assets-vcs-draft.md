@@ -1,8 +1,8 @@
 # assets VCS 設計たたき台（ローカルリポジトリ → push → Pull Request → main）
 
-> **ステータス**: **draft** — 目標設計のたたき台。実装正本ではない  
+> **ステータス**: **draft** — 目標設計のたたき台。実装正本ではない（codec のみ [x00c8](../../roadmap/slices/x00c8-vcs-object-codec.md) **done**）  
 > **スコープ**: アイテム（Prefab）先行。ワールドは後続  
-> **現行正本**: [assets-server.md](assets-server.md)（Vcs 薄皮 x0062–x0065・Origin Cert v1 x0096）  
+> **現行正本**: [assets-server.md](assets-server.md)（Vcs 薄皮 x0062–x0065・Origin Cert v1 x0096・codec x00c8）  
 > **関連**: [assets-server-draft.md](assets-server-draft.md)（5 層目標像）· [assets-threat-model.md](assets-threat-model.md)（手口×対策）· [mvcc_xpbd.md](../../roadmap/mvcc_xpbd.md) §4.7（ライブ tip / 明示 Save）· [inventory-ladder.md](../../roadmap/inventory-ladder.md)  
 > **ライセンス階層**: `assets-server` / `client` = MPL-2.0。オブジェクト形式（codec）= `protocol/`（Apache-2.0）。`market-server` = BSL-1.1（本書は境界だけを書く）
 
@@ -98,7 +98,7 @@
 
 | フィールド | 内容 |
 |:---|:---|
-| `children[]` | `local_id`（1〜255 バイトの UTF-8）、`blake3`、任意の `trs` |
+| `children[]` | `local_id`（1〜255 バイトの UTF-8）、`blake3`、任意の `trs`（f32 LE 40 bytes・x00c8） |
 | `license` | 任意。SPDX 式または `LicenseRef-*`（§12） |
 | `license_text` | 任意。独自ライセンス本文の blob の blake3 |
 
@@ -112,7 +112,7 @@
 | `parents[]` | 0〜2 個。0 = ルート、1 = 通常、2 = 将来のマージコミット。順序に意味がある（先頭 = 取り込み先の系統） |
 | `generation` | ルートは 1、それ以外は「親の generation の最大値 + 1」。祖先判定の打ち切りに使う |
 | `author_sub` | 作者の sub（1〜255 バイト、`\|` を含まない） |
-| `created_at_ms` | クライアントが申告する時刻（参考値。信頼できる時刻は Origin Cert 側に持つ） |
+| `created_at_ms` | クライアントが申告する非負の時刻 ms（CBOR uint。参考値。信頼できる時刻は Origin Cert 側に持つ） |
 | `message` | UTF-8、上限 4 KiB |
 
 現行の祖先判定は深さ 64 で打ち切っている（[`Assets.Vcs`](../../../assets-server/lib/assets/vcs.ex) の `@max_ff_depth`）。これでは実運用の履歴長に耐えない。generation があれば「辿っている側の generation が古い側を下回ったら打ち切り」で有界に判定できる。
@@ -221,7 +221,7 @@ RFC 8949 §4.2.1（Core Deterministic Encoding）を満たしたうえで、使�
 | 長さ・数値の頭部 | 常に最短形 | RFC 8949 §4.2.1 の要求 |
 | マップのキー | 符号なし整数だけ。昇順・重複禁止 | 符号なし整数なら「エンコード後のバイト順 = 数値順」になり、キー順の流派（バイト順か長さ優先か）による差が出ない |
 | 任意フィールド | 値が無いときはキーごと省略する | 同じ意味を 2 通りに書けないようにする |
-| 浮動小数の値（TRS） | IEEE 754 リトルエンディアンを詰めたバイト列として持つ（NaN / Inf / -0.0 は意味検証で拒否） | CBOR の浮動小数規則に関わらずに済む |
+| 浮動小数の値（TRS） | IEEE 754 **f32** リトルエンディアン 40 bytes（translation[3]+rotation[4]+scale[3]；NaN / Inf / -0.0 は意味検証で拒否。x00c8） | CBOR の浮動小数規則に関わらずに済む |
 | ハッシュ | 32 バイトのバイト列 | — |
 | 未知のキー | 拒否する | 検証できないものを受理しない。キーを足すときは、サーバのデコーダを先に更新してからクライアントを更新する |
 
@@ -232,7 +232,7 @@ Tree
 {
   0: 1,                                    / kind = tree /
   1: [                                     / children（local_id のバイト順で昇順） /
-       {0: "hat", 1: h'<32 bytes>', 2: h'<TRS: 40 or 80 bytes>'},
+       {0: "hat", 1: h'<32 bytes>', 2: h'<TRS: 40 bytes f32 LE>'},
        {0: "pin", 1: h'<32 bytes>'}        / trs が無い子はキー 2 を省略 /
      ],
   2: "CC-BY-4.0",                          / license（任意） /
@@ -246,7 +246,7 @@ Commit
   2: [h'<32 bytes>'],                      / parents（ルートは空配列。最大 2） /
   3: 7,                                    / generation /
   4: "user-123",                           / author_sub /
-  5: 1763172000000,                        / created_at_ms /
+  5: 1763172000000,                        / created_at_ms (non-negative uint; major 1 forbidden) /
   6: "帽子の色を変更"                      / message /
 }
 
@@ -705,8 +705,8 @@ VCS と独立に先行するもの（§14.4。現行の穴を塞ぐので優先�
 
 VCS 本体（ID は着手時に採番）:
 
-1. オブジェクト形式: `protocol/` に §6 で選んだ形式の codec・厳格デコード・ゴールデンベクタ・Port バイナリ
-2. サーバ DB の移行（内容アドレス・parents・generation・objects・repo_commits）と `promote_prefab` の置き換え
+1. オブジェクト形式: `protocol/` に §6 で選んだ形式の codec・厳格デコード・ゴールデンベクタ・Port バイナリ — **[x00c8](../../roadmap/slices/x00c8-vcs-object-codec.md)**
+2. サーバ DB の移行（内容アドレス・parents・generation・objects・repo_commits）と `promote_prefab` の置き換え（次空き `x00c9` 想定）
 3. Origin Cert v2（Authorship / Release、`issued_at_ms`・`kid`）と原産地台帳
 4. visibility、RepoRead（GET 認可）、`ItemRef` の読み取り判定、private の 404
 5. push API（negotiate → blob アップロード → push）、サーバ側の検証、ブランチ保護
@@ -723,7 +723,7 @@ VCS 本体（ID は着手時に採番）:
 
 ## 19. 未決事項
 
-- TRS の精度（f32 / f64）。shared-sim の TRS 型に合わせて確定する
+- TRS の精度: **v1 は f32 LE 40 bytes（x00c8 で確定）**。f64 への版上げは将来のスキーマ拡張（整数キー追加ではなく TRS バイト長の別キー）で検討
 - 到達不能になったコミット（rebase 前など）の保持期間と GC
 - fork 時の `vcs_repo_commits` 複製のスケール（大きなリポジトリでは、fork 元を辿る方式も検討する）
 - 未ログインでの public 閲覧を将来許すか
