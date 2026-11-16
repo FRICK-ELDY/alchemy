@@ -2,7 +2,7 @@
 
 > **ID:** `x00c2` · **slug:** `cell-exit-remove` · **status:** `done` · **area:** `[host, client, docs]` · **depends_on:** `[x00c1]`  
 > **優先度:** [spatial_interest.md](../spatial_interest.md) 実装第五波（P3-7）  
-> **後続:** Room `…/frame` 依存の段階縮小 · 多 cell 同一 tick 合流 · avatar LOD · G1/G2 実測（次空き `x00c3`〜）
+> **後続:** [x00c3](x00c3-multi-cell-same-tick-merge.md) 多 cell 同一 tick 合流 · Room 既定切替 · avatar LOD · G1/G2 実測（次空き `x00c4`〜）
 
 目標: host が前回配信セルを追跡し、セル境界横断・デスポーン時に **旧セル** `…/frame/cell/…` へ removes を soft-put する。Room `…/frame` 全文 removes と併読契約は維持。client 既定購読切替・多 cell 同一 tick 合流は後続。
 
@@ -31,11 +31,11 @@
 | `last_wire_cell` で前回配信セルを追跡（Room put 成功後に更新） | cell put 到達保証 |
 | セル境界横断時、**旧セル**へ remove をセル別密封 soft-put | 中間セルへの連鎖 remove |
 | Room `removes` / `removes_only` も last セルへ remove-only soft-put | cell 別 snapshot |
-| セル frame は upserts（可空）+ セルスコープ removes；`acked` は空 | cell-only 既定化後の多 cell 同一 tick 合流 |
+| セル frame は upserts（可空）+ セルスコープ removes；`acked` は空 | cell-only 既定化（多 cell 合流は [x00c3](x00c3-multi-cell-same-tick-merge.md)） |
 | 同一 `net_tick` を Room / 各 cell にスタンプ | avatar LOD / CCU 天井拡大 |
 | cell seal/put は soft-fail（x00c0 据え置き） | — |
 | 併読時の Room 同 tick 上書き（`decide_room_frame_tick`）維持 | ギャップ中の cell 欠落収束 |
-| upserts∩removes は **remove 勝ち**（cell upsert 除外・`last_wire_cell` も `last_sent` と同順） | 同一 tick の旧セル remove が cell 厳密ゲートで DropStale しないこと（併読は Room 収束で許容） |
+| upserts∩removes は **remove 勝ち**（cell upsert 除外・`last_wire_cell` も `last_sent` と同順） | 本スライス時点の多 cell 同一 tick 合流（→ [x00c3](x00c3-multi-cell-same-tick-merge.md)） |
 
 ---
 

@@ -266,8 +266,17 @@ impl Uniforms {
 pub struct WorldView {
     pub last_frame_tick: Option<u64>,
     /// True when [`Self::last_frame_tick`] was committed by Room `…/frame` or snapshot (x00c0).
-    /// False after a partial cell apply so same-tick Room may override under 併読.
+    /// False after a partial cell apply so same-tick Room may override under 併読,
+    /// and additional cell samples may merge (x00c3).
     pub last_frame_from_room: bool,
+    /// Entity ids that survived a cell upsert on the current [`Self::last_frame_tick`]
+    /// (x00c3). Later same-tick removes skip a guarded id only when **that id** has no
+    /// upsert in the same frame (per-id remove-only → cross-cell upsert wins). If the
+    /// frame also upserts the id, within-frame remove still wins.
+    /// Cleared on tick advance / Room / snapshot. Opt-in hot path only; grows with distinct
+    /// dirty upsert ids per tick (no hard cap — reuse via clear at tick boundary; cell 既定化
+    /// 時は dirty 予算と合わせて見直す).
+    pub cell_tick_upsert_guard: std::collections::HashSet<u32>,
     pub entities: std::collections::HashMap<u32, EntityPose>,
 }
 

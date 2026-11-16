@@ -32,7 +32,7 @@
 | 非空バケットを `…/frame/cell/{cx}_{cy}_{cz}` へ **セル別密封**で soft-put | cell put 到達保証 |
 | 空バケットは put しない | cell 別 snapshot |
 | 同一 `net_tick` を Room / 各 cell にスタンプ | — |
-| 併読時、同一 tick で Room が部分 cell 適用を上書き（`decide_room_frame_tick`） | cell-only 既定化後の多 cell 同一 tick 合流 |
+| 併読時、同一 tick で Room が部分 cell 適用を上書き（`decide_room_frame_tick`） | cell-only 既定化（多 cell 合流は [x00c3](x00c3-multi-cell-same-tick-merge.md)） |
 | removes は Room 全文。cell 側には同梱しない | セル退出の即時 remove 保証 |
 | cell seal/put は soft-fail（Room 成功後に process を殺さない） | cell put 到達保証 |
 | cell publisher キャッシュ上限 64 の **LRU**（同時アクティブ想定；declare 成功後に evict） | 無制限 publisher；cell 経路の Entity zero-clone |

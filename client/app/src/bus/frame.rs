@@ -1,4 +1,4 @@
-//! RenderFrame delta subscriber + snapshot convergence (x0023 / x0024 / x0029 / x00bf / x00c1).
+//! RenderFrame delta subscriber + snapshot convergence (x0023 / x0024 / x0029 / x00bf / x00c1 / x00c3).
 //!
 //! Guarantees:
 //! - Frame finite / tick / `host_sig` verified before apply; snapshot requires non-empty `upserts`
@@ -7,24 +7,23 @@
 //! - Snapshot skips the tick gate so a racing delta cannot block convergence
 //! - RenderFrame Entity carries quat + scale; client applies TRS (x0029)
 //! - Class-specific decode byte/count limits and AEAD failure → drop (x003b)
-//! - Room and opt-in cell interest share apply crypto; tick gates differ (x00bf / x00c0):
-//!   cell uses strict [`decide_frame_tick`]; Room uses [`decide_room_frame_tick`] so a late
-//!   Room full frame overrides a same-tick partial cell under 併読
+//! - Room and opt-in cell interest share apply crypto; tick gates differ (x00bf / x00c0 / x00c3):
+//!   cell uses [`decide_cell_frame_tick`] (same-tick merge when prior was partial cell);
+//!   Room uses [`decide_room_frame_tick`] so a late Room full frame overrides under 併読
 //! - Cell interest threads do **not** gap→snapshot (Room path owns resync; avoids dual get)
 //! - Opt-in cell interest follows wire `local_user_root` `CellId` with hysteresis and
 //!   resubscribes Moore neighborhood on center change only (x00c1); Room sub stays put.
 //!   Center is re-evaluated on a ≤250ms deadline even while cell samples keep arriving
-//! - x00c2: host may soft-put old-cell removes and new-cell upserts on the **same**
-//!   `net_tick`. Strict cell tick gate means the later cell sample is DropStale; under
-//!   併読, Room same-tick override is the convergence path (multi-cell merge not guaranteed)
+//! - x00c2/x00c3: host may soft-put old-cell removes and new-cell upserts on the **same**
+//!   `net_tick`. Client merges same-tick cell samples (cross-cell upsert guard; within-frame
+//!   remove wins). Room same-tick override remains a safety net under 併読
 //!
 //! Non-guarantees: retransmission of missed deltas, reliable-delivery ACK channel, Manifest trust
-//! (see `bus::manifest`; `host_pub` is read, not established here); cell-only delivery; AOI
-//! bandwidth reduction (Room frame remains default / tick authority); Presence-unset follow;
-//! cell gap convergence during resub; same-tick multi-cell merge (old remove may DropStale
-//! until Room / next tick).
+//! (see `bus::manifest`; `host_pub` is read, not established here); cell-only default delivery;
+//! AOI bandwidth reduction (Room frame remains default subscription); Presence-unset follow;
+//! cell gap convergence during resub.
 //! Hot-path note (x00bf opt-in / x00c0 / x00c1): Room + near-cell 併読 may AEAD-open / sig-verify /
-//! decode twice per tick; cell payloads are cell-filtered (Room remains tick authority).
+//! decode twice per tick; cell payloads are cell-filtered (Room remains snapshot / gap authority).
 
 use std::sync::Arc;
 use std::thread;
@@ -34,7 +33,7 @@ use alchemy_protocol::decode_limits::{check_frame, check_payload_bytes, WireClas
 use alchemy_protocol::wire_aead::AeadKind;
 use alchemy_protocol::wire_crypto::{frame_entities_finite, verify_frame};
 use alchemy_protocol::{
-    decide_frame_tick, decide_room_frame_tick, frame_cell_interest_keyexpr,
+    decide_cell_frame_tick, decide_room_frame_tick, frame_cell_interest_keyexpr,
     moore_neighborhood_cells, snapshot_key, FrameTickDecision, Message, RenderFrame,
     FRAME_TICK_GAP_RESYNC,
 };
@@ -60,7 +59,8 @@ enum ApplyFrameOutcome {
 
 /// Apply a tick-gated delta to a [`scene::WorldView`] (no crypto). Snapshot path skips the gate.
 ///
-/// `from_room`: Room `…/frame` / snapshot use Room authority gate; cell interest uses strict.
+/// `from_room`: Room `…/frame` / snapshot use Room authority gate; cell interest uses
+/// [`decide_cell_frame_tick`] (x00c3 same-tick merge).
 /// On [`ApplyFrameOutcome::NeedResync`], the world is left unchanged.
 fn apply_delta_entities(
     world: &mut scene::WorldView,
@@ -79,7 +79,12 @@ fn apply_delta_entities(
                 world.last_frame_from_room,
             )
         } else {
-            decide_frame_tick(world.last_frame_tick, tick, FRAME_TICK_GAP_RESYNC)
+            decide_cell_frame_tick(
+                world.last_frame_tick,
+                tick,
+                FRAME_TICK_GAP_RESYNC,
+                world.last_frame_from_room,
+            )
         };
         match decision {
             FrameTickDecision::DropStale => return ApplyFrameOutcome::Dropped,
@@ -87,6 +92,16 @@ fn apply_delta_entities(
             FrameTickDecision::Apply => {}
         }
     }
+
+    let same_tick_cell_merge = !from_room
+        && !replace_entities
+        && world.last_frame_tick == Some(tick)
+        && !world.last_frame_from_room;
+    let tick_advanced = world.last_frame_tick != Some(tick);
+    if from_room || replace_entities || tick_advanced {
+        world.cell_tick_upsert_guard.clear();
+    }
+
     if replace_entities {
         world.entities.clear();
     }
@@ -111,11 +126,36 @@ fn apply_delta_entities(
             },
         );
     }
+    // Per-id membership for merge removes (avoid O(|removes|·|upserts|) scans).
+    let upsert_ids_this_frame: std::collections::HashSet<u32> = if same_tick_cell_merge {
+        upserts.iter().map(|e| e.id).collect()
+    } else {
+        std::collections::HashSet::new()
+    };
     for id in removes {
+        // Priority (x00c3): within-frame upserts∩removes → remove wins (host 契約).
+        // Cross-cell: skip remove of id only when that id has no upsert this frame and is guarded.
+        if same_tick_cell_merge
+            && !upsert_ids_this_frame.contains(id)
+            && world.cell_tick_upsert_guard.contains(id)
+        {
+            continue;
+        }
         world.entities.remove(id);
     }
+
+    if !from_room && !replace_entities {
+        for e in upserts {
+            if world.entities.contains_key(&e.id) {
+                world.cell_tick_upsert_guard.insert(e.id);
+            } else {
+                world.cell_tick_upsert_guard.remove(&e.id);
+            }
+        }
+    }
+
     world.last_frame_tick = Some(tick);
-    // Snapshot and Room commits are Room authority; cell leaves the flag false for override.
+    // Snapshot and Room commits are Room authority; cell leaves the flag false for override/merge.
     world.last_frame_from_room = from_room || replace_entities;
     ApplyFrameOutcome::Applied
 }
@@ -578,6 +618,7 @@ mod tests {
         let mut world = WorldView {
             last_frame_tick: Some(10),
             last_frame_from_room: true,
+            cell_tick_upsert_guard: Default::default(),
             entities: [(
                 1,
                 EntityPose {
@@ -602,6 +643,7 @@ mod tests {
         let mut world = WorldView {
             last_frame_tick: Some(10),
             last_frame_from_room: true,
+            cell_tick_upsert_guard: Default::default(),
             entities: Default::default(),
         };
 
@@ -619,6 +661,7 @@ mod tests {
         let mut world = WorldView {
             last_frame_tick: Some(1),
             last_frame_from_room: true,
+            cell_tick_upsert_guard: Default::default(),
             entities: Default::default(),
         };
         let e = alchemy_protocol::entity_trs(
@@ -648,6 +691,7 @@ mod tests {
         let mut world = WorldView {
             last_frame_tick: Some(100),
             last_frame_from_room: true,
+            cell_tick_upsert_guard: Default::default(),
             entities: [(1, EntityPose::default())].into(),
         };
 
@@ -708,84 +752,111 @@ mod tests {
         assert!(!world.last_frame_from_room);
     }
 
-    /// x00c2: same-tick new-cell upsert then old-cell remove → remove DropStale;
-    /// Room same-tick override still converges (併読契約; multi-cell merge 非保証).
+    /// x00c3: same-tick new-cell upsert then old-cell remove → merge; entity stays (Room 無し).
     #[test]
-    fn cell_exit_same_tick_remove_dropstale_room_converges() {
+    fn cell_exit_same_tick_upsert_then_remove_merges() {
         let mut world = WorldView::default();
-        // Prior tick: entity visible via cell.
         assert_eq!(
             apply_delta_entities(&mut world, 4, &[sample_entity(1, 1.0)], &[], false, false),
             ApplyFrameOutcome::Applied
         );
 
-        // Boundary cross tick 5: new cell upsert arrives first.
         assert_eq!(
             apply_delta_entities(&mut world, 5, &[sample_entity(1, 32.0)], &[], false, false),
             ApplyFrameOutcome::Applied
         );
         assert!((world.entities.get(&1).unwrap().x - 32.0).abs() < f32::EPSILON);
+        assert!(world.cell_tick_upsert_guard.contains(&1));
 
-        // Old cell remove same tick is DropStale under strict cell gate.
+        // Old cell remove same tick merges; guarded upsert wins.
         assert_eq!(
             apply_delta_entities(&mut world, 5, &[], &[1], false, false),
-            ApplyFrameOutcome::Dropped
-        );
-        assert!(world.entities.contains_key(&1));
-
-        // Room same-tick full frame overrides (may clear via removes or keep live pose).
-        assert_eq!(
-            apply_delta_entities(
-                &mut world,
-                5,
-                &[sample_entity(1, 32.0)],
-                &[],
-                false,
-                /* from_room */ true,
-            ),
             ApplyFrameOutcome::Applied
         );
-        assert!(world.last_frame_from_room);
+        assert!(!world.last_frame_from_room);
         assert!((world.entities.get(&1).unwrap().x - 32.0).abs() < f32::EPSILON);
-
-        // Despawn via Room removes on a later tick (Room is remove authority).
-        assert_eq!(
-            apply_delta_entities(&mut world, 6, &[], &[1], false, true),
-            ApplyFrameOutcome::Applied
-        );
-        assert!(!world.entities.contains_key(&1));
     }
 
-    /// x00c2: reverse arrival — old-cell remove first then new-cell upsert DropStale;
-    /// Room same-tick restore still converges (対称契約).
+    /// x00c3: reverse arrival — old-cell remove then new-cell upsert merges (Room 無し).
     #[test]
-    fn cell_exit_same_tick_upsert_dropstale_room_restores() {
+    fn cell_exit_same_tick_remove_then_upsert_merges() {
         let mut world = WorldView::default();
         assert_eq!(
             apply_delta_entities(&mut world, 4, &[sample_entity(1, 1.0)], &[], false, false),
             ApplyFrameOutcome::Applied
         );
 
-        // Old cell remove arrives first on tick 5 → entity cleared.
         assert_eq!(
             apply_delta_entities(&mut world, 5, &[], &[1], false, false),
             ApplyFrameOutcome::Applied
         );
         assert!(!world.entities.contains_key(&1));
 
-        // New cell upsert same tick is DropStale under strict cell gate.
         assert_eq!(
             apply_delta_entities(&mut world, 5, &[sample_entity(1, 32.0)], &[], false, false),
-            ApplyFrameOutcome::Dropped
+            ApplyFrameOutcome::Applied
+        );
+        assert!(!world.last_frame_from_room);
+        assert!((world.entities.get(&1).unwrap().x - 32.0).abs() < f32::EPSILON);
+        assert!(world.cell_tick_upsert_guard.contains(&1));
+    }
+
+    /// x00c3: within a single cell frame, upserts∩removes stays remove-wins (host 契約).
+    #[test]
+    fn cell_same_frame_upsert_remove_intersection_remove_wins() {
+        let mut world = WorldView::default();
+        assert_eq!(
+            apply_delta_entities(&mut world, 1, &[sample_entity(1, 8.0)], &[1], false, false,),
+            ApplyFrameOutcome::Applied
         );
         assert!(!world.entities.contains_key(&1));
+        assert!(!world.cell_tick_upsert_guard.contains(&1));
+    }
 
-        // Room same-tick override restores the live pose.
+    /// x00c3: mid-merge intersection still remove-wins even if id was already guarded.
+    #[test]
+    fn cell_merge_same_frame_intersection_remove_wins_over_guard() {
+        let mut world = WorldView::default();
+        assert_eq!(
+            apply_delta_entities(&mut world, 1, &[sample_entity(1, 1.0)], &[], false, false),
+            ApplyFrameOutcome::Applied
+        );
+        assert!(world.cell_tick_upsert_guard.contains(&1));
+
+        // Same tick, another cell frame with upsert∩remove for the guarded id.
+        assert_eq!(
+            apply_delta_entities(&mut world, 1, &[sample_entity(1, 9.0)], &[1], false, false,),
+            ApplyFrameOutcome::Applied
+        );
+        assert!(!world.entities.contains_key(&1));
+        assert!(!world.cell_tick_upsert_guard.contains(&1));
+    }
+
+    /// x00c3: after multi-cell merge, Room same-tick override still applies and clears guard.
+    #[test]
+    fn room_overrides_same_tick_after_multi_cell_merge() {
+        let mut world = WorldView::default();
+        assert_eq!(
+            apply_delta_entities(&mut world, 4, &[sample_entity(1, 1.0)], &[], false, false),
+            ApplyFrameOutcome::Applied
+        );
+        assert_eq!(
+            apply_delta_entities(&mut world, 5, &[sample_entity(1, 32.0)], &[], false, false),
+            ApplyFrameOutcome::Applied
+        );
+        assert_eq!(
+            apply_delta_entities(&mut world, 5, &[], &[1], false, false),
+            ApplyFrameOutcome::Applied
+        );
+        assert!(!world.last_frame_from_room);
+        assert!(world.cell_tick_upsert_guard.contains(&1));
+        assert!((world.entities.get(&1).unwrap().x - 32.0).abs() < f32::EPSILON);
+
         assert_eq!(
             apply_delta_entities(
                 &mut world,
                 5,
-                &[sample_entity(1, 32.0)],
+                &[sample_entity(1, 40.0), sample_entity(2, 2.0)],
                 &[],
                 false,
                 /* from_room */ true,
@@ -793,7 +864,16 @@ mod tests {
             ApplyFrameOutcome::Applied
         );
         assert!(world.last_frame_from_room);
-        assert!((world.entities.get(&1).unwrap().x - 32.0).abs() < f32::EPSILON);
+        assert!(world.cell_tick_upsert_guard.is_empty());
+        assert!((world.entities.get(&1).unwrap().x - 40.0).abs() < f32::EPSILON);
+        assert!(world.entities.contains_key(&2));
+
+        // Late cell after Room stays DropStale.
+        assert_eq!(
+            apply_delta_entities(&mut world, 5, &[], &[2], false, false),
+            ApplyFrameOutcome::Dropped
+        );
+        assert!(world.entities.contains_key(&2));
     }
 
     /// x00c0: cell partial then same-tick Room full must override (併読 race).
