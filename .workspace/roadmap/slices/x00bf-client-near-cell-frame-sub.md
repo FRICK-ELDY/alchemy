@@ -2,7 +2,7 @@
 
 > **ID:** `x00bf` · **slug:** `client-near-cell-frame-sub` · **status:** `done` · **area:** `[protocol, client, docs]` · **depends_on:** `[x00be]`  
 > **優先度:** [spatial_interest.md](../spatial_interest.md) 実装第二波（P3-7）  
-> **後続:** [x00c0](x00c0-host-cell-dirty-filter.md) host セル別 dirty（**done**）· Room `…/frame` 依存の段階縮小 · 自位置追従の購読切替 · avatar LOD · G1/G2 実測（次空き `x00c1`〜）
+> **後続:** [x00c0](x00c0-host-cell-dirty-filter.md) host セル別 dirty（**done**）· [x00c1](x00c1-client-cell-follow-resub.md) 自位置追従（**done**）· Room `…/frame` 依存の段階縮小 · avatar LOD · G1/G2 実測（次空き `x00c2`〜）
 
 目標: x00be の cell frame キーを **client が opt-in で近傍セル購読**できるようにする。既定は Room `…/frame` のみ。opt-in 時は Room を維持したまま近傍 `…/frame/cell/…` を**併読**する（フルメッシュ廃止・帯域削減は後続）。
 
