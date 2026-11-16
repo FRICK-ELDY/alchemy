@@ -9,9 +9,9 @@
 //! - Intent Ed25519 session minted before guest Room Token fetch so `cnf.spk` matches bind
 //!   `session_pub` (x003e)
 //! - `ensure_room_bus` idempotent via `room_bus_started`; spawn failure clears the flag
-//! - Frame subscribe is exclusive (x00c5): default interim `…/frame/cell/*` mainline (Room
-//!   frame **not** subscribed; wire `local_user_root` center tracked for future Moore
-//!   narrowing · x00c1; no resub today). `ALCHEMY_ROOM_FRAME=1` opts into Room `…/frame` only
+//! - Frame subscribe is exclusive (x00c5/x00c6): default Moore per-key ≤27 cell mainline
+//!   (Room frame **not** subscribed; wire center follow + enter snapshot + exit prune).
+//!   `ALCHEMY_ROOM_FRAME=1` opts into Room `…/frame` only
 //! - Reopen after join only when `mtls_reopen_pending` or session was dropped (x0068)
 //! - While `room_bus_started`, soft refresh skips CSR and disk PEM rewrite (Token / epoch
 //!   only). PEMs apply on next open / Leave→Join / `mtls_reopen` — mid-flight reopen is
@@ -452,7 +452,7 @@ pub(crate) fn ensure_room_bus(
                     Arc::clone(shared),
                 )?;
                 log::info!(
-                    "cell/* interim mainline (default; Room frame not subscribed; gap→Room snapshot on cell; track wire user_root center; {ROOM_FRAME_SUB_ENV}=1 for Room-only)"
+                    "cell Moore per-key mainline (default; Room frame not subscribed; gap/enter→Room snapshot; exit prune; {ROOM_FRAME_SUB_ENV}=1 for Room-only)"
                 );
             }
             FrameSubscribeMode::Room => {

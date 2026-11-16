@@ -649,11 +649,11 @@ pub fn frame_cell_key(room_id: &str, wire_cap: &str, cx: i32, cy: i32, cz: i32) 
 
 /// Moore neighborhood of `cx,cy,cz` including the center (`3×3×3` = [`MOORE_NEIGHBORHOOD_LEN`]).
 ///
-/// Helper for [`frame_cell_interest_keyexpr`] (Moore `|` union). **x00c5 client subscribe** uses
-/// [`frame_cell_wildcard_key`] instead (interim; see that item). Does not convert world
-/// coordinates (indices only). Axis math uses `saturating_add`; near `i32` extremes neighbors
-/// can collide — callers that build a keyexpr should go through [`frame_cell_interest_keyexpr`]
-/// (dedups).
+/// **x00c6 client mainline** declares one subscriber per cell (≤27), not a `|` union.
+/// [`frame_cell_interest_keyexpr`] remains for tests / optional union experiments. Does not
+/// convert world coordinates (indices only). Axis math uses `saturating_add`; near `i32`
+/// extremes neighbors can collide — callers that build a `|` keyexpr should go through
+/// [`frame_cell_interest_keyexpr`] (dedups).
 pub fn moore_neighborhood_cells(cx: i32, cy: i32, cz: i32) -> [[i32; 3]; MOORE_NEIGHBORHOOD_LEN] {
     let mut out = [[0i32; 3]; MOORE_NEIGHBORHOOD_LEN];
     let mut i = 0;
@@ -678,10 +678,9 @@ pub fn moore_neighborhood_cells(cx: i32, cy: i32, cz: i32) -> [[i32; 3]; MOORE_N
 /// Empty `cells` yields an empty string (caller must not declare a subscriber on it).
 /// Duplicate cell indices are emitted once (stable first-seen order).
 ///
-/// **x00c5:** client mainline subscribe uses [`frame_cell_wildcard_key`] instead. This `|`
-/// helper remains for tests / future Moore interest rewiring. Observed on local peer
-/// (Zenoh 1.10.1, `tcp/127.0.0.1:7447`): long Moore unions (~27 keys) **declare OK** but
-/// delivered **zero** samples (poses froze at join snapshot).
+/// **Not client mainline** (x00c6 uses per-key ≤27). Observed on local peer (Zenoh 1.10.1,
+/// `tcp/127.0.0.1:7447`): long Moore unions (~27 keys) **declare OK** but delivered **zero**
+/// samples — keep as test / optional optimization only.
 pub fn frame_cell_interest_keyexpr(room_id: &str, wire_cap: &str, cells: &[[i32; 3]]) -> String {
     let mut out = String::new();
     let mut seen: Vec<[i32; 3]> = Vec::with_capacity(cells.len());
@@ -699,12 +698,10 @@ pub fn frame_cell_interest_keyexpr(room_id: &str, wire_cap: &str, cells: &[[i32;
     out
 }
 
-/// Interim client cell-frame subscribe keyexpr (x00c5): `…/frame/cell/*`.
+/// ACL-aligned `…/frame/cell/*` keyexpr (WAN ACL shape).
 ///
-/// ACL-aligned single-segment wildcard (same shape as WAN `frame/cell/*`). Replaces Moore
-/// `|` unions for default mainline until union delivery is re-proven on peer/router.
-/// Center-independent — interest follow does not resubscribe. Host still soft-puts only
-/// non-empty cells (dirty-bounded receive).
+/// **Not client default mainline** (x00c6: Moore per-key). Kept for ACL docs, tests, and
+/// debug/計測. Receiving all dirty cells unbounded is incompatible with the VR Interest budget.
 pub fn frame_cell_wildcard_key(room_id: &str, wire_cap: &str) -> String {
     format!("{}/frame/cell/*", room_prefix(room_id, wire_cap))
 }

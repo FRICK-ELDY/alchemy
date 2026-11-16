@@ -2,7 +2,7 @@
 
 > **ID:** `x00c5` · **slug:** `default-cell-frame-mainline` · **status:** `done` · **area:** `[protocol, client, docs]` · **depends_on:** `[x00c4]`  
 > **優先度:** [spatial_interest.md](../spatial_interest.md) 実装第八波（P3-7）  
-> **後続:** avatar LOD · G1/G2 実測 · host dual-publish 縮小 · Moore 外 prune（次空き `x00c6`〜）
+> **後続:** [x00c6](x00c6-spatial-interest-vr-delivery-contract.md) VR delivery 契約（Moore per-key · Interest enter · 自アバター応答）· その後 avatar LOD · G1/G2 · dual-publish 縮小
 
 目標: client の frame **既定購読**を cell 本線にする（Room `…/frame` 非購読）。レガシー Room 全文は **`ALCHEMY_ROOM_FRAME=1`** でオプトアウト。gap→resync は Room `…/snapshot`。host dual-publish 維持。
 
