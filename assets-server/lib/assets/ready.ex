@@ -2,23 +2,29 @@ defmodule Assets.Ready do
   @moduledoc """
   Readiness probes for `GET /ready` (x008b / P2-2).
 
-  Guarantees: Repo can answer `SELECT 1`; BLAKE3 Port **pool** reports every
-  partition Port attached via non-blocking `ready?/0` (no GenServer mailbox wait).
+  Guarantees: Repo can answer `SELECT 1`; BLAKE3 and vcs-object Port **pools**
+  report every partition Port attached via non-blocking `ready?/0`.
   Non-guarantees: CAS backend reachability; more-than-N hash throughput; auth JWKS
   (assets verifies via shared client, not a local Keys process).
   """
 
   alias Assets.Blake3.Worker, as: Blake3Port
   alias Assets.Repo
+  alias Assets.VcsObject.Worker, as: VcsObjectPort
 
   @type check_status :: :ok | :error
-  @type checks :: %{repo: check_status(), port: check_status()}
+  @type checks :: %{
+          repo: check_status(),
+          port: check_status(),
+          vcs_object_port: check_status()
+        }
 
   @spec check() :: {:ok, checks()} | {:error, checks()}
   def check do
     checks = %{
       repo: repo_ok?(),
-      port: port_ok?()
+      port: port_ok?(),
+      vcs_object_port: vcs_object_port_ok?()
     }
 
     if Enum.all?(Map.values(checks), &(&1 == :ok)) do
@@ -41,5 +47,9 @@ defmodule Assets.Ready do
 
   defp port_ok? do
     if Blake3Port.ready?(), do: :ok, else: :error
+  end
+
+  defp vcs_object_port_ok? do
+    if VcsObjectPort.ready?(), do: :ok, else: :error
   end
 end

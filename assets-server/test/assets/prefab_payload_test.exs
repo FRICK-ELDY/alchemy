@@ -144,6 +144,21 @@ defmodule Assets.PrefabPayloadTest do
     assert {:error, {:invalid_child, 0, :invalid_child_shape}} = Payload.from_json(json)
   end
 
+  test "rejects duplicate local_id (x00c9)" do
+    other = String.duplicate("b", 64)
+
+    json =
+      Jason.encode!(%{
+        schema_version: 1,
+        children: [
+          %{local_id: "same", blake3: @blake3},
+          %{local_id: "same", blake3: other}
+        ]
+      })
+
+    assert {:error, :duplicate_local_id} = Payload.from_json(json)
+  end
+
   test "rejects non-finite TRS (Inf not possible in JSON but guarded at float level)" do
     # We test non-finite detection by injecting via validate/1 directly
     # (standard JSON cannot encode Inf/NaN, so we test the guard path)

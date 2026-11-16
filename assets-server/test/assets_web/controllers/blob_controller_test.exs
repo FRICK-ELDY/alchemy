@@ -4,6 +4,7 @@ defmodule AssetsWeb.BlobControllerTest do
   alias Assets.Blake3.Worker, as: Blake3Worker
 
   @blake3_partitioner Assets.Blake3.Partitioner
+  @vcs_object_partitioner Assets.VcsObject.Partitioner
   alias Assets.Blobs
   alias Assets.Blobs.BlobGrant
   alias Assets.Blobs.CasObject
@@ -300,13 +301,17 @@ defmodule AssetsWeb.BlobControllerTest do
     assert %{"status" => "ok", "service" => "assets-server"} = json_response(conn, 200)
   end
 
-  test "ready checks repo and blake3 port", %{conn: conn} do
+  test "ready checks repo, blake3 port, and vcs-object port", %{conn: conn} do
     conn = get(conn, "/ready")
 
     assert %{
              "status" => "ok",
              "service" => "assets-server",
-             "checks" => %{"repo" => "ok", "port" => "ok"}
+             "checks" => %{
+               "repo" => "ok",
+               "port" => "ok",
+               "vcs_object_port" => "ok"
+             }
            } = json_response(conn, 200)
   end
 
@@ -315,10 +320,21 @@ defmodule AssetsWeb.BlobControllerTest do
 
     assert %{
              "status" => "not_ready",
-             "checks" => %{"repo" => "ok", "port" => "error"}
+             "checks" => %{"repo" => "ok", "port" => "error", "vcs_object_port" => "ok"}
            } = json_response(get(conn, "/ready"), 503)
   after
     restart_blake3_pool!()
+  end
+
+  test "ready returns 503 when vcs-object port pool is down", %{conn: conn} do
+    :ok = Supervisor.terminate_child(Assets.Supervisor, @vcs_object_partitioner)
+
+    assert %{
+             "status" => "not_ready",
+             "checks" => %{"repo" => "ok", "port" => "ok", "vcs_object_port" => "error"}
+           } = json_response(get(conn, "/ready"), 503)
+  after
+    restart_vcs_object_pool!()
   end
 
   test "ready returns 503 when repo is down", %{conn: conn} do
@@ -326,7 +342,7 @@ defmodule AssetsWeb.BlobControllerTest do
 
     assert %{
              "status" => "not_ready",
-             "checks" => %{"repo" => "error", "port" => "ok"}
+             "checks" => %{"repo" => "error", "port" => "ok", "vcs_object_port" => "ok"}
            } = json_response(get(conn, "/ready"), 503)
   after
     restart_repo!()
@@ -902,6 +918,16 @@ defmodule AssetsWeb.BlobControllerTest do
       {:error, {:already_started, _}} -> :ok
       {:error, :running} -> :ok
       other -> flunk("failed to restart Blake3.Partitioner: #{inspect(other)}")
+    end
+  end
+
+  defp restart_vcs_object_pool! do
+    case Supervisor.restart_child(Assets.Supervisor, @vcs_object_partitioner) do
+      {:ok, _} -> :ok
+      {:ok, _, _} -> :ok
+      {:error, {:already_started, _}} -> :ok
+      {:error, :running} -> :ok
+      other -> flunk("failed to restart VcsObject.Partitioner: #{inspect(other)}")
     end
   end
 
