@@ -1,21 +1,24 @@
 defmodule Assets.Vcs do
   @moduledoc """
-  Vcs facade — Wave 4 + content-addressed objects (x00c9 / §18.2).
+  Vcs facade — content-addressed objects (x00c9) + Origin Cert v2 (x00ca / §18.3).
 
   x0062 / x00c9: promote_prefab/2 — Prefab → VcsRepo + CBOR Tree/Commit + `main`.
   x0064: create_branch/3, create_tag/3, advance_branch/3 — Ref management.
-  x0065 / x0096: issue_cert/3, verify_cert/1 — Origin Cert v1 over commit_hash / Tag
-    (tree object hash + first parent in signed message).
+  x00ca: Authorship on promote; Release on create_tag; `vcs_blob_origins` first-seen.
 
   See Assets.ItemRef for repo@rev resolution (x0063 / x00c9).
 
   Guarantees:
   - promote: Port encode+verify **outside** DB TX; short TX for ownership/
-    grant re-check + objects + commit + repo_commits + `main` + DriveNode.
+    grant re-check + objects + commit + repo_commits + `main` + DriveNode +
+    Authorship cert + blob origins.
   - Tag frozen; FF via parent walk on `vcs_commit_parents`.
-  - Cert v1 binds Tree object hash + parent hash (not tree_json).
+  - create_tag issues Release cert (subject = repo owner_sub).
+  - Cert v2 signs `issued_at_ms` + `kid` (offline-verifiable); signing is TX-outside.
+  - Authorship is one row per commit_hash (reuse skips); subject = Commit.author_sub.
 
-  Non-guarantees: Cert v2, visibility, push, fork, non-FF merge.
+  Non-guarantees: visibility, push, fork, non-FF merge, sale-lock rejection,
+  multi-key kid lookup / automated rotation.
   """
 
   import Ecto.Query, only: [from: 2]
@@ -24,6 +27,7 @@ defmodule Assets.Vcs do
   alias Assets.Drive.Node
   alias Assets.Prefab.Payload
   alias Assets.Repo
+  alias Assets.Vcs.BlobOrigin
   alias Assets.Vcs.Cert
   alias Assets.Vcs.Commit
   alias Assets.Vcs.CommitParent
@@ -50,8 +54,11 @@ defmodule Assets.Vcs do
           {:ok, %{repo: VcsRepo.t(), commit: Commit.t(), node: Node.t()}}
           | {:error, :not_found | :not_prefab | :no_grant | :invalid_prefab | term()}
   def promote_prefab(owner_sub, node_id) do
-    with {:ok, prep} <- prepare_promote(owner_sub, node_id) do
-      Repo.transaction(fn -> write_promote!(owner_sub, node_id, prep) end)
+    with {:ok, prep} <- prepare_promote(owner_sub, node_id),
+         # Sign outside TX unless Authorship already exists for this commit_hash.
+         {:ok, authorship} <-
+           Cert.prepare_authorship_unless_present(owner_sub, prep.commit_hash) do
+      Repo.transaction(fn -> write_promote!(owner_sub, node_id, prep, authorship) end)
     end
   end
 
@@ -66,11 +73,30 @@ defmodule Assets.Vcs do
     create_ref(repo_id, name, "branch", commit_hash, false)
   end
 
-  @doc "Create an immutable tag pointing at commit_hash."
+  @doc """
+  Create an immutable tag pointing at commit_hash and issue a Release cert
+  (subject = `VcsRepo.owner_sub`). Signing runs outside the DB TX.
+  """
   @spec create_tag(String.t(), String.t(), String.t()) ::
           {:ok, VcsRef.t()} | {:error, term()}
   def create_tag(repo_id, name, commit_hash) do
-    create_ref(repo_id, name, "tag", commit_hash, true)
+    with {:ok, %VcsRepo{owner_sub: owner_sub}} <- fetch_repo(repo_id),
+         :ok <- assert_commit_in_repo(repo_id, commit_hash),
+         {:ok, release} <-
+           Cert.prepare_release_unless_present(owner_sub, repo_id, name, commit_hash) do
+      Repo.transaction(fn -> write_tag_with_release!(repo_id, name, commit_hash, release) end)
+    end
+  end
+
+  defp write_tag_with_release!(repo_id, name, commit_hash, release) do
+    case create_ref(repo_id, name, "tag", commit_hash, true) do
+      {:ok, vref} ->
+        Cert.insert_prepared_release!(release)
+        vref
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
   end
 
   @doc """
@@ -96,13 +122,18 @@ defmodule Assets.Vcs do
   end
 
   # ---------------------------------------------------------------------------
-  # Origin Cert
+  # Origin Cert v2 (x00ca)
   # ---------------------------------------------------------------------------
 
-  @doc "Issue an Origin Cert for a commit or tag (x0065 / x0096 / x00c9)."
-  @spec issue_cert(String.t(), String.t(), String.t()) ::
+  @doc "Issue an Authorship Origin Cert for an existing commit_hash."
+  @spec issue_authorship(String.t(), String.t()) ::
           {:ok, Cert.t()} | {:error, term()}
-  defdelegate issue_cert(subject_sub, target_kind, target_id), to: Cert, as: :issue
+  defdelegate issue_authorship(author_sub, commit_hash), to: Cert
+
+  @doc "Issue a Release Origin Cert for repo_id + tag_name + commit_hash."
+  @spec issue_release(String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, Cert.t()} | {:error, term()}
+  defdelegate issue_release(signer_sub, repo_id, tag_name, commit_hash), to: Cert
 
   @doc "Verify a stored Origin Cert by cert_id."
   @spec verify_cert(String.t()) :: :ok | {:error, :tampered | :not_found | term()}
@@ -351,7 +382,7 @@ defmodule Assets.Vcs do
     end
   end
 
-  defp write_promote!(owner_sub, node_id, prep) do
+  defp write_promote!(owner_sub, node_id, prep, authorship) do
     node = fetch_prefab_for_owner!(owner_sub, node_id)
     assert_prefab_unchanged!(node, prep.blake3)
     assert_child_grants!(owner_sub, prep.payload)
@@ -374,9 +405,35 @@ defmodule Assets.Vcs do
 
     insert_repo_commit!(repo_id, prep.commit_hash)
     insert_main_branch!(repo_id, prep.commit_hash)
+    # Idempotent: same commit_hash reuses the first Authorship row.
+    Cert.insert_prepared_authorship!(authorship)
+    insert_blob_origins!(prep.payload.children, prep.commit_hash, owner_sub)
 
     updated_node = update_drive_node_to_vcs!(node, repo_id)
     %{repo: repo, commit: commit, node: updated_node}
+  end
+
+  defp insert_blob_origins!(children, commit_hash, author_sub) when is_list(children) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    children
+    |> Enum.map(fn %{blake3: blake3} -> String.downcase(blake3) end)
+    |> Enum.uniq()
+    |> Enum.each(fn blake3 ->
+      case Repo.insert(
+             BlobOrigin.changeset(%BlobOrigin{}, %{
+               blake3: blake3,
+               first_commit_hash: commit_hash,
+               author_sub: author_sub,
+               first_seen_at: now
+             }),
+             on_conflict: :nothing,
+             conflict_target: :blake3
+           ) do
+        {:ok, _} -> :ok
+        {:error, cs} -> Repo.rollback({:blob_origin_insert_failed, cs})
+      end
+    end)
   end
 
   defp assert_prefab_unchanged!(%Node{blake3: blake3}, expect_blake3) do
@@ -499,6 +556,13 @@ defmodule Assets.Vcs do
     case Repo.get_by(VcsRef, repo_id: repo_id, name: name) do
       nil -> {:error, :not_found}
       %VcsRef{} = ref -> {:ok, ref}
+    end
+  end
+
+  defp fetch_repo(repo_id) do
+    case Repo.get(VcsRepo, repo_id) do
+      nil -> {:error, :not_found}
+      %VcsRepo{} = repo -> {:ok, repo}
     end
   end
 
