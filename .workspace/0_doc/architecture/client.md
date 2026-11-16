@@ -57,7 +57,7 @@
 | `…/{wire_cap}/presence` | 低（割当・解放変更 + 5s 再送） | `sub → user_root entity`（x0015 / 解放 x0016+x0019） |
 | `…/{wire_cap}/alive/{sub}/{jti}` | liveliness | client token；host は検証済み jti 一致時のみ reclaim（x0022） |
 | `…/{wire_cap}/frame` | 高（動いたものだけ）・**latest デルタ** | 署名付き pose upserts / removes。tick 欠落時は適用せず snapshot（x0023 / x0024）。**tick 正本**（x00be も Room 購読が既定） |
-| `…/{wire_cap}/frame/cell/{cx}_{cy}_{cz}` | 高・**latest**（セル別 dirty） | **x00c0**: host が dirty upsert を `CellId` でバケットし非空セルへセル別密封 soft-put（Room は全文・tick 正本）。**x00bf / x00c1**: `ALCHEMY_CELL_FRAME=1` で Moore 近傍を Room と**併読**（初期 origin；Presence 後 wire `local_user_root` 中心追従・ヒステリシス再購読）；同一 tick は Room が部分 cell を上書き可（既定切替・セル退出 remove は非保証） |
+| `…/{wire_cap}/frame/cell/{cx}_{cy}_{cz}` | 高・**latest**（セル別 dirty） | **x00c0 / x00c2**: host が dirty upsert を `CellId` でバケットし非空セルへセル別密封 soft-put（Room は全文・tick 正本）。**x00c2**: 境界横断・despawn 時は旧セルへセルスコープ removes も soft-put。**x00bf / x00c1**: `ALCHEMY_CELL_FRAME=1` で Moore 近傍を Room と**併読**（初期 origin；Presence 後 wire `local_user_root` 中心追従・ヒステリシス再購読）；同一 tick は Room が部分 cell を上書き可（既定切替・多 cell 同一 tick 合流は非保証） |
 | `…/{wire_cap}/snapshot` | queryable | late join / 再同期用フル pose（`RenderFrame`・x0023 / x0024） |
 | `…/{wire_cap}/input` | 入力 | session 署名 Intent（Token は bind / refresh 時のみ・x0023） |
 | `…/{wire_cap}/inventory/spawn` | 低 | take-out spawn（Room AEAD + session 署名・x006d / x0081 / x0098 Dual） |
