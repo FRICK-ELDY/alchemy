@@ -100,8 +100,8 @@ HTTP_* の実行側は world の `role == "host"`（Elixir）。表の正本は�
 | `LOCAL_WIRE_CAP` | fixture cap（実 room は world 発行） |
 | `MANIFEST_KEY_LOCAL` / `manifest_key(room_id, wire_cap)` | `…/local/{LOCAL_WIRE_CAP}/manifest` |
 | `FRAME_KEY_LOCAL` / `frame_key(room_id, wire_cap)` | `…/frame`（tick 正本） |
-| `FRAME_CELL_KEY_LOCAL_ORIGIN` / `frame_cell_key` / `format_cell_id_segment` / `frame_cell_wildcard_key` / `decide_cell_frame_tick` / `decide_room_frame_tick` / `ROOM_FRAME_SUB_ENV` / `room_frame_sub_enabled*` | `…/frame/cell/{cx}_{cy}_{cz}`（**x00c0/x00c2** host soft-put；**x00c5** 既定購読は暫定 `frame_cell_wildcard_key`=`…/frame/cell/*`；`ALCHEMY_ROOM_FRAME` で Room オプトアウト；**x00c3** 多 cell 合流） |
-| `moore_neighborhood_cells` / `frame_cell_interest_keyexpr` | Moore `|` union ヘルパ（テスト／将来の interest 再配線）。**x00c5 client 本線は未使用**（local peer で union 配送ゼロ観測） |
+| `FRAME_CELL_KEY_LOCAL_ORIGIN` / `frame_cell_key` / `format_cell_id_segment` / `frame_cell_wildcard_key` / `decide_cell_frame_tick` / `decide_room_frame_tick` / `ROOM_FRAME_SUB_ENV` / `room_frame_sub_enabled*` | `…/frame/cell/{cx}_{cy}_{cz}`（**x00c0/x00c2** host soft-put；**x00c3** 多 cell 合流；**x00c6** 既定購読は per-key Moore；`frame_cell_wildcard_key` は debug/ACL；`ALCHEMY_ROOM_FRAME` で Room オプトアウト） |
+| `moore_neighborhood_cells` / `frame_cell_interest_keyexpr` | Moore 近傍ヘルパ / `|` union（本線外・テスト用；x00c6 本線は per-key ≤27） |
 | `CELL_FRAME_SUB_ENV` / `cell_frame_sub_enabled*`（**deprecated** · x00c5） | `ALCHEMY_CELL_FRAME`。モード選択には未使用（無視）。Room 退避は `ALCHEMY_ROOM_FRAME`。設定時は client が deprecate warn |
 | `INPUT_KEY_LOCAL` / `input_key(room_id, wire_cap)` | `…/input` |
 | `PRESENCE_KEY_LOCAL` / `presence_key(room_id, wire_cap)` | `…/presence` |

@@ -1,4 +1,4 @@
-//! RenderFrame delta subscriber + snapshot convergence (x0023 / x0024 / x0029 / x00bf / x00c1 / x00c3 / x00c4 / x00c5).
+//! RenderFrame delta subscriber + snapshot convergence (x0023 / x0024 / x0029 / x00bf / x00c1 / x00c3 / x00c4 / x00c5 / x00c6).
 //!
 //! Guarantees:
 //! - Frame finite / tick / `host_sig` verified before apply; snapshot requires non-empty `upserts`
@@ -7,27 +7,37 @@
 //! - Snapshot skips the tick gate so a racing delta cannot block convergence
 //! - RenderFrame Entity carries quat + scale; client applies TRS (x0029)
 //! - Class-specific decode byte/count limits and AEAD failure → drop (x003b)
-//! - Default path is **cell mainline** (x00c5): Room `…/frame` is **not** subscribed.
-//!   `ALCHEMY_ROOM_FRAME=1` opts into Room `…/frame` only. Exactly one frame subscriber runs;
+//! - Default path is **cell mainline** (x00c5/x00c6): Room `…/frame` is **not** subscribed.
+//!   `ALCHEMY_ROOM_FRAME=1` opts into Room `…/frame` only. Exactly one frame mode runs;
 //!   both modes share apply crypto; tick gates differ (x00bf / x00c0 / x00c3): cell uses
 //!   [`decide_cell_frame_tick`] (same-tick merge); Room uses [`decide_room_frame_tick`]
 //! - Whichever mode is active may gap→Room `…/snapshot` (`gap_resync=true`); there is no
 //!   cell-scoped snapshot
-//! - Subscribe key is interim `…/frame/cell/*` via [`alchemy_protocol::frame_cell_wildcard_key`]
-//!   (x00c5; ACL-aligned). Wire `local_user_root` center is still tracked with hysteresis
-//!   (x00c1) for future Moore narrowing; it does **not** change the subscribe key today
+//! - **x00c6**: cell mainline subscribes Moore 3³ **per-key ≤27** (`frame_cell_key`), follows
+//!   wire `local_user_root` with hysteresis (x00c1), diffs resub on center change. Interest
+//!   **enter** (new Moore cell) → rate-limited Room snapshot that is **deferred, never
+//!   dropped** (`enter_snapshot_pending`); a successful **gap→Interest snapshot clears
+//!   pending** (enter need already satisfied). **exit** prune runs in the same world lock as
+//!   snapshot replace. Fan-in uses `try_send` (full → drop + count) so snapshot `get` cannot
+//!   stall Zenoh callbacks. `…/frame/cell/*` is not the default path (debug/ACL helper only)
 //! - x00c2/x00c3: host may soft-put old-cell removes and new-cell upserts on the **same**
 //!   `net_tick`. Client merges same-tick cell samples (cross-cell upsert guard; within-frame
 //!   remove wins). Room same-tick override remains for the Room opt-out path / unit tests
+//! - **x00c6c**: `NeedResync` / snapshot cooldown must not stop MoveIntent publish or owned
+//!   prediction ticks (those run on other threads / input paths; this module only applies wire)
 //!
 //! Non-guarantees: retransmission of missed deltas, reliable-delivery ACK channel, Manifest trust
 //! (see `bus::manifest`; `host_pub` is read, not established here); host dual-publish stop;
-//! Presence-unset follow; cell gap convergence during resub; recovery when host cell soft-put
-//! fails (default Room frame is not subscribed to backfill); AOI / Moore-exit client prune of
-//! far entities (ghost poses may linger after initial snapshot).
-//! Hot-path note (x00c5 default cell): no Room+cell dual AEAD per tick; cell payloads are
-//! cell-filtered. Snapshot / gap authority remains Room `…/snapshot`.
+//! Presence-unset follow; recovery when host cell soft-put fails (default Room frame is not
+//! subscribed to backfill); AOI-exterior continuous visibility; Moore `|` union delivery;
+//! `FRAME_TICK_GAP_RESYNC` relaxation; **AOI-invariant far ghosts** when a host cell remove is
+//! missed (no periodic prune — cleared on next enter / gap→snapshot only).
+//! Hot-path note: receive budget is Moore-bounded (≤27 keys). Snapshot / gap / enter authority
+//! remains Room `…/snapshot`.
 
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -36,8 +46,9 @@ use alchemy_protocol::decode_limits::{check_frame, check_payload_bytes, WireClas
 use alchemy_protocol::wire_aead::AeadKind;
 use alchemy_protocol::wire_crypto::{frame_entities_finite, verify_frame};
 use alchemy_protocol::{
-    decide_cell_frame_tick, decide_room_frame_tick, frame_cell_wildcard_key, snapshot_key,
-    FrameTickDecision, Message, RenderFrame, FRAME_TICK_GAP_RESYNC,
+    decide_cell_frame_tick, decide_room_frame_tick, frame_cell_key, moore_neighborhood_cells,
+    snapshot_key, FrameTickDecision, Message, RenderFrame, FRAME_TICK_GAP_RESYNC,
+    MOORE_NEIGHBORHOOD_LEN,
 };
 use alchemy_shared_sim::mvcc::{CellId, EntityDirectory};
 use anyhow::{Context, Result};
@@ -175,6 +186,9 @@ fn apply_frame(
     frame: RenderFrame,
     replace_entities: bool,
     from_room: bool,
+    // When set on successful snapshot replace: prune Moore-exterior under the same lock
+    // (x00c6 Interest exit — no Room-full ghost frame between replace and prune).
+    interest_near: Option<&HashSet<[i32; 3]>>,
 ) -> ApplyFrameOutcome {
     let host_pub = shared.host_pub.lock().ok().and_then(|g| g.clone());
     let Some(host_pub) = host_pub else {
@@ -199,7 +213,8 @@ fn apply_frame(
         );
         return ApplyFrameOutcome::Dropped;
     }
-    // Single lock for tick gate + entity mutate (no snapshot/delta interleave).
+    let keep_root = shared.local_user_root();
+    // Single lock for tick gate + entity mutate (+ optional Interest prune).
     let Ok(mut world) = shared.world.lock() else {
         log::warn!("drop RenderFrame: world lock poisoned/failed");
         return ApplyFrameOutcome::Dropped;
@@ -213,6 +228,11 @@ fn apply_frame(
         replace_entities,
         from_room,
     );
+    if outcome == ApplyFrameOutcome::Applied && replace_entities {
+        if let Some(near) = interest_near {
+            prune_entities_outside_moore(&mut world, near, keep_root);
+        }
+    }
     // TRS-only copy under world lock; mirror after drop (avoid world ↔ epoch lock order).
     let poses_for_epoch = if outcome == ApplyFrameOutcome::Applied {
         Some(
@@ -282,11 +302,24 @@ fn apply_frame(
 }
 
 /// Returns true when a non-empty snapshot was verified and applied (replace).
+///
+/// `interest_near`: when `Some`, Moore-exterior entities are pruned in the **same** world
+/// lock as the replace (x00c6 Interest enter/exit). Pass `None` for Room-only / Manifest paths.
 pub(crate) fn fetch_snapshot(
     session: &zenoh::Session,
     room_id: &str,
     wire_cap: &str,
     shared: &SharedState,
+) -> bool {
+    fetch_snapshot_interest(session, room_id, wire_cap, shared, None)
+}
+
+fn fetch_snapshot_interest(
+    session: &zenoh::Session,
+    room_id: &str,
+    wire_cap: &str,
+    shared: &SharedState,
+    interest_near: Option<&HashSet<[i32; 3]>>,
 ) -> bool {
     let key = snapshot_key(room_id, wire_cap);
     let mut applied = false;
@@ -320,8 +353,11 @@ pub(crate) fn fetch_snapshot(
                                 }
                                 let snap_scene_rev = frame.scene_rev;
                                 if apply_frame(
-                                    shared, frame, /* replace */ true,
+                                    shared,
+                                    frame,
+                                    /* replace */ true,
                                     /* from_room */ true,
+                                    interest_near,
                                 ) == ApplyFrameOutcome::Applied
                                 {
                                     log::info!("snapshot applied from {key}");
@@ -389,9 +425,94 @@ fn maybe_advance_interest_center(current: CellId, xyz: [f64; 3]) -> CellId {
     }
 }
 
-/// Cell-frame subscribe keyexpr (x00c5 interim → [`frame_cell_wildcard_key`]).
-fn cell_interest_key_for(room_id: &str, wire_cap: &str) -> String {
-    frame_cell_wildcard_key(room_id, wire_cap)
+/// Moore neighborhood as a set (x00c6 Interest).
+fn moore_cell_set(center: CellId) -> HashSet<[i32; 3]> {
+    moore_neighborhood_cells(center.0[0], center.0[1], center.0[2])
+        .into_iter()
+        .collect()
+}
+
+/// Drop entity poses whose world cell is outside `near` (keep local user_root). x00c6 exit.
+fn prune_entities_outside_moore(
+    world: &mut scene::WorldView,
+    near: &HashSet<[i32; 3]>,
+    keep_id: u32,
+) {
+    world.entities.retain(|id, pose| {
+        if keep_id != LOCAL_USER_ROOT_UNSET && *id == keep_id {
+            return true;
+        }
+        let cell = CellId::from_world_f64(f64::from(pose.x), f64::from(pose.y), f64::from(pose.z));
+        near.contains(&cell.0)
+    });
+}
+
+fn prune_shared_outside_moore(shared: &SharedState, near: &HashSet<[i32; 3]>) {
+    let keep = shared.local_user_root();
+    if let Ok(mut world) = shared.world.lock() {
+        prune_entities_outside_moore(&mut world, near, keep);
+    }
+}
+
+/// Interest-enter snapshot scheduling (x00c6b): rate-limit delays fetch; never drops the need.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnterSnapAction {
+    Idle,
+    WaitCooldown,
+    FetchNow,
+}
+
+fn enter_snapshot_action(pending: bool, now: Instant, cooldown_until: Instant) -> EnterSnapAction {
+    if !pending {
+        EnterSnapAction::Idle
+    } else if now < cooldown_until {
+        EnterSnapAction::WaitCooldown
+    } else {
+        EnterSnapAction::FetchNow
+    }
+}
+
+/// Fan-in Moore cell subscribers into one channel (per-key ≤27; not `|` union). x00c6a.
+///
+/// Callbacks use [`SyncSender::try_send`] so a blocked consumer (e.g. synchronous snapshot
+/// `get`) cannot stall Zenoh; full channel → drop + `dropped_backpressure` count.
+///
+/// Tuning note: under `FRAME_TICK_GAP_RESYNC=1`, sustained Full drops can cascade into
+/// NeedResync. Prefer raising capacity / tightening drain before widening the gap constant.
+fn sync_moore_cell_subscribers(
+    session: &zenoh::Session,
+    room_id: &str,
+    wire_cap: &str,
+    center: CellId,
+    tx: &SyncSender<ZBytes>,
+    dropped_backpressure: &Arc<AtomicU64>,
+    subs: &mut HashMap<[i32; 3], zenoh::pubsub::Subscriber<()>>,
+) -> Result<()> {
+    let wanted = moore_cell_set(center);
+    debug_assert!(wanted.len() <= MOORE_NEIGHBORHOOD_LEN);
+    // Declare missing first so a mid-failure still leaves a superset (safer than holes).
+    for cell in &wanted {
+        if subs.contains_key(cell) {
+            continue;
+        }
+        let key = frame_cell_key(room_id, wire_cap, cell[0], cell[1], cell[2]);
+        let tx = tx.clone();
+        let dropped_backpressure = Arc::clone(dropped_backpressure);
+        let sub = session
+            .declare_subscriber(key.clone())
+            .callback(move |sample| match tx.try_send(sample.payload().clone()) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    dropped_backpressure.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(TrySendError::Disconnected(_)) => {}
+            })
+            .wait()
+            .map_err(|e| anyhow::anyhow!("declare_subscriber cell {key}: {e}"))?;
+        subs.insert(*cell, sub);
+    }
+    subs.retain(|cell, _| wanted.contains(cell));
+    Ok(())
 }
 
 struct FrameGateCounters {
@@ -400,6 +521,17 @@ struct FrameGateCounters {
     applied: u64,
     dropped_tick: u64,
     need_resync: u64,
+    dropped_backpressure: u64,
+}
+
+/// Options for [`handle_frame_sample`] gap→snapshot / Interest prune (keeps arity low).
+struct FrameSampleOpts<'a> {
+    from_room: bool,
+    gap_resync: bool,
+    /// When `Some` and gap→snapshot fires, prune Moore-exterior under the same lock.
+    interest_near: Option<&'a HashSet<[i32; 3]>>,
+    /// Cleared when an interest-scoped Room snapshot applies (enter need already satisfied).
+    enter_snapshot_pending: Option<&'a mut bool>,
 }
 
 /// Handle one sealed frame sample (AEAD / decode / apply / optional Room gap→snapshot).
@@ -407,11 +539,16 @@ fn handle_frame_sample(
     shared: &SharedState,
     session: &zenoh::Session,
     bytes: &ZBytes,
-    from_room: bool,
-    gap_resync: bool,
+    opts: FrameSampleOpts<'_>,
     resync_cooldown_until: &mut Instant,
     gates: &mut FrameGateCounters,
 ) {
+    let FrameSampleOpts {
+        from_room,
+        gap_resync,
+        interest_near,
+        enter_snapshot_pending,
+    } = opts;
     let payload = match open_zenoh_payload(shared, AeadKind::Frame, bytes) {
         Ok(pt) => pt,
         Err(err) => {
@@ -432,7 +569,9 @@ fn handle_frame_sample(
                 log::warn!("drop RenderFrame: {err}");
                 return;
             }
-            match apply_frame(shared, frame, /* replace */ false, from_room) {
+            match apply_frame(
+                shared, frame, /* replace */ false, from_room, /* interest_near */ None,
+            ) {
                 ApplyFrameOutcome::Applied => {
                     gates.applied += 1;
                 }
@@ -443,6 +582,8 @@ fn handle_frame_sample(
                     gates.need_resync += 1;
                     // x0024 / x00c4: active frame path (Room XOR cell) may fetch Room `…/snapshot`.
                     // Cooldown sheds bursty NeedResync (gap storms / snapshot get storms).
+                    // x00c6c: this path must not pause Intent publish or owned prediction —
+                    // those live on other threads / input surfaces; we only refresh wire.
                     let now = Instant::now();
                     if now < *resync_cooldown_until {
                         return;
@@ -457,13 +598,35 @@ fn handle_frame_sample(
                         return;
                     }
                     if let Some(cap) = shared.wire_cap() {
-                        let _ =
-                            fetch_snapshot(session, shared.get_room_id().as_ref(), &cap, shared);
+                        let applied = fetch_snapshot_interest(
+                            session,
+                            shared.get_room_id().as_ref(),
+                            &cap,
+                            shared,
+                            interest_near,
+                        );
+                        // Gap snapshot with Interest prune already converges enter need.
+                        clear_enter_pending_after_interest_snapshot(
+                            applied,
+                            enter_snapshot_pending,
+                        );
                     }
                 }
             }
         }
         Err(err) => log::warn!("RenderFrame decode failed: {err}"),
+    }
+}
+
+/// Clear Interest-enter pending after a successful interest-scoped Room snapshot (gap or enter).
+fn clear_enter_pending_after_interest_snapshot(
+    applied: bool,
+    enter_snapshot_pending: Option<&mut bool>,
+) {
+    if applied {
+        if let Some(pending) = enter_snapshot_pending {
+            *pending = false;
+        }
     }
 }
 
@@ -475,15 +638,19 @@ fn maybe_log_frame_gate(
     if last_gate_log.elapsed() < GATE_LOG_INTERVAL {
         return;
     }
-    let noisy = gates.dropped_limits > 0 || gates.dropped_aead > 0 || gates.need_resync > 0;
+    let noisy = gates.dropped_limits > 0
+        || gates.dropped_aead > 0
+        || gates.need_resync > 0
+        || gates.dropped_backpressure > 0;
     if noisy {
         log::info!(
-            "frame gate ({thread_name}): applied={} dropped_tick={} need_resync={} dropped_limits={} dropped_aead={} (last ~5s)",
+            "frame gate ({thread_name}): applied={} dropped_tick={} need_resync={} dropped_limits={} dropped_aead={} dropped_backpressure={} (last ~5s)",
             gates.applied,
             gates.dropped_tick,
             gates.need_resync,
             gates.dropped_limits,
-            gates.dropped_aead
+            gates.dropped_aead,
+            gates.dropped_backpressure
         );
     } else if gates.applied > 0 || gates.dropped_tick > 0 {
         log::debug!(
@@ -497,6 +664,7 @@ fn maybe_log_frame_gate(
     gates.applied = 0;
     gates.dropped_tick = 0;
     gates.need_resync = 0;
+    gates.dropped_backpressure = 0;
     *last_gate_log = Instant::now();
 }
 
@@ -525,6 +693,7 @@ pub(crate) fn spawn_frame_subscriber(
                 applied: 0,
                 dropped_tick: 0,
                 need_resync: 0,
+                dropped_backpressure: 0,
             };
             let mut last_gate_log = Instant::now();
             while let Ok(sample) = subscriber.recv() {
@@ -533,8 +702,12 @@ pub(crate) fn spawn_frame_subscriber(
                     &shared,
                     &session,
                     &bytes,
-                    /* from_room */ true,
-                    /* gap_resync */ true,
+                    FrameSampleOpts {
+                        from_room: true,
+                        gap_resync: true,
+                        interest_near: None,
+                        enter_snapshot_pending: None,
+                    },
                     &mut resync_cooldown_until,
                     &mut gates,
                 );
@@ -545,65 +718,138 @@ pub(crate) fn spawn_frame_subscriber(
     Ok(())
 }
 
-/// Default cell mainline (x00c5): `…/frame/cell/*` + gap→Room snapshot.
-///
-/// Tracks wire-pose interest center with hysteresis for a future Moore rewire; subscribe
-/// key is center-stable ([`frame_cell_wildcard_key`]) so there is no resubscribe path today.
+/// Default cell mainline (x00c6): Moore per-key ≤27 + gap/enter→Room snapshot + exit prune.
 pub(crate) fn spawn_cell_interest_subscriber(
     session: zenoh::Session,
     room_id: String,
     wire_cap: String,
     shared: Arc<SharedState>,
 ) -> Result<()> {
-    let mut center = CellId([0, 0, 0]);
-    let key = cell_interest_key_for(&room_id, &wire_cap);
-    let subscriber = session
-        .declare_subscriber(key.clone())
-        .wait()
-        .map_err(|e| anyhow::anyhow!("declare_subscriber cell interest failed: {e}"))?;
+    let center = CellId([0, 0, 0]);
+    // Bounded fan-in from ≤27 cell callbacks (no flume dependency; std mpsc).
+    let (tx, rx) = mpsc::sync_channel::<ZBytes>(512);
+    let dropped_backpressure = Arc::new(AtomicU64::new(0));
+    let mut subs: HashMap<[i32; 3], zenoh::pubsub::Subscriber<()>> = HashMap::new();
+    sync_moore_cell_subscribers(
+        &session,
+        &room_id,
+        &wire_cap,
+        center,
+        &tx,
+        &dropped_backpressure,
+        &mut subs,
+    )
+    .context("declare initial Moore cell subscribers")?;
 
     const THREAD_NAME: &str = "zenoh-frame-cell";
     thread::Builder::new()
         .name(THREAD_NAME.into())
         .spawn(move || {
+            // Keep a sender alive so callback clones do not disconnect the channel.
+            let _tx_keep = tx;
             log::info!(
-                "subscribed to {key} (signed delta upserts/removes; kind=CellInterest; gap_resync=true; interim cell/* wildcard x00c5; track wire_user_root center)"
+                "subscribed Moore per-key ≤{MOORE_NEIGHBORHOOD_LEN} cells around {:?} \
+                 (kind=CellInterest; gap_resync=true; enter→Room snapshot deferred-not-dropped; \
+                  exit prune; try_send fan-in; x00c6)",
+                center.0
             );
+            let mut center = center;
+            let mut near_cells = moore_cell_set(center);
+            let mut subs = subs;
             let mut resync_cooldown_until = Instant::now();
+            let mut enter_snapshot_pending = false;
             let mut gates = FrameGateCounters {
                 dropped_limits: 0,
                 dropped_aead: 0,
                 applied: 0,
                 dropped_tick: 0,
                 need_resync: 0,
+                dropped_backpressure: 0,
             };
             let mut last_gate_log = Instant::now();
-            // Deadline so busy cell traffic cannot starve interest-center tracking (x00c1).
+            // Deadline so busy cell traffic cannot starve interest follow (x00c1 / x00c6).
             let mut next_eval_at = Instant::now() + CELL_INTEREST_POLL;
+            let mut primed_pose = false;
+
+            // Drain backlog without blocking (critical after sync snapshot get).
             loop {
                 let wait = next_eval_at.saturating_duration_since(Instant::now());
-                match subscriber.recv_timeout(wait) {
-                    Ok(Some(sample)) => {
-                        let bytes: ZBytes = sample.payload().clone();
+                match rx.recv_timeout(wait) {
+                    Ok(bytes) => {
                         handle_frame_sample(
                             &shared,
                             &session,
                             &bytes,
-                            /* from_room */ false,
-                            /* gap_resync */ true,
+                            FrameSampleOpts {
+                                from_room: false,
+                                gap_resync: true,
+                                interest_near: Some(&near_cells),
+                                enter_snapshot_pending: Some(&mut enter_snapshot_pending),
+                            },
                             &mut resync_cooldown_until,
                             &mut gates,
                         );
-                        maybe_log_frame_gate(THREAD_NAME, &mut last_gate_log, &mut gates);
+                        while let Ok(more) = rx.try_recv() {
+                            handle_frame_sample(
+                                &shared,
+                                &session,
+                                &more,
+                                FrameSampleOpts {
+                                    from_room: false,
+                                    gap_resync: true,
+                                    interest_near: Some(&near_cells),
+                                    enter_snapshot_pending: Some(&mut enter_snapshot_pending),
+                                },
+                                &mut resync_cooldown_until,
+                                &mut gates,
+                            );
+                        }
                     }
-                    Ok(None) => {
-                        maybe_log_frame_gate(THREAD_NAME, &mut last_gate_log, &mut gates);
-                    }
-                    Err(_) => {
-                        // Channel closed (session close / undeclare).
-                        break;
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+                gates.dropped_backpressure += dropped_backpressure.swap(0, Ordering::Relaxed);
+                maybe_log_frame_gate(THREAD_NAME, &mut last_gate_log, &mut gates);
+
+                // Pending enter may become due while idle / under frame traffic.
+                match enter_snapshot_action(
+                    enter_snapshot_pending,
+                    Instant::now(),
+                    resync_cooldown_until,
+                ) {
+                    EnterSnapAction::Idle | EnterSnapAction::WaitCooldown => {}
+                    EnterSnapAction::FetchNow => {
+                        resync_cooldown_until = Instant::now() + SNAPSHOT_GAP_RESYNC_COOLDOWN;
+                        let applied = if let Some(cap) = shared.wire_cap() {
+                            fetch_snapshot_interest(
+                                &session,
+                                shared.get_room_id().as_ref(),
+                                &cap,
+                                &shared,
+                                Some(&near_cells),
+                            )
+                        } else {
+                            false
+                        };
+                        enter_snapshot_pending = !applied;
+                        while let Ok(more) = rx.try_recv() {
+                            handle_frame_sample(
+                                &shared,
+                                &session,
+                                &more,
+                                FrameSampleOpts {
+                                    from_room: false,
+                                    gap_resync: true,
+                                    interest_near: Some(&near_cells),
+                                    enter_snapshot_pending: Some(&mut enter_snapshot_pending),
+                                },
+                                &mut resync_cooldown_until,
+                                &mut gates,
+                            );
+                        }
                     }
                 }
+
                 if Instant::now() < next_eval_at {
                     continue;
                 }
@@ -611,8 +857,91 @@ pub(crate) fn spawn_cell_interest_subscriber(
                 let Some(xyz) = wire_user_root_xyz(&shared) else {
                     continue;
                 };
-                // Interim wildcard: keep center for future Moore narrowing only (no resub).
-                center = maybe_advance_interest_center(center, xyz);
+
+                // First wire pose: snap center (join snapshot may include far ghosts).
+                if !primed_pose {
+                    let first = CellId::from_world_f64(xyz[0], xyz[1], xyz[2]);
+                    if first != center {
+                        match sync_moore_cell_subscribers(
+                            &session,
+                            &room_id,
+                            &wire_cap,
+                            first,
+                            &_tx_keep,
+                            &dropped_backpressure,
+                            &mut subs,
+                        ) {
+                            Ok(()) => {
+                                log::info!(
+                                    "cell interest prime center={:?} -> {:?} (subs={})",
+                                    center.0,
+                                    first.0,
+                                    subs.len()
+                                );
+                                center = first;
+                                near_cells = moore_cell_set(center);
+                            }
+                            Err(err) => {
+                                log::warn!(
+                                    "cell interest prime declare failed (will retry): {err}"
+                                );
+                                // Do not set primed_pose — retry next poll.
+                                continue;
+                            }
+                        }
+                    } else {
+                        near_cells = moore_cell_set(center);
+                    }
+                    primed_pose = true;
+                    // Enter-style converge once Presence has a pose (deferred if cooldown).
+                    enter_snapshot_pending = true;
+                    // Exit prune immediately so join far-ghosts do not linger until snapshot.
+                    prune_shared_outside_moore(&shared, &near_cells);
+                    continue;
+                }
+
+                let next = maybe_advance_interest_center(center, xyz);
+                if next == center {
+                    continue;
+                }
+
+                let new_set = moore_cell_set(next);
+                let entered = new_set.difference(&near_cells).count();
+
+                match sync_moore_cell_subscribers(
+                    &session,
+                    &room_id,
+                    &wire_cap,
+                    next,
+                    &_tx_keep,
+                    &dropped_backpressure,
+                    &mut subs,
+                ) {
+                    Ok(()) => {
+                        log::info!(
+                            "cell interest resub center={:?} -> {:?} entered={entered} subs={}",
+                            center.0,
+                            next.0,
+                            subs.len()
+                        );
+                        center = next;
+                        near_cells = new_set;
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "cell interest resub declare failed (keeping {:?}): {err}",
+                            center.0
+                        );
+                        continue;
+                    }
+                }
+
+                // Interest enter (x00c6b): always schedule; top-of-loop flushes when due.
+                if entered > 0 {
+                    enter_snapshot_pending = true;
+                }
+                // Exit prune for cells we no longer subscribe (do not wait for snapshot).
+                prune_shared_outside_moore(&shared, &near_cells);
             }
         })
         .context("spawn cell interest thread")?;
@@ -933,9 +1262,9 @@ mod tests {
 
     // Identity / presence pin / gen-rev unit tables live in alchemy-client-trust (x0070).
 
-    /// x00c5: `…/frame/cell/*` must be acceptable to Zenoh `declare_subscriber`.
+    /// x00c6: Moore per-key declares (≤27) must succeed on a local peer.
     #[test]
-    fn cell_interest_keyexpr_declare_subscriber_ok() {
+    fn moore_per_key_declare_subscriber_ok() {
         use alchemy_protocol::LOCAL_WIRE_CAP;
         use zenoh::Config;
         use zenoh::Wait;
@@ -949,13 +1278,32 @@ mod tests {
             .insert_json5("scouting/multicast/enabled", "false")
             .expect("scouting");
         let session = zenoh::open(config).wait().expect("zenoh open");
-        let ke = cell_interest_key_for("local", LOCAL_WIRE_CAP);
-        assert!(ke.ends_with("/frame/cell/*"));
-        assert!(!ke.contains('|'));
-        session
-            .declare_subscriber(ke)
-            .wait()
-            .expect("declare_subscriber interest keyexpr");
+        let (tx, _rx) = mpsc::sync_channel::<ZBytes>(8);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let mut subs = HashMap::new();
+        sync_moore_cell_subscribers(
+            &session,
+            "local",
+            LOCAL_WIRE_CAP,
+            CellId([0, 0, 0]),
+            &tx,
+            &dropped,
+            &mut subs,
+        )
+        .expect("declare Moore per-key");
+        assert_eq!(subs.len(), MOORE_NEIGHBORHOOD_LEN);
+        // Diff resub to a neighbor center must stay ≤27.
+        sync_moore_cell_subscribers(
+            &session,
+            "local",
+            LOCAL_WIRE_CAP,
+            CellId([1, 0, 0]),
+            &tx,
+            &dropped,
+            &mut subs,
+        )
+        .expect("resub Moore per-key");
+        assert_eq!(subs.len(), MOORE_NEIGHBORHOOD_LEN);
     }
 
     /// x00c1: stay inside hysteresis; cross only past 32+2 from current center origin.
@@ -984,13 +1332,116 @@ mod tests {
         );
     }
 
-    /// x00c5: wildcard key is center-independent (no resub).
+    /// x00c6: Moore key set changes when interest center moves.
     #[test]
-    fn interest_keyexpr_is_wildcard() {
-        use alchemy_protocol::{frame_cell_wildcard_key, LOCAL_WIRE_CAP};
+    fn moore_set_changes_with_center() {
+        let a = moore_cell_set(CellId([0, 0, 0]));
+        let b = moore_cell_set(CellId([1, 0, 0]));
+        assert_eq!(a.len(), MOORE_NEIGHBORHOOD_LEN);
+        assert_eq!(b.len(), MOORE_NEIGHBORHOOD_LEN);
+        assert!(a.contains(&[0, 0, 0]));
+        assert!(b.contains(&[1, 0, 0]));
+        assert_ne!(a, b);
+        assert!(b.difference(&a).count() > 0);
+    }
 
-        let ke = cell_interest_key_for("local", LOCAL_WIRE_CAP);
-        assert!(ke.ends_with("/frame/cell/*"));
-        assert_eq!(ke, frame_cell_wildcard_key("local", LOCAL_WIRE_CAP));
+    /// x00c6b: exit prune drops far poses; keeps local user_root even if outside.
+    #[test]
+    fn prune_outside_moore_keeps_near_and_local_root() {
+        let mut world = WorldView {
+            last_frame_tick: Some(1),
+            last_frame_from_room: true,
+            cell_tick_upsert_guard: Default::default(),
+            entities: [
+                (
+                    1,
+                    EntityPose {
+                        x: 1.0,
+                        ..Default::default()
+                    },
+                ),
+                (
+                    2,
+                    EntityPose {
+                        x: 500.0,
+                        ..Default::default()
+                    },
+                ),
+                (
+                    99,
+                    EntityPose {
+                        x: 999.0,
+                        ..Default::default()
+                    },
+                ),
+            ]
+            .into(),
+        };
+        let near = moore_cell_set(CellId([0, 0, 0]));
+        prune_entities_outside_moore(&mut world, &near, 99);
+        assert!(world.entities.contains_key(&1));
+        assert!(!world.entities.contains_key(&2));
+        assert!(world.entities.contains_key(&99));
+    }
+
+    /// x00c6b: enter snapshot is deferred under cooldown, never dropped.
+    #[test]
+    fn enter_snapshot_pending_waits_then_fetches() {
+        let t0 = Instant::now();
+        let cool = t0 + Duration::from_millis(500);
+        assert_eq!(
+            enter_snapshot_action(false, t0, cool),
+            EnterSnapAction::Idle
+        );
+        assert_eq!(
+            enter_snapshot_action(true, t0, cool),
+            EnterSnapAction::WaitCooldown
+        );
+        assert_eq!(
+            enter_snapshot_action(true, cool, cool),
+            EnterSnapAction::FetchNow
+        );
+        assert_eq!(
+            enter_snapshot_action(true, cool + Duration::from_millis(1), cool),
+            EnterSnapAction::FetchNow
+        );
+    }
+
+    /// x00c6b: successful interest-scoped snapshot clears enter pending (gap or enter path).
+    #[test]
+    fn gap_interest_snapshot_applied_clears_enter_pending() {
+        let mut pending = true;
+        clear_enter_pending_after_interest_snapshot(false, Some(&mut pending));
+        assert!(pending, "failed snapshot must leave pending set");
+        clear_enter_pending_after_interest_snapshot(true, Some(&mut pending));
+        assert!(!pending, "applied interest snapshot satisfies enter need");
+        clear_enter_pending_after_interest_snapshot(true, None);
+    }
+
+    /// x00c6c: NeedResync leaves world untouched — Intent/prediction are other threads
+    /// (`spawn_input_publisher`, surface prediction) and are not locked here.
+    #[test]
+    fn need_resync_is_pure_wrt_world_and_has_no_intent_side_effect_api() {
+        let mut world = WorldView {
+            last_frame_tick: Some(10),
+            last_frame_from_room: false,
+            cell_tick_upsert_guard: Default::default(),
+            entities: [(
+                1,
+                EntityPose {
+                    x: 1.0,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+        };
+        let before = world.entities.clone();
+        let outcome =
+            apply_delta_entities(&mut world, 12, &[sample_entity(1, 9.0)], &[], false, false);
+        assert_eq!(outcome, ApplyFrameOutcome::NeedResync);
+        assert_eq!(world.entities, before);
+        assert_eq!(world.last_frame_tick, Some(10));
+        // Contract anchor: this module never takes `shared.intent` / owned_prediction locks
+        // on the NeedResync path (see handle_frame_sample); MoveIntent publish continues.
     }
 }
