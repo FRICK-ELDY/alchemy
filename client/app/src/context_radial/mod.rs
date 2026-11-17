@@ -1,8 +1,10 @@
-//! Resonite-style Context radial (x00ce).
+//! Context radial menu (x00ce).
 //!
-//! Guarantees: polar hit + flick-from-inner fire; Desktop MMB/T toggle contract;
-//! XR owner-hand anchor / hand switch; Save item enabled only when grab+blake3 ready.
-//! Non-guarantees: submenu hierarchy; shared multi-user visibility; simple_controller Context.
+//! Guarantees: Arc button click on primary **release** (falling edge); Desktop MMB/T toggle;
+//! leave-pad exit (Desktop ring / XR board); pointer glyph stamped outside the layout tree;
+//! XR world-anchored board (pose frozen at open/re-anchor); Save enabled when grab+blake3 ready.
+//! Non-guarantees: flick-through; submenu hierarchy; shared multi-user visibility;
+//! simple_controller Context; hit AABB matching the drawn Save rect (polar Arc band).
 
 use crate::system_ui::{Color, DrawCmd, LayoutTree, Rect};
 
@@ -23,6 +25,10 @@ pub const RING_DIAMETER: f32 = 420.0;
 
 const INNER_RATIO: f32 = 0.28;
 const OUTER_RATIO: f32 = 0.92;
+/// Soft leave radius vs outer ring (Desktop) / board half-extents (XR input pad).
+pub const MENU_LEAVE_PAD: f32 = 1.25;
+/// Consecutive outside frames before leave-close (Desktop + XR).
+pub const LEAVE_MISS_FRAMES: u32 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HandSide {
@@ -44,12 +50,6 @@ pub struct ContextItem {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FlickPhase {
-    Idle,
-    Armed,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextEvent {
     None,
     Fired(ContextItemId),
@@ -62,9 +62,8 @@ pub struct ContextRadialState {
     /// Pointer in canvas pixels (origin top-left).
     pub pointer: Option<(f32, f32)>,
     pub primary_down: bool,
-    pub flick: FlickPhase,
-    /// Last zone while primary held (for enter-edge).
-    last_zone: Option<Zone>,
+    /// Previous frame `primary_down` (falling-edge / release click on Arc).
+    was_primary_down: bool,
     pub items: Vec<ContextItem>,
     pub hover: Option<usize>,
     pub status: String,
@@ -81,8 +80,7 @@ impl Default for ContextRadialState {
             owner: None,
             pointer: None,
             primary_down: false,
-            flick: FlickPhase::Idle,
-            last_zone: None,
+            was_primary_down: false,
             items: Vec::new(),
             hover: None,
             status: String::new(),
@@ -106,8 +104,7 @@ impl ContextRadialState {
         self.owner = None;
         self.pointer = None;
         self.primary_down = false;
-        self.flick = FlickPhase::Idle;
-        self.last_zone = None;
+        self.was_primary_down = false;
         self.hover = None;
         self.status.clear();
         self.dirty = true;
@@ -120,8 +117,6 @@ impl ContextRadialState {
         } else {
             self.open = true;
             self.owner = None;
-            self.flick = FlickPhase::Idle;
-            self.last_zone = None;
             self.status.clear();
             self.dirty = true;
         }
@@ -132,8 +127,6 @@ impl ContextRadialState {
         if !self.open {
             self.open = true;
             self.owner = Some(hand);
-            self.flick = FlickPhase::Idle;
-            self.last_zone = None;
             self.status.clear();
             self.dirty = true;
             return true;
@@ -143,8 +136,6 @@ impl ContextRadialState {
             return false;
         }
         self.owner = Some(hand);
-        self.flick = FlickPhase::Idle;
-        self.last_zone = None;
         self.pointer = None;
         self.status.clear();
         self.dirty = true;
@@ -165,18 +156,15 @@ impl ContextRadialState {
     }
 
     pub fn set_pointer(&mut self, px: f32, py: f32) {
+        // Pointer glyph is stamped after raster (not in the layout tree) so aim
+        // motion does not force a full ring rebuild every frame.
         self.pointer = Some((px, py));
     }
 
-    /// Clear laser/cursor hit. Always drops flick Armed so re-entry must pass Inner again.
+    /// Clear laser/cursor hit (tests / partial miss). Leave-to-close uses [`Self::close`].
+    #[allow(dead_code)]
     pub fn clear_pointer(&mut self) {
-        let mut changed = self.pointer.take().is_some();
-        if self.flick != FlickPhase::Idle || self.last_zone.is_some() {
-            self.flick = FlickPhase::Idle;
-            self.last_zone = None;
-            changed = true;
-        }
-        if changed {
+        if self.pointer.take().is_some() {
             self.dirty = true;
         }
     }
@@ -189,17 +177,18 @@ impl ContextRadialState {
         }
     }
 
-    /// Drive flick state machine. Call each frame / on pointer or primary change.
+    /// Arc button click on primary **release** (mouseup / trigger up).
+    ///
+    /// Release-to-click so Grab held with LMB/trigger can aim Save then let go (x00ce).
     pub fn tick_interaction(&mut self) -> ContextEvent {
         if !self.open {
+            self.was_primary_down = self.primary_down;
             return ContextEvent::None;
         }
+        let falling = !self.primary_down && self.was_primary_down;
+        self.was_primary_down = self.primary_down;
+
         let Some((px, py)) = self.pointer else {
-            if !self.primary_down && self.flick != FlickPhase::Idle {
-                self.flick = FlickPhase::Idle;
-                self.last_zone = None;
-                self.dirty = true;
-            }
             return ContextEvent::None;
         };
         let zone = hit_zone(px, py, self.canvas_w, self.canvas_h, self.items.len());
@@ -212,75 +201,50 @@ impl ContextRadialState {
             self.dirty = true;
         }
 
-        if !self.primary_down {
-            if self.flick != FlickPhase::Idle {
-                self.flick = FlickPhase::Idle;
-                self.last_zone = None;
-                self.dirty = true;
-            }
-            return ContextEvent::None;
-        }
-
-        match self.flick {
-            FlickPhase::Idle => {
-                if matches!(zone, Zone::Inner) {
-                    self.flick = FlickPhase::Armed;
-                    self.last_zone = Some(Zone::Inner);
-                    self.dirty = true;
+        if falling {
+            if let Zone::Arc(i) = zone {
+                if let Some(ev) = self.fire_item(i) {
+                    return ev;
                 }
-                ContextEvent::None
-            }
-            FlickPhase::Armed => {
-                let prev = self.last_zone;
-                self.last_zone = Some(zone);
-                if let Zone::Arc(i) = zone {
-                    let crossed = !matches!(prev, Some(Zone::Arc(j)) if j == i);
-                    if crossed {
-                        if let Some(item) = self.items.get(i) {
-                            if item.enabled {
-                                let id = item.id;
-                                let close = item.close_on_press;
-                                self.flick = FlickPhase::Idle;
-                                self.last_zone = None;
-                                self.primary_down = false;
-                                if close {
-                                    self.close();
-                                } else {
-                                    self.dirty = true;
-                                }
-                                return ContextEvent::Fired(id);
-                            }
-                        }
-                    }
-                }
-                ContextEvent::None
-            }
-        }
-    }
-
-    /// Direct tap on an enabled arc (secondary path; flick is primary).
-    #[allow(dead_code)]
-    pub fn try_click_arc(&mut self) -> ContextEvent {
-        if !self.open || !self.primary_down {
-            return ContextEvent::None;
-        }
-        let Some((px, py)) = self.pointer else {
-            return ContextEvent::None;
-        };
-        if let Zone::Arc(i) = hit_zone(px, py, self.canvas_w, self.canvas_h, self.items.len()) {
-            if let Some(item) = self.items.get(i) {
-                if item.enabled {
-                    let id = item.id;
-                    let close = item.close_on_press;
-                    if close {
-                        self.close();
-                    }
-                    return ContextEvent::Fired(id);
+                // Disabled Arc: still tell the user why Save did nothing.
+                if self
+                    .items
+                    .get(i)
+                    .is_some_and(|it| matches!(it.id, ContextItemId::Save) && !it.enabled)
+                {
+                    self.set_status("Save needs Live + held mesh (blake3)");
                 }
             }
         }
         ContextEvent::None
     }
+
+    fn fire_item(&mut self, i: usize) -> Option<ContextEvent> {
+        let item = self.items.get(i)?;
+        if !item.enabled {
+            return None;
+        }
+        let id = item.id;
+        let close = item.close_on_press;
+        self.primary_down = false;
+        if close {
+            self.close();
+        } else {
+            self.dirty = true;
+        }
+        Some(ContextEvent::Fired(id))
+    }
+}
+
+/// True when pointer is beyond the soft leave radius around the ring (Desktop).
+pub fn pointer_left_menu(px: f32, py: f32, canvas_w: f32, canvas_h: f32) -> bool {
+    let cx = canvas_w * 0.5;
+    let cy = canvas_h * 0.5;
+    let dx = px - cx;
+    let dy = py - cy;
+    let r = (dx * dx + dy * dy).sqrt();
+    let outer = RING_DIAMETER * 0.5 * OUTER_RATIO;
+    r > outer * MENU_LEAVE_PAD
 }
 
 /// Build Save item when grab target is Drive-saveable.
@@ -295,6 +259,10 @@ pub fn build_items(save_enabled: bool) -> Vec<ContextItem> {
     }]
 }
 
+/// Polar Arc-band hit (inner..outer radius × equal sectors). Intentional vs the
+/// drawn label rect: hover/fire uses the sector wedge so multi-item rings stay
+/// usable; with one item that means the whole annulus maps to Save (not just the
+/// 110×44 button AABB in [`rebuild_layout`]).
 fn hit_zone(px: f32, py: f32, w: f32, h: f32, n_items: usize) -> Zone {
     let cx = w * 0.5;
     let cy = h * 0.5;
@@ -367,14 +335,9 @@ pub fn rebuild_layout(tree: &mut LayoutTree, state: &ContextRadialState) {
         });
     }
 
-    let inner_color = if matches!(state.flick, FlickPhase::Armed) {
-        Color::rgba(0.55, 0.75, 0.95, 0.95)
-    } else {
-        Color::rgba(0.35, 0.38, 0.45, 0.95)
-    };
     tree.draws.push(DrawCmd::Rect {
         rect: Rect::new(cx - inner, cy - inner, inner * 2.0, inner * 2.0),
-        color: inner_color,
+        color: Color::rgba(0.35, 0.38, 0.45, 0.95),
     });
 
     if !state.status.is_empty() {
@@ -386,6 +349,61 @@ pub fn rebuild_layout(tree: &mut LayoutTree, state: &ContextRadialState) {
             clip: None,
         });
     }
+}
+
+/// Stamp Resonite-style cursor onto an RGBA8 canvas (look-capture has no OS cursor).
+pub fn stamp_pointer_rgba(buf: &mut [u8], width: u32, height: u32, px: f32, py: f32) {
+    let w = width as i32;
+    let h = height as i32;
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let stride = w as usize;
+    let fill = |buf: &mut [u8], x0: i32, y0: i32, x1: i32, y1: i32, rgba: [u8; 4]| {
+        let x0 = x0.clamp(0, w);
+        let y0 = y0.clamp(0, h);
+        let x1 = x1.clamp(0, w);
+        let y1 = y1.clamp(0, h);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = (y as usize * stride + x as usize) * 4;
+                if i + 3 < buf.len() {
+                    buf[i..i + 4].copy_from_slice(&rgba);
+                }
+            }
+        }
+    };
+    let cx = px.round() as i32;
+    let cy = py.round() as i32;
+    let arm = 10;
+    let thick = 3;
+    let tip = 6;
+    let white = [255, 255, 255, 242];
+    let tip_c = [89, 217, 255, 255];
+    fill(
+        buf,
+        cx - arm,
+        cy - thick / 2,
+        cx + arm,
+        cy - thick / 2 + thick,
+        white,
+    );
+    fill(
+        buf,
+        cx - thick / 2,
+        cy - arm,
+        cx - thick / 2 + thick,
+        cy + arm,
+        white,
+    );
+    fill(
+        buf,
+        cx - tip / 2,
+        cy - tip / 2,
+        cx - tip / 2 + tip,
+        cy - tip / 2 + tip,
+        tip_c,
+    );
 }
 
 #[cfg(test)]
@@ -404,38 +422,65 @@ mod tests {
     }
 
     #[test]
-    fn flick_fires_on_inner_to_arc() {
+    fn click_fires_on_arc_release() {
         let mut s = ContextRadialState::default();
         s.canvas_w = 1280.0;
         s.canvas_h = 720.0;
         s.open = true;
         s.set_items(build_items(true));
-        s.set_pointer(640.0, 360.0);
+        s.set_pointer(640.0, 360.0 - 120.0);
         s.primary_down = true;
         assert_eq!(s.tick_interaction(), ContextEvent::None);
-        assert_eq!(s.flick, FlickPhase::Armed);
-        s.set_pointer(640.0, 360.0 - 120.0);
+        s.primary_down = false;
         assert_eq!(
             s.tick_interaction(),
             ContextEvent::Fired(ContextItemId::Save)
         );
-        // Save keeps open so caller can show HTTP failure on the ring.
         assert!(s.open);
     }
 
     #[test]
-    fn flick_ignores_disabled() {
+    fn click_disabled_sets_status() {
         let mut s = ContextRadialState::default();
         s.canvas_w = 1280.0;
         s.canvas_h = 720.0;
         s.open = true;
         s.set_items(build_items(false));
-        s.set_pointer(640.0, 360.0);
+        s.set_pointer(640.0, 360.0 - 120.0);
         s.primary_down = true;
         assert_eq!(s.tick_interaction(), ContextEvent::None);
-        s.set_pointer(640.0, 240.0);
+        s.primary_down = false;
         assert_eq!(s.tick_interaction(), ContextEvent::None);
+        assert!(s.status.contains("blake3"));
         assert!(s.open);
+    }
+
+    #[test]
+    fn grab_hold_then_release_on_save_fires() {
+        // LMB already down (Grab) when menu opens — only release over Save fires.
+        let mut s = ContextRadialState::default();
+        s.canvas_w = 1280.0;
+        s.canvas_h = 720.0;
+        s.open = true;
+        s.set_items(build_items(true));
+        s.primary_down = true;
+        s.was_primary_down = true;
+        s.set_pointer(640.0, 360.0);
+        assert_eq!(s.tick_interaction(), ContextEvent::None);
+        s.set_pointer(640.0, 360.0 - 120.0);
+        assert_eq!(s.tick_interaction(), ContextEvent::None);
+        s.primary_down = false;
+        assert_eq!(
+            s.tick_interaction(),
+            ContextEvent::Fired(ContextItemId::Save)
+        );
+    }
+
+    #[test]
+    fn pointer_left_menu_beyond_leave_pad() {
+        assert!(!pointer_left_menu(640.0, 360.0, 1280.0, 720.0));
+        assert!(!pointer_left_menu(640.0, 360.0 - 180.0, 1280.0, 720.0));
+        assert!(pointer_left_menu(640.0, 360.0 - 280.0, 1280.0, 720.0));
     }
 
     #[test]
@@ -467,24 +512,6 @@ mod tests {
         assert!(s.open);
         s.toggle_desktop();
         assert!(!s.open);
-    }
-
-    #[test]
-    fn clear_pointer_resets_armed_even_while_primary_down() {
-        let mut s = ContextRadialState::default();
-        s.canvas_w = 1280.0;
-        s.canvas_h = 720.0;
-        s.open = true;
-        s.set_items(build_items(true));
-        s.set_pointer(640.0, 360.0);
-        s.primary_down = true;
-        assert_eq!(s.tick_interaction(), ContextEvent::None);
-        assert_eq!(s.flick, FlickPhase::Armed);
-        s.clear_pointer();
-        assert_eq!(s.flick, FlickPhase::Idle);
-        // Re-hit Arc without Inner must not fire.
-        s.set_pointer(640.0, 240.0);
-        assert_eq!(s.tick_interaction(), ContextEvent::None);
     }
 
     #[test]

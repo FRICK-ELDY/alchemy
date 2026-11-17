@@ -131,32 +131,88 @@ pub fn dash_quad_model(head_pos: Vec3, head_orient: Quat) -> Mat4 {
     )
 }
 
-/// Context radial board at aim laser origin + forward offset (x00ce / Resonite-style).
+/// Freeze Context board in world at open/re-anchor (aim forward + face head).
 ///
-/// Board aspect matches `canvas_w`×`canvas_h` so polar hits stay circular on the texture.
-pub fn context_board_model(
+/// Returns `(center, face_orient, model)`. Board stays put until close / re-anchor.
+pub fn freeze_context_board(
     aim_pos: Vec3,
     aim_orient: Quat,
     head_orient: Quat,
     canvas_w: f32,
     canvas_h: f32,
-) -> Mat4 {
+) -> (Vec3, Quat, Mat4) {
     let forward = aim_orient * Vec3::NEG_Z;
     let center = aim_pos + forward * crate::context_radial::CONTEXT_FORWARD_M;
-    let (bw, bh) = crate::context_radial::context_board_size(canvas_w, canvas_h);
-    // Face the user (use head yaw/pitch for readability).
-    Mat4::from_scale_rotation_translation(Vec3::new(bw, bh, 1.0), head_orient, center)
+    let model = context_board_model_at(center, head_orient, canvas_w, canvas_h);
+    (center, head_orient, model)
 }
 
-/// Ray vs context board plane → canvas pixels (same convention as dash quad).
-pub fn ray_hit_context_board(
+/// Model matrix for a world-anchored Context board (aspect-matched to canvas).
+pub fn context_board_model_at(
+    center: Vec3,
+    face_orient: Quat,
+    canvas_w: f32,
+    canvas_h: f32,
+) -> Mat4 {
+    let (bw, bh) = crate::context_radial::context_board_size(canvas_w, canvas_h);
+    Mat4::from_scale_rotation_translation(Vec3::new(bw, bh, 1.0), face_orient, center)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ContextBoardRayHit {
+    /// Inside the board rect — use exact UV.
+    Inside { px: f32, py: f32 },
+    /// Outside hard rect but within leave pad — pointer clamped to board edge.
+    Edge { px: f32, py: f32 },
+    /// No plane hit or beyond leave pad.
+    Miss,
+}
+
+/// Classify aim vs frozen board: Inside / Edge (keep open) / Miss (leave candidate).
+pub fn classify_context_board_ray(
     board_center: Vec3,
     board_orient: Quat,
     ray: Ray,
     canvas_w: f32,
     canvas_h: f32,
-) -> Option<(f32, f32)> {
+) -> ContextBoardRayHit {
+    let Some((_t, x, y)) = context_board_hit_local(board_center, board_orient, ray) else {
+        return ContextBoardRayHit::Miss;
+    };
     let (board_w, board_h) = crate::context_radial::context_board_size(canvas_w, canvas_h);
+    let half_w = board_w * 0.5;
+    let half_h = board_h * 0.5;
+    let leave_w = half_w * crate::context_radial::MENU_LEAVE_PAD;
+    let leave_h = half_h * crate::context_radial::MENU_LEAVE_PAD;
+    if x.abs() > leave_w || y.abs() > leave_h {
+        return ContextBoardRayHit::Miss;
+    }
+    let cx = x.clamp(-half_w, half_w);
+    let cy = y.clamp(-half_h, half_h);
+    let u = (cx / board_w) + 0.5;
+    let v = 0.5 - (cy / board_h);
+    let px = u * canvas_w;
+    let py = v * canvas_h;
+    if x.abs() <= half_w && y.abs() <= half_h {
+        ContextBoardRayHit::Inside { px, py }
+    } else {
+        ContextBoardRayHit::Edge { px, py }
+    }
+}
+
+/// Laser length to the frozen Context board plane (or max if miss).
+pub fn laser_length_context_board(board_center: Vec3, board_orient: Quat, ray: Ray) -> f32 {
+    match context_board_hit_local(board_center, board_orient, ray) {
+        Some((t, _, _)) if t > 0.0 => (t - LASER_TIP_GAP).max(0.01),
+        _ => LASER_MAX_LENGTH,
+    }
+}
+
+fn context_board_hit_local(
+    board_center: Vec3,
+    board_orient: Quat,
+    ray: Ray,
+) -> Option<(f32, f32, f32)> {
     let forward = board_orient * Vec3::NEG_Z;
     let right = board_orient * Vec3::X;
     let up = board_orient * Vec3::Y;
@@ -171,16 +227,7 @@ pub fn ray_hit_context_board(
     }
     let hit = ray.origin + ray.dir * t;
     let local = hit - board_center;
-    let x = local.dot(right);
-    let y = local.dot(up);
-    let half_w = board_w * 0.5;
-    let half_h = board_h * 0.5;
-    if x.abs() > half_w || y.abs() > half_h {
-        return None;
-    }
-    let u = (x / board_w) + 0.5;
-    let v = 0.5 - (y / board_h);
-    Some((u * canvas_w, v * canvas_h))
+    Some((t, local.dot(right), local.dot(up)))
 }
 
 /// Model for a unit laser box along local -Z from origin to length 1, scaled to `length`.
@@ -264,5 +311,58 @@ mod tests {
             (tip - Vec3::new(1.0, 2.0, 1.0)).length() < 1e-4,
             "tip={tip:?}"
         );
+    }
+
+    #[test]
+    fn frozen_context_board_hit_at_center() {
+        let aim_pos = Vec3::new(0.0, 1.4, 0.0);
+        let aim_orient = Quat::IDENTITY;
+        let head_orient = Quat::IDENTITY;
+        let (center, orient, _) =
+            freeze_context_board(aim_pos, aim_orient, head_orient, 960.0, 540.0);
+        let ray = pose_to_ray(aim_pos, aim_orient);
+        match classify_context_board_ray(center, orient, ray, 960.0, 540.0) {
+            ContextBoardRayHit::Inside { px, py } => {
+                assert!((px - 480.0).abs() < 2.0, "px={px}");
+                assert!((py - 270.0).abs() < 2.0, "py={py}");
+            }
+            other => panic!("expected Inside, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn frozen_context_board_miss_closes_path() {
+        let aim_pos = Vec3::ZERO;
+        let (center, orient, _) =
+            freeze_context_board(aim_pos, Quat::IDENTITY, Quat::IDENTITY, 960.0, 540.0);
+        let ray = Ray {
+            origin: aim_pos,
+            dir: Vec3::X,
+        };
+        assert_eq!(
+            classify_context_board_ray(center, orient, ray, 960.0, 540.0),
+            ContextBoardRayHit::Miss
+        );
+    }
+
+    #[test]
+    fn context_board_edge_keeps_clamped_pointer() {
+        let aim_pos = Vec3::new(0.0, 1.4, 0.0);
+        let (center, orient, _) =
+            freeze_context_board(aim_pos, Quat::IDENTITY, Quat::IDENTITY, 960.0, 540.0);
+        let (bw, _bh) = crate::context_radial::context_board_size(960.0, 540.0);
+        // Aim slightly past the right edge but inside leave pad.
+        let edge_x = bw * 0.5 * 1.1;
+        let origin = center + Vec3::new(edge_x, 0.0, 0.3);
+        let ray = Ray {
+            origin,
+            dir: Vec3::NEG_Z,
+        };
+        match classify_context_board_ray(center, orient, ray, 960.0, 540.0) {
+            ContextBoardRayHit::Edge { px, .. } => {
+                assert!((px - 960.0).abs() < 1.0, "clamped px={px}");
+            }
+            other => panic!("expected Edge, got {other:?}"),
+        }
     }
 }

@@ -21,8 +21,9 @@ use alchemy_protocol::{input_buttons, DEFAULT_MOVE_SPEED};
 
 use super::super::hotswitch::{HotswitchConfig, HotswitchController};
 use super::input::{
-    context_board_model, dash_quad_model, laser_length, laser_length_world, laser_model,
-    openxr_pose_to_isometry, pose_to_ray, ray_hit_context_board, ray_hit_dash_quad, Ray,
+    classify_context_board_ray, context_board_model_at, dash_quad_model, freeze_context_board,
+    laser_length, laser_length_context_board, laser_length_world, laser_model,
+    openxr_pose_to_isometry, pose_to_ray, ray_hit_dash_quad, ContextBoardRayHit, Ray,
 };
 use super::loco::{combine_turn_axes, intent_from_sticks, stage_move_to_world, STICK_DEADZONE};
 use super::math::{projection_from_fov_default, view_from_pose};
@@ -121,7 +122,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
     let context_action =
         action_set.create_action::<bool>("context", "Context radial toggle", &hands)?;
     let select_action = action_set.create_action::<bool>("select", "Select / click", &[])?;
-    // Analog trigger (Oculus Primary / flick); Index also bound.
+    // Analog trigger (Oculus Primary / Save click); Index also bound.
     let trigger_action = action_set.create_action::<f32>("trigger", "Primary trigger", &hands)?;
     let grab_action = action_set.create_action::<f32>("grab", "Grab / squeeze", &hands)?;
     let aim_action = action_set.create_action::<xr::Posef>("aim", "Aim pose", &hands)?;
@@ -250,6 +251,12 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
     context_radial.canvas_w = UI_CANVAS_W as f32;
     context_radial.canvas_h = UI_CANVAS_H as f32;
     let mut context_tree = LayoutTree::default();
+    // World-anchored board pose frozen at open / hand re-anchor (x00ce).
+    let mut context_board: Option<(Vec3, Quat)> = None;
+    let mut context_leave_miss: u32 = 0;
+    // Open/re-anchor edge while aim locate missed — retry a few frames (~133ms @90Hz).
+    let mut context_pending_anchor: Option<(HandSide, u32)> = None;
+    const CONTEXT_AIM_PENDING_FRAMES: u32 = 12;
     // After Context Save peer enqueue: wait for matching InventoryMirror correlation.
     let mut context_save_pending = false;
     let mut context_save_correlation: Option<u64> = None;
@@ -335,10 +342,17 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                     context_save_started_at = None;
                     if ok {
                         context_radial.close();
+                        context_board = None;
+                        context_leave_miss = 0;
+                        if let Some(gpu) = ui.gpu.as_mut() {
+                            gpu.clear_context_overlay_cache();
+                        }
                     } else {
                         if !context_radial.open {
                             let hand = context_save_owner.unwrap_or(HandSide::Right);
                             let _ = context_radial.toggle_or_reanchor(hand);
+                            context_board = None;
+                            context_leave_miss = 0;
                         }
                         let st = ui.state.inventory_status.clone();
                         context_radial.set_status(if st.is_empty() {
@@ -359,6 +373,8 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                 if !context_radial.open {
                     let hand = context_save_owner.unwrap_or(HandSide::Right);
                     let _ = context_radial.toggle_or_reanchor(hand);
+                    context_board = None;
+                    context_leave_miss = 0;
                 }
                 context_radial.set_status("Save timed out (Desktop busy?)");
                 context_save_owner = None;
@@ -516,29 +532,6 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             logged_box_count = Some(draw_box_count);
         }
 
-        let menu_down = menu_action.state(&session, xr::Path::NULL)?.current_state;
-        if menu_down && !menu_was_down {
-            ui.toggle();
-            if ui.state.open {
-                context_radial.close();
-            }
-            log::info!("XR menu → system_ui open={}", ui.state.open);
-        }
-        menu_was_down = menu_down;
-
-        let ctx_l = context_action.state(&session, hands[0])?.current_state;
-        let ctx_r = context_action.state(&session, hands[1])?.current_state;
-        if !ui.state.open {
-            if ctx_l && !context_was_down_l {
-                context_radial.toggle_or_reanchor(HandSide::Left);
-            }
-            if ctx_r && !context_was_down_r {
-                context_radial.toggle_or_reanchor(HandSide::Right);
-            }
-        }
-        context_was_down_l = ctx_l;
-        context_was_down_r = ctx_r;
-
         let head_located = view_ref.locate(&stage, xr_frame_state.predicted_display_time)?;
         let (head_pos, head_orient) = openxr_pose_to_isometry(head_located.pose);
         let aim_left_pose = locate_aim(&aim_left, &stage, xr_frame_state.predicted_display_time);
@@ -549,6 +542,116 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             &stage,
             xr_frame_state.predicted_display_time,
         );
+
+        let menu_down = menu_action.state(&session, xr::Path::NULL)?.current_state;
+        if menu_down && !menu_was_down {
+            ui.toggle();
+            if ui.state.open {
+                context_radial.close();
+                context_board = None;
+                context_leave_miss = 0;
+                context_pending_anchor = None;
+                if let Some(gpu) = ui.gpu.as_mut() {
+                    gpu.clear_context_overlay_cache();
+                }
+            }
+            log::info!("XR menu → system_ui open={}", ui.state.open);
+        }
+        menu_was_down = menu_down;
+
+        let ctx_l = context_action.state(&session, hands[0])?.current_state;
+        let ctx_r = context_action.state(&session, hands[1])?.current_state;
+        if !ui.state.open {
+            // Same-hand Context closes without aim. Open / opposite-hand re-anchor
+            // need aim; if locate misses on the edge frame, buffer for a few frames.
+            if ctx_l && !context_was_down_l {
+                let same_hand_close =
+                    context_radial.open && context_radial.owner == Some(HandSide::Left);
+                if same_hand_close {
+                    context_pending_anchor = None;
+                    let _ = context_radial.toggle_or_reanchor(HandSide::Left);
+                    context_board = None;
+                    context_leave_miss = 0;
+                    if let Some(gpu) = ui.gpu.as_mut() {
+                        gpu.clear_context_overlay_cache();
+                    }
+                } else if let Some((aim_pos, aim_orient)) = aim_left_pose {
+                    context_pending_anchor = None;
+                    let _ = context_radial.toggle_or_reanchor(HandSide::Left);
+                    let (c, o, _) = freeze_context_board(
+                        aim_pos,
+                        aim_orient,
+                        head_orient,
+                        UI_CANVAS_W as f32,
+                        UI_CANVAS_H as f32,
+                    );
+                    context_board = Some((c, o));
+                    context_leave_miss = 0;
+                } else {
+                    context_pending_anchor = Some((HandSide::Left, CONTEXT_AIM_PENDING_FRAMES));
+                }
+            }
+            if ctx_r && !context_was_down_r {
+                let same_hand_close =
+                    context_radial.open && context_radial.owner == Some(HandSide::Right);
+                if same_hand_close {
+                    context_pending_anchor = None;
+                    let _ = context_radial.toggle_or_reanchor(HandSide::Right);
+                    context_board = None;
+                    context_leave_miss = 0;
+                    if let Some(gpu) = ui.gpu.as_mut() {
+                        gpu.clear_context_overlay_cache();
+                    }
+                } else if let Some((aim_pos, aim_orient)) = aim_right_pose {
+                    context_pending_anchor = None;
+                    let _ = context_radial.toggle_or_reanchor(HandSide::Right);
+                    let (c, o, _) = freeze_context_board(
+                        aim_pos,
+                        aim_orient,
+                        head_orient,
+                        UI_CANVAS_W as f32,
+                        UI_CANVAS_H as f32,
+                    );
+                    context_board = Some((c, o));
+                    context_leave_miss = 0;
+                } else {
+                    context_pending_anchor = Some((HandSide::Right, CONTEXT_AIM_PENDING_FRAMES));
+                }
+            }
+
+            if let Some((hand, frames_left)) = context_pending_anchor {
+                let aim = match hand {
+                    HandSide::Left => aim_left_pose,
+                    HandSide::Right => aim_right_pose,
+                };
+                if let Some((aim_pos, aim_orient)) = aim {
+                    // Same-hand close while buffered: drop pending (close already handled on edge).
+                    let same_hand_close = context_radial.open && context_radial.owner == Some(hand);
+                    if !same_hand_close {
+                        let _ = context_radial.toggle_or_reanchor(hand);
+                        let (c, o, _) = freeze_context_board(
+                            aim_pos,
+                            aim_orient,
+                            head_orient,
+                            UI_CANVAS_W as f32,
+                            UI_CANVAS_H as f32,
+                        );
+                        context_board = Some((c, o));
+                        context_leave_miss = 0;
+                    }
+                    context_pending_anchor = None;
+                } else if frames_left == 0 {
+                    context_pending_anchor = None;
+                } else {
+                    context_pending_anchor = Some((hand, frames_left - 1));
+                }
+            }
+        } else {
+            context_pending_anchor = None;
+        }
+        context_was_down_l = ctx_l;
+        context_was_down_r = ctx_r;
+
         let owner_aim = match context_radial.owner {
             Some(HandSide::Left) => aim_left_pose,
             Some(HandSide::Right) => aim_right_pose,
@@ -588,6 +691,12 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         if ui.state.open {
             held_grab = None;
             context_radial.close();
+            context_board = None;
+            context_leave_miss = 0;
+            context_pending_anchor = None;
+            if let Some(gpu) = ui.gpu.as_mut() {
+                gpu.clear_context_overlay_cache();
+            }
         } else if !context_radial.open {
             let grab_down = grip_down || select_down_for_ui;
             if grab_down {
@@ -619,10 +728,24 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             }
         }
 
-        // Context radial interaction (owner hand laser → board; Primary = owner trigger only).
+        // Context radial: world-anchored board; sustained hard miss → close (x00ce).
         let mut context_save_eid: Option<u32> = None;
         let mut context_layout_dirty = false;
         if context_radial.open && !ui.state.open {
+            // Open without a pose (aim missing at toggle) — freeze now if possible.
+            if context_board.is_none() {
+                if let Some((aim_pos, aim_orient)) = owner_aim {
+                    let (c, o, _) = freeze_context_board(
+                        aim_pos,
+                        aim_orient,
+                        head_orient,
+                        UI_CANVAS_W as f32,
+                        UI_CANVAS_H as f32,
+                    );
+                    context_board = Some((c, o));
+                    context_leave_miss = 0;
+                }
+            }
             let save_ok = held_grab.is_some_and(|eid| {
                 !ui.state.inventory_blocked()
                     && shared
@@ -636,31 +759,45 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                 Some(HandSide::Right) => trigger_r >= GRAB_SQUEEZE_THRESHOLD,
                 None => select_down_for_ui,
             };
-            if let Some((aim_pos, aim_orient)) = owner_aim {
-                let board = context_board_model(
-                    aim_pos,
-                    aim_orient,
-                    head_orient,
-                    UI_CANVAS_W as f32,
-                    UI_CANVAS_H as f32,
-                );
-                let board_center = board.transform_point3(Vec3::ZERO);
+            let mut leave_close = false;
+            if let (Some((board_center, board_orient)), Some((aim_pos, aim_orient))) =
+                (context_board, owner_aim)
+            {
                 let ray = pose_to_ray(aim_pos, aim_orient);
-                if let Some((px, py)) = ray_hit_context_board(
+                match classify_context_board_ray(
                     board_center,
-                    head_orient,
+                    board_orient,
                     ray,
                     UI_CANVAS_W as f32,
                     UI_CANVAS_H as f32,
                 ) {
-                    context_radial.set_pointer(px, py);
-                } else {
-                    context_radial.clear_pointer();
+                    ContextBoardRayHit::Inside { px, py } | ContextBoardRayHit::Edge { px, py } => {
+                        context_radial.set_pointer(px, py);
+                        context_leave_miss = 0;
+                    }
+                    ContextBoardRayHit::Miss => {
+                        // In-flight Save keeps the ring visible (progress status).
+                        if !context_save_pending {
+                            context_leave_miss = context_leave_miss.saturating_add(1);
+                            if context_leave_miss >= context_radial::LEAVE_MISS_FRAMES {
+                                leave_close = true;
+                            }
+                        }
+                    }
                 }
-            } else {
-                context_radial.clear_pointer();
             }
-            if let ContextEvent::Fired(ContextItemId::Save) = context_radial.tick_interaction() {
+            // owner_aim None: tracking gap — keep last pointer, do not count as leave.
+            if leave_close {
+                context_radial.close();
+                context_board = None;
+                context_leave_miss = 0;
+                context_pending_anchor = None;
+                if let Some(gpu) = ui.gpu.as_mut() {
+                    gpu.clear_context_overlay_cache();
+                }
+            } else if let ContextEvent::Fired(ContextItemId::Save) =
+                context_radial.tick_interaction()
+            {
                 context_save_eid = held_grab;
             }
             if context_radial.dirty {
@@ -668,6 +805,8 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                 context_radial.dirty = false;
                 context_layout_dirty = true;
             }
+        } else {
+            context_leave_miss = 0;
         }
         if let Some(eid) = context_save_eid {
             if ui.state.inventory_blocked() {
@@ -719,8 +858,8 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                         UI_CANVAS_W as f32,
                         UI_CANVAS_H as f32,
                     )
-                } else if context_radial.open {
-                    crate::context_radial::CONTEXT_FORWARD_M
+                } else if let (true, Some((c, o))) = (context_radial.open, context_board) {
+                    laser_length_context_board(c, o, stage_ray)
                 } else {
                     let world_ray = ray_to_world(stage_ray, floor_model);
                     laser_length_world(world_ray, &grabbable_boxes)
@@ -757,26 +896,22 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             }
             Some(dash_quad_model(head_pos, head_orient))
         } else if context_radial.open {
-            if context_layout_dirty || context_tree.draws.is_empty() {
-                if context_tree.draws.is_empty() {
-                    context_radial::rebuild_layout(&mut context_tree, &context_radial);
-                }
-                if let Some(gpu) = ui.gpu.as_mut() {
-                    gpu.mark_dirty();
-                    gpu.rasterize_cpu(&context_tree, true);
-                }
-                if let Some((pixels, cw, ch)) = ui.canvas_rgba() {
-                    overlays.upload_ui_canvas(pixels, cw, ch);
-                }
+            if context_tree.draws.is_empty() {
+                context_radial::rebuild_layout(&mut context_tree, &context_radial);
+                context_layout_dirty = true;
             }
-            owner_aim.map(|(aim_pos, aim_orient)| {
-                context_board_model(
-                    aim_pos,
-                    aim_orient,
-                    head_orient,
-                    UI_CANVAS_W as f32,
-                    UI_CANVAS_H as f32,
-                )
+            if let Some(gpu) = ui.gpu.as_mut() {
+                gpu.prepare_context_overlay(
+                    &context_tree,
+                    context_layout_dirty,
+                    context_radial.pointer,
+                );
+            }
+            if let Some((pixels, cw, ch)) = ui.canvas_rgba() {
+                overlays.upload_ui_canvas(pixels, cw, ch);
+            }
+            context_board.map(|(center, orient)| {
+                context_board_model_at(center, orient, UI_CANVAS_W as f32, UI_CANVAS_H as f32)
             })
         } else {
             None

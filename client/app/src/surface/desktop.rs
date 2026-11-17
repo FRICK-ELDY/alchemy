@@ -70,6 +70,13 @@ struct DesktopGpu {
     spatial_lens: SpatialLensGpu,
 }
 
+/// Context radial overlay for one Desktop frame (layout + optional aim pointer).
+struct ContextOverlayFrame<'a> {
+    tree: &'a LayoutTree,
+    layout_dirty: bool,
+    pointer: Option<(f32, f32)>,
+}
+
 impl DesktopGpu {
     async fn new(window: Arc<Window>, mesh: &CpuMesh, shared: Arc<SharedState>) -> Result<Self> {
         let (_instance, surface, _adapter, device, queue, config, format) =
@@ -103,7 +110,7 @@ impl DesktopGpu {
         lens: &SpatialLensState,
         lens_headers: &[crate::spatial_lens::GpuPanelHeader],
         lens_prims: &[crate::spatial_lens::GpuUiPrim],
-        context_tree: Option<(&LayoutTree, bool)>,
+        context_overlay: Option<ContextOverlayFrame<'_>>,
     ) -> Result<()> {
         self.scene.maybe_log_pose();
         let eye = self.scene.user_root_pose();
@@ -111,13 +118,17 @@ impl DesktopGpu {
         let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
         let (view, proj) = SceneGpu::desktop_view_proj(eye, look, aspect);
 
+        let draw_context = context_overlay.is_some();
         if ui.state.open {
             ui.prepare_frame(&self.scene.queue);
-        } else if let Some((tree, gpu_dirty)) = context_tree {
-            if gpu_dirty {
-                if let Some(gpu) = ui.gpu.as_mut() {
-                    gpu.rasterize_overlay_now(&self.scene.queue, tree);
-                }
+        } else if let Some(overlay) = context_overlay {
+            if let Some(gpu) = ui.gpu.as_mut() {
+                gpu.present_context_overlay(
+                    &self.scene.queue,
+                    overlay.tree,
+                    overlay.layout_dirty,
+                    overlay.pointer,
+                );
             }
         }
 
@@ -170,7 +181,7 @@ impl DesktopGpu {
             );
         }
 
-        let draw_ui = ui.state.open || context_tree.is_some();
+        let draw_ui = ui.state.open || draw_context;
         if draw_ui {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ui-overlay"),
@@ -237,6 +248,8 @@ struct App {
     context_tree: LayoutTree,
     /// Virtual pointer on radial canvas while look-captured (Δ from center).
     context_pointer: (f32, f32),
+    /// Consecutive frames outside the radial leave pad (x00ce Desktop leave-close).
+    context_leave_miss: u32,
     /// Layout changed → re-raster Context overlay once.
     context_gpu_dirty: bool,
     /// Rate-limit "grab miss" logs.
@@ -785,7 +798,8 @@ impl App {
             return;
         }
         if self.context_radial.open {
-            // Steer radial pointer instead of look (works without look capture · x00ce review).
+            // Radial pointer steers with mouse; look keeps updating so WASD yaw stays live
+            // while the menu is open (x00ce — radial must not suppress locomotion).
             const RADIAL_SENS: f32 = 1.6;
             let w = self.context_radial.canvas_w;
             let h = self.context_radial.canvas_h;
@@ -793,7 +807,6 @@ impl App {
                 (self.context_pointer.0 + dx as f32 * RADIAL_SENS).clamp(0.0, w);
             self.context_pointer.1 =
                 (self.context_pointer.1 + dy as f32 * RADIAL_SENS).clamp(0.0, h);
-            return;
         }
         if !self.look_captured {
             return;
@@ -817,6 +830,19 @@ impl App {
         });
         self.context_radial
             .set_items(context_radial::build_items(save_ok));
+        // Surface why Save is grey while Grab is held (cuboid / not Live / no blake3).
+        if self.context_radial.open && self.held_grab.is_some() && !save_ok {
+            let hint = if self.ui.state.inventory_blocked() {
+                "Save needs Live session"
+            } else {
+                "Save needs held mesh blake3 (cuboid boxes cannot Save)"
+            };
+            if self.context_radial.status.is_empty()
+                || self.context_radial.status.starts_with("Save needs")
+            {
+                self.context_radial.set_status(hint);
+            }
+        }
     }
 
     fn sync_context_canvas_size(&mut self) {
@@ -837,13 +863,28 @@ impl App {
                 self.context_radial.canvas_w * 0.5,
                 self.context_radial.canvas_h * 0.5,
             );
+            self.context_leave_miss = 0;
+            self.context_radial
+                .set_pointer(self.context_pointer.0, self.context_pointer.1);
             self.sync_context_radial_items();
             context_radial::rebuild_layout(&mut self.context_tree, &self.context_radial);
             self.context_radial.dirty = false;
             self.context_gpu_dirty = true;
             log::info!("context radial open");
         } else {
+            self.context_leave_miss = 0;
+            if let Some(gpu) = self.ui.gpu.as_mut() {
+                gpu.clear_context_overlay_cache();
+            }
             log::info!("context radial closed");
+        }
+    }
+
+    fn close_context_radial(&mut self) {
+        self.context_radial.close();
+        self.context_leave_miss = 0;
+        if let Some(gpu) = self.ui.gpu.as_mut() {
+            gpu.clear_context_overlay_cache();
         }
     }
 
@@ -852,7 +893,7 @@ impl App {
             return None;
         }
         if self.ui.state.open {
-            self.context_radial.close();
+            self.close_context_radial();
             return None;
         }
         self.sync_context_canvas_size();
@@ -860,6 +901,26 @@ impl App {
         self.context_radial.primary_down = self.primary_down;
         self.context_radial
             .set_pointer(self.context_pointer.0, self.context_pointer.1);
+        // Leave ring soft-pad → close (same idea as XR board leave).
+        // While Grab is held, keep the menu so WASD reposition + Save stay usable.
+        let grab_held = self.grab_button_held() || self.held_grab.is_some();
+        if !grab_held
+            && context_radial::pointer_left_menu(
+                self.context_pointer.0,
+                self.context_pointer.1,
+                self.context_radial.canvas_w,
+                self.context_radial.canvas_h,
+            )
+        {
+            self.context_leave_miss = self.context_leave_miss.saturating_add(1);
+            if self.context_leave_miss >= context_radial::LEAVE_MISS_FRAMES {
+                self.close_context_radial();
+                log::info!("context radial closed (pointer left menu)");
+                return None;
+            }
+        } else {
+            self.context_leave_miss = 0;
+        }
         let ev = self.context_radial.tick_interaction();
         if self.context_radial.dirty {
             context_radial::rebuild_layout(&mut self.context_tree, &self.context_radial);
@@ -885,12 +946,15 @@ impl App {
             return;
         }
         self.ui.state.scene_meshes = self.shared.scene_meshes();
+        log::info!("context Save put_back begin entity={entity_id}");
         match run_put_back_for_entities_result(&mut self.ui, &self.shared, &[entity_id]) {
             Ok(msg) => {
+                log::info!("context Save put_back ok: {msg}");
                 self.context_radial.set_status(msg);
-                self.context_radial.close();
+                self.close_context_radial();
             }
             Err(msg) => {
+                log::warn!("context Save put_back failed: {msg}");
                 self.context_radial.set_status(msg);
                 context_radial::rebuild_layout(&mut self.context_tree, &self.context_radial);
                 self.context_radial.dirty = false;
@@ -1303,6 +1367,10 @@ impl App {
             .set_cursor_grab(CursorGrabMode::Confined)
             .or_else(|_| window.set_cursor_grab(CursorGrabMode::Locked));
         self.apply_hidden_cursor(&window);
+        // Warping while Context is open flings the radial pointer (leave-close / aim jump).
+        if self.context_radial.open {
+            return;
+        }
         // Pull back only if drifted; avoid perpetual skip_cursor_warp (kills look).
         let size = window.inner_size();
         let cx = size.width as f64 * 0.5;
@@ -1627,6 +1695,7 @@ impl App {
         }
         self.update_grab_hold();
 
+        // Context radial must not suppress locomotion (unlike Dash · x00ce).
         let dash_open = self.ui.state.open;
         let (eye, look) = self.eye_and_look();
         let yaw = look.yaw;
@@ -2011,7 +2080,7 @@ impl ApplicationHandler for App {
                     }
                     if pressed && !event.repeat && code == KeyCode::Escape {
                         if self.context_radial.open {
-                            self.context_radial.close();
+                            self.close_context_radial();
                             log::info!("context radial closed (Esc)");
                         } else {
                             self.ui.toggle();
@@ -2260,8 +2329,12 @@ impl ApplicationHandler for App {
                     None
                 };
                 let context_gpu_dirty = self.context_gpu_dirty;
-                let context_tree = if self.context_radial.open && !self.ui.state.open {
-                    Some((&self.context_tree, context_gpu_dirty))
+                let context_overlay = if self.context_radial.open && !self.ui.state.open {
+                    Some(ContextOverlayFrame {
+                        tree: &self.context_tree,
+                        layout_dirty: context_gpu_dirty,
+                        pointer: self.context_radial.pointer,
+                    })
                 } else {
                     None
                 };
@@ -2272,7 +2345,7 @@ impl ApplicationHandler for App {
                         &self.spatial_lens,
                         &self.spatial_headers,
                         &self.spatial_prims,
-                        context_tree,
+                        context_overlay,
                     ) {
                         Ok(()) => {
                             if context_gpu_dirty {
@@ -4539,6 +4612,7 @@ pub fn run(
         context_radial: ContextRadialState::default(),
         context_tree: LayoutTree::default(),
         context_pointer: (640.0, 360.0),
+        context_leave_miss: 0,
         context_gpu_dirty: false,
         last_grab_miss_log: None,
         auth_job: None,
