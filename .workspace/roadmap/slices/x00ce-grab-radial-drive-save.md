@@ -14,7 +14,7 @@
 
 1. Context ラジアルを開く（Desktop: 中ボタン / T · XR: B / Y — Dash とは別ボタン）  
 2. （任意）保存したい Prefab をグラブした状態で開く／開いたままグラブ  
-3. 中央を Primary で押し、Save セクタへフリップ通過  
+3. Save ボタンを Primary でクリック
 4. Drive に Prefab ノードとして保存される（既存 `POST /api/v1/drive/put_back`）
 
 後段（本 Slice 外）: Drive 一覧でそのアイテムを選ぶ → Git 操作の詳細パネル。
@@ -25,7 +25,7 @@
 
 | 保証する | 保証しない |
 |:---|:---|
-| Context ラジアル（Resonite 風・フリップ通過・手切替） | Room「Save Changes」（x00b7 overlay→canonical） |
+| Context ラジアル（Save クリック・手切替・空間固定） | Room「Save Changes」（x00b7 overlay→canonical） |
 | Grab 保持中に「保存」が有効（Desktop + XR peer） | Spatial VCS commit / push / promote（Git 詳細パネル後続） |
 | 保持 entity から put_back 用 children（blake3 + TRS）を組み立てる | put_back と同時 despawn の原子 TX |
 | 成功時 Drive に prefab ノードが増える（既存 `save_prefab` / Grant 必須） | 他人ワールド mesh の無断 Drive 取り込み |
@@ -56,7 +56,7 @@ Drive 詳細 Git パネル →  vcs-store / push（後続 Slice）
 | Phase | 内容 | 状態 |
 |:---|:---|:---|
 | 0 | 本 Slice 文書 | done |
-| 1 | Context ラジアル UI（フリップ・手切替・Save） | done |
+| 1 | Context ラジアル UI（Save クリック・手切替） | done |
 | 2 | held_grab → put_back children 組み立て + HTTP | done |
 | 3 | Desktop / XR 配線 + 失敗表示 | done |
 | 4 | テスト + docs 鮮度 | done |
