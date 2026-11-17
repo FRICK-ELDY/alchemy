@@ -50,7 +50,7 @@
 | ID | 項目 | 根拠 | 作業イメージ |
 |:---|:---|:---|:---|
 | P2-1 | dash / desktop イベント→コマンド分割 | -2 | **closed**（[x00d0](../../roadmap/slices/x00d0-desktop-event-command-split.md): `surface/desktop/{session,inventory,hotswitch}_flow`；`system_ui` は `UiAction` のみ） |
-| P2-2 | catalog RL / scene Grant 照会 / PoP nonce / epoch 軽量 API | -1 | **partial closed**（[x00d2](../../roadmap/slices/x00d2-catalog-rl-epoch-api.md): catalog RL + `GET …/room_key_epoch` + probe 切替；Grant は x00b5 SpawnTicket で closed）。**PoP nonce は残** |
+| P2-2 | catalog RL / scene Grant 照会 / PoP nonce / epoch 軽量 API | -1 | **closed**（[x00d2](../../roadmap/slices/x00d2-catalog-rl-epoch-api.md): catalog RL + epoch；Grant は x00b5；[x00d4](../../roadmap/slices/x00d4-pop-nonce.md): PoP nonce） |
 | P2-3 | GLB 画像は寸法先読みしてから decode | -1 | **closed**（[x00d1](../../roadmap/slices/x00d1-p2-hygiene-docs-ci-glb.md): ヘッダ寸法 → pixel budget → decode） |
 | P2-4 | KeyStale 無停止二相切替 + XR Rejoin | -1 | grace 中に bus generation 原子切替 |
 | P2-5 | docs / release の Rapier・launcher 残骸除去 | -1 | **closed**（[x00d1](../../roadmap/slices/x00d1-p2-hygiene-docs-ci-glb.md)） |

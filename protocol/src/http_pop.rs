@@ -1,11 +1,14 @@
-//! HTTP Proof-of-Possession for world host APIs (x0081).
+//! HTTP Proof-of-Possession for world host APIs (x0081 / x00d4).
 //!
-//! Guarantees: Ed25519 over `alchemy/pop/v1|{METHOD}|{path}|{ts}|{raw_body}` bound to
-//! Room Token `cnf.spk`; callers enforce clock skew.
+//! Guarantees: Ed25519 over `alchemy/pop/v1|{METHOD}|{path}|{ts}|{nonce}|{raw_body}`
+//! bound to Room Token `cnf.spk`; callers enforce clock skew and single-use nonce.
 //! Non-guarantees: RFC 9449 DPoP JWT shape; PlaceRead / auth-JWT routes; body streaming;
-//! **nonce / single-use** (replay within skew is accepted).
+//! persisting nonce consume store across world restart.
 
+use base64::Engine;
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
+use rand::rngs::OsRng;
+use rand::RngCore;
 
 use crate::wire_crypto::{
     public_key_bytes, SigningKey, WireCryptoError, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH,
@@ -16,12 +19,14 @@ pub const POP_TS_SKEW_SECS: u64 = 60;
 
 /// Header name: Unix seconds (decimal).
 pub const POP_TS_HEADER: &str = "x-alchemy-pop-ts";
+/// Header name: single-use nonce (x00d4; base64url / opaque string, max 128 bytes).
+pub const POP_NONCE_HEADER: &str = "x-alchemy-pop-nonce";
 /// Header name: base64url (no pad) Ed25519 signature.
 pub const POP_SIG_HEADER: &str = "x-alchemy-pop-sig";
 
 /// Canonical message bytes signed by `cnf.spk` secret.
-pub fn pop_signing_bytes(method: &str, path: &str, ts: u64, body: &[u8]) -> Vec<u8> {
-    let mut msg = format!("alchemy/pop/v1|{method}|{path}|{ts}|").into_bytes();
+pub fn pop_signing_bytes(method: &str, path: &str, ts: u64, nonce: &str, body: &[u8]) -> Vec<u8> {
+    let mut msg = format!("alchemy/pop/v1|{method}|{path}|{ts}|{nonce}|").into_bytes();
     msg.extend_from_slice(body);
     msg
 }
@@ -32,9 +37,10 @@ pub fn sign_pop(
     method: &str,
     path: &str,
     ts: u64,
+    nonce: &str,
     body: &[u8],
 ) -> [u8; SIGNATURE_LENGTH] {
-    let msg = pop_signing_bytes(method, path, ts, body);
+    let msg = pop_signing_bytes(method, path, ts, nonce, body);
     key.sign(&msg).to_bytes()
 }
 
@@ -44,6 +50,7 @@ pub fn verify_pop(
     method: &str,
     path: &str,
     ts: u64,
+    nonce: &str,
     body: &[u8],
     sig: &[u8],
 ) -> Result<(), WireCryptoError> {
@@ -61,7 +68,7 @@ pub fn verify_pop(
         .try_into()
         .map_err(|_| WireCryptoError::BadSignatureLen(sig.len()))?;
     let signature = Signature::from_bytes(&sig_arr);
-    let msg = pop_signing_bytes(method, path, ts, body);
+    let msg = pop_signing_bytes(method, path, ts, nonce, body);
     vk.verify(&msg, &signature)
         .map_err(|_| WireCryptoError::VerifyFailed)
 }
@@ -76,6 +83,13 @@ pub fn pop_session_pub(key: &SigningKey) -> Vec<u8> {
     public_key_bytes(key)
 }
 
+/// Fresh 16-byte PoP nonce as base64url (no pad) for `x-alchemy-pop-nonce`.
+pub fn fresh_pop_nonce() -> String {
+    let mut bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,12 +101,14 @@ mod tests {
         let pub_bytes = public_key_bytes(&key);
         let body = br#"{"host_pub":"abc"}"#;
         let ts = 1_700_000_000u64;
-        let sig = sign_pop(&key, "POST", "/api/v1/rooms/r/host_keys", ts, body);
+        let nonce = "n1";
+        let sig = sign_pop(&key, "POST", "/api/v1/rooms/r/host_keys", ts, nonce, body);
         assert!(verify_pop(
             &pub_bytes,
             "POST",
             "/api/v1/rooms/r/host_keys",
             ts,
+            nonce,
             body,
             &sig
         )
@@ -102,7 +118,18 @@ mod tests {
             "POST",
             "/api/v1/rooms/r/host_keys",
             ts,
+            nonce,
             br#"{"host_pub":"evil"}"#,
+            &sig
+        )
+        .is_err());
+        assert!(verify_pop(
+            &pub_bytes,
+            "POST",
+            "/api/v1/rooms/r/host_keys",
+            ts,
+            "other-nonce",
+            body,
             &sig
         )
         .is_err());

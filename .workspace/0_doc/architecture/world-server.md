@@ -50,7 +50,7 @@
 
 Token **応答 JSON**（JWT 外・同梱）: `wire_cap`（ルーティング）・`room_key` / `room_key_epoch`（x0069 / x007e）・任意 `mtls`（x0066）・host のみ任意 `room_key_prev*`（x007e）。Allocation JWT には `room_key` を載せない。
 
-検証は host-server が JWKS を取得して行う（転送経路は Zenoh、権威は Token）。bind 時は Intent の `session_pub` と `cnf.spk` の一致が必須（盗聴 JWT だけでは別鍵 bind 不可）。HTTP credential（scene / attest / seal）は **host `role` + `cnf.spk` PoP**（x0081: `x-alchemy-pop-ts` / `x-alchemy-pop-sig`。盗んだ Token alone → 401）。
+検証は host-server が JWKS を取得して行う（転送経路は Zenoh、権威は Token）。bind 時は Intent の `session_pub` と `cnf.spk` の一致が必須（盗聴 JWT だけでは別鍵 bind 不可）。HTTP credential（scene / attest / seal）は **host `role` + `cnf.spk` PoP**（x0081 / x00d4: `x-alchemy-pop-ts` / `x-alchemy-pop-nonce` / `x-alchemy-pop-sig`。署名 `alchemy/pop/v1|METHOD|path|ts|nonce|raw_body`；`{jti,nonce}` は ETS 一回限り・`exp=pop_ts+skew`。盗んだ Token alone → 401。nonce は解放しないため host は毎リクエスト fresh）。
 
 ## API（Slice B.5）
 

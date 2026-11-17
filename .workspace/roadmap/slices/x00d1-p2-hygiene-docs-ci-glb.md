@@ -42,7 +42,7 @@
 
 - P2-2 catalog / epoch（→ x00d2）
 - P2-4 KeyStale / P2-7 ureq / P2-8 Rooms 分割
-- PoP nonce
+- ~~PoP nonce~~ → [x00d4](x00d4-pop-nonce.md)
 - `smoke-rapier-host.sh` ファイル名変更（README 説明のみ現行化）
 
 ← [目次](../README.md) · [improvement-plan](../../0_doc/evaluation/improvement-plan-2026-11-12.md) · [x00d0](x00d0-desktop-event-command-split.md)

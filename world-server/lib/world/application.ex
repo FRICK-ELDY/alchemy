@@ -11,6 +11,7 @@ defmodule World.Application do
     RoomKeyGrace.ensure_table()
     World.RoomParticipants.ensure_table!()
     World.SpawnTicket.ensure_consume_table!()
+    World.HttpPop.Nonce.ensure_table!()
 
     children =
       [
