@@ -79,7 +79,11 @@ impl Store {
         Ok(Self { root, config })
     }
 
-    pub fn set_remote(&mut self, base_url: impl Into<String>, repo_id: impl Into<String>) -> Result<(), VcsStoreError> {
+    pub fn set_remote(
+        &mut self,
+        base_url: impl Into<String>,
+        repo_id: impl Into<String>,
+    ) -> Result<(), VcsStoreError> {
         self.config.remote_base_url = Some(base_url.into());
         self.config.repo_id = Some(repo_id.into());
         write_json(&self.root.join("config.json"), &self.config)
@@ -397,9 +401,7 @@ impl Store {
         blobs.sort();
         blobs.dedup();
         if blobs.len() > MAX_OBJECT_HASHES {
-            return Err(VcsStoreError::TooManyHashes {
-                count: blobs.len(),
-            });
+            return Err(VcsStoreError::TooManyHashes { count: blobs.len() });
         }
         Ok((objects, blobs))
     }

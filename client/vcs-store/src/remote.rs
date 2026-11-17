@@ -99,7 +99,9 @@ impl HttpRemote {
         resp: Result<ureq::Response, ureq::Error>,
     ) -> Result<T, VcsStoreError> {
         match resp {
-            Ok(r) => r.into_json::<T>().map_err(|e| VcsStoreError::Remote(e.to_string())),
+            Ok(r) => r
+                .into_json::<T>()
+                .map_err(|e| VcsStoreError::Remote(e.to_string())),
             Err(ureq::Error::Status(code, resp)) => {
                 let body = resp.into_string().unwrap_or_default();
                 let msg = serde_json::from_str::<ErrorBody>(&body)

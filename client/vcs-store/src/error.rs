@@ -7,26 +7,44 @@ pub enum VcsStoreError {
     Io(std::io::Error),
     Json(serde_json::Error),
     Codec(VcsObjectError),
-    HashMismatch { expected: String, actual: String },
-    MissingObject { hash: String },
-    MissingBlob { blake3: String },
+    HashMismatch {
+        expected: String,
+        actual: String,
+    },
+    MissingObject {
+        hash: String,
+    },
+    MissingBlob {
+        blake3: String,
+    },
     MissingConfig(&'static str),
     InvalidHash(String),
     EmptyHead,
-    TooManyHashes { count: usize },
+    TooManyHashes {
+        count: usize,
+    },
     InvalidBranch(String),
     /// Push response `commit_hash` (`actual`) ≠ local new tip (`expected`).
     /// Tracking was **not** updated. Honest assets-server advances the ref to the
     /// request `new_commit_hash` (= `expected`); repair with
     /// `set_remote_tip(branch, Some(expected))` (or re-fetch tip later). Do **not**
     /// trust `actual` for tracking — a corrupt/mismatched body must not rewrite it.
-    RemoteTipMismatch { expected: String, actual: String },
+    RemoteTipMismatch {
+        expected: String,
+        actual: String,
+    },
     /// Server tip advanced to `tip`, but local remote-tracking write failed.
     /// Caller must repair with `set_remote_tip(branch, Some(tip))` or next push
     /// will `cas_mismatch`.
-    TrackingUpdateFailed { tip: String, detail: String },
+    TrackingUpdateFailed {
+        tip: String,
+        detail: String,
+    },
     Remote(String),
-    HttpStatus { status: u16, body: String },
+    HttpStatus {
+        status: u16,
+        body: String,
+    },
 }
 
 impl fmt::Display for VcsStoreError {

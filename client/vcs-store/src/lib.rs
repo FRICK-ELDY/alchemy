@@ -20,5 +20,8 @@ mod remote;
 mod store;
 
 pub use error::VcsStoreError;
-pub use remote::{HttpRemote, MockRemote, NegotiateRequest, NegotiateResult, PushObject, PushRequest, PushResult, Remote, RemoteRef};
+pub use remote::{
+    HttpRemote, MockRemote, NegotiateRequest, NegotiateResult, PushObject, PushRequest, PushResult,
+    Remote, RemoteRef,
+};
 pub use store::{CommitRequest, CommitResult, Store, TreeChildSpec};
