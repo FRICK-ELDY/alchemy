@@ -1,13 +1,14 @@
 //! Desktop side of the x0053 hotswitch: Dash mirror of the presentation gate, F8 manual
-//! flip, Dash auto toggle, and XR-requested leave / host shutdown.
+//! flip, Dash auto toggle, and XR-requested leave / rejoin / host shutdown.
 //!
 //! Guarantees: the presentation gate is the SoT for auto / suppressed (Dash only mirrors
-//! it or stores the toggle); XR `AuthLogout` / Exit requests run here because Desktop owns
-//! Zenoh + HTTP teardown.
+//! it or stores the toggle); XR `AuthLogout` / Room Leave / Rejoin / Exit requests run here
+//! because Desktop owns Zenoh + HTTP teardown (x00d5).
 //! Non-guarantee: input-ownership edges (look / Grab / Intent reset, window title) stay on
 //! `App` in `mod.rs`.
 
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 
 use crate::leave_room;
 use crate::operator_prefs;
@@ -18,7 +19,7 @@ use crate::system_ui::{DashTab, OnboardingShell, SystemUi};
 use super::job::{discard_auth_job, AuthJobOutcome};
 use super::session_flow::{
     clear_worlds_catalog, clear_worlds_session_shell, exit_stop_supervised_host,
-    maybe_handover_before_leave,
+    maybe_handover_before_leave, worlds_leave, worlds_rejoin, RoomBindDefer,
 };
 use super::support::stop_supervised_host;
 
@@ -54,12 +55,13 @@ pub(super) fn sync_hotswitch_ui_state(
         || ui.state.hotswitch_label != prev_label
 }
 
-/// XR-requested leave / host shutdown (Desktop is the Zenoh owner).
+/// XR-requested AuthLogout / Room Leave / Rejoin / host shutdown (Desktop owns Zenoh).
 pub(super) fn poll_presentation_requests(
     ui: &mut SystemUi,
-    shared: &SharedState,
+    shared: &Arc<SharedState>,
     zenoh: &mut Option<zenoh::Session>,
     auth_job: &mut Option<(u64, Receiver<AuthJobOutcome>)>,
+    mut room_bind: RoomBindDefer<'_>,
 ) {
     if shared.presentation.take_leave_requested() {
         let had_zenoh = zenoh.is_some();
@@ -70,6 +72,7 @@ pub(super) fn poll_presentation_requests(
         }
         // Bump epoch before Leave so in-flight join cannot commit past this point.
         discard_auth_job(ui, shared, auth_job);
+        room_bind.clear();
         if shared.host_supervisor.owns_local_host() {
             maybe_handover_before_leave(shared);
         }
@@ -95,6 +98,18 @@ pub(super) fn poll_presentation_requests(
         ui.mark_dash_logic_dirty();
         ui.rebuild();
         log::info!("hotswitch: Desktop performed leave_room for XR AuthLogout");
+        // Full logout wins over session leave / rejoin in the same poll.
+        let _ = shared.presentation.take_session_leave_requested();
+        let _ = shared.presentation.take_rejoin_requested();
+    } else if shared.presentation.take_session_leave_requested() {
+        worlds_leave(ui, shared, zenoh, auth_job, room_bind);
+        log::info!("hotswitch: Desktop performed worlds_leave for XR WorldsLeave");
+        let _ = shared.presentation.take_rejoin_requested();
+        return;
+    } else if shared.presentation.take_rejoin_requested() {
+        worlds_rejoin(ui, shared, zenoh, auth_job, room_bind);
+        log::info!("hotswitch: Desktop performed worlds_rejoin for XR WorldsRejoin");
+        return;
     }
     if shared.presentation.take_host_shutdown_requested() {
         exit_stop_supervised_host(shared);

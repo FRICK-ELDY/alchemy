@@ -70,14 +70,15 @@ pub(crate) fn spawn_manifest_subscriber(
                 // x003b: early drops must still reach the interval aggregate log below.
                 'sample: {
                 let bytes: ZBytes = sample.payload().clone();
-                let payload = match open_zenoh_payload(&shared, AeadKind::Manifest, &bytes) {
-                    Ok(pt) => pt,
-                    Err(err) => {
-                        dropped_aead += 1;
-                        log::warn!("drop SceneManifest: AEAD: {err}");
-                        break 'sample;
-                    }
-                };
+                let (payload, opened_epoch) =
+                    match open_zenoh_payload(&shared, AeadKind::Manifest, &bytes) {
+                        Ok(pair) => pair,
+                        Err(err) => {
+                            dropped_aead += 1;
+                            log::warn!("drop SceneManifest: AEAD: {err}");
+                            break 'sample;
+                        }
+                    };
                 // Hold host_pub + gen-rev locks across gate+apply (x003a / x0070).
                 let (generation_changed, manifest, accepted_seal) =
                     match (shared.host_pub.lock(), shared.manifest_gen_rev.lock()) {
@@ -156,6 +157,8 @@ pub(crate) fn spawn_manifest_subscriber(
                             break 'sample;
                         }
                     };
+                // x00d5: after releasing host_pub/gen-rev (avoid lock order vs leave_room_local).
+                let _ = shared.try_commit_pending_room_aead(opened_epoch);
                 if generation_changed {
                     log::info!(
                         "SceneManifest host_generation advanced to {}; reset world + renew Intent session",

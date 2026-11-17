@@ -43,6 +43,6 @@
 
 - ~~PoP nonce~~ → [x00d4](x00d4-pop-nonce.md)
 - P2-8 Rooms / Fallback 分割
-- KeyStale 無停止（P2-4）
+- ~~KeyStale 無停止（P2-4）~~ → [x00d5](x00d5-keystale-seamless-rejoin.md)
 
-← [目次](../README.md) · [x00d1](x00d1-p2-hygiene-docs-ci-glb.md) · [x00d4](x00d4-pop-nonce.md) · [improvement-plan](../../0_doc/evaluation/improvement-plan-2026-11-12.md)
+← [目次](../README.md) · [x00d1](x00d1-p2-hygiene-docs-ci-glb.md) · [x00d4](x00d4-pop-nonce.md) · [x00d5](x00d5-keystale-seamless-rejoin.md) · [improvement-plan](../../0_doc/evaluation/improvement-plan-2026-11-12.md)

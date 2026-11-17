@@ -41,7 +41,7 @@ pub fn spawn_edit_commit_subscriber(
             while let Ok(sample) = subscriber.recv() {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = match open_zenoh_payload(&shared, AeadKind::EditCommit, &bytes) {
-                    Ok(pt) => pt,
+                    Ok((pt, _)) => pt,
                     Err(_) => continue, // EditProposal or AEAD fail
                 };
                 let Ok(commit) = EditCommit::decode(payload.as_ref()) else {

@@ -41,7 +41,7 @@
 ## やらない
 
 - P2-2 catalog / epoch（→ x00d2）
-- P2-4 KeyStale / P2-7 ureq / P2-8 Rooms 分割
+- ~~P2-4 KeyStale~~ → [x00d5](x00d5-keystale-seamless-rejoin.md) / ~~P2-7 ureq~~ → [x00d3](x00d3-relay-agent-ureq-jwks.md) / P2-8 Rooms 分割
 - ~~PoP nonce~~ → [x00d4](x00d4-pop-nonce.md)
 - `smoke-rapier-host.sh` ファイル名変更（README 説明のみ現行化）
 

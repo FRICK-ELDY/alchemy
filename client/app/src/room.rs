@@ -709,7 +709,12 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                             shared.get_room_id().as_ref(),
                             &room_tok,
                         ) {
-                            Ok(epoch) if epoch == shared.room_key_epoch() && !shared.key_stale() => {
+                            Ok(epoch)
+                                if !shared.key_stale()
+                                    && (epoch == shared.room_key_epoch()
+                                        || shared.pending_room_aead_epoch() == Some(epoch)) =>
+                            {
+                                // x00d5: pending epoch already matches world — no /tokens flood.
                                 shared.schedule_room_key_epoch_probe(
                                     crate::scene::ROOM_KEY_EPOCH_PROBE,
                                 );

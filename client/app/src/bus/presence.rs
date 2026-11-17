@@ -60,7 +60,7 @@ pub(crate) fn spawn_presence_subscriber(
                 'sample: {
                 let bytes: ZBytes = sample.payload().clone();
                 let payload = match open_zenoh_payload(&shared, AeadKind::Presence, &bytes) {
-                    Ok(pt) => pt,
+                    Ok((pt, _)) => pt,
                     Err(err) => {
                         dropped_aead += 1;
                         log::warn!("drop PresenceState: AEAD: {err}");

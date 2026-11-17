@@ -26,8 +26,12 @@ pub struct PresentationGate {
     pub xr_session_started: AtomicBool,
     /// Either surface requested process exit.
     pub exit_requested: AtomicBool,
-    /// XR UI asked Desktop to run `leave_room` (Desktop owns Zenoh).
+    /// XR UI asked Desktop to run full AuthLogout leave (Desktop owns Zenoh + session clear).
     pub leave_requested: AtomicBool,
+    /// XR UI asked Desktop to run Room Leave (stay signed in · x00d5).
+    pub session_leave_requested: AtomicBool,
+    /// XR UI asked Desktop to run KeyStale Rejoin (Leave+Join; Desktop owns HTTP/Zenoh · x00d5).
+    pub rejoin_requested: AtomicBool,
     /// XR UI asked Desktop to publish host shutdown then exit.
     pub host_shutdown_requested: AtomicBool,
     /// Last presence sample (EXT event); informational + auto input.
@@ -47,6 +51,8 @@ impl Default for PresentationGate {
             xr_session_started: AtomicBool::new(false),
             exit_requested: AtomicBool::new(false),
             leave_requested: AtomicBool::new(false),
+            session_leave_requested: AtomicBool::new(false),
+            rejoin_requested: AtomicBool::new(false),
             host_shutdown_requested: AtomicBool::new(false),
             user_present: AtomicBool::new(true),
             auto_suppressed: AtomicBool::new(false),
@@ -101,6 +107,22 @@ impl PresentationGate {
 
     pub fn take_leave_requested(&self) -> bool {
         self.leave_requested.swap(false, Ordering::SeqCst)
+    }
+
+    pub fn request_session_leave(&self) {
+        self.session_leave_requested.store(true, Ordering::SeqCst);
+    }
+
+    pub fn take_session_leave_requested(&self) -> bool {
+        self.session_leave_requested.swap(false, Ordering::SeqCst)
+    }
+
+    pub fn request_rejoin(&self) {
+        self.rejoin_requested.store(true, Ordering::SeqCst);
+    }
+
+    pub fn take_rejoin_requested(&self) -> bool {
+        self.rejoin_requested.swap(false, Ordering::SeqCst)
     }
 
     pub fn request_host_shutdown(&self) {
