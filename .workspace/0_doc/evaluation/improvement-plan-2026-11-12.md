@@ -56,7 +56,7 @@
 | P2-5 | docs / release の Rapier・launcher 残骸除去 | -1 | **closed**（[x00d1](../../roadmap/slices/x00d1-p2-hygiene-docs-ci-glb.md)） |
 | P2-6 | assets CI 用 `_build` ボリューム分離 | -1 | **closed**（[x00d1](../../roadmap/slices/x00d1-p2-hygiene-docs-ci-glb.md): `ci.sh` が `alchemy-ci-assets-*` volume） |
 | P2-7 | relay-agent JWKS を HTTP クライアント化（依存承認後） | -1 | **closed**（[x00d3](../../roadmap/slices/x00d3-relay-agent-ureq-jwks.md): ureq + JWKS lock `expect` 除去；2026-11-17 承認） |
-| P2-8 | Rooms / FallbackController 分割 | -1 | エラー表一箇所化 |
+| P2-8 | Rooms / FallbackController 分割 | -1 | **closed**（[x00d6](../../roadmap/slices/x00d6-rooms-fallback-split.md): Fallback エラー表一箇所化 + `Rooms.{Internal,Lease,RoomKey,Scene,Catalog}`；facade 維持） |
 
 ---
 

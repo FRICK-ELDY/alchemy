@@ -53,7 +53,7 @@ desktop/mod.rs  handle_ui_action（薄い match）
 
 ## やらない
 
-- P2-8 Rooms / FallbackController（world-server）
+- ~~P2-8 Rooms / FallbackController（world-server）~~ → [x00d6](x00d6-rooms-fallback-split.md)
 - `UiAction` の別 enum 化
 - `dash.rs` のレイアウト分割
 - 認証・権限チェックの弱体化
