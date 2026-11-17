@@ -9,15 +9,17 @@ defmodule Assets.Blobs do
   delete. Orphan bytes without CasObject rows are reaped by `Assets.CAS.OrphanGc`
   after grace (x0074), not by compensate.
 
-  GET (x006c / x006f): always gated by BlobGrant for auth_sub **or** a covering
-  PlaceRead JWT (x006b). CasObject holds bytes meta only (no `access` column).
+  GET (x006c / x006f / x00cb): gated by BlobGrant for auth_sub, a covering
+  PlaceRead JWT (x006b), **or** RepoRead (`vcs_repo_blobs` of a readable repo).
+  CasObject holds bytes meta only (no `access` column).
   HTTP local GET ignores CasObject.mime for Content-Type — always
   `application/octet-stream` + nosniff (x008b). Inventory path
   (`POST /api/v1/inventory/blobs`) is an HTTP-boundary alias that uses the same
   upload (x0054 / x006f).
 
-  Prefab / Vcs child Grant checks (x007f / x00b4) go through `assert_grant/2` and
-  `assert_child_grants/2` — shared by Drive, Vcs, and ItemRef.
+  Prefab / Vcs **save** child Grant checks (x007f / x00b4) go through
+  `assert_grant/2` and `assert_child_grants/2` — shared by Drive and Vcs.
+  ItemRef `repo_rev` uses RepoRead membership instead (x00cb).
   """
 
   require Logger
@@ -473,8 +475,9 @@ defmodule Assets.Blobs do
   @doc """
   Resolve blob for HTTP GET: local proxies bytes; s3 returns a signed redirect URL (x001d).
 
-  `auth_sub` is required (x004f / x006c / x006f). Read requires BlobGrant for
-  `auth_sub` **or** covering PlaceRead via `opts[:place_read]` (x006b).
+  `auth_sub` is required (x004f / x006c / x006f / x00cb). Read requires BlobGrant
+  for `auth_sub`, covering PlaceRead via `opts[:place_read]` (x006b), **or**
+  RepoRead membership in a readable repo's `vcs_repo_blobs` (x00cb).
   """
   @spec fetch(String.t(), String.t()) ::
           {:ok, binary(), CasObject.t()}
@@ -511,6 +514,11 @@ defmodule Assets.Blobs do
         fetch_object(object, blake3)
 
       is_binary(place_read) and PlaceRead.allows_blake3?(place_read, auth_sub, blake3) ->
+        fetch_object(object, blake3)
+
+      # RepoRead: blake3 in a readable repo's vcs_repo_blobs (x00cb / §9.2).
+      # `allows_blake3?` uses Repo.exists?/1; no per-request cache (revisit under load).
+      Assets.RepoRead.allows_blake3?(auth_sub, blake3) ->
         fetch_object(object, blake3)
 
       true ->

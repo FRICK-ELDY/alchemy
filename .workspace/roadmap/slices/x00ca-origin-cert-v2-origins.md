@@ -2,7 +2,7 @@
 
 > **ID:** `x00ca` · **slug:** `origin-cert-v2-origins` · **status:** `done` · **area:** `[assets, docs]` · **depends_on:** `[x00c9, x0096, x0065]`  
 > **優先度:** [assets-vcs-draft.md](../../0_doc/architecture/assets-vcs-draft.md) §18.3  
-> **後続:** visibility / RepoRead / push（§18.4+）
+> **後続:** [x00cb](x00cb-vcs-visibility-reporead.md) visibility / RepoRead（§18.4）；push（§18.5+）
 
 目標: Origin Cert を v2（Authorship / Release、`issued_at_ms`・`kid`）へ上げ、blob 先願台帳 `vcs_blob_origins` を追加する。`promote_prefab` と `create_tag` の確定 TX で自動発行・台帳書き込みする。
 

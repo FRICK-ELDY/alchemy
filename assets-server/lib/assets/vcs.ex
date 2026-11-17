@@ -1,24 +1,28 @@
 defmodule Assets.Vcs do
   @moduledoc """
-  Vcs facade — content-addressed objects (x00c9) + Origin Cert v2 (x00ca / §18.3).
+  Vcs facade — content-addressed objects (x00c9) + Origin Cert v2 (x00ca) +
+  visibility / RepoRead index (x00cb / §18.4).
 
   x0062 / x00c9: promote_prefab/2 — Prefab → VcsRepo + CBOR Tree/Commit + `main`.
   x0064: create_branch/3, create_tag/3, advance_branch/3 — Ref management.
   x00ca: Authorship on promote; Release on create_tag; `vcs_blob_origins` first-seen.
+  x00cb: promote defaults `visibility=private` and indexes child meshes in
+  `vcs_repo_blobs`; `set_visibility/3` for owner.
 
-  See Assets.ItemRef for repo@rev resolution (x0063 / x00c9).
+  See Assets.ItemRef / Assets.RepoRead for repo@rev read auth (x0063 / x00cb).
 
   Guarantees:
   - promote: Port encode+verify **outside** DB TX; short TX for ownership/
     grant re-check + objects + commit + repo_commits + `main` + DriveNode +
-    Authorship cert + blob origins.
+    Authorship cert + blob origins + repo_blobs.
   - Tag frozen; FF via parent walk on `vcs_commit_parents`.
   - create_tag issues Release cert (subject = repo owner_sub).
   - Cert v2 signs `issued_at_ms` + `kid` (offline-verifiable); signing is TX-outside.
   - Authorship is one row per commit_hash (reuse skips); subject = Commit.author_sub.
+  - visibility is private|public; private non-owner reads are :not_found via RepoRead.
 
-  Non-guarantees: visibility, push, fork, non-FF merge, sale-lock rejection,
-  multi-key kid lookup / automated rotation.
+  Non-guarantees: push, fork, non-FF merge, sale-lock / :purchased checks,
+  multi-key kid lookup / automated rotation, HTTP VCS routes.
   """
 
   import Ecto.Query, only: [from: 2]
@@ -34,6 +38,7 @@ defmodule Assets.Vcs do
   alias Assets.Vcs.Object
   alias Assets.Vcs.Ref, as: VcsRef
   alias Assets.Vcs.Repo, as: VcsRepo
+  alias Assets.Vcs.RepoBlob
   alias Assets.Vcs.RepoCommit
   alias Assets.VcsObject
 
@@ -47,6 +52,8 @@ defmodule Assets.Vcs do
   Promote DriveNode(kind=prefab) to VcsRepo with content-addressed root Commit.
 
   Creates `main` branch pointing at the new commit_hash.
+  New repos start as `visibility=private` and index Prefab child mesh blake3s
+  into `vcs_repo_blobs` (RepoRead).
   Port IPC runs before the DB transaction; the TX re-checks ownership, prefab
   kind, CAS blake3 identity, and child grants, then writes only.
   """
@@ -61,6 +68,34 @@ defmodule Assets.Vcs do
       Repo.transaction(fn -> write_promote!(owner_sub, node_id, prep, authorship) end)
     end
   end
+
+  @doc """
+  Owner-only visibility change (`private` | `public`).
+
+  public→private hides the repo from others (ItemRef → :not_found).
+  Does not detach forks or close PRs (those are later slices).
+  private→public does not yet reject `:purchased` blobs (market unshipped).
+
+  Error asymmetry (intentional until HTTP VCS): unknown `repo_id` → `:not_found`;
+  known repo but non-owner → `:forbidden`. Read paths (`RepoRead.fetch_readable_repo`,
+  ItemRef) collapse private-non-owner to `:not_found`. Align to 404 on HTTP later.
+  """
+  @spec set_visibility(String.t(), String.t(), String.t()) ::
+          {:ok, VcsRepo.t()}
+          | {:error, :not_found | :forbidden | :invalid_visibility | term()}
+  def set_visibility(repo_id, owner_sub, visibility)
+      when is_binary(repo_id) and is_binary(owner_sub) and is_binary(visibility) do
+    with {:ok, repo} <- fetch_repo(repo_id),
+         :ok <- assert_repo_owner(repo, owner_sub) do
+      case VcsRepo.visibility_changeset(repo, %{visibility: visibility}) |> Repo.update() do
+        {:ok, updated} -> {:ok, updated}
+        {:error, %Ecto.Changeset{}} -> {:error, :invalid_visibility}
+      end
+    end
+  end
+
+  defp assert_repo_owner(%VcsRepo{owner_sub: owner_sub}, owner_sub), do: :ok
+  defp assert_repo_owner(%VcsRepo{}, _), do: {:error, :forbidden}
 
   # ---------------------------------------------------------------------------
   # Branch / Tag
@@ -374,7 +409,8 @@ defmodule Assets.Vcs do
            VcsRepo.changeset(%VcsRepo{}, %{
              repo_id: repo_id,
              owner_sub: owner_sub,
-             node_id: node_id
+             node_id: node_id,
+             visibility: "private"
            })
          ) do
       {:ok, repo} -> repo
@@ -408,9 +444,26 @@ defmodule Assets.Vcs do
     # Idempotent: same commit_hash reuses the first Authorship row.
     Cert.insert_prepared_authorship!(authorship)
     insert_blob_origins!(prep.payload.children, prep.commit_hash, owner_sub)
+    insert_repo_blobs!(repo_id, prep.payload.children)
 
     updated_node = update_drive_node_to_vcs!(node, repo_id)
     %{repo: repo, commit: commit, node: updated_node}
+  end
+
+  defp insert_repo_blobs!(repo_id, children) when is_list(children) do
+    children
+    |> Enum.map(fn %{blake3: blake3} -> String.downcase(blake3) end)
+    |> Enum.uniq()
+    |> Enum.each(fn blake3 ->
+      case Repo.insert(
+             RepoBlob.changeset(%RepoBlob{}, %{repo_id: repo_id, blake3: blake3}),
+             on_conflict: :nothing,
+             conflict_target: [:repo_id, :blake3]
+           ) do
+        {:ok, _} -> :ok
+        {:error, cs} -> Repo.rollback({:repo_blob_insert_failed, cs})
+      end
+    end)
   end
 
   defp insert_blob_origins!(children, commit_hash, author_sub) when is_list(children) do
