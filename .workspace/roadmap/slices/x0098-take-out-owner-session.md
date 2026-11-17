@@ -16,7 +16,7 @@
 | owner は guest Room Token + Intent bind のまま session 署名で spawn/despawn を送れ、計算ホストが受理する | 任意 guest / Invite ACL |
 | 非 owner かつ非 host-role の guest bind は拒否 | owner と active host の同時矛盾編集の公平性 |
 | Zenoh 平文に Room Token を再導入しない | client のローカル「自分は owner」推定だけで認可が完結すること |
-| scene 書込は host プロセスの host Token + PoP（x0081） | PoP nonce / 単回使用 |
+| scene 書込は host プロセスの host Token + PoP（x0081） | ~~PoP nonce / 単回使用~~ → [x00d4](x00d4-pop-nonce.md) |
 | 制御面 Dual: `(role=host ∧ sub==計算ホスト)` **または** `sub==owner_sub` | `owner_sub` 未取得時の owner 経路（fail-closed → host-role のみ） |
 
 ---

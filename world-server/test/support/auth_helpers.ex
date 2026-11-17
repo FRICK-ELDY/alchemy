@@ -75,20 +75,23 @@ defmodule World.TestAuthHelpers do
   end
 
   @doc """
-  Attach host Room Token Bearer + PoP headers.
+  Attach host Room Token Bearer + PoP headers (x0081 / x00d4).
 
   `body` must be the exact raw HTTP body bytes that will be sent (\"\" for GET/DELETE).
+  Fresh `x-alchemy-pop-nonce` is generated per call.
   """
   def put_host_pop(conn, token, priv, method, path, body \\ "")
       when is_binary(token) and is_binary(priv) and is_binary(method) and is_binary(path) and
              is_binary(body) do
     ts = System.system_time(:second)
-    msg = HttpPop.signing_bytes(method, path, ts, body)
+    nonce = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    msg = HttpPop.signing_bytes(method, path, ts, nonce, body)
     sig = :crypto.sign(:eddsa, :none, msg, [priv, :ed25519])
 
     conn
     |> Plug.Conn.put_req_header("authorization", "Bearer " <> token)
     |> Plug.Conn.put_req_header("x-alchemy-pop-ts", Integer.to_string(ts))
+    |> Plug.Conn.put_req_header("x-alchemy-pop-nonce", nonce)
     |> Plug.Conn.put_req_header("x-alchemy-pop-sig", Base.url_encode64(sig, padding: false))
   end
 

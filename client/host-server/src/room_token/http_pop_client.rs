@@ -1,10 +1,13 @@
-//! Client-side HTTP PoP headers for world host APIs (x0081).
+//! Client-side HTTP PoP headers for world host APIs (x0081 / x00d4).
 //!
-//! Guarantees: signs `alchemy/pop/v1|…` with host Token `cnf.spk` key; path is
-//! `/api/…` without query.
+//! Guarantees: signs `alchemy/pop/v1|…|nonce|…` with host Token `cnf.spk` key; path is
+//! `/api/…` without query; **fresh nonce every request** (world does not release a
+//! consumed nonce on downstream failure / timeout).
 //! Non-guarantees: clock sync beyond world skew window.
 
-use alchemy_protocol::http_pop::{sign_pop, POP_SIG_HEADER, POP_TS_HEADER};
+use alchemy_protocol::http_pop::{
+    fresh_pop_nonce, sign_pop, POP_NONCE_HEADER, POP_SIG_HEADER, POP_TS_HEADER,
+};
 use alchemy_protocol::wire_crypto::SigningKey;
 use base64::Engine;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -41,9 +44,11 @@ pub(super) fn with_pop(
     body: &[u8],
 ) -> ureq::Request {
     let ts = now_unix_secs();
-    let sig = sign_pop(key, method, path, ts, body);
+    let nonce = fresh_pop_nonce();
+    let sig = sign_pop(key, method, path, ts, &nonce, body);
     let sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig);
     req.set(POP_TS_HEADER, &ts.to_string())
+        .set(POP_NONCE_HEADER, &nonce)
         .set(POP_SIG_HEADER, &sig_b64)
 }
 

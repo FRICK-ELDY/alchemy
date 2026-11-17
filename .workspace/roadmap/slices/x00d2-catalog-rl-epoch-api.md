@@ -15,7 +15,7 @@
 |:---|:---|
 | `GET /rooms` / `GET /rooms/:id` は IP+user catalog RL（超過 429） | catalog の ACL 評価コストそのものの削減 |
 | `GET /rooms/:id/room_key_epoch` は有効 Room Token + room_id 一致で `{room_id,room_key_epoch}`（PoP 不要） | Zenoh epoch bump ヒント / push |
-| guest/host の定期 probe は epoch 不変時 Token を再発行しない | PoP nonce（P2-2 残り・別スライス）；probe HTTP 失敗時は `/tokens` へソフトフェイル（連続失敗カウンタなし） |
+| guest/host の定期 probe は epoch 不変時 Token を再発行しない | ~~PoP nonce~~ → [x00d4](x00d4-pop-nonce.md)；probe HTTP 失敗時は `/tokens` へソフトフェイル（連続失敗カウンタなし） |
 | scene Grant は x00b5 SpawnTicket で closed と文書上明記 | world→assets 同期 HEAD Grant 照会 |
 
 ---
@@ -41,8 +41,8 @@
 
 ## やらない
 
-- PoP nonce
+- ~~PoP nonce~~ → [x00d4](x00d4-pop-nonce.md)
 - P2-8 Rooms / Fallback 分割
 - KeyStale 無停止（P2-4）
 
-← [目次](../README.md) · [x00d1](x00d1-p2-hygiene-docs-ci-glb.md) · [improvement-plan](../../0_doc/evaluation/improvement-plan-2026-11-12.md)
+← [目次](../README.md) · [x00d1](x00d1-p2-hygiene-docs-ci-glb.md) · [x00d4](x00d4-pop-nonce.md) · [improvement-plan](../../0_doc/evaluation/improvement-plan-2026-11-12.md)

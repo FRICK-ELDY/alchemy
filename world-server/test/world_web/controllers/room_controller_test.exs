@@ -2,6 +2,8 @@ defmodule WorldWeb.RoomControllerTest do
   use WorldWeb.ConnCase, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias World.HttpPop
+  alias World.HttpPop.Nonce
   alias World.ManifestSealHash.Worker, as: SealHashWorker
 
   @seal_partitioner World.ManifestSealHash.Partitioner
@@ -894,6 +896,10 @@ defmodule WorldWeb.RoomControllerTest do
              |> put_req_header("authorization", "Bearer #{host_token}")
              |> put_req_header("x-alchemy-pop-ts", Integer.to_string(System.system_time(:second)))
              |> put_req_header(
+               "x-alchemy-pop-nonce",
+               Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+             )
+             |> put_req_header(
                "x-alchemy-pop-sig",
                Base.url_encode64(:crypto.strong_rand_bytes(64), padding: false)
              )
@@ -903,13 +909,15 @@ defmodule WorldWeb.RoomControllerTest do
 
     # Skew exceeded (±60s default).
     stale_ts = System.system_time(:second) - 120
-    msg = World.HttpPop.signing_bytes("POST", path, stale_ts, raw)
+    stale_nonce = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    msg = HttpPop.signing_bytes("POST", path, stale_ts, stale_nonce, raw)
     stale_sig = :crypto.sign(:eddsa, :none, msg, [priv, :ed25519])
 
     assert %{"error" => "pop_required"} =
              build_conn()
              |> put_req_header("authorization", "Bearer #{host_token}")
              |> put_req_header("x-alchemy-pop-ts", Integer.to_string(stale_ts))
+             |> put_req_header("x-alchemy-pop-nonce", stale_nonce)
              |> put_req_header("x-alchemy-pop-sig", Base.url_encode64(stale_sig, padding: false))
              |> put_req_header("content-type", "application/json")
              |> Phoenix.ConnTest.dispatch(WorldWeb.Endpoint, :post, path, raw)
@@ -921,6 +929,171 @@ defmodule WorldWeb.RoomControllerTest do
     assert %{"error" => "pop_required"} =
              build_conn()
              |> TestAuthHelpers.put_host_pop(host_token, other_priv, "POST", path, raw)
+             |> put_req_header("content-type", "application/json")
+             |> Phoenix.ConnTest.dispatch(WorldWeb.Endpoint, :post, path, raw)
+             |> json_response(401)
+  end
+
+  test "host_keys rejects PoP nonce replay within skew (x00d4)", %{conn: conn, signer: signer} do
+    sub = "22222222-2222-2222-2222-222222222222"
+    host_pub = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+    path = "/api/v1/rooms/pop-replay/host_keys"
+    body_map = %{host_pub: host_pub}
+    raw = Jason.encode!(body_map)
+
+    conn
+    |> TestAuthHelpers.put_auth(signer, sub)
+    |> post("/api/v1/rooms", %{room_id: "pop-replay"})
+    |> json_response(201)
+
+    {pub, priv} = TestAuthHelpers.session_keypair()
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> post(
+        "/api/v1/rooms/pop-replay/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(pub)})
+      )
+      |> json_response(200)
+
+    {:ok, claims} = Joken.peek_claims(host_token)
+    jti = claims["jti"]
+
+    ts = System.system_time(:second)
+    nonce = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    msg = HttpPop.signing_bytes("POST", path, ts, nonce, raw)
+    sig = :crypto.sign(:eddsa, :none, msg, [priv, :ed25519])
+    sig_b64 = Base.url_encode64(sig, padding: false)
+
+    first =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{host_token}")
+      |> put_req_header("x-alchemy-pop-ts", Integer.to_string(ts))
+      |> put_req_header("x-alchemy-pop-nonce", nonce)
+      |> put_req_header("x-alchemy-pop-sig", sig_b64)
+      |> put_req_header("content-type", "application/json")
+      |> Phoenix.ConnTest.dispatch(WorldWeb.Endpoint, :post, path, raw)
+
+    assert %{"attestation" => _, "room_id" => "pop-replay"} = json_response(first, 200)
+    assert {:ok, exp} = Nonce.consume_exp(jti, nonce)
+    assert exp == ts + HttpPop.skew_secs()
+
+    assert %{"error" => "pop_required"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> put_req_header("x-alchemy-pop-ts", Integer.to_string(ts))
+             |> put_req_header("x-alchemy-pop-nonce", nonce)
+             |> put_req_header("x-alchemy-pop-sig", sig_b64)
+             |> put_req_header("content-type", "application/json")
+             |> Phoenix.ConnTest.dispatch(WorldWeb.Endpoint, :post, path, raw)
+             |> json_response(401)
+  end
+
+  test "host_keys keeps future-ts PoP nonce until pop_ts+skew (x00d4)", %{
+    conn: conn,
+    signer: signer
+  } do
+    sub = "22222222-2222-2222-2222-222222222222"
+    host_pub = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+    path = "/api/v1/rooms/pop-future-replay/host_keys"
+    body_map = %{host_pub: host_pub}
+    raw = Jason.encode!(body_map)
+    skew = HttpPop.skew_secs()
+
+    conn
+    |> TestAuthHelpers.put_auth(signer, sub)
+    |> post("/api/v1/rooms", %{room_id: "pop-future-replay"})
+    |> json_response(201)
+
+    {pub, priv} = TestAuthHelpers.session_keypair()
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> post(
+        "/api/v1/rooms/pop-future-replay/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(pub)})
+      )
+      |> json_response(200)
+
+    {:ok, claims} = Joken.peek_claims(host_token)
+    jti = claims["jti"]
+
+    claim_now = System.system_time(:second)
+    # Host clock ahead: still inside ±skew. Regression body is exp==ts+skew
+    # (not claim_now+skew); see also World.HttpPop.NonceTest.
+    ts = claim_now + skew - 5
+    nonce = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    msg = HttpPop.signing_bytes("POST", path, ts, nonce, raw)
+    sig = :crypto.sign(:eddsa, :none, msg, [priv, :ed25519])
+    sig_b64 = Base.url_encode64(sig, padding: false)
+
+    first =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{host_token}")
+      |> put_req_header("x-alchemy-pop-ts", Integer.to_string(ts))
+      |> put_req_header("x-alchemy-pop-nonce", nonce)
+      |> put_req_header("x-alchemy-pop-sig", sig_b64)
+      |> put_req_header("content-type", "application/json")
+      |> Phoenix.ConnTest.dispatch(WorldWeb.Endpoint, :post, path, raw)
+
+    assert %{"attestation" => _, "room_id" => "pop-future-replay"} = json_response(first, 200)
+    assert {:ok, exp} = Nonce.consume_exp(jti, nonce)
+    assert exp == ts + skew
+    assert exp > claim_now + skew + 1
+
+    # force_prune at wall "now" does not simulate old claim-relative expiry
+    # (claim_now+skew is still in the future). It only checks we did not store a
+    # short-lived exp that is already past.
+    assert :ok = Nonce.force_prune_expired!()
+    assert {:ok, ^exp} = Nonce.consume_exp(jti, nonce)
+
+    assert %{"error" => "pop_required"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> put_req_header("x-alchemy-pop-ts", Integer.to_string(ts))
+             |> put_req_header("x-alchemy-pop-nonce", nonce)
+             |> put_req_header("x-alchemy-pop-sig", sig_b64)
+             |> put_req_header("content-type", "application/json")
+             |> Phoenix.ConnTest.dispatch(WorldWeb.Endpoint, :post, path, raw)
+             |> json_response(401)
+  end
+
+  test "host_keys rejects missing PoP nonce (x00d4)", %{conn: conn, signer: signer} do
+    sub = "22222222-2222-2222-2222-222222222222"
+    host_pub = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+    path = "/api/v1/rooms/pop-nononce/host_keys"
+    body_map = %{host_pub: host_pub}
+    raw = Jason.encode!(body_map)
+
+    conn
+    |> TestAuthHelpers.put_auth(signer, sub)
+    |> post("/api/v1/rooms", %{room_id: "pop-nononce"})
+    |> json_response(201)
+
+    {pub, priv} = TestAuthHelpers.session_keypair()
+
+    %{"token" => host_token} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> post(
+        "/api/v1/rooms/pop-nononce/tokens",
+        token_params(%{role: "host", session_pub: TestAuthHelpers.session_pub_b64(pub)})
+      )
+      |> json_response(200)
+
+    ts = System.system_time(:second)
+    # Sign as if nonce were present, but omit the header → missing_pop.
+    nonce = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    msg = HttpPop.signing_bytes("POST", path, ts, nonce, raw)
+    sig = :crypto.sign(:eddsa, :none, msg, [priv, :ed25519])
+
+    assert %{"error" => "pop_required"} =
+             build_conn()
+             |> put_req_header("authorization", "Bearer #{host_token}")
+             |> put_req_header("x-alchemy-pop-ts", Integer.to_string(ts))
+             |> put_req_header("x-alchemy-pop-sig", Base.url_encode64(sig, padding: false))
              |> put_req_header("content-type", "application/json")
              |> Phoenix.ConnTest.dispatch(WorldWeb.Endpoint, :post, path, raw)
              |> json_response(401)
