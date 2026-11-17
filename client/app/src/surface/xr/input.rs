@@ -131,6 +131,58 @@ pub fn dash_quad_model(head_pos: Vec3, head_orient: Quat) -> Mat4 {
     )
 }
 
+/// Context radial board at aim laser origin + forward offset (x00ce / Resonite-style).
+///
+/// Board aspect matches `canvas_w`×`canvas_h` so polar hits stay circular on the texture.
+pub fn context_board_model(
+    aim_pos: Vec3,
+    aim_orient: Quat,
+    head_orient: Quat,
+    canvas_w: f32,
+    canvas_h: f32,
+) -> Mat4 {
+    let forward = aim_orient * Vec3::NEG_Z;
+    let center = aim_pos + forward * crate::context_radial::CONTEXT_FORWARD_M;
+    let (bw, bh) = crate::context_radial::context_board_size(canvas_w, canvas_h);
+    // Face the user (use head yaw/pitch for readability).
+    Mat4::from_scale_rotation_translation(Vec3::new(bw, bh, 1.0), head_orient, center)
+}
+
+/// Ray vs context board plane → canvas pixels (same convention as dash quad).
+pub fn ray_hit_context_board(
+    board_center: Vec3,
+    board_orient: Quat,
+    ray: Ray,
+    canvas_w: f32,
+    canvas_h: f32,
+) -> Option<(f32, f32)> {
+    let (board_w, board_h) = crate::context_radial::context_board_size(canvas_w, canvas_h);
+    let forward = board_orient * Vec3::NEG_Z;
+    let right = board_orient * Vec3::X;
+    let up = board_orient * Vec3::Y;
+    let normal = -forward;
+    let denom = ray.dir.dot(normal);
+    if denom.abs() < 1e-5 {
+        return None;
+    }
+    let t = (board_center - ray.origin).dot(normal) / denom;
+    if t < 0.0 {
+        return None;
+    }
+    let hit = ray.origin + ray.dir * t;
+    let local = hit - board_center;
+    let x = local.dot(right);
+    let y = local.dot(up);
+    let half_w = board_w * 0.5;
+    let half_h = board_h * 0.5;
+    if x.abs() > half_w || y.abs() > half_h {
+        return None;
+    }
+    let u = (x / board_w) + 0.5;
+    let v = 0.5 - (y / board_h);
+    Some((u * canvas_w, v * canvas_h))
+}
+
 /// Model for a unit laser box along local -Z from origin to length 1, scaled to `length`.
 ///
 /// Mesh is expected as a box from z=0 .. z=-1 (aim forward = -Z), cross-section ±0.5 on X/Y

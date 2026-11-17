@@ -343,6 +343,13 @@ impl UiGpu {
         self.upload_canvas(queue);
     }
 
+    /// Force-rasterize any tree (Context radial overlay when Dash is closed · x00ce).
+    pub fn rasterize_overlay_now(&mut self, queue: &wgpu::Queue, tree: &LayoutTree) {
+        self.dirty = true;
+        self.rasterize_cpu(tree, true);
+        self.upload_canvas(queue);
+    }
+
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);

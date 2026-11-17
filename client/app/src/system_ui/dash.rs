@@ -164,6 +164,8 @@ pub struct DashState {
     /// One-shot take-out target (XR peer / lag); not mirrored.
     /// Consumed at InventoryTakeOut entry (discarded on busy/blocked — XR re-fires).
     pub inventory_take_out_override: Option<(String, String)>,
+    /// Peer/Context Save PutBack correlation; consumed on put_back mirror publish (x00ce).
+    pub inventory_put_back_correlation: Option<u64>,
     /// Scene mesh rows for put-back (x006e); `(entity_id, blake3)`.
     pub scene_meshes: Vec<(u32, String)>,
     /// Multi-select indices into `scene_meshes` (x007f put-back). Despawn uses first.
@@ -285,6 +287,7 @@ impl Default for DashState {
             inventory_nodes: Vec::new(),
             inventory_selected: None,
             inventory_take_out_override: None,
+            inventory_put_back_correlation: None,
             scene_meshes: Vec::new(),
             scene_selected: Vec::new(),
             inventory_status: String::new(),

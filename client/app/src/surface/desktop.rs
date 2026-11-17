@@ -34,6 +34,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Cursor, CursorGrabMode, CustomCursor, Window, WindowId};
 
 use crate::auth;
+use crate::context_radial::{self, ContextEvent, ContextItemId, ContextRadialState};
 use crate::host_supervisor;
 use crate::mesh::CpuMesh;
 use crate::operator_prefs::{self, endpoints_for, OperatorKind};
@@ -48,7 +49,8 @@ use crate::spatial_lens::{
 };
 use crate::surface::hotswitch::DesktopRole;
 use crate::system_ui::{
-    rematch_scene_selection, DashTab, InventoryPeerRequest, OnboardingShell, SystemUi, UiAction,
+    rematch_scene_selection, DashTab, InventoryPeerRequest, LayoutTree, OnboardingShell, SystemUi,
+    UiAction,
 };
 use crate::world_api;
 use crate::world_hit::{desktop_look_ray, pick_grabbable_desktop, Ray};
@@ -101,6 +103,7 @@ impl DesktopGpu {
         lens: &SpatialLensState,
         lens_headers: &[crate::spatial_lens::GpuPanelHeader],
         lens_prims: &[crate::spatial_lens::GpuUiPrim],
+        context_tree: Option<(&LayoutTree, bool)>,
     ) -> Result<()> {
         self.scene.maybe_log_pose();
         let eye = self.scene.user_root_pose();
@@ -108,7 +111,15 @@ impl DesktopGpu {
         let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
         let (view, proj) = SceneGpu::desktop_view_proj(eye, look, aspect);
 
-        ui.prepare_frame(&self.scene.queue);
+        if ui.state.open {
+            ui.prepare_frame(&self.scene.queue);
+        } else if let Some((tree, gpu_dirty)) = context_tree {
+            if gpu_dirty {
+                if let Some(gpu) = ui.gpu.as_mut() {
+                    gpu.rasterize_overlay_now(&self.scene.queue, tree);
+                }
+            }
+        }
 
         let frame = self
             .surface
@@ -159,7 +170,8 @@ impl DesktopGpu {
             );
         }
 
-        if ui.state.open {
+        let draw_ui = ui.state.open || context_tree.is_some();
+        if draw_ui {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ui-overlay"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -174,7 +186,11 @@ impl DesktopGpu {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            ui.draw(&mut pass);
+            if ui.state.open {
+                ui.draw(&mut pass);
+            } else {
+                ui.draw_canvas(&mut pass);
+            }
         }
 
         self.scene.queue.submit(Some(encoder.finish()));
@@ -216,6 +232,13 @@ struct App {
     grab_down: bool,
     /// After look capture, require one LMB release before LMB can Grab (avoid capture-click grab).
     lmb_grab_armed: bool,
+    /// Resonite-style Context radial (x00ce); independent of Dash.
+    context_radial: ContextRadialState,
+    context_tree: LayoutTree,
+    /// Virtual pointer on radial canvas while look-captured (Δ from center).
+    context_pointer: (f32, f32),
+    /// Layout changed → re-raster Context overlay once.
+    context_gpu_dirty: bool,
     /// Rate-limit "grab miss" logs.
     last_grab_miss_log: Option<std::time::Instant>,
     /// In-flight Auth HTTP (+ join) worker: `(auth_work_epoch, rx)` (x002e / x007c).
@@ -758,7 +781,21 @@ impl App {
     }
 
     fn apply_look_delta(&mut self, dx: f64, dy: f64) {
-        if !self.owns_input() || !self.look_captured || self.ui.state.open {
+        if !self.owns_input() || self.ui.state.open {
+            return;
+        }
+        if self.context_radial.open {
+            // Steer radial pointer instead of look (works without look capture · x00ce review).
+            const RADIAL_SENS: f32 = 1.6;
+            let w = self.context_radial.canvas_w;
+            let h = self.context_radial.canvas_h;
+            self.context_pointer.0 =
+                (self.context_pointer.0 + dx as f32 * RADIAL_SENS).clamp(0.0, w);
+            self.context_pointer.1 =
+                (self.context_pointer.1 + dy as f32 * RADIAL_SENS).clamp(0.0, h);
+            return;
+        }
+        if !self.look_captured {
             return;
         }
         if dx == 0.0 && dy == 0.0 {
@@ -766,6 +803,99 @@ impl App {
         }
         if let Ok(mut look) = self.shared.look.lock() {
             *look = apply_mouse_look(*look, dx, dy, LOOK_SENSITIVITY, PITCH_LIMIT);
+        }
+    }
+
+    fn sync_context_radial_items(&mut self) {
+        let save_ok = self.held_grab.is_some_and(|eid| {
+            !self.ui.state.inventory_blocked()
+                && self
+                    .shared
+                    .scene_meshes()
+                    .iter()
+                    .any(|(id, b)| *id == eid && b.len() == 64)
+        });
+        self.context_radial
+            .set_items(context_radial::build_items(save_ok));
+    }
+
+    fn sync_context_canvas_size(&mut self) {
+        if let Some(gpu) = self.gpu.as_ref() {
+            self.context_radial.canvas_w = gpu.config.width.max(1) as f32;
+            self.context_radial.canvas_h = gpu.config.height.max(1) as f32;
+        }
+    }
+
+    fn toggle_context_radial(&mut self) {
+        if self.ui.state.open {
+            return;
+        }
+        self.sync_context_canvas_size();
+        self.context_radial.toggle_desktop();
+        if self.context_radial.open {
+            self.context_pointer = (
+                self.context_radial.canvas_w * 0.5,
+                self.context_radial.canvas_h * 0.5,
+            );
+            self.sync_context_radial_items();
+            context_radial::rebuild_layout(&mut self.context_tree, &self.context_radial);
+            self.context_radial.dirty = false;
+            self.context_gpu_dirty = true;
+            log::info!("context radial open");
+        } else {
+            log::info!("context radial closed");
+        }
+    }
+
+    fn tick_context_radial(&mut self) -> Option<UiAction> {
+        if !self.context_radial.open {
+            return None;
+        }
+        if self.ui.state.open {
+            self.context_radial.close();
+            return None;
+        }
+        self.sync_context_canvas_size();
+        self.sync_context_radial_items();
+        self.context_radial.primary_down = self.primary_down;
+        self.context_radial
+            .set_pointer(self.context_pointer.0, self.context_pointer.1);
+        let ev = self.context_radial.tick_interaction();
+        if self.context_radial.dirty {
+            context_radial::rebuild_layout(&mut self.context_tree, &self.context_radial);
+            self.context_radial.dirty = false;
+            self.context_gpu_dirty = true;
+        }
+        match ev {
+            ContextEvent::Fired(ContextItemId::Save) => {
+                let eid = self.held_grab?;
+                Some(UiAction::GrabRadialSave(eid))
+            }
+            ContextEvent::None => None,
+        }
+    }
+
+    /// Context Save with status on the ring (fail keeps open · x00ce review).
+    fn handle_context_save(&mut self, entity_id: u32) {
+        if self.ui.state.inventory_blocked() {
+            self.context_radial.set_status("Save needs Live session");
+            context_radial::rebuild_layout(&mut self.context_tree, &self.context_radial);
+            self.context_radial.dirty = false;
+            self.context_gpu_dirty = true;
+            return;
+        }
+        self.ui.state.scene_meshes = self.shared.scene_meshes();
+        match run_put_back_for_entities_result(&mut self.ui, &self.shared, &[entity_id]) {
+            Ok(msg) => {
+                self.context_radial.set_status(msg);
+                self.context_radial.close();
+            }
+            Err(msg) => {
+                self.context_radial.set_status(msg);
+                context_radial::rebuild_layout(&mut self.context_tree, &self.context_radial);
+                self.context_radial.dirty = false;
+                self.context_gpu_dirty = true;
+            }
         }
     }
 
@@ -1422,6 +1552,10 @@ impl App {
             }
             return;
         }
+        // Context radial owns LMB as Primary — freeze Grab begin/release while open (x00ce review).
+        if self.context_radial.open {
+            return;
+        }
         if button {
             // Looking at Spatial Lens board: do not start world Grab through the panel.
             if self.held_grab.is_none() && may_start && !self.spatial_lens_hit_panel {
@@ -1644,7 +1778,7 @@ impl ApplicationHandler for App {
         self.sync_hotswitch_ui();
         self.ui.rebuild();
         log::info!(
-            "system_ui ready — Esc dash; F8 hotswitch (XR companion); click to look; Grab LMB/RMB/E; WASD+Space+C"
+            "system_ui ready — Esc dash; MMB/T context radial; F8 hotswitch (XR companion); click to look; Grab LMB/RMB/E; WASD+Space+C"
         );
     }
 
@@ -1655,7 +1789,14 @@ impl ApplicationHandler for App {
         event: DeviceEvent,
     ) {
         if let DeviceEvent::MouseMotion { delta } = event {
-            if self.look_captured && !self.ui.state.open {
+            if self.context_radial.open && !self.ui.state.open {
+                // Look-captured: Device Δ only (set device_look_active so CursorMoved
+                // does not double-add). Uncaptured: ignore Device — absolute CursorMoved only.
+                if self.look_captured {
+                    self.device_look_active = true;
+                    self.apply_look_delta(delta.0, delta.1);
+                }
+            } else if self.look_captured && !self.ui.state.open {
                 self.device_look_active = true;
                 self.apply_look_delta(delta.0, delta.1);
             }
@@ -1676,6 +1817,17 @@ impl ApplicationHandler for App {
                     gpu.resize(size.width, size.height);
                     self.ui.resize(&gpu.scene.device, size.width, size.height);
                 }
+                if self.context_radial.open {
+                    let prev_w = self.context_radial.canvas_w.max(1.0);
+                    let prev_h = self.context_radial.canvas_h.max(1.0);
+                    self.sync_context_canvas_size();
+                    let sx = self.context_radial.canvas_w / prev_w;
+                    let sy = self.context_radial.canvas_h / prev_h;
+                    self.context_pointer.0 *= sx;
+                    self.context_pointer.1 *= sy;
+                    self.context_radial.dirty = true;
+                    self.context_gpu_dirty = true;
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if self.ui.state.open {
@@ -1684,6 +1836,17 @@ impl ApplicationHandler for App {
                         self.cursor.0 as f32,
                         self.cursor.1 as f32,
                         self.primary_down,
+                    );
+                } else if self.context_radial.open && self.look_captured {
+                    // Same dual path as look: DeviceEvent sets device_look_active; if it never
+                    // arrives (Linux/WSL Confined), CursorMoved relative is the fallback.
+                    self.on_cursor_moved_look(position.x, position.y);
+                } else if self.context_radial.open {
+                    // Uncaptured: absolute cursor → radial canvas only.
+                    self.cursor = (position.x, position.y);
+                    self.context_pointer = (
+                        (position.x as f32).clamp(0.0, self.context_radial.canvas_w),
+                        (position.y as f32).clamp(0.0, self.context_radial.canvas_h),
                     );
                 } else if self.look_captured {
                     self.on_cursor_moved_look(position.x, position.y);
@@ -1757,6 +1920,11 @@ impl ApplicationHandler for App {
                             event_loop,
                         );
                     }
+                } else if self.context_radial.open {
+                    self.context_radial.primary_down = pressed;
+                    if let Some(UiAction::GrabRadialSave(eid)) = self.tick_context_radial() {
+                        self.handle_context_save(eid);
+                    }
                 } else if pressed && !self.look_captured && self.owns_input() {
                     self.set_look_capture(true);
                 } else if !pressed && self.look_captured {
@@ -1764,6 +1932,15 @@ impl ApplicationHandler for App {
                     self.lmb_grab_armed = true;
                 }
                 self.rebuild_intent();
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Middle,
+                ..
+            } => {
+                if state == ElementState::Pressed && self.owns_input() && !self.ui.state.open {
+                    self.toggle_context_radial();
+                }
             }
             WindowEvent::MouseInput {
                 state,
@@ -1833,14 +2010,27 @@ impl ApplicationHandler for App {
                         self.activate_spatial_lens_binding();
                     }
                     if pressed && !event.repeat && code == KeyCode::Escape {
-                        self.ui.toggle();
-                        if self.ui.state.open {
-                            self.set_look_capture(false);
-                            self.clear_grab_attach();
-                            self.grab_down = false;
-                            self.ui.clear_pointer();
+                        if self.context_radial.open {
+                            self.context_radial.close();
+                            log::info!("context radial closed (Esc)");
+                        } else {
+                            self.ui.toggle();
+                            if self.ui.state.open {
+                                self.set_look_capture(false);
+                                self.clear_grab_attach();
+                                self.grab_down = false;
+                                self.ui.clear_pointer();
+                            }
+                            log::info!("system_ui open={}", self.ui.state.open);
                         }
-                        log::info!("system_ui open={}", self.ui.state.open);
+                    }
+                    if pressed
+                        && !event.repeat
+                        && code == KeyCode::KeyT
+                        && self.owns_input()
+                        && !self.ui.state.open
+                    {
+                        self.toggle_context_radial();
                     }
                     let dash_text = self.ui.state.open
                         && matches!(self.ui.state.tab, DashTab::Home | DashTab::Settings);
@@ -2046,9 +2236,32 @@ impl ApplicationHandler for App {
                 } else if self.look_captured {
                     self.set_look_capture(false);
                 }
+                if let Some(action) = self.tick_context_radial() {
+                    match action {
+                        UiAction::GrabRadialSave(eid) => self.handle_context_save(eid),
+                        other => handle_ui_action(
+                            other,
+                            &mut self.ui,
+                            &self.shared,
+                            &mut self.zenoh,
+                            &mut self.auth_job,
+                            RoomBindDefer {
+                                pending: &mut self.pending_room_bind,
+                                painted: &mut self.room_bind_progress_painted,
+                            },
+                            event_loop,
+                        ),
+                    }
+                }
                 // Mirror while VR-active is intentional (non-guarantee GPU cost).
                 let highlight = if self.owns_input() {
                     self.aim_highlight()
+                } else {
+                    None
+                };
+                let context_gpu_dirty = self.context_gpu_dirty;
+                let context_tree = if self.context_radial.open && !self.ui.state.open {
+                    Some((&self.context_tree, context_gpu_dirty))
                 } else {
                     None
                 };
@@ -2059,8 +2272,14 @@ impl ApplicationHandler for App {
                         &self.spatial_lens,
                         &self.spatial_headers,
                         &self.spatial_prims,
+                        context_tree,
                     ) {
-                        Ok(()) => true,
+                        Ok(()) => {
+                            if context_gpu_dirty {
+                                self.context_gpu_dirty = false;
+                            }
+                            true
+                        }
                         Err(err) => {
                             log::error!("render failed: {err:#}");
                             false
@@ -2651,14 +2870,18 @@ fn apply_inventory_peer_request(
             }
             Some(UiAction::InventoryTakeOut)
         }
-        InventoryPeerRequest::PutBack { entity_ids } => {
+        InventoryPeerRequest::PutBack {
+            entity_ids,
+            correlation,
+        } => {
             ui.state.scene_meshes = shared.scene_meshes();
             ui.state.scene_selected = rematch_scene_selection(&ui.state.scene_meshes, entity_ids);
             ui.state.inventory_selected = None;
+            ui.state.inventory_put_back_correlation = *correlation;
             if ui.state.scene_selected.is_empty() {
                 ui.state.inventory_status =
                     "XR put-back: selected meshes not in scene (Refresh / wait Manifest)".into();
-                publish_inventory_mirror_from_ui(ui, shared);
+                publish_put_back_outcome(ui, shared, false);
                 ui.rebuild();
                 return None;
             }
@@ -2686,13 +2909,117 @@ fn publish_inventory_mirror_from_ui(ui: &SystemUi, shared: &SharedState) {
     shared.publish_inventory_mirror(
         ui.state.inventory_nodes.clone(),
         ui.state.inventory_status.clone(),
+        None,
+        None,
     );
+}
+
+/// Put_back terminal: always `Some(ok)` + consume peer correlation after publish (x00ce).
+fn publish_put_back_outcome(ui: &mut SystemUi, shared: &SharedState, ok: bool) {
+    let correlation = ui.state.inventory_put_back_correlation;
+    if shared.publish_inventory_mirror(
+        ui.state.inventory_nodes.clone(),
+        ui.state.inventory_status.clone(),
+        Some(ok),
+        correlation,
+    ) {
+        ui.state.inventory_put_back_correlation = None;
+    }
 }
 
 fn inventory_status_rebuild(ui: &mut SystemUi, shared: &SharedState, status: impl Into<String>) {
     ui.state.inventory_status = status.into();
     publish_inventory_mirror_from_ui(ui, shared);
     ui.rebuild();
+}
+
+/// Shared Inventory Put back / Context Save path (x006e / x00ce).
+fn run_put_back_for_entities(ui: &mut SystemUi, shared: &SharedState, entity_ids: &[u32]) {
+    let _ = run_put_back_for_entities_result(ui, shared, entity_ids);
+}
+
+/// `Ok(status)` on Drive success, `Err(status)` on fail-closed paths (for Context radial UI).
+fn run_put_back_for_entities_result(
+    ui: &mut SystemUi,
+    shared: &SharedState,
+    entity_ids: &[u32],
+) -> Result<String, String> {
+    let meshes = shared.scene_meshes();
+    let children = {
+        let world = shared.world.lock().ok();
+        match crate::inventory::put_back_children_for_entities(&meshes, entity_ids, |eid| {
+            world.as_ref().and_then(|w| {
+                w.entities.get(&eid).map(|p| {
+                    (
+                        [p.x as f64, p.y as f64, p.z as f64],
+                        [p.qx as f64, p.qy as f64, p.qz as f64, p.qw as f64],
+                        [p.sx as f64, p.sy as f64, p.sz as f64],
+                    )
+                })
+            })
+        }) {
+            Ok(c) => c,
+            Err(msg) => {
+                ui.state.inventory_status = msg.to_string();
+                publish_put_back_outcome(ui, shared, false);
+                ui.rebuild();
+                return Err(msg.to_string());
+            }
+        }
+    };
+    if children.is_empty() {
+        ui.state.inventory_status = "no put-back children".into();
+        publish_put_back_outcome(ui, shared, false);
+        ui.rebuild();
+        return Err("no put-back children".into());
+    }
+    let assets = shared.get_assets_url();
+    let access = {
+        let Ok(auth) = shared.auth.lock() else {
+            ui.state.inventory_status = "auth lock failed".into();
+            publish_put_back_outcome(ui, shared, false);
+            ui.rebuild();
+            return Err("auth lock failed".into());
+        };
+        auth.access_token.clone()
+    };
+    let Some(access) = access else {
+        ui.state.inventory_status = "sign in required".into();
+        publish_put_back_outcome(ui, shared, false);
+        ui.rebuild();
+        return Err("sign in required".into());
+    };
+    let name = crate::inventory::put_back_auto_name(&children);
+    let result =
+        match crate::inventory::put_back_prefab_children(&assets, &access, &name, &children) {
+            Ok(node) => {
+                if let Ok(nodes) = crate::inventory::list_drive_nodes(&assets, &access) {
+                    ui.state.inventory_nodes = nodes
+                        .into_iter()
+                        .map(|n| (n.node_id, n.kind, n.name))
+                        .collect();
+                }
+                ui.state.scene_meshes = shared.scene_meshes();
+                Ok(format!(
+                    "put-back ok {} ({} children stay in room)",
+                    node.name,
+                    children.len()
+                ))
+            }
+            Err(err) => {
+                log::warn!("inventory put_back: {err:#}");
+                Err(format!("put_back failed: {err:#}"))
+            }
+        };
+    let put_back_ok = result.is_ok();
+    match &result {
+        Ok(status) | Err(status) => {
+            ui.state.inventory_status = status.clone();
+        }
+    }
+    publish_put_back_outcome(ui, shared, put_back_ok);
+    ui.rebuild();
+    result
 }
 
 fn shared_has_host_inventory_token(shared: &SharedState) -> bool {
@@ -3837,6 +4164,9 @@ fn handle_ui_action(
             if ui.state.inventory_blocked() {
                 ui.state.tab = DashTab::Home;
                 ui.state.home_status = "Inventory is available when Live (x007f)".into();
+                ui.state.inventory_status = "Inventory is available when Live (x007f)".into();
+                // Peer/Context Save must not hang on Live reject (x00ce).
+                publish_put_back_outcome(ui, shared, false);
                 ui.mark_dash_chrome_dirty();
                 ui.rebuild();
                 return;
@@ -3854,81 +4184,22 @@ fn handle_ui_action(
                 .filter_map(|eid| ui.state.scene_meshes.iter().position(|(id, _)| id == eid))
                 .collect();
             if ui.state.scene_selected.is_empty() {
-                inventory_status_rebuild(
-                    ui,
-                    shared,
-                    "select one or more scene meshes first (Refresh if empty)",
-                );
+                ui.state.inventory_status =
+                    "select one or more scene meshes first (Refresh if empty)".into();
+                publish_put_back_outcome(ui, shared, false);
+                ui.rebuild();
                 return;
             }
-            let children: Vec<crate::inventory::PrefabPutBackChild> = {
-                let world = shared.world.lock().ok();
-                ui.state
-                    .scene_selected
-                    .iter()
-                    .filter_map(|&i| {
-                        let (entity_id, blake3) = ui.state.scene_meshes.get(i)?;
-                        let trs = world.as_ref().and_then(|w| {
-                            w.entities.get(entity_id).map(|p| {
-                                (
-                                    [p.x as f64, p.y as f64, p.z as f64],
-                                    [p.qx as f64, p.qy as f64, p.qz as f64, p.qw as f64],
-                                    [p.sx as f64, p.sy as f64, p.sz as f64],
-                                )
-                            })
-                        });
-                        Some((format!("mesh_{entity_id}"), blake3.clone(), trs))
-                    })
-                    .collect()
-            };
-            if children.is_empty() {
-                inventory_status_rebuild(
-                    ui,
-                    shared,
-                    "select a scene mesh first (Refresh if empty)",
-                );
-                return;
-            }
-            let assets = shared.get_assets_url();
-            let access = {
-                let Ok(auth) = shared.auth.lock() else {
-                    inventory_status_rebuild(ui, shared, "auth lock failed");
-                    return;
-                };
-                auth.access_token.clone()
-            };
-            let Some(access) = access else {
-                inventory_status_rebuild(ui, shared, "sign in required");
-                return;
-            };
-            let first_eid = children[0].0.strip_prefix("mesh_").unwrap_or("0");
-            let name = format!(
-                "putback-n{}-e{first_eid}-{}",
-                children.len(),
-                &children[0].1[..8.min(children[0].1.len())]
-            );
-            match crate::inventory::put_back_prefab_children(&assets, &access, &name, &children) {
-                Ok(node) => {
-                    ui.state.inventory_status = format!(
-                        "put-back ok {} ({} children stay in room)",
-                        node.name,
-                        children.len()
-                    );
-                    if let Ok(nodes) = crate::inventory::list_drive_nodes(&assets, &access) {
-                        ui.state.inventory_nodes = nodes
-                            .into_iter()
-                            .map(|n| (n.node_id, n.kind, n.name))
-                            .collect();
-                    }
-                    ui.state.scene_meshes = shared.scene_meshes();
-                }
-                Err(err) => {
-                    ui.state.inventory_status = format!("put_back failed: {err:#}");
-                    log::warn!("inventory put_back: {err:#}");
-                }
-            }
-            publish_inventory_mirror_from_ui(ui, shared);
-            ui.rebuild();
+            let entity_ids: Vec<u32> = ui
+                .state
+                .scene_selected
+                .iter()
+                .filter_map(|&i| ui.state.scene_meshes.get(i).map(|(eid, _)| *eid))
+                .collect();
+            run_put_back_for_entities(ui, shared, &entity_ids);
+        }
+        UiAction::GrabRadialSave(_entity_id) => {
+            // Desktop handles this via `App::handle_context_save` (radial status).
         }
         UiAction::InventoryDespawn => {
             if ui.state.inventory_blocked() {
@@ -4265,6 +4536,10 @@ pub fn run(
         grab_needs_release: false,
         grab_down: false,
         lmb_grab_armed: false,
+        context_radial: ContextRadialState::default(),
+        context_tree: LayoutTree::default(),
+        context_pointer: (640.0, 360.0),
+        context_gpu_dirty: false,
         last_grab_miss_log: None,
         auth_job: None,
         waiting_session_job: None,

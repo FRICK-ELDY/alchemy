@@ -21,22 +21,25 @@ use alchemy_protocol::{input_buttons, DEFAULT_MOVE_SPEED};
 
 use super::super::hotswitch::{HotswitchConfig, HotswitchController};
 use super::input::{
-    dash_quad_model, laser_length, laser_length_world, laser_model, openxr_pose_to_isometry,
-    pose_to_ray, ray_hit_dash_quad, Ray,
+    context_board_model, dash_quad_model, laser_length, laser_length_world, laser_model,
+    openxr_pose_to_isometry, pose_to_ray, ray_hit_context_board, ray_hit_dash_quad, Ray,
 };
 use super::loco::{combine_turn_axes, intent_from_sticks, stage_move_to_world, STICK_DEADZONE};
 use super::math::{projection_from_fov_default, view_from_pose};
 use super::render_model::{enable_if_available, RenderModelCache};
 use super::wgpu_interop::{self, FrameEndGuard, SwapchainReleaseGuard, XrWgpuBridge, VIEW_COUNT};
 use super::wgpu_overlays::{GpuController, XrOverlays};
+use crate::context_radial::{self, ContextEvent, ContextItemId, ContextRadialState, HandSide};
 use crate::mesh::CpuMesh;
 use crate::scene::{create_depth_view, MoveIntent, SceneGpu, SharedState, BOX_HALF_EXTENT};
-use crate::system_ui::{InventoryPeerRequest, SystemUi, UiAction};
+use crate::system_ui::{InventoryPeerRequest, LayoutTree, SystemUi, UiAction};
 use crate::turn::{update_turn_yaw, TURN_DEADZONE};
 use crate::world_hit::ray_hit_grabbable_boxes_with_extents;
 
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 const UI_CANVAS_W: u32 = 960;
+/// Context Save peer wait: Desktop stalled / unresponsive → fail-closed (x00ce).
+const CONTEXT_SAVE_TIMEOUT: Duration = Duration::from_secs(15);
 const UI_CANVAS_H: u32 = 540;
 const GRAB_SQUEEZE_THRESHOLD: f32 = 0.7;
 const WORLD_CLEAR: wgpu::Color = wgpu::Color {
@@ -114,8 +117,12 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         xr_instance.string_to_path("/user/hand/left")?,
         xr_instance.string_to_path("/user/hand/right")?,
     ];
-    let menu_action = action_set.create_action::<bool>("menu", "Menu toggle", &[])?;
+    let menu_action = action_set.create_action::<bool>("menu", "Dash toggle", &[])?;
+    let context_action =
+        action_set.create_action::<bool>("context", "Context radial toggle", &hands)?;
     let select_action = action_set.create_action::<bool>("select", "Select / click", &[])?;
+    // Analog trigger (Oculus Primary / flick); Index also bound.
+    let trigger_action = action_set.create_action::<f32>("trigger", "Primary trigger", &hands)?;
     let grab_action = action_set.create_action::<f32>("grab", "Grab / squeeze", &hands)?;
     let aim_action = action_set.create_action::<xr::Posef>("aim", "Aim pose", &hands)?;
     let thumbstick_action =
@@ -124,7 +131,9 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
     suggest_bindings(
         &xr_instance,
         &menu_action,
+        &context_action,
         &select_action,
+        &trigger_action,
         &grab_action,
         &aim_action,
         &thumbstick_action,
@@ -235,6 +244,18 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
     let mut session_running = false;
     let mut menu_was_down = false;
     let mut select_was_down = false;
+    let mut context_was_down_l = false;
+    let mut context_was_down_r = false;
+    let mut context_radial = ContextRadialState::default();
+    context_radial.canvas_w = UI_CANVAS_W as f32;
+    context_radial.canvas_h = UI_CANVAS_H as f32;
+    let mut context_tree = LayoutTree::default();
+    // After Context Save peer enqueue: wait for matching InventoryMirror correlation.
+    let mut context_save_pending = false;
+    let mut context_save_correlation: Option<u64> = None;
+    let mut context_save_corr_seq: u64 = 0;
+    let mut context_save_owner: Option<HandSide> = None;
+    let mut context_save_started_at: Option<Instant> = None;
     let mut held_grab: Option<u32> = None;
     let mut exit_requested = false;
     let mut logged_box_count: Option<usize> = None;
@@ -295,12 +316,53 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         ui.pull_dash_logic(&shared);
         let hier = ui.pull_hierarchy(&shared);
         let xray = ui.pull_epoch_xray(&shared, false);
-        let mut inventory_ui_dirty = ui.pull_inventory_mirror(&shared) || hier || xray;
+        let (mirror_dirty, put_back) = ui.pull_inventory_mirror(&shared);
+        let mut inventory_ui_dirty = mirror_dirty || hier || xray;
         if ui.state.tab == crate::system_ui::DashTab::Inventory {
             inventory_ui_dirty |= ui.sync_inventory_scene_meshes(&shared);
         }
         if inventory_ui_dirty {
             ui.rebuild();
+        }
+        // Context Save: match peer correlation (ignore unrelated Dash put_back).
+        if context_save_pending {
+            let mut settled = false;
+            if let Some((ok, corr)) = put_back {
+                if corr == context_save_correlation {
+                    settled = true;
+                    context_save_pending = false;
+                    context_save_correlation = None;
+                    context_save_started_at = None;
+                    if ok {
+                        context_radial.close();
+                    } else {
+                        if !context_radial.open {
+                            let hand = context_save_owner.unwrap_or(HandSide::Right);
+                            let _ = context_radial.toggle_or_reanchor(hand);
+                        }
+                        let st = ui.state.inventory_status.clone();
+                        context_radial.set_status(if st.is_empty() {
+                            "put_back failed".into()
+                        } else {
+                            st
+                        });
+                    }
+                    context_save_owner = None;
+                }
+            }
+            if !settled
+                && context_save_started_at.is_some_and(|t| t.elapsed() >= CONTEXT_SAVE_TIMEOUT)
+            {
+                context_save_pending = false;
+                context_save_correlation = None;
+                context_save_started_at = None;
+                if !context_radial.open {
+                    let hand = context_save_owner.unwrap_or(HandSide::Right);
+                    let _ = context_radial.toggle_or_reanchor(hand);
+                }
+                context_radial.set_status("Save timed out (Desktop busy?)");
+                context_save_owner = None;
+            }
         }
         sync_xr_hotswitch_ui(&mut ui, &shared);
 
@@ -457,19 +519,42 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         let menu_down = menu_action.state(&session, xr::Path::NULL)?.current_state;
         if menu_down && !menu_was_down {
             ui.toggle();
+            if ui.state.open {
+                context_radial.close();
+            }
             log::info!("XR menu → system_ui open={}", ui.state.open);
         }
         menu_was_down = menu_down;
 
+        let ctx_l = context_action.state(&session, hands[0])?.current_state;
+        let ctx_r = context_action.state(&session, hands[1])?.current_state;
+        if !ui.state.open {
+            if ctx_l && !context_was_down_l {
+                context_radial.toggle_or_reanchor(HandSide::Left);
+            }
+            if ctx_r && !context_was_down_r {
+                context_radial.toggle_or_reanchor(HandSide::Right);
+            }
+        }
+        context_was_down_l = ctx_l;
+        context_was_down_r = ctx_r;
+
         let head_located = view_ref.locate(&stage, xr_frame_state.predicted_display_time)?;
         let (head_pos, head_orient) = openxr_pose_to_isometry(head_located.pose);
+        let aim_left_pose = locate_aim(&aim_left, &stage, xr_frame_state.predicted_display_time);
+        let aim_right_pose = locate_aim(&aim_right, &stage, xr_frame_state.predicted_display_time);
         let aim_pose = locate_ui_aim(
             &aim_right,
             &aim_left,
             &stage,
             xr_frame_state.predicted_display_time,
         );
-        let world_hit_id = if !ui.state.open {
+        let owner_aim = match context_radial.owner {
+            Some(HandSide::Left) => aim_left_pose,
+            Some(HandSide::Right) => aim_right_pose,
+            None => aim_pose,
+        };
+        let world_hit_id = if !ui.state.open && !context_radial.open {
             aim_pose.and_then(|(aim_pos, aim_orient)| {
                 let stage_ray = pose_to_ray(aim_pos, aim_orient);
                 let world_ray = ray_to_world(stage_ray, floor_model);
@@ -486,7 +571,12 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             None
         };
 
-        let select_down_for_ui = select_action.state(&session, xr::Path::NULL)?.current_state;
+        let select_bool = select_action.state(&session, xr::Path::NULL)?.current_state;
+        let trigger_l = trigger_action.state(&session, hands[0])?.current_state;
+        let trigger_r = trigger_action.state(&session, hands[1])?.current_state;
+        let trigger_down =
+            trigger_l >= GRAB_SQUEEZE_THRESHOLD || trigger_r >= GRAB_SQUEEZE_THRESHOLD;
+        let select_down_for_ui = select_bool || trigger_down;
         let squeeze_l = grab_action.state(&session, hands[0])?.current_state;
         let squeeze_r = grab_action.state(&session, hands[1])?.current_state;
         let grip_down = squeeze_l >= GRAB_SQUEEZE_THRESHOLD || squeeze_r >= GRAB_SQUEEZE_THRESHOLD;
@@ -497,7 +587,8 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         }
         if ui.state.open {
             held_grab = None;
-        } else {
+            context_radial.close();
+        } else if !context_radial.open {
             let grab_down = grip_down || select_down_for_ui;
             if grab_down {
                 if held_grab.is_none() {
@@ -528,22 +619,115 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             }
         }
 
-        let laser_draw = aim_pose.map(|(aim_pos, aim_orient)| {
-            let stage_ray = pose_to_ray(aim_pos, aim_orient);
-            let len = if ui.state.open {
-                laser_length(
-                    head_pos,
+        // Context radial interaction (owner hand laser → board; Primary = owner trigger only).
+        let mut context_save_eid: Option<u32> = None;
+        let mut context_layout_dirty = false;
+        if context_radial.open && !ui.state.open {
+            let save_ok = held_grab.is_some_and(|eid| {
+                !ui.state.inventory_blocked()
+                    && shared
+                        .scene_meshes()
+                        .iter()
+                        .any(|(id, b)| *id == eid && b.len() == 64)
+            });
+            context_radial.set_items(context_radial::build_items(save_ok));
+            context_radial.primary_down = match context_radial.owner {
+                Some(HandSide::Left) => trigger_l >= GRAB_SQUEEZE_THRESHOLD,
+                Some(HandSide::Right) => trigger_r >= GRAB_SQUEEZE_THRESHOLD,
+                None => select_down_for_ui,
+            };
+            if let Some((aim_pos, aim_orient)) = owner_aim {
+                let board = context_board_model(
+                    aim_pos,
+                    aim_orient,
                     head_orient,
-                    stage_ray,
                     UI_CANVAS_W as f32,
                     UI_CANVAS_H as f32,
-                )
+                );
+                let board_center = board.transform_point3(Vec3::ZERO);
+                let ray = pose_to_ray(aim_pos, aim_orient);
+                if let Some((px, py)) = ray_hit_context_board(
+                    board_center,
+                    head_orient,
+                    ray,
+                    UI_CANVAS_W as f32,
+                    UI_CANVAS_H as f32,
+                ) {
+                    context_radial.set_pointer(px, py);
+                } else {
+                    context_radial.clear_pointer();
+                }
             } else {
-                let world_ray = ray_to_world(stage_ray, floor_model);
-                laser_length_world(world_ray, &grabbable_boxes)
+                context_radial.clear_pointer();
+            }
+            if let ContextEvent::Fired(ContextItemId::Save) = context_radial.tick_interaction() {
+                context_save_eid = held_grab;
+            }
+            if context_radial.dirty {
+                context_radial::rebuild_layout(&mut context_tree, &context_radial);
+                context_radial.dirty = false;
+                context_layout_dirty = true;
+            }
+        }
+        if let Some(eid) = context_save_eid {
+            if ui.state.inventory_blocked() {
+                context_radial.set_status("Save needs Live session");
+            } else if context_save_pending {
+                context_radial.set_status("Save already in flight");
+            } else {
+                match shared.inventory_peer_actions.lock() {
+                    Ok(mut q) => {
+                        context_save_corr_seq = context_save_corr_seq.wrapping_add(1);
+                        let corr = context_save_corr_seq;
+                        q.push(InventoryPeerRequest::PutBack {
+                            entity_ids: vec![eid],
+                            correlation: Some(corr),
+                        });
+                        context_save_owner = context_radial.owner;
+                        context_save_correlation = Some(corr);
+                        context_save_pending = true;
+                        context_save_started_at = Some(Instant::now());
+                        // Stay open until mirror echoes this correlation (x00ce).
+                        context_radial.set_status("Saving…");
+                    }
+                    Err(_) => {
+                        context_radial.set_status("Save queue unavailable");
+                        log::warn!("inventory_peer_actions lock poisoned — XR Save dropped");
+                    }
+                }
+            }
+            if context_radial.open && context_radial.dirty {
+                context_radial::rebuild_layout(&mut context_tree, &context_radial);
+                context_radial.dirty = false;
+                context_layout_dirty = true;
+            }
+        }
+
+        let laser_draw = {
+            let laser_aim = if context_radial.open {
+                owner_aim
+            } else {
+                aim_pose
             };
-            laser_model(aim_pos, aim_orient, len)
-        });
+            laser_aim.map(|(aim_pos, aim_orient)| {
+                let stage_ray = pose_to_ray(aim_pos, aim_orient);
+                let len = if ui.state.open {
+                    laser_length(
+                        head_pos,
+                        head_orient,
+                        stage_ray,
+                        UI_CANVAS_W as f32,
+                        UI_CANVAS_H as f32,
+                    )
+                } else if context_radial.open {
+                    crate::context_radial::CONTEXT_FORWARD_M
+                } else {
+                    let world_ray = ray_to_world(stage_ray, floor_model);
+                    laser_length_world(world_ray, &grabbable_boxes)
+                };
+                laser_model(aim_pos, aim_orient, len)
+            })
+        };
 
         if ui.state.open {
             if let Some((aim_pos, aim_orient)) = aim_pose {
@@ -572,6 +756,28 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                 overlays.upload_ui_canvas(pixels, cw, ch);
             }
             Some(dash_quad_model(head_pos, head_orient))
+        } else if context_radial.open {
+            if context_layout_dirty || context_tree.draws.is_empty() {
+                if context_tree.draws.is_empty() {
+                    context_radial::rebuild_layout(&mut context_tree, &context_radial);
+                }
+                if let Some(gpu) = ui.gpu.as_mut() {
+                    gpu.mark_dirty();
+                    gpu.rasterize_cpu(&context_tree, true);
+                }
+                if let Some((pixels, cw, ch)) = ui.canvas_rgba() {
+                    overlays.upload_ui_canvas(pixels, cw, ch);
+                }
+            }
+            owner_aim.map(|(aim_pos, aim_orient)| {
+                context_board_model(
+                    aim_pos,
+                    aim_orient,
+                    head_orient,
+                    UI_CANVAS_W as f32,
+                    UI_CANVAS_H as f32,
+                )
+            })
         } else {
             None
         };
@@ -856,6 +1062,9 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                         UiAction::HierarchyRelayout => {
                             ui.apply_hierarchy_relayout(&shared);
                         }
+                        UiAction::GrabRadialSave(_) => {
+                            // Context radial Save is handled via InventoryPeerRequest::PutBack.
+                        }
                         UiAction::None => {}
                     }
                 }
@@ -925,7 +1134,10 @@ fn enqueue_inventory_peer(ui: &mut SystemUi, shared: &SharedState, action: UiAct
                 ui.rebuild();
                 return;
             }
-            vec![InventoryPeerRequest::PutBack { entity_ids }]
+            vec![InventoryPeerRequest::PutBack {
+                entity_ids,
+                correlation: None,
+            }]
         }
         UiAction::InventoryDespawn => {
             let Some(&i) = ui.state.scene_selected.first() else {
@@ -988,39 +1200,42 @@ fn ray_to_world(stage_ray: Ray, floor_model: Mat4) -> Ray {
     Ray { origin, dir }
 }
 
+fn locate_aim(aim: &xr::Space, stage: &xr::Space, time: xr::Time) -> Option<(Vec3, Quat)> {
+    let Ok(l) = aim.locate(stage, time) else {
+        return None;
+    };
+    if l.location_flags
+        .contains(xr::SpaceLocationFlags::POSITION_VALID)
+        && l.location_flags
+            .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+    {
+        Some(openxr_pose_to_isometry(l.pose))
+    } else {
+        None
+    }
+}
+
 fn locate_ui_aim(
     aim_right: &xr::Space,
     aim_left: &xr::Space,
     stage: &xr::Space,
     time: xr::Time,
 ) -> Option<(Vec3, Quat)> {
-    let valid = |l: &xr::SpaceLocation| {
-        l.location_flags
-            .contains(xr::SpaceLocationFlags::POSITION_VALID)
-            && l.location_flags
-                .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
-    };
-    if let Ok(l) = aim_right.locate(stage, time) {
-        if valid(&l) {
-            return Some(openxr_pose_to_isometry(l.pose));
-        }
-    }
-    if let Ok(l) = aim_left.locate(stage, time) {
-        if valid(&l) {
-            return Some(openxr_pose_to_isometry(l.pose));
-        }
-    }
-    None
+    locate_aim(aim_right, stage, time).or_else(|| locate_aim(aim_left, stage, time))
 }
 
+#[allow(clippy::too_many_arguments)] // OpenXR profile bindings need each Action handle.
 fn suggest_bindings(
     xr_instance: &xr::Instance,
     menu_action: &xr::Action<bool>,
+    context_action: &xr::Action<bool>,
     select_action: &xr::Action<bool>,
+    trigger_action: &xr::Action<f32>,
     grab_action: &xr::Action<f32>,
     aim_action: &xr::Action<xr::Posef>,
     thumbstick_action: &xr::Action<xr::Vector2f>,
 ) -> Result<()> {
+    // simple_controller: Context non-guaranteed (no second face button).
     xr_instance.suggest_interaction_profile_bindings(
         xr_instance.string_to_path("/interaction_profiles/khr/simple_controller")?,
         &[
@@ -1050,6 +1265,7 @@ fn suggest_bindings(
             ),
         ],
     )?;
+    // Resonite-aligned: A = Dash, B/Y = Context, trigger = Primary (x00ce).
     let _ = xr_instance.suggest_interaction_profile_bindings(
         xr_instance.string_to_path("/interaction_profiles/oculus/touch_controller")?,
         &[
@@ -1059,15 +1275,23 @@ fn suggest_bindings(
             ),
             xr::Binding::new(
                 menu_action,
+                xr_instance.string_to_path("/user/hand/right/input/a/click")?,
+            ),
+            xr::Binding::new(
+                context_action,
+                xr_instance.string_to_path("/user/hand/right/input/b/click")?,
+            ),
+            xr::Binding::new(
+                context_action,
                 xr_instance.string_to_path("/user/hand/left/input/y/click")?,
             ),
             xr::Binding::new(
-                select_action,
-                xr_instance.string_to_path("/user/hand/left/input/x/click")?,
+                trigger_action,
+                xr_instance.string_to_path("/user/hand/left/input/trigger/value")?,
             ),
             xr::Binding::new(
-                select_action,
-                xr_instance.string_to_path("/user/hand/right/input/a/click")?,
+                trigger_action,
+                xr_instance.string_to_path("/user/hand/right/input/trigger/value")?,
             ),
             xr::Binding::new(
                 grab_action,
@@ -1100,10 +1324,18 @@ fn suggest_bindings(
         &[
             xr::Binding::new(
                 menu_action,
-                xr_instance.string_to_path("/user/hand/left/input/b/click")?,
+                xr_instance.string_to_path("/user/hand/left/input/a/click")?,
             ),
             xr::Binding::new(
                 menu_action,
+                xr_instance.string_to_path("/user/hand/right/input/a/click")?,
+            ),
+            xr::Binding::new(
+                context_action,
+                xr_instance.string_to_path("/user/hand/left/input/b/click")?,
+            ),
+            xr::Binding::new(
+                context_action,
                 xr_instance.string_to_path("/user/hand/right/input/b/click")?,
             ),
             xr::Binding::new(
@@ -1113,6 +1345,14 @@ fn suggest_bindings(
             xr::Binding::new(
                 select_action,
                 xr_instance.string_to_path("/user/hand/right/input/trigger/click")?,
+            ),
+            xr::Binding::new(
+                trigger_action,
+                xr_instance.string_to_path("/user/hand/left/input/trigger/value")?,
+            ),
+            xr::Binding::new(
+                trigger_action,
+                xr_instance.string_to_path("/user/hand/right/input/trigger/value")?,
             ),
             xr::Binding::new(
                 grab_action,

@@ -18,6 +18,8 @@ pub enum InventoryPeerRequest {
     },
     PutBack {
         entity_ids: Vec<u32>,
+        /// XR Context Save wait token; echoed on [`InventoryMirror`] (x00ce).
+        correlation: Option<u64>,
     },
     Despawn {
         entity_id: u32,
@@ -32,6 +34,10 @@ pub struct InventoryMirror {
     pub revision: u64,
     pub nodes: Vec<(String, String, String)>,
     pub status: String,
+    /// Set on put_back publish (`Some(ok)`); cleared/ignored on other inventory publishes.
+    pub last_put_back_ok: Option<bool>,
+    /// Echo of peer/Context Save correlation; `None` for Dash-local put_back.
+    pub last_put_back_correlation: Option<u64>,
 }
 
 /// Re-resolve Drive selection by `node_id` after list replace (not by stale index).

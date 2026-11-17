@@ -926,14 +926,31 @@ impl SharedState {
     }
 
     /// Desktop → XR: publish Drive rows + inventory status (x007f).
-    pub fn publish_inventory_mirror(&self, nodes: Vec<(String, String, String)>, status: String) {
+    ///
+    /// `put_back_ok`: `Some` only for put_back outcomes so XR can wait on revision + flag
+    /// without parsing status text (x00ce). `put_back_correlation` echoes the peer token.
+    /// Returns `false` when the mirror lock is poisoned (caller may keep correlation).
+    pub fn publish_inventory_mirror(
+        &self,
+        nodes: Vec<(String, String, String)>,
+        status: String,
+        put_back_ok: Option<bool>,
+        put_back_correlation: Option<u64>,
+    ) -> bool {
         let Ok(mut m) = self.inventory_mirror.lock() else {
             log::warn!("inventory_mirror lock poisoned — XR list not updated");
-            return;
+            return false;
         };
         m.nodes = nodes;
         m.status = status;
+        m.last_put_back_ok = put_back_ok;
+        m.last_put_back_correlation = if put_back_ok.is_some() {
+            put_back_correlation
+        } else {
+            None
+        };
         m.revision = m.revision.saturating_add(1);
+        true
     }
 
     /// Current Zenoh `wire_cap` after join (x004e).
