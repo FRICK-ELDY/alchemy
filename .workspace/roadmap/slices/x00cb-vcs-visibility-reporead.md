@@ -2,7 +2,7 @@
 
 > **ID:** `x00cb` · **slug:** `vcs-visibility-reporead` · **status:** `done` · **area:** `[assets, docs]` · **depends_on:** `[x00ca, x00c9, x0063, x00b4]`  
 > **優先度:** [assets-vcs-draft.md](../../0_doc/architecture/assets-vcs-draft.md) §18.4  
-> **後続:** push API（§18.5）；fork / PR / public→private 切り離し（§18.8–9）
+> **後続:** [x00cc](x00cc-vcs-push.md) push API（§18.5）；fork / PR（§18.8–9）
 
 目標: `vcs_repos.visibility` と `vcs_repo_blobs` を導入し、RepoRead を blob GET 認可に足す。`ItemRef` の `repo_rev` を「オーナーか」から「読めるか」（§9.1）へ変え、private 非オーナーは 404 で存在を漏らさない。
 

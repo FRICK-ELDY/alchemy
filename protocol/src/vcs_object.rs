@@ -80,6 +80,10 @@ pub struct ObjectSummary {
     pub parents: Vec<ObjectHash>,
     pub generation: Option<u64>,
     pub author_sub: Option<String>,
+    /// Commit only (x00cc push: copy into `vcs_commits`).
+    pub created_at_ms: Option<u64>,
+    /// Commit only (x00cc push: copy into `vcs_commits`).
+    pub message: Option<String>,
     pub child_blake3s: Vec<ObjectHash>,
     pub license: Option<String>,
 }
@@ -365,6 +369,8 @@ pub fn verify(bytes: &[u8]) -> Result<ObjectSummary, VcsObjectError> {
             parents: Vec::new(),
             generation: None,
             author_sub: None,
+            created_at_ms: None,
+            message: None,
             child_blake3s: t.children.iter().map(|c| c.blake3).collect(),
             license: t.license,
         },
@@ -375,6 +381,8 @@ pub fn verify(bytes: &[u8]) -> Result<ObjectSummary, VcsObjectError> {
             parents: c.parents,
             generation: Some(c.generation),
             author_sub: Some(c.author_sub),
+            created_at_ms: Some(c.created_at_ms),
+            message: Some(c.message),
             child_blake3s: Vec::new(),
             license: None,
         },
