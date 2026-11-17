@@ -22,6 +22,7 @@ mod asset_decode_budget;
 mod assets_fetch;
 mod auth;
 mod bus;
+mod context_radial;
 mod epoch_mirror;
 mod epoch_view;
 mod host_supervisor;

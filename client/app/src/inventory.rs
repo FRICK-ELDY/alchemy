@@ -131,6 +131,44 @@ pub fn take_out_blobs(
 /// Prefab put-back child: `(local_id, blake3, optional TRS)`.
 pub type PrefabPutBackChild = (String, String, Option<([f64; 3], [f64; 4], [f64; 3])>);
 
+/// Assemble put-back children from entity ids + Manifest meshes (x006e / x00ce).
+///
+/// `trs_of(entity_id)` supplies live world pose; missing pose still yields a child without TRS.
+pub fn put_back_children_for_entities(
+    scene_meshes: &[(u32, String)],
+    entity_ids: &[u32],
+    mut trs_of: impl FnMut(u32) -> Option<([f64; 3], [f64; 4], [f64; 3])>,
+) -> Result<Vec<PrefabPutBackChild>, &'static str> {
+    if entity_ids.is_empty() {
+        return Err("no entities");
+    }
+    let mut children = Vec::with_capacity(entity_ids.len());
+    for &eid in entity_ids {
+        let Some((_, blake3)) = scene_meshes.iter().find(|(id, _)| *id == eid) else {
+            return Err("entity has no mesh blake3");
+        };
+        if blake3.len() != 64 {
+            return Err("invalid blake3");
+        }
+        let trs = trs_of(eid);
+        children.push((format!("mesh_{eid}"), blake3.clone(), trs));
+    }
+    Ok(children)
+}
+
+/// Auto name matching Inventory Put back (`putback-n…-e…-blake8`).
+pub fn put_back_auto_name(children: &[PrefabPutBackChild]) -> String {
+    let first_eid = children
+        .first()
+        .and_then(|(lid, _, _)| lid.strip_prefix("mesh_"))
+        .unwrap_or("0");
+    let blake8 = children
+        .first()
+        .map(|(_, b, _)| &b[..8.min(b.len())])
+        .unwrap_or("00000000");
+    format!("putback-n{}-e{first_eid}-{blake8}", children.len())
+}
+
 /// Save a Prefab via assets put-back (x006e / x007f multi-child). Returns Drive node.
 pub fn put_back_prefab_children(
     assets_url: &str,
@@ -226,6 +264,33 @@ pub fn room_token_role_unverified(room_token: &str) -> Option<String> {
         .ok()?;
     let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     v.get("role")?.as_str().map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn put_back_children_for_known_entity() {
+        let meshes = vec![(10u32, "a".repeat(64)), (20u32, "b".repeat(64))];
+        let children = put_back_children_for_entities(&meshes, &[20], |_| {
+            Some(([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0]))
+        })
+        .expect("ok");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].0, "mesh_20");
+        assert_eq!(children[0].1.len(), 64);
+        assert!(children[0].2.is_some());
+        let name = put_back_auto_name(&children);
+        assert!(name.starts_with("putback-n1-e20-"));
+    }
+
+    #[test]
+    fn put_back_children_rejects_unknown() {
+        let meshes = vec![(10u32, "a".repeat(64))];
+        let err = put_back_children_for_entities(&meshes, &[99], |_| None).unwrap_err();
+        assert_eq!(err, "entity has no mesh blake3");
+    }
 }
 
 /// Put AEAD-sealed `EditProposal` on `…/edit` (x00b2).

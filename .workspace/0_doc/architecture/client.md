@@ -15,7 +15,7 @@
 | `client/app/src/surface/` | boot: Desktop (winit) / OpenXR。デバイス差の吸収 |
 | `client/app/assets/icons/` | Material Icons（静的同梱） |
 | `client/host-server` | オンデマンド子プロセスの計算ホスト（Rapier + user_root loco） |
-| `client/vcs-store` | Spatial VCS ローカル CAS + negotiate/push クライアント（x00cd；Save UI は後続） |
+| `client/vcs-store` | Spatial VCS ローカル CAS + negotiate/push クライアント（x00cd；Drive Git 詳細パネル / VCS Save UI は後続。x00ce Context→Drive は別経路） |
 | `client/app/src/host_supervisor.rs` | 親 client からの spawn / ready / IPC shutdown / Job Object |
 | `client/fixtures/` | Coin_PolygonalMind GLB（CC0） |
 | `../protocol` | 共有ワイヤ契約（workspace 外） |
@@ -40,7 +40,7 @@
 | `HostSupervisor`: Join では host 未起動。Start / Worlds Host は `ensure_running_for_room`（`ROOM_ID` 不一致なら再起動）。ready は IPC bind 直後。Windows Job Object / Linux PDEATHSIG（`ALCHEMY_HOST_BIN`）。Exit は Handover stub → IPC SHUTDOWN。Leave/Logout は host 維持。Exit Client only 廃止。**x009f**: UI access JWT 注入時は ParentBroker（`ALCHEMY_AUTH_BROKER` + `EXPIRES_IN`≥1；欠落は **spawn / bootstrap / 同一 room Host** を拒否）。親は **login / register / silent·remember-me 適用 / soft-refresh / Host 起動直後·同一 room** で IPC `AUTH_PUSH`（`auth` lock 解放後に retry；`refresh_token` は子に渡さない）。再ログイン時 push は必須（host 維持前提）。`AUTH_USER` / 親 env 長命 `ALCHEMY_AUTH_TOKEN` は従来どおり自己 refresh（その子へは push しない） | deep link / トレイ / 本実装 Handover / host crash 自動再起動 / `cargo run` 道連れ / launcher discovery；入室維持のままの Host Rescue；親落ち後の子単独 refresh；IPC `OK`＝inbox 受理のみ（非 ParentBroker 適用拒否は消費済み） |
 | host: world `GET …/scene` → XPBD `from_entries` + sealed Manifest 公開（x0027 / x0093）。60Hz + session gate + `is_finite` + Grab 開始距離（x0021）+ **hold aim/offset クランプ**（x0041）+ **Intent rate**（x0040；bind は soft-global 20/10s（成功 JWT 返却）+ per-`session_pub`・map cap・idle=成功消費基準・x0077/x009c；キーは Ed25519 `session_pub`）+ Presence + Leave / jti liveliness / TTL（x0022）+ signed 30Hz 純デルタ + snapshot。Room Token JWKS は soft SWR + **hard stale 300s**（x0040）。attestation / seal は **credential worker**（x003d）；Frame/Manifest/Presence **`put` は `zenoh-publish`**（x0042・物理は pose ジョブ投入のみ・encode は worker 内 protobuf）。物理は gate + `hard_expire_at` を毎 tick 評価。一時 HTTP 失敗ではプロセスを殺さず、hard expiry 後は配信停止。再開時は `last_sent` から catch-up。**x009f**: ParentBroker 時は親 `AUTH_PUSH` で access JWT を更新し host Room Token を再発行（自己 login/refresh しない）。長命 `ALCHEMY_AUTH_TOKEN` / `AUTH_USER` は従来どおり。Grab on/off は `alchemy-shared-sim` **SlotGraph** と同期（x0056/x0057）；`pass_held` / `place_held`（x005a）；一般 `reparent` + 循環拒否（x0059）；`SlotUndoStack` API（x005b・UI 入口は後続）。**x006d / x0081 / x0098**: Zenoh `…/inventory/spawn` は Room AEAD（`InventorySpawn`）+ session 署名（Token 非搭載）；spawn worker が SessionTable Dual（**`role=host`∧`sub`==計算ホスト** **または** **`sub`==`owner_sub`**；`owner_sub` は scene GET）検証後に **host 自 Token+PoP** で world scene 追記（物理ループ外）；physics は scene+reseal 先→XPBD（拒否時も reseal）。**x007b / x0081 / x0098**: `…/inventory/despawn` も同型 → world DELETE → scene+reseal → mesh remove。owner は guest Token のまま take-out 可；`host_room_token` は非オーナー計算ホストの Intent re-bind 用 | Dual-AST Kernel / 予測補間 / verifier / 本格 Walk / Steal / floor Manifest 化 / rkyv·bytemuck ワイヤ / 親落ち後の短命 JWT 自己更新 / Intent strike・一時 ban / 未 bind steady の Ed25519 洪水 / bind-pub map 満杯かつ成功消費で全行 hot のときの新規 pub deny / 失敗 JWT 洪水で soft-global 枯渇時の入室遅延 / Prefab 多子 take-out / Frame parent フィールド / Invite ACL |
 | metrics（x0049）: `ALCHEMY_METRICS_ADDR=127.0.0.1:…` 時のみ専用 localhost `GET /metrics`（tick lateness / late>5ms counter / frame seen+age / JWKS age·hard-stale）。未設定は起動しない | OTLP / 公網スクレイプ / 高 cardinality label（`sub`/`room_id`） |
-| ESC（Desktop）/ Menu（OpenXR）ダッシュ・下タブ Home/Inventory/**Room**/Settings/Exit（x00b6）・Pinned Exit・Home アカウント殻（x0018）・**Inventory**（**Live のみ**・x007f / **x0098**；Drive blob/prefab take-out→guest+session 署名→host Dual 認可；8/10s ペースの逐次 spawn は UI 外ワーカー；scene 多選択 put-back；Despawn・x007b；XR は選択ペイロード付き Desktop 委譲＋Drive Mirror）・**Room**（入室中のみ・Session/Users/Permissions 枠；Leave/Rejoin/host CTA；Save/Users/Permissions 本体は後続）・Button hover・**単一 Exit**（supervised host のみ Handover stub + IPC；外部/CI host は触らない）。Esc でダッシュ開時は look／Grab 解放 | Facet 並べ替え / Context / Primary ツール本体 / XR 単独 HTTP・Zenoh；host 一括多子 spawn／host spawn ack；put-back+despawn TX；XR 仮想キーボード / 認証付きリモート shutdown；任意 guest 編集 ACL；明示 Save；editor_subs UI |
+| ESC（Desktop）/ **A / system Menu**（OpenXR）ダッシュ・下タブ Home/Inventory/**Room**/Settings/Exit（x00b6）・Pinned Exit・Home アカウント殻（x0018）・**Inventory**（**Live のみ**・x007f / **x0098**；Drive blob/prefab take-out→guest+session 署名→host Dual 認可；8/10s ペースの逐次 spawn は UI 外ワーカー；scene 多選択 put-back；Despawn・x007b；XR は選択ペイロード付き Desktop 委譲＋Drive Mirror）・**Room**（入室中のみ・Session/Users/Permissions 枠；Leave/Rejoin/host CTA；Save/Users/Permissions 本体は後続）・Button hover・**単一 Exit**（supervised host のみ Handover stub + IPC；外部/CI host は触らない）。Esc でダッシュ開時は look／Grab 解放。**Context ラジアル**（x00ce；Desktop 中ボタン/T・XR B/Y；Dash と独立；Save ボタンクリック；Grab 保持時「保存」→ Drive put_back；XR は Desktop peer） | Facet 並べ替え / Primary・Context **ツール本体**（ラジアル以外）/ サブメニュー階層 / XR 単独 HTTP・Zenoh；host 一括多子 spawn／host spawn ack；put-back+despawn TX；XR 仮想キーボード / 認証付きリモート shutdown；任意 guest 編集 ACL；Room 明示 Save（x00b7 経路）以外の canonical Save；editor_subs UI |
 | Home ログイン後: MainHub（x007c）— **Participation**（公開セッション一覧→Join）/ **Organizing**（Create／Host・Server Operator ゲート）。作成パネルでセッション名 + **アクセスレベル**（=`visibility`）→ Host で create/PUT + 自 host（x0037）。owner 同一アカウント時のみ選択レベルが載る；非 owner は既存 ACL のまま入室し status で区別。ログイン（UI / silent / remember-me）は自動入室しない | UI アート最終化 / テンプレ本実装 / XR Start HTTP / 表示名の永続；Organizing「My worlds」Host 本一覧 |
 | Session shell（x007c / x00b6）: カタログ＝見える／Join＝入れる／Live＝読める／Host＝回す。Join と Host 分離（Rescue は owner・実入室のみ）。Waiting / Live / KeyStale / Entering の Leave・host CTA は **Room → Session** サブ；固定 ROOM_ID Join/Start は Settings Advanced | XR 上のカタログ HTTP／KeyStale Rejoin；Host Rescue の入室維持パス |
 | Room key epoch / KeyStale（x007e）: Token の `room_key_epoch` を AEAD AAD に束縛；refresh で epoch 前進（**`0→1` 含む**）→ KeyStale（**live AEAD は旧鍵維持**・新鍵は Rejoin で commit）+ remount_generation bump。KeyStale overlay / `worlds_key_stale` 同期は **Desktop** | KeyStale 中の透過的無停止鍵切替；XR 上の KeyStale overlay / Rejoin HTTP（XR ゲストは FRAME_STALL 等に依存） |
@@ -70,19 +70,20 @@
 
 | 入力 | 役割 |
 |:---|:---|
-| Esc | ダッシュ開閉（開いている間は移動 Intent = 0） |
+| Esc | ダッシュ開閉（開いている間は移動 Intent = 0）。Context ラジアル開中はラジアルのみ閉じる |
 | F8 | XR companion 時: VR↔Desktop present 切替（x0053。Resonite 相当） |
 | WASD | 前/左/後/右（固定 look・yaw=0 相対）※Desktop が入力所有のときのみ |
 | Space / C | 上昇 / 下降（Noclip・Fly） |
-| Y / T / R | Primary / Context / Secondary（キーのみスタブ） |
-| マウス | ダッシュ開: UI。閉: LMB で look capture、移動で yaw/pitch（x0012）；look 中は箱を下向き照準（明るい）＋ LMB/RMB/E 長押しで Grab（x0013）。VR present 中は look/Grab を Desktop 側で出さない |
+| T / 中ボタン | Context ラジアル開閉（x00ce）。Y / R は Primary / Secondary キーのみスタブ |
+| マウス | ダッシュ開: UI（移動 Intent suppress）。閉: LMB で look capture、移動で yaw/pitch（x0012）；look 中は箱を下向き照準（明るい）＋ LMB/RMB/E 長押しで Grab（x0013）。ラジアル開中も WASD/look は継続；Save はボタン上で Primary **離す**と発火（Grab の LMB 押しっぱなし対応）；mesh blake3 付きのみ Drive 保存可。Grab 非保持時はリング外へ継続すると閉じる。VR present 中は look/Grab を Desktop 側で出さない |
 
 ## OpenXR バインド（x000a / x000b / x000c / x000d / x000e）
 
 | 入力 | 役割 |
 |:---|:---|
-| Menu | ダッシュ開閉（開いている間は移動 Intent = 0） |
-| Select + aim | ダッシュ UI クリック（開中）。閉時はワールドレーザー；squeeze 無し時は Grab も兼ねる |
+| A / system Menu | ダッシュ開閉（開いている間は移動 Intent = 0；x00ce で A=Dash にリマップ） |
+| B（右）/ Y（左） | Context ラジアル（x00ce）。押した瞬間の空間に固定；反対の手で押すと再配置；ボード外へレーザーが継続して外れると閉じる（Saving 中は維持） |
+| trigger + aim | Primary（ダッシュクリック / ラジアル Save クリック）。閉時はワールドレーザー；squeeze 無し時は Grab も兼ねる |
 | squeeze（Grip） | ダッシュ閉・ヒット中に Grab hold 開始／保持（x0011） |
 | 左右 thumbstick Y | その手の aim 相対で前後移動（L+R 加算） |
 | 左右 thumbstick X | コンフォートターン（L+R 加算。既定 Snap 30° / Smooth 切替可） |

@@ -31,7 +31,7 @@ pub use gpu::UiGpu;
 pub use inventory_peer::{
     rematch_inventory_selection, rematch_scene_selection, InventoryMirror, InventoryPeerRequest,
 };
-pub use layout::{LayoutTree, WidgetId};
+pub use layout::{Color, DrawCmd, LayoutTree, Rect, WidgetId};
 
 use std::sync::Mutex;
 
@@ -160,12 +160,18 @@ impl SystemUi {
     }
 
     /// XR: adopt Desktop Drive list + inventory status when mirror advances.
-    pub fn pull_inventory_mirror(&mut self, shared: &SharedState) -> bool {
+    ///
+    /// Returns `(layout_dirty, put_back)` where `put_back` is `Some((ok, correlation))`
+    /// only when this revision carried an explicit put_back outcome (x00ce Context Save).
+    pub fn pull_inventory_mirror(
+        &mut self,
+        shared: &SharedState,
+    ) -> (bool, Option<(bool, Option<u64>)>) {
         let Ok(m) = shared.inventory_mirror.lock() else {
-            return false;
+            return (false, None);
         };
         if m.revision == self.inventory_mirror_rev {
-            return false;
+            return (false, None);
         }
         let prev_node_id = self.state.inventory_selected.and_then(|i| {
             self.state
@@ -177,8 +183,11 @@ impl SystemUi {
         self.state.inventory_selected =
             rematch_inventory_selection(&self.state.inventory_nodes, prev_node_id.as_deref());
         self.state.inventory_status = m.status.clone();
+        let put_back = m
+            .last_put_back_ok
+            .map(|ok| (ok, m.last_put_back_correlation));
         self.inventory_mirror_rev = m.revision;
-        true
+        (true, put_back)
     }
 
     /// XR: keep scene mesh rows in sync with Manifest-derived SharedState.
@@ -1431,6 +1440,13 @@ impl SystemUi {
             gpu.draw(pass);
         }
     }
+
+    /// Draw whatever is currently in the UI canvas (Dash or Context radial · x00ce).
+    pub fn draw_canvas<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        if let Some(gpu) = self.gpu.as_ref() {
+            gpu.draw(pass);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1462,6 +1478,8 @@ pub enum UiAction {
     InventoryTakeOut,
     /// Inventory: put-back selected scene mesh as Prefab (x006e).
     InventoryPutBack,
+    /// Context radial Save → Drive put_back (x00ce); payload = held entity id.
+    GrabRadialSave(u32),
     /// Inventory: despawn selected scene mesh via host control plane (x007b).
     InventoryDespawn,
     /// Worlds: refresh catalog (x007c).

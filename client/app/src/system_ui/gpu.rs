@@ -31,6 +31,8 @@ pub struct UiGpu {
     icons: HashMap<&'static str, RgbaImage>,
     pixels: Vec<u8>,
     dirty: bool,
+    /// Context radial ring without pointer glyph (x00ce cursor stamp layer).
+    overlay_base: Option<Vec<u8>>,
 }
 
 impl UiGpu {
@@ -201,6 +203,7 @@ impl UiGpu {
             icons,
             pixels,
             dirty: true,
+            overlay_base: None,
         })
     }
 
@@ -216,8 +219,55 @@ impl UiGpu {
         self.canvas_w = w;
         self.canvas_h = h;
         self.pixels.resize((w * h * 4) as usize, 0);
+        self.overlay_base = None;
         self.dirty = true;
         self.rebind(device);
+    }
+
+    pub fn clear_context_overlay_cache(&mut self) {
+        self.overlay_base = None;
+    }
+
+    /// Rasterize Context ring (cached) then stamp pointer — avoids full rebuild on aim move.
+    pub fn prepare_context_overlay(
+        &mut self,
+        tree: &LayoutTree,
+        layout_dirty: bool,
+        pointer: Option<(f32, f32)>,
+    ) {
+        let need_base = layout_dirty
+            || self
+                .overlay_base
+                .as_ref()
+                .is_none_or(|b| b.len() != self.pixels.len());
+        if need_base {
+            self.dirty = true;
+            self.rasterize_cpu(tree, true);
+            self.overlay_base = Some(self.pixels.clone());
+        } else if let Some(base) = self.overlay_base.as_ref() {
+            self.pixels.copy_from_slice(base);
+        }
+        if let Some((px, py)) = pointer {
+            crate::context_radial::stamp_pointer_rgba(
+                &mut self.pixels,
+                self.canvas_w,
+                self.canvas_h,
+                px,
+                py,
+            );
+        }
+    }
+
+    /// [`prepare_context_overlay`] + GPU upload (Desktop).
+    pub fn present_context_overlay(
+        &mut self,
+        queue: &wgpu::Queue,
+        tree: &LayoutTree,
+        layout_dirty: bool,
+        pointer: Option<(f32, f32)>,
+    ) {
+        self.prepare_context_overlay(tree, layout_dirty, pointer);
+        self.upload_canvas(queue);
     }
 
     pub fn rebind(&mut self, device: &wgpu::Device) {

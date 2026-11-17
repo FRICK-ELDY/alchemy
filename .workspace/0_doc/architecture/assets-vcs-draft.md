@@ -712,7 +712,7 @@ VCS 本体（ID は着手時に採番）:
 5. push API（negotiate → blob アップロード → push）、サーバ側の検証、ブランチ保護 — **[x00cc](../../roadmap/slices/x00cc-vcs-push.md)**
 6. client のローカルストア（`vcs-store`: init / clone / commit / branch / fetch / push）＋ HTTP negotiate/push — **[x00cd](../../roadmap/slices/x00cd-vcs-http-store.md)**（本 Slice は init / commit / push + HTTP；clone/fetch は後続）
 7. shared-sim の部分木 ⇔ ツリー変換と Save UI（x00b3 の「明示 Save」負債をここで回収）
-   - **UI 先行切り出し:** グラブ → ラジアル「保存」→ Drive put_back — **[x00ce](../../roadmap/slices/x00ce-grab-radial-drive-save.md)**（VCS commit は Drive 詳細パネル後続）
+   - **UI 先行切り出し:** Context ラジアル「保存」→ Drive put_back — **[x00ce](../../roadmap/slices/x00ce-grab-radial-drive-save.md)**（**done**；VCS commit は Drive 詳細パネル後続）
 8. fork、`:imported` Grant、Quota
 9. PR（作成・クローズ・FF マージ・`expected_head`）と、public → private 時の切り離し
 10. 内容ライセンスの表示と設定 UI
