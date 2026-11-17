@@ -2,7 +2,7 @@
 
 > **ID:** `x00cd` · **slug:** `vcs-http-store` · **status:** `done` · **area:** `[assets, client, docs]` · **depends_on:** `[x00cc]`  
 > **優先度:** [assets-vcs-draft.md](../../0_doc/architecture/assets-vcs-draft.md) §7.1·§18.6  
-> **後続:** Save UI / shared-sim 部分木（§18.7）；clone/fetch；fork / PR（§18.8–9）
+> **後続:** [x00ce](x00ce-grab-radial-drive-save.md) グラブ→ラジアル Save→Drive；Git 詳細パネル；clone/fetch；fork / PR（§18.8–9）
 
 目標: 既存 Bearer JWT の `/api/v1` に negotiate/push を載せ、client `vcs-store` で init / commit / push の最小ローカル CAS を動かす。SSH は採用しない（TLS 終端＋トークンで既存 API と同型）。
 
