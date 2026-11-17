@@ -11,8 +11,9 @@
 |:---|:---|
 | `client/Cargo.toml` | workspace 根（将来 submodule の根） |
 | `client/app` | 画面プロセス（パッケージ名 `client`） |
-| `client/app/src/system_ui/` | 個人 DashRoot + 公式 Facet（OpenXR / Room を知らない） |
+| `client/app/src/system_ui/` | 個人 DashRoot + 公式 Facet（OpenXR / Room を知らない）。`UiAction` を出すだけ（x00d0） |
 | `client/app/src/surface/` | boot: Desktop (winit) / OpenXR。デバイス差の吸収 |
+| `client/app/src/surface/desktop/` | Desktop 実行器（x00d0）: `session_flow` / `inventory_flow` / `hotswitch_flow` + `job` + 葉 `support`；`mod.rs` は winit・入力・薄い `UiAction` ディスパッチ |
 | `client/app/assets/icons/` | Material Icons（静的同梱） |
 | `client/host-server` | オンデマンド子プロセスの計算ホスト（Rapier + user_root loco） |
 | `client/vcs-store` | Spatial VCS ローカル CAS + negotiate/push クライアント（x00cd；Drive Git 詳細パネル / VCS Save UI は後続。x00ce Context→Drive は別経路） |
