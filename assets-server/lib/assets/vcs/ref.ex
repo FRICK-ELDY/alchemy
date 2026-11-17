@@ -1,14 +1,15 @@
 defmodule Assets.Vcs.Ref do
   @moduledoc """
-  VcsRef — Branch (mutable head) or Tag (immutable pin) (x0064 / x00c9).
+  VcsRef — Branch (mutable head) or Tag (immutable pin) (x0064 / x00c9 / x00cc).
 
   Guarantees:
   - Ref name is unique per repo.
   - Tags are frozen (is_frozen=true): updating their commit_hash is rejected.
-  - Branch heads may be advanced (fast-forward only).
+  - Branch heads may be advanced (fast-forward only) unless `protected`.
   - Points at content-addressed `commit_hash` (x00c9).
+  - `protected` (x00cc): direct push / advance_branch → `:ref_protected`.
 
-  Non-guarantees: 3-way merge, rebase, reflog.
+  Non-guarantees: 3-way merge, rebase, reflog, branch delete API.
   """
 
   use Ecto.Schema
@@ -26,13 +27,14 @@ defmodule Assets.Vcs.Ref do
     field :kind, :string
     field :commit_hash, :string
     field :is_frozen, :boolean, default: false
+    field :protected, :boolean, default: false
 
     timestamps(type: :utc_datetime_usec)
   end
 
   def changeset(ref, attrs) do
     ref
-    |> cast(attrs, [:ref_id, :repo_id, :name, :kind, :commit_hash, :is_frozen])
+    |> cast(attrs, [:ref_id, :repo_id, :name, :kind, :commit_hash, :is_frozen, :protected])
     |> validate_required([:ref_id, :repo_id, :name, :kind, :commit_hash])
     |> validate_inclusion(:kind, @kind_values)
     |> validate_length(:name, min: 1, max: @name_max)
@@ -48,6 +50,13 @@ defmodule Assets.Vcs.Ref do
     |> cast(attrs, [:commit_hash])
     |> validate_required([:commit_hash])
     |> validate_not_frozen()
+  end
+
+  @doc "Owner toggles branch protection (branch only)."
+  def protection_changeset(ref, attrs) do
+    ref
+    |> cast(attrs, [:protected])
+    |> validate_required([:protected])
   end
 
   defp validate_not_frozen(changeset) do

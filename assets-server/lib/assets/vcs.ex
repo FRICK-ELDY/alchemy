@@ -1,28 +1,35 @@
 defmodule Assets.Vcs do
   @moduledoc """
   Vcs facade — content-addressed objects (x00c9) + Origin Cert v2 (x00ca) +
-  visibility / RepoRead index (x00cb / §18.4).
+  visibility / RepoRead (x00cb) + push / branch protection (x00cc / §18.5).
 
   x0062 / x00c9: promote_prefab/2 — Prefab → VcsRepo + CBOR Tree/Commit + `main`.
   x0064: create_branch/3, create_tag/3, advance_branch/3 — Ref management.
   x00ca: Authorship on promote; Release on create_tag; `vcs_blob_origins` first-seen.
   x00cb: promote defaults `visibility=private` and indexes child meshes in
   `vcs_repo_blobs`; `set_visibility/3` for owner.
+  x00cc: `negotiate/3` + `push/3` (owner); `set_branch_protection/4`;
+  protected refs reject direct push / advance.
 
   See Assets.ItemRef / Assets.RepoRead for repo@rev read auth (x0063 / x00cb).
+  See Assets.Vcs.Push for push verification details.
 
   Guarantees:
   - promote: Port encode+verify **outside** DB TX; short TX for ownership/
     grant re-check + objects + commit + repo_commits + `main` + DriveNode +
     Authorship cert + blob origins + repo_blobs.
-  - Tag frozen; FF via parent walk on `vcs_commit_parents`.
+  - Tag frozen; FF via parent walk (generation-bounded, x00cc).
   - create_tag issues Release cert (subject = repo owner_sub).
   - Cert v2 signs `issued_at_ms` + `kid` (offline-verifiable); signing is TX-outside.
   - Authorship is one row per commit_hash (reuse skips); subject = Commit.author_sub.
   - visibility is private|public; private non-owner reads are :not_found via RepoRead.
+  - push: owner-only; tip-reachable only (orphan trees not stored); Port verify;
+    author match; Grant+CAS (prepare + TX recheck); joining ≤256; ref CAS+FF;
+    Authorship + repo_blobs + origins (Commit.author_sub) in one TX;
+    protected → `:ref_protected`. Details: `Assets.Vcs.Push`.
 
-  Non-guarantees: push, fork, non-FF merge, sale-lock / :purchased checks,
-  multi-key kid lookup / automated rotation, HTTP VCS routes.
+  Non-guarantees: HTTP VCS; fork; non-FF merge; sale-lock / :purchased;
+  multi-key kid lookup / automated rotation; client vcs-store.
   """
 
   import Ecto.Query, only: [from: 2]
@@ -36,13 +43,14 @@ defmodule Assets.Vcs do
   alias Assets.Vcs.Commit
   alias Assets.Vcs.CommitParent
   alias Assets.Vcs.Object
+  alias Assets.Vcs.Push
   alias Assets.Vcs.Ref, as: VcsRef
   alias Assets.Vcs.Repo, as: VcsRepo
   alias Assets.Vcs.RepoBlob
   alias Assets.Vcs.RepoCommit
   alias Assets.VcsObject
 
-  @max_ff_depth 64
+  @max_ff_visits 10_000
 
   # ---------------------------------------------------------------------------
   # Promote Prefab → VcsRepo (x00c9)
@@ -98,6 +106,51 @@ defmodule Assets.Vcs do
   defp assert_repo_owner(%VcsRepo{}, _), do: {:error, :forbidden}
 
   # ---------------------------------------------------------------------------
+  # Push (x00cc)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Report which declared object / blob hashes are missing on the server.
+
+  Owner-only. Blob bodies are uploaded via `Assets.Blobs.upload/3` before `push/3`.
+  """
+  @spec negotiate(String.t(), String.t(), map()) ::
+          {:ok, %{missing_object_hashes: [String.t()], missing_blob_blake3s: [String.t()]}}
+          | {:error, term()}
+  defdelegate negotiate(repo_id, owner_sub, attrs), to: Push
+
+  @doc """
+  Accept Tree/Commit objects and advance (or create) a branch tip in one TX.
+
+  See `Assets.Vcs.Push` for validation rules (draft §7.1).
+  """
+  @spec push(String.t(), String.t(), map()) :: {:ok, VcsRef.t()} | {:error, term()}
+  defdelegate push(repo_id, owner_sub, attrs), to: Push
+
+  @doc """
+  Owner toggles `protected` on a branch. Tags return `:frozen`.
+  """
+  @spec set_branch_protection(String.t(), String.t(), String.t(), boolean()) ::
+          {:ok, VcsRef.t()}
+          | {:error, :not_found | :forbidden | :frozen | term()}
+  def set_branch_protection(repo_id, owner_sub, name, protected?)
+      when is_binary(repo_id) and is_binary(owner_sub) and is_binary(name) and
+             is_boolean(protected?) do
+    with {:ok, repo} <- fetch_repo(repo_id),
+         :ok <- assert_repo_owner(repo, owner_sub),
+         {:ok, vref} <- fetch_ref(repo_id, name),
+         :ok <- assert_branch_not_tag(vref) do
+      vref
+      |> VcsRef.protection_changeset(%{protected: protected?})
+      |> Repo.update()
+    end
+  end
+
+  defp assert_branch_not_tag(%VcsRef{kind: "tag"}), do: {:error, :frozen}
+  defp assert_branch_not_tag(%VcsRef{is_frozen: true}), do: {:error, :frozen}
+  defp assert_branch_not_tag(%VcsRef{}), do: :ok
+
+  # ---------------------------------------------------------------------------
   # Branch / Tag
   # ---------------------------------------------------------------------------
 
@@ -136,13 +189,15 @@ defmodule Assets.Vcs do
 
   @doc """
   Advance a branch (fast-forward only via parent chain).
-  Tags always return `{:error, :frozen}`.
+  Tags always return `{:error, :frozen}`. Protected branches → `:ref_protected` (x00cc).
   """
   @spec advance_branch(String.t(), String.t(), String.t()) ::
-          {:ok, VcsRef.t()} | {:error, :frozen | :not_fast_forward | :not_found | term()}
+          {:ok, VcsRef.t()}
+          | {:error, :frozen | :ref_protected | :not_fast_forward | :not_found | term()}
   def advance_branch(repo_id, name, new_commit_hash) do
     with {:ok, vref} <- fetch_ref(repo_id, name),
          :ok <- assert_not_frozen(vref),
+         :ok <- assert_not_protected(vref),
          :ok <- assert_commit_in_repo(repo_id, new_commit_hash),
          :ok <- assert_fast_forward(vref.commit_hash, new_commit_hash) do
       changeset = VcsRef.advance_changeset(vref, %{commit_hash: new_commit_hash})
@@ -210,6 +265,9 @@ defmodule Assets.Vcs do
       )
     )
   end
+
+  @doc false
+  def generate_id, do: do_generate_id()
 
   @doc false
   def generate_id_for_test, do: generate_id()
@@ -599,7 +657,8 @@ defmodule Assets.Vcs do
           name: name,
           kind: kind,
           commit_hash: commit_hash,
-          is_frozen: is_frozen
+          is_frozen: is_frozen,
+          protected: false
         })
       )
     end
@@ -622,6 +681,9 @@ defmodule Assets.Vcs do
   defp assert_not_frozen(%VcsRef{is_frozen: true}), do: {:error, :frozen}
   defp assert_not_frozen(%VcsRef{}), do: :ok
 
+  defp assert_not_protected(%VcsRef{protected: true}), do: {:error, :ref_protected}
+  defp assert_not_protected(%VcsRef{}), do: :ok
+
   defp assert_commit_in_repo(repo_id, commit_hash) do
     if commit_in_repo?(repo_id, commit_hash) do
       :ok
@@ -631,20 +693,35 @@ defmodule Assets.Vcs do
   end
 
   defp assert_fast_forward(old_hash, new_hash) do
-    do_ff_check(old_hash, new_hash, @max_ff_depth)
-  end
+    case get_commit(old_hash) do
+      {:ok, %Commit{generation: old_gen}} ->
+        do_ff_check(old_hash, new_hash, old_gen, @max_ff_visits)
 
-  defp do_ff_check(_old, _new, 0), do: {:error, :not_fast_forward}
-  defp do_ff_check(old, new, _depth) when old == new, do: :ok
-
-  defp do_ff_check(old, current, depth) do
-    case first_parent_hash(current) do
-      nil -> {:error, :not_fast_forward}
-      parent -> do_ff_check(old, parent, depth - 1)
+      {:error, _} ->
+        {:error, :not_fast_forward}
     end
   end
 
-  defp generate_id do
+  defp do_ff_check(old, current, _old_gen, _visits) when old == current, do: :ok
+  defp do_ff_check(_old, _current, _old_gen, 0), do: {:error, :not_fast_forward}
+
+  defp do_ff_check(old, current, old_gen, visits) do
+    case get_commit(current) do
+      {:ok, %Commit{generation: gen}} when gen < old_gen ->
+        {:error, :not_fast_forward}
+
+      {:ok, %Commit{}} ->
+        case first_parent_hash(current) do
+          nil -> {:error, :not_fast_forward}
+          parent -> do_ff_check(old, parent, old_gen, visits - 1)
+        end
+
+      {:error, _} ->
+        {:error, :not_fast_forward}
+    end
+  end
+
+  defp do_generate_id do
     :crypto.strong_rand_bytes(16)
     |> Base.encode16(case: :lower)
     |> then(fn hex ->

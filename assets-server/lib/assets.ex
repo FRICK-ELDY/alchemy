@@ -46,8 +46,12 @@ defmodule Assets do
     non-owner → :not_found; missing index → :incomplete_index (not :no_grant);
     invalid rev → :not_found (x0063)
   - Vcs.create_branch/3, create_tag/3, advance_branch/3: Ref CRUD; tags immutable (frozen);
-    advance_branch checks fast-forward reachability (x0064); create_tag issues
-    Release cert (subject = repo owner_sub) (x00ca)
+    advance_branch checks fast-forward reachability (x0064) and `protected`
+    (x00cc); create_tag issues Release cert (subject = repo owner_sub) (x00ca)
+  - Vcs.negotiate/3 + push/3: owner-only; tip-reachable only; Port verify; author
+    match; Grant+CAS (prepare + TX recheck); ref CAS+FF; joining≤256; Authorship
+    + repo_blobs + origins in one TX; protected → :ref_protected (x00cc).
+  - Vcs.set_branch_protection/4: owner toggles branch `protected` (x00cc)
   - Vcs.issue_authorship/2 / issue_release/4 / verify_cert/1: Ed25519 Origin Cert v2
     (`v2|commit|…|issued_at_ms|kid` / `v2|release|…`); offline-verifiable;
     private key never logged or returned; tampered → :tampered (x00ca)
@@ -57,7 +61,8 @@ defmodule Assets do
   - Group Vault/purchased/mail_temp, room-scoped grants, signed direct PUT, LOD
   - PlaceRead TTL refresh UI; client mesh render; existence oracle (403 vs 404)
   - Group Vault, sharing, Mail/Comms, Shopfront
-  - VcsRepo fork/transfer/push/HTTP VCS, CA chain, cert revocation, License Token
+  - VcsRepo fork/transfer/HTTP VCS / client vcs-store, CA chain, cert revocation,
+    License Token, `:purchased` push rejection
   - unauthenticated public repo browse; blob GET denial as 404
   - CRDT, Dual-AST Kernel, non-FF merge, 3D Diff
   - mime/size first-writer change; CasObject-with-zero-refs GC; S3 bucket listing scan

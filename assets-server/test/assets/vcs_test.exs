@@ -2,7 +2,8 @@ defmodule Assets.VcsTest do
   @moduledoc """
   Tests for x0062/x00c9 (promote_prefab content-addressed), x0063 (ItemRef),
   x0064 (Branch/Tag), x00ca (Origin Cert v2 + blob origins),
-  x00cb (visibility / RepoRead / private 404).
+  x00cb (visibility / RepoRead / private 404),
+  x00cc (negotiate / push / branch protection).
   """
   use Assets.DataCase, async: false, cas: true
 
@@ -979,5 +980,323 @@ defmodule Assets.VcsTest do
     assert_raise ArgumentError, fn ->
       Cert.authorship_message(String.duplicate("a", 64), "evil|sub", 0, "default")
     end
+  end
+
+  # ---------------------------------------------------------------------------
+  # x00cc — negotiate / push / branch protection
+  # ---------------------------------------------------------------------------
+
+  defp encode_push_child(parent_commit, mesh_blake3, opts \\ []) do
+    message = Keyword.get(opts, :message, "push-child")
+    author = Keyword.get(opts, :author_sub, @sub_a)
+    created_at_ms = Keyword.get(opts, :created_at_ms, System.system_time(:millisecond))
+
+    {:ok, %{bytes: tree_bytes, hash_hex: tree_hash}} =
+      VcsObject.encode_tree(%{
+        "children" => [%{"local_id" => "c0", "blake3" => String.downcase(mesh_blake3)}]
+      })
+
+    {:ok, %{bytes: commit_bytes, hash_hex: commit_hash}} =
+      VcsObject.encode_commit(%{
+        "tree" => tree_hash,
+        "parents" => [parent_commit.commit_hash],
+        "generation" => parent_commit.generation + 1,
+        "author_sub" => author,
+        "created_at_ms" => created_at_ms,
+        "message" => message
+      })
+
+    %{
+      tree_hash: tree_hash,
+      tree_bytes: tree_bytes,
+      commit_hash: commit_hash,
+      commit_bytes: commit_bytes,
+      mesh_blake3: String.downcase(mesh_blake3)
+    }
+  end
+
+  test "negotiate reports missing objects and blobs (x00cc)" do
+    {node, _} = build_prefab_node(@sub_a, "neg-base")
+    {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    {:ok, mesh, _} = Assets.Blobs.upload(@sub_a, "neg-mesh", "application/octet-stream")
+    child = encode_push_child(c1, mesh.blake3)
+
+    fake_obj = String.duplicate("a", 64)
+    fake_blob = String.duplicate("b", 64)
+
+    assert {:ok,
+            %{
+              missing_object_hashes: missing_objs,
+              missing_blob_blake3s: missing_blobs
+            }} =
+             Vcs.negotiate(repo.repo_id, @sub_a, %{
+               ref_name: "main",
+               old_commit_hash: c1.commit_hash,
+               new_commit_hash: child.commit_hash,
+               object_hashes: [child.tree_hash, child.commit_hash, c1.commit_hash, fake_obj],
+               blob_blake3s: [child.mesh_blake3, fake_blob]
+             })
+
+    assert child.tree_hash in missing_objs
+    assert child.commit_hash in missing_objs
+    refute c1.commit_hash in missing_objs
+    assert fake_obj in missing_objs
+    refute child.mesh_blake3 in missing_blobs
+    assert fake_blob in missing_blobs
+  end
+
+  test "push advances main with objects, repo_blobs, Authorship (x00cc)" do
+    {node, _} = build_prefab_node(@sub_a, "push-ok")
+    {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    {:ok, mesh, _} = Assets.Blobs.upload(@sub_a, "push-mesh", "application/octet-stream")
+    child = encode_push_child(c1, mesh.blake3)
+
+    assert {:ok, %VcsRef{commit_hash: tip}} =
+             Vcs.push(repo.repo_id, @sub_a, %{
+               ref_name: "main",
+               old_commit_hash: c1.commit_hash,
+               new_commit_hash: child.commit_hash,
+               objects: [
+                 %{hash_hex: child.tree_hash, bytes: child.tree_bytes},
+                 %{hash_hex: child.commit_hash, bytes: child.commit_bytes}
+               ]
+             })
+
+    assert tip == child.commit_hash
+    assert {:ok, %VcsRef{commit_hash: ^tip}} = Vcs.get_ref(repo.repo_id, "main")
+    assert Vcs.commit_in_repo?(repo.repo_id, child.commit_hash)
+
+    assert %RepoBlob{} =
+             Assets.Repo.get_by!(RepoBlob, repo_id: repo.repo_id, blake3: child.mesh_blake3)
+
+    assert %Cert{cert_kind: "commit", target_id: ^tip} = authorship_cert!(child.commit_hash)
+
+    assert {:ok, blobs} = ItemRef.resolve({:repo_rev, repo.repo_id, "main"}, @sub_a)
+    assert Enum.any?(blobs, &(&1.blake3 == child.mesh_blake3))
+  end
+
+  test "push rejects non-owner, cas mismatch, author mismatch, protected (x00cc)" do
+    {node, _} = build_prefab_node(@sub_a, "push-deny")
+    {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    {:ok, mesh, _} = Assets.Blobs.upload(@sub_a, "push-deny-mesh", "application/octet-stream")
+    child = encode_push_child(c1, mesh.blake3)
+
+    attrs = %{
+      ref_name: "main",
+      old_commit_hash: c1.commit_hash,
+      new_commit_hash: child.commit_hash,
+      objects: [
+        %{hash_hex: child.tree_hash, bytes: child.tree_bytes},
+        %{hash_hex: child.commit_hash, bytes: child.commit_bytes}
+      ]
+    }
+
+    assert {:error, :forbidden} = Vcs.push(repo.repo_id, @sub_b, attrs)
+
+    assert {:error, :cas_mismatch} =
+             Vcs.push(repo.repo_id, @sub_a, %{attrs | old_commit_hash: String.duplicate("0", 64)})
+
+    bad_author = encode_push_child(c1, mesh.blake3, author_sub: @sub_b, message: "evil")
+
+    assert {:error, :author_mismatch} =
+             Vcs.push(repo.repo_id, @sub_a, %{
+               ref_name: "main",
+               old_commit_hash: c1.commit_hash,
+               new_commit_hash: bad_author.commit_hash,
+               objects: [
+                 %{hash_hex: bad_author.tree_hash, bytes: bad_author.tree_bytes},
+                 %{hash_hex: bad_author.commit_hash, bytes: bad_author.commit_bytes}
+               ]
+             })
+
+    assert {:ok, _} = Vcs.set_branch_protection(repo.repo_id, @sub_a, "main", true)
+
+    assert {:error, :ref_protected} = Vcs.push(repo.repo_id, @sub_a, attrs)
+    assert {:error, :ref_protected} = Vcs.advance_branch(repo.repo_id, "main", child.commit_hash)
+
+    assert {:ok, %VcsRef{commit_hash: tip}} = Vcs.get_ref(repo.repo_id, "main")
+    assert tip == c1.commit_hash
+  end
+
+  test "push create-on-push new branch when old is nil (x00cc)" do
+    {node, _} = build_prefab_node(@sub_a, "push-new-branch")
+    {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    {:ok, mesh, _} = Assets.Blobs.upload(@sub_a, "push-nb-mesh", "application/octet-stream")
+    child = encode_push_child(c1, mesh.blake3)
+
+    assert {:ok, %VcsRef{name: "feature", commit_hash: tip, kind: "branch"}} =
+             Vcs.push(repo.repo_id, @sub_a, %{
+               ref_name: "feature",
+               old_commit_hash: nil,
+               new_commit_hash: child.commit_hash,
+               objects: [
+                 %{hash_hex: child.tree_hash, bytes: child.tree_bytes},
+                 %{hash_hex: child.commit_hash, bytes: child.commit_bytes}
+               ]
+             })
+
+    assert tip == child.commit_hash
+  end
+
+  test "push rejects missing child grant (x00cc)" do
+    {node, _} = build_prefab_node(@sub_a, "push-no-grant")
+    {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    {:ok, mesh, _} = Assets.Blobs.upload(@sub_a, "push-ng-mesh", "application/octet-stream")
+    child = encode_push_child(c1, mesh.blake3)
+
+    grant =
+      Assets.Repo.get_by!(Assets.Blobs.BlobGrant, grantee_sub: @sub_a, blake3: child.mesh_blake3)
+
+    {:ok, _} = Assets.Repo.delete(grant)
+
+    assert {:error, :no_grant} =
+             Vcs.push(repo.repo_id, @sub_a, %{
+               ref_name: "main",
+               old_commit_hash: c1.commit_hash,
+               new_commit_hash: child.commit_hash,
+               objects: [
+                 %{hash_hex: child.tree_hash, bytes: child.tree_bytes},
+                 %{hash_hex: child.commit_hash, bytes: child.commit_bytes}
+               ]
+             })
+  end
+
+  test "push rejects non-FF and missing CAS blob (x00cc)" do
+    {node, _} = build_prefab_node(@sub_a, "push-ff-blob")
+    {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    {:ok, mesh, _} = Assets.Blobs.upload(@sub_a, "push-ff-mesh", "application/octet-stream")
+
+    # Sibling root — not a descendant of c1
+    {:ok, %{bytes: tree_bytes, hash_hex: tree_hash}} =
+      VcsObject.encode_tree(%{
+        "children" => [%{"local_id" => "c0", "blake3" => String.downcase(mesh.blake3)}]
+      })
+
+    {:ok, %{bytes: commit_bytes, hash_hex: sibling_hash}} =
+      VcsObject.encode_commit(%{
+        "tree" => tree_hash,
+        "parents" => [],
+        "generation" => 1,
+        "author_sub" => @sub_a,
+        "created_at_ms" => System.system_time(:millisecond),
+        "message" => "sibling-root"
+      })
+
+    assert {:error, :not_fast_forward} =
+             Vcs.push(repo.repo_id, @sub_a, %{
+               ref_name: "main",
+               old_commit_hash: c1.commit_hash,
+               new_commit_hash: sibling_hash,
+               objects: [
+                 %{hash_hex: tree_hash, bytes: tree_bytes},
+                 %{hash_hex: sibling_hash, bytes: commit_bytes}
+               ]
+             })
+
+    child = encode_push_child(c1, mesh.blake3)
+    Assets.Repo.get!(Assets.Blobs.CasObject, child.mesh_blake3) |> Assets.Repo.delete!()
+
+    assert {:error, {:missing_blob, _}} =
+             Vcs.push(repo.repo_id, @sub_a, %{
+               ref_name: "main",
+               old_commit_hash: c1.commit_hash,
+               new_commit_hash: child.commit_hash,
+               objects: [
+                 %{hash_hex: child.tree_hash, bytes: child.tree_bytes},
+                 %{hash_hex: child.commit_hash, bytes: child.commit_bytes}
+               ]
+             })
+  end
+
+  test "push rejects unreachable commit in payload (x00cc)" do
+    {node, _} = build_prefab_node(@sub_a, "push-unreach")
+    {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    {:ok, mesh, _} = Assets.Blobs.upload(@sub_a, "push-ur-mesh", "application/octet-stream")
+    child = encode_push_child(c1, mesh.blake3)
+
+    {:ok, %{bytes: ghost_tree_bytes, hash_hex: ghost_tree}} =
+      VcsObject.encode_tree(%{
+        "children" => [%{"local_id" => "g0", "blake3" => String.downcase(mesh.blake3)}]
+      })
+
+    {:ok, %{bytes: ghost_commit_bytes, hash_hex: ghost_hash}} =
+      VcsObject.encode_commit(%{
+        "tree" => ghost_tree,
+        "parents" => [],
+        "generation" => 1,
+        "author_sub" => @sub_a,
+        "created_at_ms" => System.system_time(:millisecond) + 1,
+        "message" => "ghost"
+      })
+
+    assert {:error, {:unreachable_commit, ^ghost_hash}} =
+             Vcs.push(repo.repo_id, @sub_a, %{
+               ref_name: "main",
+               old_commit_hash: c1.commit_hash,
+               new_commit_hash: child.commit_hash,
+               objects: [
+                 %{hash_hex: child.tree_hash, bytes: child.tree_bytes},
+                 %{hash_hex: child.commit_hash, bytes: child.commit_bytes},
+                 %{hash_hex: ghost_tree, bytes: ghost_tree_bytes},
+                 %{hash_hex: ghost_hash, bytes: ghost_commit_bytes}
+               ]
+             })
+  end
+
+  test "push drops orphan trees and backfills origins on joining (x00cc)" do
+    {node, _} = build_prefab_node(@sub_a, "push-orphan-join")
+    {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    {:ok, mesh, _} = Assets.Blobs.upload(@sub_a, "push-oj-mesh", "application/octet-stream")
+    child = encode_push_child(c1, mesh.blake3)
+
+    {:ok, %{bytes: orphan_bytes, hash_hex: orphan_tree}} =
+      VcsObject.encode_tree(%{
+        "children" => [%{"local_id" => "orphan", "blake3" => String.downcase(mesh.blake3)}]
+      })
+
+    assert {:ok, _} =
+             Vcs.push(repo.repo_id, @sub_a, %{
+               ref_name: "main",
+               old_commit_hash: c1.commit_hash,
+               new_commit_hash: child.commit_hash,
+               objects: [
+                 %{hash_hex: child.tree_hash, bytes: child.tree_bytes},
+                 %{hash_hex: child.commit_hash, bytes: child.commit_bytes},
+                 %{hash_hex: orphan_tree, bytes: orphan_bytes}
+               ]
+             })
+
+    assert {:error, :not_found} = Vcs.get_object(orphan_tree)
+    assert {:ok, %Object{}} = Vcs.get_object(child.tree_hash)
+
+    # Simulate joining-only: commit remains global, leave this repo's index.
+    Assets.Repo.get_by!(Assets.Vcs.RepoCommit,
+      repo_id: repo.repo_id,
+      commit_hash: child.commit_hash
+    )
+    |> Assets.Repo.delete!()
+
+    Assets.Repo.get!(BlobOrigin, child.mesh_blake3) |> Assets.Repo.delete!()
+
+    assert {:ok, _} =
+             Vcs.push(repo.repo_id, @sub_a, %{
+               ref_name: "feature",
+               old_commit_hash: nil,
+               new_commit_hash: child.commit_hash,
+               objects: []
+             })
+
+    assert %Commit{author_sub: author} = Assets.Repo.get!(Commit, child.commit_hash)
+
+    assert %BlobOrigin{first_commit_hash: tip, author_sub: ^author} =
+             Assets.Repo.get!(BlobOrigin, child.mesh_blake3)
+
+    assert tip == child.commit_hash
+    assert author == @sub_a
+    assert Vcs.commit_in_repo?(repo.repo_id, child.commit_hash)
   end
 end

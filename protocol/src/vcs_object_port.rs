@@ -51,6 +51,8 @@ fn op_verify(v: &Value) -> Result<String, String> {
         "parents_hex": summary.parents.iter().map(hash_to_hex).collect::<Vec<_>>(),
         "generation": summary.generation,
         "author_sub": summary.author_sub,
+        "created_at_ms": summary.created_at_ms,
+        "message": summary.message,
         "child_blake3s_hex": summary.child_blake3s.iter().map(hash_to_hex).collect::<Vec<_>>(),
         "license": summary.license,
     })

@@ -709,7 +709,7 @@ VCS 本体（ID は着手時に採番）:
 2. サーバ DB の移行（内容アドレス・parents・generation・objects・repo_commits）と `promote_prefab` の置き換え — **[x00c9](../../roadmap/slices/x00c9-vcs-content-addressed.md)**
 3. Origin Cert v2（Authorship / Release、`issued_at_ms`・`kid`）と原産地台帳 — **[x00ca](../../roadmap/slices/x00ca-origin-cert-v2-origins.md)**
 4. visibility、RepoRead（GET 認可）、`ItemRef` の読み取り判定、private の 404 — **[x00cb](../../roadmap/slices/x00cb-vcs-visibility-reporead.md)**
-5. push API（negotiate → blob アップロード → push）、サーバ側の検証、ブランチ保護
+5. push API（negotiate → blob アップロード → push）、サーバ側の検証、ブランチ保護 — **[x00cc](../../roadmap/slices/x00cc-vcs-push.md)**
 6. client のローカルストア（`vcs-store`: init / clone / commit / branch / fetch / push）
 7. shared-sim の部分木 ⇔ ツリー変換と Save UI（x00b3 の「明示 Save」負債をここで回収）
 8. fork、`:imported` Grant、Quota
