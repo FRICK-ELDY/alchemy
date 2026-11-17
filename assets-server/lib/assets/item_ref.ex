@@ -1,6 +1,6 @@
 defmodule Assets.ItemRef do
   @moduledoc """
-  ItemRef — asset spawn reference (x0055 / x0063 / x00c9).
+  ItemRef — asset spawn reference (x0055 / x0063 / x00c9 / x00cb).
 
   Variants:
   - `{:blake3, blake3_hex}` — direct CAS reference
@@ -8,16 +8,21 @@ defmodule Assets.ItemRef do
     rev is a commit_hash (64 hex) OR a VcsRef name (branch/tag).
 
   Guarantees:
-  - resolve/2 checks owner + child BlobGrants for repo_rev (x00b4).
+  - resolve/2 for blake3 checks personal BlobGrant.
+  - resolve/2 for repo_rev uses RepoRead (`can_read` / private → :not_found)
+    and asserts every tree child is in that repo's `vcs_repo_blobs` (x00cb);
+    missing index → `:incomplete_index` (not `:no_grant`).
   - Tree children come from `vcs_objects` after Port verify with
     kind=tree and hash_hex == Commit.tree_hash (fail-closed on bytes/PK
     mismatch; not tree_json).
 
-  Non-guarantees: public repo sharing; PROTOCOL_PIN bump.
+  Non-guarantees: unauthenticated public browse; PROTOCOL_PIN bump;
+  vcs_repo take_out / spawn execution.
   """
 
   alias Assets.Blobs
   alias Assets.Repo
+  alias Assets.RepoRead
   alias Assets.Vcs
   alias Assets.Vcs.Commit
   alias Assets.Vcs.Object
@@ -34,6 +39,7 @@ defmodule Assets.ItemRef do
           | {:error,
              :not_found
              | :no_grant
+             | :incomplete_index
              | :invalid_rev
              | :invalid_item_ref
              | {:corrupt_tree, term()}
@@ -48,10 +54,10 @@ defmodule Assets.ItemRef do
 
   def resolve({:repo_rev, repo_id, rev}, auth_sub)
       when is_binary(repo_id) and is_binary(rev) and is_binary(auth_sub) do
-    with {:ok, repo} <- fetch_repo_as_owner(repo_id, auth_sub),
+    with {:ok, repo} <- RepoRead.fetch_readable_repo(repo_id, auth_sub),
          {:ok, commit} <- resolve_rev(repo, rev),
          {:ok, children} <- decode_tree_children(commit),
-         :ok <- Blobs.assert_child_grants(auth_sub, children) do
+         :ok <- RepoRead.assert_repo_blobs(repo.repo_id, children) do
       blobs = Enum.map(children, &%{blake3: &1.blake3})
       {:ok, blobs}
     end
@@ -91,14 +97,6 @@ defmodule Assets.ItemRef do
 
   defp assert_tree_summary(summary, _expect_hash) do
     {:error, {:corrupt_tree, {:invalid_summary, summary}}}
-  end
-
-  defp fetch_repo_as_owner(repo_id, auth_sub) do
-    case Repo.get(VcsRepo, repo_id) do
-      nil -> {:error, :not_found}
-      %VcsRepo{owner_sub: ^auth_sub} = repo -> {:ok, repo}
-      %VcsRepo{} -> {:error, :no_grant}
-    end
   end
 
   defp resolve_rev(%VcsRepo{repo_id: repo_id}, rev) do

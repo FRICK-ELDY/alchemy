@@ -13,7 +13,8 @@ defmodule Assets do
   - auth-gated PUT/GET, CasObject + per-owner BlobRef + owned BlobGrant
   - reserved→put→used; failure releases reservation only (no CAS.delete on compensate)
   - TTL `quota_reservations` reaper + grace orphan CAS GC (x0074; GenServer, not Oban)
-  - GET always BlobGrant or covering PlaceRead (x006c); CasObject is bytes meta
+  - GET always BlobGrant, covering PlaceRead (x006c), or RepoRead membership
+    in a readable repo's `vcs_repo_blobs` (x00cb); CasObject is bytes meta
     only (no `access` column — x006f). Bearer alone is never a read capability
   - Local blob GET is always `application/octet-stream` + `X-Content-Type-Options:
     nosniff` (x008b); CasObject.mime is storage meta / upload echo only
@@ -36,9 +37,13 @@ defmodule Assets do
   - Vcs.promote_prefab/2: DriveNode(prefab)→VcsRepo + CBOR Tree/Commit + `main`
     in one TX; child Grants re-checked (x00b4); commit_hash = blake3(Commit bytes)
     via vcs-object Port (x0062 / x00c9); Authorship cert + `vcs_blob_origins`
-    for child meshes (x00ca); old prefab blake3 path remains readable
-  - ItemRef.resolve/2: {:blake3, hash} and {:repo_rev, repo_id, rev} paths;
-    owner / BlobGrant checked; repo_rev also asserts every tree child Grant (x00b4);
+    for child meshes (x00ca); `visibility=private` + `vcs_repo_blobs` index
+    (x00cb); old prefab blake3 path remains readable
+  - Vcs.set_visibility/3: owner flips private|public (x00cb); no fork detach /
+    :purchased check yet
+  - ItemRef.resolve/2: {:blake3, hash} needs BlobGrant; {:repo_rev, …} needs
+    RepoRead (`can_read`) + children ∈ `vcs_repo_blobs` (x00cb); private
+    non-owner → :not_found; missing index → :incomplete_index (not :no_grant);
     invalid rev → :not_found (x0063)
   - Vcs.create_branch/3, create_tag/3, advance_branch/3: Ref CRUD; tags immutable (frozen);
     advance_branch checks fast-forward reachability (x0064); create_tag issues
@@ -52,7 +57,8 @@ defmodule Assets do
   - Group Vault/purchased/mail_temp, room-scoped grants, signed direct PUT, LOD
   - PlaceRead TTL refresh UI; client mesh render; existence oracle (403 vs 404)
   - Group Vault, sharing, Mail/Comms, Shopfront
-  - VcsRepo fork/transfer, CA chain, cert revocation, License Token
+  - VcsRepo fork/transfer/push/HTTP VCS, CA chain, cert revocation, License Token
+  - unauthenticated public repo browse; blob GET denial as 404
   - CRDT, Dual-AST Kernel, non-FF merge, 3D Diff
   - mime/size first-writer change; CasObject-with-zero-refs GC; S3 bucket listing scan
   """

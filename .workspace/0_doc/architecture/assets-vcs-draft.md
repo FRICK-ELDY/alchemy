@@ -390,7 +390,7 @@ sequenceDiagram
 
 ### 9.2 blob の読み取り
 
-現行の GET は「BlobGrant または PlaceRead」が必須。ここに「読めるリポジトリの `vcs_repo_blobs` に含まれている」（RepoRead）を足す。public だからといって検証せずに返す形にはしない。
+現行の GET は「BlobGrant または PlaceRead」が必須。ここに「読めるリポジトリの `vcs_repo_blobs` に含まれている」（RepoRead）を足す（**x00cb** 実装済み）。public だからといって検証せずに返す形にはしない。
 
 ### 9.3 public → private の切り替え（詳細）
 
@@ -591,7 +591,7 @@ sequenceDiagram
 | 層 | 内容 | 状態 |
 |:---|:---|:---|
 | 配るものを最小にする | 購入者に渡るのはタグ時点のスナップショットだけ。履歴・他のブランチ・編集用の元データは private リポジトリに残る。元データ（高解像度・編集用）と配布用データ（最適化済み）を分け、配布用だけをリリースする運用を推奨する | 本設計で実現 |
-| サーバの取得制限 | Grant か PlaceRead（将来は RepoRead も）がなければ取得できない | 現行 ＋ 本設計 |
+| サーバの取得制限 | Grant か PlaceRead か RepoRead（x00cb）がなければ取得できない | 現行 ＋ 本設計 |
 | プラットフォーム上の利用監査 | 着用・配置時に world-server の verifier が License Token / Origin Cert を確認する。抽出したデータを再アップロードしても、完全一致なら原産地台帳で作者違いを検出できる | 目標（assets-server-draft の外部境界③） |
 | 出所の証拠 | Origin Cert（署名付きの受理時刻）で先願を示し、削除要請の根拠にする | 本設計で実現 |
 | 利用規約 | 抽出・再配布の禁止と、取り下げの手続き | 運用 |
@@ -690,7 +690,7 @@ host-server はユーザーの PC で動くので、改造されている前提�
 |:---|:---|
 | x0062 の UUID コミット | `promote_prefab` を内容アドレスのルートコミット生成に置き換える（**x00c9**）。既存 UUID/`tree_json` 行の in-place 再エンコードは **未実装** — x00c9 は開発/hermetic DB 向け **破壊的 DROP+再作成**（本番 UUID VCS 未出荷前提）。将来本番データがある場合は別 Slice で移行パスを足す |
 | Origin Cert v1 | **x00ca** で v2 のみ発行・検証。v1 行は移行時 DELETE（互換検証なし） |
-| `ItemRef` | `rev` は ref 名かコミットハッシュにする。「オーナーか」のチェックを「読めるか」（§9.1）に変える |
+| `ItemRef` | `rev` は ref 名かコミットハッシュにする。「オーナーか」のチェックを「読めるか」（§9.1）に変える — **x00cb** |
 | `DriveNode(kind=vcs_repo)` の take_out | 現在は非保証。`repo@main` を取り出せるようにする |
 | `Prefab.Payload` | `local_id` の一意性検証を追加する（§5.2） |
 
@@ -708,7 +708,7 @@ VCS 本体（ID は着手時に採番）:
 1. オブジェクト形式: `protocol/` に §6 で選んだ形式の codec・厳格デコード・ゴールデンベクタ・Port バイナリ — **[x00c8](../../roadmap/slices/x00c8-vcs-object-codec.md)**
 2. サーバ DB の移行（内容アドレス・parents・generation・objects・repo_commits）と `promote_prefab` の置き換え — **[x00c9](../../roadmap/slices/x00c9-vcs-content-addressed.md)**
 3. Origin Cert v2（Authorship / Release、`issued_at_ms`・`kid`）と原産地台帳 — **[x00ca](../../roadmap/slices/x00ca-origin-cert-v2-origins.md)**
-4. visibility、RepoRead（GET 認可）、`ItemRef` の読み取り判定、private の 404
+4. visibility、RepoRead（GET 認可）、`ItemRef` の読み取り判定、private の 404 — **[x00cb](../../roadmap/slices/x00cb-vcs-visibility-reporead.md)**
 5. push API（negotiate → blob アップロード → push）、サーバ側の検証、ブランチ保護
 6. client のローカルストア（`vcs-store`: init / clone / commit / branch / fetch / push）
 7. shared-sim の部分木 ⇔ ツリー変換と Save UI（x00b3 の「明示 Save」負債をここで回収）

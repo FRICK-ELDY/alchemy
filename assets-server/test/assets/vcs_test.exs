@@ -1,7 +1,8 @@
 defmodule Assets.VcsTest do
   @moduledoc """
   Tests for x0062/x00c9 (promote_prefab content-addressed), x0063 (ItemRef),
-  x0064 (Branch/Tag), x00ca (Origin Cert v2 + blob origins).
+  x0064 (Branch/Tag), x00ca (Origin Cert v2 + blob origins),
+  x00cb (visibility / RepoRead / private 404).
   """
   use Assets.DataCase, async: false, cas: true
 
@@ -10,12 +11,14 @@ defmodule Assets.VcsTest do
   alias Assets.Drive
   alias Assets.ItemRef
   alias Assets.Prefab.Payload
+  alias Assets.RepoRead
   alias Assets.Vcs
   alias Assets.Vcs.BlobOrigin
   alias Assets.Vcs.Cert
   alias Assets.Vcs.Commit
   alias Assets.Vcs.Object
   alias Assets.Vcs.Ref, as: VcsRef
+  alias Assets.Vcs.RepoBlob
   alias Assets.VcsObject
 
   @sub_a "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
@@ -97,6 +100,7 @@ defmodule Assets.VcsTest do
 
     assert repo.owner_sub == @sub_a
     assert repo.node_id == node.node_id
+    assert repo.visibility == "private"
     assert byte_size(commit.commit_hash) == 64
     assert byte_size(commit.tree_hash) == 64
     assert commit.author_sub == @sub_a
@@ -267,11 +271,11 @@ defmodule Assets.VcsTest do
     assert {:ok, _blobs} = ItemRef.resolve({:repo_rev, repo.repo_id, "main"}, @sub_a)
   end
 
-  test "ItemRef.resolve {:repo_rev, ...} fails for other user (no_grant)" do
+  test "ItemRef.resolve {:repo_rev, ...} private other user is :not_found (x00cb)" do
     {node, _} = build_prefab_node(@sub_a)
     {:ok, %{repo: repo, commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
 
-    assert {:error, :no_grant} =
+    assert {:error, :not_found} =
              ItemRef.resolve({:repo_rev, repo.repo_id, commit.commit_hash}, @sub_b)
   end
 
@@ -283,7 +287,7 @@ defmodule Assets.VcsTest do
              ItemRef.resolve({:repo_rev, repo.repo_id, "nonexistent-branch"}, @sub_a)
   end
 
-  test "ItemRef.resolve {:repo_rev, ...} rejects revoked child grant (x00b4)" do
+  test "ItemRef.resolve + Blobs.fetch succeed via RepoRead after grant revoke (x00cb)" do
     {node, _} = build_prefab_node(@sub_a, "itemref-revoke")
     {:ok, %{repo: repo, commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
 
@@ -295,11 +299,14 @@ defmodule Assets.VcsTest do
 
     {:ok, _} = Assets.Repo.delete(grant)
 
-    assert {:error, :no_grant} =
+    assert {:ok, [%{blake3: ^child_blake3}]} =
              ItemRef.resolve({:repo_rev, repo.repo_id, commit.commit_hash}, @sub_a)
+
+    assert RepoRead.allows_blake3?(@sub_a, child_blake3)
+    assert {:ok, _bytes, _obj} = Assets.Blobs.fetch(child_blake3, @sub_a)
   end
 
-  test "ItemRef.resolve {:repo_rev, ...} rejects commit tree with never-granted child (x00b4)" do
+  test "ItemRef.resolve {:repo_rev, ...} rejects tree child missing from vcs_repo_blobs (x00cb)" do
     {node, _} = build_prefab_node(@sub_a, "itemref-legacy-base")
     {:ok, %{repo: repo, commit: c1}} = Vcs.promote_prefab(@sub_a, node.node_id)
 
@@ -307,7 +314,7 @@ defmodule Assets.VcsTest do
     {tree_hash, _} = encode_tree_object!([%{"local_id" => "ghost", "blake3" => fake_child}])
     c2 = encode_child_commit!(repo.repo_id, c1, tree_hash: tree_hash)
 
-    assert {:error, :no_grant} =
+    assert {:error, :incomplete_index} =
              ItemRef.resolve({:repo_rev, repo.repo_id, c2.commit_hash}, @sub_a)
   end
 
@@ -340,6 +347,75 @@ defmodule Assets.VcsTest do
 
     assert {:error, {:corrupt_tree, {:wrong_kind, "commit"}}} =
              ItemRef.resolve({:repo_rev, repo.repo_id, commit.commit_hash}, @sub_a)
+  end
+
+  # ---------------------------------------------------------------------------
+  # x00cb — visibility / RepoRead / private 404
+  # ---------------------------------------------------------------------------
+
+  test "promote_prefab indexes child blake3s into vcs_repo_blobs (x00cb)" do
+    {node, payload} = build_prefab_node(@sub_a, "repo-blobs")
+    {:ok, %{repo: repo}} = Vcs.promote_prefab(@sub_a, node.node_id)
+
+    [%{blake3: child}] = payload.children
+    child = String.downcase(child)
+
+    assert %RepoBlob{blake3: ^child} =
+             Assets.Repo.get_by!(RepoBlob, repo_id: repo.repo_id, blake3: child)
+  end
+
+  test "set_visibility owner can flip private↔public; non-owner forbidden (x00cb)" do
+    {node, _} = build_prefab_node(@sub_a, "vis-flip")
+    {:ok, %{repo: repo}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    assert repo.visibility == "private"
+
+    assert {:ok, %{visibility: "public"}} =
+             Vcs.set_visibility(repo.repo_id, @sub_a, "public")
+
+    assert {:error, :forbidden} =
+             Vcs.set_visibility(repo.repo_id, @sub_b, "private")
+
+    assert {:ok, %{visibility: "private"}} =
+             Vcs.set_visibility(repo.repo_id, @sub_a, "private")
+
+    assert {:error, :invalid_visibility} =
+             Vcs.set_visibility(repo.repo_id, @sub_a, "friends")
+  end
+
+  test "public repo: other user ItemRef resolve + RepoRead GET (x00cb)" do
+    {node, payload} = build_prefab_node(@sub_a, "public-read")
+    {:ok, %{repo: repo, commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    [%{blake3: child}] = payload.children
+
+    assert {:error, :not_found} =
+             ItemRef.resolve({:repo_rev, repo.repo_id, commit.commit_hash}, @sub_b)
+
+    assert {:error, :forbidden} = Assets.Blobs.fetch(child, @sub_b)
+
+    assert {:ok, _} = Vcs.set_visibility(repo.repo_id, @sub_a, "public")
+
+    assert {:ok, [%{blake3: ^child}]} =
+             ItemRef.resolve({:repo_rev, repo.repo_id, commit.commit_hash}, @sub_b)
+
+    assert RepoRead.allows_blake3?(@sub_b, child)
+    assert {:ok, _bytes, _obj} = Assets.Blobs.fetch(child, @sub_b)
+  end
+
+  test "public→private hides ItemRef and RepoRead for others (x00cb)" do
+    {node, payload} = build_prefab_node(@sub_a, "reprivate")
+    {:ok, %{repo: repo, commit: commit}} = Vcs.promote_prefab(@sub_a, node.node_id)
+    [%{blake3: child}] = payload.children
+
+    assert {:ok, _} = Vcs.set_visibility(repo.repo_id, @sub_a, "public")
+    assert {:ok, _} = ItemRef.resolve({:repo_rev, repo.repo_id, commit.commit_hash}, @sub_b)
+
+    assert {:ok, _} = Vcs.set_visibility(repo.repo_id, @sub_a, "private")
+
+    assert {:error, :not_found} =
+             ItemRef.resolve({:repo_rev, repo.repo_id, commit.commit_hash}, @sub_b)
+
+    refute RepoRead.allows_blake3?(@sub_b, child)
+    assert {:error, :forbidden} = Assets.Blobs.fetch(child, @sub_b)
   end
 
   test "Commit.changeset accepts empty message (codec-compatible)" do

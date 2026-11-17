@@ -1,7 +1,7 @@
 # assets-server
 
 > **正本コード**: [`assets-server/`](../../../assets-server/)  
-> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳）+ **x0054**（inventory PUT 経路）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x0096**（Origin Cert v1 tree/content hash）+ **x00c9**（VCS 内容アドレス DB + vcs-object Port + promote→CBOR Tree/Commit）+ **x00ca**（Origin Cert v2 Authorship/Release + `vcs_blob_origins`）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）+ **x006e**（Drive HTTP put_back）+ **x006f**（CasObject.access 列廃止）+ **x0074**（reserved reaper / orphan CAS GC）+ **x0075**（BLAKE3 常駐 Port）+ **x008d**（BLAKE3 Port プール）+ **x007f**（prefab take_out 多子展開）+ **x0086**（test hermetic: reaper/GC off + CAS tmp_dir）+ **x008b**（`/ready` + GET octet-stream/nosniff）+ **x00b5**（SpawnTicket 発行・JWKS）  
+> **ステータス**: x0003（ローカル CAS + Quota）+ **x001c**（S3/R2 バックエンド）+ **x001d**（s3 時 GET は署名 URL 302）+ **x003f**（CasObject / BlobRef 分離 + `reserved_bytes` put 補償）+ **x004f**（BlobGrant 台帳）+ **x0054**（inventory PUT 経路）+ **x0058**（Personal Vault 薄皮）+ **x005c/x005d**（DriveNode folder/blob/prefab）+ **x005e**（Prefab.Payload スキーマ検証）+ **x005f/x0060/x0061**（take-out/put-back/roundtrip）+ **x0062–x0065**（Vcs promote/commit/ref/cert・ItemRef repo@rev）+ **x0096**（Origin Cert v1 tree/content hash）+ **x00c9**（VCS 内容アドレス DB + vcs-object Port + promote→CBOR Tree/Commit）+ **x00ca**（Origin Cert v2 Authorship/Release + `vcs_blob_origins`）+ **x00cb**（visibility / RepoRead / ItemRef 読取 / private 404）+ **x006b**（PlaceRead）+ **x006c**（GET 案 B）+ **x006d**（Drive HTTP list/take_out）+ **x006e**（Drive HTTP put_back）+ **x006f**（CasObject.access 列廃止）+ **x0074**（reserved reaper / orphan CAS GC）+ **x0075**（BLAKE3 常駐 Port）+ **x008d**（BLAKE3 Port プール）+ **x007f**（prefab take_out 多子展開）+ **x0086**（test hermetic: reaper/GC off + CAS tmp_dir）+ **x008b**（`/ready` + GET octet-stream/nosniff）+ **x00b5**（SpawnTicket 発行・JWKS）  
 
 > **目標たたき台**: [assets-server-draft.md](assets-server-draft.md)（5 層全体）  
 > **脅威（手口×対策）**: [assets-threat-model.md](assets-threat-model.md)
@@ -14,7 +14,7 @@
 
 | | 内容 |
 |:---|:---|
-| **現行（x006c 案 B + x006f）** | GET 可否の SSoT は常に **BlobGrant** またはカバーする **PlaceRead**（x006b）。`CasObject` は bytes メタのみ（`access` 列なし） |
+| **現行（x006c 案 B + x006f + x00cb）** | GET 可否の SSoT は **BlobGrant**、カバーする **PlaceRead**（x006b）、または **RepoRead**（読める repo の `vcs_repo_blobs`・x00cb）。`CasObject` は bytes メタのみ（`access` 列なし） |
 | **移行段（x004f 案 A・完了）** | 台帳 + 任意 `grant_required`。GET 既定 capability は x006c で廃止。列は x006f で削除 |
 
 ## 保証すること / しないこと
@@ -23,12 +23,12 @@
 |:---|:---|
 | メタ（CasObject / BlobRef / BlobGrant / QuotaLedger）を SQLite に置く | GLB/KTX2 本体を DB に置く |
 | 不変バイナリを CAS（BLAKE3 キー）に置く。ダイジェストは常駐 `blake3-hash --serve` Port プール（x0075 / **x008d**；`PartitionSupervisor`；既定は **起動ホスト** `schedulers_online` / `BLAKE3_HASH_PARTITIONS`；リクエスト毎 CLI なし） | Folder / Commit（Spatial VCS）・Group Vault；パーティション数超の並列・ストリーミング NIF；release ビルドホスト CPU 数の焼き付き |
-| Spatial VCS: 決定的 CBOR codec（x00c8）+ assets `vcs-object` Port プール + 内容アドレス DB（`vcs_objects` / `commit_hash`）+ `promote_prefab`→Tree/Commit/`main`（**x00c9**）+ Origin Cert v2 Authorship/Release + `vcs_blob_origins`（**x00ca** / [assets-vcs-draft.md](assets-vcs-draft.md) §18.3） | visibility / RepoRead・push / fork / PR（§18.4+）；client `vcs-store`；販売ロック拒否・market 照合 |
+| Spatial VCS: 決定的 CBOR codec（x00c8）+ assets `vcs-object` Port プール + 内容アドレス DB（`vcs_objects` / `commit_hash`）+ `promote_prefab`→Tree/Commit/`main`（**x00c9**）+ Origin Cert v2 Authorship/Release + `vcs_blob_origins`（**x00ca**）+ `visibility` / `vcs_repo_blobs` / RepoRead / ItemRef 読取・private 404（**x00cb** / [assets-vcs-draft.md](assets-vcs-draft.md) §18.4） | push / fork / PR（§18.5+）；HTTP VCS；client `vcs-store`；販売ロック拒否・market 照合；未ログイン public 閲覧 |
 | `Assets.Vault.personal/1` が Quota と一致する used/reserved/limit を返す（vault_id=`owner_sub` 暫定・x0058） | UUID vault_id 移行・`:read_only`・課金プラン連動 |
 | `CasObject`（物理・所有者なし・size/mime のみ）と `BlobRef`（owner×blake3）を分離（x003f / x006f） | StorageVault / `:purchased` / `:mail_temp` |
 | PUT finalize で uploader に `:owned` `BlobGrant`（x004f） | room スコープ grant・Manifest 連動付与以外の Grant 種別 |
 | `POST /api/v1/inventory/blobs` は inventory 用パス契約（x0054）。中身は通常 PUT と同じ（常に owned Grant・x006f） | DriveNode / Prefab / Vault 表・client UI |
-| Drive `take_out`（x007f / x00b5）: blob → 単一 blake3；prefab → Payload 子 mesh（`blake3`+`local_id`+任意 `trs`）。payload + 各子に Grant。欠落は全体 `:no_grant`。`room_id` 指定時は SpawnTicket 同梱（RS256・Origin Cert 鍵と分離）。単体 `POST /api/v1/spawn_tickets`。`save_prefab` / `create_prefab_node` / `promote_prefab` / `ItemRef` `repo_rev` も子 Grant 必須（x00b4；拒否時 Quota/CAS 非消費；HTTP put_back は 403 `no_grant`） | folder / vcs_repo take-out；payload blake3 を blobs に載せる；host 一括 spawn；鍵ローテーション自動化 |
+| Drive `take_out`（x007f / x00b5）: blob → 単一 blake3；prefab → Payload 子 mesh（`blake3`+`local_id`+任意 `trs`）。payload + 各子に Grant。欠落は全体 `:no_grant`。`room_id` 指定時は SpawnTicket 同梱（RS256・Origin Cert 鍵と分離）。単体 `POST /api/v1/spawn_tickets`。`save_prefab` / `create_prefab_node` / `promote_prefab` は子 Grant 必須（x00b4；拒否時 Quota/CAS 非消費；HTTP put_back は 403 `no_grant`）。`ItemRef` `repo_rev` は RepoRead + `vcs_repo_blobs`（x00cb；private 非オーナーは `:not_found`；索引欠落は `:incomplete_index`） | folder / vcs_repo take-out；payload blake3 を blobs に載せる；host 一括 spawn；鍵ローテーション自動化 |
 | 同一 blake3 を `/blobs` と `/inventory/blobs` から別 owner が PUT しても共存（x006f） | mime/size 先勝ちの変更；CasObject あり・refcount=0 の GC |
 | local GET は常に `application/octet-stream` + `nosniff`（x008b） | S3 オブジェクト側 Content-Type の強制；表示用 mime のサーバー配信 |
 | PUT: `quota_reservations` + `reserved_bytes` 予約 → TX 外 CAS put → used 振替。失敗時は**予約解放のみ**（compensate は CAS 非削除＝並行同一 hash 安全）（x003f / x0074） | Oban・署名 URL 直 PUT；S3 バケット全 listing |
@@ -106,7 +106,7 @@ PUT（`POST /api/v1/blobs`）は実バイト再送（PoP）必須。`x-alchemy-b
 | VcsRef | `ref_id` + `repo_id` + `name` + `kind`（branch/tag）+ `commit_hash` + `is_frozen`（Tag は true、x0064 / x00c9） |
 | VcsCert | `cert_id` + `subject_sub` + `cert_kind`（commit/release）+ `target_id`（commit_hash）+ `repo_id`/`tag_name`（release）+ `issued_at_ms` + `kid` + `message_version` + `target_hash` + `signature`（Ed25519・x00ca）。Authorship は commit あたり 1 行（subject=`Commit.author_sub`）；Release は repo+tag あたり 1 行（owner・tag 束縛）。署名は TX 外。オフライン検証は明示 pub key（省略時は現行鍵；`kid` ルックアップなし）。v1 廃止 |
 | VcsBlobOrigin | `blake3` PK + `first_commit_hash` + `author_sub` + `first_seen_at`（先願 1 行・x00ca） |
-| ItemRef | 型: `{:blake3, hex}` \| `{:repo_rev, repo_id, rev}`。`Assets.ItemRef.resolve/2` でブロブ参照解決（x0063） |
+| ItemRef | 型: `{:blake3, hex}` \| `{:repo_rev, repo_id, rev}`。`Assets.ItemRef.resolve/2` でブロブ参照解決（x0063）；`repo_rev` は RepoRead + `vcs_repo_blobs`（x00cb；private 非オーナーは `:not_found`；索引欠落は `:incomplete_index`、`:no_grant` と分離） |
 
 ```mermaid
 flowchart LR
