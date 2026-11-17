@@ -27,9 +27,11 @@ defmodule Assets.Vcs do
     author match; Grant+CAS (prepare + TX recheck); joining ≤256; ref CAS+FF;
     Authorship + repo_blobs + origins (Commit.author_sub) in one TX;
     protected → `:ref_protected`. Details: `Assets.Vcs.Push`.
+  - HTTP negotiate/push (x00cd): same domain under Bearer JWT; see
+    `AssetsWeb.VcsController`.
 
-  Non-guarantees: HTTP VCS; fork; non-FF merge; sale-lock / :purchased;
-  multi-key kid lookup / automated rotation; client vcs-store.
+  Non-guarantees: clone/fetch; fork; non-FF merge; sale-lock / :purchased;
+  multi-key kid lookup / automated rotation; Save UI; SSH.
   """
 
   import Ecto.Query, only: [from: 2]

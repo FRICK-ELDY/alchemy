@@ -8,7 +8,8 @@ defmodule Assets.Vcs.Push do
   repo_commits / repo_blobs / origins / Authorship / ref. joining ≤256;
   tree child resolution is fail-closed; orphan trees are not stored.
 
-  Non-guarantees: HTTP; fork push; `:purchased` / `:imported`; client vcs-store.
+  Non-guarantees: fork push; `:purchased` / `:imported`; clone/fetch; Save UI.
+  HTTP wiring: `AssetsWeb.VcsController` (x00cd).
   """
 
   import Ecto.Query, only: [from: 2]

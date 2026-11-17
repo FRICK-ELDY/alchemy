@@ -15,6 +15,7 @@
 | `client/app/src/surface/` | boot: Desktop (winit) / OpenXR。デバイス差の吸収 |
 | `client/app/assets/icons/` | Material Icons（静的同梱） |
 | `client/host-server` | オンデマンド子プロセスの計算ホスト（Rapier + user_root loco） |
+| `client/vcs-store` | Spatial VCS ローカル CAS + negotiate/push クライアント（x00cd；Save UI は後続） |
 | `client/app/src/host_supervisor.rs` | 親 client からの spawn / ready / IPC shutdown / Job Object |
 | `client/fixtures/` | Coin_PolygonalMind GLB（CC0） |
 | `../protocol` | 共有ワイヤ契約（workspace 外） |
