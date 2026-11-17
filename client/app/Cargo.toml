@@ -38,6 +38,8 @@ jsonwebtoken = "9"
 base64 = "0.22"
 png = "0.17"
 libc = "0.2"
+# Human-approved (2026-11-17): MIT OR Apache-2.0; P1-6 OS vault (x00cf).
+keyring = "4"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

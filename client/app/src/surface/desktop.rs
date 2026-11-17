@@ -1006,9 +1006,8 @@ impl App {
             if let Ok(mut gate) = self.shared.auth.lock() {
                 gate.clear_session();
             }
-            let mut prefs = operator_prefs::load();
-            prefs.clear_session();
-            operator_prefs::save(&prefs);
+            let key = operator_prefs::clear_session_rmw();
+            operator_prefs::delete_refresh_vault_key(key, &crate::refresh_vault::OsRefreshVault);
             self.ui.state.home_logged_in_as = None;
             self.ui.state.home_create_open = false;
             self.ui.state.shell = OnboardingShell::Step1Operator;
@@ -1186,26 +1185,50 @@ impl App {
     }
 
     fn persist_session_prefs(&self, username: &str) {
-        let mut prefs = operator_prefs::load();
-        prefs.operator_chosen = true;
-        prefs.operator = self.ui.state.operator;
-        prefs.custom_host = self.ui.state.custom_host.clone();
-        let ep = endpoints_for(prefs.operator, &prefs.custom_host);
-        prefs.apply_endpoints(&ep);
-        prefs.username = Some(username.to_string());
-        if self.ui.state.home_remember_me {
-            prefs.refresh_token = self
-                .shared
-                .auth
-                .lock()
-                .ok()
-                .and_then(|g| g.refresh_token.clone());
-            prefs.last_login_at = Some(operator_prefs::now_unix_secs());
+        let operator = self.ui.state.operator;
+        let custom_host = self.ui.state.custom_host.clone();
+        let remember_me = self.ui.state.home_remember_me;
+        let refresh = self
+            .shared
+            .auth
+            .lock()
+            .ok()
+            .and_then(|g| g.refresh_token.clone());
+        let username = username.to_string();
+        let vault = crate::refresh_vault::OsRefreshVault;
+        let apply_endpoints = |prefs: &mut operator_prefs::OnboardingPrefs| {
+            prefs.operator_chosen = true;
+            prefs.operator = operator;
+            prefs.custom_host = custom_host.clone();
+            let ep = endpoints_for(prefs.operator, &prefs.custom_host);
+            prefs.apply_endpoints(&ep);
+        };
+        if remember_me {
+            match refresh.as_deref() {
+                Some(rt) if !rt.is_empty() => {
+                    // Vault I/O outside prefs lock; disk RMW afterward.
+                    let _ =
+                        operator_prefs::persist_remember_me(&username, rt, &vault, apply_endpoints);
+                }
+                _ => {
+                    let key = operator_prefs::update_prefs(|prefs| {
+                        apply_endpoints(prefs);
+                        let key = operator_prefs::clear_remember_me_fields(prefs);
+                        prefs.username = Some(username.clone());
+                        key
+                    });
+                    operator_prefs::delete_refresh_vault_key(key, &vault);
+                }
+            }
         } else {
-            prefs.clear_session();
-            prefs.username = Some(username.to_string());
+            let key = operator_prefs::update_prefs(|prefs| {
+                apply_endpoints(prefs);
+                let key = operator_prefs::clear_remember_me_fields(prefs);
+                prefs.username = Some(username.clone());
+                key
+            });
+            operator_prefs::delete_refresh_vault_key(key, &vault);
         }
-        operator_prefs::save(&prefs);
     }
 
     fn apply_auth_outcome(&mut self, outcome: AuthJobOutcome) {
@@ -3362,10 +3385,11 @@ fn handle_ui_action(
             log::info!("hotswitch auto stored → {}", ui.state.hotswitch_auto);
         }
         UiAction::ServerOperatorChanged => {
-            let mut prefs = operator_prefs::load();
-            prefs.server_operator = ui.state.server_operator;
-            operator_prefs::save(&prefs);
-            log::info!("server operator prefs → {}", ui.state.server_operator);
+            let server_operator = ui.state.server_operator;
+            operator_prefs::update_prefs(|prefs| {
+                prefs.server_operator = server_operator;
+            });
+            log::info!("server operator prefs → {server_operator}");
         }
         UiAction::ExitClientOnly | UiAction::ExitClientAndHost => {
             // Exit Client only abolished: stop supervisor-owned host only.
@@ -3385,13 +3409,15 @@ fn handle_ui_action(
             shared
                 .room_bus_started
                 .store(false, std::sync::atomic::Ordering::SeqCst);
-            let mut prefs = operator_prefs::load();
-            prefs.operator_chosen = true;
-            prefs.operator = ui.state.operator;
-            prefs.custom_host = ui.state.custom_host.clone();
-            prefs.apply_endpoints(&ep);
-            // Keep any existing refresh until login replaces it.
-            operator_prefs::save(&prefs);
+            let operator = ui.state.operator;
+            let custom_host = ui.state.custom_host.clone();
+            // RMW under prefs lock — must not resurrect a cleared refresh_vault_key.
+            operator_prefs::update_prefs(|prefs| {
+                prefs.operator_chosen = true;
+                prefs.operator = operator;
+                prefs.custom_host = custom_host;
+                prefs.apply_endpoints(&ep);
+            });
             log::info!(
                 "operator endpoints applied: auth={} world={} zenoh={}",
                 ep.auth_url,
@@ -3552,9 +3578,8 @@ fn handle_ui_action(
             if let Ok(mut gate) = shared.auth.lock() {
                 gate.clear_session();
             }
-            let mut prefs = operator_prefs::load();
-            prefs.clear_session();
-            operator_prefs::save(&prefs);
+            let key = operator_prefs::clear_session_rmw();
+            operator_prefs::delete_refresh_vault_key(key, &crate::refresh_vault::OsRefreshVault);
             ui.state.home_logged_in_as = None;
             ui.state.home_create_open = false;
             ui.state.shell = OnboardingShell::Step1Operator;

@@ -68,7 +68,7 @@ flowchart TB
 | 経路 | 脅威 | 防御 |
 |:---|:---|:---|
 | Zenoh `host_control` | WAN peer が shutdown を送る | 既定購読しない（`ALCHEMY_HOST_CONTROL` opt-in・x001e） |
-| client `HostSupervisor` → host | ローカルのみ graceful stop；UI host の access JWT 失効 | TCP `127.0.0.1` + ワンタイムトークン（x0032）+ **AUTH_PUSH** で親が短命 access JWT を再供給（x009f；`refresh_token` は子に渡さない；IPC `OK`＝inbox 受理、適用は ParentBroker のみ；親は durable 子へ push しない） |
+| client `HostSupervisor` → host | ローカルのみ graceful stop；UI host の access JWT 失効 | TCP `127.0.0.1` + ワンタイムトークン（x0032）+ **AUTH_PUSH** で親が短命 access JWT を再供給（x009f；`refresh_token` は子に渡さない；IPC `OK`＝inbox 受理、適用は ParentBroker のみ；親は durable 子へ push しない）。親 remember-me refresh は OS vault（x00cf；prefs は key id のみ；不能時 session-only） |
 | client Exit → host | ホスト中に部屋を落とす | **終了前 Handover stub**（失敗→部屋終了）。異常終了は Job Object / PDEATHSIG 道連れ + world 死活で別ホスト昇格。Exit Client only（host 維持）は**廃止** |
 | `GET /metrics`（host/client/assets） | 公網・Tunnel 経由の運用スクレイプ | **専用 loopback bind**（`ALCHEMY_METRICS_ADDR` / `ASSETS_METRICS_ADDR`・x0049）。公開 API ポートに載せない（Tunnel→127.0.0.1 で peer が loopback に見える経路を避ける） |
 

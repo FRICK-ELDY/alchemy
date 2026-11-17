@@ -35,6 +35,7 @@ mod mvcc_mirror;
 mod operator_prefs;
 mod owned_prediction;
 mod place_read;
+mod refresh_vault;
 mod render_wgpu;
 mod room;
 mod scene;
@@ -79,31 +80,42 @@ fn main() -> Result<()> {
     let silent = auth::try_silent_session(&auth_url).context("silent auth")?;
     let auth_mode = if silent.is_some() { "silent" } else { "ui" };
 
+    // x00cf: strip legacy plaintext refresh from prefs (migrate into OS vault when possible).
+    let mut prefs = prefs;
+    let vault = refresh_vault::OsRefreshVault;
+    if operator_prefs::migrate_legacy_refresh(&mut prefs, &vault) {
+        operator_prefs::save(&prefs);
+    }
+
     let mut gate = AuthGate::default();
     if let Some(session) = silent {
         gate.apply_auth_session(session);
     } else if prefs.operator_chosen
         && prefs.session_still_valid(operator_prefs::now_unix_secs())
-        && prefs.refresh_token.is_some()
+        && prefs.has_remembered_refresh()
     {
-        // Restore remember-me session (≤7 days); failure falls through to UI Step2.
-        if let Some(rt) = prefs.refresh_token.clone() {
-            match auth::refresh(&auth_url, &rt) {
+        // Restore remember-me session (≤7 days) from OS vault; failure → UI Step2.
+        match operator_prefs::load_refresh_secret(&prefs, &vault) {
+            Some(rt) => match auth::refresh(&auth_url, &rt) {
                 Ok(session) => {
-                    log::info!("onboarding: restored session via refresh_token");
-                    let mut prefs = prefs.clone();
-                    prefs.refresh_token = session.refresh_token.clone().or(Some(rt));
-                    prefs.username = Some(session.user.username.clone());
-                    prefs.last_login_at = Some(operator_prefs::now_unix_secs());
-                    operator_prefs::save(&prefs);
+                    log::info!("onboarding: restored session via refresh vault");
+                    let username = session.user.username.clone();
+                    let rotated = session.refresh_token.clone().unwrap_or_else(|| rt.clone());
+                    // Same production path as UI remember-me (vault then locked prefs RMW).
+                    let _ =
+                        operator_prefs::persist_remember_me(&username, &rotated, &vault, |_| {});
                     gate.apply_auth_session(session);
                 }
                 Err(err) => {
                     log::info!("onboarding: refresh restore failed ({err:#}) — UI login");
-                    let mut prefs = prefs.clone();
-                    prefs.clear_session();
+                    prefs.clear_session_with_vault(&vault);
                     operator_prefs::save(&prefs);
                 }
+            },
+            None => {
+                log::info!("onboarding: remember-me key present but vault empty — scrub");
+                operator_prefs::scrub_missing_refresh_secret(&mut prefs, &vault);
+                operator_prefs::save(&prefs);
             }
         }
     }

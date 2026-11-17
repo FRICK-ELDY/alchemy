@@ -1187,9 +1187,10 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                             ui.rebuild();
                         }
                         UiAction::ServerOperatorChanged => {
-                            let mut prefs = crate::operator_prefs::load();
-                            prefs.server_operator = ui.state.server_operator;
-                            crate::operator_prefs::save(&prefs);
+                            let server_operator = ui.state.server_operator;
+                            crate::operator_prefs::update_prefs(|prefs| {
+                                prefs.server_operator = server_operator;
+                            });
                         }
                         UiAction::HierarchyCollapseToggle(row) => {
                             ui.apply_hierarchy_collapse_toggle(&shared, row);
