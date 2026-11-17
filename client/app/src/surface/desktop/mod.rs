@@ -520,13 +520,17 @@ impl App {
         }
     }
 
-    /// XR-requested leave / host shutdown (Desktop is the Zenoh owner).
+    /// XR-requested leave / rejoin / host shutdown (Desktop is the Zenoh owner · x00d5).
     fn poll_presentation_requests(&mut self) {
         hotswitch_flow::poll_presentation_requests(
             &mut self.ui,
             &self.shared,
             &mut self.zenoh,
             &mut self.auth_job,
+            session_flow::RoomBindDefer {
+                pending: &mut self.pending_room_bind,
+                painted: &mut self.room_bind_progress_painted,
+            },
         );
     }
 

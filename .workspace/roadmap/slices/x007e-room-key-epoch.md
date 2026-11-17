@@ -17,7 +17,7 @@
 | visibility **縮小**・owner kick（本 Slice で定義する経路）・定期ローテで epoch+1 と新鍵を発行 | 退室単独での即時全参加者失効（Token TTL 猶予は残る） |
 | AEAD AAD に epoch を含める（差し替えで旧暗号文は新鍵で開かない） | 参加者同士の鍵 forward 秘匿（共有鍵モデルは x0069 のまま） |
 | host は **現行 + 直前 1 世代**の鍵だけで open；それ以外は discard | 3 世代以上の受理；クライアント側マルチ鍵バッファの長期保持 |
-| client は Token 再取得で epoch 前進を検知 → **KeyStale**（再 Join / Leave） | KeyStale 中の透過的な無停止鍵切替（必ず再 Token） |
+| client は Token 再取得で epoch 前進を検知 → 当初 **KeyStale**（再 Join / Leave） | ~~透過的無停止鍵切替~~ → [x00d5](x00d5-keystale-seamless-rejoin.md) |
 | 保証表（world-server / client / peer-delivery / x0069 追記）に鍵寿命を明記 | Group ACL / 招待コード；WAN ACL のキー式縮小本体（別帯） |
 
 ---

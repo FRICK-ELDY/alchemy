@@ -321,6 +321,20 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
 
         hotswitch.tick(&shared.presentation, Instant::now());
         ui.pull_dash_logic(&shared);
+        // x00d5: KeyStale overlay — Desktop publishes via shared; XR reads atomic.
+        let _ = shared.poll_pending_room_aead_grace();
+        let stale = shared.key_stale();
+        if ui.state.worlds_key_stale != stale {
+            ui.state.worlds_key_stale = stale;
+            if stale {
+                ui.state.worlds_status = "Room updated — reconnect required".into();
+                ui.state.open = true;
+                ui.state.tab = crate::system_ui::DashTab::Home;
+                ui.state.shell = crate::system_ui::OnboardingShell::Dash;
+            }
+            ui.mark_dash_chrome_dirty();
+            ui.rebuild();
+        }
         let hier = ui.pull_hierarchy(&shared);
         let xray = ui.pull_epoch_xray(&shared, false);
         let (mirror_dirty, put_back) = ui.pull_inventory_mirror(&shared);
@@ -1149,15 +1163,40 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                             ui.mark_dash_logic_dirty();
                             ui.rebuild();
                         }
+                        UiAction::WorldsLeave => {
+                            // Desktop owns Zenoh Leave (stay signed in · x00d5).
+                            // Keep worlds_key_stale until Desktop clears shared.key_stale().
+                            shared.presentation.request_session_leave();
+                            ui.state.worlds_waiting_host = false;
+                            ui.state.worlds_host_disconnect = false;
+                            ui.state.worlds_in_room = false;
+                            ui.state.worlds_status = "Leaving… (Desktop owns Zenoh leave)".into();
+                            ui.state.in_session_peer = false;
+                            ui.state.inventory_live_peer = false;
+                            if ui.state.tab == crate::system_ui::DashTab::Room {
+                                ui.state.tab = crate::system_ui::DashTab::Home;
+                            }
+                            ui.mark_dash_chrome_dirty();
+                            ui.mark_dash_logic_dirty();
+                            ui.rebuild();
+                        }
+                        UiAction::WorldsRejoin => {
+                            // Desktop owns Leave+Join HTTP/Zenoh (x00d5 KeyStale fallback).
+                            // Do not clear worlds_key_stale here — Desktop completion +
+                            // shared.key_stale() sync owns the overlay (avoids flicker on fail).
+                            shared.presentation.request_rejoin();
+                            ui.state.worlds_status = "Rejoining… (Desktop owns HTTP/Zenoh)".into();
+                            ui.mark_dash_chrome_dirty();
+                            ui.mark_dash_form_dirty();
+                            ui.rebuild();
+                        }
                         UiAction::StartSession
                         | UiAction::JoinRoom
                         | UiAction::WorldsRefresh
                         | UiAction::WorldsJoinGuest
                         | UiAction::WorldsHostRoom
                         | UiAction::WorldsHostRescue
-                        | UiAction::WorldsTakeover
-                        | UiAction::WorldsLeave
-                        | UiAction::WorldsRejoin => {
+                        | UiAction::WorldsTakeover => {
                             ui.state.home_status =
                                 "Worlds / Start/Join HTTP is Desktop-only this Slice (use silent login or Desktop)".into();
                             ui.state.worlds_status = ui.state.home_status.clone();

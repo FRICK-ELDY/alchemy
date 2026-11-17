@@ -58,7 +58,7 @@ pub(super) struct RoomBindDefer<'a> {
 }
 
 impl RoomBindDefer<'_> {
-    fn clear(&mut self) {
+    pub(super) fn clear(&mut self) {
         *self.pending = None;
         *self.painted = false;
     }
@@ -1059,6 +1059,8 @@ pub(super) fn tick_worlds_session_ui(
     let tick = shared.world.lock().ok().and_then(|w| w.last_frame_tick);
     let now = std::time::Instant::now();
     let mut dirty = false;
+    // x00d5: pending grace → hard KeyStale even when no wire sample arrives.
+    let _ = shared.poll_pending_room_aead_grace();
     let stale = shared.key_stale();
     if ui.state.worlds_key_stale != stale {
         ui.state.worlds_key_stale = stale;

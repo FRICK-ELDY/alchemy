@@ -59,13 +59,30 @@ pub use alchemy_shared_sim::DEFAULT_BOX_HALF_EXTENT as BOX_HALF_EXTENT;
 pub const REMOTE_ROOT_HALF_EXTENT: f32 = 0.25;
 /// Guest Room Token probe cadence for `room_key_epoch` (x007e; matches host ≈15s sync).
 pub const ROOM_KEY_EPOCH_PROBE: Duration = Duration::from_secs(15);
+/// Pending AEAD grace before hard KeyStale (x00d5; ≈ host `DEFAULT_PREV_GRACE` / Token TTL).
+pub const PENDING_ROOM_AEAD_GRACE: Duration = Duration::from_secs(300);
 
-/// Decision for Token refresh vs live `(room_key, epoch)` (x007e).
+/// Shared Room AEAD key bytes (x0069 / x00d5).
+pub type RoomAeadKey = Arc<[u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]>;
+/// Dual-open snapshot: `(current_key, current_epoch, prev, bus_generation)` (x00d5).
+pub type RoomAeadOpenView = (RoomAeadKey, u64, Option<(RoomAeadKey, u64)>, u64);
+
+/// Stashed next `(room_key, epoch)` while live AEAD still opens residual old ciphertext (x00d5).
+#[derive(Clone, Debug)]
+pub struct PendingRoomAead {
+    pub key: RoomAeadKey,
+    pub epoch: u64,
+    pub deadline: Instant,
+}
+
+/// Decision for Token refresh vs live `(room_key, epoch)` (x007e / x00d5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RefreshAeadAction {
     /// Same epoch, not KeyStale — sync live bytes.
     Commit,
-    /// Token epoch advanced — keep live AEAD; UI must Rejoin.
+    /// Token epoch advanced by exactly 1 — stash pending; dual-open until Manifest commit (x00d5).
+    PreparePending,
+    /// Hard stop — UI must Rejoin (grace fail, already KeyStale, or epoch gap > 1).
     KeyStale,
     /// Token epoch below live — refuse (monotonic fail-closed).
     IgnoreBackward,
@@ -74,20 +91,71 @@ pub(crate) enum RefreshAeadAction {
     IgnoreWhileStale,
 }
 
-/// Pure refresh policy: any `token_epoch > live_epoch` is KeyStale (including `0 → 1`).
+/// Pure refresh policy (x00d5): `+1` → PreparePending; hard-stale or gap `>1` → KeyStale.
 pub(crate) fn refresh_aead_action(
     live_epoch: u64,
     token_epoch: u64,
     key_stale: bool,
 ) -> RefreshAeadAction {
     if token_epoch > live_epoch {
-        RefreshAeadAction::KeyStale
+        if key_stale || token_epoch > live_epoch.saturating_add(1) {
+            // Hard-stale, or skipped a generation (host current+prev only) — Rejoin.
+            RefreshAeadAction::KeyStale
+        } else {
+            RefreshAeadAction::PreparePending
+        }
     } else if token_epoch < live_epoch {
         RefreshAeadAction::IgnoreBackward
     } else if key_stale {
         RefreshAeadAction::IgnoreWhileStale
     } else {
         RefreshAeadAction::Commit
+    }
+}
+
+/// Under `room_key` → `pending` lock order: install pending into live only when bus is up
+/// and live key still present. Clears pending **after** copying the Arc (x00d5).
+pub(crate) fn commit_pending_into_live(
+    live_key: &mut Option<Arc<[u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]>>,
+    pending: &mut Option<PendingRoomAead>,
+    opened_epoch: u64,
+    bus_started: bool,
+) -> Option<(Arc<[u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]>, u64)> {
+    if !bus_started || live_key.is_none() {
+        return None;
+    }
+    let p = pending.as_ref()?;
+    if p.epoch != opened_epoch {
+        return None;
+    }
+    let key = Arc::clone(&p.key);
+    let epoch = p.epoch;
+    *live_key = Some(Arc::clone(&key));
+    *pending = None;
+    Some((key, epoch))
+}
+
+/// Under pending lock: if deadline passed, take pending and return its epoch (x00d5).
+pub(crate) fn take_pending_if_grace_expired(
+    pending: &mut Option<PendingRoomAead>,
+    now: Instant,
+) -> Option<u64> {
+    match pending.as_ref() {
+        Some(p) if now >= p.deadline => {
+            let epoch = p.epoch;
+            *pending = None;
+            Some(epoch)
+        }
+        _ => None,
+    }
+}
+
+/// Soft-TTL / Join live commit: drop pending unless it is **ahead** of `commit_epoch`
+/// (delayed same-epoch response must not wipe a newer seamless stash · x00d5 §8).
+pub(crate) fn clear_pending_unless_newer(pending: &mut Option<PendingRoomAead>, commit_epoch: u64) {
+    let keep_newer = pending.as_ref().is_some_and(|p| p.epoch > commit_epoch);
+    if !keep_newer {
+        *pending = None;
     }
 }
 
@@ -306,10 +374,13 @@ pub struct SharedState {
     pub room_key: Mutex<Option<Arc<[u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]>>>,
     /// Room key epoch from Token (x007e); paired with `room_key` for AEAD AAD.
     pub room_key_epoch: AtomicU64,
-    /// Token refresh saw a higher `room_key_epoch` — UI must Rejoin / Leave (x007e KeyStale).
-    /// Live AEAD stays on the pre-stale pair until [`Self::commit_room_aead`] (Join / Rejoin
-    /// always re-fetches Token; no pending key stash).
+    /// Hard KeyStale — UI must Rejoin / Leave (x007e / x00d5 grace fail).
+    /// Soft epoch advance uses [`Self::pending_room_aead`] instead (seamless path).
     pub key_stale: AtomicBool,
+    /// Next `(key, epoch)` while live still opens residual old ciphertext (x00d5).
+    pub pending_room_aead: Mutex<Option<PendingRoomAead>>,
+    /// Wire AEAD generation — bumped on pending commit / KeyStale / Leave (x00d5).
+    pub bus_generation: AtomicU64,
     /// Next guest Room Token probe for epoch detection (x007e; ≈ host 15s sync).
     pub room_key_epoch_probe_at: Mutex<Option<Instant>>,
     /// Rate-limit AEAD-fail → Token refresh nudges.
@@ -980,12 +1051,10 @@ impl SharedState {
         self.key_stale.store(stale, Ordering::SeqCst);
     }
 
-    /// Token **refresh** path: if epoch advanced, enter KeyStale without swapping live AEAD.
-    /// New key material from this response is discarded — Rejoin re-fetches and
-    /// [`Self::commit_room_aead`] installs it.
+    /// Token **refresh** path (x00d5): `live+1` stashes pending AEAD for dual-open;
+    /// hard KeyStale when already stale, grace later fails, or epoch gap `> 1`.
     ///
-    /// Includes `0 → 1` (fresh rooms start at epoch 0). Join/Rejoin use
-    /// [`Self::commit_room_aead`] for first install — this path never hot-swaps on advance.
+    /// Includes `0 → 1`. Join/Rejoin use [`Self::commit_room_aead`] for first install.
     pub fn note_room_aead_from_refresh(
         &self,
         room_key: [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
@@ -997,16 +1066,15 @@ impl SharedState {
                 self.commit_room_aead(room_key, epoch);
                 false
             }
+            RefreshAeadAction::PreparePending => {
+                self.stash_pending_room_aead(room_key, epoch);
+                self.schedule_room_key_epoch_probe(ROOM_KEY_EPOCH_PROBE);
+                false
+            }
             RefreshAeadAction::KeyStale => {
                 if !self.key_stale() {
-                    self.set_key_stale(true);
-                    // Drop in-flight remounts; pose bus keeps using old AEAD until Rejoin (x007e).
-                    self.bump_remount_generation();
-                    log::info!(
-                        "room_key_epoch advanced {prev} → {epoch} (KeyStale; live AEAD unchanged)"
-                    );
+                    self.enter_key_stale(prev, epoch);
                 }
-                // Discard new key material — Rejoin fetches a fresh Token; do not hot-swap.
                 let _ = room_key;
                 self.schedule_room_key_epoch_probe(ROOM_KEY_EPOCH_PROBE);
                 true
@@ -1019,7 +1087,6 @@ impl SharedState {
                 false
             }
             RefreshAeadAction::IgnoreWhileStale => {
-                // Same epoch while already KeyStale — keep overlay; do not commit/clear.
                 let _ = room_key;
                 self.schedule_room_key_epoch_probe(ROOM_KEY_EPOCH_PROBE);
                 true
@@ -1027,7 +1094,41 @@ impl SharedState {
         }
     }
 
-    /// Join / Rejoin: install live `(key, epoch)` and clear KeyStale.
+    /// Stash next key for seamless dual-open (x00d5). Live AEAD unchanged.
+    fn stash_pending_room_aead(
+        &self,
+        room_key: [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
+        epoch: u64,
+    ) {
+        let key = Arc::new(room_key);
+        let Ok(mut slot) = self.pending_room_aead.lock() else {
+            log::warn!("stash_pending_room_aead: mutex poisoned");
+            return;
+        };
+        let renew = slot.as_ref().map(|p| p.epoch != epoch).unwrap_or(true);
+        if renew {
+            let deadline = Instant::now() + PENDING_ROOM_AEAD_GRACE;
+            log::info!(
+                "room_key_epoch advanced {} → {epoch} (pending AEAD; dual-open until Manifest)",
+                self.room_key_epoch()
+            );
+            *slot = Some(PendingRoomAead {
+                key,
+                epoch,
+                deadline,
+            });
+        } else if let Some(pending) = slot.as_mut() {
+            // Same pending epoch — refresh key Arc + extend grace.
+            pending.key = key;
+            pending.deadline = Instant::now() + PENDING_ROOM_AEAD_GRACE;
+        }
+    }
+
+    /// Join / Rejoin / first install / same-epoch soft-TTL sync: set live `(key, epoch)`.
+    ///
+    /// Clears pending only when it is not ahead of `epoch` (a delayed same-epoch `Commit`
+    /// must not wipe a newer seamless stash · x00d5).
+    /// `bus_generation` bumps only when the live epoch changes (not same-epoch soft-TTL).
     pub fn commit_room_aead(
         &self,
         room_key: [u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN],
@@ -1037,11 +1138,100 @@ impl SharedState {
             log::warn!("commit_room_aead: room_key Mutex poisoned; refusing epoch-only update");
             return;
         };
+        let prev_epoch = self.room_key_epoch();
         *key_guard = Some(Arc::new(room_key));
         self.set_room_key_epoch(epoch);
+        if let Ok(mut pending) = self.pending_room_aead.lock() {
+            clear_pending_unless_newer(&mut pending, epoch);
+        }
         drop(key_guard);
         self.set_key_stale(false);
+        if prev_epoch != epoch {
+            self.bump_bus_generation();
+        }
         self.schedule_room_key_epoch_probe(ROOM_KEY_EPOCH_PROBE);
+    }
+
+    /// Manifest Accept opened with pending epoch → live←pending under
+    /// `room_key` → `pending` lock order (matches [`Self::leave_room_local`]; x00d5).
+    ///
+    /// Pending is cleared only after live is updated. Refuse if Leave already cleared
+    /// live key or the room bus is down.
+    pub fn try_commit_pending_room_aead(&self, opened_epoch: u64) -> bool {
+        let bus_started = self.room_bus_started.load(Ordering::SeqCst);
+        let Ok(mut key_guard) = self.room_key.lock() else {
+            log::warn!("try_commit_pending_room_aead: room_key poisoned; pending kept");
+            return false;
+        };
+        let Ok(mut pending_guard) = self.pending_room_aead.lock() else {
+            return false;
+        };
+        let Some((_key, epoch)) = commit_pending_into_live(
+            &mut key_guard,
+            &mut pending_guard,
+            opened_epoch,
+            bus_started,
+        ) else {
+            return false;
+        };
+        self.set_room_key_epoch(epoch);
+        drop(pending_guard);
+        drop(key_guard);
+        self.set_key_stale(false);
+        self.bump_bus_generation();
+        self.schedule_room_key_epoch_probe(ROOM_KEY_EPOCH_PROBE);
+        log::info!("pending room AEAD committed epoch={epoch} (seamless; bus_generation bumped)");
+        true
+    }
+
+    /// Grace deadline exceeded or hard fail → KeyStale overlay (x00d5).
+    pub fn enter_key_stale(&self, prev_epoch: u64, token_epoch: u64) {
+        if let Ok(mut pending) = self.pending_room_aead.lock() {
+            *pending = None;
+        }
+        self.set_key_stale(true);
+        self.bump_remount_generation();
+        self.bump_bus_generation();
+        log::info!("room_key_epoch {prev_epoch} → {token_epoch} (KeyStale; Rejoin required)");
+    }
+
+    /// Poll pending grace; returns true when hard KeyStale was entered this call.
+    ///
+    /// Deadline check and pending clear run under the **same** pending lock so a concurrent
+    /// [`Self::try_commit_pending_room_aead`] cannot commit then be overwritten by KeyStale.
+    pub fn poll_pending_room_aead_grace(&self) -> bool {
+        if self.key_stale() {
+            return false;
+        }
+        let Ok(mut slot) = self.pending_room_aead.lock() else {
+            return false;
+        };
+        let prev = self.room_key_epoch();
+        let Some(epoch) = take_pending_if_grace_expired(&mut slot, Instant::now()) else {
+            return false;
+        };
+        drop(slot);
+        self.set_key_stale(true);
+        self.bump_remount_generation();
+        self.bump_bus_generation();
+        log::info!("room_key_epoch {prev} → {epoch} (KeyStale; pending grace expired)");
+        true
+    }
+
+    pub fn bump_bus_generation(&self) {
+        self.bus_generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn bus_generation(&self) -> u64 {
+        self.bus_generation.load(Ordering::SeqCst)
+    }
+
+    /// Pending epoch while seamless switch is in flight (`None` if idle).
+    pub fn pending_room_aead_epoch(&self) -> Option<u64> {
+        self.pending_room_aead
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|p| p.epoch))
     }
 
     /// Snapshot live `(room_key, epoch)` under one `room_key` lock (x007e wire boundary).
@@ -1055,6 +1245,46 @@ impl SharedState {
         // Writers of the pair hold this mutex when updating epoch (`commit_room_aead`).
         let epoch = self.room_key_epoch.load(Ordering::SeqCst);
         Some((key, epoch))
+    }
+
+    /// Dual-open view: pending as current (if any), live as prev (x00d5).
+    /// Returns `(current_key, current_epoch, prev, bus_generation)`.
+    pub fn room_aead_open_view(&self) -> Option<RoomAeadOpenView> {
+        let gen = self.bus_generation();
+        let live = self.live_room_aead()?;
+        let Ok(pending_guard) = self.pending_room_aead.lock() else {
+            return Some((live.0, live.1, None, gen));
+        };
+        if let Some(pending) = pending_guard.as_ref() {
+            let current_key = Arc::clone(&pending.key);
+            let current_epoch = pending.epoch;
+            let prev = Some(live);
+            Some((current_key, current_epoch, prev, gen))
+        } else {
+            Some((live.0, live.1, None, gen))
+        }
+    }
+
+    /// Seal key: pending if set, else live (x00d5). Returns `(key, epoch, bus_generation)`.
+    pub fn room_aead_seal_view(
+        &self,
+    ) -> Option<(
+        Arc<[u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]>,
+        u64,
+        u64,
+    )> {
+        let gen = self.bus_generation();
+        let Ok(pending_guard) = self.pending_room_aead.lock() else {
+            let (key, epoch) = self.live_room_aead()?;
+            return Some((key, epoch, gen));
+        };
+        if let Some(pending) = pending_guard.as_ref() {
+            Some((Arc::clone(&pending.key), pending.epoch, gen))
+        } else {
+            drop(pending_guard);
+            let (key, epoch) = self.live_room_aead()?;
+            Some((key, epoch, gen))
+        }
     }
 
     /// Schedule the next guest epoch probe (Token re-fetch while joined).
@@ -1103,10 +1333,27 @@ impl SharedState {
         if let Ok(mut cap) = self.wire_cap.lock() {
             *cap = None;
         }
-        if let Ok(mut key) = self.room_key.lock() {
-            *key = None;
-            // Pair with key clear under the same lock (`live_room_aead` / commit).
-            self.set_room_key_epoch(0);
+        // Lock order: room_key → pending (matches try_commit_pending_room_aead · x00d5).
+        // Prefer nested clear; if room_key is poisoned still drop pending so stash cannot
+        // outlive Leave.
+        match self.room_key.lock() {
+            Ok(mut key) => {
+                *key = None;
+                // Pair with key clear under the same lock (`live_room_aead` / commit).
+                self.set_room_key_epoch(0);
+                if let Ok(mut pending) = self.pending_room_aead.lock() {
+                    *pending = None;
+                }
+            }
+            Err(_) => {
+                log::error!(
+                    "leave_room_local: room_key Mutex poisoned; clearing pending without key lock"
+                );
+                self.set_room_key_epoch(0);
+                if let Ok(mut pending) = self.pending_room_aead.lock() {
+                    *pending = None;
+                }
+            }
         }
         if let Ok(mut probe) = self.room_key_epoch_probe_at.lock() {
             *probe = None;
@@ -1115,6 +1362,7 @@ impl SharedState {
             *nudge = None;
         }
         self.set_key_stale(false);
+        self.bump_bus_generation();
         // Callers must `session.close()` (see `leave_room` / `close_zenoh`); Drop alone is not
         // enough if any strong clone remains. This flag only gates re-attach on the next open/bind.
         self.room_bus_started
@@ -2610,14 +2858,36 @@ mod eye_display_tests {
 
 #[cfg(test)]
 mod refresh_aead_tests {
-    use super::{refresh_aead_action, RefreshAeadAction};
+    use super::{
+        clear_pending_unless_newer, commit_pending_into_live, refresh_aead_action,
+        take_pending_if_grace_expired, PendingRoomAead, RefreshAeadAction,
+    };
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     #[test]
-    fn epoch_zero_to_one_is_key_stale() {
+    fn epoch_zero_to_one_prepares_pending() {
         assert_eq!(
             refresh_aead_action(0, 1, false),
+            RefreshAeadAction::PreparePending
+        );
+    }
+
+    #[test]
+    fn epoch_gap_greater_than_one_is_key_stale() {
+        assert_eq!(
+            refresh_aead_action(0, 2, false),
             RefreshAeadAction::KeyStale
         );
+        assert_eq!(
+            refresh_aead_action(3, 5, false),
+            RefreshAeadAction::KeyStale
+        );
+    }
+
+    #[test]
+    fn epoch_advance_while_hard_stale_stays_key_stale() {
+        assert_eq!(refresh_aead_action(0, 1, true), RefreshAeadAction::KeyStale);
     }
 
     #[test]
@@ -2639,5 +2909,122 @@ mod refresh_aead_tests {
             refresh_aead_action(5, 4, false),
             RefreshAeadAction::IgnoreBackward
         );
+    }
+
+    #[test]
+    fn commit_pending_requires_bus_and_live_key() {
+        let key = Arc::new([9u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]);
+        let mut pending = Some(PendingRoomAead {
+            key: Arc::clone(&key),
+            epoch: 4,
+            deadline: Instant::now() + Duration::from_secs(60),
+        });
+        let mut live = None;
+        assert!(
+            commit_pending_into_live(&mut live, &mut pending, 4, true).is_none(),
+            "Refuse write-back after Leave cleared live"
+        );
+        assert!(pending.is_some(), "pending must survive failed commit");
+
+        live = Some(Arc::new([1u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]));
+        assert!(
+            commit_pending_into_live(&mut live, &mut pending, 4, false).is_none(),
+            "Refuse when room bus is down"
+        );
+        assert!(pending.is_some());
+    }
+
+    #[test]
+    fn commit_pending_clears_only_after_live_update() {
+        let new_key = Arc::new([9u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]);
+        let mut live = Some(Arc::new([1u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]));
+        let mut pending = Some(PendingRoomAead {
+            key: Arc::clone(&new_key),
+            epoch: 4,
+            deadline: Instant::now() + Duration::from_secs(60),
+        });
+        let (installed, epoch) =
+            commit_pending_into_live(&mut live, &mut pending, 4, true).expect("commit");
+        assert_eq!(epoch, 4);
+        assert_eq!(installed.as_ref(), new_key.as_ref());
+        assert_eq!(live.as_ref().map(|k| k.as_ref()), Some(new_key.as_ref()));
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn commit_pending_rejects_epoch_mismatch_without_clearing() {
+        let mut live = Some(Arc::new([1u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]));
+        let mut pending = Some(PendingRoomAead {
+            key: Arc::new([9u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]),
+            epoch: 4,
+            deadline: Instant::now() + Duration::from_secs(60),
+        });
+        assert!(commit_pending_into_live(&mut live, &mut pending, 3, true).is_none());
+        assert!(pending.is_some());
+    }
+
+    #[test]
+    fn same_epoch_commit_keeps_newer_pending() {
+        let mut pending = Some(PendingRoomAead {
+            key: Arc::new([9u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]),
+            epoch: 5,
+            deadline: Instant::now() + Duration::from_secs(60),
+        });
+        clear_pending_unless_newer(&mut pending, 4);
+        assert_eq!(
+            pending.as_ref().map(|p| p.epoch),
+            Some(5),
+            "same-epoch Commit must not wipe pending ahead of live (x00d5 §8)"
+        );
+
+        clear_pending_unless_newer(&mut pending, 5);
+        assert!(
+            pending.is_none(),
+            "equal epoch may clear (stash already applied)"
+        );
+
+        pending = Some(PendingRoomAead {
+            key: Arc::new([8u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]),
+            epoch: 3,
+            deadline: Instant::now() + Duration::from_secs(60),
+        });
+        clear_pending_unless_newer(&mut pending, 4);
+        assert!(
+            pending.is_none(),
+            "stale pending behind commit epoch is cleared"
+        );
+    }
+
+    #[test]
+    fn grace_expired_takes_pending_once() {
+        let mut pending = Some(PendingRoomAead {
+            key: Arc::new([9u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]),
+            epoch: 7,
+            deadline: Instant::now() - Duration::from_secs(1),
+        });
+        assert_eq!(
+            take_pending_if_grace_expired(&mut pending, Instant::now()),
+            Some(7)
+        );
+        assert!(pending.is_none());
+        assert_eq!(
+            take_pending_if_grace_expired(&mut pending, Instant::now()),
+            None,
+            "second poll must not KeyStale after commit already cleared pending"
+        );
+    }
+
+    #[test]
+    fn grace_not_expired_keeps_pending() {
+        let mut pending = Some(PendingRoomAead {
+            key: Arc::new([9u8; alchemy_protocol::wire_aead::ROOM_KEY_LEN]),
+            epoch: 7,
+            deadline: Instant::now() + Duration::from_secs(60),
+        });
+        assert_eq!(
+            take_pending_if_grace_expired(&mut pending, Instant::now()),
+            None
+        );
+        assert!(pending.is_some());
     }
 }

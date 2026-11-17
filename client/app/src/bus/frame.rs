@@ -345,7 +345,7 @@ fn fetch_snapshot_interest(
                     Ok(sample) => {
                         let bytes: ZBytes = sample.payload().clone();
                         let payload = match open_zenoh_payload(shared, AeadKind::Snapshot, &bytes) {
-                            Ok(pt) => pt,
+                            Ok((pt, _)) => pt,
                             Err(err) => {
                                 dropped_aead += 1;
                                 log::warn!("drop snapshot: AEAD: {err}");
@@ -856,7 +856,7 @@ fn decode_verified_lod_frame(
     gates: &mut FrameGateCounters,
 ) -> Option<RenderFrame> {
     let payload = match open_zenoh_payload(shared, AeadKind::Frame, bytes) {
-        Ok(pt) => pt,
+        Ok((pt, _)) => pt,
         Err(err) => {
             gates.dropped_aead += 1;
             log::warn!("drop RenderFrame lod: AEAD: {err}");
@@ -971,7 +971,7 @@ fn handle_frame_sample(
         enter_snapshot_pending,
     } = opts;
     let payload = match open_zenoh_payload(shared, AeadKind::Frame, bytes) {
-        Ok(pt) => pt,
+        Ok((pt, _)) => pt,
         Err(err) => {
             gates.dropped_aead += 1;
             log::warn!("drop RenderFrame: AEAD: {err}");
