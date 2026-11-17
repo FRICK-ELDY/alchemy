@@ -115,6 +115,7 @@ jobs:
             client/host-server/src/main.rs
             client/trust/src/lib.rs
             client/zenoh-connect/src/lib.rs
+            client/vcs-store/src/lib.rs
           )
           for f in "${files[@]}"; do
             grep -q 'forbid(unsafe_code)' "$f" || { echo "missing forbid in $f"; exit 1; }

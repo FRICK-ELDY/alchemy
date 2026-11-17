@@ -2,7 +2,7 @@
 
 > **ID:** `x00cc` · **slug:** `vcs-push` · **status:** `done` · **area:** `[assets, protocol, docs]` · **depends_on:** `[x00cb, x00ca, x00c9, x00b4]`  
 > **優先度:** [assets-vcs-draft.md](../../0_doc/architecture/assets-vcs-draft.md) §18.5  
-> **後続:** client `vcs-store`（§18.6）；fork / PR（§18.8–9）
+> **後続:** [x00cd](x00cd-vcs-http-store.md) HTTP + vcs-store（§18.6）；fork / PR（§18.8–9）
 
 目標: Elixir の `negotiate` / `push` でオーナーが新 Tree/Commit をサーバに受理できるようにする。`vcs_refs.protected` とブランチ保護切替を入れ、1 TX で objects / repo_commits / repo_blobs / origins / Authorship / ref を確定する。
 

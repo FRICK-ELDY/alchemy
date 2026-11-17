@@ -19,6 +19,9 @@ defmodule AssetsWeb.Router do
     post "/drive/put_back", DriveController, :put_back
     # x00b5: Grant-backed SpawnTicket for world scene/overlay append.
     post "/spawn_tickets", SpawnTicketController, :create
+    # x00cd: Spatial VCS negotiate / push (owner JWT; blobs via POST /blobs).
+    post "/vcs/repos/:repo_id/negotiate", VcsController, :negotiate
+    post "/vcs/repos/:repo_id/push", VcsController, :push
   end
 
   scope "/", AssetsWeb do

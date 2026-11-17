@@ -1,0 +1,21 @@
+[package]
+name = "alchemy-vcs-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local Spatial VCS object store + negotiate/push client (x00cd)"
+
+[lints]
+workspace = true
+
+[lib]
+name = "alchemy_vcs_store"
+path = "src/lib.rs"
+
+[dependencies]
+alchemy-protocol = { workspace = true }
+base64 = "0.22"
+blake3 = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = { workspace = true }
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
