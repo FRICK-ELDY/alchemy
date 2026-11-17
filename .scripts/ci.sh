@@ -237,8 +237,12 @@ run_assets_docker() {
     return
   fi
   step "docker compose build assets" docker compose -f "$compose" build assets
+  # x00d1 / P2-6: isolate CI deps/_build from the named volumes used by a local
+  # `docker compose up` assets container (shared volumes caused credo compile flakes).
   # x001e: force local CAS so developer assets-server/.env (R2) cannot affect mix test
   step "assets mix checks (Docker)" docker compose -f "$compose" run --rm --entrypoint "" \
+    -v alchemy-ci-assets-deps:/app/deps \
+    -v alchemy-ci-assets-build:/app/_build \
     -e MIX_ENV=test \
     -e ASSETS_CAS_BACKEND=local \
     assets sh -c 'mix deps.get && mix hex.audit && mix format --check-formatted && mix compile --warnings-as-errors && mix credo --strict && mix test'

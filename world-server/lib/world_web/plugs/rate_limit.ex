@@ -3,6 +3,8 @@ defmodule WorldWeb.Plugs.RateLimit do
   Applies per-endpoint rate limits to world HTTP routes.
 
   - x0071 `:user_auth` — `room_create` / `room_token` / `room_visibility`（IP + user）
+  - x00d2 catalog — `room_catalog`（`GET /rooms` · `GET /rooms/:id`・IP + user）
+  - x00d2 epoch probe — `room_key_epoch`（IP + Bearer `room_id|jti`）
   - x0084 host-token scope — `host_seal` / `host_scene` / `place_read`
     （IP + Bearer claims の `room_id|jti`。path の room_id は使わない）
   """
@@ -57,6 +59,17 @@ defmodule WorldWeb.Plugs.RateLimit do
   end
 
   defp action_for(%{method: "POST", path_info: ["api", "v1", "rooms"]}), do: :room_create
+
+  defp action_for(%{method: "GET", path_info: ["api", "v1", "rooms"]}), do: :room_catalog
+
+  defp action_for(%{method: "GET", path_info: ["api", "v1", "rooms", _room_id]}),
+    do: :room_catalog
+
+  defp action_for(%{
+         method: "GET",
+         path_info: ["api", "v1", "rooms", _room_id, "room_key_epoch"]
+       }),
+       do: :room_key_epoch
 
   defp action_for(%{method: "POST", path_info: ["api", "v1", "rooms", _room_id, "tokens"]}),
     do: :room_token
@@ -137,7 +150,7 @@ defmodule WorldWeb.Plugs.RateLimit do
   defp action_for(_conn), do: nil
 
   defp rate_limit_keys(conn, action)
-       when action in [:room_create, :room_token, :room_visibility] do
+       when action in [:room_create, :room_token, :room_visibility, :room_catalog] do
     ip = WorldWeb.ClientIp.from_conn(conn)
 
     case conn.assigns[:auth_sub] do
@@ -150,7 +163,7 @@ defmodule WorldWeb.Plugs.RateLimit do
   end
 
   defp rate_limit_keys(conn, action)
-       when action in [:host_seal, :host_scene, :place_read] do
+       when action in [:host_seal, :host_scene, :place_read, :room_key_epoch] do
     ip = WorldWeb.ClientIp.from_conn(conn)
 
     # jti 軸は Bearer claims 由来（path room_id を回してもカウンタを分割できない）。
@@ -190,6 +203,10 @@ defmodule WorldWeb.Plugs.RateLimit do
   defp bucket(:room_token, :user), do: :room_token_user
   defp bucket(:room_visibility, :ip), do: :room_visibility_ip
   defp bucket(:room_visibility, :user), do: :room_visibility_user
+  defp bucket(:room_catalog, :ip), do: :room_catalog_ip
+  defp bucket(:room_catalog, :user), do: :room_catalog_user
+  defp bucket(:room_key_epoch, :ip), do: :room_key_epoch_ip
+  defp bucket(:room_key_epoch, :jti), do: :room_key_epoch_jti
   defp bucket(:host_seal, :ip), do: :host_seal_ip
   defp bucket(:host_seal, :jti), do: :host_seal_jti
   defp bucket(:host_scene, :ip), do: :host_scene_ip

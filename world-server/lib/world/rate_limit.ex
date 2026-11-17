@@ -10,6 +10,11 @@ defmodule World.RateLimit do
     room_token_user: {:room_token, :user},
     room_visibility_ip: {:room_visibility, :ip},
     room_visibility_user: {:room_visibility, :user},
+    # x00d2: catalog + epoch probe
+    room_catalog_ip: {:room_catalog, :ip},
+    room_catalog_user: {:room_catalog, :user},
+    room_key_epoch_ip: {:room_key_epoch, :ip},
+    room_key_epoch_jti: {:room_key_epoch, :jti},
     # x0084: host Room Token / PlaceRead scope
     host_seal_ip: {:host_seal, :ip},
     host_seal_jti: {:host_seal, :jti},

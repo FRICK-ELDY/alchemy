@@ -1,8 +1,8 @@
-//! Guest Room Token HTTP client (x0021 / x003e / x004e / x0066 / x0069).
+//! Guest Room Token HTTP client (x0021 / x003e / x004e / x0066 / x0069 / x00d2).
 //!
 //! Guarantees: `POST …/tokens` includes `session_pub`; returns `wire_cap` + `room_key` +
 //! `room_key_epoch` (x007e) + `allocation_token`; optional `csr_pem` → `mtls` when world CA
-//! is configured.
+//! is configured. `GET …/room_key_epoch` (Room Token Bearer, no PoP) for lightweight probes.
 //! Non-guarantees: debug `ALCHEMY_ROOM_TOKEN` bypass cnf alignment.
 
 use std::time::Duration;
@@ -23,6 +23,11 @@ struct MtlsResponse {
     /// Soft TTL / NotAfter alignment (x0068); drives PEM soft TTL + reopen scheduling.
     #[serde(default)]
     expires_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EpochResponse {
+    room_key_epoch: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +92,22 @@ fn token_agent() -> ureq::Agent {
         .timeout_connect(TOKEN_HTTP_TIMEOUT)
         .timeout_read(TOKEN_HTTP_TIMEOUT)
         .build()
+}
+
+/// Lightweight `room_key_epoch` probe (x00d2). Bearer must be a Room Token for `room_id`.
+pub fn fetch_room_key_epoch(world_url: &str, room_id: &str, room_token: &str) -> Result<u64> {
+    let base = world_url.trim_end_matches('/');
+    let url = format!("{base}/api/v1/rooms/{room_id}/room_key_epoch");
+    let authz = format!("Bearer {room_token}");
+    let resp: EpochResponse = match token_agent().get(&url).set("authorization", &authz).call() {
+        Ok(resp) => resp.into_json().context("parse room_key_epoch response")?,
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            anyhow::bail!("room_key_epoch probe failed status={code} body={body}")
+        }
+        Err(err) => return Err(err).context("room_key_epoch probe request"),
+    };
+    Ok(resp.room_key_epoch)
 }
 
 /// Issue a Room Token bound to `session_pub_b64` (`cnf.spk`, x003e).

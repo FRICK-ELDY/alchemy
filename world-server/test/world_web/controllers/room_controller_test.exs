@@ -49,6 +49,65 @@ defmodule WorldWeb.RoomControllerTest do
     assert %{"error" => "missing_auth_token"} = json_response(conn, 401)
   end
 
+  test "room_key_epoch rejects auth JWT alone (x00d2)", %{conn: conn, signer: signer} do
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+    assert %{"room_id" => "epoch-auth-jwt"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "epoch-auth-jwt", visibility: "public"})
+             |> json_response(201)
+
+    # Auth JWT is not a Room Token (`aud` / claims) — fail closed as invalid_room_token.
+    denied =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> get("/api/v1/rooms/epoch-auth-jwt/room_key_epoch")
+
+    assert %{"error" => "invalid_room_token"} = json_response(denied, 401)
+  end
+
+  test "room_key_epoch rejects room_id mismatch (x00d2)", %{conn: conn, signer: signer} do
+    owner = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+    assert %{"room_id" => "epoch-match-a"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "epoch-match-a", visibility: "public"})
+             |> json_response(201)
+
+    assert %{"room_id" => "epoch-match-b"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "epoch-match-b", visibility: "public"})
+             |> json_response(201)
+
+    %{"token" => token_a, "room_key_epoch" => epoch} =
+      build_conn()
+      |> TestAuthHelpers.put_auth(signer, owner)
+      |> post("/api/v1/rooms/epoch-match-a/tokens", token_params(%{role: "guest"}))
+      |> json_response(200)
+
+    ok =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{token_a}")
+      |> get("/api/v1/rooms/epoch-match-a/room_key_epoch")
+
+    assert %{"room_id" => "epoch-match-a", "room_key_epoch" => ^epoch} = json_response(ok, 200)
+
+    mismatch =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{token_a}")
+      |> get("/api/v1/rooms/epoch-match-b/room_key_epoch")
+
+    assert %{"error" => "room_id_mismatch"} = json_response(mismatch, 403)
+  end
+
+  test "room_key_epoch rejects missing bearer (x00d2)", %{conn: conn} do
+    denied = get(conn, "/api/v1/rooms/no-bearer/room_key_epoch")
+    assert %{"error" => "missing_room_token"} = json_response(denied, 401)
+  end
+
   defp activate_host!(signer, sub, room_id) do
     assert %{"role" => "host", "state" => "active"} =
              build_conn()

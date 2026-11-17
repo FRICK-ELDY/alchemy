@@ -48,4 +48,4 @@ DNS / Let's Encrypt（追加）: [`manual/relay-server-dns.md`](../manual/relay-
 
 ## トークン検証と mTLS 発行
 
-zenohd は Token を見ない。**推奨（x0066）**: world が Room Token 発行時に CSR を受け、同一 client CA で短命 cert を返す。**互換（x004e）**: Relay Agent が Allocation Token（`aud=alchemy-relay`）を JWKS で検証してから短命 mTLS 証明書を渡す。Room Token は従来どおり host-server。アプリ層の境界は [trust-boundary.md](trust-boundary.md)。
+zenohd は Token を見ない。**推奨（x0066）**: world が Room Token 発行時に CSR を受け、同一 client CA で短命 cert を返す。**互換（x004e / x00d3）**: Relay Agent が Allocation Token（`aud=alchemy-relay`）を world JWKS（**ureq** GET）で検証してから短命 mTLS 証明書を渡す。Room Token は従来どおり host-server。アプリ層の境界は [trust-boundary.md](trust-boundary.md)。

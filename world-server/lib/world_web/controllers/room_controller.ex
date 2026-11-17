@@ -44,6 +44,48 @@ defmodule WorldWeb.RoomController do
     end
   end
 
+  @doc """
+  x00d2: return only `room_key_epoch` for an existing room.
+
+  Authorization is any valid Room Token for `room_id` (guest or host). PoP is
+  **not** required — this is a read-only probe so clients can skip Token reissue
+  when the epoch is unchanged.
+  """
+  def show_room_key_epoch(conn, %{"room_id" => room_id}) do
+    with {:ok, bearer} <- fetch_bearer(conn),
+         {:ok, claims} <- Token.verify(bearer),
+         :ok <- require_room_token(claims, room_id),
+         {:ok, room} <- Rooms.get(room_id) do
+      json(conn, %{room_id: room_id, room_key_epoch: room.room_key_epoch})
+    else
+      {:error, :missing_bearer} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "missing_room_token"})
+
+      {:error, :room_mismatch} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "room_id_mismatch"})
+
+      {:error, :not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "room_not_found"})
+
+      {:error, :invalid_room_id} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid_room_id"})
+
+      {:error, :storage_error} ->
+        storage_unavailable(conn)
+
+      {:error, reason} ->
+        Logger.warning("invalid Room Token (room_key_epoch path): #{inspect(reason)}")
+
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "invalid_room_token"})
+    end
+  end
+
   # x0080: single-room session summary (no secrets) for Waiting / nomination polls.
   def show(conn, %{"room_id" => room_id} = params) do
     case resolve_sub(conn, params) do

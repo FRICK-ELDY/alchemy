@@ -6,13 +6,17 @@
 //! `load_textured_rigged_from_glb` keeps a node hierarchy for runtime-replaced locals;
 //! [`placeholder_error_mesh`] is visually distinct from the Coin fixture (auth asset failure).
 //! [`empty_shell_mesh`] is the MainHub / post-Leave display (no world draw; x007d).
-//! Decode respects [`crate::asset_decode_budget::AssetDecodeBudget`] (x0085) — over budget → `Err`.
+//! Decode respects [`crate::asset_decode_budget::AssetDecodeBudget`] (x0085 / x00d1) — over budget → `Err`.
 //! Auth remount (`load_mesh_from_glb`) imports **buffers only** (no image decode).
-//! Textured paths convert each embedded image to RGBA **once** and share via [`std::sync::Arc`].
-//! Non-guarantees: PBR maps, skins, morphs, external URI textures, Coin textured draw;
-//! peak RAM inside a single `image` crate decode of one embedded texture.
+//! Textured paths: **header dimensions → pixel budget → decode**; decoded size must match
+//! the probed header (mismatch → `Err`); then RGBA **once** via [`std::sync::Arc`].
+//! Dimension probe supports embedded **PNG / JPEG** only (other encodings fail before decode).
+//! Non-guarantees: PBR maps, skins, morphs, external URI textures, WebP/GIF/etc. textures,
+//! Coin textured draw; peak RAM inside a single `image` crate decode of one embedded texture.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -219,7 +223,7 @@ fn import_glb_buffers_only(
     Ok((gltf.document, buffers))
 }
 
-/// Buffers + images; each image is decoded once, charged, converted to RGBA once, then shared.
+/// Buffers + images; dimensions are budgeted **before** full decode (x00d1 / P2-3).
 fn import_glb_with_images(
     bytes: &[u8],
     budget: &mut AssetDecodeBudget,
@@ -227,9 +231,15 @@ fn import_glb_with_images(
     let (doc, buffers) = import_glb_buffers_only(bytes, budget)?;
     let mut images = Vec::with_capacity(doc.images().count());
     for image in doc.images() {
-        let data = gltf::image::Data::from_source(image.source(), None, &buffers)
+        let source = image.source();
+        let encoded = embedded_image_bytes(&source, &buffers)
+            .context("embedded image bytes for dimension probe")?;
+        let (decl_w, decl_h) = probe_image_dimensions(encoded.as_ref())
+            .context("image header dimensions (before decode)")?;
+        budget.add_image_pixels(decl_w, decl_h)?;
+        let data = gltf::image::Data::from_source(source, None, &buffers)
             .map_err(|e| anyhow!("gltf image decode: {e}"))?;
-        budget.add_image_pixels(data.width, data.height)?;
+        ensure_decoded_matches_header(decl_w, decl_h, &data)?;
         // Source decode bytes always (transient). RGBA retain only if conversion keeps it.
         budget.add_expanded_bytes(data.pixels.len())?;
         let rgba = image_to_rgba8(&data).map(Arc::new);
@@ -239,6 +249,112 @@ fn import_glb_with_images(
         images.push(rgba);
     }
     Ok((doc, buffers, images))
+}
+
+/// BufferView / data-URI bytes only. External filesystem URIs stay non-guaranteed.
+fn embedded_image_bytes<'a>(
+    source: &gltf::image::Source<'a>,
+    buffers: &'a [gltf::buffer::Data],
+) -> Result<Cow<'a, [u8]>> {
+    match source {
+        gltf::image::Source::View { view, .. } => {
+            let parent = buffers
+                .get(view.buffer().index())
+                .ok_or_else(|| anyhow!("image bufferView buffer index out of range"))?;
+            let begin = view.offset();
+            let end = begin
+                .checked_add(view.length())
+                .ok_or_else(|| anyhow!("image bufferView range overflow"))?;
+            let slice = parent
+                .0
+                .get(begin..end)
+                .ok_or_else(|| anyhow!("image bufferView out of buffer bounds"))?;
+            Ok(Cow::Borrowed(slice))
+        }
+        gltf::image::Source::Uri { uri, .. } => {
+            if !uri.starts_with("data:") {
+                bail!("external image URI is not supported");
+            }
+            let payload = uri
+                .split_once(',')
+                .map(|(_, b)| b)
+                .ok_or_else(|| anyhow!("malformed data: image URI"))?;
+            // glTF data: URIs are base64 (gltf import path).
+            use base64::Engine as _;
+            let raw = base64::engine::general_purpose::STANDARD
+                .decode(payload)
+                .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(payload))
+                .context("data: image URI base64")?;
+            Ok(Cow::Owned(raw))
+        }
+    }
+}
+
+/// Fail closed when full decode disagrees with the pre-decode header probe (x00d1).
+fn ensure_decoded_matches_header(decl_w: u32, decl_h: u32, data: &gltf::image::Data) -> Result<()> {
+    if data.width != decl_w || data.height != decl_h {
+        bail!(
+            "image dimensions mismatch header {}x{} vs decode {}x{}",
+            decl_w,
+            decl_h,
+            data.width,
+            data.height
+        );
+    }
+    Ok(())
+}
+
+fn probe_image_dimensions(encoded: &[u8]) -> Result<(u32, u32)> {
+    if encoded.len() >= 8 && encoded.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let mut decoder = png::Decoder::new(Cursor::new(encoded));
+        let info = decoder
+            .read_header_info()
+            .map_err(|e| anyhow!("png header: {e}"))?;
+        return Ok((info.width, info.height));
+    }
+    if let Some(dims) = jpeg_sof_dimensions(encoded) {
+        return Ok(dims);
+    }
+    bail!("unsupported image encoding for dimension probe")
+}
+
+/// SOF0–SOF15 (excluding DHT/DAC/…) width/height without Huffman decode.
+fn jpeg_sof_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+        return None;
+    }
+    let mut i = 2usize;
+    while i + 9 < data.len() {
+        if data[i] != 0xFF {
+            return None;
+        }
+        let marker = data[i + 1];
+        i += 2;
+        if marker == 0xD9 || marker == 0xDA {
+            break;
+        }
+        // Standalone markers have no length.
+        if matches!(marker, 0xD0..=0xD7 | 0x01) {
+            continue;
+        }
+        if i + 2 > data.len() {
+            return None;
+        }
+        let seg_len = u16::from_be_bytes([data[i], data[i + 1]]) as usize;
+        if seg_len < 2 || i + seg_len > data.len() {
+            return None;
+        }
+        if matches!(
+            marker,
+            0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF
+        ) {
+            let height = u16::from_be_bytes([data[i + 3], data[i + 4]]) as u32;
+            let width = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
+            return Some((width, height));
+        }
+        i += seg_len;
+    }
+    None
 }
 
 fn framing_radius(positions: &[[f32; 3]]) -> f32 {
@@ -858,6 +974,131 @@ mod tests {
         let err = load_flattened_textured_from_glb_with_budget(&bytes, &mut budget).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("image pixels"), "unexpected err: {msg}");
+    }
+
+    /// PNG with IHDR claiming 8192×8192 but a tiny IDAT — must fail on header budget
+    /// **before** a full pixel decode (x00d1 / P2-3).
+    fn png_huge_ihdr_tiny_idat() -> Vec<u8> {
+        fn chunk(tag: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut out = Vec::with_capacity(12 + data.len());
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(tag);
+            out.extend_from_slice(data);
+            let mut crc_data = Vec::with_capacity(4 + data.len());
+            crc_data.extend_from_slice(tag);
+            crc_data.extend_from_slice(data);
+            out.extend_from_slice(&crc32fast_png(&crc_data).to_be_bytes());
+            out
+        }
+        // ISO-3309 CRC used by PNG (poly 0xEDB88320).
+        fn crc32fast_png(bytes: &[u8]) -> u32 {
+            let mut crc = 0xFFFF_FFFFu32;
+            for &b in bytes {
+                crc ^= u32::from(b);
+                for _ in 0..8 {
+                    let mask = (crc & 1).wrapping_neg();
+                    crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+                }
+            }
+            !crc
+        }
+        let mut ihdr = Vec::with_capacity(13);
+        ihdr.extend_from_slice(&8192u32.to_be_bytes());
+        ihdr.extend_from_slice(&8192u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA
+        let mut png = Vec::new();
+        png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        png.extend_from_slice(&chunk(b"IHDR", &ihdr));
+        // Minimal/invalid IDAT is fine: we must not reach inflate.
+        png.extend_from_slice(&chunk(b"IDAT", &[0x78, 0x01, 0x01, 0x00, 0x00, 0xFF, 0xFF]));
+        png.extend_from_slice(&chunk(b"IEND", &[]));
+        png
+    }
+
+    fn tiny_glb_with_png(png: &[u8]) -> Vec<u8> {
+        let mut bin = Vec::with_capacity(36 + 24 + png.len());
+        for p in [[0f32, 0., 0.], [1., 0., 0.], [0., 1., 0.]] {
+            for f in p {
+                bin.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+        for p in [[0f32, 0.], [1., 0.], [0., 1.]] {
+            for f in p {
+                bin.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+        let png_off = bin.len();
+        bin.extend_from_slice(png);
+        while bin.len() % 4 != 0 {
+            bin.push(0);
+        }
+        let bin_len = bin.len();
+        let json = format!(
+            concat!(
+                r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"#,
+                r#""nodes":[{{"mesh":0}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"TEXCOORD_0":1}},"material":0}}]}}],"#,
+                r#""materials":[{{"pbrMetallicRoughness":{{"baseColorTexture":{{"index":0}}}}}}],"#,
+                r#""textures":[{{"source":0}}],"images":[{{"bufferView":2,"mimeType":"image/png"}}],"#,
+                r#""accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","max":[1,1,0],"min":[0,0,0]}},"#,
+                r#"{{"bufferView":1,"componentType":5126,"count":3,"type":"VEC2"}}],"#,
+                r#""bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":36}},"#,
+                r#"{{"buffer":0,"byteOffset":36,"byteLength":24}},"#,
+                r#"{{"buffer":0,"byteOffset":{png_off},"byteLength":{png_len}}}],"#,
+                r#""buffers":[{{"byteLength":{bin_len}}}]}}"#
+            ),
+            png_off = png_off,
+            png_len = png.len(),
+            bin_len = bin_len
+        );
+        let mut json_bytes = json.into_bytes();
+        while json_bytes.len() % 4 != 0 {
+            json_bytes.push(b' ');
+        }
+        let total = 12 + 8 + json_bytes.len() + 8 + bin.len();
+        let mut out = Vec::with_capacity(total);
+        out.extend_from_slice(&0x46546C67u32.to_le_bytes());
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&(total as u32).to_le_bytes());
+        out.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0x4E4F534Au32.to_le_bytes());
+        out.extend_from_slice(&json_bytes);
+        out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0x004E4942u32.to_le_bytes());
+        out.extend_from_slice(&bin);
+        out
+    }
+
+    #[test]
+    fn huge_ihdr_rejected_before_full_decode() {
+        let png = png_huge_ihdr_tiny_idat();
+        // Header-only probe must see 8192² without needing a valid IDAT inflate.
+        let (w, h) = probe_image_dimensions(&png).expect("IHDR probe");
+        assert_eq!((w, h), (8192, 8192));
+        let bytes = tiny_glb_with_png(&png);
+        let mut budget = AssetDecodeBudget::standard(); // max_image_pixels = 16_777_216
+        let err = load_flattened_textured_from_glb_with_budget(&bytes, &mut budget).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("image pixels"),
+            "must reject on pixel budget before decode; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decoded_dims_must_match_header_probe() {
+        let data = gltf::image::Data {
+            pixels: vec![0, 0, 0, 255],
+            format: gltf::image::Format::R8G8B8A8,
+            width: 2,
+            height: 2,
+        };
+        let err = ensure_decoded_matches_header(1, 1, &data).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("dimensions mismatch") && msg.contains("1x1") && msg.contains("2x2"),
+            "unexpected err: {msg}"
+        );
+        ensure_decoded_matches_header(2, 2, &data).expect("matching dims ok");
     }
 
     #[test]
