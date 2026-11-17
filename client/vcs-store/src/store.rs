@@ -15,6 +15,9 @@ use crate::remote::{NegotiateRequest, PushObject, PushRequest, PushResult, Remot
 /// Match assets-server `@max_object_hashes` (x00cc / x00cd).
 const MAX_OBJECT_HASHES: usize = 512;
 
+/// `(object_hash, bytes)` list plus child blob blake3s for negotiate/push.
+type PushPayload = (Vec<(String, Vec<u8>)>, Vec<String>);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Config {
     #[serde(default)]
@@ -118,8 +121,7 @@ impl Store {
 
     pub fn get_object(&self, hash_hex: &str) -> Result<Vec<u8>, VcsStoreError> {
         let hash = hash_hex.to_ascii_lowercase();
-        read_cas(&self.root.join("objects"), &hash)
-            .ok_or_else(|| VcsStoreError::MissingObject { hash })
+        read_cas(&self.root.join("objects"), &hash).ok_or(VcsStoreError::MissingObject { hash })
     }
 
     pub fn put_blob(&self, blake3_hex: &str, bytes: &[u8]) -> Result<(), VcsStoreError> {
@@ -133,8 +135,7 @@ impl Store {
 
     pub fn get_blob(&self, blake3_hex: &str) -> Result<Vec<u8>, VcsStoreError> {
         let hash = blake3_hex.to_ascii_lowercase();
-        read_cas(&self.root.join("blobs"), &hash)
-            .ok_or_else(|| VcsStoreError::MissingBlob { blake3: hash })
+        read_cas(&self.root.join("blobs"), &hash).ok_or(VcsStoreError::MissingBlob { blake3: hash })
     }
 
     pub fn head(&self) -> Result<Option<String>, VcsStoreError> {
@@ -292,7 +293,7 @@ impl Store {
         for blake3 in &neg.missing_blob_blake3s {
             let bytes = self.get_blob(blake3)?;
             let returned = remote.upload_blob(token, &bytes)?;
-            if returned.to_ascii_lowercase() != blake3.to_ascii_lowercase() {
+            if !returned.eq_ignore_ascii_case(blake3) {
                 return Err(VcsStoreError::HashMismatch {
                     expected: blake3.clone(),
                     actual: returned,
@@ -355,7 +356,7 @@ impl Store {
         &self,
         tip: &str,
         remote_tip: Option<&str>,
-    ) -> Result<(Vec<(String, Vec<u8>)>, Vec<String>), VcsStoreError> {
+    ) -> Result<PushPayload, VcsStoreError> {
         let stop = remote_tip.map(|h| h.to_ascii_lowercase());
         let mut objects = Vec::new();
         let mut blobs = Vec::new();
