@@ -49,7 +49,7 @@
 
 | ID | 項目 | 根拠 | 作業イメージ |
 |:---|:---|:---|:---|
-| P2-1 | dash / desktop イベント→コマンド分割 | -2 | session/inventory/hotswitch flow を UI から分離 |
+| P2-1 | dash / desktop イベント→コマンド分割 | -2 | **closed**（[x00d0](../../roadmap/slices/x00d0-desktop-event-command-split.md): `surface/desktop/{session,inventory,hotswitch}_flow`；`system_ui` は `UiAction` のみ） |
 | P2-2 | catalog RL / scene Grant 照会 / PoP nonce / epoch 軽量 API | -1 | world 軽微群を 1〜2 スライスで |
 | P2-3 | GLB 画像は寸法先読みしてから decode | -1 | `into_dimensions` → budget → decode |
 | P2-4 | KeyStale 無停止二相切替 + XR Rejoin | -1 | grace 中に bus generation 原子切替 |
@@ -97,7 +97,7 @@
 | P0-3 Scene CAS | **完了**（x0082） |
 | P0-4 Agent CSR-only | **完了**（x0083） |
 | P1-1〜P1-5 | **完了**（host RL / GLB / hermetic / WAN host E2E / Allocation）。GLB 画像順のみ残 → P2-3 |
-| P2-1〜P2-14 | **大半完了**。dash/desktop と docs 再ずれが残 |
+| P2-1〜P2-14 | **大半完了**。P2-1 dash/desktop 分割は **x00d0 done**；docs 再ずれは個別 |
 
 ---
 
