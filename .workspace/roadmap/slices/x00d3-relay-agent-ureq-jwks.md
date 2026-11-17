@@ -37,7 +37,7 @@
 
 ## やらない
 
-- ~~P2-4~~ → [x00d5](x00d5-keystale-seamless-rejoin.md) / P2-8 / ~~PoP nonce~~ → [x00d4](x00d4-pop-nonce.md)
+- ~~P2-4~~ → [x00d5](x00d5-keystale-seamless-rejoin.md) / ~~P2-8~~ → [x00d6](x00d6-rooms-fallback-split.md) / ~~PoP nonce~~ → [x00d4](x00d4-pop-nonce.md)
 - openssl 依存の除去
 
 ← [目次](../README.md) · [x00d2](x00d2-catalog-rl-epoch-api.md) · [improvement-plan](../../0_doc/evaluation/improvement-plan-2026-11-12.md)

@@ -72,7 +72,7 @@
 - Zenoh epoch bump push
 - PROTOCOL_PIN bump
 - guest Token への prev 鍵同梱
-- P2-8 Rooms / Fallback 分割
+- ~~P2-8 Rooms / Fallback 分割~~ → [x00d6](x00d6-rooms-fallback-split.md)
 - XR 単独 HTTP Join/Host/catalog
 
 ## 関連

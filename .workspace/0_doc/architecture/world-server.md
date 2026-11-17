@@ -103,6 +103,7 @@ host-token / PlaceRead 系は x0084 で操作別 rate limit（超過は **429** 
 | 上書き | env `WORLD_DATABASE_PATH`（**`MIX_ENV=test` では無視**・x003b；assets CAS 隔離と同型） |
 | スキーマ | `rooms(room_id PK, owner_sub, scene JSON, visibility, active_host_sub, state, host_lease_expires_at, timestamps)`；`room_owner_quotas(owner_sub PK, room_count, timestamps)`（x0097） |
 | Postgres 切替 | 属性は Postgres 互換のみ。運営規模拡大時は `ash_postgres` + `AshPostgres.DataLayer` / `AshPostgres.Repo` に差し替え、`mix ash.codegen` で再生成。API facade（`World.Rooms`）は変えない |
+| モジュール分割（x00d6） | `World.Rooms` facade + `Rooms.{Internal,Scene,Lease,RoomKey,Catalog}`。HTTP エラー表は `WorldWeb.FallbackController` に一箇所化（曖昧 domain atom は controller 境界で正規化） |
 | 障害 | SQLite / Ash 失敗は `:storage_error` → HTTP 503 `storage_unavailable`（404/422 に潰さない） |
 | prod volume | `world_prod_keys` に JWT PEM と SQLite を同居（`/var/lib/world`）。`-v` で両方消える |
 
