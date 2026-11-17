@@ -2,6 +2,8 @@ defmodule WorldWeb.RoomControllerTest do
   use WorldWeb.ConnCase, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias World.HttpPop
+  alias World.HttpPop.Nonce
   alias World.ManifestSealHash.Worker, as: SealHashWorker
 
   @seal_partitioner World.ManifestSealHash.Partitioner
@@ -908,7 +910,7 @@ defmodule WorldWeb.RoomControllerTest do
     # Skew exceeded (±60s default).
     stale_ts = System.system_time(:second) - 120
     stale_nonce = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
-    msg = World.HttpPop.signing_bytes("POST", path, stale_ts, stale_nonce, raw)
+    msg = HttpPop.signing_bytes("POST", path, stale_ts, stale_nonce, raw)
     stale_sig = :crypto.sign(:eddsa, :none, msg, [priv, :ed25519])
 
     assert %{"error" => "pop_required"} =
@@ -960,7 +962,7 @@ defmodule WorldWeb.RoomControllerTest do
 
     ts = System.system_time(:second)
     nonce = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
-    msg = World.HttpPop.signing_bytes("POST", path, ts, nonce, raw)
+    msg = HttpPop.signing_bytes("POST", path, ts, nonce, raw)
     sig = :crypto.sign(:eddsa, :none, msg, [priv, :ed25519])
     sig_b64 = Base.url_encode64(sig, padding: false)
 
@@ -974,8 +976,8 @@ defmodule WorldWeb.RoomControllerTest do
       |> Phoenix.ConnTest.dispatch(WorldWeb.Endpoint, :post, path, raw)
 
     assert %{"attestation" => _, "room_id" => "pop-replay"} = json_response(first, 200)
-    assert {:ok, exp} = World.HttpPop.Nonce.consume_exp(jti, nonce)
-    assert exp == ts + World.HttpPop.skew_secs()
+    assert {:ok, exp} = Nonce.consume_exp(jti, nonce)
+    assert exp == ts + HttpPop.skew_secs()
 
     assert %{"error" => "pop_required"} =
              build_conn()
@@ -997,7 +999,7 @@ defmodule WorldWeb.RoomControllerTest do
     path = "/api/v1/rooms/pop-future-replay/host_keys"
     body_map = %{host_pub: host_pub}
     raw = Jason.encode!(body_map)
-    skew = World.HttpPop.skew_secs()
+    skew = HttpPop.skew_secs()
 
     conn
     |> TestAuthHelpers.put_auth(signer, sub)
@@ -1023,7 +1025,7 @@ defmodule WorldWeb.RoomControllerTest do
     # (not claim_now+skew); see also World.HttpPop.NonceTest.
     ts = claim_now + skew - 5
     nonce = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
-    msg = World.HttpPop.signing_bytes("POST", path, ts, nonce, raw)
+    msg = HttpPop.signing_bytes("POST", path, ts, nonce, raw)
     sig = :crypto.sign(:eddsa, :none, msg, [priv, :ed25519])
     sig_b64 = Base.url_encode64(sig, padding: false)
 
@@ -1037,15 +1039,15 @@ defmodule WorldWeb.RoomControllerTest do
       |> Phoenix.ConnTest.dispatch(WorldWeb.Endpoint, :post, path, raw)
 
     assert %{"attestation" => _, "room_id" => "pop-future-replay"} = json_response(first, 200)
-    assert {:ok, exp} = World.HttpPop.Nonce.consume_exp(jti, nonce)
+    assert {:ok, exp} = Nonce.consume_exp(jti, nonce)
     assert exp == ts + skew
     assert exp > claim_now + skew + 1
 
     # force_prune at wall "now" does not simulate old claim-relative expiry
     # (claim_now+skew is still in the future). It only checks we did not store a
     # short-lived exp that is already past.
-    assert :ok = World.HttpPop.Nonce.force_prune_expired!()
-    assert {:ok, ^exp} = World.HttpPop.Nonce.consume_exp(jti, nonce)
+    assert :ok = Nonce.force_prune_expired!()
+    assert {:ok, ^exp} = Nonce.consume_exp(jti, nonce)
 
     assert %{"error" => "pop_required"} =
              build_conn()
@@ -1084,7 +1086,7 @@ defmodule WorldWeb.RoomControllerTest do
     ts = System.system_time(:second)
     # Sign as if nonce were present, but omit the header → missing_pop.
     nonce = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
-    msg = World.HttpPop.signing_bytes("POST", path, ts, nonce, raw)
+    msg = HttpPop.signing_bytes("POST", path, ts, nonce, raw)
     sig = :crypto.sign(:eddsa, :none, msg, [priv, :ed25519])
 
     assert %{"error" => "pop_required"} =

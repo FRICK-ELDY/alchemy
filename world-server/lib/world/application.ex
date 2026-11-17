@@ -3,6 +3,7 @@ defmodule World.Application do
 
   use Application
 
+  alias World.HttpPop.Nonce
   alias World.Rooms.RoomKeyGrace
 
   @impl true
@@ -11,7 +12,7 @@ defmodule World.Application do
     RoomKeyGrace.ensure_table()
     World.RoomParticipants.ensure_table!()
     World.SpawnTicket.ensure_consume_table!()
-    World.HttpPop.Nonce.ensure_table!()
+    Nonce.ensure_table!()
 
     children =
       [
