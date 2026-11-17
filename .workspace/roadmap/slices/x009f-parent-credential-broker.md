@@ -13,11 +13,11 @@
 
 | 保証する | 保証しない |
 |:---|:---|
-| UI 注入パス（親に `AUTH_USER` / 既存 `ALCHEMY_AUTH_TOKEN` が無い）では host を **ParentBroker** モードで起動。`refresh_token` は子に渡さない | 親が落ちたあとの子単独 refresh；OS vault（P1-6） |
+| UI 注入パス（親に `AUTH_USER` / 既存 `ALCHEMY_AUTH_TOKEN` が無い）では host を **ParentBroker** モードで起動。`refresh_token` は子に渡さない | 親が落ちたあとの子単独 refresh |
 | 親は access JWT 更新のたびに（login / register / silent·remember-me 適用後 / soft-refresh / Host 起動直後·同一 room）`AUTH_PUSH`。**`auth` lock を握ったまま IPC しない**（clone してから retry）。Leave/Logout は host 維持のため、**再ログイン時 push は必須** | WAN / 非 loopback IPC；TLS；失効済み JWT の push；IPC `OK`＝inbox 受理のみ（非 ParentBroker は apply 拒否・消費済み — 親は durable 子へ push しないことで対称） |
 | host は push を受理すると auth セッションと hard expiry を更新し、続く host Room Token 再発行に新しい Bearer を使う | JWT 署名検証（親プロセス信頼境界内・IPC トークン認証のみ） |
 | ParentBroker 時、host は auth soft-refresh で login / env 再読込をしない（親待ち）。auth hard expiry 後は既存どおり配信停止 | `AUTH_USER`(+password) / 長命 env `ALCHEMY_AUTH_TOKEN` 経路の変更（従来どおり host 自己 refresh） |
-| 否定系: 偽 IPC トークンの `AUTH_PUSH` は無視。統合: 短 TTL でも親 push 後に host Token 再発行が成功する（実時計 30 分待ちはしない） | refresh 平文 prefs → OS vault |
+| 否定系: 偽 IPC トークンの `AUTH_PUSH` は無視。統合: 短 TTL でも親 push 後に host Token 再発行が成功する（実時計 30 分待ちはしない） | refresh 平文 prefs → OS vault（→ **[x00cf](x00cf-refresh-os-vault.md)**） |
 
 ### IPC 行（protocol）
 

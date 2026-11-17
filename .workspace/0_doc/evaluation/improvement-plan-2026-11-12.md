@@ -41,7 +41,7 @@
 | P1-3 | hot-path zero-allocation | -2 | **Phase 1（プール page-alloc）closed**（[x00a4](../../roadmap/slices/x00a4-mvcc-phase1-dod.md)；**page-alloc ≤ 2**/tick）。`WorldSnapshot` Vec / XPBD scratch / シート clone は非保証 | Phase 1: tick ページ確保が上限以下（1k entity・500 Tick） |
 | P1-4 | handover 候補 accept 二段階 | -2 | **closed**（x00a1） | 非 accept 候補に lease が付かない否定系 |
 | P1-5 | SceneBudget | -2 | **closed**（x00a2） | 上限超過 413/422 + 競合テスト |
-| P1-6 | refresh token を OS vault へ | -1 | prefs は key id のみ。不能時は session-only。MVCC と直交（並行可） | 平文 refresh がディスクに残らない |
+| P1-6 | refresh token を OS vault へ | -1 | **closed**（[x00cf](../../roadmap/slices/x00cf-refresh-os-vault.md)）: prefs は key id のみ。不能時は session-only | 平文 refresh がディスクに残らない |
 
 ---
 
@@ -107,7 +107,7 @@
 2. **資格情報 broker**（P0-2 / x009f）— **closed**
 3. **kick/epoch + handover accept + SceneBudget**（P1-1 / P1-4 / P1-5）— **closed**（x00a0 / x00a1 / x00a2）
 4. **MVCC×XPBD Phase 1**（P1-2 shared-sim 能力 / P1-3）— **closed**（x00a3 scaffold + [x00a4](../../roadmap/slices/x00a4-mvcc-phase1-dod.md) DoD；host 接触オンは Phase 3）
-5. **P1-6 / P2**（vault・UI 分割 / docs / CI）— Phase 1 と **並行可**
+5. **P1-6**（vault）— **closed**（x00cf）。**P2**（UI 分割 / docs / CI）は並走可
 6. **MVCC×XPBD Phase 2**（P3-2 吸収）— jitter + 手元予測 + ArcSwap 出版 + `wgpu` Compute
 7. **MVCC×XPBD Phase 3** — [x00ad](../../roadmap/slices/x00ad-phase3-host-sim-backend.md) **done** → dirty デルタ（x0024）+ `sim_state` handover；確定レーン（`…/edit`）は並走可
 8. **Spatial Interest 実装スライス群**（P3-7）— 正本 [`spatial_interest.md`](../../roadmap/spatial_interest.md) は先行済；**実装は Phase 3 Green 後**（採番は着手時）

@@ -616,6 +616,7 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                     match refresh_token {
                         Some(rt) => match auth::refresh(&shared.get_auth_url(), &rt) {
                             Ok(session) => {
+                                let rotated = session.refresh_token.clone();
                                 // Release auth lock before IPC retry (timeouts can block seconds).
                                 let push = if let Ok(mut gate) = shared.auth.lock() {
                                     gate.apply_auth_session(session);
@@ -627,6 +628,13 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                                 };
                                 if let Some((tok, exp)) = push {
                                     shared.host_supervisor.push_access_token_retry(&tok, exp);
+                                }
+                                // x00cf: rotate vault secret; failure drops remember-me (session continues).
+                                if let Some(new_rt) = rotated {
+                                    crate::operator_prefs::sync_rotated_refresh(
+                                        &new_rt,
+                                        &crate::refresh_vault::OsRefreshVault,
+                                    );
                                 }
                                 log::info!("access token refreshed");
                             }
