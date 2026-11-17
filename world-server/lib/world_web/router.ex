@@ -48,6 +48,8 @@ defmodule WorldWeb.Router do
     post "/rooms/:room_id/host_keys", RoomController, :create_host_key
     post "/rooms/:room_id/manifest_seal", RoomController, :create_manifest_seal
     get "/rooms/:room_id/scene", RoomController, :show_scene
+    # x00d2: lightweight room_key_epoch probe (any Room Token; no PoP).
+    get "/rooms/:room_id/room_key_epoch", RoomController, :show_room_key_epoch
     # x006d: owner/editor persist mesh to canonical scene.
     post "/rooms/:room_id/scene/entries", RoomController, :create_scene_entry
     # x007b: owner/editor remove canonical mesh.

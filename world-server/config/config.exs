@@ -67,6 +67,16 @@ config :world, World.RateLimit,
       ip: %{limit: 60, period_ms: 60_000},
       user: %{limit: 30, period_ms: 60_000}
     },
+    # x00d2: catalog list/show (ACL-heavy reads).
+    room_catalog: %{
+      ip: %{limit: 120, period_ms: 60_000},
+      user: %{limit: 60, period_ms: 60_000}
+    },
+    # x00d2: lightweight epoch probe (Room Token; polled ≈15s).
+    room_key_epoch: %{
+      ip: %{limit: 240, period_ms: 60_000},
+      jti: %{limit: 120, period_ms: 60_000}
+    },
     # x0084: host Room Token / PlaceRead (seal Port / DB amplification).
     host_seal: %{
       ip: %{limit: 30, period_ms: 60_000},

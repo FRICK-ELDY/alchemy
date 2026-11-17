@@ -234,6 +234,31 @@ if config_env() == :prod do
             rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_VISIBILITY_USER_PERIOD_MS", 60_000)
         }
       },
+      # x00d2: catalog list/show
+      room_catalog: %{
+        ip: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_CATALOG_IP_LIMIT", 120),
+          period_ms: rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_CATALOG_IP_PERIOD_MS", 60_000)
+        },
+        user: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_CATALOG_USER_LIMIT", 60),
+          period_ms:
+            rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_CATALOG_USER_PERIOD_MS", 60_000)
+        }
+      },
+      # x00d2: lightweight epoch probe
+      room_key_epoch: %{
+        ip: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_KEY_EPOCH_IP_LIMIT", 240),
+          period_ms:
+            rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_KEY_EPOCH_IP_PERIOD_MS", 60_000)
+        },
+        jti: %{
+          limit: rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_KEY_EPOCH_JTI_LIMIT", 120),
+          period_ms:
+            rate_limit_env_integer.("WORLD_RATE_LIMIT_ROOM_KEY_EPOCH_JTI_PERIOD_MS", 60_000)
+        }
+      },
       # x0084: host Room Token / PlaceRead
       host_seal: %{
         ip: %{

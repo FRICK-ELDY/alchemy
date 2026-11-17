@@ -17,6 +17,14 @@ config :world, World.RateLimit,
       ip: %{limit: 300, period_ms: 60_000},
       user: %{limit: 300, period_ms: 60_000}
     },
+    room_catalog: %{
+      ip: %{limit: 300, period_ms: 60_000},
+      user: %{limit: 300, period_ms: 60_000}
+    },
+    room_key_epoch: %{
+      ip: %{limit: 300, period_ms: 60_000},
+      jti: %{limit: 300, period_ms: 60_000}
+    },
     host_seal: %{
       ip: %{limit: 300, period_ms: 60_000},
       jti: %{limit: 300, period_ms: 60_000}

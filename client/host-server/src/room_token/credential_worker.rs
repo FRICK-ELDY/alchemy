@@ -2,14 +2,18 @@
 //!
 //! Guarantees: credential / seal HTTP runs on a dedicated thread; failure keeps the last good
 //! snapshot and retries with backoff; publish stops after hard expiry (process stays up);
-//! host Room Token key sync ≈15s advances only after a successful refresh (failure re-arms
-//! with backoff, capped by the sync interval).
-//! Non-guarantees: Zenoh put path (x0042), auth UI.
+//! host Room key sync ≈15s probes `GET …/room_key_epoch` first (x00d2) and **skips** Token
+//! reissue when epoch is unchanged. Soft-fail: probe HTTP error / 429 still reissues Token
+//! (availability over jti thrift; refresh failure re-arms with backoff, capped by the sync
+//! interval).
+//! Non-guarantees: Zenoh put path (x0042), auth UI; consecutive probe-failure counters before
+//! `/tokens` (both guest and host fall through on first probe error).
 
 use super::auth_broker::AuthBrokerInbox;
 use super::credential_chain::{
     plan_credential_refresh, CredentialRefreshPlan, HostCredentialChain,
 };
+use super::http::credential_agent;
 use super::room_scene::RoomScene;
 use super::seal_cache::ManifestSealCache;
 use super::timing::{earliest_hard_expire, publish_allowed_at};
@@ -169,6 +173,33 @@ pub fn force_seal_retry(seal_cache: &mut ManifestSealCache, pending_seal: &mut b
     seal_cache.refresh_at = Instant::now();
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct EpochProbeResponse {
+    room_key_epoch: u64,
+}
+
+/// `GET …/room_key_epoch` with host Room Token (x00d2; no PoP).
+fn fetch_room_key_epoch_probe(world_url: &str, room_id: &str, host_token: &str) -> Result<u64> {
+    let base = world_url.trim_end_matches('/');
+    let url = format!("{base}/api/v1/rooms/{room_id}/room_key_epoch");
+    let authz = format!("Bearer {host_token}");
+    let resp: EpochProbeResponse = match credential_agent()
+        .get(&url)
+        .set("authorization", &authz)
+        .call()
+    {
+        Ok(resp) => resp.into_json().context("parse room_key_epoch response")?,
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            return Err(anyhow!(
+                "room_key_epoch probe failed status={code} body={body}"
+            ));
+        }
+        Err(err) => return Err(err).context("room_key_epoch probe request"),
+    };
+    Ok(resp.room_key_epoch)
+}
+
 /// Spawn background auth → Room Token → attestation → seal refresh (x003d).
 pub fn spawn_credential_worker(
     snapshot: Arc<RwLock<HostPublishSnapshot>>,
@@ -243,21 +274,50 @@ pub fn spawn_credential_worker(
                         },
                     });
                 }
-                // Advance `next_room_key_sync` only after a successful refresh (below);
+                // Advance `next_room_key_sync` only after a successful probe/refresh (below);
                 // on failure, backoff + short re-arm keep the ≈15s guarantee closer.
                 let key_sync_due = now >= next_room_key_sync;
+                let mut key_sync_needs_token = false;
                 if key_sync_due {
-                    plan = Some(match plan {
-                        Some(mut p) => {
-                            p.refresh_host = true;
-                            p
+                    // x00d2: lightweight epoch GET before reissuing host Token + Allocation.
+                    match fetch_room_key_epoch_probe(
+                        &cfg.world_url,
+                        &cfg.room_id,
+                        &creds.host_token,
+                    ) {
+                        Ok(epoch) if epoch == creds.room_key_epoch => {
+                            log::debug!(
+                                "credential worker: room_key_epoch probe unchanged epoch={epoch}"
+                            );
+                            next_room_key_sync = Instant::now() + ROOM_KEY_SYNC_INTERVAL;
                         }
-                        None => CredentialRefreshPlan {
-                            refresh_auth: false,
-                            refresh_host: true,
-                            refresh_attest: false,
-                        },
-                    });
+                        Ok(epoch) => {
+                            log::info!(
+                                "credential worker: room_key_epoch probe world={epoch} live={}; refresh host Token",
+                                creds.room_key_epoch
+                            );
+                            key_sync_needs_token = true;
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                "credential worker: room_key_epoch probe failed: {err:#}; refresh host Token"
+                            );
+                            key_sync_needs_token = true;
+                        }
+                    }
+                    if key_sync_needs_token {
+                        plan = Some(match plan {
+                            Some(mut p) => {
+                                p.refresh_host = true;
+                                p
+                            }
+                            None => CredentialRefreshPlan {
+                                refresh_auth: false,
+                                refresh_host: true,
+                                refresh_attest: false,
+                            },
+                        });
+                    }
                 }
                 let external_reseal = cfg
                     .force_reseal
@@ -380,7 +440,7 @@ pub fn spawn_credential_worker(
                         log::warn!(
                             "credential refresh failed (retry with backoff; keeping last good snapshot): {err:#}"
                         );
-                        if key_sync_due {
+                        if key_sync_due && key_sync_needs_token {
                             // Fail-closed soft retry: do not wait a full 15s after a sync miss.
                             next_room_key_sync = Instant::now() + backoff.min(ROOM_KEY_SYNC_INTERVAL);
                         }

@@ -9,6 +9,8 @@
 //! Under loopback/tunnel, peer IP is often `127.0.0.1` so the IP axis is process-wide. Optional
 //! loopback `/metrics` + `room_jti` log correlation (x007a).
 //!
+//! JWKS fetch uses **ureq** (x00d3 / P2-7; no curl subprocess). OpenSSL remains for CSR signing.
+//!
 //! Non-guarantees: CCU/QoS, multi-relay discovery, L7 Zenoh proxy, TLS-terminated non-loopback,
 //! distributed rate counters, `X-Forwarded-For`.
 
@@ -378,13 +380,21 @@ impl AgentState {
 
     /// Install JWKS keys for tests (bypasses HTTP).
     pub fn install_jwks_for_test(&self, keys: HashMap<String, DecodingKey>, fetched_at: Instant) {
-        let mut cache = self.cache.write().expect("jwks lock");
+        // Poison: recover inner so tests can still inject keys (x00d3).
+        let mut cache = self
+            .cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         cache.keys = keys;
         cache.fetched_at = fetched_at;
     }
 
     pub fn jwks_age(&self) -> Duration {
-        self.cache.read().expect("jwks lock").fetched_at.elapsed()
+        match self.cache.read() {
+            Ok(cache) => cache.fetched_at.elapsed(),
+            // Fail closed: treat poisoned lock as hard-stale so refresh is attempted.
+            Err(_) => JWKS_HARD_TTL,
+        }
     }
 
     pub fn verify_allocation(&self, token: &str) -> Result<AllocClaims> {
@@ -632,17 +642,18 @@ fn run_openssl(bin: &Path, args: &[&str]) -> Result<()> {
 }
 
 fn ureq_get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
-    let out = Command::new("curl")
-        .args(["-fsSL", "--max-time", "5", url])
-        .output()
-        .context("curl JWKS (install curl or set PATH)")?;
-    if !out.status.success() {
-        return Err(anyhow!(
-            "curl JWKS failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ));
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(5))
+        .timeout_read(Duration::from_secs(5))
+        .build();
+    match agent.get(url).call() {
+        Ok(resp) => resp.into_json().context("parse JWKS JSON"),
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(anyhow!("JWKS HTTP {code}: {body}"))
+        }
+        Err(err) => Err(err).context("JWKS GET (ureq)"),
     }
-    serde_json::from_slice(&out.stdout).context("parse JWKS JSON")
 }
 
 pub fn handle_client(mut stream: TcpStream, state: &AgentState) -> Result<()> {

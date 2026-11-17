@@ -37,7 +37,6 @@ jobs:
         with:
           workspaces: |
             client -> target
-            launcher -> target
 
       - name: Resolve version
         id: ver

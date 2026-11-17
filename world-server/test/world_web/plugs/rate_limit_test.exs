@@ -11,6 +11,8 @@ defmodule WorldWeb.Plugs.RateLimitTest do
     room_create: %{ip: @strict_two, user: @strict_two},
     room_token: %{ip: @strict_two, user: @strict_two},
     room_visibility: %{ip: @strict_two, user: @strict_two},
+    room_catalog: %{ip: @strict_two, user: @strict_two},
+    room_key_epoch: %{ip: @high, jti: @high},
     host_seal: %{ip: @high, jti: @high},
     host_scene: %{ip: @high, jti: @high},
     place_read: %{ip: @high, jti: @high}
@@ -20,6 +22,8 @@ defmodule WorldWeb.Plugs.RateLimitTest do
     room_create: %{ip: @high, user: @high},
     room_token: %{ip: @high, user: @high},
     room_visibility: %{ip: @high, user: @high},
+    room_catalog: %{ip: @high, user: @high},
+    room_key_epoch: %{ip: @high, jti: @strict_two},
     host_seal: %{ip: @high, jti: @strict_two},
     host_scene: %{ip: @high, jti: @strict_two},
     place_read: %{ip: @high, jti: @strict_two}
@@ -29,6 +33,8 @@ defmodule WorldWeb.Plugs.RateLimitTest do
     room_create: %{ip: @high, user: @high},
     room_token: %{ip: @high, user: @high},
     room_visibility: %{ip: @high, user: @high},
+    room_catalog: %{ip: @high, user: @high},
+    room_key_epoch: %{ip: @high, jti: @high},
     host_seal: %{ip: @strict_two, jti: @high},
     host_scene: %{ip: @high, jti: @high},
     place_read: %{ip: @high, jti: @high}
@@ -403,5 +409,53 @@ defmodule WorldWeb.Plugs.RateLimitTest do
     overflow = build_conn() |> post("/api/v1/rooms/rl-ip-seal/host_keys", %{host_pub: "x"})
     assert %{"errors" => %{"detail" => "Too Many Requests"}} = json_response(overflow, 429)
     assert Plug.Conn.get_resp_header(overflow, "retry-after") != []
+  end
+
+  test "returns 429 when room_catalog user limit is exceeded (x00d2)", %{
+    conn: conn,
+    signer: signer
+  } do
+    sub = "55555555-5555-5555-5555-555555555555"
+
+    for _ <- 1..2 do
+      c =
+        conn
+        |> TestAuthHelpers.put_auth(signer, sub)
+        |> get("/api/v1/rooms")
+
+      assert c.status in [200, 401, 403]
+      refute c.status == 429
+    end
+
+    overflow =
+      conn
+      |> TestAuthHelpers.put_auth(signer, sub)
+      |> get("/api/v1/rooms")
+
+    assert %{"errors" => %{"detail" => "Too Many Requests"}} = json_response(overflow, 429)
+  end
+
+  test "returns 429 when room_key_epoch jti limit is exceeded (x00d2)", %{signer: signer} do
+    put_limits(@host_token_strict_limits)
+    RateLimit.reset()
+    room = "rl-epoch-#{System.unique_integer([:positive])}"
+    {host_token, _priv} = create_room_and_host_token(signer, "epoch-rl-owner", room)
+
+    for _ <- 1..2 do
+      c =
+        build_conn()
+        |> put_req_header("authorization", "Bearer #{host_token}")
+        |> get("/api/v1/rooms/#{room}/room_key_epoch")
+
+      assert c.status == 200
+      refute c.status == 429
+    end
+
+    overflow =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{host_token}")
+      |> get("/api/v1/rooms/#{room}/room_key_epoch")
+
+    assert %{"errors" => %{"detail" => "Too Many Requests"}} = json_response(overflow, 429)
   end
 end

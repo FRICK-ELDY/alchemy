@@ -10,7 +10,7 @@ make ci-protocol
 make ci-fuzz       # x004c cargo-fuzz smoke（Linux/macOS + nightly；Windows は SKIP）
 make ci-auth
 make ci-world
-make ci-assets
+make ci-assets     # x00d1: CI 専用 alchemy-ci-assets-{deps,build}（開発用 assets_build と分離）
 make ci-shared     # x0089 shared/alchemy_*（Docker 既定・deps/_build は named volume；SHARED_CI_HOST=1 でホスト mix）
 
 # x001f — Hermetic Compose 縦 E2E（外ネット不要）

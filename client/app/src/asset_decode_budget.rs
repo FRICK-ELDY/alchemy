@@ -1,17 +1,19 @@
-//! GLB / glTF decode resource budgets (x0085 / improvement P1-2).
+//! GLB / glTF decode resource budgets (x0085 / x00d1 / improvement P1-2 / P2-3).
 //!
 //! Guarantees:
 //! - input bytes checked **before** parse / buffer import
 //! - declared + actual buffer bytes, decoded image bytes, and RGBA retain **only when
 //!   conversion succeeds**, counted toward `expanded_bytes` before mesh `Vec` growth
 //! - vertex / index caps use accessor **counts** before collecting into `Vec`
-//! - image pixel caps applied **per decoded image** before keeping it
+//! - image pixel caps applied from **header dimensions before full decode** (x00d1);
+//!   decode must report the same width/height (mismatch → `Err`)
 //! - textured mesh paths convert each image to RGBA **once** and share (`Arc`); no
 //!   per-primitive RGBA `Vec` multiplication within budget
 //!
 //! Non-guarantees:
 //! - peak inside a single `image` crate decode of one embedded texture (mitigated by
-//!   input ≤32 MiB and fail-fast after each image)
+//!   header pixel gate + input ≤32 MiB and fail-fast after each image)
+//! - dimension probe for formats other than PNG / JPEG (those fail closed before decode)
 //! - assets-server quarantine heuristics
 
 use anyhow::{bail, Result};

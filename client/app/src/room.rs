@@ -17,10 +17,10 @@
 //!   only). PEMs apply on next open / Leave→Join / `mtls_reopen` — mid-flight reopen is
 //!   not done (full close orphans Intent → Presence TTL / liveliness Delete). NotAfter hang
 //!   across a long live session is **not** guaranteed
-//! - Epoch probe (~15s) only rotates Room Token / liveliness when `room_key_epoch` advances
-//!   or soft-TTL is due; same-epoch probes must not churn `jti` (Presence reclaim).
-//!   Probe still POSTs `/tokens` today (world has no epoch-only API) — issued jti is
-//!   discarded on unchanged epoch (load/log noise; not a Presence hazard)
+//! - Epoch probe (~15s) uses `GET …/room_key_epoch` (x00d2). Same-epoch success skips
+//!   `/tokens` (no `jti` churn / Presence reclaim). `/tokens` runs when epoch advances,
+//!   soft-TTL / pending rotate is due, **or** the probe HTTP fails (soft-fail to legacy
+//!   path; same policy as host credential worker).
 //! - Join starts a mesh-remount worker: Manifest blake3 → assets GET →
 //!   `try_apply_world_remount` (x007d)
 //! - In-flight remount after Leave / host-generation reset is discarded via
@@ -692,6 +692,45 @@ pub(crate) fn spawn_token_refresh(shared: Arc<SharedState>) -> Result<()> {
                             shared.schedule_room_key_epoch_probe(TOKEN_REFRESH_POLL);
                         }
                     };
+                    // x00d2: epoch-only probe uses Room Token GET (no `/tokens` reissue).
+                    if epoch_probe_due && !room_due && !pending_due {
+                        let room_tok = shared
+                            .auth
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.room_token.clone());
+                        let Some(room_tok) = room_tok else {
+                            shared.schedule_room_key_epoch_probe(TOKEN_REFRESH_POLL);
+                            continue;
+                        };
+                        let world_url = shared.get_world_url();
+                        match world_token::fetch_room_key_epoch(
+                            &world_url,
+                            shared.get_room_id().as_ref(),
+                            &room_tok,
+                        ) {
+                            Ok(epoch) if epoch == shared.room_key_epoch() && !shared.key_stale() => {
+                                shared.schedule_room_key_epoch_probe(
+                                    crate::scene::ROOM_KEY_EPOCH_PROBE,
+                                );
+                                log::debug!(
+                                    "room_key_epoch probe: unchanged epoch={epoch}; skip Token rotate"
+                                );
+                                continue;
+                            }
+                            Ok(epoch) => {
+                                log::info!(
+                                    "room_key_epoch probe: world epoch={epoch} live={}; refresh Token",
+                                    shared.room_key_epoch()
+                                );
+                                // Fall through to `/tokens` with access JWT below.
+                            }
+                            Err(err) => {
+                                log::warn!("room_key_epoch probe failed: {err:#}; try Token refresh");
+                                // Fall through — soft-fail to legacy Token path.
+                            }
+                        }
+                    }
                     let access = shared.auth.lock().ok().and_then(|g| {
                         if g.is_joined() {
                             g.access_token.clone()

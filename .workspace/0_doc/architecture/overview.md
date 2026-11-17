@@ -161,7 +161,7 @@ flowchart TB
 
         ProtocolCrate["protocol (alchemy-protocol)<br/>・Protobuf (.proto) ワイヤ契約 SSoT (PROTOCOL_PIN で厳密固定)<br/>・render_frame.proto: 描画ワイヤ空間量は binary64 (f64) + デルタ(差分)フラグ<br/>・input_events.proto: 移動・アクション・空間編集入力 (+ Room Token)<br/>・client_info.proto: ホスト引き受け可否(can_be_host) / CPU余裕度 / 空きRAM / Ping RTT<br/>・audio & tracking: Opus音声フレーム / 圧縮済フルトラ・BlendShape配列"]:::shared
 
-        SharedSimCrate["shared-sim / host-server (100% Pure Rust — Cargo Workspace 同居)<br/>・空間状態保持 (単精度 f32) + Rapier3d 物理エンジン + Dual-AST Kernel (Pure Rust)<br/>・【3層デカップリング・ティック構造】:<br/> ① 内部物理・Dual-AST Kernel Tick: 常時 60Hz 固定 (16.6ms — 壁抜け防止・関節安定化・通信費0円)<br/> ② ネットワーク配信 Tick: 可変 20Hz(省エネ) / 30Hz(標準) / 60Hz(高速) ＋ 静止物スリープ差分送信<br/> ③ クライアント予測補間 Tick: ~60Hz–120Hz<br/>・実行形態: PCでは『独立裏プロセス(host-server)』、Web/Mobile/Questでは『インプロセス(Worker)』"]:::shared
+        SharedSimCrate["shared-sim / host-server (100% Pure Rust — Cargo Workspace 同居)<br/>・空間状態保持 (単精度 f32) + XPBD 物理（SoA / LBVH）+ Dual-AST Kernel (Pure Rust)<br/>・【3層デカップリング・ティック構造】:<br/> ① 内部物理・Dual-AST Kernel Tick: 常時 60Hz 固定 (16.6ms — 壁抜け防止・関節安定化・通信費0円)<br/> ② ネットワーク配信 Tick: 可変 20Hz(省エネ) / 30Hz(標準) / 60Hz(高速) ＋ 静止物スリープ差分送信<br/> ③ クライアント予測補間 Tick: ~60Hz–120Hz<br/>・実行形態: PCでは『独立裏プロセス(host-server)』、Web/Mobile/Questでは『インプロセス(Worker)』"]:::shared
 
         DualRepSpec["Dual Representation (ノード ＆ テキスト両対応共通規格)<br/>・役割: Formula＝ギミック DSL 表面 / Dual-AST Kernel＝共通 AST 実行器（旧称 Formula VM）・NIF とは別<br/>・シェーダー: 3D空間ノードグラフ(DAG) ⇄ WGSL テキスト関数<br/>・空間ギミック: Formula ノードグラフ ⇄ Formula スクリプト<br/>・どちらも単一の共通 AST に変換 → Naga / Dual-AST Kernel で実行"]:::shader
     end
