@@ -16,6 +16,7 @@
 | 登録・ログイン・Refresh・ログアウト | グループ / Block / フォロー承認制 |
 | Follow（有向）+ Friendship（相互フォロー時のみ申請→accept）（x0033） | 関係グラフを JWT に載せること |
 | unfollow は同一トランザクションで Follow 削除＋Friendship 解除 | Room Token の即時失効（world TTL） |
+| **x00d7**: 全 `unfollow` / `unfriend` 成功が同一 TX で `relation_outbox` を残し、2hop 影響 owner を載せて world へ再送（2xx まで） | 既発行 Room Token JWT の即時失効；影響集合の厳密最小性（過回転可） |
 | S2S `GET /internal/v1/access`（visibility 判定・x0034/x0035）。**公網 Tunnel では `/internal/*` を 404**（x0043・LAN S2S は対象外） | Room の `visibility` 永続（world） |
 | prod は `AUTH_INTERNAL_TOKEN` 必須（未設定は起動失敗） | 既定 `"dev-internal-token"` を prod に残すこと |
 | Social mutate は IP + user の rate limit（x0043・429） | アクション別細粒度バケット |
@@ -38,6 +39,13 @@
 | POST | `/api/v1/social/friend-requests/:user_id/accept` | Bearer | addressee のみ |
 | POST | `/api/v1/social/friend-requests/:user_id/reject` | Bearer | 当事者 |
 | DELETE | `/api/v1/social/friends/:user_id` | Bearer | unfriend |
+
+### World notify outbox（x00a0 / **x00d7**）
+
+- Social revoke 成功時: mutation 前に影響 owner（`{a,b} ∪ friends ∪ followees`）を計算し、同一 TX で `relation_outbox` INSERT
+- Dispatcher（本番 HTTP・Endpoint より前に起動）が `FOR UPDATE SKIP LOCKED` で claim（`attempts` +1 + lease）し、`POST {WORLD_INTERNAL_URL}/internal/v1/relation_changed` を 2xx まで再送（body: `event_id` / `sub_a` / `sub_b` / `reason` / `affected_owner_subs`）
+- `delivered` 行は保持期限あり（既定 7 日で purge・無期限監査ログではない）
+- テスト stub は commit 後同期配送し `delivered` にする
 
 ### S2S Access（x0034）
 

@@ -3121,4 +3121,266 @@ defmodule WorldWeb.RoomControllerTest do
     {:ok, after_public} = World.Rooms.get("rel-public")
     assert after_public.room_key_epoch == 0
   end
+
+  test "relation_changed rotates followers room on unfollow pair (x00d7)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "e0e0e0e0-e0e0-e0e0-e0e0-e0e0e0e0e0e0"
+    follower = "f0f0f0f0-f0f0-f0f0-f0f0-f0f0f0f0f0f0"
+
+    assert %{"room_id" => "rel-followers"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "rel-followers", visibility: "followers"})
+             |> json_response(201)
+
+    {:ok, before} = World.Rooms.get("rel-followers")
+    old_key = before.room_key
+
+    assert %{"ok" => true, "rotated" => rotated} =
+             build_conn()
+             |> put_req_header("x-alchemy-internal-token", "dev-internal-token")
+             |> post("/internal/v1/relation_changed", %{
+               event_id: "evt-unfollow-followers-1",
+               sub_a: follower,
+               sub_b: owner,
+               reason: "unfollow",
+               affected_owner_subs: [owner, follower]
+             })
+             |> json_response(200)
+
+    assert Enum.any?(rotated, fn
+             %{"room_id" => "rel-followers", "room_key_epoch" => 1} -> true
+             _ -> false
+           end)
+
+    {:ok, after_followers} = World.Rooms.get("rel-followers")
+    assert after_followers.room_key_epoch == 1
+    assert after_followers.room_key != old_key
+  end
+
+  test "relation_changed rotates third-party friends_plus owner (x00d7)", %{
+    conn: conn,
+    signer: signer
+  } do
+    alice = "a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1"
+    bob = "b1b1b1b1-b1b1-b1b1-b1b1-b1b1b1b1b1b1"
+    carol = "c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1"
+
+    assert %{"room_id" => "rel-fof"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, alice)
+             |> post("/api/v1/rooms", %{room_id: "rel-fof", visibility: "friends_plus"})
+             |> json_response(201)
+
+    {:ok, before} = World.Rooms.get("rel-fof")
+    old_key = before.room_key
+
+    assert %{"ok" => true, "rotated" => rotated} =
+             build_conn()
+             |> put_req_header("x-alchemy-internal-token", "dev-internal-token")
+             |> post("/internal/v1/relation_changed", %{
+               event_id: "evt-fof-1",
+               sub_a: bob,
+               sub_b: carol,
+               reason: "unfriend",
+               affected_owner_subs: [alice, bob, carol]
+             })
+             |> json_response(200)
+
+    assert Enum.any?(rotated, fn
+             %{"room_id" => "rel-fof", "room_key_epoch" => 1} -> true
+             _ -> false
+           end)
+
+    {:ok, after_fof} = World.Rooms.get("rel-fof")
+    assert after_fof.room_key_epoch == 1
+    assert after_fof.room_key != old_key
+  end
+
+  test "relation_changed event_id is idempotent (x00d7)", %{conn: conn, signer: signer} do
+    owner = "d1d1d1d1-d1d1-d1d1-d1d1-d1d1d1d1d1d1"
+    other = "e1e1e1e1-e1e1-e1e1-e1e1-e1e1e1e1e1e1"
+
+    assert %{"room_id" => "rel-idem"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "rel-idem", visibility: "friends"})
+             |> json_response(201)
+
+    body = %{
+      event_id: "evt-idem-1",
+      sub_a: owner,
+      sub_b: other,
+      reason: "unfriend",
+      affected_owner_subs: [owner, other]
+    }
+
+    refute World.RelationEvents.applied?("evt-idem-1")
+
+    assert %{"ok" => true, "rotated" => rotated} =
+             build_conn()
+             |> put_req_header("x-alchemy-internal-token", "dev-internal-token")
+             |> post("/internal/v1/relation_changed", body)
+             |> json_response(200)
+
+    assert Enum.any?(rotated, fn
+             %{"room_id" => "rel-idem", "room_key_epoch" => 1} -> true
+             _ -> false
+           end)
+
+    assert World.RelationEvents.applied?("evt-idem-1") == true
+
+    assert %{"ok" => true, "already_applied" => true, "rotated" => []} =
+             build_conn()
+             |> put_req_header("x-alchemy-internal-token", "dev-internal-token")
+             |> post("/internal/v1/relation_changed", body)
+             |> json_response(200)
+
+    {:ok, after_idem} = World.Rooms.get("rel-idem")
+    assert after_idem.room_key_epoch == 1
+  end
+
+  test "relation_changed rotates third-party followers_plus owner (x00d7)", %{
+    conn: conn,
+    signer: signer
+  } do
+    alice = "a2a2a2a2-a2a2-a2a2-a2a2-a2a2a2a2a2a2"
+    bob = "b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2"
+    carol = "c2c2c2c2-c2c2-c2c2-c2c2-c2c2c2c2c2c2"
+
+    assert %{"room_id" => "rel-fop"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, alice)
+             |> post("/api/v1/rooms", %{room_id: "rel-fop", visibility: "followers_plus"})
+             |> json_response(201)
+
+    {:ok, before} = World.Rooms.get("rel-fop")
+    old_key = before.room_key
+
+    assert %{"ok" => true, "rotated" => rotated} =
+             build_conn()
+             |> put_req_header("x-alchemy-internal-token", "dev-internal-token")
+             |> post("/internal/v1/relation_changed", %{
+               event_id: "evt-fop-1",
+               sub_a: carol,
+               sub_b: bob,
+               reason: "unfollow",
+               affected_owner_subs: [alice, bob, carol]
+             })
+             |> json_response(200)
+
+    assert Enum.any?(rotated, fn
+             %{"room_id" => "rel-fop", "room_key_epoch" => 1} -> true
+             _ -> false
+           end)
+
+    {:ok, after_fop} = World.Rooms.get("rel-fop")
+    assert after_fop.room_key_epoch == 1
+    assert after_fop.room_key != old_key
+  end
+
+  test "mid-batch storage_error returns 503 and leaves event unrecorded (x00d7)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner_a = "b3b3b3b3-b3b3-b3b3-b3b3-b3b3b3b3b3b3"
+    owner_b = "c3c3c3c3-c3c3-c3c3-c3c3-c3c3c3c3c3c3"
+    other = "d3d3d3d3-d3d3-d3d3-d3d3-d3d3d3d3d3d3"
+
+    assert %{"room_id" => "rel-mid-a"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner_a)
+             |> post("/api/v1/rooms", %{room_id: "rel-mid-a", visibility: "friends"})
+             |> json_response(201)
+
+    assert %{"room_id" => "rel-mid-b"} =
+             build_conn()
+             |> TestAuthHelpers.put_auth(signer, owner_b)
+             |> post("/api/v1/rooms", %{room_id: "rel-mid-b", visibility: "friends"})
+             |> json_response(201)
+
+    previous = Application.get_env(:world, :relation_rotate_fail_after)
+    # After 1 successful rotate, inject storage_error before the second room.
+    Application.put_env(:world, :relation_rotate_fail_after, 1)
+
+    on_exit(fn ->
+      if previous == nil,
+        do: Application.delete_env(:world, :relation_rotate_fail_after),
+        else: Application.put_env(:world, :relation_rotate_fail_after, previous)
+    end)
+
+    event_id = "evt-mid-batch-1"
+
+    assert %{"error" => "storage_unavailable"} =
+             build_conn()
+             |> put_req_header("x-alchemy-internal-token", "dev-internal-token")
+             |> post("/internal/v1/relation_changed", %{
+               event_id: event_id,
+               sub_a: owner_a,
+               sub_b: other,
+               reason: "unfriend",
+               affected_owner_subs: [owner_a, owner_b, other]
+             })
+             |> json_response(503)
+
+    refute World.RelationEvents.applied?(event_id)
+
+    {:ok, room_a} = World.Rooms.get("rel-mid-a")
+    {:ok, room_b} = World.Rooms.get("rel-mid-b")
+    # Exactly one of the two social rooms rotated before the inject fired.
+    assert room_a.room_key_epoch + room_b.room_key_epoch == 1
+  end
+
+  test "unrecorded event_id remains retriable after inbox wipe (x00d7)", %{
+    conn: conn,
+    signer: signer
+  } do
+    owner = "f2f2f2f2-f2f2-f2f2-f2f2-f2f2f2f2f2f2"
+    other = "a3a3a3a3-a3a3-a3a3-a3a3-a3a3a3a3a3a3"
+
+    assert %{"room_id" => "rel-retry"} =
+             conn
+             |> TestAuthHelpers.put_auth(signer, owner)
+             |> post("/api/v1/rooms", %{room_id: "rel-retry", visibility: "followers"})
+             |> json_response(201)
+
+    body = %{
+      event_id: "evt-retry-1",
+      sub_a: other,
+      sub_b: owner,
+      reason: "unfollow",
+      affected_owner_subs: [owner, other]
+    }
+
+    assert %{"ok" => true} =
+             build_conn()
+             |> put_req_header("x-alchemy-internal-token", "dev-internal-token")
+             |> post("/internal/v1/relation_changed", body)
+             |> json_response(200)
+
+    {:ok, after_first} = World.Rooms.get("rel-retry")
+    assert after_first.room_key_epoch == 1
+
+    # Simulate incomplete record (crash before inbox write): wipe event so retry can close.
+    assert {:ok, _} =
+             World.Repo.query("DELETE FROM relation_events WHERE event_id = ?", ["evt-retry-1"])
+
+    refute World.RelationEvents.applied?("evt-retry-1")
+
+    assert %{"ok" => true, "rotated" => rotated} =
+             build_conn()
+             |> put_req_header("x-alchemy-internal-token", "dev-internal-token")
+             |> post("/internal/v1/relation_changed", body)
+             |> json_response(200)
+
+    assert Enum.any?(rotated, fn
+             %{"room_id" => "rel-retry", "room_key_epoch" => 2} -> true
+             _ -> false
+           end)
+
+    {:ok, after_retry} = World.Rooms.get("rel-retry")
+    assert after_retry.room_key_epoch == 2
+  end
 end

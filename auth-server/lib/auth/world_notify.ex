@@ -1,32 +1,33 @@
 defmodule Auth.WorldNotify do
   @moduledoc """
-  auth → world S2S for relation revoke (x00a0).
+  auth → world S2S for relation revoke (x00a0 / **x00d7**).
 
-  Guarantees: fire-and-forget `POST /internal/v1/relation_changed` with shared
-  internal token after unfriend / friendship-clearing unfollow (stub mode is sync
-  for tests). HTTP uses a short receive timeout and does not block the Social API
-  on world latency beyond Task scheduling.
-  Non-guarantees: retry queue; world availability; already-issued Room Token JWT revoke.
+  Guarantees: social mutate commits a durable `relation_outbox` row in the same TX;
+  stub mode delivers synchronously after commit; HTTP mode is drained by
+  `Auth.WorldNotify.Dispatcher` until world returns 2xx (idempotent `event_id`).
+  Non-guarantees: already-issued Room Token JWT revoke; world availability latency bound.
   """
 
   require Logger
 
+  alias Auth.WorldNotify.Dispatcher
+  alias Auth.WorldNotify.Outbox
+
   @http_timeout_ms 750
 
-  @spec relation_changed(String.t(), String.t(), String.t()) :: :ok
-  def relation_changed(sub_a, sub_b, reason)
-      when is_binary(sub_a) and is_binary(sub_b) and is_binary(reason) do
+  @doc """
+  After a successful social TX that inserted `row`, deliver (stub) or kick HTTP dispatcher.
+  """
+  @spec after_commit(Outbox.t()) :: :ok
+  def after_commit(%Outbox{} = row) do
     case Application.get_env(:auth, :world_notify_mode, :http) do
       :stub ->
-        stub_notify(sub_a, sub_b, reason)
+        stub_notify(Outbox.payload(row))
+        _ = Outbox.mark_delivered(row)
+        :ok
 
       :http ->
-        # Keep Social HTTP responsive: notify off the request path.
-        _ =
-          Task.Supervisor.start_child(Auth.TaskSupervisor, fn ->
-            http_notify(sub_a, sub_b, reason)
-          end)
-
+        Dispatcher.kick()
         :ok
 
       _ ->
@@ -34,37 +35,20 @@ defmodule Auth.WorldNotify do
     end
   end
 
-  def relation_changed(_, _, _), do: :ok
-
-  defp stub_notify(sub_a, sub_b, reason) do
-    fun = Application.get_env(:auth, :world_notify_stub)
-
-    cond do
-      is_function(fun, 3) ->
-        fun.(sub_a, sub_b, reason)
-        :ok
-
-      is_pid(fun) ->
-        send(fun, {:relation_changed, sub_a, sub_b, reason})
-        :ok
-
-      true ->
-        :ok
-    end
-  end
-
-  defp http_notify(sub_a, sub_b, reason) do
+  @doc false
+  @spec http_deliver(map()) :: :ok | {:error, term()}
+  def http_deliver(
+        %{event_id: _, sub_a: _, sub_b: _, reason: _, affected_owner_subs: _} = payload
+      ) do
     base = Application.get_env(:auth, :world_internal_url)
     token = Application.get_env(:auth, :internal_token)
 
     cond do
       not is_binary(base) or base == "" ->
-        Logger.warning("WorldNotify: world_internal_url unset; skip relation_changed")
-        :ok
+        {:error, :world_internal_url_unset}
 
       not is_binary(token) or token == "" ->
-        Logger.warning("WorldNotify: internal_token unset; skip relation_changed")
-        :ok
+        {:error, :internal_token_unset}
 
       true ->
         url = String.trim_trailing(base, "/") <> "/internal/v1/relation_changed"
@@ -74,7 +58,7 @@ defmodule Auth.WorldNotify do
                  {"x-alchemy-internal-token", token},
                  {"content-type", "application/json"}
                ],
-               json: %{sub_a: sub_a, sub_b: sub_b, reason: reason},
+               json: payload,
                receive_timeout: @http_timeout_ms,
                connect_options: [timeout: @http_timeout_ms]
              ) do
@@ -82,13 +66,46 @@ defmodule Auth.WorldNotify do
             :ok
 
           {:ok, %{status: status, body: body}} ->
-            Logger.warning("WorldNotify unexpected status=#{status} body=#{inspect(body)}")
-            :ok
+            {:error, {:unexpected_status, status, body}}
 
           {:error, reason} ->
-            Logger.warning("WorldNotify unavailable: #{inspect(reason)}")
-            :ok
+            {:error, reason}
         end
+    end
+  end
+
+  defp stub_notify(%{
+         event_id: event_id,
+         sub_a: sub_a,
+         sub_b: sub_b,
+         reason: reason,
+         affected_owner_subs: owners
+       }) do
+    fun = Application.get_env(:auth, :world_notify_stub)
+
+    cond do
+      is_function(fun, 1) ->
+        fun.(%{
+          event_id: event_id,
+          sub_a: sub_a,
+          sub_b: sub_b,
+          reason: reason,
+          affected_owner_subs: owners
+        })
+
+        :ok
+
+      is_function(fun, 3) ->
+        # Legacy x00a0 stub arity — keep for older tests.
+        fun.(sub_a, sub_b, reason)
+        :ok
+
+      is_pid(fun) ->
+        send(fun, {:relation_changed, event_id, sub_a, sub_b, reason, owners})
+        :ok
+
+      true ->
+        :ok
     end
   end
 end
