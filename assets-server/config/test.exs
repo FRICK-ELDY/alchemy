@@ -41,5 +41,27 @@ config :assets,
   blake3_hash_partitions: 2,
   vcs_object_partitions: 2
 
+# x00d9: high ceilings so ordinary controller suites do not trip RL.
+config :assets, Assets.RateLimit,
+  enabled: true,
+  limits: %{
+    blob_put: %{
+      ip: %{limit: 10_000, period_ms: 60_000},
+      user: %{limit: 10_000, period_ms: 60_000}
+    },
+    vcs_push: %{
+      ip: %{limit: 10_000, period_ms: 60_000},
+      user: %{limit: 10_000, period_ms: 60_000}
+    },
+    vcs_negotiate: %{
+      ip: %{limit: 10_000, period_ms: 60_000},
+      user: %{limit: 10_000, period_ms: 60_000}
+    },
+    spawn_ticket: %{
+      ip: %{limit: 10_000, period_ms: 60_000},
+      user: %{limit: 10_000, period_ms: 60_000}
+    }
+  }
+
 config :logger, level: :warning
 config :phoenix, :plug_init_mode, :runtime

@@ -3,6 +3,8 @@ import Config
 config :assets,
   ecto_repos: [Assets.Repo],
   generators: [timestamp_type: :utc_datetime],
+  # x00d9 / x004b: Tunnel peers listed here so CF-Connecting-IP / XFF are trusted.
+  trusted_proxies: [],
   cas_backend: :local,
   cas_path: "priv/cas",
   cas_s3: %{
@@ -81,6 +83,28 @@ config :assets, AssetsWeb.Endpoint,
   ],
   pubsub_server: Assets.PubSub,
   live_view: [signing_salt: "assets-slice-c"]
+
+# x00d9: heavy write paths (IP × auth_sub). Override in runtime.exs via env.
+config :assets, Assets.RateLimit,
+  enabled: true,
+  limits: %{
+    blob_put: %{
+      ip: %{limit: 30, period_ms: 60_000},
+      user: %{limit: 15, period_ms: 60_000}
+    },
+    vcs_push: %{
+      ip: %{limit: 20, period_ms: 60_000},
+      user: %{limit: 10, period_ms: 60_000}
+    },
+    vcs_negotiate: %{
+      ip: %{limit: 60, period_ms: 60_000},
+      user: %{limit: 30, period_ms: 60_000}
+    },
+    spawn_ticket: %{
+      ip: %{limit: 60, period_ms: 60_000},
+      user: %{limit: 30, period_ms: 60_000}
+    }
+  }
 
 config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",
