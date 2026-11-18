@@ -1,10 +1,10 @@
 defmodule AlchemyClientIp do
   @moduledoc """
-  Trusted-proxy client IP resolution for Alchemy auth/world (x004b / P3-6).
+  Trusted-proxy client IP resolution for Alchemy auth/world/assets (x004b / x00d9).
 
   Guarantees: when `otp_app`'s `:trusted_proxies` is non-empty and peer matches,
   prefer `CF-Connecting-IP` then `X-Forwarded-For`; untrusted peers ignore those
-  headers. Non-guarantees: Cloudflare Access; automatic proxy discovery; assets usage.
+  headers. Non-guarantees: Cloudflare Access; automatic proxy discovery.
   """
 
   @spec from_conn(Plug.Conn.t(), keyword()) :: String.t()

@@ -4,20 +4,24 @@ defmodule AssetsWeb.VcsController do
 
   Guarantees: Bearer JWT via `:user_auth`; owner-only; same semantics as
   `Assets.Vcs.negotiate/3` / `push/3`. Push object bodies are base64 (`bytes_b64`).
-  Blobs remain `POST /api/v1/blobs`.
+  Blobs remain `POST /api/v1/blobs`. Push is at most one concurrent request per
+  `auth_sub` on this node from **before body read through** `Vcs.push` (x00d9
+  `Assets.Vcs.PushGate`; busy → 429 `push_in_flight` without reading the body).
 
-  Non-guarantees: clone/fetch; SSH; Save UI.
+  Non-guarantees: clone/fetch; SSH; Save UI; cross-node push fairness.
   """
 
   use AssetsWeb, :controller
 
   alias Assets.Vcs
+  alias Assets.Vcs.PushGate
   alias Assets.Vcs.Ref, as: VcsRef
 
   # Negotiate payloads are hash lists only.
   @negotiate_body_limit 65_536
   # Push may carry several ≤1 MiB objects as base64 (~4/3 expansion).
   @push_body_limit 12_582_912
+  @push_busy_retry_after_seconds 1
 
   def negotiate(conn, %{"repo_id" => repo_id}) do
     with {:ok, body, conn} <- read_json_body(conn, @negotiate_body_limit),
@@ -45,24 +49,41 @@ defmodule AssetsWeb.VcsController do
   end
 
   def push(conn, %{"repo_id" => repo_id}) do
-    with {:ok, body, conn} <- read_json_body(conn, @push_body_limit),
-         {:ok, attrs} <- push_attrs(body) do
-      case Vcs.push(repo_id, conn.assigns.auth_sub, attrs) do
-        {:ok, %VcsRef{} = vref} ->
-          json(conn, %{ref: ref_json(vref)})
+    sub = conn.assigns.auth_sub
 
-        {:error, reason} ->
-          respond_vcs_error(conn, reason)
-      end
-    else
-      {:error, :invalid_json} ->
-        conn |> put_status(:bad_request) |> json(%{error: "invalid_json"})
+    case PushGate.checkout(sub) do
+      :ok ->
+        try do
+          with {:ok, body, conn} <- read_json_body(conn, @push_body_limit),
+               {:ok, attrs} <- push_attrs(body) do
+            case Vcs.push(repo_id, sub, attrs) do
+              {:ok, %VcsRef{} = vref} ->
+                json(conn, %{ref: ref_json(vref)})
 
-      {:error, :too_large} ->
-        conn |> put_status(413) |> json(%{error: "too_large"})
+              {:error, reason} ->
+                respond_vcs_error(conn, reason)
+            end
+          else
+            {:error, :invalid_json} ->
+              conn |> put_status(:bad_request) |> json(%{error: "invalid_json"})
 
-      {:error, reason} ->
-        conn |> put_status(:unprocessable_entity) |> json(%{error: error_code(reason)})
+            {:error, :too_large} ->
+              conn |> put_status(413) |> json(%{error: "too_large"})
+
+            {:error, reason} ->
+              conn |> put_status(:unprocessable_entity) |> json(%{error: error_code(reason)})
+          end
+        after
+          PushGate.checkin(sub)
+        end
+
+      {:error, :busy} ->
+        # Body unread (no Plug.Parsers); close so keep-alive does not leave a half request.
+        conn
+        |> put_resp_header("retry-after", Integer.to_string(@push_busy_retry_after_seconds))
+        |> put_resp_header("connection", "close")
+        |> put_status(:too_many_requests)
+        |> json(%{error: "push_in_flight"})
     end
   end
 

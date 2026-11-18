@@ -6,12 +6,16 @@ on:
     paths:
       - "assets-server/**"
       - "shared/alchemy_auth_client/**"
+      - "shared/alchemy_client_ip/**"
+      - "shared/alchemy_rate_limit/**"
       - "protocol/**"
       - ".github/workflows/assets-server-ci.yml"
   pull_request:
     paths:
       - "assets-server/**"
       - "shared/alchemy_auth_client/**"
+      - "shared/alchemy_client_ip/**"
+      - "shared/alchemy_rate_limit/**"
       - "protocol/**"
       - ".github/workflows/assets-server-ci.yml"
 
@@ -54,7 +58,7 @@ jobs:
           path: |
             assets-server/deps
             assets-server/_build
-          key: ${{ runner.os }}-assets-mix-${{ hashFiles('assets-server/mix.lock', 'shared/alchemy_auth_client/mix.lock', 'shared/alchemy_auth_client/lib/**/*.ex', 'shared/alchemy_auth_client/mix.exs') }}
+          key: ${{ runner.os }}-assets-mix-${{ hashFiles('assets-server/mix.lock', 'shared/alchemy_auth_client/mix.lock', 'shared/alchemy_auth_client/lib/**/*.ex', 'shared/alchemy_auth_client/mix.exs', 'shared/alchemy_client_ip/mix.lock', 'shared/alchemy_client_ip/lib/**/*.ex', 'shared/alchemy_client_ip/mix.exs', 'shared/alchemy_rate_limit/mix.lock', 'shared/alchemy_rate_limit/lib/**/*.ex', 'shared/alchemy_rate_limit/mix.exs') }}
           restore-keys: |
             ${{ runner.os }}-assets-mix-
 

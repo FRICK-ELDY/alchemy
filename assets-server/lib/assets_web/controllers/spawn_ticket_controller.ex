@@ -2,8 +2,9 @@ defmodule AssetsWeb.SpawnTicketController do
   @moduledoc """
   Standalone SpawnTicket issue API for Grant holders (x00b5).
 
-  Guarantees: Grant check per blake3 before issue; same claims as take_out bundling.
-  Non-guarantees: world consume; rate-limit beyond Plug stack.
+  Guarantees: Grant check per blake3 before issue; same claims as take_out bundling;
+  HTTP IP×sub rate limit via `AssetsWeb.Plugs.RateLimit` (x00d9).
+  Non-guarantees: world consume; cluster-wide rate limit.
   """
 
   use AssetsWeb, :controller

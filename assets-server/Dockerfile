@@ -12,7 +12,7 @@ RUN cargo build --release --bin blake3-hash --bin vcs-object \
  && cp target/release/blake3-hash /blake3-hash \
  && cp target/release/vcs-object /vcs-object
 
-# Build context: repository root (shared/alchemy_auth_client path dep).
+# Build context: repository root (shared path deps).
 FROM ${ELIXIR_IMAGE} AS dev
 
 RUN apk add --no-cache build-base git wget
@@ -24,6 +24,8 @@ WORKDIR /app
 RUN mix local.hex --force && mix local.rebar --force
 
 COPY shared/alchemy_auth_client /shared/alchemy_auth_client
+COPY shared/alchemy_client_ip /shared/alchemy_client_ip
+COPY shared/alchemy_rate_limit /shared/alchemy_rate_limit
 COPY assets-server/mix.exs assets-server/mix.lock ./
 RUN mix deps.get || true
 
@@ -53,6 +55,8 @@ RUN mix local.hex --force && mix local.rebar --force
 ENV MIX_ENV=prod
 
 COPY shared/alchemy_auth_client /shared/alchemy_auth_client
+COPY shared/alchemy_client_ip /shared/alchemy_client_ip
+COPY shared/alchemy_rate_limit /shared/alchemy_rate_limit
 COPY assets-server/mix.exs assets-server/mix.lock ./
 RUN mix deps.get --only prod
 

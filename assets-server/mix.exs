@@ -35,6 +35,8 @@ defmodule Assets.MixProject do
       {:ecto_sql, "~> 3.12"},
       {:ecto_sqlite3, "~> 0.17"},
       {:alchemy_auth_client, path: "../shared/alchemy_auth_client"},
+      {:alchemy_client_ip, path: "../shared/alchemy_client_ip"},
+      {:alchemy_rate_limit, path: "../shared/alchemy_rate_limit"},
       {:joken, "~> 2.6"},
       {:jose, "~> 1.11.13"},
       {:req, "~> 0.5"},

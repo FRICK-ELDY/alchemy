@@ -178,6 +178,84 @@ if config_env() != :test do
   end
 end
 
+# x00d9: proxies + rate-limit env overrides stay out of test (shell leakage).
+if config_env() != :test do
+  if proxies = System.get_env("TRUSTED_PROXIES") do
+    list =
+      proxies
+      |> String.split(",", trim: true)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+
+    config :assets, trusted_proxies: list
+  end
+
+  rate_limit_env_integer = fn name, default ->
+    case System.get_env(name) do
+      nil ->
+        default
+
+      value ->
+        case Integer.parse(String.trim(value)) do
+          {n, ""} when n >= 1 ->
+            n
+
+          _ ->
+            raise "#{name} must be an integer >= 1 (got: #{inspect(value)})"
+        end
+    end
+  end
+
+  config :assets, Assets.RateLimit,
+    enabled: true,
+    limits: %{
+      blob_put: %{
+        ip: %{
+          limit: rate_limit_env_integer.("ASSETS_RATE_LIMIT_BLOB_PUT_IP_LIMIT", 30),
+          period_ms: rate_limit_env_integer.("ASSETS_RATE_LIMIT_BLOB_PUT_IP_PERIOD_MS", 60_000)
+        },
+        user: %{
+          limit: rate_limit_env_integer.("ASSETS_RATE_LIMIT_BLOB_PUT_USER_LIMIT", 15),
+          period_ms: rate_limit_env_integer.("ASSETS_RATE_LIMIT_BLOB_PUT_USER_PERIOD_MS", 60_000)
+        }
+      },
+      vcs_push: %{
+        ip: %{
+          limit: rate_limit_env_integer.("ASSETS_RATE_LIMIT_VCS_PUSH_IP_LIMIT", 20),
+          period_ms: rate_limit_env_integer.("ASSETS_RATE_LIMIT_VCS_PUSH_IP_PERIOD_MS", 60_000)
+        },
+        user: %{
+          limit: rate_limit_env_integer.("ASSETS_RATE_LIMIT_VCS_PUSH_USER_LIMIT", 10),
+          period_ms: rate_limit_env_integer.("ASSETS_RATE_LIMIT_VCS_PUSH_USER_PERIOD_MS", 60_000)
+        }
+      },
+      vcs_negotiate: %{
+        ip: %{
+          limit: rate_limit_env_integer.("ASSETS_RATE_LIMIT_VCS_NEGOTIATE_IP_LIMIT", 60),
+          period_ms:
+            rate_limit_env_integer.("ASSETS_RATE_LIMIT_VCS_NEGOTIATE_IP_PERIOD_MS", 60_000)
+        },
+        user: %{
+          limit: rate_limit_env_integer.("ASSETS_RATE_LIMIT_VCS_NEGOTIATE_USER_LIMIT", 30),
+          period_ms:
+            rate_limit_env_integer.("ASSETS_RATE_LIMIT_VCS_NEGOTIATE_USER_PERIOD_MS", 60_000)
+        }
+      },
+      spawn_ticket: %{
+        ip: %{
+          limit: rate_limit_env_integer.("ASSETS_RATE_LIMIT_SPAWN_TICKET_IP_LIMIT", 60),
+          period_ms:
+            rate_limit_env_integer.("ASSETS_RATE_LIMIT_SPAWN_TICKET_IP_PERIOD_MS", 60_000)
+        },
+        user: %{
+          limit: rate_limit_env_integer.("ASSETS_RATE_LIMIT_SPAWN_TICKET_USER_LIMIT", 30),
+          period_ms:
+            rate_limit_env_integer.("ASSETS_RATE_LIMIT_SPAWN_TICKET_USER_PERIOD_MS", 60_000)
+        }
+      }
+    }
+end
+
 if config_env() == :prod do
   secret_key_base =
     System.get_env("SECRET_KEY_BASE") ||

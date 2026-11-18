@@ -15,6 +15,9 @@ defmodule Assets.Application do
     children =
       [
         AssetsWeb.Telemetry,
+        # x00d9: HTTP RL + VCS push per-sub concurrency gate
+        Assets.RateLimit,
+        Assets.Vcs.PushGate,
         Assets.Repo,
         {Phoenix.PubSub, name: Assets.PubSub},
         Assets.Auth.Jwks,
