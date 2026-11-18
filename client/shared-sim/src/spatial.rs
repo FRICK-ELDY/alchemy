@@ -1,8 +1,15 @@
 //! Flat Morton LBVH + narrow-phase primitives + raycast / capsule extrude.
 //!
-//! Guarantees: pointer-free 1D spatial index; collider kinds limited to Sphere /
-//! Capsule / Box / Ray (+ StaticSDF Atom stub); readiness COLLIDER bit gates queries.
-//! Non-guarantees: concave mesh GJK/EPA; asset-compiler SDF generation.
+//! Guarantees: pointer-free 1D spatial index; **O(n) rebuild** via `(morton, leaf_index)`
+//! AABB indexing (x00d8); **tick-local refit** when topology is unchanged; collider kinds
+//! limited to Sphere / Capsule / Box / Ray (+ StaticSDF Atom stub); readiness COLLIDER bit
+//! gates queries. SceneBudget entries ≤ 4096 (x00a2) is the host LBVH sizing ceiling;
+//! authority tick is 60 Hz / 16.6 ms with **1 rebuild + (substeps−1) refits** per tick.
+//! Build target < 0.2 ms @ thousands is aspirational; wall-clock is measured by
+//! `#[ignore]` timing tests, not CI SLA.
+//! Non-guarantees: concave mesh GJK/EPA; asset-compiler SDF generation; exact OBB;
+//! Morton order freshness across ticks (depends on per-tick rebuild); Karras parallel build;
+//! Epoch sheet clone reduction (P1-1).
 //!
 //! Safety: `#![forbid(unsafe_code)]`.
 
@@ -113,22 +120,40 @@ pub fn morton_code30(pos: [f32; 3], bounds: SceneBounds) -> u32 {
     expand_bits(codes[0]) | (expand_bits(codes[1]) << 1) | (expand_bits(codes[2]) << 2)
 }
 
-/// Deterministic LSD radix sort of `(morton, row_id)`.
-/// Key is `morton << 32 | row_id` so equal Morton codes break ties by `row_id` ascending
-/// without a follow-up comparison sort (LSD radix is stable).
+/// Deterministic LSD radix sort of `(morton, leaf_index)` (or any `(key, tie)` pair).
+/// Key is `morton << 32 | leaf_index` so equal Morton codes break ties by the second
+/// field ascending without a follow-up comparison sort (LSD radix is stable).
+///
+/// Allocates temporary buffers; prefer [`radix_sort_morton_with_scratch`] on hot paths.
 pub fn radix_sort_morton(pairs: &mut [(u32, u32)]) {
+    let mut keys = Vec::new();
+    let mut tmp_keys = Vec::new();
+    let mut tmp_pairs = Vec::new();
+    radix_sort_morton_with_scratch(pairs, &mut keys, &mut tmp_keys, &mut tmp_pairs);
+}
+
+/// Same as [`radix_sort_morton`], reusing `keys` / `tmp_keys` / `tmp_pairs` capacity.
+pub fn radix_sort_morton_with_scratch(
+    pairs: &mut [(u32, u32)],
+    keys: &mut Vec<u64>,
+    tmp_keys: &mut Vec<u64>,
+    tmp_pairs: &mut Vec<(u32, u32)>,
+) {
     if pairs.len() < 2 {
         return;
     }
-    let mut keys: Vec<u64> = pairs
-        .iter()
-        .map(|&(m, r)| ((m as u64) << 32) | (r as u64))
-        .collect();
-    let mut tmp_keys = vec![0u64; keys.len()];
-    let mut tmp_pairs = vec![(0u32, 0u32); pairs.len()];
+    keys.clear();
+    keys.reserve(pairs.len());
+    for &(m, leaf) in pairs.iter() {
+        keys.push(((m as u64) << 32) | (leaf as u64));
+    }
+    tmp_keys.clear();
+    tmp_keys.resize(keys.len(), 0);
+    tmp_pairs.clear();
+    tmp_pairs.resize(pairs.len(), (0, 0));
     for shift in (0..64).step_by(8) {
         let mut counts = [0usize; 256];
-        for &k in &keys {
+        for &k in keys.iter() {
             counts[((k >> shift) & 0xFF) as usize] += 1;
         }
         let mut offsets = [0usize; 256];
@@ -142,8 +167,8 @@ pub fn radix_sort_morton(pairs: &mut [(u32, u32)]) {
             tmp_pairs[slot] = pairs[i];
             offsets[bucket] += 1;
         }
-        keys.copy_from_slice(&tmp_keys);
-        pairs.copy_from_slice(&tmp_pairs);
+        keys.copy_from_slice(tmp_keys);
+        pairs.copy_from_slice(tmp_pairs);
     }
 }
 
@@ -162,13 +187,53 @@ pub struct FlatLbvh {
     pub nodes: Vec<LbvhNode>,
     /// Root index, or `None` if empty.
     pub root: Option<u32>,
+    /// `(morton, row_id)` in Morton-sorted leaf order (debug / consumers).
     pub sorted_leaves: Vec<(u32, u32)>,
+    /// Contiguous leaf node indices in Morton order (for O(n) refit leaf walk).
+    leaf_node_indices: Vec<u32>,
+    /// Rebuild scratch: `(morton, leaf_index)` before/after radix sort.
+    scratch_pairs: Vec<(u32, u32)>,
+    scratch_leaf_aabbs: Vec<Aabb>,
+    scratch_leaf_rows: Vec<u32>,
+    /// Pairwise-merge level buffers (reused across rebuilds).
+    scratch_level: Vec<u32>,
+    scratch_level_next: Vec<u32>,
+    /// Radix-sort scratch (reused across rebuilds; see [`radix_sort_morton_with_scratch`]).
+    scratch_radix_keys: Vec<u64>,
+    scratch_radix_tmp_keys: Vec<u64>,
+    scratch_radix_tmp_pairs: Vec<(u32, u32)>,
+    /// Test-only call counters (x00d8 regression for rebuild-once / refit-rest).
+    #[cfg(test)]
+    pub test_rebuild_calls: u32,
+    #[cfg(test)]
+    pub test_refit_ok_calls: u32,
+    #[cfg(test)]
+    pub test_refit_fail_calls: u32,
 }
 
 impl FlatLbvh {
+    /// Allocate a fresh tree (calls [`Self::rebuild_from_sheet`]).
     pub fn build_from_sheet(sheet: &EpochSheet, bounds: SceneBounds) -> Self {
-        let mut pairs = Vec::new();
-        let mut leaf_aabbs = Vec::new();
+        let mut tree = Self::default();
+        tree.rebuild_from_sheet(sheet, bounds);
+        tree
+    }
+
+    /// Full O(n) rebuild: Morton codes + radix sort + bottom-up pairwise merge.
+    /// Reuses `nodes` / sorted leaf buffers / rebuild scratch capacity.
+    pub fn rebuild_from_sheet(&mut self, sheet: &EpochSheet, bounds: SceneBounds) {
+        #[cfg(test)]
+        {
+            self.test_rebuild_calls = self.test_rebuild_calls.saturating_add(1);
+        }
+        self.nodes.clear();
+        self.sorted_leaves.clear();
+        self.leaf_node_indices.clear();
+        self.root = None;
+        self.scratch_pairs.clear();
+        self.scratch_leaf_aabbs.clear();
+        self.scratch_leaf_rows.clear();
+
         for row in sheet.iter_active_rows() {
             let idx = row as usize;
             if !sheet.readiness[idx].is_ready(ReadinessMask::COLLIDER) {
@@ -176,70 +241,161 @@ impl FlatLbvh {
             }
             let aabb = collider_world_aabb(&sheet.world_transforms[idx], &sheet.colliders[idx]);
             let code = morton_code30(aabb.center(), bounds);
-            pairs.push((code, row));
-            leaf_aabbs.push((row, aabb));
+            let leaf_index = self.scratch_leaf_rows.len() as u32;
+            self.scratch_pairs.push((code, leaf_index));
+            self.scratch_leaf_aabbs.push(aabb);
+            self.scratch_leaf_rows.push(row);
         }
-        radix_sort_morton(&mut pairs);
-        build_lbvh_from_sorted(pairs, &leaf_aabbs)
-    }
-}
-
-fn build_lbvh_from_sorted(sorted: Vec<(u32, u32)>, leaf_aabbs: &[(u32, Aabb)]) -> FlatLbvh {
-    if sorted.is_empty() {
-        return FlatLbvh::default();
-    }
-    let aabb_of = |row: u32| -> Aabb {
-        leaf_aabbs
-            .iter()
-            .find(|(r, _)| *r == row)
-            .map(|(_, a)| *a)
-            .unwrap_or_default()
-    };
-
-    let mut nodes = Vec::new();
-    // Create leaves in sorted order.
-    let mut leaf_indices = Vec::with_capacity(sorted.len());
-    for &(_code, row) in &sorted {
-        let idx = nodes.len() as u32;
-        nodes.push(LbvhNode {
-            aabb: aabb_of(row),
-            left: u32::MAX,
-            right: u32::MAX,
-            row_id: Some(row),
-        });
-        leaf_indices.push(idx);
+        // Sort pairs with resident radix scratch (avoid per-rebuild keys/tmp alloc).
+        {
+            let pairs = &mut self.scratch_pairs;
+            let keys = &mut self.scratch_radix_keys;
+            let tmp_keys = &mut self.scratch_radix_tmp_keys;
+            let tmp_pairs = &mut self.scratch_radix_tmp_pairs;
+            radix_sort_morton_with_scratch(pairs, keys, tmp_keys, tmp_pairs);
+        }
+        self.finish_build_from_scratch();
     }
 
-    // Bottom-up pairwise merge (simple flat LBVH).
-    let mut level = leaf_indices;
-    while level.len() > 1 {
-        let mut next = Vec::with_capacity(level.len().div_ceil(2));
-        let mut i = 0;
-        while i < level.len() {
-            if i + 1 == level.len() {
-                next.push(level[i]);
-                break;
-            }
-            let left = level[i];
-            let right = level[i + 1];
-            let aabb = nodes[left as usize].aabb.merge(nodes[right as usize].aabb);
-            let parent = nodes.len() as u32;
-            nodes.push(LbvhNode {
+    fn finish_build_from_scratch(&mut self) {
+        if self.scratch_pairs.is_empty() {
+            return;
+        }
+
+        self.scratch_level.clear();
+        self.scratch_level.reserve(self.scratch_pairs.len());
+        let pair_len = self.scratch_pairs.len();
+        for i in 0..pair_len {
+            let (code, leaf_index) = self.scratch_pairs[i];
+            let li = leaf_index as usize;
+            let row = self.scratch_leaf_rows[li];
+            let aabb = self.scratch_leaf_aabbs[li];
+            let idx = self.nodes.len() as u32;
+            self.nodes.push(LbvhNode {
                 aabb,
-                left,
-                right,
-                row_id: None,
+                left: u32::MAX,
+                right: u32::MAX,
+                row_id: Some(row),
             });
-            next.push(parent);
-            i += 2;
+            self.leaf_node_indices.push(idx);
+            self.sorted_leaves.push((code, row));
+            self.scratch_level.push(idx);
         }
-        level = next;
+
+        // Bottom-up pairwise merge (simple flat LBVH).
+        // Invariant: every parent index is strictly greater than both child indices
+        // (parents are always appended after children).
+        while self.scratch_level.len() > 1 {
+            self.scratch_level_next.clear();
+            self.scratch_level_next
+                .reserve(self.scratch_level.len().div_ceil(2));
+            let mut i = 0;
+            while i < self.scratch_level.len() {
+                if i + 1 == self.scratch_level.len() {
+                    self.scratch_level_next.push(self.scratch_level[i]);
+                    break;
+                }
+                let left = self.scratch_level[i];
+                let right = self.scratch_level[i + 1];
+                let aabb = self.nodes[left as usize]
+                    .aabb
+                    .merge(self.nodes[right as usize].aabb);
+                let parent = self.nodes.len() as u32;
+                debug_assert!(left < parent && right < parent);
+                self.nodes.push(LbvhNode {
+                    aabb,
+                    left,
+                    right,
+                    row_id: None,
+                });
+                self.scratch_level_next.push(parent);
+                i += 2;
+            }
+            std::mem::swap(&mut self.scratch_level, &mut self.scratch_level_next);
+        }
+
+        self.root = self.scratch_level.first().copied();
     }
 
-    FlatLbvh {
-        root: level.first().copied(),
-        nodes,
-        sorted_leaves: sorted,
+    /// Update leaf AABBs from `sheet` and re-merge internals in place (topology fixed).
+    ///
+    /// Returns `false` if leaf count / row readiness no longer match this tree
+    /// (caller should [`Self::rebuild_from_sheet`]). **On `false`, the tree is left
+    /// unmodified** — all validation runs before any leaf AABB write. Intended caller
+    /// today is [`crate::xpbd::step`] only; other call sites must honor the same contract.
+    pub fn refit_from_sheet(&mut self, sheet: &EpochSheet) -> bool {
+        let leaf_count = self.leaf_node_indices.len();
+        let mut sheet_colliders = 0usize;
+        for row in sheet.iter_active_rows() {
+            if sheet.readiness[row as usize].is_ready(ReadinessMask::COLLIDER) {
+                sheet_colliders += 1;
+            }
+        }
+        if sheet_colliders != leaf_count {
+            #[cfg(test)]
+            {
+                self.test_refit_fail_calls = self.test_refit_fail_calls.saturating_add(1);
+            }
+            return false;
+        }
+        if leaf_count == 0 {
+            let ok = self.root.is_none();
+            #[cfg(test)]
+            {
+                if ok {
+                    self.test_refit_ok_calls = self.test_refit_ok_calls.saturating_add(1);
+                } else {
+                    self.test_refit_fail_calls = self.test_refit_fail_calls.saturating_add(1);
+                }
+            }
+            return ok;
+        }
+        // Validate every leaf before mutating any AABB (fail-closed / no partial update).
+        for &node_idx in &self.leaf_node_indices {
+            let Some(row) = self.nodes[node_idx as usize].row_id else {
+                #[cfg(test)]
+                {
+                    self.test_refit_fail_calls = self.test_refit_fail_calls.saturating_add(1);
+                }
+                return false;
+            };
+            let idx = row as usize;
+            if idx >= sheet.len() || !sheet.readiness[idx].is_ready(ReadinessMask::COLLIDER) {
+                #[cfg(test)]
+                {
+                    self.test_refit_fail_calls = self.test_refit_fail_calls.saturating_add(1);
+                }
+                return false;
+            }
+        }
+        for &node_idx in &self.leaf_node_indices {
+            let row = self.nodes[node_idx as usize]
+                .row_id
+                .expect("leaf row_id validated above");
+            let idx = row as usize;
+            self.nodes[node_idx as usize].aabb =
+                collider_world_aabb(&sheet.world_transforms[idx], &sheet.colliders[idx]);
+        }
+        // Parents are always appended after children during build, so ascending
+        // index order is a valid bottom-up pass.
+        for i in 0..self.nodes.len() {
+            if self.nodes[i].row_id.is_some() {
+                continue;
+            }
+            let left = self.nodes[i].left as usize;
+            let right = self.nodes[i].right as usize;
+            debug_assert!(
+                left < i && right < i,
+                "refit requires parent index > child indices (build invariant)"
+            );
+            let merged = self.nodes[left].aabb.merge(self.nodes[right].aabb);
+            self.nodes[i].aabb = merged;
+        }
+        #[cfg(test)]
+        {
+            self.test_refit_ok_calls = self.test_refit_ok_calls.saturating_add(1);
+        }
+        true
     }
 }
 
@@ -830,5 +986,181 @@ mod tests {
         let pos = extrude_capsule(&sheet, cap.row_id, 8).unwrap();
         // Must be pushed outside expanded box.
         assert!(pos[0].abs() >= 1.0 || pos[1].abs() >= 1.0 || pos[2].abs() >= 1.0);
+    }
+
+    fn sheet_with_n_spheres(n: usize, spacing: f64) -> EpochSheet {
+        let mut sheet = EpochSheet::with_capacity(n);
+        for i in 0..n {
+            let h = sheet.alloc_row();
+            let x = (i as f64) * spacing;
+            sheet
+                .set_transform(h.row_id, WorldTransformf64::identity_at([x, 0.0, 0.0]))
+                .unwrap();
+            sheet.colliders[h.row_id as usize] = ColliderShape {
+                shape_type: ColliderShape::SPHERE,
+                extents: [0.4, 0.0, 0.0],
+            };
+            sheet.readiness[h.row_id as usize] =
+                ReadinessMask(ReadinessMask::ALLOCATED | ReadinessMask::COLLIDER);
+        }
+        sheet
+    }
+
+    #[test]
+    fn lbvh_refit_tracks_leaf_motion() {
+        let mut sheet = sheet_with_n_spheres(2, 2.0);
+        let bounds = SceneBounds::default();
+        let mut tree = FlatLbvh::build_from_sheet(&sheet, bounds);
+        let root_before = tree.nodes[tree.root.unwrap() as usize].aabb;
+
+        sheet
+            .set_transform(0, WorldTransformf64::identity_at([10.0, 0.0, 0.0]))
+            .unwrap();
+        sheet
+            .set_transform(1, WorldTransformf64::identity_at([10.5, 0.0, 0.0]))
+            .unwrap();
+        assert!(tree.refit_from_sheet(&sheet));
+        let root_after = tree.nodes[tree.root.unwrap() as usize].aabb;
+        assert!(root_after.min[0] > root_before.min[0]);
+        assert!(root_after.max[0] > root_before.max[0]);
+        let pairs = collect_overlap_pairs(&tree);
+        assert!(pairs.contains(&(0, 1)));
+    }
+
+    #[test]
+    fn lbvh_refit_rejects_topology_change() {
+        let mut sheet = sheet_with_n_spheres(2, 2.0);
+        let mut tree = FlatLbvh::build_from_sheet(&sheet, SceneBounds::default());
+        // Drop collider readiness on leaf 0 → count mismatch.
+        sheet.readiness[0] = ReadinessMask(ReadinessMask::ALLOCATED);
+        assert!(!tree.refit_from_sheet(&sheet));
+
+        // Grow leaf set → count mismatch.
+        sheet = sheet_with_n_spheres(2, 2.0);
+        tree.rebuild_from_sheet(&sheet, SceneBounds::default());
+        let extra = sheet.alloc_row();
+        sheet
+            .set_transform(
+                extra.row_id,
+                WorldTransformf64::identity_at([4.0, 0.0, 0.0]),
+            )
+            .unwrap();
+        sheet.colliders[extra.row_id as usize] = ColliderShape {
+            shape_type: ColliderShape::SPHERE,
+            extents: [0.4, 0.0, 0.0],
+        };
+        sheet.readiness[extra.row_id as usize] =
+            ReadinessMask(ReadinessMask::ALLOCATED | ReadinessMask::COLLIDER);
+        assert!(!tree.refit_from_sheet(&sheet));
+    }
+
+    #[test]
+    fn lbvh_rebuild_reuses_capacity() {
+        let sheet = sheet_with_n_spheres(8, 1.0);
+        let mut tree = FlatLbvh::build_from_sheet(&sheet, SceneBounds::default());
+        let cap = tree.nodes.capacity();
+        let pairs_cap = tree.scratch_pairs.capacity();
+        let radix_cap = tree.scratch_radix_keys.capacity();
+        tree.rebuild_from_sheet(&sheet, SceneBounds::default());
+        assert!(tree.nodes.capacity() >= cap);
+        assert!(tree.scratch_pairs.capacity() >= pairs_cap);
+        assert!(tree.scratch_radix_keys.capacity() >= radix_cap);
+        assert_eq!(tree.leaf_node_indices.len(), 8);
+    }
+
+    fn assert_aabbs_unchanged(tree: &FlatLbvh, before: &[Aabb]) {
+        assert_eq!(tree.nodes.len(), before.len());
+        for (i, node) in tree.nodes.iter().enumerate() {
+            assert_eq!(node.aabb.min, before[i].min);
+            assert_eq!(node.aabb.max, before[i].max);
+        }
+    }
+
+    #[test]
+    fn lbvh_refit_fail_leaves_tree_unmodified() {
+        // Path A: sheet collider count ≠ leaf_count (early return).
+        let mut sheet = sheet_with_n_spheres(2, 2.0);
+        let mut tree = FlatLbvh::build_from_sheet(&sheet, SceneBounds::default());
+        let before: Vec<Aabb> = tree.nodes.iter().map(|n| n.aabb).collect();
+        sheet.readiness[0] = ReadinessMask(ReadinessMask::ALLOCATED);
+        assert!(!tree.refit_from_sheet(&sheet));
+        assert_aabbs_unchanged(&tree, &before);
+
+        // Path B: counts match, but a tree leaf's row lost COLLIDER (validate loop).
+        // Swap COLLIDER from row 0 onto a new row so sheet_colliders == leaf_count == 2.
+        sheet = sheet_with_n_spheres(2, 2.0);
+        tree.rebuild_from_sheet(&sheet, SceneBounds::default());
+        let before: Vec<Aabb> = tree.nodes.iter().map(|n| n.aabb).collect();
+        sheet.readiness[0] = ReadinessMask(ReadinessMask::ALLOCATED);
+        let extra = sheet.alloc_row();
+        sheet
+            .set_transform(
+                extra.row_id,
+                WorldTransformf64::identity_at([4.0, 0.0, 0.0]),
+            )
+            .unwrap();
+        sheet.colliders[extra.row_id as usize] = ColliderShape {
+            shape_type: ColliderShape::SPHERE,
+            extents: [0.4, 0.0, 0.0],
+        };
+        sheet.readiness[extra.row_id as usize] =
+            ReadinessMask(ReadinessMask::ALLOCATED | ReadinessMask::COLLIDER);
+        let mut sheet_colliders = 0usize;
+        for row in sheet.iter_active_rows() {
+            if sheet.readiness[row as usize].is_ready(ReadinessMask::COLLIDER) {
+                sheet_colliders += 1;
+            }
+        }
+        assert_eq!(sheet_colliders, tree.leaf_node_indices.len());
+        assert!(!tree.refit_from_sheet(&sheet));
+        assert_aabbs_unchanged(&tree, &before);
+    }
+
+    /// Manual: `cargo test -p alchemy-shared-sim lbvh_build_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn lbvh_build_timing_1024_4096() {
+        use std::time::Instant;
+        let bounds = SceneBounds::default();
+        let mut rebuild_ms_by_n = [0.0f64; 2];
+        for (slot, &n) in [1024usize, 4096usize].iter().enumerate() {
+            let mut sheet = sheet_with_n_spheres(n, 0.5);
+            let mut tree = FlatLbvh::default();
+            let t0 = Instant::now();
+            tree.rebuild_from_sheet(&sheet, bounds);
+            let rebuild_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            rebuild_ms_by_n[slot] = rebuild_ms;
+
+            for i in 0..n {
+                let p = sheet.world_transforms[i].position;
+                sheet
+                    .set_transform(
+                        i as u32,
+                        WorldTransformf64::identity_at([p[0] + 0.01, p[1], p[2]]),
+                    )
+                    .unwrap();
+            }
+            let t1 = Instant::now();
+            assert!(tree.refit_from_sheet(&sheet));
+            let refit_ms = t1.elapsed().as_secs_f64() * 1000.0;
+
+            eprintln!("n={n}: rebuild={rebuild_ms:.3}ms refit={refit_ms:.3}ms");
+            // Absolute: generous for debug/slow hosts, but far below O(n²) at 4096.
+            assert!(
+                rebuild_ms < 200.0,
+                "rebuild n={n} took {rebuild_ms:.1}ms (expected O(n))"
+            );
+            assert!(
+                refit_ms <= rebuild_ms * 2.0 + 1.0,
+                "refit slower than rebuild unexpectedly"
+            );
+        }
+        // Scaling: 4× n should not approach 16× time (O(n²)). Allow 10× headroom for noise.
+        let ratio = rebuild_ms_by_n[1] / rebuild_ms_by_n[0].max(1e-9);
+        eprintln!("rebuild scale 4096/1024 = {ratio:.2}×");
+        assert!(
+            ratio < 10.0,
+            "rebuild time scaled {ratio:.1}× for 4× n (O(n²) would be ~16×)"
+        );
     }
 }

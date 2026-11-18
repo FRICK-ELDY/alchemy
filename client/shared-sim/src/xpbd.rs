@@ -1,7 +1,8 @@
 //! Native XPBD solver over EpochPrev / EpochCurr tapes.
 //!
 //! Guarantees: position-based constraints (no force blow-up); Grab via GRABBED bit;
-//! sleeping / dirty bitsets for sparse work; finite gate on writes.
+//! sleeping / dirty bitsets for sparse work; finite gate on writes;
+//! with `bounds: Some`, LBVH **rebuild on substep 0** then **refit** (x00d8).
 //! Non-guarantees: full-body IK UX; Zenoh delta publish; Dual-AST Kernel;
 //! Grab-vs-contact priority under heavy overlap (sensor exclusion is best-effort).
 //!
@@ -25,6 +26,8 @@ pub struct XpbdWorld {
     constraint_scratch: Vec<XpbdConstraintRow>,
     sub_prev_scratch: Vec<[f64; 3]>,
     x_before_scratch: Vec<[f64; 3]>,
+    /// Flat LBVH scratch: rebuild once per tick, refit on later substeps (x00d8).
+    lbvh_scratch: FlatLbvh,
 }
 
 impl XpbdWorld {
@@ -38,12 +41,19 @@ impl XpbdWorld {
             constraint_scratch: Vec::new(),
             sub_prev_scratch: Vec::with_capacity(capacity),
             x_before_scratch: Vec::with_capacity(capacity),
+            lbvh_scratch: FlatLbvh::default(),
         }
     }
 
     /// Mirror curr into prev after a committed tick (call after solve).
     pub fn commit_prev_from_curr(&mut self) {
         self.prev = self.curr.clone();
+    }
+
+    /// Test access to LBVH scratch counters / tree (x00d8).
+    #[cfg(test)]
+    pub fn lbvh_scratch_for_test(&mut self) -> &mut FlatLbvh {
+        &mut self.lbvh_scratch
     }
 }
 
@@ -401,7 +411,8 @@ pub fn extract_dirty_deltas(sheet: &EpochSheet) -> Vec<TransformDelta> {
 /// Frame `world.prev` stays at start-of-tick for publish. Substep Verlet uses a scratch
 /// `sub_prev` advanced after each substep so gravity is not re-applied against the frame start.
 ///
-/// When `bounds` is `Some`, rebuilds Flat LBVH each substep (contacts track motion).
+/// When `bounds` is `Some`, rebuilds Flat LBVH on the first substep then refits
+/// (topology-fixed AABB update) on later substeps so contacts track motion (x00d8).
 pub fn step(
     world: &mut XpbdWorld,
     topo: &mut FlatTopology,
@@ -426,7 +437,7 @@ pub fn step(
     }
     world.x_before_scratch.clear();
     world.x_before_scratch.resize(n, [0.0; 3]);
-    for _ in 0..world.substeps.max(1) {
+    for substep_i in 0..world.substeps.max(1) {
         let n = world.curr.len();
         if world.x_before_scratch.len() < n {
             world.x_before_scratch.resize(n, [0.0; 3]);
@@ -445,8 +456,14 @@ pub fn step(
         world.constraint_scratch.extend_from_slice(user_constraints);
         grab_constraint_rows_into(&world.curr, &mut world.constraint_scratch);
         if let Some(b) = bounds {
-            let tree = FlatLbvh::build_from_sheet(&world.curr, b);
-            contact_constraints_from_lbvh_into(&world.curr, &tree, &mut world.constraint_scratch);
+            if substep_i == 0 || !world.lbvh_scratch.refit_from_sheet(&world.curr) {
+                world.lbvh_scratch.rebuild_from_sheet(&world.curr, b);
+            }
+            contact_constraints_from_lbvh_into(
+                &world.curr,
+                &world.lbvh_scratch,
+                &mut world.constraint_scratch,
+            );
         }
         let constraints = std::mem::take(&mut world.constraint_scratch);
         color_constraints(&constraints, topo);
@@ -784,6 +801,42 @@ mod tests {
             (dist - 5.0).abs() < 1e-6,
             "inequality must not attract: dist={dist}"
         );
+    }
+
+    #[test]
+    fn step_rebuilds_once_then_refits_remaining_substeps() {
+        // x00d8: default-shaped tick with bounds → 1 rebuild + (substeps−1) successful refits.
+        let mut world = XpbdWorld::new(2);
+        world.gravity = [0.0, 0.0, 0.0];
+        world.substeps = 4;
+        let a = dynamic_at(&mut world.curr, [-0.1, 0.0, 0.0]);
+        let b = dynamic_at(&mut world.curr, [0.1, 0.0, 0.0]);
+        for row in [a, b] {
+            world.curr.colliders[row as usize] = ColliderShape {
+                shape_type: ColliderShape::SPHERE,
+                extents: [0.5, 0.0, 0.0],
+            };
+            world.curr.readiness[row as usize] =
+                world.curr.readiness[row as usize].with_bits(ReadinessMask::COLLIDER);
+        }
+        sync_prev_capacity(&mut world);
+        world.prev = world.curr.clone();
+        {
+            let lbvh = world.lbvh_scratch_for_test();
+            lbvh.test_rebuild_calls = 0;
+            lbvh.test_refit_ok_calls = 0;
+            lbvh.test_refit_fail_calls = 0;
+        }
+        let mut topo = FlatTopology::default();
+        let bounds = SceneBounds {
+            min: [-10.0, -10.0, -10.0],
+            max: [10.0, 10.0, 10.0],
+        };
+        step(&mut world, &mut topo, &[], &[], Some(bounds), 1.0 / 60.0);
+        let lbvh = world.lbvh_scratch_for_test();
+        assert_eq!(lbvh.test_rebuild_calls, 1, "one rebuild on first substep");
+        assert_eq!(lbvh.test_refit_ok_calls, 3, "refit on substeps 1..3");
+        assert_eq!(lbvh.test_refit_fail_calls, 0);
     }
 
     #[test]
