@@ -25,7 +25,7 @@
 | ID | 項目 | 根拠 | 作業イメージ | 完了条件 |
 |:---|:---|:---|:---|:---|
 | P0-1 | social revoke 完了 | -3 | 全 unfollow で `relation_changed`。world は影響 owner（`friends_plus`/`followers_plus` 含む）を再評価して epoch CAS。auth に durable outbox + 冪等 consume | 通常 unfollow 後、旧鍵で新 epoch 平文が読めない否定系。world 一時停止後も outbox 再送で閉じる |
-| P0-2 | LBVH O(n) + サブステップ refit | -2 | `(code, leaf_index)` で AABB を添字引き。サブステップ 2 回目以降は refit。n=1024/4096 の時間計測（`#[ignore]` 可） | 構築が O(n)。SceneBudget 上限で 1 tick 時間予算を文書化 |
+| P0-2 | LBVH O(n) + サブステップ refit | -2 | `(code, leaf_index)` で AABB を添字引き。サブステップ 2 回目以降は refit。n=1024/4096 の時間計測（`#[ignore]` 可） | **完了（x00d8）** — 構築 O(n)。SceneBudget 上限で 1 tick 時間予算を文書化 |
 | P0-3 | assets HTTP rate limit | -2 | path 依存 `shared/alchemy_rate_limit` を assets に導入。`blob_put`/`vcs_push`/`vcs_negotiate`/`spawn_ticket` を IP×sub。push は同時 1 本セマフォ | 連打で 429。Port プール飢餓の否定系 |
 
 ---
