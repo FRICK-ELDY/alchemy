@@ -10,7 +10,8 @@ defmodule AlchemyClientIp.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       package: package(),
-      description: "Trusted-proxy client IP (CF-Connecting-IP / XFF) for Alchemy auth/world/assets"
+      description:
+        "Trusted-proxy client IP (CF-Connecting-IP / XFF) for Alchemy auth/world/assets"
     ]
   end
 
