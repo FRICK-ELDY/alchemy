@@ -29,8 +29,9 @@ defmodule World.Rooms do
   `mine=1` may include dormant definitions. Handover / takeover / lease sweep are world-authoritative.
   **x009e**: `session_overlay` holds active-host temporary entries (dormant clears);
   `composed_scene/1` merges canonical ∥ overlay; takeover requires owner ∪ `eligible_host_subs`.
-  **x00a0**: owner `rotate_room_key/2` is HTTP-reachable; auth relation_changed rotates
-  social-visibility rooms owned by either party (CAS).
+  **x00a0 / x00d7**: owner `rotate_room_key/2` is HTTP-reachable; auth relation_changed rotates
+  social-visibility rooms owned by `affected_owner_subs` (2hop upper bound; CAS) with
+  durable outbox + `event_id` idempotent consume.
   **x00a1**: handover nominates `handover_candidate_sub` and goes **dormant**; lease only after
   `accept_handover/2`. Null target → dormant + clear candidate. Owner/active-host may
   **re-nominate** (`handover(other)`) to replace a pending candidate without cancel first.
@@ -48,7 +49,7 @@ defmodule World.Rooms do
   entity_id remap on Save collision (reject instead);
   live Reparent/SetField / Spawn CAS (host tip only until Save);
   signed HostDelegation JWT;
-  relation notify retry queue; already-issued Room Token JWT revocation (TTL; new epoch AEAD closed);
+  already-issued Room Token JWT revocation (TTL; new epoch AEAD closed);
   grace durability across world restart; Room physical DELETE (and quota decrement);
   user_root / cuboid (empty blake3) despawn;
   catalog Frame reachability; seamless pose / grab inheritance across hosts;
@@ -586,8 +587,11 @@ defmodule World.Rooms do
   @doc "See `World.Rooms.RoomKey.rotate_room_key/2`."
   defdelegate rotate_room_key(room_id, sub), to: RoomKey
 
-  @doc "See `World.Rooms.RoomKey.rotate_for_relation_change/2`."
+  @doc "See `World.Rooms.RoomKey.rotate_for_relation_change/2` / `/3` (x00a0 / x00d7)."
   defdelegate rotate_for_relation_change(sub_a, sub_b), to: RoomKey
+
+  @doc "See `World.Rooms.RoomKey.rotate_for_relation_change/3`."
+  defdelegate rotate_for_relation_change(sub_a, sub_b, opts), to: RoomKey
 
   @doc "See `World.Rooms.RoomKey.rotate_due_room_keys/1`."
   defdelegate rotate_due_room_keys(hours), to: RoomKey

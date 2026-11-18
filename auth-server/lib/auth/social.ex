@@ -1,15 +1,16 @@
 defmodule Auth.Social do
   @moduledoc """
-  Follow + Friendship operations (x0033).
+  Follow + Friendship operations (x0033 / **x00d7**).
 
   Guarantees:
   - Directed follow / unfollow
   - Friend request only when mutual follow
   - Unfollow clears friendship (pending or accepted) for that pair (same DB transaction)
-  - After accepted friendship clear (unfriend / unfollow), notify world for Room key rotate (x00a0)
+  - Every successful `unfollow` / `unfriend` inserts a durable `relation_outbox` row in the
+    same TX (affected owners = 2hop safe upper bound) and notifies world (x00a0 / x00d7)
 
   Non-guarantees: Block, Group, push notifications, JWT claims for the graph;
-  world notify retry; already-issued Room Token JWT immediate revoke (TTL; new epoch AEAD closed).
+  already-issued Room Token JWT immediate revoke (TTL; new epoch AEAD closed).
   """
 
   require Logger
@@ -18,6 +19,7 @@ defmodule Auth.Social do
   alias Auth.Repo
   alias Auth.Social.{Follow, Friendship}
   alias Auth.WorldNotify
+  alias Auth.WorldNotify.Outbox
 
   @type user_id :: String.t() | Ecto.UUID.t()
 
@@ -46,21 +48,18 @@ defmodule Auth.Social do
          {:ok, followee_id} <- cast_id(followee_id),
          :ok <- reject_self(follower_id, followee_id),
          {:ok, %Follow{} = edge} <- fetch_follow(follower_id, followee_id) do
-      had_accepted = friends?(follower_id, followee_id)
+      owners = affected_owner_subs(follower_id, followee_id)
 
       case Repo.transaction(fn ->
              with :ok <- destroy_follow(edge),
                   :ok <- clear_friendship(follower_id, followee_id) do
-               :ok
+               Outbox.insert!(follower_id, followee_id, "unfollow", owners)
              else
                {:error, reason} -> Repo.rollback(reason)
              end
            end) do
-        {:ok, :ok} ->
-          if had_accepted do
-            WorldNotify.relation_changed(follower_id, followee_id, "unfollow")
-          end
-
+        {:ok, %Outbox{} = row} ->
+          WorldNotify.after_commit(row)
           :ok
 
         {:error, reason} ->
@@ -162,10 +161,22 @@ defmodule Auth.Social do
     with {:ok, a} <- cast_id(a),
          {:ok, b} <- cast_id(b),
          {lo, hi} <- pair(a, b),
-         {:ok, %Friendship{state: :accepted} = row} <- fetch_pair(lo, hi),
-         :ok <- destroy_friendship(row) do
-      WorldNotify.relation_changed(a, b, "unfriend")
-      :ok
+         {:ok, %Friendship{state: :accepted} = row} <- fetch_pair(lo, hi) do
+      owners = affected_owner_subs(a, b)
+
+      case Repo.transaction(fn ->
+             case destroy_friendship(row) do
+               :ok -> Outbox.insert!(a, b, "unfriend", owners)
+               {:error, reason} -> Repo.rollback(reason)
+             end
+           end) do
+        {:ok, %Outbox{} = outbox} ->
+          WorldNotify.after_commit(outbox)
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     else
       {:error, _} = err -> err
       _ -> {:error, :not_found}
@@ -196,6 +207,37 @@ defmodule Auth.Social do
 
       _ ->
         []
+    end
+  end
+
+  @doc "Outbound followee ids of `user_id`."
+  @spec followee_ids(user_id()) :: [Ecto.UUID.t()]
+  def followee_ids(user_id) do
+    case cast_id(user_id) do
+      {:ok, user_id} ->
+        case Follow.list_following(user_id) do
+          {:ok, edges} -> Enum.map(edges, & &1.followee_id)
+          _ -> []
+        end
+
+      _ ->
+        []
+    end
+  end
+
+  @doc """
+  2hop safe upper bound of Room owners whose social ACL may change when `a`/`b` revoke
+  (x00d7). Computed **before** graph mutation. Over-rotation is allowed.
+  """
+  @spec affected_owner_subs(user_id(), user_id()) :: [String.t()]
+  def affected_owner_subs(a, b) do
+    with {:ok, a} <- cast_id(a),
+         {:ok, b} <- cast_id(b) do
+      ([a, b] ++ friend_ids(a) ++ friend_ids(b) ++ followee_ids(a) ++ followee_ids(b))
+      |> Enum.map(&to_string/1)
+      |> Enum.uniq()
+    else
+      _ -> []
     end
   end
 

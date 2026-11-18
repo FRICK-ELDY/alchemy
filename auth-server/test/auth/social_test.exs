@@ -4,6 +4,7 @@ defmodule Auth.SocialTest do
   import Auth.AccountsFixtures
 
   alias Auth.{Access, Social}
+  alias Auth.WorldNotify.Outbox
 
   setup do
     alice = user_fixture(%{username: "alice_soc"})
@@ -18,6 +19,51 @@ defmodule Auth.SocialTest do
     assert {:error, :already_following} = Social.follow(alice.id, bob.id)
     assert :ok = Social.unfollow(alice.id, bob.id)
     refute Social.following?(alice.id, bob.id)
+  end
+
+  test "plain unfollow enqueues relation outbox (x00d7)", %{alice: alice, bob: bob} do
+    parent = self()
+    previous_stub = Application.get_env(:auth, :world_notify_stub)
+    Application.put_env(:auth, :world_notify_stub, parent)
+
+    on_exit(fn ->
+      if previous_stub,
+        do: Application.put_env(:auth, :world_notify_stub, previous_stub),
+        else: Application.delete_env(:auth, :world_notify_stub)
+    end)
+
+    assert {:ok, _} = Social.follow(alice.id, bob.id)
+    refute Social.friends?(alice.id, bob.id)
+
+    assert :ok = Social.unfollow(alice.id, bob.id)
+
+    assert_receive {:relation_changed, event_id, sub_a, sub_b, "unfollow", owners}, 500
+    assert sub_a == alice.id
+    assert sub_b == bob.id
+    assert bob.id in owners
+    assert alice.id in owners
+
+    row = Outbox.get(event_id)
+    assert row.status == "delivered"
+    assert row.reason == "unfollow"
+  end
+
+  test "affected_owner_subs includes FoF friends (x00d7)", %{
+    alice: alice,
+    bob: bob,
+    carol: carol
+  } do
+    for {a, b} <- [{alice, bob}, {bob, carol}] do
+      assert {:ok, _} = Social.follow(a.id, b.id)
+      assert {:ok, _} = Social.follow(b.id, a.id)
+      assert {:ok, _} = Social.request_friend(a.id, b.id)
+      assert {:ok, _} = Social.accept_friend(b.id, a.id)
+    end
+
+    owners = Social.affected_owner_subs(bob.id, carol.id)
+    assert alice.id in owners
+    assert bob.id in owners
+    assert carol.id in owners
   end
 
   test "cannot follow self", %{alice: alice} do

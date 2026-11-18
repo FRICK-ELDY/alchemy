@@ -48,6 +48,8 @@ config :auth, :trusted_proxies, ["127.0.0.1", "::1"]
 config :auth, :internal_token, "dev-internal-token"
 config :auth, :world_notify_mode, :stub
 config :auth, :world_internal_url, "http://127.0.0.1:9"
+# x00d7: stub delivers sync after commit; avoid GenServer + SQL sandbox races
+config :auth, Auth.WorldNotify.Dispatcher, enabled: false
 
 config :auth, Auth.RateLimit,
   limits: %{

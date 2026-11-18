@@ -1,9 +1,11 @@
 defmodule World.Rooms.RoomKey do
   @moduledoc """
-  Room key rotation (x007e / x00a0; x00d6 split from `World.Rooms`).
+  Room key rotation (x007e / x00a0 / **x00d7**; x00d6 split from `World.Rooms`).
 
   Guarantees: rotate / visibility-narrow / periodic due rotate bump `room_key_epoch` via epoch CAS
-  (lost races retry) and park the previous key in `RoomKeyGrace`.
+  (lost races retry) and park the previous key in `RoomKeyGrace`. Relation revoke rotates
+  `needs_social?` rooms owned by `affected_owner_subs` (2hop upper bound from auth) with
+  optional `event_id` idempotency via `World.RelationEvents`.
 
   Non-guarantees: owner/auth policy beyond `owner_matches/2` on `rotate_room_key/2`; visibility
   parsing (`World.Rooms.set_visibility/3` orchestrates and calls `narrow_visibility_with_rotate/2`).
@@ -18,6 +20,7 @@ defmodule World.Rooms.RoomKey do
   import World.Rooms.Internal,
     only: [get_room: 1, owner_matches: 2, set_visibility_only: 2, storage_error: 2]
 
+  alias World.RelationEvents
   alias World.Rooms.Room
   alias World.Rooms.RoomKeyGrace
   alias World.Visibility
@@ -47,17 +50,80 @@ defmodule World.Rooms.RoomKey do
   def rotate_room_key(_, _), do: {:error, :invalid_room_id}
 
   @doc """
-  x00a0: after auth friendship/follow revoke, rotate social-visibility rooms owned by
-  either party. Returns list of `%{room_id:, room_key_epoch:}` (`room_key_epoch` may be `:noop`).
+  x00a0 / x00d7: after auth friendship/follow revoke, rotate social-visibility rooms owned by
+  `affected_owner_subs` (defaults to either party). Optional `event_id` is recorded **after**
+  a successful rotate batch (so 503 / partial failure stays retriable); already-recorded ids
+  return `{:ok, :already_applied}`. Idempotent “epoch が二重に進まない” holds **only after
+  record succeeds**; check-then-act races before record may over-rotate (safe). Mid-batch
+  storage failure leaves the event unrecorded — auth outbox retry closes the rest.
   """
   @spec rotate_for_relation_change(owner_sub(), owner_sub()) ::
-          {:ok, [%{room_id: room_id(), room_key_epoch: non_neg_integer() | :noop}]}
+          {:ok,
+           [%{room_id: room_id(), room_key_epoch: non_neg_integer() | :noop}] | :already_applied}
           | {:error, storage_error()}
-  def rotate_for_relation_change(sub_a, sub_b)
-      when is_binary(sub_a) and sub_a != "" and is_binary(sub_b) and sub_b != "" do
+  def rotate_for_relation_change(sub_a, sub_b), do: rotate_for_relation_change(sub_a, sub_b, [])
+
+  @spec rotate_for_relation_change(owner_sub(), owner_sub(), keyword()) ::
+          {:ok,
+           [%{room_id: room_id(), room_key_epoch: non_neg_integer() | :noop}] | :already_applied}
+          | {:error, storage_error()}
+  def rotate_for_relation_change(sub_a, sub_b, opts)
+      when is_binary(sub_a) and sub_a != "" and is_binary(sub_b) and sub_b != "" and is_list(opts) do
+    owners = relation_affected_owners(opts, sub_a, sub_b)
+    event_id = Keyword.get(opts, :event_id)
+    rotate_relation_if_new(event_id, owners)
+  end
+
+  def rotate_for_relation_change(_, _, _), do: {:ok, []}
+
+  defp relation_affected_owners(opts, sub_a, sub_b) do
+    case Keyword.get(opts, :affected_owner_subs) do
+      list when is_list(list) and list != [] ->
+        list
+        |> Enum.filter(&(is_binary(&1) and &1 != ""))
+        |> Enum.uniq()
+
+      _ ->
+        [sub_a, sub_b]
+    end
+  end
+
+  defp rotate_relation_if_new(event_id, owners) do
+    case RelationEvents.applied?(event_id) do
+      true -> {:ok, :already_applied}
+      {:error, :storage_error} -> {:error, :storage_error}
+      false -> rotate_and_record(event_id, owners)
+    end
+  end
+
+  defp rotate_and_record(event_id, owners) do
+    case rotate_social_rooms_for_owners(owners) do
+      {:ok, rotated} -> record_relation_event(event_id, rotated)
+      {:error, _} = err -> err
+    end
+  end
+
+  defp record_relation_event(event_id, rotated) do
+    case RelationEvents.record(event_id) do
+      :ok ->
+        {:ok, rotated}
+
+      :already_applied ->
+        # Concurrent deliver finished recording; rotate work already done this call.
+        {:ok, rotated}
+
+      {:error, :storage_error} ->
+        # Leave unrecorded so auth retry can close; may over-rotate.
+        {:error, :storage_error}
+    end
+  end
+
+  defp rotate_social_rooms_for_owners([]), do: {:ok, []}
+
+  defp rotate_social_rooms_for_owners(owners) when is_list(owners) do
     query =
       from r in Room,
-        where: r.owner_sub in ^[sub_a, sub_b]
+        where: r.owner_sub in ^owners
 
     try do
       rooms = World.Repo.all(query)
@@ -71,14 +137,35 @@ defmodule World.Rooms.RoomKey do
     end
   end
 
-  def rotate_for_relation_change(_, _), do: {:ok, []}
-
   defp accumulate_relation_rotate(room, acc) do
+    case maybe_relation_rotate_test_inject(acc) do
+      {:halt, _} = halt -> halt
+      :cont -> do_accumulate_relation_rotate(room, acc)
+    end
+  end
+
+  # Compiled only under MIX_ENV=test — absent from prod/dev beams (no runtime get_env).
+  if Mix.env() == :test do
+    defp maybe_relation_rotate_test_inject(acc) do
+      case Application.get_env(:world, :relation_rotate_fail_after) do
+        n when is_integer(n) and n >= 0 and length(acc) >= n ->
+          {:halt, {:error, :storage_error}}
+
+        _ ->
+          :cont
+      end
+    end
+  else
+    defp maybe_relation_rotate_test_inject(_acc), do: :cont
+  end
+
+  defp do_accumulate_relation_rotate(room, acc) do
     case do_rotate_room_key(room) do
       {:ok, epoch} ->
         {:cont, [%{room_id: room.room_id, room_key_epoch: epoch} | acc]}
 
       {:error, :storage_error} ->
+        # Do not record event_id (caller); auth retry re-runs the batch (over-rotate OK).
         {:halt, {:error, :storage_error}}
 
       {:error, _} ->
