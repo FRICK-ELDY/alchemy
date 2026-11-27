@@ -34,6 +34,7 @@ mod metrics;
 mod mvcc_mirror;
 mod operator_prefs;
 mod owned_prediction;
+mod pending_local_ops;
 mod place_read;
 mod refresh_vault;
 mod render_wgpu;
@@ -189,6 +190,7 @@ fn main() -> Result<()> {
         presence_peer_subs: Mutex::new(Vec::new()),
         epoch: crate::epoch_view::EpochViewState::new(),
         owned_prediction: Mutex::new(crate::owned_prediction::OwnedPrediction::new()),
+        pending_local: crate::pending_local_ops::PendingLocalGate::new(),
         eye_pose_cache: Mutex::new(None),
     });
     // Sync AUTH/WORLD/ASSETS/ZENOH into process env for supervised host spawn.

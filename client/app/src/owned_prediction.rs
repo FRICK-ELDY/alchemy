@@ -7,107 +7,32 @@
 //! Non-guarantees: full `acked_intent_seq` / `Entity.holder` Snap wiring (fields on
 //! wire as of x00af; reject still uses authority-distance after a short grace);
 //! user_root loco prediction (Epoch eye path); rewriting Epoch GPU storage rows.
+//!
+//! Pose / nlerp / [`ReconcileMode`] / Keep–Blend thresholds are owned by
+//! [`crate::pending_local_ops`] (x00e6); this module re-exports them for Grab callers.
 
-/// How predicted pose is reconciled with host authority.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReconcileMode {
-    /// Prediction wins (error ≤ keep threshold).
-    Keep,
-    /// Soft pull toward authority (keep < error ≤ blend).
-    Blend,
-    /// Hard snap to authority (reject, large error, or explicit snap).
-    Snap,
-}
+pub use crate::pending_local_ops::ReconcileMode;
+
+/// Grab-facing pose type — same layout/API as [`crate::pending_local_ops::PendingPose`].
+pub type PredictionPose = crate::pending_local_ops::PendingPose;
 
 /// Default keep distance (meters) — held object stays with the hand.
-pub const DEFAULT_KEEP_THRESHOLD_M: f32 = 0.05;
+pub const DEFAULT_KEEP_THRESHOLD_M: f32 = crate::pending_local_ops::DEFAULT_KEEP_THRESHOLD_M;
 /// Beyond this, snap instead of blend. Also the post-grace host-accept radius.
-pub const DEFAULT_BLEND_THRESHOLD_M: f32 = 0.35;
+pub const DEFAULT_BLEND_THRESHOLD_M: f32 = crate::pending_local_ops::DEFAULT_BLEND_THRESHOLD_M;
 /// Blend factor toward authority when in [`ReconcileMode::Blend`].
-pub const DEFAULT_BLEND_ALPHA: f32 = 0.35;
+pub const DEFAULT_BLEND_ALPHA: f32 = crate::pending_local_ops::DEFAULT_BLEND_ALPHA;
 /// Optimistic Applied Frame count before reject distance is checked.
 /// With `N`, frames `1..=N` stay accepted; reject is eligible from frame `N+1`
 /// (`held_auth_frames <= N` → optimistic). Default 2 → reject from the 3rd Applied.
 pub const DEFAULT_REJECT_GRACE_FRAMES: u32 = 2;
 
-#[derive(Clone, Copy, Debug)]
-pub struct PredictionPose {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-    pub qx: f32,
-    pub qy: f32,
-    pub qz: f32,
-    pub qw: f32,
-}
-
-impl PredictionPose {
-    pub fn xyz(x: f32, y: f32, z: f32) -> Self {
-        Self {
-            x,
-            y,
-            z,
-            qx: 0.0,
-            qy: 0.0,
-            qz: 0.0,
-            qw: 1.0,
-        }
-    }
-
-    pub fn xyz_quat(x: f32, y: f32, z: f32, qx: f32, qy: f32, qz: f32, qw: f32) -> Self {
-        Self {
-            x,
-            y,
-            z,
-            qx,
-            qy,
-            qz,
-            qw,
-        }
-    }
-
-    pub fn distance_xyz(self, other: Self) -> f32 {
-        let dx = self.x - other.x;
-        let dy = self.y - other.y;
-        let dz = self.z - other.z;
-        (dx * dx + dy * dy + dz * dz).sqrt()
-    }
-
-    /// Hemisphere-aware nlerp (same path for near-parallel quats; no dead slerp branch).
-    pub fn lerp_toward(self, authority: Self, t: f32) -> Self {
-        let t = t.clamp(0.0, 1.0);
-        let mut q_pred = [self.qx, self.qy, self.qz, self.qw];
-        let q_auth = [authority.qx, authority.qy, authority.qz, authority.qw];
-        let mut dot = q_pred[0] * q_auth[0]
-            + q_pred[1] * q_auth[1]
-            + q_pred[2] * q_auth[2]
-            + q_pred[3] * q_auth[3];
-        if dot < 0.0 {
-            q_pred = [-q_pred[0], -q_pred[1], -q_pred[2], -q_pred[3]];
-            dot = -dot;
-        }
-        let _ = dot; // hemisphere fix only; nlerp is stable for near-1 dots
-        let qx = q_pred[0] + (q_auth[0] - q_pred[0]) * t;
-        let qy = q_pred[1] + (q_auth[1] - q_pred[1]) * t;
-        let qz = q_pred[2] + (q_auth[2] - q_pred[2]) * t;
-        let qw = q_pred[3] + (q_auth[3] - q_pred[3]) * t;
-        let inv = 1.0 / (qx * qx + qy * qy + qz * qz + qw * qw).sqrt().max(1e-6);
-        Self {
-            x: self.x + (authority.x - self.x) * t,
-            y: self.y + (authority.y - self.y) * t,
-            z: self.z + (authority.z - self.z) * t,
-            qx: qx * inv,
-            qy: qy * inv,
-            qz: qz * inv,
-            qw: qw * inv,
-        }
-    }
-}
-
 /// Reconcile local prediction with host authority.
 ///
-/// `authority_accepted == false` (Grab reject / authority NACK) always Snaps.
-/// Grab hold path uses [`OwnedPrediction::reconcile_held`] (Keep on large lag while accepted).
+/// `authority_accepted == false` (Grab reject / authority NACK) maps to
+/// [`crate::pending_local_ops::ErrorSmoothing::reconcile`] with `teleport=true`
+/// (forced Snap). Grab hold path uses [`OwnedPrediction::reconcile_held`]
+/// (Keep on large lag while accepted — separate semantics).
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn reconcile_owned(
     predicted: PredictionPose,
@@ -117,20 +42,12 @@ pub fn reconcile_owned(
     blend_threshold_m: f32,
     blend_alpha: f32,
 ) -> (PredictionPose, ReconcileMode) {
-    if !authority_accepted {
-        return (authority, ReconcileMode::Snap);
+    crate::pending_local_ops::ErrorSmoothing {
+        keep_threshold_m,
+        blend_threshold_m,
+        blend_alpha,
     }
-    let err = predicted.distance_xyz(authority);
-    if err <= keep_threshold_m {
-        (predicted, ReconcileMode::Keep)
-    } else if err <= blend_threshold_m {
-        (
-            predicted.lerp_toward(authority, blend_alpha),
-            ReconcileMode::Blend,
-        )
-    } else {
-        (authority, ReconcileMode::Snap)
-    }
+    .reconcile(predicted, authority, !authority_accepted)
 }
 
 /// Whether host appears to have accepted the Grab (distance heuristic).
