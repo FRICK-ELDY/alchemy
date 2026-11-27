@@ -17,12 +17,16 @@
 | FrameBridge および／または host `sim.rs` バリアが Arena ローテ＋Carry-Over 経由 | scene_store / LiveEditLedger facade（→ Phase 1b） |
 | 既存 `EpochSnapshotPair` 1 store 出版を維持（Ring3 API 大破壊なし） | SoftLease / TRASH / StableUuid / `op_chain_hash` |
 | bridge 経路でも先祖返りしないこと；rust-ci（client workspace test）Green | `mvcc/` → `sim_pages` 改称（→ [x00e7](x00e7-mvcc-rename-sim-pages.md)） |
-| 出版は Prev/Published **as-is**（TELEPORT 含む）。**クリアは [x00db](x00db-sim-arena-carry-over.md) Step 0 の責務**を配線で飛ばさない | 出版境界での TELEPORT 二重クリア／独自クリア経路の新設 |
+| 出版は Prev/Published **as-is**（TELEPORT 含む）。**クリアは [x00db](x00db-sim-arena-carry-over.md)**（Step 0 Work clear ＋ rotate の Published 離脱 clear）を配線で飛ばさない | 出版境界での TELEPORT 二重クリア／独自クリア経路の新設 |
 | 新規外部クレートなし | 物理ソルバ置換、Rapier |
 
 ## `STATE_TELEPORT_THIS_TICK`（本スライス）
 
-- **クリア本体は x00db**（Work / Step 0）。本スライスはバリア順が `Carry-Over(+TELEPORT clear) → … → publish → rotate` を崩さないことだけを保証する。
+- **クリア本体は x00db**（Step 0 の Work clear ＋ `rotate_faces` の Published 離脱 clear）。本スライスはバリア順だけを保証する。
+- **必須順序**: `Carry-Over(+ Work TELEPORT clear) → writers（`write_*`）→ **publish（Prev/Published スナップショット）→ rotate`。
+  - Published 離脱 clear は面バッファを **in-place** 更新する。`publish` より後・または Ring3 が同一面メモリを rotate またぎで保持すると、読取側から TP が消える。
+  - 出版はコピーまたは arc-swap で **rotate 前の内容**を渡すこと。live 参照の跨 rotate 共有は禁止。
+- Work 書き込みは **`SimArena::write_*` のみ**（本線で raw `work_mut` を呼ばない）。`work_mut`＋`mark_dirty` なしは dirty 窓から外れ、Carry-Over **と** Published 離脱 clear の両方の対象外になり TELEPORT 蘇り経路が残る。型／CI で raw を封じるのは任意（現状は契約＋レビューで縛る）。
 - Ring3（GPU）は Published 面の TELEPORT を読んで 1 世代スナップすればよい。
 
 ## 触るファイル（予定）
@@ -43,6 +47,6 @@
 ## 完了条件（本スライス = Phase 1a 閉じ）
 
 1. 先祖返りテストが bridge（または host バリア）経路でも成立。
-2. バリアが x00db の Carry-Over＋TELEPORT Work clear を経由していること（スキップ経路を作らない）。
+2. バリアが x00db の Carry-Over＋TELEPORT 寿命（Work clear / Published 離脱 clear）を経由し、**publish → rotate** 順を守ること（スキップ経路・live 跨 rotate を作らない）。
 3. `cargo test --workspace`（`client/`）相当の rust-ci Green。新規クレートなし。
 4. scene_store・LiveEditLedger 改修・`mvcc` 改称はしない。

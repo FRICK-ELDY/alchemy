@@ -5,7 +5,7 @@
 //! demo id constants; [`scene_entry_color_rgba`]; runtime held slots via
 //! [`slot_graph::SlotGraph`] (x0056); Zero-Base spatial lifecycle primitives in
 //! [`tape`] / [`topology`] / [`spatial`] / [`xpbd`] / [`bridge`] / [`mvcc`] (x00a3);
-//! Sim Arena 3-face scaffold in [`sim_arena`] (x00da; Carry-Over → x00db).
+//! Sim Arena 3-face + Carry-Over in [`sim_arena`] (x00da / x00db; bridge → x00dc).
 //! Non-guarantees: Rapier / Dual-AST Kernel / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); CRDT / Zenoh / GPU wiring (client `epoch_view`);
