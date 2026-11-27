@@ -1,8 +1,8 @@
-//! Phase 1b Scene Store ops (`entity_id: u32`) — x00de.
+//! Phase 1b Scene Store ops (`entity_id: u32`) — x00de / x00e3.
 //!
 //! Contract sample in roadmap §6 uses `StableUuid` / `wire_slot` (Phase 1c shape).
 //! Here `node` / `parent` are [`EntityId`]; `wire_slot` is omitted (wire id = entity).
-//! TRASH_UUID deletion is **not** in this slice.
+//! Logical delete = [`CrdtOp::MoveNode`] with `new_parent = Some(TRASH_ENTITY_ID)`.
 
 use super::{EntityId, OpTimestamp};
 
@@ -42,7 +42,8 @@ pub enum CrdtOp {
         node: EntityId,
         parent: Option<EntityId>,
     },
-    /// Reparent `node` under `new_parent` (`None` = world root).
+    /// Reparent `node` under `new_parent` (`None` = world root;
+    /// `Some(TRASH_ENTITY_ID)` = logical delete — virtual parent, not a sparse row).
     /// Cyclic moves are Reject / No-op ([`super::ApplyOutcome::RejectedCycle`]).
     MoveNode {
         ts: OpTimestamp,

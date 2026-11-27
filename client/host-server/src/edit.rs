@@ -1,5 +1,5 @@
 //! Deterministic edit lane (`…/edit`) — Spawn/Despawn + live Reparent/SetField + Save
-//! (x00b2–x00b9 / x00e0 facade / x00e2 SoftLease).
+//! (x00b2–x00b9 / x00e0 facade / x00e2 SoftLease / x00e3 TRASH).
 //!
 //! Guarantees: AEAD `EditProposal` → session Ed25519 → Dual-auth / shared control rate /
 //! `control_seq`; single op.
@@ -8,6 +8,7 @@
 //! (inbox closed / apply fail → reject `APPLY` + `release_reserved`, tip unchanged).
 //! Reparent/SetField: SoftLease gate (x00e2) then quarantine then optimistic
 //! [`LiveEditLedger`] → `scene_store` apply; SoftLease conflict → reject `SOFT_LEASE`;
+//! `TRASH_ENTITY_ID` as reparent parent → `NOT_FOUND` (despawn path only; x00e3);
 //! **tip + accept Commit after** FrameBridge queue **and** barrier — never rewind tip;
 //! queue/barrier/inbox fail → reject `APPLY`.
 //! Save (x00b7–x00b9): world packed CAS folds pending spawns/despawns + parent/SetField;
@@ -615,6 +616,11 @@ fn save_patches_from_ledger(
         if led.pending_spawns.contains_key(&eid) {
             continue;
         }
+        // Trashed rows stay in sparse until GC/Save clear — not live Save diffs
+        // (canonical delete is `pending_despawns` / x00e3).
+        if !led.contains_entity(eid) {
+            continue;
+        }
         let canon = by_id.get(&eid);
         let live_parent = led.parent_of(eid);
         let canon_parent = canon.map(|e| e.parent_entity_id).unwrap_or(0);
@@ -693,6 +699,15 @@ fn apply_reparent(
         .map_err(|_| anyhow!("LiveEditLedger poisoned"))?;
     let tip = led.tip;
     if !led.contains_entity(r.child_entity_id) {
+        return Ok((
+            Some(reject_commit(proposal, edit_reject::NOT_FOUND, tip)),
+            None,
+        ));
+    }
+    // TRASH_ENTITY_ID is despawn-only (x00e3); not a reparent target.
+    if alchemy_shared_sim::is_trash_entity_id(r.new_parent_entity_id)
+        || alchemy_shared_sim::is_trash_entity_id(r.child_entity_id)
+    {
         return Ok((
             Some(reject_commit(proposal, edit_reject::NOT_FOUND, tip)),
             None,
