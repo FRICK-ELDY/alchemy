@@ -476,6 +476,10 @@ pub struct SharedState {
     pub epoch: crate::epoch_view::EpochViewState,
     /// Local user_root / Grab prediction vs host authority (x00ab).
     pub owned_prediction: Mutex<crate::owned_prediction::OwnedPrediction>,
+    /// Grab-agnostic pending local ops + Release/Acquire emptiness gate (x00e6).
+    /// Display only; never mutates Published / EpochSnapshotPair.
+    /// Sole mutation API: [`crate::pending_local_ops::PendingLocalGate`] methods.
+    pub pending_local: crate::pending_local_ops::PendingLocalGate,
     /// FPS eye TRS frozen with [`Self::begin_display_frame`] (x0092; avoid N× lock per frame).
     /// Keyed by `local_user_root` id so Presence races cannot serve a stale anchor.
     pub(crate) eye_pose_cache: Mutex<Option<(u32, EntityPose)>>,
@@ -786,11 +790,36 @@ impl SharedState {
         self.display_pose_for_draw(entity_id, wire).0
     }
 
-    /// Like [`Self::display_pose_for`], plus whether the pose is an owned-prediction
+    /// Like [`Self::display_pose_for`], plus whether the pose is a local-prediction
     /// override (draw must use `model_override` in the same decision).
+    ///
+    /// Priority: owned Grab prediction (x00ab) → PendingLocalOps (x00e6) → Epoch display.
     pub fn display_pose_for_draw(&self, entity_id: u32, wire: EntityPose) -> (EntityPose, bool) {
         if let Ok(owned) = self.owned_prediction.lock() {
             if let Some(p) = owned.display_override(entity_id) {
+                return (
+                    EntityPose {
+                        x: p.x,
+                        y: p.y,
+                        z: p.z,
+                        qx: p.qx,
+                        qy: p.qy,
+                        qz: p.qz,
+                        qw: p.qw,
+                        sx: wire.sx,
+                        sy: wire.sy,
+                        sz: wire.sz,
+                        r: wire.r,
+                        g: wire.g,
+                        b: wire.b,
+                        a: wire.a,
+                    },
+                    true,
+                );
+            }
+        }
+        if self.pending_local.any_pending() {
+            if let Some(p) = self.pending_local.display_override(entity_id) {
                 return (
                     EntityPose {
                         x: p.x,
@@ -2286,14 +2315,14 @@ impl SceneGpu {
         view_proj: Mat4,
         entity_id: u32,
         pose: EntityPose,
-        owned_override: bool,
+        pred_override: bool,
         scale_mul: Vec3,
         extra_rot: glam::Quat,
         color: [f32; 4],
     ) -> Uniforms {
-        // x00ab: owned Grab prediction must win over Epoch `out[pack]` (which ignores CPU TRS).
-        // `owned_override` comes from the same `display_pose_for_draw` lock as `pose`.
-        if owned_override {
+        // Local prediction override (x00ab Grab or x00e6 PendingLocalOps) must win over
+        // Epoch `out[pack]` (which ignores CPU TRS). Flag comes from `display_pose_for_draw`.
+        if pred_override {
             let model = Mat4::from_scale_rotation_translation(
                 pose.scale() * scale_mul,
                 pose.rotation() * extra_rot,
@@ -2404,9 +2433,9 @@ impl SceneGpu {
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 for (slot, (id, wire)) in poses.into_iter().enumerate().take(MESH_DRAW_SLOTS) {
-                    // Mesh asset tilt stays client-local; TRS from display (Epoch or owned pred).
+                    // Mesh asset tilt stays client-local; TRS from display (Epoch or local pred).
                     // Height gradient uses display Y so color tracks the visible pose.
-                    let (display, owned) = self.shared.display_pose_for_draw(id, wire);
+                    let (display, pred_override) = self.shared.display_pose_for_draw(id, wire);
                     let height_t = (display.y / 5.0).clamp(0.0, 1.0);
                     let coin_color = [
                         0.95 * height_t + 0.15,
@@ -2418,7 +2447,7 @@ impl SceneGpu {
                         view_proj,
                         id,
                         display,
-                        owned,
+                        pred_override,
                         Vec3::splat(visual_scale),
                         mesh_tilt,
                         coin_color,
@@ -2479,7 +2508,7 @@ impl SceneGpu {
                     .get(&id)
                     .copied()
                     .unwrap_or(BOX_HALF_EXTENT);
-                let (display, owned) = self.shared.display_pose_for_draw(id, wire);
+                let (display, pred_override) = self.shared.display_pose_for_draw(id, wire);
                 let mut color = wire.color();
                 if highlight_entity == Some(id) {
                     // Brighten so look-aim / Grab target is obvious without a crosshair.
@@ -2494,7 +2523,7 @@ impl SceneGpu {
                     view_proj,
                     id,
                     display,
-                    owned,
+                    pred_override,
                     Vec3::splat(he * 2.0),
                     identity_rot,
                     color,
