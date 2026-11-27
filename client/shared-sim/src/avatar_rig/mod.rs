@@ -110,10 +110,8 @@ mod tests {
         let mut rig = AvatarRigBuffer::with_capacity(3);
         rig.push_pinned(AvatarAnchorKind::Root, [0.0, 0.0, 0.0])
             .unwrap();
-        rig.push_secondary(0, 1.0, 0.0, [0.0, -1.0, 0.0])
-            .unwrap();
-        rig.push_secondary(1, 1.0, 1e-3, [0.0, -1.0, 0.0])
-            .unwrap();
+        rig.push_secondary(0, 1.0, 0.0, [0.0, -1.0, 0.0]).unwrap();
+        rig.push_secondary(1, 1.0, 1e-3, [0.0, -1.0, 0.0]).unwrap();
 
         let mut world = AvatarAnchorWorld::default();
         assert!(world.set(AvatarAnchorKind::Root, [0.0, 0.0, 0.0]));
@@ -137,10 +135,9 @@ mod tests {
             (dist_mid_pin - 1.0).abs() < 0.1,
             "hard mid near rest=1 (dist={dist_mid_pin})"
         );
-        let dist_tip_mid = ((tip[0] - mid[0]).powi(2)
-            + (tip[1] - mid[1]).powi(2)
-            + (tip[2] - mid[2]).powi(2))
-        .sqrt();
+        let dist_tip_mid =
+            ((tip[0] - mid[0]).powi(2) + (tip[1] - mid[1]).powi(2) + (tip[2] - mid[2]).powi(2))
+                .sqrt();
         assert!(
             (dist_tip_mid - 1.0).abs() < 0.2,
             "soft tip near rest=1 (dist={dist_tip_mid})"
@@ -206,15 +203,11 @@ mod tests {
         assert!(rig
             .push_secondary(BONE_PINNED, 1.0, 0.0, [0.0, -1.0, 0.0])
             .is_none());
-        assert!(rig
-            .push_secondary(99, 1.0, 0.0, [0.0, -1.0, 0.0])
-            .is_none());
+        assert!(rig.push_secondary(99, 1.0, 0.0, [0.0, -1.0, 0.0]).is_none());
         assert!(rig
             .push_secondary(0, f32::NAN, 0.0, [0.0, -1.0, 0.0])
             .is_none());
-        assert!(rig
-            .push_secondary(0, 1.0, -0.1, [0.0, -1.0, 0.0])
-            .is_none());
+        assert!(rig.push_secondary(0, 1.0, -0.1, [0.0, -1.0, 0.0]).is_none());
         assert!(rig
             .push_secondary(0, 1.0, 0.0, [f32::INFINITY, 0.0, 0.0])
             .is_none());
