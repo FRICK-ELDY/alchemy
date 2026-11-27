@@ -14,10 +14,10 @@
 | 保証する | 保証しない |
 |:---|:---|
 | `glam` / `wide` が `alchemy-shared-sim` の依存として解決される（Q5） | host/app 本線配線・`ALCHEMY_SIM_BACKEND` |
-| [`step_inertia`](../../client/shared-sim/src/mvcc/inertia.rs) が SIMD 既定の **SoA ビルディングブロック**（アダプタ未配線）；[`step_inertia_scalar`](../../client/shared-sim/src/mvcc/inertia.rs) が参照として残る | 拘束ソルバー全体の SIMD 化・`PageXpbdAdapter` / `predict_integrate` 置換（本番ティックは従来どおり Epoch XPBD） |
+| [`step_inertia`](../../client/shared-sim/src/sim_pages/inertia.rs) が SIMD 既定の **SoA ビルディングブロック**（アダプタ未配線）；[`step_inertia_scalar`](../../client/shared-sim/src/sim_pages/inertia.rs) が参照として残る | 拘束ソルバー全体の SIMD 化・`PageXpbdAdapter` / `predict_integrate` 置換（本番ティックは従来どおり Epoch XPBD） |
 | 同一 `curr`/`prev`/重力/`dt` で scalar と SIMD の SoA 位置が **ビット一致** | クロスアーキ決定論（Q2 未決） |
 | `math_det`（`-0.0` 正規化・有限検疫・IEEE `f32` √ による normalize）が `forbid(unsafe_code)` 下で動く | `-fma` ワークスペース一括 rustflags；√ の `libm` 経由は主張しない |
-| 既存 `cargo test -p alchemy-shared-sim --lib mvcc` が Green のまま | Phase 2 wgpu / Phase 3 dirty デルタ |
+| 既存 `cargo test -p alchemy-shared-sim --lib sim_pages` が Green のまま（旧 `--lib mvcc`；x00e7 改称） | Phase 2 wgpu / Phase 3 dirty デルタ |
 
 ---
 
@@ -33,6 +33,6 @@
 
 ## 完了条件
 
-1. `cargo test -p alchemy-shared-sim --lib mvcc` Green（inertia scalar≡simd 含む）。
+1. `cargo test -p alchemy-shared-sim --lib sim_pages` Green（inertia scalar≡simd 含む；旧 `--lib mvcc`／x00e7）。
 2. Epoch / host / app 本線に差分なし（アダプタの XPBD 経路は置換しない）。
 3. roadmap 目次で本スライスが `done`。

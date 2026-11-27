@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use alchemy_shared_sim::mvcc::{
+use alchemy_shared_sim::sim_pages::{
     HotPhysicsPage, KinematicPoseF32, PublishedFace, PublishedPair, ENTITIES_PER_PAGE,
 };
 

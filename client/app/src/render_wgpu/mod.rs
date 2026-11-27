@@ -1,6 +1,6 @@
 //! MVCC page GPU interpolate path (x00ac).
 //!
-//! Guarantees: [`shaders::INTERP_WGSL`] matches [`alchemy_shared_sim::mvcc::GpuTransferableSoA`]
+//! Guarantees: [`shaders::INTERP_WGSL`] matches [`alchemy_shared_sim::sim_pages::GpuTransferableSoA`]
 //! field order; naga parses the module with entry `cs_interpolate_entities`.
 //! Non-guarantees: replacing Epoch [`crate::epoch_view::INTERPOLATE_WGSL`] draw path;
 //! host page publish; multi-page upload.

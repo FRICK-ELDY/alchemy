@@ -1,5 +1,5 @@
 // HotPhysicsPage GpuTransferableSoA interpolate (x00ac / mvcc_xpbd.md §4.6).
-// Layout must match alchemy_shared_sim::mvcc::page::GpuTransferableSoA field order.
+// Layout must match alchemy_shared_sim::sim_pages::page::GpuTransferableSoA field order.
 
 struct GpuTransferableSoA {
     pos_x: array<f32, 1024>,

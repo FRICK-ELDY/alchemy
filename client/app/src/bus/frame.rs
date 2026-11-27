@@ -59,7 +59,7 @@ use alchemy_protocol::{
     frame_lod_key, moore_neighborhood_cells, scene_entry_is_user_root, snapshot_key,
     FrameTickDecision, Message, RenderFrame, FRAME_TICK_GAP_RESYNC, MOORE_NEIGHBORHOOD_LEN,
 };
-use alchemy_shared_sim::mvcc::{CellId, EntityDirectory};
+use alchemy_shared_sim::sim_pages::{CellId, EntityDirectory};
 use anyhow::{Context, Result};
 use zenoh::bytes::ZBytes;
 use zenoh::Wait;

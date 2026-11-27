@@ -14,7 +14,7 @@
 | `room_seq` | `LiveEditLedger.tip` → `scene_rev` / EditCommit | 思想同型。Property-level LWW は Phase 1b。`op_chain_hash` は **Phase 1c 枠のみ**（DoD 必須外） |
 | 30Hz 密デルタ | RenderFrame `net_tick` + dirty（latest、欠落は snapshot） | Reliable Op ログとは別クラス |
 | 計画的 handover 速度 | **`…/sim_state`（正本）** | `frame_delta_xyz` は副案 |
-| 実行面ページ資産 | `client/shared-sim/src/mvcc/` → 改称予定 **`sim_pages`** | SSoT ではない。opt-in backend |
+| 実行面ページ資産 | `client/shared-sim/src/sim_pages/`（旧 `mvcc/`） | SSoT ではない。opt-in backend |
 
 ### モジュール配置（shared-sim と host の境界）
 
@@ -23,18 +23,12 @@
 | `shared-sim` | **`scene_store/`**（x00dd–x00e0） | SparseSet・親子木・LWW/循環・`SimPatch` 生成・決定論 Undo 逆 Op 計算 | Room Token 検証・Zenoh put・`actor_id` 上書き・Save HTTP |
 | `host-server` | **`LiveEditLedger` facade**（x00e0） | 検疫ゲート、`scene_rev` 採番、edit ワイヤ、Save 折込、facade が `scene_store` を呼ぶ | 疎コンポーネントの第二コピー（並存禁止） |
 | `shared-sim` | **`sim_arena/`**（新） | 3 面 SoA・Carry-Over・bitmask・Depth Bucket | ネットワーク・時計 |
-| `shared-sim` | `mvcc/` → **`sim_pages/`** | ページプール資産（opt-in） | 品質本線 SSoT |
+| `shared-sim` | **`sim_pages/`**（旧 `mvcc/`） | ページプール資産（opt-in） | 品質本線 SSoT |
 | `shared-sim` / host | 既存 `FrameBridge` / `EpochSnapshotPair`（`arc-swap`） | Prev/Published **出版**（読取側ロック待ちゼロ） | Sim Arena 内部の Work 面を直接公開しない |
 
 **並存禁止の意味**: host に古い `LiveEditLedger` 状態辞書を残したまま `scene_store` にも同じ親子を持たない。移行後の正は `shared-sim::scene_store`、host は入口と採番と永続 I/O だけ。
 
-### モジュール改称方針（コードは後段）
-
-| 現行 | 予定名 | 役割 |
-|:---|:---|:---|
-| `shared-sim/src/mvcc/` | **`sim_pages/`** | ページ単位 SoA プール・学習／opt-in 資産 |
-| （未実装）実行面 3 面 | **`sim_arena/`** | Prev / Published / Work |
-| （実装済）疎ストア | **`scene_store/`** | Host-Sequenced + SparseSet。host `LiveEditLedger` は facade（x00e0） |
+**改称履歴**: `shared-sim/src/mvcc/` → `sim_pages/`（[x00e7](slices/x00e7-mvcc-rename-sim-pages.md)）。型名・`mvcc_xpbd` 識別子は据え置き。
 
 ---
 
@@ -143,7 +137,7 @@ flowchart TB
 | **B. セッション構造** | **セッション疎 SSoT** | 親子・属性・spawn/despawn・Undo・連番 | **`shared-sim::scene_store` + host `LiveEditLedger` facade**（x00e0 / x00e1 done · Phase 1b 閉じ） | host に第二コピーを残さない（§冒頭の配置表） |
 | **C. 60Hz 密実行** | **実行面 SSoT** | 座標・delta・bitmask・物理パラメータ | `EpochSheet` / FrameBridge（目標: Sim Arena 3 面） | B から `SimPatch`。密 Transform を CRDT に載せない |
 | **D. ワイヤ投影** | **否** | 配送用の見え方 | SceneManifest、RenderFrame、cell/lod | B/C から生成。正本を名乗らせない |
-| **E. ページプール** | **否** | opt-in / 学習資産 | `mvcc/` → **`sim_pages`** | 品質本線の座を奪わない |
+| **E. ページプール** | **否** | opt-in / 学習資産 | **`sim_pages`**（旧 `mvcc/`） | 品質本線の座を奪わない |
 
 **禁止**: B を残したまま別モジュールを「Scene Store SSoT」と名乗る並存。
 
@@ -405,11 +399,11 @@ pub struct NetTransformDelta {
 | [x00e4](slices/x00e4-three-layer-ids.md) | 1c | three-layer-ids | done | 3層 ID |
 | [x00e5](slices/x00e5-op-chain-room-snapshot.md) | 1c | op-chain-room-snapshot | done | op_chain_hash + RoomSnapshot 枠 |
 | [x00e6](slices/x00e6-pending-local-ops.md) | 1c | pending-local-ops | done | PendingLocalOps（app） |
-| [x00e7](slices/x00e7-mvcc-rename-sim-pages.md) | 改称 | mvcc-rename-sim-pages | planned | `mvcc/` → `sim_pages/` |
+| [x00e7](slices/x00e7-mvcc-rename-sim-pages.md) | 改称 | mvcc-rename-sim-pages | done | `mvcc/` → `sim_pages/` |
 | [x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md) | 2 | avatar-rig-buffer-xpbd | planned | AvatarRigBuffer XPBD |
 | [x00e9](slices/x00e9-rigid-solver-boundary.md) | 3 | rigid-solver-boundary | planned | RigidSolver 境界のみ |
 
-**次の着手:** [x00e7](slices/x00e7-mvcc-rename-sim-pages.md)（`mvcc/` → `sim_pages/` 改称。PendingLocalOps = [x00e6](slices/x00e6-pending-local-ops.md) **done**）。
+**次の着手:** [x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md)（Phase 2 AvatarRigBuffer。改称 [x00e7](slices/x00e7-mvcc-rename-sim-pages.md) **done**）。
 
 ### Phase 1a（最小垂直切片・最優先）：Sim Arena 3 面 ＋ Carry-Over ＋ 既存出版
 * **目的**: 先祖返りゼロと Arena バリア（Carry-Over → publish → rotate）を、既存 `EpochSnapshotPair`（arc-swap）上で閉じる。**Phase 1a の Ring3 SSoT は host の f64 Epoch sheet（`start` / `world.curr`）**；Arena は Carry-Over / TELEPORT 寿命の補助（面を sheet に overlay しない）。物理・CRDT・SoftLease・3層 UUID は入れない。
@@ -425,7 +419,7 @@ pub struct NetTransformDelta {
 
 ### Phase 1c（枠・後続スライス）：SoftLease / `op_chain_hash` / 3層 ID / `TRASH_UUID` / RoomSnapshot / PendingLocalOps
 * **DoD 必須にしない**（1a/1b Green 後）。削除モデルを `TRASH_UUID` MoveNode へ移行してよいのはここから。`SoftLease` は編集ロック（物理 `holder_slot` と別）。
-* **スライス**: [x00e2](slices/x00e2-soft-lease-edit-lock.md) … [x00e6](slices/x00e6-pending-local-ops.md)；改称 [x00e7](slices/x00e7-mvcc-rename-sim-pages.md)
+* **スライス**: [x00e2](slices/x00e2-soft-lease-edit-lock.md) … [x00e6](slices/x00e6-pending-local-ops.md)；改称 [x00e7](slices/x00e7-mvcc-rename-sim-pages.md) **done**
 
 ### Phase 2：アバター揺れもの（XPBD × `AvatarRigBuffer`）
 * 1a–1c の後。空間 Slot に載せない。スライス: [x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md)
@@ -443,7 +437,7 @@ pub struct NetTransformDelta {
 4. **セキュリティ境界を壊さない**。
 5. **Phase 飛び越し禁止**。着手は **1a → 1b → 1c**。Rapier 未採択。
 6. **SSoT 並存禁止**: 疎状態の正は `shared-sim::scene_store`。host `LiveEditLedger` は facade のみ。物理掴みの正は `holder_slot`（SoftLease と二重化しない）。
-7. **`mvcc/` → `sim_pages` 改称**（別スライス）。実行面目標は `sim_arena`。
+7. **`sim_pages`**（旧 `mvcc/`；[x00e7](slices/x00e7-mvcc-rename-sim-pages.md) **done**）。実行面目標は `sim_arena`。
 8. **規模 KPI を品質本線で宣言しない**。
 9. **実装前に現状調査**し、変更ファイル一覧と当該スライスの DoD を提示してからコード生成。
 

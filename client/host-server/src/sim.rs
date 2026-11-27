@@ -35,10 +35,12 @@ use alchemy_shared_sim::delta_codec::{
     extract_dirty_records_into, unpack_quaternion_smallest_three, EntityDeltaRecord,
     WireDirtyAccumulator,
 };
-#[cfg(test)]
-use alchemy_shared_sim::mvcc::KinematicPoseF32;
-use alchemy_shared_sim::mvcc::{HotPhysicsPage, PageXpbdAdapter, ENTITIES_PER_PAGE, NO_HOLDER};
 use alchemy_shared_sim::sim_arena::SimArena;
+#[cfg(test)]
+use alchemy_shared_sim::sim_pages::KinematicPoseF32;
+use alchemy_shared_sim::sim_pages::{
+    HotPhysicsPage, PageXpbdAdapter, ENTITIES_PER_PAGE, NO_HOLDER,
+};
 use alchemy_shared_sim::spatial::SceneBounds;
 use alchemy_shared_sim::xpbd::{self, XpbdWorld};
 use alchemy_shared_sim::{
@@ -1392,7 +1394,7 @@ impl PhysicsWorld {
         occupied: &[Option<String>],
         slot_count: usize,
         out: &mut Vec<(u32, Pose)>,
-    ) -> Option<[u64; alchemy_shared_sim::mvcc::BITMASK_WORDS]> {
+    ) -> Option<[u64; alchemy_shared_sim::sim_pages::BITMASK_WORDS]> {
         out.clear();
         self.mvcc.as_ref()?;
         self.sync_wire_entity_of();
@@ -1408,7 +1410,7 @@ impl PhysicsWorld {
             std::mem::take(&mut mvcc.delta_scratch)
         };
 
-        let mut sent = [0u64; alchemy_shared_sim::mvcc::BITMASK_WORDS];
+        let mut sent = [0u64; alchemy_shared_sim::sim_pages::BITMASK_WORDS];
         for rec in &records {
             if rec.entity_id == 0 {
                 continue;
@@ -1445,7 +1447,7 @@ impl PhysicsWorld {
     /// OR in-flight masks back after empty / failed publish (x00b1).
     pub fn restore_wire_dirty_inflight_bits(
         &mut self,
-        masks: impl IntoIterator<Item = [u64; alchemy_shared_sim::mvcc::BITMASK_WORDS]>,
+        masks: impl IntoIterator<Item = [u64; alchemy_shared_sim::sim_pages::BITMASK_WORDS]>,
     ) {
         let Some(mvcc) = self.mvcc.as_mut() else {
             return;
@@ -1483,7 +1485,7 @@ impl PhysicsWorld {
     #[cfg(test)]
     pub fn wire_dirty_mask_for_test(
         &self,
-    ) -> Option<[u64; alchemy_shared_sim::mvcc::BITMASK_WORDS]> {
+    ) -> Option<[u64; alchemy_shared_sim::sim_pages::BITMASK_WORDS]> {
         self.mvcc
             .as_ref()?
             .wire_dirty

@@ -293,7 +293,7 @@ impl EntityDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mvcc::page::HotPhysicsPage;
+    use crate::sim_pages::page::HotPhysicsPage;
 
     #[test]
     fn from_world_uses_center_origin() {
