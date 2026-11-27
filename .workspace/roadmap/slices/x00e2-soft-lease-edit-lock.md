@@ -1,6 +1,6 @@
 # x00e2 — SoftLease 編集ロック（Phase 1c 枠）
 
-> **ID:** `x00e2` · **slug:** `soft-lease-edit-lock` · **status:** `planned` · **area:** `[host, sim]` · **depends_on:** `[x00e1]`  
+> **ID:** `x00e2` · **slug:** `soft-lease-edit-lock` · **status:** `done` · **area:** `[host, sim]` · **depends_on:** `[x00e1]`  
 > **優先度:** 品質本線 **Phase 1c**（1a/1b Green 後・DoD 必須外の枠）  
 > **後続:** [x00e3](x00e3-trash-uuid-gc.md)
 

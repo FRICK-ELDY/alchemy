@@ -1,12 +1,13 @@
 //! Deterministic edit lane (`…/edit`) — Spawn/Despawn + live Reparent/SetField + Save
-//! (x00b2–x00b9 / x00e0 facade).
+//! (x00b2–x00b9 / x00e0 facade / x00e2 SoftLease).
 //!
 //! Guarantees: AEAD `EditProposal` → session Ed25519 → Dual-auth / shared control rate /
 //! `control_seq`; single op.
 //! Spawn/Despawn (x00b9): host-local id + pending ticket/despawn (no live overlay CAS);
 //! inbox enqueue only here; **tip + accept Commit after physics/local apply in HostLoop**
 //! (inbox closed / apply fail → reject `APPLY` + `release_reserved`, tip unchanged).
-//! Reparent/SetField: quarantine then optimistic [`LiveEditLedger`] → `scene_store` apply;
+//! Reparent/SetField: SoftLease gate (x00e2) then quarantine then optimistic
+//! [`LiveEditLedger`] → `scene_store` apply; SoftLease conflict → reject `SOFT_LEASE`;
 //! **tip + accept Commit after** FrameBridge queue **and** barrier — never rewind tip;
 //! queue/barrier/inbox fail → reject `APPLY`.
 //! Save (x00b7–x00b9): world packed CAS folds pending spawns/despawns + parent/SetField;
@@ -14,7 +15,7 @@
 //! accept Commit with current tip.
 //!
 //! Non-guarantees: multi-op batch; Undo UI; old inventory key removal; Spatial VCS;
-//! crash durability of unsaved pending;
+//! crash durability of unsaved pending; SoftLease ↔ physical grab;
 //! **`control_seq` is committed before physics/apply** — later HostLoop `APPLY` reject
 //! still leaves seq advanced (same window as inventory HTTP-era; wider now that tip waits).
 
@@ -46,6 +47,7 @@ use crate::room_token::{
     SceneParentPatch, SceneSaveError, SceneSavePatches, SceneSpawnPatch, SharedHostHttpAuth,
 };
 use crate::session::SessionTable;
+use alchemy_shared_sim::actor_id_from_sub;
 
 enum ReadyEdit {
     /// Tip+Commit deferred until inbox `send` succeeds (avoids tip advance without Commit).
@@ -351,7 +353,7 @@ fn process_proposal(
             ));
         }
     }
-    {
+    let actor_id = {
         let mut table = sessions
             .lock()
             .map_err(|_| anyhow!("SessionTable poisoned"))?;
@@ -372,13 +374,21 @@ fn process_proposal(
                 None,
             ));
         }
-    }
+        // SoftLease holder from Room Token `sub` (Dual-auth already bound this pub).
+        let Some(sub) = table.sub_for_pub(&proposal.session_pub) else {
+            return Ok((
+                Some(reject_commit(&proposal, edit_reject::AUTH, reject_rev)),
+                None,
+            ));
+        };
+        actor_id_from_sub(sub)
+    };
 
     match op {
         OpKind::Spawn(spawn) => apply_spawn(&proposal, &spawn, shared_scene, live_edit),
         OpKind::Despawn(entity_id) => apply_despawn(&proposal, entity_id, shared_scene, live_edit),
-        OpKind::Reparent(r) => apply_reparent(&proposal, r, live_edit),
-        OpKind::SetField(f) => apply_set_field(&proposal, f, live_edit),
+        OpKind::Reparent(r) => apply_reparent(&proposal, r, live_edit, actor_id),
+        OpKind::SetField(f) => apply_set_field(&proposal, f, live_edit, actor_id),
         OpKind::Save => apply_save(
             &proposal,
             room_id,
@@ -676,6 +686,7 @@ fn apply_reparent(
     proposal: &EditProposal,
     r: EditReparent,
     live_edit: &SharedLiveEdit,
+    actor_id: u64,
 ) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
     let mut led = live_edit
         .lock()
@@ -703,30 +714,51 @@ fn apply_reparent(
             None,
         ));
     }
+    if led.soft_lease_allows(r.child_entity_id, actor_id).is_err() {
+        return Ok((
+            Some(reject_commit(proposal, edit_reject::SOFT_LEASE, tip)),
+            None,
+        ));
+    }
     let prev_parent = led.parent_of(r.child_entity_id);
     let outcome = led.apply_reparent(r.child_entity_id, r.new_parent_entity_id);
     if !outcome.is_success() {
         // Store is SSoT for cycle / depth / residual stale-missing after quarantine.
+        // SoftLease not refreshed (allows-only above).
         return Ok((
             Some(reject_commit(proposal, edit_reject_for_apply(outcome), tip)),
             None,
         ));
     }
+    // Sparse success → refresh SoftLease (barrier fail keeps it for same-actor retry).
+    // Same-lock: allows just passed, so Err is unreachable; still compensate if it fires.
+    let child = r.child_entity_id;
+    let ready = ReadyLiveEdit::Reparent {
+        proposal: proposal.clone(),
+        op: r,
+        prev_parent,
+    };
+    if led.try_acquire_soft_lease(child, actor_id).is_err() {
+        if !led.rollback_mirrors(&ready) {
+            log::warn!(
+                "SoftLease acquire failed after reparent: rollback_mirrors failed op_id={}; tip unchanged, reject still published",
+                ready.proposal().op_id
+            );
+        }
+        return Ok((
+            Some(reject_commit(proposal, edit_reject::SOFT_LEASE, tip)),
+            None,
+        ));
+    }
     // Tip + accept Commit deferred until HostLoop barrier succeeds.
-    Ok((
-        None,
-        Some(ReadyEdit::Live(ReadyLiveEdit::Reparent {
-            proposal: proposal.clone(),
-            op: r,
-            prev_parent,
-        })),
-    ))
+    Ok((None, Some(ReadyEdit::Live(ready))))
 }
 
 fn apply_set_field(
     proposal: &EditProposal,
     f: EditSetField,
     live_edit: &SharedLiveEdit,
+    actor_id: u64,
 ) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
     let mut led = live_edit
         .lock()
@@ -761,6 +793,7 @@ fn apply_set_field(
             None,
         ));
     }
+    // Decode before SoftLease so invalid PAYLOAD cannot refresh TTL.
     let prev_value = cur;
     let prop = match f.field_id {
         alchemy_protocol::edit_field_id::FLAGS => {
@@ -804,8 +837,15 @@ fn apply_set_field(
             ));
         }
     };
+    if led.soft_lease_allows(f.entity_id, actor_id).is_err() {
+        return Ok((
+            Some(reject_commit(proposal, edit_reject::SOFT_LEASE, tip)),
+            None,
+        ));
+    }
     let set_outcome = led.apply_set_field(f.entity_id, f.field_id, prop);
     if !set_outcome.is_success() {
+        // SoftLease not refreshed on sparse failure.
         return Ok((
             Some(reject_commit(
                 proposal,
@@ -815,15 +855,27 @@ fn apply_set_field(
             None,
         ));
     }
+    // Same-lock: allows just passed, so Err is unreachable; still compensate if it fires.
+    let entity_id = f.entity_id;
+    let ready = ReadyLiveEdit::SetField {
+        proposal: proposal.clone(),
+        op: f,
+        prev_value,
+    };
+    if led.try_acquire_soft_lease(entity_id, actor_id).is_err() {
+        if !led.rollback_mirrors(&ready) {
+            log::warn!(
+                "SoftLease acquire failed after set_field: rollback_mirrors failed op_id={}; tip unchanged, reject still published",
+                ready.proposal().op_id
+            );
+        }
+        return Ok((
+            Some(reject_commit(proposal, edit_reject::SOFT_LEASE, tip)),
+            None,
+        ));
+    }
     // Tip + accept Commit deferred until HostLoop barrier succeeds.
-    Ok((
-        None,
-        Some(ReadyEdit::Live(ReadyLiveEdit::SetField {
-            proposal: proposal.clone(),
-            op: f,
-            prev_value,
-        })),
-    ))
+    Ok((None, Some(ReadyEdit::Live(ready))))
 }
 
 fn reject_commit(proposal: &EditProposal, reason: u32, scene_rev: u64) -> EditCommit {
@@ -949,7 +1001,8 @@ mod tests {
             expected_parent_entity_id: 1,
             new_parent_entity_id: 2,
         };
-        let (c1, ready) = apply_reparent(&p1, r, &live).unwrap();
+        let actor = actor_id_from_sub("alice");
+        let (c1, ready) = apply_reparent(&p1, r, &live, actor).unwrap();
         assert!(c1.is_none(), "live accept Commit waits for barrier");
         assert!(ready.is_some());
         {
@@ -976,6 +1029,7 @@ mod tests {
                 new_parent_entity_id: 0,
             },
             &live,
+            actor,
         )
         .unwrap();
         let c2 = c2.expect("stale reject Commit");
@@ -1019,7 +1073,8 @@ mod tests {
             Op::SetField(f) => f.clone(),
             _ => unreachable!(),
         };
-        let (c1, r1) = apply_set_field(&p1, f1, &live).unwrap();
+        let actor = actor_id_from_sub("alice");
+        let (c1, r1) = apply_set_field(&p1, f1, &live, actor).unwrap();
         assert!(c1.is_none());
         assert!(r1.is_some());
         let p2 = mk(11, 2);
@@ -1027,13 +1082,191 @@ mod tests {
             Op::SetField(f) => f.clone(),
             _ => unreachable!(),
         };
-        let (c2, r2) = apply_set_field(&p2, f2, &live).unwrap();
+        let (c2, r2) = apply_set_field(&p2, f2, &live, actor).unwrap();
         assert!(c2.is_none());
         assert!(r2.is_some());
         let led = live.lock().unwrap();
         assert_eq!(led.tip, 0);
         assert_eq!(led.flags_of(10), Some(1));
         assert_eq!(led.flags_of(11), Some(1));
+    }
+
+    #[test]
+    fn soft_lease_conflict_rejects_other_actor_reparent() {
+        let live = new_shared_live_edit();
+        {
+            let mut led = live.lock().unwrap();
+            assert!(led.note_spawn_with_parent(1, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+            assert!(led.note_spawn_with_parent(2, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+            assert!(led.note_spawn_with_parent(10, 1, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        }
+        let key = generate_signing_key();
+        let mut p1 = EditProposal {
+            session_pub: public_key_bytes(&key),
+            control_seq: 1,
+            base_scene_rev: 0,
+            op_id: 1,
+            ops: vec![EditOp {
+                op: Some(Op::Reparent(EditReparent {
+                    child_entity_id: 10,
+                    expected_parent_entity_id: 1,
+                    new_parent_entity_id: 2,
+                })),
+            }],
+            sig: vec![],
+            room_id: "local".into(),
+        };
+        sign_edit_proposal(&key, &mut p1);
+        let r = EditReparent {
+            child_entity_id: 10,
+            expected_parent_entity_id: 1,
+            new_parent_entity_id: 2,
+        };
+        let alice = actor_id_from_sub("alice");
+        let bob = actor_id_from_sub("bob");
+        let (c1, ready) = apply_reparent(&p1, r, &live, alice).unwrap();
+        assert!(c1.is_none());
+        assert!(ready.is_some());
+
+        let mut p2 = p1.clone();
+        p2.op_id = 2;
+        // Parent already moved; use expected=2 so SoftLease is the reject reason.
+        p2.ops = vec![EditOp {
+            op: Some(Op::Reparent(EditReparent {
+                child_entity_id: 10,
+                expected_parent_entity_id: 2,
+                new_parent_entity_id: 0,
+            })),
+        }];
+        sign_edit_proposal(&key, &mut p2);
+        let (c2, ready2) = apply_reparent(
+            &p2,
+            EditReparent {
+                child_entity_id: 10,
+                expected_parent_entity_id: 2,
+                new_parent_entity_id: 0,
+            },
+            &live,
+            bob,
+        )
+        .unwrap();
+        let c2 = c2.expect("SoftLease reject Commit");
+        assert!(!c2.accepted);
+        assert_eq!(c2.reject_reason, edit_reject::SOFT_LEASE);
+        assert!(ready2.is_none());
+        let led = live.lock().unwrap();
+        assert_eq!(led.parent_of(10), 2, "parent unchanged on SoftLease reject");
+    }
+
+    #[test]
+    fn soft_lease_conflict_rejects_other_actor_set_field() {
+        use alchemy_protocol::{encode_flags, hash_flags};
+        let live = new_shared_live_edit();
+        {
+            let mut led = live.lock().unwrap();
+            assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        }
+        let key = generate_signing_key();
+        let alice = actor_id_from_sub("alice");
+        let bob = actor_id_from_sub("bob");
+        let mut p1 = EditProposal {
+            session_pub: public_key_bytes(&key),
+            control_seq: 1,
+            base_scene_rev: 0,
+            op_id: 1,
+            ops: vec![EditOp {
+                op: Some(Op::SetField(EditSetField {
+                    entity_id: 10,
+                    field_id: alchemy_protocol::edit_field_id::FLAGS,
+                    value: encode_flags(1).to_vec(),
+                    expected_value_hash: hash_flags(0).to_vec(),
+                })),
+            }],
+            sig: vec![],
+            room_id: "local".into(),
+        };
+        sign_edit_proposal(&key, &mut p1);
+        let f1 = match p1.ops[0].op.as_ref().unwrap() {
+            Op::SetField(f) => f.clone(),
+            _ => unreachable!(),
+        };
+        let (c1, ready) = apply_set_field(&p1, f1, &live, alice).unwrap();
+        assert!(c1.is_none());
+        assert!(ready.is_some());
+
+        let mut p2 = p1.clone();
+        p2.op_id = 2;
+        p2.ops = vec![EditOp {
+            op: Some(Op::SetField(EditSetField {
+                entity_id: 10,
+                field_id: alchemy_protocol::edit_field_id::FLAGS,
+                value: encode_flags(2).to_vec(),
+                expected_value_hash: hash_flags(1).to_vec(),
+            })),
+        }];
+        sign_edit_proposal(&key, &mut p2);
+        let f2 = match p2.ops[0].op.as_ref().unwrap() {
+            Op::SetField(f) => f.clone(),
+            _ => unreachable!(),
+        };
+        let (c2, ready2) = apply_set_field(&p2, f2, &live, bob).unwrap();
+        let c2 = c2.expect("SoftLease reject Commit");
+        assert!(!c2.accepted);
+        assert_eq!(c2.reject_reason, edit_reject::SOFT_LEASE);
+        assert!(ready2.is_none());
+        let led = live.lock().unwrap();
+        assert_eq!(
+            led.flags_of(10),
+            Some(1),
+            "flags unchanged on SoftLease reject"
+        );
+    }
+
+    #[test]
+    fn soft_lease_not_refreshed_on_payload_reject() {
+        use alchemy_protocol::hash_flags;
+        let live = new_shared_live_edit();
+        let alice = actor_id_from_sub("alice");
+        let expires = {
+            let mut led = live.lock().unwrap();
+            assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+            assert!(led.try_acquire_soft_lease(10, alice).is_ok());
+            led.soft_lease_of(10).unwrap().lease_expires_tick
+        };
+        let key = generate_signing_key();
+        let mut p = EditProposal {
+            session_pub: public_key_bytes(&key),
+            control_seq: 1,
+            base_scene_rev: 0,
+            op_id: 1,
+            ops: vec![EditOp {
+                op: Some(Op::SetField(EditSetField {
+                    entity_id: 10,
+                    field_id: alchemy_protocol::edit_field_id::FLAGS,
+                    value: vec![0xff], // invalid flags encoding
+                    expected_value_hash: hash_flags(0).to_vec(),
+                })),
+            }],
+            sig: vec![],
+            room_id: "local".into(),
+        };
+        sign_edit_proposal(&key, &mut p);
+        let f = match p.ops[0].op.as_ref().unwrap() {
+            Op::SetField(f) => f.clone(),
+            _ => unreachable!(),
+        };
+        let (c, ready) = apply_set_field(&p, f, &live, alice).unwrap();
+        let c = c.expect("PAYLOAD reject");
+        assert!(!c.accepted);
+        assert_eq!(c.reject_reason, edit_reject::PAYLOAD);
+        assert!(ready.is_none());
+        let led = live.lock().unwrap();
+        assert_eq!(
+            led.soft_lease_of(10).unwrap().lease_expires_tick,
+            expires,
+            "invalid PAYLOAD must not refresh SoftLease TTL"
+        );
+        assert_eq!(led.flags_of(10), Some(0));
     }
 
     #[test]

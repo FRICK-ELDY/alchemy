@@ -400,7 +400,7 @@ pub struct NetTransformDelta {
 | [x00df](slices/x00df-scene-store-sim-patch.md) | 1b | scene-store-sim-patch | done | SimPatch → Arena Drain |
 | [x00e0](slices/x00e0-live-edit-facade.md) | 1b | live-edit-facade | done | LiveEditLedger facade |
 | [x00e1](slices/x00e1-scene-store-undo-despawn.md) | 1b 閉じ | scene-store-undo-despawn | done | Undo + pending_despawns |
-| [x00e2](slices/x00e2-soft-lease-edit-lock.md) | 1c | soft-lease-edit-lock | planned | SoftLease |
+| [x00e2](slices/x00e2-soft-lease-edit-lock.md) | 1c | soft-lease-edit-lock | done | SoftLease |
 | [x00e3](slices/x00e3-trash-uuid-gc.md) | 1c | trash-uuid-gc | planned | TRASH_UUID + GC |
 | [x00e4](slices/x00e4-three-layer-ids.md) | 1c | three-layer-ids | planned | 3層 ID |
 | [x00e5](slices/x00e5-op-chain-room-snapshot.md) | 1c | op-chain-room-snapshot | planned | op_chain_hash + RoomSnapshot 枠 |
@@ -409,7 +409,7 @@ pub struct NetTransformDelta {
 | [x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md) | 2 | avatar-rig-buffer-xpbd | planned | AvatarRigBuffer XPBD |
 | [x00e9](slices/x00e9-rigid-solver-boundary.md) | 3 | rigid-solver-boundary | planned | RigidSolver 境界のみ |
 
-**次の着手:** [x00e2](slices/x00e2-soft-lease-edit-lock.md)（Phase 1c 枠 · SoftLease。Phase 1b = [x00e1](slices/x00e1-scene-store-undo-despawn.md) **done**）。
+**次の着手:** [x00e3](slices/x00e3-trash-uuid-gc.md)（Phase 1c · TRASH_UUID + GC。SoftLease = [x00e2](slices/x00e2-soft-lease-edit-lock.md) **done**）。
 
 ### Phase 1a（最小垂直切片・最優先）：Sim Arena 3 面 ＋ Carry-Over ＋ 既存出版
 * **目的**: 先祖返りゼロと Arena バリア（Carry-Over → publish → rotate）を、既存 `EpochSnapshotPair`（arc-swap）上で閉じる。**Phase 1a の Ring3 SSoT は host の f64 Epoch sheet（`start` / `world.curr`）**；Arena は Carry-Over / TELEPORT 寿命の補助（面を sheet に overlay しない）。物理・CRDT・SoftLease・3層 UUID は入れない。

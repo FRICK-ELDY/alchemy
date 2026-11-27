@@ -7,7 +7,7 @@
 //! **fresh** [`CrdtOp::MoveNode`] (latest lamport, caller `actor_id`).
 //! Non-guarantees: persistence across leave; undoing another operator's moves;
 //! physics velocity restore; Undo Intent / tip / FrameBridge wire (host peel is
-//! test-only until Intent); TRASH_UUID / SoftLease (→ x00e3 / x00e2).
+//! test-only until Intent); TRASH_UUID (→ x00e3); SoftLease is host edit gate (x00e2).
 
 use std::collections::VecDeque;
 

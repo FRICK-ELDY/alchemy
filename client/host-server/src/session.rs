@@ -83,6 +83,14 @@ impl SessionTable {
         self.by_pub.contains_key(session_pub)
     }
 
+    /// Room Token `sub` for a bound `session_pub` (SoftLease / future actor_id).
+    ///
+    /// Dual-auth still compares the string `sub`; this lookup only feeds numeric
+    /// SoftLease holder ids via [`alchemy_shared_sim::actor_id_from_sub`].
+    pub fn sub_for_pub(&self, session_pub: &[u8]) -> Option<&str> {
+        self.by_pub.get(session_pub).map(|b| b.sub.as_str())
+    }
+
     /// Remove all bindings for `sub`. Returns removed `session_pub` keys (for rate cleanup).
     pub fn remove_by_sub(&mut self, sub: &str) -> Vec<Vec<u8>> {
         let mut removed = Vec::new();

@@ -331,6 +331,14 @@ impl HostLoop {
     /// `now` is the **publish-gate clock**. Pass the pre-sleep sample (legacy contract) so
     /// hard-expiry does not advance by up to one physics period relative to pre-x0099.
     pub(crate) fn tick(&mut self, now: Instant) {
+        // SoftLease clock (x00e2); independent of tip / scene_rev.
+        match self.live_edit.lock() {
+            Ok(mut led) => led.advance_lease_tick(),
+            Err(_) => {
+                log::error!("LiveEditLedger poisoned on SoftLease tick; aborting host");
+                std::process::exit(78);
+            }
+        }
         // x00b1: restore in-flight bits from empty/fail puts before this tick's absorb.
         {
             let mut q = self

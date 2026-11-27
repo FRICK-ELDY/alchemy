@@ -1,5 +1,5 @@
 //! Scene Store — SparseSet + Host-Sequenced LWW / cycle reject + SimPatch queue
-//! (x00dd / x00de / x00df / x00e0).
+//! + SoftLease (x00dd / x00de / x00df / x00e0 / x00e2).
 //!
 //! Guarantees: [`SparseSet<T>`] with `sparse` / `dense_slots` / `dense_values`;
 //! sparse key = [`EntityId`] (`u32`); dense walk of live entries; holes in the
@@ -12,9 +12,10 @@
 //! host facade live ops via [`SceneStore::apply_sparse`] (LWW, no patch enqueue);
 //! [`SceneStore::remove_node`] clears orphan parents + enqueues [`SimPatch::FreeSlot`];
 //! facade despawn uses [`SceneStore::remove_node_sparse`] (no FreeSlot; host
-//! `pending_despawns` + FrameBridge own dense free).
+//! `pending_despawns` + FrameBridge own dense free);
+//! [`SoftLease`] / [`SoftLeaseTable`] structural edit lock (host gate acquires).
 //! Non-guarantees: Zenoh edit / Save I/O / tip 採番 (host facade);
-//! TRASH_UUID / SoftLease / 3-layer IDs; JWT `sub` → `actor_id` (host gate);
+//! TRASH_UUID / 3-layer IDs; Dual-auth JWT path (host); physical grab SSoT;
 //! SlotUndo Intent wire (library + host facade peel in x00e1).
 //!
 //! # Live re-Spawn
@@ -41,12 +42,16 @@
 
 mod op;
 mod patch;
+mod soft_lease;
 mod sparse_set;
 mod store;
 mod timestamp;
 
 pub use op::{CrdtOp, PropValue};
 pub use patch::SimPatch;
+pub use soft_lease::{
+    actor_id_from_sub, SoftLease, SoftLeaseConflict, SoftLeaseTable, SOFT_LEASE_TTL_TICKS,
+};
 pub use sparse_set::SparseSet;
 pub use store::{ApplyOutcome, SceneStore, MAX_PARENT_HOPS};
 pub use timestamp::{OpTimestamp, MAX_LAMPORT_DRIFT};
