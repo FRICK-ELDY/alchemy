@@ -9,12 +9,12 @@
 //! Carry-Over clears `STATE_TELEPORT_THIS_TICK` on those **Work** rows;
 //! [`SimArena::rotate_faces`] clears it on the face **leaving Published**
 //! (lifetime = one Published epoch; prevents 3rd-face sticky snap).
-//! Non-guarantees: FrameBridge / host wiring (x00dc); scene_store / CRDT;
-//! physics; Depth Bucket; §6 `COMP_*` / `STATE_IS_GRABBED` (intentional defer —
-//! grab SSoT stays on `mvcc` / Epoch).
+//! Non-guarantees: scene_store / CRDT; physics; Depth Bucket; §6 `COMP_*` /
+//! `STATE_IS_GRABBED` (intentional defer — grab SSoT stays on `mvcc` / Epoch).
 //!
-//! Ring3 readers must not touch Work — publish Prev/Published via existing
-//! `EpochSnapshotPair` (wired in x00dc).
+//! Ring3 readers must not touch Work — publish via
+//! [`crate::bridge::publish_arena_then_rotate`] into `EpochSnapshotPair`
+//! (x00dc; owned sheets, then rotate).
 //!
 //! # Tick order
 //!
@@ -23,17 +23,19 @@
 //!    [`SimArena::write_teleport`]; raw [`SimArena::work_mut`] **must**
 //!    [`SimArena::mark_dirty`] — without it the slot misses Carry-Over **and**
 //!    Published-leave TELEPORT clear)
-//! 3. **host/bridge (x00dc):** publish Prev/Published snapshot **immediately
-//!    before** rotate (library itself has no publish step)
-//! 4. [`SimArena::rotate_faces`] (role + dirty-ring shift + Published-leave
-//!    TELEPORT clear)
+//! 3. **host/bridge (x00dc):** [`crate::bridge::publish_arena_then_rotate`] —
+//!    publish **caller-owned Epoch sheets** (Phase 1a Ring3 SSoT = sheet
+//!    `start`/`curr`; not Arena face overlay), then rotate
+//! 4. [`SimArena::rotate_faces`] (invoked inside step 3; role + dirty-ring shift +
+//!    Published-leave TELEPORT clear)
 //!
 //! # `STATE_TELEPORT_THIS_TICK` clear ownership
 //!
 //! - **Set**: Work writer / `SimPatch` apply (Spawn, SetParent, warp, enabled ON).
-//! - **Observe**: Ring 2 Step 1 bitmask edge Observer *detects* the bit (and
-//!   enabled edges); it does not own lifetime.
-//! - **Work→Published**: bit **survives** rotate so Ring3 can snap for one epoch.
+//! - **Observe (Phase 1a)**: Arena faces / Observer only — **not** EpochSheet /
+//!   Ring3 GPU yet. Ring 2 Step 1 bitmask edge Observer *detects* the bit; it
+//!   does not own lifetime.
+//! - **Work→Published**: bit **survives** rotate for one Arena Published epoch.
 //! - **Published→Prev (rotate)**: [`SimArena::rotate_faces`] **clears** the bit on
 //!   `prev_dirty_slots` of the face leaving Published (sparse, not O(n) full
 //!   scan). Lifetime ends here — a later recycle must not republish TELEPORT
@@ -42,11 +44,12 @@
 //!   [`SimArena::carry_over`] clears TELEPORT on those **Work** rows so only this
 //!   tick's writers can set it again. Published still holds the bit until the
 //!   rotate that ends its epoch.
-//! - **x00dc**: publish Prev/Published **as-is**, then rotate. Leave-clear is
-//!   in-place on the face becoming Prev — do not hand Ring3 a live face across
-//!   rotate, invent a second clear path, or skip x00db Work / leave clear.
-//!   Work mutations on the host path should go through `write_*` (not raw
-//!   `work_mut` without `mark_dirty`).
+//! - **x00dc**: [`crate::bridge::publish_arena_then_rotate`] publishes **caller
+//!   sheets** then rotate. Pure-Arena tests build sheets from faces first.
+//!   Leave-clear is in-place on the face becoming Prev — do not hand Ring3 a
+//!   live face across rotate, invent a second clear path, or skip x00db Work /
+//!   leave clear. Work mutations on the host path should go through `write_*`
+//!   (not raw `work_mut` without `mark_dirty`).
 
 #![forbid(unsafe_code)]
 

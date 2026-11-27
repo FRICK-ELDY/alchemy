@@ -2,10 +2,24 @@
 //!
 //! Guarantees: Ring1 patches merge without clobbering DYNAMIC physics coords when
 //! flagged; topology rebuild only on parent changes; `arc-swap` publishes immutable
-//! snapshots to Ring3 readers.
+//! snapshots to Ring3 readers; Sim Arena path (x00dc)
+//! [`publish_arena_then_rotate`] stores **caller-owned** Prev/Curr sheets then
+//! [`crate::sim_arena::SimArena::rotate_faces`] (never live face across rotate;
+//! TELEPORT leave-clear stays on x00db).
 //!
 //! Prev/Curr contract for Ring3: publish **start-of-tick Prev** and **end-of-tick Curr**
 //! (distinct faces for α-lerp), then commit Prev←Curr for the next tick's velocity.
+//!
+//! **Phase 1a Ring3 SSoT** is the Epoch sheet pair the caller passes (host:
+//! tick-start `start` + `world.curr`). Arena is Carry-Over / TELEPORT auxiliary —
+//! [`publish_arena_then_rotate`] does **not** overlay Arena f32 faces onto those
+//! sheets (stale Work must not clobber f64 curr). Host `MvccXpbd` marks sheet dirty
+//! on page→sheet pose change so Arena sync stays aligned; Ring3 still publishes
+//! the sheet as-is. Pure-Arena tests build sheets from faces via
+//! [`epoch_sheet_from_sim_face`] before calling publish.
+//!
+//! [`FrameBridge::tick`] / [`FrameBridge::tick_mirror_publish`] remain the legacy
+//! XPBD-only publish path (no Carry-Over). Host `sim.rs` is the Arena-wired barrier.
 //! Non-guarantees: Loro CRDT / Hydration; Zenoh publish.
 //!
 //! Safety: `#![forbid(unsafe_code)]`.
@@ -16,8 +30,9 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 
+use crate::sim_arena::{LocalSlotId, SimArena, SimFace};
 use crate::spatial::SceneBounds;
-use crate::tape::{EpochSheet, PendingPatch, TapeError};
+use crate::tape::{EpochSheet, PendingPatch, ReadinessMask, TapeError, WorldTransformf64};
 use crate::topology::{FlatTopology, TopologyError};
 use crate::xpbd::{self, XpbdWorld};
 
@@ -106,6 +121,8 @@ impl FrameBridge {
     /// Frame barrier: apply patches → rebuild topology if needed → XPBD tick →
     /// publish (pre-commit Prev, post-step Curr) → commit Prev←Curr.
     ///
+    /// **Legacy XPBD-only path** — does not run Sim Arena Carry-Over / rotate.
+    /// Host authoritative barrier is `host-server` `PhysicsWorld::step_dt` (x00dc).
     /// Pass `bounds: None` to skip LBVH/contact rebuild (predict/solve only). Host
     /// kinematic shadow should prefer [`Self::tick_mirror_publish`] instead.
     pub fn tick(
@@ -141,6 +158,8 @@ impl FrameBridge {
 
     /// Kinematic / Rapier-shadow barrier: apply patches → (optional reparent) →
     /// publish Prev/Curr → commit. **No** XPBD step, LBVH, or contact collect.
+    ///
+    /// **Legacy path** (no Sim Arena Carry-Over). See [`Self::tick`].
     ///
     /// Skips publish+clone when there were no patches, no reparent, and
     /// `force_publish` is false (faces unchanged). Pass `force_publish` after
@@ -188,6 +207,105 @@ impl FrameBridge {
             return Err(BridgeError::Topology(e));
         }
         Ok(())
+    }
+}
+
+/// Build a minimal allocated Epoch sheet whose poses match `face` (Phase 1a tests / seed).
+pub fn epoch_sheet_from_sim_face(face: &SimFace, epoch_id: u64) -> EpochSheet {
+    let n = face.slot_count();
+    let mut sheet = EpochSheet::with_capacity(n);
+    for slot in 0..n as LocalSlotId {
+        let h = sheet.alloc_row();
+        debug_assert_eq!(h.row_id, slot);
+        let pos = face.pos(slot);
+        let rot = face.rot(slot);
+        let mut xf = WorldTransformf64::identity_at([
+            f64::from(pos[0]),
+            f64::from(pos[1]),
+            f64::from(pos[2]),
+        ]);
+        xf.rotation = rot;
+        sheet.world_transforms[h.row_id as usize] = xf;
+        sheet.readiness[h.row_id as usize] =
+            ReadinessMask(ReadinessMask::ALLOCATED | ReadinessMask::TRANSFORM);
+    }
+    sheet.epoch_id = epoch_id;
+    sheet.clear_dirty();
+    sheet
+}
+
+/// x00dc barrier tail: publish owned Epoch sheets, then rotate Arena faces.
+///
+/// Order (mandatory):
+/// 1. [`EpochSnapshotPair::publish`] the caller-owned `prev_sheet` / `curr_sheet`
+///    **as-is** — including `epoch_id` (no Arena field rewrite; host live sheet and
+///    Ring3 Arc stay aligned). Do not overlay Arena f32 onto them.
+/// 2. [`SimArena::rotate_faces`] (Published-leave TELEPORT clear is in-place on the
+///    buffer that becomes Prev — Ring3 already holds owned clones).
+///
+/// Pure-Arena callers should build sheets from faces first
+/// ([`epoch_sheet_from_sim_face`], which sets `epoch_id` from Arena epochs); host
+/// passes tick-start / end-of-tick sheets with their own `epoch_id`.
+pub fn publish_arena_then_rotate(
+    arena: &mut SimArena,
+    snapshots: &EpochSnapshotPair,
+    prev_sheet: EpochSheet,
+    curr_sheet: EpochSheet,
+) {
+    snapshots.publish(prev_sheet, curr_sheet);
+    arena.rotate_faces();
+}
+
+/// Sync dirty Epoch rows into Arena Work via `write_*` (host / bridge writers).
+///
+/// Prefer this over raw [`SimArena::work_mut`] so Carry-Over and Published-leave
+/// TELEPORT clear stay on the dirty window. This keeps Arena aligned for Carry-Over;
+/// it does **not** feed Ring3 (see [`publish_arena_then_rotate`]). f64→f32 is
+/// intentional for Arena columns only.
+pub fn sync_dirty_sheet_to_arena_work(arena: &mut SimArena, sheet: &EpochSheet) {
+    if arena.slot_count() < sheet.len() {
+        arena.resize(sheet.len());
+    }
+    for row in sheet.iter_dirty_rows() {
+        let i = row as usize;
+        if i >= sheet.world_transforms.len() || i >= arena.slot_count() {
+            continue;
+        }
+        let xf = &sheet.world_transforms[i];
+        arena.write_pos(
+            row,
+            xf.position[0] as f32,
+            xf.position[1] as f32,
+            xf.position[2] as f32,
+        );
+        arena.write_rot(
+            row,
+            xf.rotation[0],
+            xf.rotation[1],
+            xf.rotation[2],
+            xf.rotation[3],
+        );
+    }
+}
+
+/// Seed every allocated sheet row onto all Arena faces (host bootstrap; not a tick writer).
+pub fn seed_arena_from_sheet(arena: &mut SimArena, sheet: &EpochSheet) {
+    if arena.slot_count() < sheet.len() {
+        arena.resize(sheet.len());
+    }
+    for row in sheet.iter_active_rows() {
+        let i = row as usize;
+        if i >= sheet.world_transforms.len() || i >= arena.slot_count() {
+            continue;
+        }
+        let xf = &sheet.world_transforms[i];
+        arena.seed_slot(
+            row,
+            xf.position[0] as f32,
+            xf.position[1] as f32,
+            xf.position[2] as f32,
+            xf.rotation,
+        );
     }
 }
 
@@ -408,5 +526,152 @@ mod tests {
         snaps.publish(EpochSheet::default(), sheet);
         let loaded = snaps.load_curr();
         assert_eq!(loaded.world_transforms[0].position, [4.0, 5.0, 6.0]);
+    }
+
+    /// One Arena tick through the x00dc bridge barrier (carry → write → publish → rotate).
+    fn arena_bridge_tick(
+        arena: &mut SimArena,
+        snaps: &EpochSnapshotPair,
+        write: impl FnOnce(&mut SimArena),
+    ) {
+        arena.carry_over();
+        write(arena);
+        let prev_sheet = epoch_sheet_from_sim_face(arena.published(), arena.epoch());
+        let curr_sheet = epoch_sheet_from_sim_face(arena.work(), arena.work_epoch());
+        publish_arena_then_rotate(arena, snaps, prev_sheet, curr_sheet);
+    }
+
+    #[test]
+    fn arena_bridge_publish_prevents_ancestor_regression_after_three_idle_ticks() {
+        let slot = 0u32;
+        let mut arena = SimArena::with_slots(2);
+        let snaps = EpochSnapshotPair::new(EpochSheet::default(), EpochSheet::default());
+
+        arena_bridge_tick(&mut arena, &snaps, |a| {
+            a.write_pos(slot, 10.0, 0.0, 0.0);
+            a.write_rot(slot, 0.0, 0.0, 0.0, 1.0);
+        });
+        arena_bridge_tick(&mut arena, &snaps, |a| {
+            a.write_pos(slot, 20.0, 1.0, 0.0);
+            a.write_rot(slot, 0.0, 1.0, 0.0, 0.0);
+        });
+
+        assert_eq!(
+            snaps.load_curr().world_transforms[slot as usize].position,
+            [20.0, 1.0, 0.0]
+        );
+
+        for tick in 0..3 {
+            arena_bridge_tick(&mut arena, &snaps, |_| {});
+            let curr = snaps.load_curr().world_transforms[slot as usize].position;
+            assert_eq!(
+                curr, [20.0, 1.0, 0.0],
+                "idle bridge tick {tick}: Ring3 curr must not ancestor-regress"
+            );
+            assert_eq!(
+                arena.published().pos(slot),
+                [20.0, 1.0, 0.0],
+                "idle bridge tick {tick}: pure-Arena path built Ring3 curr from Work→Published; face must keep pose (not a host sheet-SSoT claim)"
+            );
+        }
+    }
+
+    #[test]
+    fn arena_bridge_keeps_teleport_on_published_for_one_epoch() {
+        // Phase 1a: TELEPORT lifetime is Arena-Published only; Ring3 sheet carries pose,
+        // not the TELEPORT bit (pure-Arena test builds sheets from faces for pose check).
+        let slot = 0u32;
+        let mut arena = SimArena::with_slots(1);
+        let snaps = EpochSnapshotPair::new(EpochSheet::default(), EpochSheet::default());
+
+        arena_bridge_tick(&mut arena, &snaps, |a| {
+            a.write_pos(slot, 1.0, 0.0, 0.0);
+            a.write_teleport(slot, true);
+        });
+        // After publish→rotate, Work (with TELEPORT) is Arena.Published for one epoch.
+        assert!(arena.published().is_teleport(slot));
+        assert_eq!(
+            snaps.load_curr().world_transforms[slot as usize].position,
+            [1.0, 0.0, 0.0]
+        );
+
+        arena_bridge_tick(&mut arena, &snaps, |_| {});
+        assert!(
+            !arena.published().is_teleport(slot),
+            "Published-leave clear must run on rotate after the snap was taken"
+        );
+        // Sheet pose from the idle tick; TELEPORT is not a Ring3/sheet field in Phase 1a.
+        assert_eq!(
+            snaps.load_curr().world_transforms[slot as usize].position,
+            [1.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn publish_arena_forbids_live_face_across_rotate() {
+        // Owned sheets must outlive rotate: mutating live Published after publish must not
+        // change the Arc already handed to Ring3.
+        let mut arena = SimArena::with_slots(1);
+        arena.carry_over();
+        arena.write_pos(0, 3.0, 0.0, 0.0);
+        let snaps = EpochSnapshotPair::new(EpochSheet::default(), EpochSheet::default());
+        let prev_sheet = epoch_sheet_from_sim_face(arena.published(), 0);
+        let curr_sheet = epoch_sheet_from_sim_face(arena.work(), 1);
+        publish_arena_then_rotate(&mut arena, &snaps, prev_sheet, curr_sheet);
+        let loaded = snaps.load_curr();
+        assert_eq!(loaded.world_transforms[0].position, [3.0, 0.0, 0.0]);
+        // Live Published is the old Work; leave-clear / later writers must not poke the Arc.
+        arena.work_mut().set_pos(0, 99.0, 99.0, 99.0);
+        assert_eq!(
+            snaps.load_curr().world_transforms[0].position,
+            [3.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn publish_arena_keeps_caller_sheet_over_stale_arena_work() {
+        // Regression (x00dc review): dirty-window Work must not clobber f64 sheet curr
+        // when page→sheet omitted mark_dirty (MvccXpbd). Ring3 SSoT = caller sheets.
+        let mut arena = SimArena::with_slots(1);
+        arena.carry_over();
+        arena.write_pos(0, 1.0, 0.0, 0.0);
+        arena.rotate_faces();
+        arena.carry_over();
+        // Stale Work still holds 1.0 while authoritative sheet advanced to 9.0.
+        let mut prev = EpochSheet::with_capacity(1);
+        let mut curr = EpochSheet::with_capacity(1);
+        let hp = prev.alloc_row();
+        let hc = curr.alloc_row();
+        prev.set_transform(hp.row_id, WorldTransformf64::identity_at([8.0, 0.0, 0.0]))
+            .unwrap();
+        curr.set_transform(hc.row_id, WorldTransformf64::identity_at([9.0, 0.0, 0.0]))
+            .unwrap();
+        let snaps = EpochSnapshotPair::new(EpochSheet::default(), EpochSheet::default());
+        publish_arena_then_rotate(&mut arena, &snaps, prev, curr);
+        assert_eq!(
+            snaps.load_curr().world_transforms[0].position,
+            [9.0, 0.0, 0.0],
+            "stale Arena Work must not overlay Ring3 curr"
+        );
+        assert_eq!(
+            snaps.load_prev().world_transforms[0].position,
+            [8.0, 0.0, 0.0],
+            "caller prev sheet must remain Ring3 prev SSoT"
+        );
+    }
+
+    #[test]
+    fn sync_dirty_sheet_to_arena_work_marks_dirty_window() {
+        let mut arena = SimArena::with_slots(2);
+        let mut sheet = EpochSheet::with_capacity(2);
+        let a = sheet.alloc_row();
+        let _b = sheet.alloc_row();
+        sheet.clear_dirty();
+        sheet
+            .set_transform(a.row_id, WorldTransformf64::identity_at([7.0, 8.0, 9.0]))
+            .unwrap();
+        sync_dirty_sheet_to_arena_work(&mut arena, &sheet);
+        assert_eq!(arena.work().pos(a.row_id), [7.0, 8.0, 9.0]);
+        assert_eq!(arena.this_tick_dirty(), &[a.row_id]);
     }
 }

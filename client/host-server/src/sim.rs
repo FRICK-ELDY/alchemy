@@ -8,8 +8,10 @@
 //! Presence capacity = contiguous Manifest user_root entries (x004d / x009b);
 //! wire TRS authority is Epoch Curr after [`Self::step`] (x0093);
 //! **x00ad**: [`SimBackendKind`] switch; LBVH body-body contacts **on** (`bounds: Some`);
-//! `mvcc_xpbd` is a **temporary bridge** (page steps XPBD; wire still samples Epoch Curr).
-//! Classification via `alchemy-shared-sim` [`EntityKind`] (x0030).
+//! `mvcc_xpbd` is a **temporary bridge** (page steps XPBD; wire still samples Epoch Curr);
+//! **x00dc**: tick barrier runs Sim Arena Carry-Over +
+//! [`alchemy_shared_sim::publish_arena_then_rotate`] (publish then rotate; no live face
+//! across rotate). Classification via `alchemy-shared-sim` [`EntityKind`] (x0030).
 //! Non-guarantees: Grab aim **rotation** follow (translation only); throw impulse;
 //! Rapier bit-exact parity; capsule Walk extrude; PROTOCOL_PIN bump for quantized poses;
 //! (shared-sim `delta_codec` is x00ae; host dirty 30Hz cutover is x00b1;
@@ -38,10 +40,12 @@ use alchemy_shared_sim::mvcc::KinematicPoseF32;
 use alchemy_shared_sim::mvcc::{HotPhysicsPage, PageXpbdAdapter, ENTITIES_PER_PAGE, NO_HOLDER};
 use alchemy_shared_sim::spatial::SceneBounds;
 use alchemy_shared_sim::xpbd::{self, XpbdWorld};
+use alchemy_shared_sim::sim_arena::SimArena;
 use alchemy_shared_sim::{
-    classify_scene_entry, scene_entry_color_rgba, ColliderShape, EntityKind, EpochSheet,
-    EpochSnapshotPair, FlatTopology, FrameBridge, NodeHandle, PendingPatch, ReadinessMask,
-    SlotGraph, WorldTransformf64, PHYS_BALL_RADIUS,
+    classify_scene_entry, publish_arena_then_rotate, scene_entry_color_rgba, seed_arena_from_sheet,
+    sync_dirty_sheet_to_arena_work, ColliderShape, EntityKind, EpochSheet, EpochSnapshotPair,
+    FlatTopology, FrameBridge, NodeHandle, PendingPatch, ReadinessMask, SlotGraph,
+    WorldTransformf64, PHYS_BALL_RADIUS,
 };
 
 use crate::network_worker::Pose;
@@ -164,6 +168,10 @@ pub struct PhysicsWorld {
     /// epoch path stays thin; mvcc construct still spikes once inside
     /// [`HotPhysicsPage::zeroed_boxed`].
     mvcc: Option<Box<HostMvccState>>,
+    /// Sim Arena 3-face + Carry-Over (x00dc). Boxed so [`PhysicsWorld`] stays under
+    /// [`PHYSICS_WORLD_STACK_BUDGET`] (faces are heap `Vec`s, but three `SimFace`s
+    /// plus dirty rings still cost hundreds of bytes on the stack).
+    arena: Box<SimArena>,
     pub barrier_ticks: u64,
     pub publishes: u64,
 }
@@ -478,6 +486,9 @@ impl PhysicsWorld {
         // Creative hierarchy from SceneEntry.parent_entity_id (x00b8); fall back to flat roots.
         let topo = seed_topo_from_scene_parents(&entity_rows, entries, world.curr.len());
 
+        let mut arena = Box::new(SimArena::with_slots(world.curr.len()));
+        seed_arena_from_sheet(&mut arena, &world.curr);
+
         let mut host = Self {
             world,
             topo,
@@ -507,11 +518,18 @@ impl PhysicsWorld {
             backend,
             scene_bounds,
             mvcc,
+            arena,
             barrier_ticks: 0,
             publishes: 0,
         };
-        host.snapshots
-            .publish(host.world.prev.clone(), host.world.curr.clone());
+        // Initial Ring3 faces: seed already matched curr on all Arena faces; publish
+        // owned sheets then rotate so leave-clear / dirty rings start from a clean barrier.
+        publish_arena_then_rotate(
+            &mut host.arena,
+            &host.snapshots,
+            host.world.prev.clone(),
+            host.world.curr.clone(),
+        );
         host.publishes = 1;
         host.barrier_ticks = 1;
         Ok(host)
@@ -604,8 +622,13 @@ impl PhysicsWorld {
             }
         }
         host.apply_sim_state_entities(state, import)?;
-        host.snapshots
-            .publish(host.world.prev.clone(), host.world.curr.clone());
+        seed_arena_from_sheet(&mut host.arena, &host.world.curr);
+        publish_arena_then_rotate(
+            &mut host.arena,
+            &host.snapshots,
+            host.world.prev.clone(),
+            host.world.curr.clone(),
+        );
         host.publishes = host.publishes.saturating_add(1);
         host.publish_dirty = true;
         Ok(host)
@@ -1262,7 +1285,22 @@ impl PhysicsWorld {
             || !self.sanitize_scratch.is_empty()
             || self.has_active_grab();
         if moved {
-            self.snapshots.publish(start, self.world.curr.clone());
+            // x00dc: Carry-Over → sync sheet dirty into Arena Work → publish **sheet**
+            // SSoT (start / curr) as-is → rotate. Arena f32 is never overlaid onto Ring3
+            // (Phase 1a contract; keeps f64 sheet / live `epoch_id` aligned).
+            // MvccXpbd page→sheet marks dirty on pose change so this Arena sync stays fed.
+            //
+            // Idle (`moved == false`) skips carry/rotate entirely: Arena dirty window and
+            // TELEPORT Published lifetime advance on **publish count**, not every sim tick.
+            // Intentional — matches the pre-x00dc skip-publish policy for Ring3 faces.
+            self.arena.carry_over();
+            sync_dirty_sheet_to_arena_work(&mut self.arena, &self.world.curr);
+            publish_arena_then_rotate(
+                &mut self.arena,
+                &self.snapshots,
+                start,
+                self.world.curr.clone(),
+            );
             self.publishes = self.publishes.wrapping_add(1);
             self.publish_dirty = false;
         }
@@ -1926,6 +1964,14 @@ fn sync_sheet_to_page(
 }
 
 /// Write page local poses back into Epoch Curr (f64 = cell_origin + local).
+///
+/// Marks sheet dirty when pose/rot actually change so Arena Carry-Over sync
+/// (`sync_dirty_sheet_to_arena_work`) and sheet→wire absorb see mvcc motion.
+/// Wire OR still primarily uses page dirty; sheet dirty is additive.
+///
+/// **Cost:** moving entities stay in the Arena dirty window every publish while
+/// they keep changing — intentional for Carry-Over correctness (dense `write_*`
+/// on movers; stationary rows stay out of the window once motion stops).
 fn sync_page_poses_to_sheet(page: &HotPhysicsPage, sheet: &mut EpochSheet) {
     let ox = page.cell_origin_x;
     let oy = page.cell_origin_y;
@@ -1941,14 +1987,17 @@ fn sync_page_poses_to_sheet(page: &HotPhysicsPage, sheet: &mut EpochSheet) {
         if !(lx.is_finite() && ly.is_finite() && lz.is_finite()) {
             continue;
         }
-        let xf = &mut sheet.world_transforms[idx];
-        xf.position = [ox + f64::from(lx), oy + f64::from(ly), oz + f64::from(lz)];
-        xf.rotation = [
+        let new_pos = [ox + f64::from(lx), oy + f64::from(ly), oz + f64::from(lz)];
+        let new_rot = [
             page.soa.rot_x[idx],
             page.soa.rot_y[idx],
             page.soa.rot_z[idx],
             page.soa.rot_w[idx],
         ];
+        let xf = &mut sheet.world_transforms[idx];
+        let pose_changed = xf.position != new_pos || xf.rotation != new_rot;
+        xf.position = new_pos;
+        xf.rotation = new_rot;
         // Poses only for all rows. SLEEPING write-back is DYNAMIC-only — kinematic
         // user_roots must never pick up SLEEPING from the page adapter face.
         let mut mask = sheet.readiness[idx];
@@ -1959,6 +2008,9 @@ fn sync_page_poses_to_sheet(page: &HotPhysicsPage, sheet: &mut EpochSheet) {
                 mask = mask.without_bits(ReadinessMask::SLEEPING);
             }
             sheet.readiness[idx] = mask;
+        }
+        if pose_changed {
+            sheet.mark_dirty(idx as u32);
         }
     }
 }
@@ -2081,6 +2133,69 @@ mod tests {
         assert_eq!(
             live, published,
             "snapshot Curr must match live after Intent"
+        );
+    }
+
+    #[test]
+    fn arena_host_barrier_no_ancestor_regression_after_idle_publishes() {
+        // x00dc DoD: host publish path goes through Carry-Over + publish→rotate.
+        let mut world =
+            PhysicsWorld::from_entries(&demo_entries_for_test(), LocoMode::Noclip, 10.0);
+        for _ in 0..20 {
+            world.step();
+        }
+        world.apply_user_intent(0, 1.0, 0.0, 0.0, 1.0 / 60.0);
+        world.step();
+        world.apply_user_intent(0, 1.0, 0.0, 0.0, 1.0 / 60.0);
+        world.step();
+        let id = PhysicsWorld::user_root_entity_id(0);
+        let row = world.entity_row(id).unwrap().row_id as usize;
+        let frozen = world.snapshots().load_curr().world_transforms[row].position;
+        let pubs_before = world.publishes;
+        for tick in 0..3 {
+            // Force Ring3 + Arena barrier even when XPBD would skip publish.
+            world.publish_dirty = true;
+            world.step();
+            let curr = world.snapshots().load_curr().world_transforms[row].position;
+            assert_eq!(
+                curr, frozen,
+                "idle host barrier tick {tick}: Ring3 curr must not ancestor-regress"
+            );
+        }
+        assert!(
+            world.publishes >= pubs_before + 3,
+            "forced idle publishes must advance Ring3 via Arena barrier"
+        );
+        assert!(
+            world.arena.epoch() > 0,
+            "Arena rotate must run on the host publish path"
+        );
+    }
+
+    #[test]
+    fn mvcc_ring3_curr_matches_live_sheet_not_stale_arena() {
+        // Integration smoke: MvccXpbd publish path keeps Ring3 curr == live sheet.
+        // Overlay-regression itself is pinned by shared-sim
+        // `publish_arena_keeps_caller_sheet_over_stale_arena_work` (this test's
+        // `write_pos(42,…)` is overwritten by `sync_dirty_sheet_to_arena_work`
+        // before publish, so it alone would not catch an overlay revival).
+        let mut world = test_world_mvcc();
+        world.world.gravity = [0.0, -9.8, 0.0];
+        let mesh_id = world.mesh_entity_id().expect("demo mesh");
+        let row = world.entity_row(mesh_id).unwrap().row_id as usize;
+        world.arena.write_pos(row as u32, 42.0, 42.0, 42.0);
+        for _ in 0..5 {
+            world.step();
+        }
+        let live = world.world.curr.world_transforms[row].position;
+        let published = world.snapshots().load_curr().world_transforms[row].position;
+        assert_eq!(
+            live, published,
+            "MvccXpbd Ring3 curr must track live sheet"
+        );
+        assert!(
+            (published[0] - 42.0).abs() > 1.0 || (published[1] - 42.0).abs() > 1.0,
+            "published pose must have left the planted stale seed (got {published:?})"
         );
     }
 

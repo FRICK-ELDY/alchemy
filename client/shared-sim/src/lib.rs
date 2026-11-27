@@ -5,7 +5,8 @@
 //! demo id constants; [`scene_entry_color_rgba`]; runtime held slots via
 //! [`slot_graph::SlotGraph`] (x0056); Zero-Base spatial lifecycle primitives in
 //! [`tape`] / [`topology`] / [`spatial`] / [`xpbd`] / [`bridge`] / [`mvcc`] (x00a3);
-//! Sim Arena 3-face + Carry-Over in [`sim_arena`] (x00da / x00db; bridge → x00dc).
+//! Sim Arena 3-face + Carry-Over + bridge publish in [`sim_arena`] / [`bridge`]
+//! (x00da / x00db / x00dc).
 //! Non-guarantees: Rapier / Dual-AST Kernel / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); CRDT / Zenoh / GPU wiring (client `epoch_view`);
@@ -33,7 +34,10 @@ pub mod tape;
 pub mod topology;
 pub mod xpbd;
 
-pub use bridge::{EpochFaces, EpochSnapshotPair, FrameBridge};
+pub use bridge::{
+    epoch_sheet_from_sim_face, publish_arena_then_rotate, seed_arena_from_sheet,
+    sync_dirty_sheet_to_arena_work, EpochFaces, EpochSnapshotPair, FrameBridge,
+};
 pub use tape::{
     ColliderShape, EpochSheet, NodeHandle, PendingPatch, ReadinessMask, WorldTransformf64,
     XpbdConstraintRow,
