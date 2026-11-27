@@ -13,8 +13,6 @@ defmodule Auth.Social do
   already-issued Room Token JWT immediate revoke (TTL; new epoch AEAD closed).
   """
 
-  require Logger
-
   alias Auth.Accounts.User
   alias Auth.Repo
   alias Auth.Social.{Follow, Friendship}
@@ -107,8 +105,8 @@ defmodule Auth.Social do
           end
       end
     else
+      # `mutual? || {:error, :not_mutual}` never yields bare `false`.
       {:error, _} = err -> err
-      false -> {:error, :not_mutual}
     end
   end
 
@@ -135,7 +133,6 @@ defmodule Auth.Social do
       end
     else
       {:error, _} = err -> err
-      _ -> {:error, :not_found}
     end
   end
 

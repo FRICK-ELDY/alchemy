@@ -131,9 +131,7 @@ defmodule AuthWeb.Plugs.RateLimit do
     end)
   end
 
-  defp rate_limit_keys(conn, :refresh) do
-    with_ip(conn, fn ip -> [{:ip, ip}] end)
-  end
+  # `:refresh` uses `first_exceeded_axis/3` + `check_refresh_token_limit/2` (not this helper).
 
   defp rate_limit_keys(conn, :resend_verification) do
     with_ip(conn, fn ip ->

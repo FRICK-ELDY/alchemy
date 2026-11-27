@@ -100,6 +100,8 @@ pub mod edit_reject {
     pub const SAVE_FORBIDDEN: u32 = 12;
     /// Save packed CAS exhausted / revision conflict (x00b7).
     pub const SAVE_CONFLICT: u32 = 13;
+    /// SoftLease held by another actor (x00e2 structural edit lock).
+    pub const SOFT_LEASE: u32 = 14;
 }
 
 /// `EditSetField.field_id` (x00b3). Value encodings are little-endian / UTF-8 as noted.

@@ -9,7 +9,7 @@
 //! (x00da / x00db / x00dc); Scene Store SparseSet + LWW / cycle reject +
 //! [`SimPatch`] queue → Arena Drain in [`scene_store`] / [`sim_arena`]
 //! (x00dd / x00de / x00df / x00e0); [`slot_undo`] ↔ Scene Store + host
-//! `pending_despawns` (x00e1 Phase 1b close).
+//! `pending_despawns` (x00e1 Phase 1b close); [`SoftLease`] edit lock (x00e2).
 //! Non-guarantees: Rapier / Dual-AST Kernel / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); Zenoh edit / Save I/O (host `LiveEditLedger` facade);
@@ -17,7 +17,8 @@
 //! は x00ae；host dirty 30Hz は x00b1; not V_ack/XOR）; cross-arch determinism (Q2).
 //! Host `SimBackend` + contact-on wiring is x00ad (`host-server`);
 //! MVCC gate x00a6–x00a9 + Phase 2 app x00aa–x00ac are in [`mvcc`] / client;
-//! SoA inertia SIMD (x00a5) is not on the tick path yet.
+//! SoA inertia SIMD (x00a5) is not on the tick path yet; physical grab remains
+//! `holder_slot` (SoftLease is structural only).
 
 #![forbid(unsafe_code)]
 
@@ -49,8 +50,9 @@ pub use tape::{
 pub use topology::FlatTopology;
 
 pub use scene_store::{
-    ApplyOutcome, CrdtOp, EntityId, OpTimestamp, PropValue, SceneStore, SimPatch, SparseSet,
-    MAX_LAMPORT_DRIFT, MAX_PARENT_HOPS,
+    actor_id_from_sub, ApplyOutcome, CrdtOp, EntityId, OpTimestamp, PropValue, SceneStore,
+    SimPatch, SoftLease, SoftLeaseConflict, SoftLeaseTable, SparseSet, MAX_LAMPORT_DRIFT,
+    MAX_PARENT_HOPS, SOFT_LEASE_TTL_TICKS,
 };
 pub use slot_graph::{ReparentError, SlotGraph};
 pub use slot_undo::{SlotTransition, SlotUndoStack, UndoError};

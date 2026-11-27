@@ -44,7 +44,7 @@ defmodule World.MixProject do
       {:remote_ip, "~> 1.2"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
-      {:ash, "~> 3.0"},
+      {:ash, "~> 3.38"},
       {:ash_sqlite, "~> 0.2"},
       {:zenohex, "~> 0.10.1"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}

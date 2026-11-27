@@ -73,8 +73,8 @@ struct NodeRecord {
 /// Drain; dense transform / bits / box go via [`Self::enqueue_patch`] (not CRDT).
 /// Keys = [`EntityId`].
 /// Non-guarantees: edit wire / Zenoh / Save I/O (host facade); TRASH_UUID /
-/// SoftLease / `op_chain_hash`; JWT `sub` → actor_id; SlotUndo Intent wire
-/// (see [`crate::slot_undo`] + host facade).
+/// `op_chain_hash`; SoftLease acquisition (host gate; type in soft_lease);
+/// Dual-auth JWT path; SlotUndo Intent wire (see [`crate::slot_undo`] + host facade).
 #[derive(Clone, Debug, Default)]
 pub struct SceneStore {
     nodes: SparseSet<NodeRecord>,

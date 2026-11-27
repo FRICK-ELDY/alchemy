@@ -120,7 +120,6 @@ defmodule Auth.Token do
       {:user, {:error, :unauthorized}} -> {:error, :unauthorized}
       {:user, {:error, :forbidden}} -> {:error, :forbidden}
       {:user, {:error, error}} -> {:error, {:account_verification_failed, error}}
-      other -> {:error, {:unexpected_claim_verification_result, other}}
     end
   end
 end

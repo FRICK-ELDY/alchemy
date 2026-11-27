@@ -1,6 +1,6 @@
-//! Host live edit facade over `shared-sim::scene_store` (x00e0 / x00e1).
+//! Host live edit facade over `shared-sim::scene_store` (x00e0 / x00e1 / x00e2).
 //!
-//! Contract (x00b3 / x00b9 / x00e0 / x00e1):
+//! Contract (x00b3 / x00b9 / x00e0 / x00e1 / x00e2):
 //! - Sparse SSoT is [`SceneStore`] (parents / fields / entities) — **no** host
 //!   HashMap second copy.
 //! - Host keeps quarantine, `tip` (`scene_rev`) sequencing, pending spawn/despawn
@@ -17,15 +17,20 @@
 //!   (`cfg(test)` peel only; must not be called from production).
 //! - Despawn stays **`pending_despawns`** + sparse remove (no TRASH_UUID);
 //!   live despawn **prunes** that child's undo/redo entries (x00e1; TRASH GC → x00e3).
+//! - [`SoftLeaseTable`] gates concurrent structural edits (Reparent / SetField) at
+//!   the edit entrance (`allows` before mutate, `try_acquire` only after sparse
+//!   success). Barrier / APPLY rollback keeps SoftLease so the same actor can
+//!   retry without another actor stealing mid-window; physical grab
+//!   (`holder_slot`) is a separate SSoT.
 //!
 //! Facade structural ops use [`SceneStore::apply_sparse`] (no `SimPatch` enqueue):
 //! FrameBridge already owns dense Reparent/SetField until Arena drain is wired
 //! from this ledger. Barrier / queue failure rolls back **LIFO** (reverse apply order).
 //!
 //! Non-guarantees: crash durability of unsaved pending; Spatial VCS flush;
-//! TRASH_UUID / SoftLease; Undo Intent / tip bump / EditCommit path; leave-time
+//! TRASH_UUID; Undo Intent / tip bump / EditCommit path; leave-time
 //! `undo_stacks` eviction (empty stacks pruned on despawn only); Arena SimPatch
-//! drain wiring.
+//! drain wiring; SoftLease ↔ physical grab integration.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -37,11 +42,12 @@ use alchemy_protocol::{
     edit_field_id, scene_entry_is_user_root, user_root_entity_last, EditCommit, EditProposal,
     EditReparent, EditSetField, Message, SceneEntry,
 };
-#[cfg(test)]
-use alchemy_shared_sim::UndoError;
 use alchemy_shared_sim::{
     ApplyOutcome, CrdtOp, OpTimestamp, PropValue, SceneStore, SlotTransition, SlotUndoStack,
+    SoftLeaseConflict, SoftLeaseTable, SOFT_LEASE_TTL_TICKS,
 };
+#[cfg(test)]
+use alchemy_shared_sim::{SoftLease, UndoError};
 use zenoh::Wait;
 
 use crate::room_aead::{self, SharedRoomAead};
@@ -75,6 +81,10 @@ pub struct LiveEditLedger {
     /// barrier-confirmed Reparent; not persisted across leave. Leave/Save do
     /// not clear this map (non-guarantee); despawn prunes per-child entries.
     undo_stacks: HashMap<Vec<u8>, SlotUndoStack>,
+    /// SoftLease table (entity → holder). Advanced by [`Self::advance_lease_tick`].
+    soft_leases: SoftLeaseTable,
+    /// Host tick clock for SoftLease expiry (not `tip` / scene_rev).
+    lease_tick: u64,
 }
 
 pub type SharedLiveEdit = Arc<Mutex<LiveEditLedger>>;
@@ -97,6 +107,41 @@ impl LiveEditLedger {
     pub fn bump_tip(&mut self) -> u64 {
         self.tip = self.tip.saturating_add(1);
         self.tip
+    }
+
+    /// Advance SoftLease clock (call once per host physics tick).
+    pub fn advance_lease_tick(&mut self) {
+        self.lease_tick = self.lease_tick.saturating_add(1);
+        self.soft_leases.purge_expired(self.lease_tick);
+    }
+
+    /// SoftLease conflict check (no TTL refresh). Call before sparse mutate.
+    pub fn soft_lease_allows(
+        &self,
+        entity_id: u32,
+        actor_id: u64,
+    ) -> Result<(), SoftLeaseConflict> {
+        self.soft_leases
+            .allows(entity_id, actor_id, self.lease_tick)
+    }
+
+    /// SoftLease acquire/refresh after a **successful** sparse apply.
+    ///
+    /// Failed decode / CYCLE / etc. must not call this (avoids TTL extension
+    /// without a scene change). Barrier / APPLY rollback intentionally leaves
+    /// the lease so the same actor can retry.
+    pub fn try_acquire_soft_lease(
+        &mut self,
+        entity_id: u32,
+        actor_id: u64,
+    ) -> Result<(), SoftLeaseConflict> {
+        self.soft_leases
+            .try_acquire(entity_id, actor_id, self.lease_tick, SOFT_LEASE_TTL_TICKS)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn soft_lease_of(&self, entity_id: u32) -> Option<SoftLease> {
+        self.soft_leases.get(entity_id)
     }
 
     #[inline]
@@ -274,6 +319,7 @@ impl LiveEditLedger {
         // Do **not** call [`SceneStore::remove_node`] here (that enqueues FreeSlot
         // for Arena drain — would double-free against FrameBridge).
         let _ = self.store.remove_node_sparse(entity_id);
+        self.soft_leases.clear(entity_id);
         self.prune_undo_for_entity(entity_id);
     }
 
@@ -1010,5 +1056,54 @@ mod tests {
         assert_eq!(led.parent_of(1), 0);
         assert_eq!(led.parent_of(2), 1);
         assert_eq!(led.parent_of(3), 2);
+    }
+
+    #[test]
+    fn soft_lease_blocks_other_actor_until_expiry() {
+        let mut led = LiveEditLedger::default();
+        assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.try_acquire_soft_lease(10, 1).is_ok());
+        assert!(
+            led.try_acquire_soft_lease(10, 1).is_ok(),
+            "same actor refresh"
+        );
+        assert_eq!(
+            led.try_acquire_soft_lease(10, 2),
+            Err(SoftLeaseConflict),
+            "other actor blocked while lease active"
+        );
+        for _ in 0..=SOFT_LEASE_TTL_TICKS {
+            led.advance_lease_tick();
+        }
+        assert!(
+            led.try_acquire_soft_lease(10, 2).is_ok(),
+            "other actor may acquire after expiry"
+        );
+    }
+
+    #[test]
+    fn soft_lease_cleared_on_despawn() {
+        let mut led = LiveEditLedger::default();
+        assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.try_acquire_soft_lease(10, 1).is_ok());
+        led.note_live_despawn(10);
+        // Entity gone; lease row cleared — re-acquire after re-spawn is free.
+        assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.try_acquire_soft_lease(10, 2).is_ok());
+    }
+
+    #[test]
+    fn soft_lease_allows_does_not_refresh_ttl() {
+        let mut led = LiveEditLedger::default();
+        assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.try_acquire_soft_lease(10, 1).is_ok());
+        let expires = led.soft_lease_of(10).unwrap().lease_expires_tick;
+        led.advance_lease_tick();
+        assert!(led.soft_lease_allows(10, 1).is_ok());
+        assert_eq!(
+            led.soft_lease_of(10).unwrap().lease_expires_tick,
+            expires,
+            "allows must not extend TTL"
+        );
     }
 }
