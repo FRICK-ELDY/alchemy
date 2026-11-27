@@ -69,11 +69,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install system packages
-        run: >
-          sudo apt-get update && sudo apt-get install -y
-          pkg-config curl
-          libxkbcommon-dev libwayland-dev
-          libx11-dev libxcursor-dev libxi-dev libxrandr-dev
+        run: |
+          # Runner images ship packages.microsoft.com sources that 403 on
+          # ubuntu-latest (26.04 resolute); we only need Ubuntu archive packages.
+          sudo grep -rlE 'packages\.microsoft\.com' /etc/apt/sources.list.d/ 2>/dev/null \
+            | sudo xargs -r rm -f || true
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config curl \
+            libxkbcommon-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev
 
       - name: Compose up (hermetic)
         run: docker compose -f docker-compose.e2e.yml up -d --build
@@ -103,11 +108,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install system packages
-        run: >
-          sudo apt-get update && sudo apt-get install -y
-          pkg-config curl openssl
-          libxkbcommon-dev libwayland-dev
-          libx11-dev libxcursor-dev libxi-dev libxrandr-dev
+        run: |
+          # Runner images ship packages.microsoft.com sources that 403 on
+          # ubuntu-latest (26.04 resolute); we only need Ubuntu archive packages.
+          sudo grep -rlE 'packages\.microsoft\.com' /etc/apt/sources.list.d/ 2>/dev/null \
+            | sudo xargs -r rm -f || true
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config curl openssl \
+            libxkbcommon-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev
 
       - name: Smoke WAN host E2E
         env:
