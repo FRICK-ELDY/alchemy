@@ -1,11 +1,11 @@
-# x00a7 — EntityDirectory + セル越え
+﻿# x00a7 — EntityDirectory + セル越え
 
 > **ID:** `x00a7` · **slug:** `entity-directory` · **status:** `done` · **area:** `[client, docs]` · **depends_on:** `[x00a6]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) §4.3 EntityDirectory（Phase 1 P0）
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §4.3 EntityDirectory（Phase 1 P0）
 
 目標: wire 正 ID `entity_id: u32` と `PageSlot` / `CellId` を導入し、セル越えを同一呼び出し内で原子的に行う。Q8 暫定: `CELL_SIZE_M=64` / `CELL_HYSTERESIS_M=2`。
 
-根拠: [mvcc_xpbd.md](../mvcc_xpbd.md) · [spatial_interest.md](../spatial_interest.md)（キー系のみ共有）
+根拠: [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) · [spatial_interest.md](../spatial_interest.md)（キー系のみ共有）
 
 ---
 

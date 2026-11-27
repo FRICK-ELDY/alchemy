@@ -1,11 +1,11 @@
-# x00a4 — MVCC×XPBD Phase 1 DoD（接触 / zero-alloc / リプレイ）
+﻿# x00a4 — MVCC×XPBD Phase 1 DoD（接触 / zero-alloc / リプレイ）
 
 > **ID:** `x00a4` · **slug:** `mvcc-phase1-dod` · **status:** `done` · **area:** `[client, docs]` · **depends_on:** `[x00a3]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 1 DoD（P1-2 / P1-3 吸収）
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) Phase 1 DoD（P1-2 / P1-3 吸収）
 
 目標: x00a3 scaffold の上で、ページ／アリーナ経路の **body-body 接触**・**プール page-alloc 上限**・**ビット一致リプレイ**・**`frame_delta` 速度復元** を `shared-sim` 単体テストで閉じる。host/app 本線は触らない。
 
-根拠: [improvement-plan-2026-11-12.md](../../0_doc/evaluation/improvement-plan-2026-11-12.md) · [mvcc_xpbd.md](../mvcc_xpbd.md) §5 Phase 1 · 計画「MVCC×XPBD — 次にやるべきこと」
+根拠: [improvement-plan-2026-11-12.md](../../0_doc/evaluation/improvement-plan-2026-11-12.md) · [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §5 Phase 1 · 計画「MVCC×XPBD — 次にやるべきこと」
 
 ---
 

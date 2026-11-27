@@ -1,11 +1,11 @@
-# x0090 — client Epoch 購読 + SceneGpu 最小 bind
+﻿# x0090 — client Epoch 購読 + SceneGpu 最小 bind
 
 > **ID:** `x0090` · **slug:** `client-epoch-scenegpu-bind` · **status:** `done` · **area:** `[client, sim]` · **depends_on:** `[x008e, x008f, x0023]`  
 > **優先度:** Zero-Base Spatial 本線（x008f の「次」）
 
 目標: 検証済み `RenderFrame` 適用後に client ローカル `EpochSnapshotPair` へ kinematic mirror し、`SceneGpu` が Prev/Curr を storage buffer へ整列パックして interpolate compute を dispatch する。描画 UBO / wire 権威は **引き続き `EntityPose`（WorldView）**。
 
-根拠: [x008f](x008f-host-frame-bridge.md)「やらない／次」· [alchemy_zero_base_spatial_lifecycle_architecture.md](../alchemy_zero_base_spatial_lifecycle_architecture.md) Step 5
+根拠: [x008f](x008f-host-frame-bridge.md)「やらない／次」· [alchemy_zero_base_spatial_lifecycle_architecture.md](../archive/2026-11-27/alchemy_zero_base_spatial_lifecycle_architecture.md) Step 5
 
 ---
 

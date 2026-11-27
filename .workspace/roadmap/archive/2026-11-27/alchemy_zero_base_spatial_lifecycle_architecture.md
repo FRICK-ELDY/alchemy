@@ -1,3 +1,7 @@
+> **status: archived**（2026-11-27）  
+> **実装指示として使わない。** 後任の品質本線は [`../../scene_store_sim_arena.md`](../../scene_store_sim_arena.md)（Host-Sequenced CRDT × Sim Arena。Loro 本線は採用しない）。  
+> 規模本線は [`../../spatial_interest.md`](../../spatial_interest.md)。
+
 # Alchemy: Zero-Base Spatial Lifecycle & Native XPBD Dataflow Architecture
 
 - **対象リポジトリ / モジュール**: `FRICK-ELDY/alchemy` (`client`, `host-server`, `shared-sim`)

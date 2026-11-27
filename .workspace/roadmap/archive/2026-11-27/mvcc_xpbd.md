@@ -1,9 +1,13 @@
+> **status: archived**（2026-11-27）  
+> **実装指示として使わない。** 後任の品質本線は [`../../scene_store_sim_arena.md`](../../scene_store_sim_arena.md)。  
+> 本ファイルはページ CoW MVCC × XPBD 時代の歴史文書。規模本線は [`../../spatial_interest.md`](../../spatial_interest.md)。
+
 # `FRICK-ELDY/alchemy` 向け「MVCC $\times$ XPBD」空間物理・同期基盤 統合実装指示書
 
 * **対象リポジトリ**: `https://github.com/FRICK-ELDY/alchemy`
 * **対象コンポーネント**: `client/` ワークスペース（**既存** `shared-sim` の進化、`host-server`, `app`）、`protocol/`
-* **改善計画上の位置**: [improvement-plan-2026-11-12.md](../0_doc/evaluation/improvement-plan-2026-11-12.md) — **P1-1 / P1-4 / P1-5 完了後**に Phase 1。**P1-2** = Phase 1（shared-sim 能力）+ Phase 3（host 配線）で閉じる、**P1-3** = Phase 1、**P3-2** = Phase 2 に吸収
-* **本線の役割**: **品質本線**（近傍物理・ゼロアロ・handover 速度・補間）。同一 Room の大規模 CCU（1000 人 horizon）は規模本線 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**）
+* **改善計画上の位置**: [improvement-plan-2026-11-12.md](../../../0_doc/evaluation/archive/2026-11-12/improvement-plan-2026-11-12.md) — **P1-1 / P1-4 / P1-5 完了後**に Phase 1。**P1-2** = Phase 1（shared-sim 能力）+ Phase 3（host 配線）で閉じる、**P1-3** = Phase 1、**P3-2** = Phase 2 に吸収
+* **本線の役割（当時）**: 近傍物理・ゼロアロ・handover 速度・補間。同一 Room の大規模 CCU は規模本線 [spatial_interest.md](../../spatial_interest.md)（**P3-7**）。**現行品質本線は後任** [`../../scene_store_sim_arena.md`](../../scene_store_sim_arena.md)
 * **関連スライス**: `x0020` (Desktop 正本), `x0039` (`ManifestSeal`), `x0053` (体感並行補間), `x0067` (Zenoh 非対称 ACL), `x0068` (短命 mTLS), `x0069` (Room 鍵 AEAD), `x0024`（frame tick 連番 + 欠落時 snapshot）
 * **レビュー取り込み**: [mvcc_xpbd_review_proposal.md](mvcc_xpbd_review_proposal.md)（2026-11-13）の P0/P1 を本版に反映。未決事項は §6
 * **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜dirty 30Hz（x00ad–[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)）+ 確定レーン土台 [x00b2](slices/x00b2-phase3-edit-lane-foundation.md) **done** + ライブ Reparent/SetField [x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md)（案 B / VCS 前提）+ Room タブ器 [x00b6](slices/x00b6-dash-room-tab.md) + 明示 Save [x00b7](slices/x00b7-overlay-canonical-save.md)/[x00b8](slices/x00b8-save-parent-setfield-persist.md) + Spawn 即 CAS 見直し [x00b9](slices/x00b9-spawn-without-live-cas.md) **done** + 規模本線 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)/[x00bf](slices/x00bf-client-near-cell-frame-sub.md)/[x00c0](slices/x00c0-host-cell-dirty-filter.md)/[x00c1](slices/x00c1-client-cell-follow-resub.md)/[x00c2](slices/x00c2-cell-exit-remove.md)/[x00c3](slices/x00c3-multi-cell-same-tick-merge.md)/[x00c4](slices/x00c4-opt-in-cell-frame-mainline.md)/[x00c5](slices/x00c5-default-cell-frame-mainline.md)（既定 cell 本線）。残り: avatar LOD / dual-publish 縮小 / Spatial VCS。

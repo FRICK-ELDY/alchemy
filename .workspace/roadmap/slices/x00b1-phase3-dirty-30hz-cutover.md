@@ -1,12 +1,12 @@
-# x00b1 — Phase 3: host dirty 30Hz 本番切替
+﻿# x00b1 — Phase 3: host dirty 30Hz 本番切替
 
 > **ID:** `x00b1` · **slug:** `phase3-dirty-30hz-cutover` · **status:** `done` · **area:** `[host, sim, docs]` · **depends_on:** `[x00ae, x00af, x00b0]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 3 残り（dirty 本番 → 並走可 `…/edit`）  
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) Phase 3 残り（dirty 本番 → 並走可 `…/edit`）  
 > **後続:**（並走可）確定レーン `…/edit` · Spatial Interest は Phase 3 DoD 後 · 既定 backend を `mvcc_xpbd` に切替は別スライス
 
 目標: x00ae の `WireDirtyAccumulator` / `extract_dirty_records_into` を **host 権威ループの 30Hz publish** に配線する。60Hz 物理のうち送らない tick の dirty を OR 蓄積し、pack 時に送った bit を in-flight 化し（成功で確定破棄・空/失敗で restore）、pack 後の再 dirty を消さない。欠落は x0024 snapshot（`V_ack` 禁止）。
 
-根拠: [mvcc_xpbd.md](../mvcc_xpbd.md) §4.5 / §5 Phase 3 · [x00ae](x00ae-phase3-dirty-delta-codec.md) · [x00af](x00af-phase3-protocol-pin.md)（量子化ポーズは本スライスで **任意**）
+根拠: [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §4.5 / §5 Phase 3 · [x00ae](x00ae-phase3-dirty-delta-codec.md) · [x00af](x00af-phase3-protocol-pin.md)（量子化ポーズは本スライスで **任意**）
 
 ---
 
@@ -48,7 +48,7 @@
 * user_root は Presence occupied slot のみ（full-scan と同集合；落とされた bit は detach しない）。inactive / 空き slot の sticky bit 刈り取りは本スライス非保証（reclaim・catchup・将来 mowing）
 * `entity_of` は `entity_rows` / sheet 行から同期（unset→0 を wire に出さないよう extract 前に埋める）
 * 量子化: `EntityDeltaRecord.packed_quat` は内部利用可；wire は当面 unpack→f64（PIN 据え置き）。PIN bump するなら本スライス末尾で 1 回に限る
-* 回帰: host 版 `dirty_survives_skipped_net_tick`（正本名は [mvcc_xpbd.md](../mvcc_xpbd.md) §5 / x00ae と同契約；スキップ物理 tick 分の OR が次 net publish に残る）· 空デルタ非 publish · epoch smoke 退行なし ·（arena 導入時）`reuse_clears_stale_wire_dirty`
+* 回帰: host 版 `dirty_survives_skipped_net_tick`（正本名は [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §5 / x00ae と同契約；スキップ物理 tick 分の OR が次 net publish に残る）· 空デルタ非 publish · epoch smoke 退行なし ·（arena 導入時）`reuse_clears_stale_wire_dirty`
 
 ---
 

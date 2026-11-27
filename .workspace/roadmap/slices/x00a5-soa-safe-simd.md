@@ -1,11 +1,11 @@
-# x00a5 — SoA ホットパス Safe SIMD（`wide` / `glam`）
+﻿# x00a5 — SoA ホットパス Safe SIMD（`wide` / `glam`）
 
 > **ID:** `x00a5` · **slug:** `soa-safe-simd` · **status:** `done` · **area:** `[client, docs]` · **depends_on:** `[x00a4]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) §6 Q5 承認済み後続強化（Phase 1 DoD 後・host/app 本線は触らない）
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §6 Q5 承認済み後続強化（Phase 1 DoD 後・host/app 本線は触らない）
 
 目標: 承認済み `glam`（`bytemuck`+`libm`）と `wide` を `shared-sim` に入れ、`HotPhysicsPage` SoA 上の **慣性予測ホットパス**を Safe SIMD 既定に差し替える。**スカラー参照実装は残し**、同一入力でビット一致を単体テストする。
 
-根拠: [mvcc_xpbd.md](../mvcc_xpbd.md) Q5 · [improvement-plan-2026-11-12.md](../../0_doc/evaluation/improvement-plan-2026-11-12.md)
+根拠: [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) Q5 · [improvement-plan-2026-11-12.md](../../0_doc/evaluation/improvement-plan-2026-11-12.md)
 
 ---
 

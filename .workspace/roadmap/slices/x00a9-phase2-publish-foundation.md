@@ -1,7 +1,7 @@
-# x00a9 — Phase 2 出版契約の土台（ArcSwap / sim_tick）
+﻿# x00a9 — Phase 2 出版契約の土台（ArcSwap / sim_tick）
 
 > **ID:** `x00a9` · **slug:** `phase2-publish-foundation` · **status:** `done` · **area:** `[client, docs]` · **depends_on:** `[x00a6, x00a7, x00a8]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 2 / improvement-plan **P3-2**（着手）
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) Phase 2 / improvement-plan **P3-2**（着手）
 
 目標: Phase 2 ゲート（レイアウト・真 CoW・Directory・不等式）が Green になった前提で、`shared-sim` に **ArcSwap 出版ペア**（`sim_tick` 付き `PublishedFace`）を入れる。app の jitter / 手元予測 / `interp.wgsl` は後続サブスライス。
 

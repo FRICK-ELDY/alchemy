@@ -2,8 +2,10 @@
 
 > 根拠: [specific-weaknesses-2026-11-18.md](specific-weaknesses-2026-11-18.md)  
 > 前回計画: [archive/2026-11-12/improvement-plan-2026-11-12.md](archive/2026-11-12/improvement-plan-2026-11-12.md)  
-> 品質本線（物理）: [mvcc_xpbd.md](../../roadmap/mvcc_xpbd.md)  
+> 品質本線（同期・状態）: [scene_store_sim_arena.md](../../roadmap/scene_store_sim_arena.md)  
 > 規模本線（配信）: [spatial_interest.md](../../roadmap/spatial_interest.md)  
+> 旧品質本線（archived）: [mvcc_xpbd.md](../../roadmap/archive/2026-11-27/mvcc_xpbd.md)  
+
 > 目的: 採用マイナス ~-18 を潰し、正味 ~+132 をさらに押し上げる。
 
 ---
@@ -65,7 +67,7 @@
 | P3-5 | Dual-AST / Wake / OSC / LOD ビルド / audio | 目標 | 減点しない |
 | P3-6 | 署名付き installer / SBOM / 自動更新 | 提案 | OS vault 後の配布 trust |
 | P3-7 | Spatial Interest 深化（AOI snapshot・規模 gate） | 規模本線 | 正本 [`spatial_interest.md`](../../roadmap/spatial_interest.md) |
-| P3-8 | MVCC default 切替・複数 page | 品質本線 | 正本 [`mvcc_xpbd.md`](../../roadmap/mvcc_xpbd.md)。ベンチ条件を満たしてから |
+| P3-8 | ~~MVCC default 切替・複数 page~~ → **凍結** | 品質本線 | 旧正本 archived。後任は [`scene_store_sim_arena.md`](../../roadmap/scene_store_sim_arena.md) Phase 1（LiveEditLedger → Scene Store）。`mvcc/` は `sim_pages` へ改称予定（SSoT にしない） |
 
 ---
 
@@ -91,9 +93,9 @@
 2. **LBVH O(n)+refit**（P0-2）— 修正量小・効果大
 3. **assets RL + scene/save RL**（P0-3 / P2-1）
 4. **kick deny + cell 回復 + E2E**（P1-2 / P1-3 / P1-4）
-5. **Epoch clone 削減**（P1-1）— MVCC default はベンチ後（P3-8）
+5. **Epoch clone 削減**（P1-1）— 旧 P3-8 MVCC default 切替は**凍結**（品質本線は Scene Store × Sim Arena）
 6. **P2 衛生**（overlay / CI / trust-boundary / smoke / 分割）— 並走可
-7. **P3** — Interest 深化・VCS clone・verifier・配布。品質本線と規模本線を混同しない
+7. **P3** — Interest 深化・VCS clone・verifier・配布・Scene Store Phase 1。品質本線と規模本線を混同しない
 
 スライス完了条件に必ず含める:
 

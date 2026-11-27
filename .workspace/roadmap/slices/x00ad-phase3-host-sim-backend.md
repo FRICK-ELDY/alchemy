@@ -1,12 +1,12 @@
-# x00ad — Phase 3 着手: host `SimBackend` + 接触オン
+﻿# x00ad — Phase 3 着手: host `SimBackend` + 接触オン
 
 > **ID:** `x00ad` · **slug:** `phase3-host-sim-backend` · **status:** `done` · **area:** `[host, sim, client, docs]` · **depends_on:** `[x00a8, x00ac]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 3 着手 / improvement-plan **P1-2（host 配線）**  
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) Phase 3 着手 / improvement-plan **P1-2（host 配線）**  
 > **後続:** [x00ae](x00ae-phase3-dirty-delta-codec.md) dirty codec **done** · PROTOCOL_PIN · `…/sim_state` · `…/edit`（次空き `x00af`〜）
 
 目標: Phase 2（x00a9–x00ac）Green 後、`host-server` 権威ループに **切替可能な `SimBackend`** を入れ、**body-body 接触をオン**（`xpbd::step(..., bounds: Some)`）にして improvement-plan **P1-2 の host 側**を閉じる。x0093 で意図的に切っていた LBVH 接触を、不等式経路（x00a8）のまま本線に戻す。
 
-根拠: [mvcc_xpbd.md](../mvcc_xpbd.md) §0 / §5 Phase 3 · [improvement-plan-2026-11-12.md](../../0_doc/evaluation/improvement-plan-2026-11-12.md) P1-2 · [x0093](x0093-xpbd-wire-authority.md)（接触 OFF の記録）· [x00a8](x00a8-inequality-contact.md)
+根拠: [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §0 / §5 Phase 3 · [improvement-plan-2026-11-12.md](../../0_doc/evaluation/improvement-plan-2026-11-12.md) P1-2 · [x0093](x0093-xpbd-wire-authority.md)（接触 OFF の記録）· [x00a8](x00a8-inequality-contact.md)
 
 ---
 

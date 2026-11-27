@@ -1,9 +1,9 @@
-# assets VCS 設計たたき台（ローカルリポジトリ → push → Pull Request → main）
+﻿# assets VCS 設計たたき台（ローカルリポジトリ → push → Pull Request → main）
 
 > **ステータス**: **draft** — 目標設計のたたき台。実装正本ではない（codec [x00c8](../../roadmap/slices/x00c8-vcs-object-codec.md) / 内容アドレス [x00c9](../../roadmap/slices/x00c9-vcs-content-addressed.md) / Cert v2+origins [x00ca](../../roadmap/slices/x00ca-origin-cert-v2-origins.md) **done**）  
 > **スコープ**: アイテム（Prefab）先行。ワールドは後続  
 > **現行正本**: [assets-server.md](assets-server.md)（Vcs 薄皮 x0062–x0065・codec x00c8・内容アドレス x00c9・**Origin Cert v2 + 原産地台帳 x00ca**。v1/x0096 は廃止）  
-> **関連**: [assets-server-draft.md](assets-server-draft.md)（5 層目標像）· [assets-threat-model.md](assets-threat-model.md)（手口×対策）· [mvcc_xpbd.md](../../roadmap/mvcc_xpbd.md) §4.7（ライブ tip / 明示 Save）· [inventory-ladder.md](../../roadmap/inventory-ladder.md)  
+> **関連**: [assets-server-draft.md](assets-server-draft.md)（5 層目標像）· [assets-threat-model.md](assets-threat-model.md)（手口×対策）· [scene_store_sim_arena.md](../../roadmap/scene_store_sim_arena.md)（ライブ tip / 明示 Save；旧 §4.7 は [archive](../../roadmap/archive/2026-11-27/mvcc_xpbd.md)）（ライブ tip / 明示 Save）· [inventory-ladder.md](../../roadmap/inventory-ladder.md)  
 > **ライセンス階層**: `assets-server` / `client` = MPL-2.0。オブジェクト形式（codec）= `protocol/`（Apache-2.0）。`market-server` = BSL-1.1（本書は境界だけを書く）
 
 ---

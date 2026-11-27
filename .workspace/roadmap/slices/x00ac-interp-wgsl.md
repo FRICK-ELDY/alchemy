@@ -1,7 +1,7 @@
-# x00ac — HotPhysicsPage 向け `interp.wgsl` + naga 検証
+﻿# x00ac — HotPhysicsPage 向け `interp.wgsl` + naga 検証
 
 > **ID:** `x00ac` · **slug:** `interp-wgsl` · **status:** `done` · **area:** `[client, docs]` · **depends_on:** `[x00aa]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 2 ゲート（シェーダ検証）
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) Phase 2 ゲート（シェーダ検証）
 
 目標: `GpuTransferableSoA` レイアウト契約の `interp.wgsl` を置き、wgpu 再エクスポートの naga でパース検証する。Epoch インライン WGSL 描画は当面維持。
 

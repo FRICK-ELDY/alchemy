@@ -1,15 +1,16 @@
 # Alchemy 拡張ギャップメモ — 体感・運用4点
 
 * **種別**: `memo/` 提案。正本ではない
+* **注記（2026-11-27）**: `MvccPageArena` 前提は**旧**。品質本線は [`../scene_store_sim_arena.md`](../scene_store_sim_arena.md)（Sim Arena / `sim_pages`）。旧文書は [`../archive/2026-11-27/mvcc_xpbd.md`](../archive/2026-11-27/mvcc_xpbd.md)
 * **対象外（本メモでは扱わない）**: 決定論 math、SHM IPC、Dual-AST→Wasm/WGSL、Spatial AoI、HKDF 階層鍵
-  → それぞれ [`mvcc_xpbd.md`](../mvcc_xpbd.md) / [`spatial_interest.md`](../spatial_interest.md) / 既存 Room AEAD・epoch に委譲
+  → それぞれ [`../scene_store_sim_arena.md`](../scene_store_sim_arena.md) / [`spatial_interest.md`](../spatial_interest.md) / 既存 Room AEAD・epoch に委譲
 * **目的**: VR ヒッチ根絶とクリエイト／長時間運用に効く、現行ロードマップで言語化が薄い4束を固定する
 
 ---
 
 ## 1. 優先度（Expansion Wave）
 
-品質本線（MVCC）・規模本線（Spatial Interest）の **P0〜** とは番号を共有しない。ここでは **E1 / E2** のみ。
+品質本線（Scene Store × Sim Arena）・規模本線（Spatial Interest）の **P0〜** とは番号を共有しない。ここでは **E1 / E2** のみ。
 
 ### E1：ヒッチ根絶 + アバター描画メモリ
 

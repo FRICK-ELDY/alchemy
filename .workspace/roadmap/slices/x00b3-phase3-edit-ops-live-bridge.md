@@ -1,12 +1,12 @@
-# x00b3 — Phase 3: ライブ確定レーン（Reparent/SetField + FrameBridge・VCS 前提）
+﻿# x00b3 — Phase 3: ライブ確定レーン（Reparent/SetField + FrameBridge・VCS 前提）
 
 > **ID:** `x00b3` · **slug:** `phase3-edit-ops-live-bridge` · **status:** `done` · **area:** `[protocol, host, client, shared-sim, docs]` · **depends_on:** `[x00b2]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) §4.7 案 B（ライブ tip / 明示 Save）  
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §4.7 案 B（ライブ tip / 明示 Save）  
 > **後続:** 明示 Save（Save Changes）· Spatial VCS · Spawn 即 CAS 見直し · 旧 inventory キー廃止 · Undo UI
 
 目標: Reparent / SetField を **host ライブ確定 + FrameBridge** で適用する。world overlay 即時 CAS はしない（将来の Git 型版管理 = working tree / commit 分離）。`EditCommit.scene_rev` を **host `live_scene_rev`** に再定義し、snapshot に `scene_rev` を載せて gap 収束する。
 
-根拠: [mvcc_xpbd.md](../mvcc_xpbd.md) §4.7 / Q3 · [mvcc_xpbd_review_proposal.md](../mvcc_xpbd_review_proposal.md) 指摘 6 · x00b2
+根拠: [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §4.7 / Q3 · [mvcc_xpbd_review_proposal.md](../archive/2026-11-27/mvcc_xpbd_review_proposal.md) 指摘 6 · x00b2
 
 ---
 

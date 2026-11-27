@@ -1,11 +1,11 @@
-# x0092 — camera / loco eye → display TRS
+﻿# x0092 — camera / loco eye → display TRS
 
 > **ID:** `x0092` · **slug:** `eye-display-trs` · **status:** `done` · **area:** `[client, sim]` · **depends_on:** `[x0091]`  
 > **優先度:** Zero-Base Spatial 本線（x0091 残レガシー撤廃）
 
 目標: Desktop FPS view／Grab ray／loco aim origin／XR floor 基準の **user_root 位置** を WorldView Curr から **`begin_display_frame` の同一 display snap** へ移す。viewpoint アンカーは引き続き `local_user_root`（FPS）。
 
-根拠: [x0091](x0091-epoch-out-scenegpu-draw.md)「やらない／次」· [alchemy_zero_base_spatial_lifecycle_architecture.md](../alchemy_zero_base_spatial_lifecycle_architecture.md) Step 5
+根拠: [x0091](x0091-epoch-out-scenegpu-draw.md)「やらない／次」· [alchemy_zero_base_spatial_lifecycle_architecture.md](../archive/2026-11-27/alchemy_zero_base_spatial_lifecycle_architecture.md) Step 5
 
 ---
 

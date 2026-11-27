@@ -1,4 +1,4 @@
-# x00d8 — LBVH O(n) + サブステップ refit（P0-2）
+﻿# x00d8 — LBVH O(n) + サブステップ refit（P0-2）
 
 > **ID:** `x00d8` · **slug:** `lbvh-o-n-refit` · **status:** `done` · **area:** `[shared-sim, docs]` · **depends_on:** `[x008e, x00a2, x00ad]`  
 > **優先度:** improvement-plan 2026-11-18 **P0-2**
@@ -39,4 +39,4 @@
 ## 実装メモ
 
 - コード: `client/shared-sim/src/spatial.rs` · `client/shared-sim/src/xpbd.rs`
-- 設計目標（aspirational）: [alchemy_zero_base_spatial_lifecycle_architecture.md](../alchemy_zero_base_spatial_lifecycle_architecture.md) §4.2 数千オブジェクトで構築 < 0.2 ms
+- 設計目標（aspirational）: [alchemy_zero_base_spatial_lifecycle_architecture.md](../archive/2026-11-27/alchemy_zero_base_spatial_lifecycle_architecture.md) §4.2 数千オブジェクトで構築 < 0.2 ms

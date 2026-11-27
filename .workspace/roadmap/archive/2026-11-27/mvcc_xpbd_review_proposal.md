@@ -1,3 +1,7 @@
+> **status: archived**（2026-11-27）  
+> **実装指示として使わない。** 後任の品質本線は [`../../scene_store_sim_arena.md`](../../scene_store_sim_arena.md)。  
+> 当時の取り込み先 [`mvcc_xpbd.md`](mvcc_xpbd.md) も同ディレクトリにアーカイブ済み。
+
 # MVCC × XPBD 実装指示書 レビューと改善提案
 
 > **取り込み状況（2026-11-13）**: 本提案の P0/P1 は [`mvcc_xpbd.md`](mvcc_xpbd.md) と [`improvement-plan-2026-11-12.md`](../0_doc/evaluation/improvement-plan-2026-11-12.md) に**文書反映済み**。  
