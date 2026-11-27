@@ -8,10 +8,10 @@
 //! Sim Arena 3-face + Carry-Over + bridge publish in [`sim_arena`] / [`bridge`]
 //! (x00da / x00db / x00dc); Scene Store SparseSet + LWW / cycle reject +
 //! [`SimPatch`] queue → Arena Drain in [`scene_store`] / [`sim_arena`]
-//! (x00dd / x00de / x00df).
+//! (x00dd / x00de / x00df / x00e0).
 //! Non-guarantees: Rapier / Dual-AST Kernel / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
-//! Slot graphs (→ x0059); LiveEdit facade (→ x00e0); Zenoh /
+//! Slot graphs (→ x0059); Zenoh edit / Save I/O (host `LiveEditLedger` facade);
 //! GPU wiring (client `epoch_view`); PROTOCOL_PIN quantized pose（[`delta_codec`]
 //! は x00ae；host dirty 30Hz は x00b1; not V_ack/XOR）; cross-arch determinism (Q2).
 //! Host `SimBackend` + contact-on wiring is x00ad (`host-server`);

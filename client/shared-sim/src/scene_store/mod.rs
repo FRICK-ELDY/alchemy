@@ -1,5 +1,5 @@
 //! Scene Store — SparseSet + Host-Sequenced LWW / cycle reject + SimPatch queue
-//! (x00dd / x00de / x00df).
+//! (x00dd / x00de / x00df / x00e0).
 //!
 //! Guarantees: [`SparseSet<T>`] with `sparse` / `dense_slots` / `dense_values`;
 //! sparse key = [`EntityId`] (`u32`); dense walk of live entries; holes in the
@@ -7,8 +7,11 @@
 //! [`SceneStore`] Property-level LWW + cyclic [`CrdtOp::MoveNode`] Reject
 //! (No-op); [`OpTimestamp`] with lamport drift reject gate;
 //! [`SimPatch`] queue (Spawn/Move auto-enqueue; dense transform via
-//! [`SceneStore::enqueue_patch`]) for Arena Step 0 Drain.
-//! Non-guarantees: LiveEditLedger facade / Zenoh edit / Save (→ x00e0);
+//! [`SceneStore::enqueue_patch`]) for Arena Step 0 Drain;
+//! host boot / physics-ok seed via [`SceneStore::seed_node`] (no patch);
+//! host facade live ops via [`SceneStore::apply_sparse`] (LWW, no patch enqueue);
+//! [`SceneStore::remove_node`] clears orphan parents (no FreeSlot yet).
+//! Non-guarantees: Zenoh edit / Save I/O / tip 採番 (host facade);
 //! TRASH_UUID / SoftLease / 3-layer IDs; JWT `sub` → `actor_id` (host gate);
 //! FreeSlot auto-enqueue (→ x00e1 pending_despawns).
 //!

@@ -1,6 +1,6 @@
 # x00e0 — LiveEditLedger → scene_store facade
 
-> **ID:** `x00e0` · **slug:** `live-edit-facade` · **status:** `planned` · **area:** `[host, sim]` · **depends_on:** `[x00df]`  
+> **ID:** `x00e0` · **slug:** `live-edit-facade` · **status:** `done` · **area:** `[host, sim]` · **depends_on:** `[x00df]`  
 > **優先度:** 品質本線 Phase 1b（疎 SSoT 一本化）  
 > **後続:** Undo / pending_despawns 閉じは [x00e1](x00e1-scene-store-undo-despawn.md)
 

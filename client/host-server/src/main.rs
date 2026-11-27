@@ -864,14 +864,21 @@ fn main() -> Result<()> {
         let mut led = live_edit
             .lock()
             .map_err(|_| anyhow::anyhow!("LiveEditLedger poisoned"))?;
+        // Skipped ids stay out of the ledger → later live Reparent/SetField gets NOT_FOUND.
         for e in &scene.entries {
-            led.note_spawn_with_parent(
+            if !led.note_spawn_with_parent(
                 e.entity_id,
                 e.parent_entity_id,
                 e.flags,
                 [e.r, e.g, e.b, if e.a == 0.0 { 1.0 } else { e.a }],
                 e.blake3.clone(),
-            );
+            ) {
+                log::warn!(
+                    "LiveEditLedger seed skipped entity_id={} parent={} (live edit will NOT_FOUND)",
+                    e.entity_id,
+                    e.parent_entity_id
+                );
+            }
         }
     }
     let control_rate = control_rate::SharedControlRate::new_shared();
