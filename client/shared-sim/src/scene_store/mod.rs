@@ -1,5 +1,6 @@
 //! Scene Store — SparseSet + Host-Sequenced LWW / cycle reject + SimPatch queue
-//! + SoftLease + Trash + 3-layer ID coexistence (x00dd…x00e4).
+//! + SoftLease + Trash + 3-layer ID coexistence + op_chain / RoomSnapshot 枠
+//!   (x00dd…x00e5).
 //!
 //! Guarantees: [`SparseSet<T>`] with `sparse` / `dense_slots` / `dense_values`;
 //! sparse key = [`EntityId`] (`u32`); dense walk of live entries; holes in the
@@ -16,10 +17,13 @@
 //! still projects `pending_despawns`);
 //! [`SoftLease`] / [`SoftLeaseTable`] structural edit lock (host gate acquires);
 //! 3-layer ID types + [`crate::ids::WireToLocal`] skeleton (x00e4; live path
-//! still keys on [`EntityId`]).
+//! still keys on [`EntityId`]);
+//! [`SequencedOp`] / [`fold_op_chain_hash`] / [`RoomSnapshot`] skeleton (x00e5).
 //! Non-guarantees: Zenoh edit / Save I/O / tip 採番 (host facade);
 //! PROTOCOL_PIN / edit `entity_id` cutover to StableUuid; Dual-auth JWT path
-//! (host); physical grab SSoT; SlotUndo Intent wire (library + host facade peel).
+//! (host); physical grab SSoT; SlotUndo Intent wire (library + host facade peel);
+//! wire carriage of `op_chain_hash`; `…/snapshot` / `…/sim_state` replacement;
+//! host_loop auto-fold of the op chain.
 //!
 //! # Live re-Spawn
 //!
@@ -49,7 +53,9 @@
 #![forbid(unsafe_code)]
 
 mod op;
+mod op_chain;
 mod patch;
+mod room_snapshot;
 mod soft_lease;
 mod sparse_set;
 mod store;
@@ -57,7 +63,12 @@ mod timestamp;
 mod trash;
 
 pub use op::{CrdtOp, PropValue};
+pub use op_chain::{
+    digest_crdt_op, digest_crdt_op_into, fold_op_chain, fold_op_chain_hash, fold_op_chain_into,
+    SequencedOp, OP_CHAIN_DOMAIN,
+};
 pub use patch::SimPatch;
+pub use room_snapshot::{RoomSnapshot, RoomSnapshotNode, RoomSnapshotPose};
 pub use soft_lease::{
     actor_id_from_sub, SoftLease, SoftLeaseConflict, SoftLeaseTable, SOFT_LEASE_TTL_TICKS,
 };

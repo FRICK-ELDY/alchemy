@@ -12,7 +12,7 @@
 //! [`SoftLease`] edit lock (x00e2); logical delete via [`TRASH_ENTITY_ID`] +
 //! [`TrashStore`] GC (x00e3; host Save still projects `pending_despawns`);
 //! 3-layer IDs + [`WireToLocal`] skeleton (x00e4; edit/PROTOCOL_PIN still
-//! `entity_id: u32`).
+//! `entity_id: u32`); [`SequencedOp`] / op_chain fold + [`RoomSnapshot`] 枠 (x00e5).
 //! Non-guarantees: Rapier / Dual-AST Kernel / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); Zenoh edit / Save I/O (host `LiveEditLedger` facade);
@@ -21,7 +21,8 @@
 //! Host `SimBackend` + contact-on wiring is x00ad (`host-server`);
 //! MVCC gate x00a6–x00a9 + Phase 2 app x00aa–x00ac are in [`mvcc`] / client;
 //! SoA inertia SIMD (x00a5) is not on the tick path yet; physical grab remains
-//! `holder_slot` (SoftLease is structural only); full StableUuid wire/Save cutover.
+//! `holder_slot` (SoftLease is structural only); full StableUuid wire/Save cutover;
+//! wire carriage of `op_chain_hash`; `…/snapshot` / `…/sim_state` replacement.
 
 #![forbid(unsafe_code)]
 
@@ -59,9 +60,11 @@ pub use ids::{
     SLOT_ABSENT, TRASH_ENTITY_ID, TRASH_UUID,
 };
 pub use scene_store::{
-    actor_id_from_sub, is_trash_entity_id, ApplyOutcome, CrdtOp, EntityId, OpTimestamp, PropValue,
-    SceneStore, SimPatch, SoftLease, SoftLeaseConflict, SoftLeaseTable, SparseSet, TrashStore,
-    MAX_LAMPORT_DRIFT, MAX_PARENT_HOPS, SOFT_LEASE_TTL_TICKS, TRASH_MAX_ENTRIES, TRASH_TTL_TICKS,
+    actor_id_from_sub, digest_crdt_op, digest_crdt_op_into, fold_op_chain, fold_op_chain_hash,
+    fold_op_chain_into, is_trash_entity_id, ApplyOutcome, CrdtOp, EntityId, OpTimestamp, PropValue,
+    RoomSnapshot, RoomSnapshotNode, RoomSnapshotPose, SceneStore, SequencedOp, SimPatch, SoftLease,
+    SoftLeaseConflict, SoftLeaseTable, SparseSet, TrashStore, MAX_LAMPORT_DRIFT, MAX_PARENT_HOPS,
+    OP_CHAIN_DOMAIN, SOFT_LEASE_TTL_TICKS, TRASH_MAX_ENTRIES, TRASH_TTL_TICKS,
 };
 pub use slot_graph::{ReparentError, SlotGraph};
 pub use slot_undo::{SlotTransition, SlotUndoStack, UndoError};
