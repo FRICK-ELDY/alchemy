@@ -1,6 +1,11 @@
-//! Three SoA faces, end-of-tick role rotation, and 2-frame dirty Carry-Over (x00db).
+//! Three SoA faces, end-of-tick role rotation, 2-frame dirty Carry-Over (x00db),
+//! and SimPatch Drain onto Work (x00df).
 
 use super::{LocalSlotId, STATE_TELEPORT_THIS_TICK};
+use crate::scene_store::SimPatch;
+
+/// Sentinel in durable parent column: no parent (world root / free).
+const PARENT_ABSENT: u32 = u32::MAX;
 
 /// Which logical face a buffer currently plays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13,8 +18,8 @@ pub enum FaceRole {
 /// One SoA face: cell-relative transforms + per-slot state bits.
 ///
 /// Guarantees: all column lengths stay equal ([`Self::slot_count`]) via private
-/// `Vec`s and [`Self::resize`]. Non-guarantees: parent hierarchy, attached/enabled
-/// masks (later slices).
+/// `Vec`s and [`Self::resize`]. Parent / attached / enabled / scale / procedural
+/// box live on [`SimArena`] durable (non-rotated) columns — not on the face.
 ///
 /// # Panics
 ///
@@ -180,16 +185,26 @@ impl SimFace {
     }
 }
 
-/// Triple-buffered Sim Arena (Prev / Published / Work) with 2-frame dirty Carry-Over.
+/// Triple-buffered Sim Arena (Prev / Published / Work) with 2-frame dirty
+/// Carry-Over and SimPatch Drain.
 ///
 /// Tick contract:
-/// 1. [`Self::carry_over`] (Step 0) — `Work[slot] = Published[slot]` for
-///    `prev_dirty ∪ prev2_dirty`, then clear `STATE_TELEPORT_THIS_TICK` on those
-///    Work rows.
+/// 1. Step 0 — [`Self::carry_over`] then [`Self::apply_patches`] (or
+///    [`Self::step0_carry_and_apply_patches`]): `Work[slot] = Published[slot]`
+///    for `prev_dirty ∪ prev2_dirty`, clear TELEPORT on those Work rows, then
+///    drain Ring 1 patches onto Work (no page swap).
 /// 2. Writers mutate Work via [`Self::write_pos`] / [`Self::write_rot`] /
 ///    [`Self::write_teleport`] (or [`Self::work_mut`] + [`Self::mark_dirty`]).
 /// 3. [`Self::rotate_faces`] — Work→Published→Prev; clear TELEPORT on the face
 ///    leaving Published; shift dirty rings; advance [`Self::epoch`].
+///
+/// Durable (non-rotated) columns hold parent / attached / enabled / scale /
+/// procedural-box params updated by patches. Face Carry-Over still copies only
+/// **pos + rot + state_bits** (x00db contract unchanged).
+///
+/// Durable columns are **Arena-internal / Work-update-side**: reading them
+/// mid-tick can mix Published face pose with newer parent/scale. Ring3 must not
+/// treat them as co-published with Published until a later barrier slice.
 #[derive(Debug)]
 pub struct SimArena {
     faces: [SimFace; 3],
@@ -211,8 +226,24 @@ pub struct SimArena {
     prev2_dirty_slots: Vec<LocalSlotId>,
     /// Last Work-generation (`epoch + 1` at write time) that touched pos/rot.
     transform_dirty_epoch: u64,
-    /// Last Work-generation that touched `state_bits` (including teleport).
+    /// Last Work-generation that touched face `state_bits` (including teleport).
     state_bits_dirty_epoch: u64,
+    /// Last Work-generation that touched durable attached/enabled masks
+    /// (SetAttached/SetEnabled **and** Allocate/Free reset clears).
+    masks_dirty_epoch: u64,
+    /// Durable parent slot (`PARENT_ABSENT` = none). Not face-rotated.
+    parent_slot: Vec<u32>,
+    /// Resonite-style attached mask (component presence). Not face-rotated.
+    attached_masks: Vec<u64>,
+    /// Resonite-style enabled mask (60Hz execution). Not face-rotated.
+    enabled_masks: Vec<u64>,
+    scale_x: Vec<f32>,
+    scale_y: Vec<f32>,
+    scale_z: Vec<f32>,
+    box_half_x: Vec<f32>,
+    box_half_y: Vec<f32>,
+    box_half_z: Vec<f32>,
+    box_corner_radius: Vec<f32>,
 }
 
 impl SimArena {
@@ -234,6 +265,17 @@ impl SimArena {
             prev2_dirty_slots: Vec::new(),
             transform_dirty_epoch: 0,
             state_bits_dirty_epoch: 0,
+            masks_dirty_epoch: 0,
+            parent_slot: vec![PARENT_ABSENT; slot_count],
+            attached_masks: vec![0; slot_count],
+            enabled_masks: vec![0; slot_count],
+            scale_x: vec![1.0; slot_count],
+            scale_y: vec![1.0; slot_count],
+            scale_z: vec![1.0; slot_count],
+            box_half_x: vec![0.0; slot_count],
+            box_half_y: vec![0.0; slot_count],
+            box_half_z: vec![0.0; slot_count],
+            box_corner_radius: vec![0.0; slot_count],
         }
     }
 
@@ -248,6 +290,16 @@ impl SimArena {
         }
         self.this_tick_marked.resize(slot_count, false);
         self.carry_seen.resize(slot_count, false);
+        self.parent_slot.resize(slot_count, PARENT_ABSENT);
+        self.attached_masks.resize(slot_count, 0);
+        self.enabled_masks.resize(slot_count, 0);
+        self.scale_x.resize(slot_count, 1.0);
+        self.scale_y.resize(slot_count, 1.0);
+        self.scale_z.resize(slot_count, 1.0);
+        self.box_half_x.resize(slot_count, 0.0);
+        self.box_half_y.resize(slot_count, 0.0);
+        self.box_half_z.resize(slot_count, 0.0);
+        self.box_corner_radius.resize(slot_count, 0.0);
         self.this_tick_dirty.retain(|&s| (s as usize) < slot_count);
         self.prev_dirty_slots.retain(|&s| (s as usize) < slot_count);
         self.prev2_dirty_slots
@@ -278,6 +330,13 @@ impl SimArena {
     #[inline]
     pub fn state_bits_dirty_epoch(&self) -> u64 {
         self.state_bits_dirty_epoch
+    }
+
+    /// Last Work-generation that touched durable attached/enabled masks.
+    /// Distinct from [`Self::state_bits_dirty_epoch`] (face TELEPORT / state_bits).
+    #[inline]
+    pub fn masks_dirty_epoch(&self) -> u64 {
+        self.masks_dirty_epoch
     }
 
     #[inline]
@@ -391,6 +450,253 @@ impl SimArena {
         self.work_mut().set_teleport(slot, on);
         self.mark_dirty(slot);
         self.state_bits_dirty_epoch = self.work_epoch();
+    }
+
+    /// Durable parent for `slot` (`None` = world root / free / absent).
+    ///
+    /// Work-update-side only — not co-published with face Published pose (x00df).
+    #[inline]
+    pub fn parent(&self, slot: LocalSlotId) -> Option<LocalSlotId> {
+        let i = slot as usize;
+        if i >= self.parent_slot.len() {
+            return None;
+        }
+        let p = self.parent_slot[i];
+        if p == PARENT_ABSENT {
+            None
+        } else {
+            Some(p)
+        }
+    }
+
+    /// Durable attached mask. Work-update-side only (see [`Self::parent`]).
+    #[inline]
+    pub fn attached_bits(&self, slot: LocalSlotId) -> u64 {
+        let i = slot as usize;
+        if i >= self.attached_masks.len() {
+            0
+        } else {
+            self.attached_masks[i]
+        }
+    }
+
+    /// Durable enabled mask. Work-update-side only (see [`Self::parent`]).
+    #[inline]
+    pub fn enabled_bits(&self, slot: LocalSlotId) -> u64 {
+        let i = slot as usize;
+        if i >= self.enabled_masks.len() {
+            0
+        } else {
+            self.enabled_masks[i]
+        }
+    }
+
+    /// Durable scale. Work-update-side only (see [`Self::parent`]).
+    #[inline]
+    pub fn scale(&self, slot: LocalSlotId) -> [f32; 3] {
+        let i = slot as usize;
+        if i >= self.scale_x.len() {
+            [1.0, 1.0, 1.0]
+        } else {
+            [self.scale_x[i], self.scale_y[i], self.scale_z[i]]
+        }
+    }
+
+    /// Durable procedural box params. Work-update-side only (see [`Self::parent`]).
+    #[inline]
+    pub fn procedural_box(&self, slot: LocalSlotId) -> ([f32; 3], f32) {
+        let i = slot as usize;
+        if i >= self.box_half_x.len() {
+            ([0.0, 0.0, 0.0], 0.0)
+        } else {
+            (
+                [self.box_half_x[i], self.box_half_y[i], self.box_half_z[i]],
+                self.box_corner_radius[i],
+            )
+        }
+    }
+
+    /// Step 0 barrier: Carry-Over then drain `patches` onto Work (queue order).
+    ///
+    /// Pos / rot / scale / parent / masks / box: last write wins. Teleport bit:
+    /// sticky OR (`SetLocalTransform { teleport: false }` does not clear).
+    /// Prefer passing `&store.drain_patches()` (or any `&[SimPatch]`) — no second
+    /// `Vec` collect inside Drain.
+    pub fn step0_carry_and_apply_patches(&mut self, patches: &[SimPatch]) {
+        self.carry_over();
+        self.apply_patches(patches);
+    }
+
+    /// Drain SimPatch queue onto Work in iterator order (call after Carry-Over).
+    ///
+    /// Takes `&[SimPatch]` so a `SceneStore::drain_patches()` `Vec` can be passed
+    /// without a second Tick-boundary allocation.
+    ///
+    /// - Pre-grows once to the max [`SimPatch::AllocateSlot`] index only
+    ///   (Allocate-first contract from Scene Store). Free / Set* on a slot that
+    ///   was never Allocated remain **no-ops** (high-id Set* alone does not grow).
+    /// - [`SimPatch::AllocateSlot`] resets durable defaults + identity pose then
+    ///   sets parent / TELEPORT (re-Allocate without Free must not keep stale
+    ///   scale/masks/box — Free auto-enqueue arrives in x00e1).
+    /// - `SetLocalTransform.teleport`: sticky OR (false does not clear).
+    /// - `Some(parent)` with `parent == u32::MAX` coerces to root (illegal id).
+    /// - Depth Bucket rebuild on SetParent is **not** performed (→ later slice).
+    /// - Procedural-box has no dedicated column dirty_epoch yet (deferred).
+    pub fn apply_patches(&mut self, patches: &[SimPatch]) {
+        let mut max_need = self.slot_count();
+        for patch in patches {
+            if let SimPatch::AllocateSlot { slot, .. } = patch {
+                max_need = max_need.max((*slot as usize).saturating_add(1));
+            }
+        }
+        if max_need > self.slot_count() {
+            self.resize(max_need);
+        }
+        for patch in patches {
+            self.apply_one_patch(patch);
+        }
+    }
+
+    fn apply_one_patch(&mut self, patch: &SimPatch) {
+        match *patch {
+            SimPatch::AllocateSlot { slot, parent } => {
+                self.ensure_slot_capacity(slot);
+                self.reset_slot_defaults(slot);
+                self.set_parent_column(slot, parent);
+                self.write_teleport(slot, true);
+            }
+            SimPatch::FreeSlot { slot } => {
+                if !self.slot_in_range(slot) {
+                    return;
+                }
+                self.reset_slot_defaults(slot);
+                self.write_teleport(slot, false);
+            }
+            SimPatch::SetParent { slot, parent } => {
+                if !self.slot_in_range(slot) {
+                    return;
+                }
+                self.set_parent_column(slot, parent);
+                // Hierarchy change → GPU snap (Depth Bucket rebuild deferred).
+                self.write_teleport(slot, true);
+            }
+            SimPatch::SetLocalTransform {
+                slot,
+                pos,
+                rot,
+                scale,
+                teleport,
+            } => {
+                if !self.slot_in_range(slot) {
+                    return;
+                }
+                let i = slot as usize;
+                self.scale_x[i] = scale[0];
+                self.scale_y[i] = scale[1];
+                self.scale_z[i] = scale[2];
+                self.write_pos(slot, pos[0], pos[1], pos[2]);
+                self.write_rot(slot, rot[0], rot[1], rot[2], rot[3]);
+                // Sticky OR: false leaves an earlier Allocate/SetParent/true bit.
+                if teleport {
+                    self.write_teleport(slot, true);
+                }
+            }
+            SimPatch::SetAttachedBits { slot, add, remove } => {
+                if !self.slot_in_range(slot) {
+                    return;
+                }
+                let i = slot as usize;
+                self.attached_masks[i] = (self.attached_masks[i] | add) & !remove;
+                self.mark_dirty(slot);
+                self.masks_dirty_epoch = self.work_epoch();
+            }
+            SimPatch::SetEnabledBits { slot, add, remove } => {
+                if !self.slot_in_range(slot) {
+                    return;
+                }
+                let i = slot as usize;
+                self.enabled_masks[i] = (self.enabled_masks[i] | add) & !remove;
+                self.mark_dirty(slot);
+                self.masks_dirty_epoch = self.work_epoch();
+            }
+            SimPatch::SetProceduralBox {
+                slot,
+                half_extents,
+                corner_radius,
+            } => {
+                if !self.slot_in_range(slot) {
+                    return;
+                }
+                let i = slot as usize;
+                self.box_half_x[i] = half_extents[0];
+                self.box_half_y[i] = half_extents[1];
+                self.box_half_z[i] = half_extents[2];
+                self.box_corner_radius[i] = corner_radius;
+                // No dedicated box dirty_epoch yet (roadmap §4.1 low-freq defer).
+                self.mark_dirty(slot);
+            }
+        }
+    }
+
+    #[inline]
+    fn slot_in_range(&self, slot: LocalSlotId) -> bool {
+        (slot as usize) < self.slot_count()
+    }
+
+    fn ensure_slot_capacity(&mut self, slot: LocalSlotId) {
+        let need = (slot as usize).saturating_add(1);
+        if need > self.slot_count() {
+            self.resize(need);
+        }
+    }
+
+    /// Reset durable columns + identity Work pose (Allocate / Free shared path).
+    ///
+    /// Clears attached/enabled and bumps [`Self::masks_dirty_epoch`] so epoch
+    /// skippers cannot miss a Free / re-Allocate mask clear (not Set*-only).
+    fn reset_slot_defaults(&mut self, slot: LocalSlotId) {
+        let i = slot as usize;
+        debug_assert!(i < self.parent_slot.len());
+        self.parent_slot[i] = PARENT_ABSENT;
+        self.attached_masks[i] = 0;
+        self.enabled_masks[i] = 0;
+        self.masks_dirty_epoch = self.work_epoch();
+        self.scale_x[i] = 1.0;
+        self.scale_y[i] = 1.0;
+        self.scale_z[i] = 1.0;
+        self.box_half_x[i] = 0.0;
+        self.box_half_y[i] = 0.0;
+        self.box_half_z[i] = 0.0;
+        self.box_corner_radius[i] = 0.0;
+        self.write_pos(slot, 0.0, 0.0, 0.0);
+        self.write_rot(slot, 0.0, 0.0, 0.0, 1.0);
+    }
+
+    /// `Some(u32::MAX)` is illegal (sentinel = absent) and coerces to root.
+    fn set_parent_column(&mut self, slot: LocalSlotId, parent: Option<LocalSlotId>) {
+        let i = slot as usize;
+        debug_assert!(i < self.parent_slot.len());
+        self.parent_slot[i] = match parent {
+            Some(p) if p != PARENT_ABSENT => p,
+            _ => PARENT_ABSENT,
+        };
+    }
+
+    #[cfg(test)]
+    fn durable_columns_aligned(&self) -> bool {
+        let n = self.slot_count();
+        self.parent_slot.len() == n
+            && self.attached_masks.len() == n
+            && self.enabled_masks.len() == n
+            && self.scale_x.len() == n
+            && self.scale_y.len() == n
+            && self.scale_z.len() == n
+            && self.box_half_x.len() == n
+            && self.box_half_y.len() == n
+            && self.box_half_z.len() == n
+            && self.box_corner_radius.len() == n
+            && self.this_tick_marked.len() == n
+            && self.carry_seen.len() == n
     }
 
     /// Step 0: 2-frame dirty Carry-Over from Published → Work, then clear
@@ -598,9 +904,11 @@ mod tests {
         assert!(arena.prev().columns_aligned());
         assert!(arena.published().columns_aligned());
         assert!(arena.work().columns_aligned());
+        assert!(arena.durable_columns_aligned());
         arena.resize(3);
         assert_eq!(arena.slot_count(), 3);
         assert!(arena.work().columns_aligned());
+        assert!(arena.durable_columns_aligned());
     }
 
     #[test]
@@ -791,5 +1099,304 @@ mod tests {
         arena.rotate_faces();
         assert_eq!(arena.prev_dirty_slots(), &[0]);
         assert!(arena.this_tick_dirty().is_empty());
+    }
+
+    #[test]
+    fn consecutive_patches_same_slot_last_write_wins() {
+        // Lost Update barrier: pos/rot/scale last-write-wins; teleport sticky OR.
+        let mut arena = SimArena::with_slots(2);
+        let slot = 0u32;
+        let patches = [
+            SimPatch::AllocateSlot { slot, parent: None },
+            SimPatch::SetLocalTransform {
+                slot,
+                pos: [1.0, 0.0, 0.0],
+                rot: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0, 1.0, 1.0],
+                teleport: true,
+            },
+            SimPatch::SetLocalTransform {
+                slot,
+                pos: [2.0, 3.0, 4.0],
+                rot: [0.0, 1.0, 0.0, 0.0],
+                scale: [2.0, 2.0, 2.0],
+                teleport: false, // must NOT clear TELEPORT from earlier patches
+            },
+            SimPatch::SetLocalTransform {
+                slot,
+                pos: [9.0, 8.0, 7.0],
+                rot: [0.0, 0.0, 1.0, 0.0],
+                scale: [3.0, 3.0, 3.0],
+                teleport: true,
+            },
+        ];
+
+        arena.step0_carry_and_apply_patches(&patches);
+
+        assert_eq!(arena.work().pos(slot), [9.0, 8.0, 7.0]);
+        assert_eq!(arena.work().rot(slot), [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!(arena.scale(slot), [3.0, 3.0, 3.0]);
+        assert!(
+            arena.work().is_teleport(slot),
+            "teleport sticky OR: false mid-queue must not clear"
+        );
+        assert_eq!(arena.parent(slot), None);
+    }
+
+    #[test]
+    fn set_local_transform_teleport_false_is_sticky_or_after_allocate() {
+        let mut arena = SimArena::with_slots(1);
+        arena.step0_carry_and_apply_patches(&[
+            SimPatch::AllocateSlot {
+                slot: 0,
+                parent: None,
+            },
+            SimPatch::SetLocalTransform {
+                slot: 0,
+                pos: [1.0, 2.0, 3.0],
+                rot: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0, 1.0, 1.0],
+                teleport: false,
+            },
+        ]);
+        assert_eq!(arena.work().pos(0), [1.0, 2.0, 3.0]);
+        assert!(
+            arena.work().is_teleport(0),
+            "Allocate TELEPORT must survive later SetLocalTransform {{ teleport: false }}"
+        );
+    }
+
+    #[test]
+    fn parent_some_absent_sentinel_coerces_to_root() {
+        let mut arena = SimArena::with_slots(2);
+        arena.step0_carry_and_apply_patches(&[
+            SimPatch::AllocateSlot {
+                slot: 0,
+                parent: None,
+            },
+            SimPatch::AllocateSlot {
+                slot: 1,
+                parent: Some(PARENT_ABSENT),
+            },
+            SimPatch::SetParent {
+                slot: 0,
+                parent: Some(PARENT_ABSENT),
+            },
+        ]);
+        assert_eq!(arena.parent(1), None);
+        assert_eq!(arena.parent(0), None);
+    }
+
+    #[test]
+    fn reallocate_resets_stale_durable_defaults() {
+        let mut arena = SimArena::with_slots(1);
+        arena.step0_carry_and_apply_patches(&[
+            SimPatch::AllocateSlot {
+                slot: 0,
+                parent: None,
+            },
+            SimPatch::SetAttachedBits {
+                slot: 0,
+                add: 0b1111,
+                remove: 0,
+            },
+            SimPatch::SetLocalTransform {
+                slot: 0,
+                pos: [9.0, 9.0, 9.0],
+                rot: [0.0, 1.0, 0.0, 0.0],
+                scale: [4.0, 4.0, 4.0],
+                teleport: false,
+            },
+            SimPatch::SetProceduralBox {
+                slot: 0,
+                half_extents: [1.0, 1.0, 1.0],
+                corner_radius: 0.2,
+            },
+        ]);
+        // Advance Work generation so reset's masks bump cannot hide behind the
+        // same-tick SetAttachedBits epoch (regression if reset skips bump).
+        arena.rotate_faces();
+        arena.carry_over();
+        let masks_before = arena.masks_dirty_epoch();
+        let work_before = arena.work_epoch();
+        // Re-Allocate without Free (x00e1 Free auto-enqueue not yet wired).
+        arena.apply_patches(&[SimPatch::AllocateSlot {
+            slot: 0,
+            parent: None,
+        }]);
+        assert_eq!(arena.attached_bits(0), 0);
+        assert_eq!(arena.scale(0), [1.0, 1.0, 1.0]);
+        assert_eq!(arena.procedural_box(0), ([0.0, 0.0, 0.0], 0.0));
+        assert_eq!(arena.work().pos(0), [0.0, 0.0, 0.0]);
+        assert!(arena.work().is_teleport(0));
+        assert_eq!(arena.work_epoch(), work_before);
+        assert!(
+            arena.masks_dirty_epoch() > masks_before,
+            "re-Allocate mask clear must advance masks_dirty_epoch after rotate"
+        );
+        assert_eq!(arena.masks_dirty_epoch(), arena.work_epoch());
+    }
+
+    #[test]
+    fn mask_patches_bump_masks_epoch_not_state_bits_epoch() {
+        let mut arena = SimArena::with_slots(1);
+        arena.write_teleport(0, true);
+        let state_at = arena.state_bits_dirty_epoch();
+        arena.apply_patches(&[SimPatch::SetAttachedBits {
+            slot: 0,
+            add: 1,
+            remove: 0,
+        }]);
+        assert_eq!(arena.masks_dirty_epoch(), arena.work_epoch());
+        assert_eq!(
+            arena.state_bits_dirty_epoch(),
+            state_at,
+            "attached/enabled must not bump face state_bits_dirty_epoch"
+        );
+    }
+
+    #[test]
+    fn free_slot_bumps_masks_dirty_epoch() {
+        let mut arena = SimArena::with_slots(1);
+        arena.step0_carry_and_apply_patches(&[
+            SimPatch::AllocateSlot {
+                slot: 0,
+                parent: None,
+            },
+            SimPatch::SetAttachedBits {
+                slot: 0,
+                add: 0b1,
+                remove: 0,
+            },
+        ]);
+        // Same-tick SetAttachedBits already at work_epoch — rotate so Free's
+        // reset bump is observable as a strict advance.
+        arena.rotate_faces();
+        arena.carry_over();
+        let masks_before = arena.masks_dirty_epoch();
+        arena.apply_patches(&[SimPatch::FreeSlot { slot: 0 }]);
+        assert_eq!(arena.attached_bits(0), 0);
+        assert!(
+            arena.masks_dirty_epoch() > masks_before,
+            "Free mask clear must advance masks_dirty_epoch after rotate"
+        );
+        assert_eq!(arena.masks_dirty_epoch(), arena.work_epoch());
+    }
+
+    #[test]
+    fn set_without_prior_allocate_is_noop_no_grow() {
+        // Allocate-first contract: high-id Set* alone does not grow capacity.
+        let mut arena = SimArena::with_slots(1);
+        arena.apply_patches(&[SimPatch::SetLocalTransform {
+            slot: 9,
+            pos: [1.0, 0.0, 0.0],
+            rot: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+            teleport: true,
+        }]);
+        assert_eq!(arena.slot_count(), 1);
+    }
+
+    #[test]
+    fn patch_drain_allocate_grows_and_set_parent_sets_teleport() {
+        let mut arena = SimArena::with_slots(1);
+        assert_eq!(arena.slot_count(), 1);
+
+        arena.step0_carry_and_apply_patches(&[
+            SimPatch::AllocateSlot {
+                slot: 0,
+                parent: None,
+            },
+            SimPatch::AllocateSlot {
+                slot: 5,
+                parent: Some(0),
+            },
+            SimPatch::SetParent {
+                slot: 5,
+                parent: None,
+            },
+        ]);
+
+        assert!(arena.slot_count() >= 6);
+        assert_eq!(arena.parent(5), None);
+        assert!(arena.work().is_teleport(5));
+    }
+
+    #[test]
+    fn patch_bits_and_box_and_free_slot() {
+        let mut arena = SimArena::with_slots(1);
+        arena.step0_carry_and_apply_patches(&[
+            SimPatch::AllocateSlot {
+                slot: 0,
+                parent: None,
+            },
+            SimPatch::SetAttachedBits {
+                slot: 0,
+                add: 0b1010,
+                remove: 0,
+            },
+            SimPatch::SetEnabledBits {
+                slot: 0,
+                add: 0b0100,
+                remove: 0,
+            },
+            SimPatch::SetAttachedBits {
+                slot: 0,
+                add: 0b0001,
+                remove: 0b1000,
+            },
+            SimPatch::SetProceduralBox {
+                slot: 0,
+                half_extents: [0.5, 0.25, 0.125],
+                corner_radius: 0.05,
+            },
+        ]);
+        assert_eq!(arena.attached_bits(0), 0b0011);
+        assert_eq!(arena.enabled_bits(0), 0b0100);
+        assert_eq!(arena.procedural_box(0), ([0.5, 0.25, 0.125], 0.05));
+
+        arena.apply_patches(&[SimPatch::FreeSlot { slot: 0 }]);
+        assert_eq!(arena.parent(0), None);
+        assert_eq!(arena.attached_bits(0), 0);
+        assert_eq!(arena.enabled_bits(0), 0);
+        assert_eq!(arena.work().pos(0), [0.0, 0.0, 0.0]);
+        assert!(!arena.work().is_teleport(0));
+    }
+
+    #[test]
+    fn scene_store_drain_into_arena_preserves_carry_over_contract() {
+        use crate::scene_store::{CrdtOp, OpTimestamp, SceneStore};
+
+        let mut store = SceneStore::new();
+        let mut arena = SimArena::with_slots(4);
+
+        // Establish a Published pose via normal tick writers.
+        arena.carry_over();
+        arena.write_pos(1, 10.0, 0.0, 0.0);
+        arena.rotate_faces();
+
+        assert_eq!(
+            store.apply(CrdtOp::SpawnNode {
+                ts: OpTimestamp::new(1, 1),
+                node: 1,
+                parent: None,
+            }),
+            crate::scene_store::ApplyOutcome::Applied
+        );
+        store.enqueue_patch(SimPatch::SetLocalTransform {
+            slot: 1,
+            pos: [42.0, 1.0, 2.0],
+            rot: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+            teleport: true,
+        });
+
+        let patches = store.drain_patches();
+        arena.step0_carry_and_apply_patches(&patches);
+
+        // Carry-Over brought Published [10,0,0] then patches overwrote to final.
+        assert_eq!(arena.work().pos(1), [42.0, 1.0, 2.0]);
+        assert!(arena.work().is_teleport(1));
+        assert!(store.pending_patches().is_empty());
     }
 }

@@ -1,13 +1,16 @@
-//! Scene Store — SparseSet + Host-Sequenced LWW / cycle reject (x00dd / x00de).
+//! Scene Store — SparseSet + Host-Sequenced LWW / cycle reject + SimPatch queue
+//! (x00dd / x00de / x00df).
 //!
 //! Guarantees: [`SparseSet<T>`] with `sparse` / `dense_slots` / `dense_values`;
 //! sparse key = [`EntityId`] (`u32`); dense walk of live entries; holes in the
 //! sparse table are allowed (gaps between entity ids);
 //! [`SceneStore`] Property-level LWW + cyclic [`CrdtOp::MoveNode`] Reject
-//! (No-op); [`OpTimestamp`] with lamport drift reject gate.
+//! (No-op); [`OpTimestamp`] with lamport drift reject gate;
+//! [`SimPatch`] queue (Spawn/Move auto-enqueue; dense transform via
+//! [`SceneStore::enqueue_patch`]) for Arena Step 0 Drain.
 //! Non-guarantees: LiveEditLedger facade / Zenoh edit / Save (→ x00e0);
-//! TRASH_UUID / SoftLease / 3-layer IDs; `SimPatch` → Arena (→ x00df);
-//! JWT `sub` → `actor_id` (host gate).
+//! TRASH_UUID / SoftLease / 3-layer IDs; JWT `sub` → `actor_id` (host gate);
+//! FreeSlot auto-enqueue (→ x00e1 pending_despawns).
 //!
 //! # Live re-Spawn
 //!
@@ -19,22 +22,26 @@
 //!
 //! - **sparse key** = `entity_id` (Phase 1b; StableUuid is Phase 1c).
 //! - **dense index** = packed live-entry walk index — not `entity_id` itself.
+//! - **Arena slot (Phase 1b)** = same numeric `u32` as `entity_id` when
+//!   emitting [`SimPatch`] (no separate wire map yet).
 //!
 //! # Id aliases
 //!
 //! [`EntityId`] and [`crate::sim_arena::LocalSlotId`] are both plain `u32`
 //! aliases in Phase 1b — the type system will not catch mix-ups. Newtype
-//! separation is deferred until Scene Store ↔ Arena wiring mixes them more
-//! (x00df+). `u32::MAX` is **not** a valid [`EntityId`] (sparse ABSENT).
+//! separation lands with 3-layer IDs (→ x00e4). `u32::MAX` is **not** a valid
+//! [`EntityId`] (sparse ABSENT).
 
 #![forbid(unsafe_code)]
 
 mod op;
+mod patch;
 mod sparse_set;
 mod store;
 mod timestamp;
 
 pub use op::{CrdtOp, PropValue};
+pub use patch::SimPatch;
 pub use sparse_set::SparseSet;
 pub use store::{ApplyOutcome, SceneStore, MAX_PARENT_HOPS};
 pub use timestamp::{OpTimestamp, MAX_LAMPORT_DRIFT};
