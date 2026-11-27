@@ -4,7 +4,7 @@
 
 # MVCC × XPBD 実装指示書 レビューと改善提案
 
-> **取り込み状況（2026-11-13）**: 本提案の P0/P1 は [`mvcc_xpbd.md`](mvcc_xpbd.md) と [`improvement-plan-2026-11-12.md`](../0_doc/evaluation/improvement-plan-2026-11-12.md) に**文書反映済み**。  
+> **取り込み状況（2026-11-13）**: 本提案の P0/P1 は [`mvcc_xpbd.md`](mvcc_xpbd.md) と [`improvement-plan-2026-11-12.md`](../../../0_doc/evaluation/improvement-plan-2026-11-12.md) に**文書反映済み**。  
 > **文書反映 ≠ コード完了**: `forbid` クレート直下・真の CoW・レイアウト予約・不等式接触・alloc DoD などの実装 P0 は未着手。後続エージェントは計画書の「現状」欄を正とする。未決 Q2–Q8 は `mvcc_xpbd.md` §6（Q1 は文書方針として採用済み）。本ファイルは壁打ちの正本アーカイブとして残す。
 
 * **対象**: `.workspace/roadmap/mvcc_xpbd.md`（以下「計画書」）と Phase 1 の実装

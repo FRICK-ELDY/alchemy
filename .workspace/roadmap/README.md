@@ -1,4 +1,4 @@
-﻿# Roadmap
+# Roadmap
 
 縦スライス単位の進捗目次。各 Slice の詳細（保証・Phase・起動）は個別ファイルへ。
 

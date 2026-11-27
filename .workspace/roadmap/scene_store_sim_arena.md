@@ -1,4 +1,4 @@
-﻿# Alchemy — 品質本線：Scene Store × Sim Arena
+# Alchemy — 品質本線：Scene Store × Sim Arena
 
 * **種別**: **品質本線**の仕様正本（セッション同期・シーン構造・実行面メモリ・段階物理の枠）
 * **規模本線**: [spatial_interest.md](spatial_interest.md)（配信 interest / CCU。本ファイルと混同しない）
@@ -11,10 +11,22 @@
 | 本正本の語 | 現行コード／契約 | 備考 |
 |:---|:---|:---|
 | `host_epoch` | `host_generation`（world CAS / GenRev） | 接続可。リネームは任意 |
-| `room_seq` | `LiveEditLedger.tip` → `scene_rev` / EditCommit | 思想同型。Property-level LWW・`op_chain_hash` は未 |
+| `room_seq` | `LiveEditLedger.tip` → `scene_rev` / EditCommit | 思想同型。Property-level LWW は Phase 1b。`op_chain_hash` は **Phase 1c 枠のみ**（DoD 必須外） |
 | 30Hz 密デルタ | RenderFrame `net_tick` + dirty（latest、欠落は snapshot） | Reliable Op ログとは別クラス |
 | 計画的 handover 速度 | **`…/sim_state`（正本）** | `frame_delta_xyz` は副案 |
 | 実行面ページ資産 | `client/shared-sim/src/mvcc/` → 改称予定 **`sim_pages`** | SSoT ではない。opt-in backend |
+
+### モジュール配置（shared-sim と host の境界）
+
+| 場所 | 予定名 / 現行 | 持つもの | 持たないもの |
+|:---|:---|:---|:---|
+| `shared-sim` | **`scene_store/`**（新） | SparseSet・親子木・LWW/循環・`SimPatch` 生成・決定論 Undo 逆 Op 計算 | Room Token 検証・Zenoh put・`actor_id` 上書き・Save HTTP |
+| `host-server` | **`LiveEditLedger` → 薄い facade** | 検疫ゲート、`scene_rev` 採番、edit ワイヤ、Save 折込、facade が `scene_store` を呼ぶ | 疎コンポーネントの第二コピー（並存禁止） |
+| `shared-sim` | **`sim_arena/`**（新） | 3 面 SoA・Carry-Over・bitmask・Depth Bucket | ネットワーク・時計 |
+| `shared-sim` | `mvcc/` → **`sim_pages/`** | ページプール資産（opt-in） | 品質本線 SSoT |
+| `shared-sim` / host | 既存 `FrameBridge` / `EpochSnapshotPair`（`arc-swap`） | Prev/Published **出版**（読取側ロック待ちゼロ） | Sim Arena 内部の Work 面を直接公開しない |
+
+**並存禁止の意味**: host に古い `LiveEditLedger` 状態辞書を残したまま `scene_store` にも同じ親子を持たない。移行後の正は `shared-sim::scene_store`、host は入口と採番と永続 I/O だけ。
 
 ### モジュール改称方針（コードは後段）
 
@@ -22,7 +34,7 @@
 |:---|:---|:---|
 | `shared-sim/src/mvcc/` | **`sim_pages/`** | ページ単位 SoA プール・学習／opt-in 資産 |
 | （未実装）実行面 3 面 | **`sim_arena/`** | Prev / Published / Work |
-| （未実装）疎ストア | **`scene_store/`** | Host-Sequenced + SparseSet。実装時は `LiveEditLedger` を表層化 |
+| （未実装）疎ストア | **`scene_store/`**（shared-sim） | Host-Sequenced + SparseSet。host `LiveEditLedger` は facade |
 
 ---
 
@@ -33,11 +45,11 @@
 空間コア（`client/shared-sim`）においても、過度な汎用ミドルウェア依存や「インフラ自作沼」による未完リスクを避け、**MVCC の世代分離という思想から着想を得た「Scene Store × Sim Arena」の二層分離**を品質本線とする（DB 級フル多版・Loro 本線は採用しない）。
 
 1. **同期・メモリ基盤を最優先とし、物理は「後から差し替え可能なオプション層」とする**
-    * 物理演算が一切動いていない Phase 1 の時点で、分散連合環境下での複数人リアルタイム共同編集・マルチプレイ Undo/Redo・親子階層操作・ホスト交代・120fps GPU 補間・30Hz ネットワーク差分同期がロック待ちゼロで成立する土台を最優先で固める。
+    * 最終的な Phase 1（1a〜1c）で共同編集・Undo・ホスト交代・120fps 補間・30Hz dirty の土台を揃える。**着手の最小切片は §7 の Phase 1a**（Arena ＋ Carry-Over ＋ 既存出版のみ）。1a に Undo/CRDT/共同編集一式を持ち込まない。
 2. **Scene Store × Sim Arena 二層分離**
    * **Scene Store**（Host-Sequenced CRDT ＋ 型付き `SparseSet<T>`）と、**Sim Arena**（3 面 SoA バッファ ＋ 2-Frame Dirty Carry-Over ＋ カラム世代追跡）へ責務を分離する。
-   * 60Hz 書き手は実質 Single-Writer のため、過去 128 フレームの空間全体ロールバックは行わない。遅延補正は `PendingLocalOps` ＋ Error Smoothing。
-3. **Host-Sequenced CRDT（Kleppmann 循環防止 ＋ Property-level LWW）**
+   * 60Hz 書き手は実質 Single-Writer のため、過去 128 フレームの空間全体ロールバックは行わない。遅延補正（`PendingLocalOps` 等）は **Phase 1c / app**。
+3. **Host-Sequenced CRDT（Kleppmann 循環防止 ＋ Property-level LWW）** — **Phase 1b 以降**
    * 外部汎用 CRDT（Loro 等）と純粋 P2P の過去ログ巻き戻しを避け、**「データモデルは CRDT、リアルタイム確定順序はホスト連番」**とする。
    * 適用順序は `(host_epoch, room_seq)`（現行写像: `host_generation` + `scene_rev`）。無限ログ保持・ツリー巻き戻しはしない。
    * Dual-AST テキスト同時編集だけは将来、テキスト特化 CRDT を局所採用しうる（人承認・本線外）。
@@ -58,33 +70,39 @@ flowchart TB
     classDef arena fill:#9b2226,stroke:#f4a261,stroke-width:2px,color:#fff
     classDef sim fill:#b7410e,stroke:#ffd8a8,stroke-width:2px,color:#fff
     classDef out fill:#1b4332,stroke:#74c69d,stroke-width:2px,color:#fff
+    classDef host fill:#5c4d7a,stroke:#c4b5fd,stroke-width:2px,color:#fff
 
-    subgraph SceneStore["Scene Store (Ring 1: Host-Sequenced CRDT + 型付き SparseSet SSoT)"]
+    subgraph HostGate["host-server 入口 (検疫・採番・I/O — shared-sim に入れない)"]
         direction LR
-        OpGate["操作検疫ゲート (Untrusted防御)<br/>・Room Token sub から actor_id 強制上書き<br/>・is_finite() / ManifestSeal 二重照合<br/>・(host_epoch, room_seq) 採番 & op_chain_hash 連鎖"]:::store
-        CrdtEngine["Host-Sequenced CRDT エンジン (Pure Rust)<br/>・Kleppmann 循環防止ルール (祖先チェック)<br/>・Property-level LWW (OpTimestamp 全順序)<br/>・SoftLease (2人同時掴み・回線断解放)"]:::store
-        SparseSSoT["Sparse Component Store & 3層ID台帳 (SSoT)<br/>・StableUuid(u128) <-> WireSlotId(u32) <-> LocalSlotId(u32)<br/>・名前 / BLAKE3 Hash / ライト / 音声 / UGC属性<br/>・TRASH_UUID 削除退避 (件数/TTL 上限GC付き)"]:::store
-        UndoMgr["個人別 Undo / Redo スタック<br/>・Transaction束ね (Before / After)<br/>・Undo = 最新 OpTimestamp 付き逆 CrdtOp 発行"]:::store
-        PatchQ["Patch Queue (Vec of SimPatch)<br/>・Sim Arena 向けの密データ差分のみ送出"]:::store
-
-        OpGate --> CrdtEngine
-        CrdtEngine -->|"疎データ更新 & 3層ID解決"| SparseSSoT
-        CrdtEngine -->|"密データ差分を抽出"| PatchQ
-        UndoMgr <-->|"逆CrdtOp発行"| OpGate
+        OpGate["操作検疫ゲート<br/>・Room Token sub から actor_id 強制上書き<br/>・is_finite() / ManifestSeal 照合<br/>・scene_rev 採番 (1c: SoftLease 編集ロック / op_chain_hash 枠)"]:::host
     end
+
+    subgraph SceneStore["shared-sim::scene_store (Ring 1: 疎 SSoT)"]
+        direction LR
+        CrdtEngine["Host-Sequenced 適用エンジン<br/>・Kleppmann 循環防止<br/>・Property-level LWW"]:::store
+        SparseSSoT["SparseSet + ID 台帳 (SSoT)<br/>・1b: entity_id u32 / 1c: 3層 ID<br/>・1b: pending_despawns / 1c: TRASH_UUID"]:::store
+        UndoMgr["個人別 Undo / Redo<br/>・逆 Op 計算 (送信は host)"]:::store
+        PatchQ["Patch Queue (SimPatch)<br/>・密データ差分のみ"]:::store
+
+        CrdtEngine -->|"疎データ更新"| SparseSSoT
+        CrdtEngine -->|"密差分抽出"| PatchQ
+        UndoMgr -->|"逆 Op"| CrdtEngine
+    end
+
+    OpGate -->|"検疫済み Op"| CrdtEngine
 
     subgraph SimArena["Sim Arena (MVCC着想の3面 SoA バッファ + 2-Frame Carry-Over)"]
         direction LR
         BufPrev["Prev 面 (Epoch N-1 / Read-Only)<br/>・GPU補間の始点 & 物理の慣性導出元"]:::arena
         BufPub["Published 面 (Epoch N / Read-Only)<br/>・GPU補間の終点 & 30Hz dirty 差分の最新"]:::arena
-        BufWork["Work 面 (Epoch N+1 / Single-Writer)<br/>・prev_dirty_slots 引き継ぎ (先祖返り防止)<br/>・active_slots & カラム別 dirty_epoch 追跡"]:::arena
+        BufWork["Work 面 (Epoch N+1 / Single-Writer)<br/>・prev + prev2 dirty 引き継ぎ (先祖返り防止)<br/>・active_slots & カラム別 dirty_epoch 追跡"]:::arena
         BufWork -.->|"Tick末尾で役割ローテーション"| BufPub
         BufPub -.->|"1世代スライド"| BufPrev
     end
 
     subgraph Ring2["Ring 2: 60Hz 決定論ループ (shared-sim::tick / スレッド非依存)"]
         direction TB
-        Step0["Step 0: Carry-Over & パッチ合流バリア<br/>・prev_dirty_slots を Published -> Work へ引き継ぎ<br/>・PatchQ 一括 Drain / 階層変更時のみ Depth Bucket 再構築"]:::sim
+        Step0["Step 0: Carry-Over & パッチ合流バリア<br/>・prev_dirty_slots と prev2_dirty_slots を Published -> Work へ引き継ぎ<br/>・PatchQ 一括 Drain / 階層変更時のみ Depth Bucket 再構築"]:::sim
         Step1["Step 1: bitmask edge Observer<br/>attached / enabled / TELEPORT_THIS_TICK 検知<br/>(0->1 立ち上がり初速リセット / 1->0 破棄)"]:::sim
         Step2["Step 2: 段階的物理 (Phase 2〜 で接続)<br/>・Phase 1: 物理スキップ (同期・階層のみ)<br/>・Phase 2: AvatarRigBuffer 揺れもの XPBD<br/>・Phase 3: RigidSolver (境界のみ・実装は別決)"]:::sim
         Step3["Step 3: Depth Bucket 階層一括伝播<br/>浅い段から親->子へワールド座標を確定"]:::sim
@@ -93,22 +111,34 @@ flowchart TB
 
     subgraph Ring3["Ring 3: 描画 & ネットワーク配信 (外側バイナリ責務)"]
         direction LR
-        GPU["client/app (render_wgpu)<br/>・PendingLocalOps + Error Smoothing 合成<br/>・Prev / Published を既存 RenderFrame ブリッジまたは<br/>  WGSL 120fps 補間 (TELEPORT時は即スナップ)"]:::out
+        GPU["client/app (render_wgpu)<br/>・Prev / Published 補間 (1a から)<br/>・1c: PendingLocalOps + Error Smoothing<br/>・TELEPORT時は即スナップ"]:::out
         NetRel["構造変更 (現行 …/edit → 将来 Reliable Op)<br/>・確定 Scene Op (host_generation + scene_rev)<br/>・Late Join は snapshot / RoomSnapshot 枠"]:::out
         NetFast["密デルタ (現行 RenderFrame latest · 30Hz)<br/>・dirty 合成 + x0024 欠落→snapshot<br/>・ドラッグ中揮発 (Room鍵 AEAD)"]:::out
     end
     PatchQ ===>|"Tick冒頭で一括Drain"| Step0
     SimArena <===>|"連続SoAゼロコピー参照"| Ring2
     BufPrev & BufPub ===>|"Read-Only スライス参照"| GPU & NetFast
-    OpGate ===>|"確定Op配信 & op_chain_hash"| NetRel
+    OpGate ===>|"確定Op配信 (scene_rev; op_chain_hash は 1c)"| NetRel
 ```
+
+### 2.1 確定レーン（ライブ tip ≠ 明示 Save）— 旧 `mvcc_xpbd` §4.7 の後継
+
+60Hz 実行面は「毎ティックの姿勢」だけを扱う。**生成・削除・親子・プロパティ編集**は別レーン（現行 `…/edit` / `LiveEditLedger`、将来 Scene Store Op）。
+
+**VCS 前提（案 B / x00b3 · x00b9・本正本に移植）**:
+
+- `EditCommit.scene_rev` = host の **ライブ tip**（セッション working-tree）。
+- 永続（canonical / Spatial VCS）は **明示 Save のときだけ**進む（Git の commit 相当）。
+- Spawn / Despawn / Reparent / SetField はいずれも **ライブ ≠ 永続**（Save body に `spawns`/`despawns`/`parents`/`fields`）。
+- 競合は操作対象ごとの楽観ロック（`expected_parent` 等）。Undo は逆操作＋前提条件。
+- 詳細履歴は [archive/2026-11-27/mvcc_xpbd.md](archive/2026-11-27/mvcc_xpbd.md) §4.7。**実装・VCS たたき台の参照先は本節**。
 
 ### 時間軸別 SSoT（単一ストアに潰さない・並存も禁止）
 
 | 層 | SSoT? | 担当 | 現行の器 | 方針 |
 | :--- | :--- | :--- | :--- | :--- |
 | **A. 永続・権限** | **永続 SSoT** | seal/save できる内容、canonical バイト | world `canonical` + `session_overlay`、ManifestSeal | 維持。Save で B から書き出す |
-| **B. セッション構造** | **セッション疎 SSoT** | 親子・属性・spawn/despawn・Undo・連番 | **`LiveEditLedger` + `scene_rev`**（SlotGraph / SlotUndo） | **Scene Store に進化**（別名の新正本を横置きしない） |
+| **B. セッション構造** | **セッション疎 SSoT** | 親子・属性・spawn/despawn・Undo・連番 | 現行 host `LiveEditLedger`；目標 **`shared-sim::scene_store` + host facade** | host に第二コピーを残さない（§冒頭の配置表） |
 | **C. 60Hz 密実行** | **実行面 SSoT** | 座標・delta・bitmask・物理パラメータ | `EpochSheet` / FrameBridge（目標: Sim Arena 3 面） | B から `SimPatch`。密 Transform を CRDT に載せない |
 | **D. ワイヤ投影** | **否** | 配送用の見え方 | SceneManifest、RenderFrame、cell/lod | B/C から生成。正本を名乗らせない |
 | **E. ページプール** | **否** | opt-in / 学習資産 | `mvcc/` → **`sim_pages`** | 品質本線の座を奪わない |
@@ -127,46 +157,41 @@ flowchart TB
 
 ## 3. Scene Store の詳細仕様（Host-Sequenced CRDT × 3層 ID × `SparseSet<T>`）
 
-### 3.1 3層 ID 分離による「衝突ゼロ」と「30Hz 高速通信」の両立
-ネットワーク・永続化の衝突回避と、30Hz リアルタイム配信の帯域・CPU 効率を両立するため、オブジェクト ID を以下の **3 層** に厳密分離する。
+### 3.1 3層 ID と現行 `entity_id: u32` の移行
 
-1. **`StableUuid (u128)`（世界不変 ID）**
-   * UUIDv7 等のグローバル一意 ID。Spatial VCS（Git 保存・マージ）、Scene Store の `CrdtOp`（`Spawn` / `MoveNode` / `SetProperty`）、および個人別 `UndoTransaction` では **常に `StableUuid` を使用** する。
-2. **`WireSlotId (u32)`（セッション通信用 4Byte 添字）**
-   * `host_epoch` 内でホストが割り当てる 4Byte の一時通信 ID。`Spawn` 時および `RoomSnapshot` 内で `StableUuid <-> WireSlotId` の対応表を配布する。
-   * 30Hz の高頻度 Transform デルタやドラッグ中ストリームは `StableUuid (16Byte)` ではなく **`WireSlotId (4Byte)`** で運び、帯域消費を 1/4 に圧縮する。
-3. **`LocalSlotId (u32)`（各端末の Sim Arena / `SparseSet` ローカル添字）**
-   * 各端末の SoA 配列インデックス。受信側では `wire_to_local: Vec<Option<LocalSlotId>>` の単純な配列参照だけで $O(1)$ 変換でき、30Hz 受信ホットパスから `HashMap<u128, u32>` のハッシュ検索を完全に排除する。
+| 段階 | ワイヤ / 永続 | 内部 |
+|:---|:---|:---|
+| **現行〜Phase 1a/1b** | `entity_id: u32` | **SparseSet の sparse キー = `entity_id`**（配列長は max id+1 かハッシュ相当。穴があってよい）。**dense 添字**は生存オブジェクトを詰めた走査用インデックスであり、`entity_id` そのものではない。Arena の行添字も dense／別マップで解決してよい。`StableUuid` はまだ必須にしない |
+| **Phase 1c〜** | `WireSlotId` 配布＋永続 `StableUuid` | `wire_to_local` で O(1)。sparse キーを StableUuid 側へ寄せる移行 |
 
-### 3.2 Host-Sequenced CRDT（Kleppmann 循環防止 ＋ LWW ＋ `TRASH_UUID` GC）
-* **全順序タイムスタンプ**：`OpTimestamp { lamport: u64, actor_id: u64 }` により、オフライン分岐やホスト交代直後でも決定論的な勝敗が決まる。
-* **リアルタイム適用ルール（過去ログ巻き戻しなし）**：
-  * セッション中の確定適用順序は `(host_epoch, room_seq)` の単調増加連番に従う。
-  * `MoveNode { node, new_parent }` 適用時は、`new_parent` からルートへ親ポインタを辿り `node` 自身に到達する場合は循環参照となるため No-op で弾く（Kleppmann 循環防止ルール）。
-  * 過去タイムスタンプの遅延到着時に「既存ツリーを Undo → Apply → Redo で巻き戻す処理」は行わず、フレームスパイク・bitmask edge の不可逆副作用との矛盾・ログ無限肥大化を構造的に防ぐ。
-* **削除（`TRASH_UUID`）と GC 上限契約**：
-  * ノード削除は特別な破壊操作ではなく、仮想ノード **`TRASH_UUID`** の下へ `MoveNode` することで表現する。
-  * 削除された瞬間に `SparseSet<T>` からは `swap_remove` で取り出し（実行中の `SparseSet` を常に 100% 生存オブジェクトのみで密着維持）、実体データは `TrashStore` へ退避する。
-  * 長時間ルームでの OOM を防ぐため、**`TrashStore` には GC 上限（例：直近 200 ノード、または退避後 10 分超過で完全解放）** を設ける。GC 済みの `StableUuid` に対する Undo 要求が届いた場合はクラッシュさせず安全な No-op としてスキップする。
-* **Spatial VCS（Git）との意味論境界**：
-  * `OpTimestamp` と `room_seq` はセッション内・ホスト交代時の収束に限定し、Spatial VCS（Git Commit）へエクスポートする際は純粋なシーン構造（`StableUuid` キー＋決定論的ソート済みプロパティ）として書き出す。これにより Git の 3-way Merge や過去コミットへの Rollback 時にタイムスタンプのねじれが起きない。
+一気に全経路 StableUuid 化しない。Phase 1b 完了基準は **u32 `entity_id` のまま**循環防止・LWW・facade 化が Green であること。
+
+### 3.2 Host-Sequenced 適用・削除モデル（Phase 分け）
+* **全順序タイムスタンプ**：`OpTimestamp { lamport: u64, actor_id: u64 }`（1b 以降）。
+* **リアルタイム適用**：`(host_epoch, room_seq)` 単調適用。循環 `MoveNode` は No-op。過去ログ巻き戻しなし。
+* **削除（Phase 分け・確定）**:
+  * **Phase 1b（当面）**: 現行どおり **`pending_despawns` / parent クリア系**を維持。**`TRASH_UUID` MoveNode と Trash GC は 1b DoD に入れない**。
+  * **Phase 1c 以降**: 仮想ノード **`TRASH_UUID`** への `MoveNode` ＋ `TrashStore`（件数/TTL GC）。GC 済み Undo は No-op。
+* **Spatial VCS**：セッション連番はエクスポートに載せない（構造のみ）。StableUuid キーは 1c 以降。
 
 ### 3.3 型付き `SparseSet<T>` と個人別マルチプレイ Undo / Redo
-* **`SparseSet<T>` が Scene Store の唯一の正（SSoT）**：外部 CRDT を外したことで二重持ちが消滅し、`sparse: Vec<Option<usize>>`、`dense_slots: Vec<LocalSlotId>`、`dense_values: Vec<T>` の 3 本（Pure Rust 約 60 行）がそのまま SSoT になる。Rust 標準 `HashMap` のようなランダムシードによる走査順ブレがなく、決定論的かつキャッシュ効率最速で全件走査できる。
-* **個人別 Undo / Redo**：他人の作業を壊さないため、「時間を巻き戻す」のではなく**「個人別スタックから逆操作を取り出し、最新の `OpTimestamp` を付けた新規 `CrdtOp` として送信する」**方式とする。
-  * 3D 空間ガード：① 親が `TRASH_UUID` へ移された際に他人がぶら下げた子ノードが残っていればワールド座標を維持して親をルート/祖父へ自動退避、② 循環を作る Undo は `host-server` で安全に Reject、③ 机の消滅・移動 Undo 時は近傍の静止剛体（Phase 3）のスリープビットを起床させる。
+* **`SparseSet<T>` が Scene Store の唯一の正（SSoT）**：`sparse`（キー→dense）・`dense_slots`・`dense_values` の 3 本。1b のキーは `entity_id: u32`（§3.1）。走査は dense のみ（決定論・キャッシュ効率）。
+* **個人別 Undo / Redo（1b は既存 SlotUndo 接続から）**：逆操作を最新タイムスタンプ付き新規 Op として送る。TRASH 周りの子ノード退避ガードは **1c（TRASH 導入後）**。
 
-### 3.4 ドラッグ中揮発分離・`SoftLease`・楽観予測の Jitter 防止
-* **60Hz ドラッグ座標の揮発分離**：VR で箱を掴んで動かしている最中の毎フレーム座標は CRDT ログに入れず、揮発 Datagram で `Sim Arena` へ流し、**手を離した瞬間（Commit）の 1 回だけ `SetProperty` として CRDT へ確定記録**する。
-* **2 人同時掴み・回線断ガード（`SoftLease`）**：`host-server` 側で掴み対象ごとに短命の **`SoftLease { holder_actor_id: u64, lease_expires_tick: u64 }`**（例：90 Tick ＝ 1.5 秒間操作更新がなければ自動解放）を管理し、同時掴みの奪い合いワープと掴みっぱなし回線断によるロック放置を防ぐ。
-* **楽観予測（Optimistic Update）の Jitter 防止**：高 RTT の分散連合環境（150〜250ms）でも手元が震えないよう、クライアント側は未承認操作を **`PendingLocalOps`** として分離保持する。サーバー確定面（`Published`）自体は汚さず、描画直前の予測合成層で未承認分を反映し、サーバー確定後にズレが生じた場合は 80〜120ms かけて減衰させる **Error Smoothing オフセット** で滑らかに吸収する。
+### 3.4 ドラッグ中揮発分離・掴み権威・楽観予測
+* **60Hz ドラッグ座標の揮発分離**：掴み中の毎フレーム座標は疎ストア／CRDT に入れず、揮発ストリームで実行面へ流し、**手放し（Commit）の 1 回だけ**構造／姿勢を確定記録する。
+* **物理掴み権威（現行・維持）**: 実行面の **`holder_slot` / `is_grabbed_mask` / `STATE_IS_GRABBED`**（`sim_pages` / Epoch 経路）が **唯一の物理掴み SSoT**。二系統にしない。
+* **`SoftLease`（編集ロック・Phase 1c）**: host 入口の短命リースで、**同時の構造編集奪い合い**（inspector / Reparent 等）を防ぐ。物理 Grab の置換ではない。Phase 1a/1b の DoD に含めない。
+* **楽観予測（Phase 1c / app）**: `PendingLocalOps` ＋ Error Smoothing。Published 面は汚さない。
 
 ---
 
 ## 4. Sim Arena の詳細仕様（MVCC 着想の 3 面 SoA バッファ ＋ 2-Frame Carry-Over）
 
 ### 4.1 3 面リングバッファと「2-Frame Dirty Carry-Over」（先祖返り防止契約）
-Sim Arena は GPU の 120fps 補間（`Prev` と `Published` の同時読取）と 60Hz 計算（`Work` への独占書込）をロック待ちゼロで並走させるため、**`Prev`（Epoch $N-1$）・`Published`（Epoch $N$）・`Work`（Epoch $N+1$）の 3 面 SoA 配列**をローテーションする。
+Sim Arena は GPU の 120fps 補間（`Prev` と `Published` の同時読取）と 60Hz 計算（`Work` への独占書込）を並走させるため、**`Prev`（Epoch $N-1$）・`Published`（Epoch $N$）・`Work`（Epoch $N+1$）の 3 面 SoA 配列**をローテーションする。
+
+**出版契約**: Ring 2 は Single-Writer で Work だけを書く。Tick 末尾で面をローテしたあと、**確定した Prev/Published の不変スナップショットを既存どおり `arc-swap`（`EpochSnapshotPair` / 将来 `PublishedPair`）で Ring 3 へ一括公開**する。GPU 読取側は Arc を load するだけ（内部 Work へ触らない）。「ロック待ちゼロ」はこの出版境界の話であり、Arena 内部の排他を否定するものではない。
 
 ```text
 【読取側 (Ring 3: GPU 120fps補間 & Zenoh 30Hz配信)】
@@ -207,28 +232,35 @@ Sim Arena は GPU の 120fps 補間（`Prev` と `Published` の同時読取）�
 
 | トラフィック種別 | トランスポート契約 | 欠損時の振る舞い | 主なペイロード |
 | :--- | :--- | :--- | :--- |
-| **Scene Op ログ**<br>*(Scene Store 構造・属性変更)* | **現行**: `…/edit` + `scene_rev`。**目標**: Reliable 順序保証＋ `(host_epoch, room_seq)` 連番 | **欠損厳禁**（目標）。飛び検知時は欠損レンジ再送または snapshot 収束 | `Spawn` / `MoveNode` / `SetProperty` / `TRASH_UUID` / `SoftLease` |
+| **Scene Op ログ**<br>*(Scene Store 構造・属性変更)* | **現行**: `…/edit` + `scene_rev`。**目標**: Reliable 順序保証＋ `(host_epoch, room_seq)` 連番 | **欠損厳禁**（目標）。飛び検知時は欠損レンジ再送または snapshot 収束 | `Spawn` / `MoveNode` / `SetProperty`（1b: `pending_despawns`）。**1c**: `TRASH_UUID` / `SoftLease` |
 | **Sim 30Hz デルタ**<br>*(Sim Arena 連続座標・掴み中)* | **現行**: RenderFrame latest（dirty 合成）＋ cell/lod。**目標も** best-effort / 低遅延 | **欠損許容**。欠落は x0024 どおり snapshot。古い tick は破棄 | Transform dirty、`TELEPORT_THIS_TICK`、ドラッグ中揮発座標 |
 
 ### 5.2 Late Join とホスト交代（速度復元の正本）
-* **Late Join**：現行は Room `…/snapshot` 等。目標として Scene Store 全量＋実行面の **`RoomSnapshot`**（`snapshot_seq` / `op_chain_hash`）枠を用意し、以降の Op で追いつく。
-* **計画的 handover の速度復元（正本）**: 既存 **`…/sim_state`**（量子化なし丸渡し）。crash 時は last-good / fail-closed（旧品質本線 §4.8 の契約を継承）。
-* **`frame_delta_xyz`（副案）**: 30Hz デルタ同梱による昇格時近似復元。`sim_state` が取れない経路の補助であり、計画的 handover の第一正本にしない。
+* **Late Join（現行）**: Room `…/snapshot`。**Phase 1c 枠**: Scene Store 全量＋実行面の `RoomSnapshot`（任意で `op_chain_hash`）。
+* **計画的 handover の速度復元（正本）**: 既存 **`…/sim_state`**。crash 時は last-good / fail-closed（旧 §4.8 継承）。
+* **`frame_delta_xyz`（副案）**: 計画的 handover の第一正本にしない。
 * **PC 版 `host-server` 昇格**: 最新状態を子プロセスへ IPC。Job Object / Process Group で道連れ終了。
 
-### 5.3 Untrusted Host 防御と `apps/verifier` 監査証跡
-ローカル `host-server` はユーザーの PC 上で動く Untrusted プロセスであるため、以下の四重防御を Phase 1 の契約へ最初から組み込む。
+### 5.3 Untrusted Host 防御と verifier
+ローカル `host-server` は Untrusted。防御の層を分ける。
 
-1. **同室内なりすまし遮断（`actor_id` 強制上書き）**：`host-server` 入口の検疫ゲートでは、クライアントが `CrdtOp` 内に申告した `actor_id` を一切信用せず、**Room Token の `sub` クレームから決定論的に導出した値で必ず上書き**する。
-2. **無許可アセット差し込み遮断（`ManifestSeal` 二重照合）**：アセット参照（メッシュ・アバター・マテリアル等の BLAKE3 ハッシュ）を書き換える `SetProperty` は、`world-server` が署名発行した `ManifestSeal` に登録済みのハッシュのみ受理し、さらに**ゲスト側の描画直前にも `ManifestSeal` と照合**して未許可アセットを破棄する。
-3. **`room_seq` 二枚舌・検閲の監査証跡（`op_chain_hash`）**：`host-server` は確定した `CrdtOp` を処理するたびに直前のハッシュと結合した操作連鎖ハッシュ **`op_chain_hash: [u8; 32]`** を更新し、定期フレームおよび `RoomSnapshot` へ `world-server` 発行の Room Host Token 署名とともに付与する。これにより `world-server (apps/verifier)` の抜き打ち監査で不正な分岐・改ざんを客観的に検知し、強制フェイルオーバーを発動できる。
-4. **未来タイムスタンプ攻撃のクランプ**：受信した `OpTimestamp.lamport` が現在のルーム最大値から許容ドリフト上限を超えている場合は即座にドロップし、LWW の永久乗っ取りを遮断する。
+| 項目 | Phase | 内容 |
+|:---|:---|:---|
+| `actor_id` 強制上書き | **1b（必須）** | 申告値を信用せず Room Token `sub` から導出（現行 Intent/edit ゲートと同型） |
+| ManifestSeal 照合 | **1b（必須・host）** | アセット参照 SetProperty / Spawn は seal 済みハッシュのみ（現行 x0039）。**ゲスト描画直前の二重破棄は本線後続**（現行 Frame 経路には無い。将来の防御強化） |
+| lamport ドリフトクランプ | **1b（必須）** | 未来時計の LWW 乗っ取り遮断 |
+| **`op_chain_hash`** | **1c（枠のみ・DoD 外）** | 連鎖ハッシュ更新口と `World.Verifier` Behaviour への将来入力。Phase 1a/1b Green に必須としない |
+| Spot-Check 統計 | **本線外** | Proprietary。OSS は Noop 注入点のみ |
 
 ---
 
-## 6. コア Rust データ構造・契約仕様（`client/shared-sim`：`std` のみ）
+## 6. コア Rust データ構造・契約仕様（`client/shared-sim`）
 
-Phase 1 の `client/shared-sim` は **`#![forbid(unsafe_code)]` かつ新規外部クレート追加ゼロ（`std` のみ）** で実装する。
+**依存契約（矛盾させない）**:
+
+- `#![forbid(unsafe_code)]`（クレート直下）。
+- **新規**外部クレート追加は Phase 1 全体で禁止（人承認なし）。
+- **既存維持可**: `alchemy-protocol` / `arc-swap` / `bytemuck` / `glam` / `wide`（現行 `shared-sim`）。「`std` のみのグリーンフィールド」ではない。
 
 ```rust
 #![forbid(unsafe_code)]
@@ -247,14 +279,15 @@ pub const TRASH_UUID: StableUuid = 0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFE;
 pub const ROOT_UUID: StableUuid  = 0x0000_0000_0000_0000_0000_0000_0000_0000;
 
 /// 主要コンポーネント＆状態ビットマスク予約 (Phase 1〜3 共通)
+/// `1<<4` / `1<<7` / `1<<8` は将来予約（未割当）。勝手に使わない。
 pub const COMP_ALIVE: u64               = 1 << 0;
 pub const COMP_TRANSFORM_DIRTY: u64     = 1 << 1;
 pub const COMP_SDF_VISUAL: u64          = 1 << 2; // プロシージャル BOX 描画
 pub const COMP_MESH_RENDER: u64         = 1 << 3;
 pub const COMP_COLLIDER: u64            = 1 << 5; // Static / Dynamic 共通コライダー
 pub const COMP_GRABBABLE: u64           = 1 << 6;
-pub const COMP_RIGID_BODY: u64          = 1 << 9; // Phase 3: 剛体物理 (rapier3d -> AVBD)
-pub const STATE_IS_GRABBED: u64         = 1 << 10; // VR 掴み中 (揮発ストリーム優先 / XPBD切替)
+pub const COMP_RIGID_BODY: u64          = 1 << 9; // Phase 3 枠（実装は別決）
+pub const STATE_IS_GRABBED: u64         = 1 << 10; // 物理掴み（holder_slot と整合）
 pub const STATE_TELEPORT_THIS_TICK: u64 = 1 << 11; // 生成・SetParent・ワープ時の GPU 補間無効化
 
 /// 全ピア間で一意の全順序が定まる論理タイムスタンプ
@@ -264,15 +297,30 @@ pub struct OpTimestamp {
     pub actor_id: u64, // host-server 入口で Room Token sub から強制導出
 }
 
-/// 信頼チャネル (Reliable Stream) で配送される確定 Scene Store 操作
+/// 確定 Scene Store 操作（ワイヤは現行 EditCommit / 将来 SequencedOp）
 #[derive(Clone, Debug)]
 pub struct SequencedOp {
-    pub host_epoch: u64,          // world-server がホスト交代ごとにインクリメント
-    pub room_seq: u64,            // host-server 採番の単調増加連番 (欠損検知キー)
-    pub op_chain_hash: [u8; 32],  // verifier 監査用の操作連鎖ハッシュ枠
+    pub host_epoch: u64,          // ↔ host_generation
+    pub room_seq: u64,            // ↔ scene_rev
+    pub op_chain_hash: [u8; 32],  // Phase 1c 枠。1a/1b DoD 外
     pub op: CrdtOp,
 }
 
+/// SetProperty の値（契約サンプル。実装で enum を拡張してよい）
+#[derive(Clone, Debug)]
+pub enum PropValue {
+    Bool(bool),
+    U32(u32),
+    F32(f32),
+    F32x3([f32; 3]),
+    F32x4([f32; 4]),
+    Bytes(Vec<u8>),
+    Blake3([u8; 32]),
+}
+
+/// Phase **1c 形**の契約サンプル（ノード ID = `StableUuid`）。
+/// Phase **1b** では `node` / `parent` / `new_parent` を **`entity_id: u32`** に読み替え、
+/// `wire_slot` フィールドは省略（ワイヤ ID = entity_id）。TRASH_UUID 削除は 1c。
 #[derive(Clone, Debug)]
 pub enum CrdtOp {
     SpawnNode {
@@ -284,7 +332,7 @@ pub enum CrdtOp {
     MoveNode {
         ts: OpTimestamp,
         node: StableUuid,
-        new_parent: StableUuid, // TRASH_UUID なら論理削除
+        new_parent: StableUuid, // 1c: TRASH_UUID なら論理削除。1b は pending_despawns
     },
     SetProperty {
         ts: OpTimestamp,
@@ -294,11 +342,11 @@ pub enum CrdtOp {
     },
 }
 
-/// 2人同時掴み・回線断放置を防ぐ短命リース (host-server 管理)
+/// 編集ロック用短命リース（Phase 1c）。物理 Grab の holder_slot とは別概念
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SoftLease {
     pub holder_actor_id: u64,
-    pub lease_expires_tick: u64, // 例: 無通信 90 Tick (1.5秒) で自動失効
+    pub lease_expires_tick: u64,
 }
 
 /// Scene Store (Ring 1) -> Sim Arena (Ring 2) へ送る密データ差分パッチ
@@ -319,13 +367,13 @@ pub enum SimPatch {
     SetProceduralBox { slot: LocalSlotId, half_extents: [f32; 3], corner_radius: f32 },
 }
 
-/// 30Hz デルタ配信用の 1 行スナップショット (0秒ホスト交代時の 60Hz 速度復元対応)
+/// 30Hz dirty 配信用の 1 行（任意フィールド）
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NetTransformDelta {
     pub wire_slot: WireSlotId,
     pub pos: [f32; 3],
     pub rot: [f32; 4],
-    /// 60Hz 1 Tick 分の変位 (x_curr - x_prev)。ホスト昇格時に x_prev = x_curr - delta で速度復元
+    /// 副案のみ。計画的 handover の速度復元正本は `…/sim_state`
     pub frame_delta_xyz: [f32; 3],
     pub teleport: bool,
 }
@@ -333,54 +381,42 @@ pub struct NetTransformDelta {
 
 ---
 
-## 7. 段階的実装ロードマップ（Phase 1 → Phase 2 → Phase 3）
+## 7. 段階的実装ロードマップ
 
-以下の順序を厳守し、各 Phase がヘッドレス単体テスト（`cargo test`）と既存 CI（`./.scripts/ci.sh rust`）の通過を確認してから次へ進む。
+着手は**縦スライス単位**。Phase 1 を一枚岩で実装しない。
 
-### Phase 1：Scene Store × Sim Arena 同期基盤【最優先・物理ゼロ】
-* **目的**：物理コード 0 行のまま、分散連合 VR に耐えうる同期・階層・編集・Undo・120fps 補間・既存 `RenderFrame` ブリッジの心臓部を完成させる。
-* **実装タスク**：
-  1. **Scene Store（`scene_store/`）の実装**：
-     * 3 層 ID 台帳（`StableUuid` / `WireSlotId` / `LocalSlotId` と `wire_to_local: Vec<Option<LocalSlotId>>`）。
-     * Host-Sequenced CRDT（Kleppmann 循環参照防止、Property-level LWW、許容ドリフトクランプ、`TRASH_UUID` 退避＋件数/TTL 上限 GC）。
-     * 型付き `SparseSet<T>`（SSoT）、個人別 `LocalUndoHistory`（逆操作の最新 `OpTimestamp` 発行）、`SoftLease` 管理、および `RoomSnapshot` シリアライズ枠と `op_chain_hash` 更新枠。
-  2. **Sim Arena（`sim_arena/`）の実装**：
-     * 3 面 SoA バッファ（`Prev` / `Published` / `Work`）、**2-Frame Dirty Carry-Over（`prev_dirty_slots` 引き継ぎ）**、カラム別 `dirty_epoch`、`f64` セル原点＋局所 `f32` 座標。
-     * 親子階層の平坦化（`parent_ids`、UI 用 `EulerTourEntry`、親→子伝播用 `DepthBucket`）を `SetParent` パッチ発生時のみ再構築。
-     * 2 層ビットマスク（`attached_masks` / `enabled_masks`）、bitmask edge Observer、`STATE_TELEPORT_THIS_TICK` 制御、`ProceduralBox16B`。
-     * 30Hz dirty 抽出と既存 RenderFrame ブリッジ。速度復元は **`sim_state` を正**とし、`frame_delta_xyz` は任意。
-  3. **既存パイプラインへの縦貫通**:
-     * **`LiveEditLedger` を Scene Store の表層として進化**（並行 SSoT 禁止）。
-     * `RenderFrame (binary64)`・Room AEAD（`x0068` / `x0069`）を壊さない。
-     * `PendingLocalOps` / Error Smoothing の接続フック。
-* **完了基準（`cargo test` 必須）**：
-  1. 先祖返りゼロ（3 面ローテーション後）。
-  2. 循環防止・LWW・旧 `host_generation` 棄却・未来 lamport クランプ。
-  3. 削除・個人 Undo・GC 後 Undo の No-op。
-  4. 生成・`SetParent` 直後の `STATE_TELEPORT_THIS_TICK`。
-  5. `#![forbid(unsafe_code)]`・Phase 1 で**新規**外部クレート追加なし（既存 `alchemy-protocol` / `arc-swap` / `bytemuck` / `glam` / `wide` は維持可）・`./.scripts/ci.sh rust` Green。
+### Phase 1a（最小垂直切片・最優先）：Sim Arena 3 面 ＋ Carry-Over ＋ 既存出版
+* **目的**: 先祖返りゼロと Prev/Published の `arc-swap` 出版を、既存 Epoch/RenderFrame ブリッジ上で閉じる。物理・CRDT・SoftLease・3層 UUID は入れない。
+* **タスク**: `sim_arena`（または Epoch 進化）に `Prev`/`Published`/`Work`、**`prev_dirty_slots` + `prev2_dirty_slots`**、カラム `dirty_epoch`、`STATE_TELEPORT_THIS_TICK`、既存 FrameBridge 出版。
+* **DoD**: 静止後 3 tick で先祖返りしない単体テスト。CI rust Green。新規クレートなし。
 
-### Phase 2：アバターの揺れもの（XPBD × `AvatarRigBuffer`）
-* 空間 Slot を増やさず髪・耳・尻尾・スカートをローカル計算。パラメータ変換は `client/sim-rig` 等へ分離。同期はしない（規模本線 LOD と整合）。
+### Phase 1b：`shared-sim::scene_store` ＋ host `LiveEditLedger` facade
+* **目的**: セッション疎 SSoT を shared-sim に一本化。host は検疫・`scene_rev`・edit/Save I/O のみ。
+* **タスク**: SparseSet（**sparse キー = `entity_id: u32`**）、循環防止、Property-level LWW、`SimPatch` → Arena、LiveEditLedger を facade 化（第二コピー禁止）。個人 Undo は既存 `SlotUndoStack` 接続から。**削除は現行 `pending_despawns` 維持**。
+* **DoD**: 循環 Reject・LWW・facade 経由の Reparent / Despawn（pending 系）。`actor_id`/ManifestSeal/lamport は現行ゲート維持。**TRASH_UUID / Trash GC / SoftLease / StableUuid / `op_chain_hash` は含めない**。
 
+### Phase 1c（枠・後続スライス）：SoftLease / `op_chain_hash` / 3層 ID / `TRASH_UUID` / RoomSnapshot / PendingLocalOps
+* **DoD 必須にしない**（1a/1b Green 後）。削除モデルを `TRASH_UUID` MoveNode へ移行してよいのはここから。`SoftLease` は編集ロック（物理 `holder_slot` と別）。
+
+### Phase 2：アバター揺れもの（XPBD × `AvatarRigBuffer`）
+* 1a–1c の後。空間 Slot に載せない。
 
 ### Phase 3：剛体物理（枠のみ・実装は別決）
-* `RigidSolver` トレイト境界と bitmask edge による初速リセット等の**枠**は定義してよい。
-* **`rapier3d` / AVBD の具体実装・新規クレートは未採択**（人承認後に別スライス）。現行 Native XPBD・不等式接触を捨てない。
+* `RigidSolver` 境界のみ可。**rapier3d / AVBD は未採択**。
 
 ---
 
 ## 8. Cursor 実装時の厳守制約（Non-Negotiables）
 
-1. **`#![forbid(unsafe_code)]`（クレート直下）**。Phase 1 で**新規**外部クレートを追加しない（既存依存の無断追加も禁止。人承認）。
-2. **`shared-sim` は OS スレッド・`Instant`・wgpu・ソケットに非依存**。タイマー／IPC／描画は host / app。
-3. **決定論・finite 検疫**。`-C target-feature=-fma` 方針を維持。
-4. **セキュリティ境界を壊さない**: mTLS / ACL / Room AEAD / ManifestSeal / RenderFrame。移行は既存ブリッジ経由。
-5. **Phase 飛び越し禁止**（揺れもの・剛体は Phase 1 Green 後）。**Rapier 再導入は未採択**。
-6. **SSoT 並存禁止**: Scene Store 実装は `LiveEditLedger` の進化。world canonical と実行面と役割を混同しない。
-7. **`mvcc/` は削除せず `sim_pages` へ改称**（別スライス）。品質本線の実行面目標名は `sim_arena`。
-8. **規模 KPI を品質本線で宣言しない** → [spatial_interest.md](spatial_interest.md)。
-9. **実装前に現状調査**し、変更ファイル一覧と完了基準テストを提示してからコード生成。
+1. **`#![forbid(unsafe_code)]`**。**新規**外部クレート禁止。既存 `alchemy-protocol` / `arc-swap` / `bytemuck` / `glam` / `wide` は維持可（§6）。
+2. **`shared-sim` は OS スレッド・`Instant`・wgpu・ソケットに非依存**。
+3. **決定論・finite 検疫**。
+4. **セキュリティ境界を壊さない**。
+5. **Phase 飛び越し禁止**。着手は **1a → 1b → 1c**。Rapier 未採択。
+6. **SSoT 並存禁止**: 疎状態の正は `shared-sim::scene_store`。host `LiveEditLedger` は facade のみ。物理掴みの正は `holder_slot`（SoftLease と二重化しない）。
+7. **`mvcc/` → `sim_pages` 改称**（別スライス）。実行面目標は `sim_arena`。
+8. **規模 KPI を品質本線で宣言しない**。
+9. **実装前に現状調査**し、変更ファイル一覧と当該スライスの DoD を提示してからコード生成。
 
 ---
 
@@ -389,10 +425,8 @@ pub struct NetTransformDelta {
 ```text
 @.workspace/roadmap/scene_store_sim_arena.md を読み込んでください（品質本線）。
 
-Scene Store（Host-Sequenced CRDT + SparseSet；LiveEditLedger の進化）× Sim Arena（3面 SoA + 2-Frame Dirty Carry-Over）の Phase 1 を進めます。物理・Rapier・新規 Reliable チャネルは入れません。
+まず Phase 1a（Sim Arena 3面 + prev/prev2 Carry-Over + 既存 arc-swap 出版 + RenderFrame ブリッジ）だけを計画してください。
+1b（scene_store + LiveEditLedger facade）・1c（SoftLease / op_chain_hash / StableUuid）・物理は入れません。
 
-まだコードは書かず、`client/Cargo.toml`・`shared-sim`・host `LiveEditLedger`・RenderFrame / edit 境界・CI を調査し、次を提示してください。
-1. Phase 1 のファイル一覧と LiveEditLedger 表層化の影響範囲
-2. scene_store / sim_arena / sim_pages（旧 mvcc）のモジュール分割
-3. Phase 1 完了基準の単体テスト設計
+まだコードは書かず、現行 Epoch/FrameBridge/mvcc・CI を調査し、1a のファイル一覧と先祖返りテスト設計を提示してください。
 ```

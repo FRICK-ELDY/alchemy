@@ -1,4 +1,4 @@
-﻿# Alchemy — 配信の空間インデックス（Spatial Interest）正本
+# Alchemy — 配信の空間インデックス（Spatial Interest）正本
 
 * **種別**: 規模本線の仕様正本。実装第一波は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)（キー契約 + ACL + dual-publish）。第二波は [x00bf](slices/x00bf-client-near-cell-frame-sub.md)（client 近傍セル opt-in 併読）。第三波は [x00c0](slices/x00c0-host-cell-dirty-filter.md)（host セル別 dirty / 複数セル soft-put）。第四波は [x00c1](slices/x00c1-client-cell-follow-resub.md)（自位置追従の cell 購読切替）。第五波は [x00c2](slices/x00c2-cell-exit-remove.md)（セル退出 remove）。第六波は [x00c3](slices/x00c3-multi-cell-same-tick-merge.md)（多 cell 同一 tick 合流）。第七波は [x00c4](slices/x00c4-opt-in-cell-frame-mainline.md)（opt-in cell 本線・Room frame 非購読）。第八波は [x00c5](slices/x00c5-default-cell-frame-mainline.md)（既定 cell 本線・`ALCHEMY_ROOM_FRAME` オプトアウト）。第九波は [x00c6](slices/x00c6-spatial-interest-vr-delivery-contract.md)（VR delivery 契約: Moore per-key · Interest enter 収束 · 自アバター応答）。第十波は [x00c7](slices/x00c7-avatar-sync-lod-mid-band.md)（Avatar sync LOD: 中距離 `frame/lod` · 粗い格子）
 * **改善計画上の位置**: [improvement-plan-2026-11-12.md](../0_doc/evaluation/improvement-plan-2026-11-12.md) **P3-7**
