@@ -2,7 +2,7 @@
 
 > **ID:** `x00e3` · **slug:** `trash-uuid-gc` · **status:** `done` · **area:** `[sim, host]` · **depends_on:** `[x00e1]`  
 > **優先度:** 品質本線 Phase 1c  
-> **後続:** [x00e4](x00e4-three-layer-ids.md)
+> **後続:** [x00e4](x00e4-three-layer-ids.md)（**done**）
 
 目標: 削除モデルを現行 `pending_despawns` から **`TRASH_UUID` への `MoveNode` + `TrashStore`（件数/TTL GC）** へ移行する。GC 済み Undo は No-op。
 

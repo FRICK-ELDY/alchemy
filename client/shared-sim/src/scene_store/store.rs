@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use super::sparse_set::SparseSet;
 use super::trash::{is_trash_entity_id, TRASH_ENTITY_ID};
 use super::{CrdtOp, EntityId, OpTimestamp, PropValue, SimPatch};
-use crate::sim_arena::LocalSlotId;
+use crate::ids::LocalSlotId;
 
 /// Bound ancestor walks so a corrupt / ultra-deep parent chain cannot loop forever.
 ///
@@ -576,10 +576,10 @@ fn valid_parent_id(id: EntityId) -> bool {
     id != u32::MAX && !is_trash_entity_id(id)
 }
 
-/// Phase 1b: Arena slot index == Scene Store entity id (numerically).
+/// Phase 1b / x00e4 coexistence: Arena slot == entity id (identity map).
 #[inline]
 const fn entity_as_slot(id: EntityId) -> LocalSlotId {
-    id
+    crate::ids::local_from_entity_id(id)
 }
 
 #[cfg(test)]

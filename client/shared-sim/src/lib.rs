@@ -10,7 +10,9 @@
 //! [`SimPatch`] queue → Arena Drain in [`scene_store`] / [`sim_arena`]
 //! (x00dd / x00de / x00df / x00e0); [`slot_undo`] ↔ Scene Store (x00e1);
 //! [`SoftLease`] edit lock (x00e2); logical delete via [`TRASH_ENTITY_ID`] +
-//! [`TrashStore`] GC (x00e3; host Save still projects `pending_despawns`).
+//! [`TrashStore`] GC (x00e3; host Save still projects `pending_despawns`);
+//! 3-layer IDs + [`WireToLocal`] skeleton (x00e4; edit/PROTOCOL_PIN still
+//! `entity_id: u32`).
 //! Non-guarantees: Rapier / Dual-AST Kernel / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); Zenoh edit / Save I/O (host `LiveEditLedger` facade);
@@ -19,7 +21,7 @@
 //! Host `SimBackend` + contact-on wiring is x00ad (`host-server`);
 //! MVCC gate x00a6–x00a9 + Phase 2 app x00aa–x00ac are in [`mvcc`] / client;
 //! SoA inertia SIMD (x00a5) is not on the tick path yet; physical grab remains
-//! `holder_slot` (SoftLease is structural only); 3-layer IDs → x00e4.
+//! `holder_slot` (SoftLease is structural only); full StableUuid wire/Save cutover.
 
 #![forbid(unsafe_code)]
 
@@ -30,6 +32,7 @@ use alchemy_protocol::{scene_entry_grabbable, scene_entry_is_user_root, SceneEnt
 pub mod bridge;
 pub mod delta_codec;
 pub mod demo;
+pub mod ids;
 pub mod mvcc;
 pub mod scene_store;
 pub mod sim_arena;
@@ -50,11 +53,15 @@ pub use tape::{
 };
 pub use topology::FlatTopology;
 
+pub use ids::{
+    entity_id_from_stable_embed, entity_id_from_wire, local_from_entity_id, stable_from_entity_id,
+    wire_from_entity_id, IdMapError, LocalSlotId, StableUuid, WireSlotId, WireToLocal, ROOT_UUID,
+    SLOT_ABSENT, TRASH_ENTITY_ID, TRASH_UUID,
+};
 pub use scene_store::{
     actor_id_from_sub, is_trash_entity_id, ApplyOutcome, CrdtOp, EntityId, OpTimestamp, PropValue,
     SceneStore, SimPatch, SoftLease, SoftLeaseConflict, SoftLeaseTable, SparseSet, TrashStore,
-    MAX_LAMPORT_DRIFT, MAX_PARENT_HOPS, SOFT_LEASE_TTL_TICKS, TRASH_ENTITY_ID, TRASH_MAX_ENTRIES,
-    TRASH_TTL_TICKS, TRASH_UUID,
+    MAX_LAMPORT_DRIFT, MAX_PARENT_HOPS, SOFT_LEASE_TTL_TICKS, TRASH_MAX_ENTRIES, TRASH_TTL_TICKS,
 };
 pub use slot_graph::{ReparentError, SlotGraph};
 pub use slot_undo::{SlotTransition, SlotUndoStack, UndoError};

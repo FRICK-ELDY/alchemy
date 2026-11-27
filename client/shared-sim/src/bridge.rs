@@ -30,7 +30,8 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 
-use crate::sim_arena::{LocalSlotId, SimArena, SimFace};
+use crate::ids::LocalSlotId;
+use crate::sim_arena::{SimArena, SimFace};
 use crate::spatial::SceneBounds;
 use crate::tape::{EpochSheet, PendingPatch, ReadinessMask, TapeError, WorldTransformf64};
 use crate::topology::{FlatTopology, TopologyError};

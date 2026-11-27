@@ -1,5 +1,5 @@
 //! Scene Store — SparseSet + Host-Sequenced LWW / cycle reject + SimPatch queue
-//! + SoftLease + Trash (x00dd / x00de / x00df / x00e0 / x00e2 / x00e3).
+//! + SoftLease + Trash + 3-layer ID coexistence (x00dd…x00e4).
 //!
 //! Guarantees: [`SparseSet<T>`] with `sparse` / `dense_slots` / `dense_values`;
 //! sparse key = [`EntityId`] (`u32`); dense walk of live entries; holes in the
@@ -14,10 +14,12 @@
 //! logical delete = [`CrdtOp::MoveNode`] to [`TRASH_ENTITY_ID`] + [`TrashStore`]
 //! count/TTL GC (hard remove via [`SceneStore::remove_node_sparse`]; host Save
 //! still projects `pending_despawns`);
-//! [`SoftLease`] / [`SoftLeaseTable`] structural edit lock (host gate acquires).
+//! [`SoftLease`] / [`SoftLeaseTable`] structural edit lock (host gate acquires);
+//! 3-layer ID types + [`crate::ids::WireToLocal`] skeleton (x00e4; live path
+//! still keys on [`EntityId`]).
 //! Non-guarantees: Zenoh edit / Save I/O / tip 採番 (host facade);
-//! 3-layer IDs (→ x00e4); Dual-auth JWT path (host); physical grab SSoT;
-//! SlotUndo Intent wire (library + host facade peel).
+//! PROTOCOL_PIN / edit `entity_id` cutover to StableUuid; Dual-auth JWT path
+//! (host); physical grab SSoT; SlotUndo Intent wire (library + host facade peel).
 //!
 //! # Live re-Spawn
 //!
@@ -25,20 +27,24 @@
 //! equal/older ts → [`ApplyOutcome::RejectedStale`]; newer ts → parent LWW
 //! only ([`ApplyOutcome::AppliedAsReparent`]), props kept.
 //!
-//! # Sparse vs dense
+//! # Sparse vs dense vs 3-layer IDs
 //!
-//! - **sparse key** = `entity_id` (Phase 1b; StableUuid is Phase 1c / x00e4).
+//! - **sparse key** = [`EntityId`] (Phase 1b; remains through x00e4 coexistence).
 //! - **dense index** = packed live-entry walk index — not `entity_id` itself.
-//! - **Arena slot (Phase 1b)** = same numeric `u32` as `entity_id` when
-//!   emitting [`SimPatch`] (no separate wire map yet).
+//! - **Arena [`crate::ids::LocalSlotId`]** = Phase 1b still equals `entity_id`
+//!   numerically when emitting [`SimPatch`]; remap via [`crate::ids::WireToLocal`]
+//!   when wire ≠ local.
+//! - **[`crate::ids::StableUuid`] / [`crate::ids::WireSlotId`]** = skeleton only;
+//!   CrdtOp / PROTOCOL_PIN edit still use [`EntityId`].
 //!
 //! # Id aliases
 //!
-//! [`EntityId`] and [`crate::sim_arena::LocalSlotId`] are both plain `u32`
-//! aliases in Phase 1b — the type system will not catch mix-ups. Newtype
-//! separation lands with 3-layer IDs (→ x00e4). `u32::MAX` is **not** a valid
-//! [`EntityId`] (sparse ABSENT). [`TRASH_ENTITY_ID`] is the virtual trash
-//! parent (not a sparse row).
+//! [`EntityId`], [`crate::ids::WireSlotId`], and [`crate::ids::LocalSlotId`] are
+//! plain `u32` aliases — the type system will not catch mix-ups. Prefer
+//! [`crate::ids`] helpers (`wire_from_entity_id` / `local_from_entity_id` /
+//! `WireToLocal`) at new call sites. `u32::MAX` is **not** a valid [`EntityId`]
+//! (sparse ABSENT). [`TRASH_ENTITY_ID`] is the virtual trash parent (not a
+//! sparse row).
 
 #![forbid(unsafe_code)]
 
@@ -64,7 +70,8 @@ pub use trash::{
 
 /// Phase 1b Scene Store key (wire / Manifest `entity_id`).
 ///
-/// Not a dense row index and not [`crate::sim_arena::LocalSlotId`].
+/// Not a dense row index and not [`crate::ids::LocalSlotId`]. During x00e4
+/// coexistence this remains the live edit / SparseSet key; see [`crate::ids`].
 /// Must be host/quarantine-bounded; **must not** be `u32::MAX` (sparse ABSENT)
 /// and **must not** be [`TRASH_ENTITY_ID`] as a spawnable node.
 pub type EntityId = u32;

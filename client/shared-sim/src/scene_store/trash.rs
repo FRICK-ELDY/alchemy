@@ -2,8 +2,8 @@
 //!
 //! Guarantees: FIFO [`TrashStore`] records; [`TrashStore::gc`] returns ids that
 //! exceed [`TRASH_MAX_ENTRIES`] (oldest first) or [`TRASH_TTL_TICKS`];
-//! [`TRASH_ENTITY_ID`] mirrors low 32 bits of [`TRASH_UUID`] (Phase 1b key;
-//! full StableUuid wiring → x00e4).
+//! [`TRASH_ENTITY_ID`] / [`TRASH_UUID`] are defined in [`crate::ids`] (x00e4)
+//! and re-exported here for Scene Store call sites.
 //! Non-guarantees: Save body `despawns` projection (host `pending_despawns`);
 //! Spatial VCS schema; Undo Intent wire.
 
@@ -11,15 +11,7 @@ use std::collections::VecDeque;
 
 use super::EntityId;
 
-/// StableUuid trash sentinel (roadmap §6). Full 3-layer ID path is x00e4.
-pub const TRASH_UUID: u128 = 0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFE;
-
-/// Phase 1b wire / sparse key for the virtual trash parent (`TRASH_UUID` low 32).
-///
-/// Not seeded into [`super::SceneStore`]; [`super::SceneStore::apply`] allows
-/// MoveNode with this parent without `contains`. Must not equal `u32::MAX`
-/// (sparse ABSENT).
-pub const TRASH_ENTITY_ID: EntityId = (TRASH_UUID & 0xFFFF_FFFF) as EntityId;
+pub use crate::ids::{TRASH_ENTITY_ID, TRASH_UUID};
 
 /// Max nodes retained under trash before oldest are GC candidates.
 pub const TRASH_MAX_ENTRIES: usize = 256;

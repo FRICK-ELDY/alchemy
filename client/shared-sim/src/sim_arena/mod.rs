@@ -70,8 +70,8 @@ mod arena;
 
 pub use arena::{FaceRole, SimArena, SimFace};
 
-/// Internal Sim Arena / SparseSet dense-row index (wire map arrives in Phase 1c).
-pub type LocalSlotId = u32;
+/// Internal Sim Arena row index (definition owned by [`crate::ids`]; x00e4).
+pub use crate::ids::LocalSlotId;
 
 /// Spawn / SetParent / warp: GPU lerp must snap to Published (roadmap §6).
 ///
