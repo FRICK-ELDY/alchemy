@@ -17,18 +17,18 @@
 | 動いた行だけ Carry-Over；静止多数のフルコピーなし | FrameBridge / `EpochSnapshotPair` 本線置換（→ [x00dc](x00dc-sim-arena-bridge-publish.md)） |
 | 「動かす → 静止 → 3 tick」で座標が 2 フレーム前へ先祖返りしない単体テスト | scene_store / `SimPatch` Drain / 物理 |
 | カラム別 `dirty_epoch: u64` | 30Hz dirty ワイヤ変更、RenderFrame 契約変更 |
-| **`STATE_TELEPORT_THIS_TICK` 寿命**（Carry-Over 後 Work clear ＋ Published 離脱時 clear。idle 回転で蘇らない） | Observer 本体の実装、出版境界での二重クリア（→ [x00dc](x00dc-sim-arena-bridge-publish.md) は Published をそのまま出す） |
+| **`STATE_TELEPORT_THIS_TICK` 寿命**（Carry-Over 後 Work clear ＋ Published 離脱時 clear。idle 回転で蘇らない） | Observer 本体、EpochSheet/Ring3 GPU への TELEPORT 配線（→ [x00dc](x00dc-sim-arena-bridge-publish.md) Phase 1a は Arena 面のみ） |
 | 新規外部クレートなし | SoftLease / CRDT / `mvcc`→`sim_pages` |
 
 ## `STATE_TELEPORT_THIS_TICK`（本スライスの責務）
 
 | 段階 | 振る舞い |
 |:---|:---|
-| `rotate_faces`（Work→Published） | ビットは**残る**（Ring3 が 1 epoch スナップ可能） |
+| `rotate_faces`（Work→Published） | ビットは**残る**（Arena Published 上で 1 epoch 保持；Phase 1a の Ring3/EpochSheet は未観測） |
 | `rotate_faces`（Published→Prev） | `prev_dirty_slots` 行だけ TELEPORT を**明示 clear**（寿命終了・O(dirty)。第3面 recycle での蘇り防止） |
 | Step 0 Carry-Over | `Work[slot] = Published[slot]` で **pos + rot + state_bits 等を行コピー**したあと、**Work 上の TELEPORT ビットを明示 clear** |
 | その後の writer | 今 tick だけ TELEPORT を立て直せる |
-| Published | Ring3 用に直前 tick の TELEPORT を保持（次の rotate＝Published 離脱まで） |
+| Published | **Arena 面**が直前 tick の TELEPORT を保持（次の rotate＝Published 離脱まで）。GPU/sheet 配線は後続 |
 
 ## 触ったファイル
 

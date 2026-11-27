@@ -330,6 +330,27 @@ impl SimArena {
         &mut self.faces[self.work_i as usize]
     }
 
+    /// Bootstrap helper: copy the same pose onto **all three** faces (no dirty mark).
+    ///
+    /// Used once when wiring an existing Epoch sheet into the Arena so all faces
+    /// start aligned with sheet poses. Not a tick-path writer — prefer
+    /// [`Self::write_pos`] / [`Self::write_rot`] after seed.
+    ///
+    /// # Panics
+    /// If `slot` is out of range (same contract as [`Self::mark_dirty`]).
+    pub fn seed_slot(&mut self, slot: LocalSlotId, x: f32, y: f32, z: f32, rot: [f32; 4]) {
+        let i = slot as usize;
+        assert!(
+            i < self.slot_count(),
+            "LocalSlotId {slot} out of range (slot_count={})",
+            self.slot_count()
+        );
+        for face in &mut self.faces {
+            face.set_pos(slot, x, y, z);
+            face.set_rot(slot, rot[0], rot[1], rot[2], rot[3]);
+        }
+    }
+
     /// Record `slot` as written this Work tick (idempotent per tick).
     ///
     /// Prefer [`Self::write_pos`] / [`Self::write_rot`] / [`Self::write_teleport`],

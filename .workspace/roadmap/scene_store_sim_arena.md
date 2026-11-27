@@ -111,13 +111,15 @@ flowchart TB
 
     subgraph Ring3["Ring 3: 描画 & ネットワーク配信 (外側バイナリ責務)"]
         direction LR
-        GPU["client/app (render_wgpu)<br/>・Prev / Published 補間 (1a から)<br/>・1c: PendingLocalOps + Error Smoothing<br/>・TELEPORT時は即スナップ"]:::out
+        GPU["client/app (render_wgpu)<br/>・1a: EpochSnapshotPair(sheet) 補間<br/>・1c: PendingLocalOps + Error Smoothing<br/>・TELEPORT GPU snap は後続（1a は Arena 面のみ）"]:::out
         NetRel["構造変更 (現行 …/edit → 将来 Reliable Op)<br/>・確定 Scene Op (host_generation + scene_rev)<br/>・Late Join は snapshot / RoomSnapshot 枠"]:::out
         NetFast["密デルタ (現行 RenderFrame latest · 30Hz)<br/>・dirty 合成 + x0024 欠落→snapshot<br/>・ドラッグ中揮発 (Room鍵 AEAD)"]:::out
     end
     PatchQ ===>|"Tick冒頭で一括Drain"| Step0
     SimArena <===>|"連続SoAゼロコピー参照"| Ring2
-    BufPrev & BufPub ===>|"Read-Only スライス参照"| GPU & NetFast
+    BufPrev & BufPub -.->|"将来: 面スライス直読取"| GPU & NetFast
+    SheetPub["1a: Epoch sheet as-is<br/>EpochSnapshotPair (arc-swap)"]:::out
+    SheetPub ===>|"Ring3 load"| GPU & NetFast
     OpGate ===>|"確定Op配信 (scene_rev; op_chain_hash は 1c)"| NetRel
 ```
 
@@ -191,15 +193,16 @@ flowchart TB
 ### 4.1 3 面リングバッファと「2-Frame Dirty Carry-Over」（先祖返り防止契約）
 Sim Arena は GPU の 120fps 補間（`Prev` と `Published` の同時読取）と 60Hz 計算（`Work` への独占書込）を並走させるため、**`Prev`（Epoch $N-1$）・`Published`（Epoch $N$）・`Work`（Epoch $N+1$）の 3 面 SoA 配列**をローテーションする。
 
-**出版契約**: Ring 2 は Single-Writer で Work だけを書く。Tick 末尾で面をローテしたあと、**確定した Prev/Published の不変スナップショットを既存どおり `arc-swap`（`EpochSnapshotPair` / 将来 `PublishedPair`）で Ring 3 へ一括公開**する。GPU 読取側は Arc を load するだけ（内部 Work へ触らない）。「ロック待ちゼロ」はこの出版境界の話であり、Arena 内部の排他を否定するものではない。
+**出版契約（Phase 1a 確定 / x00dc）**: Ring 2 は Single-Writer で Arena **Work** だけを書く。Tick 末尾は **`publish`（caller の f64 Epoch sheet `prev`/`curr` を `EpochSnapshotPair` へ as-is）→ `rotate_faces`**。Ring 3 が読むのは **sheet Arc**（Arena 面の overlay / live 共有はしない）。Arena の `Prev`/`Published`/`Work` は実行面ロール＋Carry-Over / TELEPORT 寿命用。将来の面スライス直読取は後続。「ロック待ちゼロ」は arc-swap 出版境界の話であり、Arena 内部の排他を否定するものではない。
 
 ```text
-【読取側 (Ring 3: GPU 120fps補間 & Zenoh 30Hz配信)】
-   ├─ 面A: Prev      (Epoch N-1 / 確定済み・Read-Only) ← 補間の始点 ＆ 物理の慣性導出元
-   └─ 面B: Published (Epoch N   / 確定済み・Read-Only) ← 補間の終点 ＆ dirty 通信差分の最新
+【読取側 (Ring 3 / Phase 1a)】
+   EpochSnapshotPair ← host tick-start sheet (prev) + world.curr (curr)
+   ※ Arena 面は Ring3 SSoT ではない（TELEPORT も Arena のみ；GPU snap は後続）
 
-【書込側 (Ring 2: 60Hz Single-Writer 計算ループ)】
-   └─ 面C: Work      (Epoch N+1 / 計算中・独占書込)    ← Carry-Over ＋ パッチ合流 ＋ 階層伝播
+【実行面 (Ring 2: 60Hz Single-Writer)】
+   ├─ Prev / Published / Work … 3 面ロール（Carry-Over・TELEPORT 寿命）
+   └─ Work のみ独占書込 ← Carry-Over ＋ パッチ合流 ＋ 階層伝播
 ```
 
 * **⚠️ 必須契約：2-Frame Dirty Carry-Over（先祖返りバグの防止）**
@@ -391,7 +394,7 @@ pub struct NetTransformDelta {
 |:---|:---|:---|:---|:---|
 | [x00da](slices/x00da-sim-arena-scaffold.md) | 1a | sim-arena-scaffold | done | `sim_arena/` 3 面骨格 |
 | [x00db](slices/x00db-sim-arena-carry-over.md) | 1a | sim-arena-carry-over | done | prev/prev2 Carry-Over + dirty_epoch |
-| [x00dc](slices/x00dc-sim-arena-bridge-publish.md) | 1a 閉じ | sim-arena-bridge-publish | planned | FrameBridge / 既存 arc-swap 出版 |
+| [x00dc](slices/x00dc-sim-arena-bridge-publish.md) | 1a 閉じ | sim-arena-bridge-publish | done | FrameBridge / 既存 arc-swap 出版 |
 | [x00dd](slices/x00dd-scene-store-sparseset.md) | 1b | scene-store-sparseset | planned | SparseSet + scene_store 骨格 |
 | [x00de](slices/x00de-scene-store-lww-cycle.md) | 1b | scene-store-lww-cycle | planned | LWW + 循環防止 |
 | [x00df](slices/x00df-scene-store-sim-patch.md) | 1b | scene-store-sim-patch | planned | SimPatch → Arena Drain |
@@ -406,13 +409,13 @@ pub struct NetTransformDelta {
 | [x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md) | 2 | avatar-rig-buffer-xpbd | planned | AvatarRigBuffer XPBD |
 | [x00e9](slices/x00e9-rigid-solver-boundary.md) | 3 | rigid-solver-boundary | planned | RigidSolver 境界のみ |
 
-**次の着手:** [x00dc](slices/x00dc-sim-arena-bridge-publish.md)（[x00db](slices/x00db-sim-arena-carry-over.md) done）。
+**次の着手:** [x00dd](slices/x00dd-scene-store-sparseset.md)（[x00dc](slices/x00dc-sim-arena-bridge-publish.md) done · Phase 1a 閉じ）。
 
 ### Phase 1a（最小垂直切片・最優先）：Sim Arena 3 面 ＋ Carry-Over ＋ 既存出版
-* **目的**: 先祖返りゼロと Prev/Published の `arc-swap` 出版を、既存 Epoch/RenderFrame ブリッジ上で閉じる。物理・CRDT・SoftLease・3層 UUID は入れない。
-* **タスク**: `sim_arena`（または Epoch 進化）に `Prev`/`Published`/`Work`、**`prev_dirty_slots` + `prev2_dirty_slots`**、カラム `dirty_epoch`、`STATE_TELEPORT_THIS_TICK`、既存 FrameBridge 出版。
+* **目的**: 先祖返りゼロと Arena バリア（Carry-Over → publish → rotate）を、既存 `EpochSnapshotPair`（arc-swap）上で閉じる。**Phase 1a の Ring3 SSoT は host の f64 Epoch sheet（`start` / `world.curr`）**；Arena は Carry-Over / TELEPORT 寿命の補助（面を sheet に overlay しない）。物理・CRDT・SoftLease・3層 UUID は入れない。
+* **タスク**: `sim_arena` に `Prev`/`Published`/`Work`、**`prev_dirty_slots` + `prev2_dirty_slots`**、カラム `dirty_epoch`、`STATE_TELEPORT_THIS_TICK`、host/bridge の sheet as-is 出版＋Arena rotate。
 * **スライス**: [x00da](slices/x00da-sim-arena-scaffold.md) → [x00db](slices/x00db-sim-arena-carry-over.md) → [x00dc](slices/x00dc-sim-arena-bridge-publish.md)
-* **DoD**: 静止後 3 tick で先祖返りしない単体テスト。CI rust Green。新規クレートなし。
+* **DoD**: 静止後 3 tick で先祖返りしない単体テスト（bridge/host 経路含む）。CI rust Green。新規クレートなし。
 
 ### Phase 1b：`shared-sim::scene_store` ＋ host `LiveEditLedger` facade
 * **目的**: セッション疎 SSoT を shared-sim に一本化。host は検疫・`scene_rev`・edit/Save I/O のみ。

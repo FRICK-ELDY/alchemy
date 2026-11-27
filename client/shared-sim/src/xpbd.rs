@@ -405,7 +405,9 @@ pub fn extract_dirty_deltas(sheet: &EpochSheet) -> Vec<TransformDelta> {
 
 /// One XPBD tick: predict → color → solve (grab + contacts + user constraints) → sleep.
 ///
-/// Does **not** commit Prev←Curr. Caller must `publish(prev, curr)` for Ring3, then
+/// Does **not** commit Prev←Curr. Caller must publish for Ring3 (legacy
+/// `EpochSnapshotPair::publish`, or x00dc [`crate::bridge::publish_arena_then_rotate`]
+/// after syncing dirty rows into [`crate::sim_arena::SimArena`]), then
 /// [`XpbdWorld::commit_prev_from_curr`] so next tick's velocity uses end-of-frame Curr.
 ///
 /// Frame `world.prev` stays at start-of-tick for publish. Substep Verlet uses a scratch
