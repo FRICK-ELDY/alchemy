@@ -12,7 +12,8 @@ const ABSENT: u32 = u32::MAX;
 /// Guarantees: O(1) insert / remove / contains by [`EntityId`]; dense iteration
 /// visits only live entries in insert-stable order except after swap-remove;
 /// sparse table may contain holes (unused ids between used ones).
-/// Non-guarantees: parent hierarchy, LWW timestamps, Arena `LocalSlotId` map.
+/// Non-guarantees: parent hierarchy / LWW (see [`crate::scene_store::SceneStore`]);
+/// Arena `LocalSlotId` map.
 ///
 /// # Caller contract (id bounds)
 ///
