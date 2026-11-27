@@ -72,9 +72,9 @@ struct NodeRecord {
 /// Successful Spawn / Move / reparent enqueue [`SimPatch`] for Arena Step 0
 /// Drain; dense transform / bits / box go via [`Self::enqueue_patch`] (not CRDT).
 /// Keys = [`EntityId`].
-/// Non-guarantees: LiveEditLedger facade / edit wire; TRASH_UUID / SoftLease /
-/// `op_chain_hash`; JWT `sub` → actor_id; FreeSlot auto-enqueue (→ x00e1
-/// pending_despawns).
+/// Non-guarantees: edit wire / Zenoh / Save I/O (host facade); TRASH_UUID /
+/// SoftLease / `op_chain_hash`; JWT `sub` → actor_id; FreeSlot auto-enqueue
+/// (→ x00e1 pending_despawns).
 #[derive(Clone, Debug, Default)]
 pub struct SceneStore {
     nodes: SparseSet<NodeRecord>,
@@ -116,6 +116,12 @@ impl SceneStore {
         self.nodes.get(entity_id).and_then(|n| n.parent)
     }
 
+    /// Packed live entity ids (dense walk order).
+    #[inline]
+    pub fn entity_ids(&self) -> &[EntityId] {
+        self.nodes.dense_slots()
+    }
+
     /// Current LWW value for `(entity_id, prop_key)`, if any.
     pub fn property(&self, entity_id: EntityId, prop_key: u32) -> Option<&PropValue> {
         self.nodes
@@ -127,6 +133,70 @@ impl SceneStore {
     #[inline]
     pub fn pending_patches(&self) -> &[SimPatch] {
         &self.patches
+    }
+
+    /// Host / boot insert: create or replace a live node **without** LWW or
+    /// [`SimPatch`] enqueue. Parent may be absent (forward-ref seed order).
+    ///
+    /// When `parent` is already live, runs the same cycle / depth gate as
+    /// [`CrdtOp::MoveNode`] (fresh or re-seed). Fresh insert can still cycle if
+    /// an ancestor already forward-refs `node` as its parent. Missing parent
+    /// skips the gate — caller must not leave a permanent cycle after the
+    /// full seed pass. Rejects invalid ids (`u32::MAX`, self-parent).
+    pub fn seed_node(&mut self, node: EntityId, parent: Option<EntityId>) -> bool {
+        if !valid_entity_id(node) {
+            return false;
+        }
+        if let Some(p) = parent {
+            if !valid_entity_id(p) || p == node {
+                return false;
+            }
+            if self.nodes.contains(p) && self.cycle_check(node, p).is_err() {
+                return false;
+            }
+        }
+        let ts = OpTimestamp::new(self.max_lamport.saturating_add(1), 0);
+        if let Some(existing) = self.nodes.get_mut(node) {
+            existing.parent_ts = ts;
+            existing.parent = parent;
+            // Props kept on re-seed (same as live re-Spawn contract).
+        } else {
+            self.nodes.insert(
+                node,
+                NodeRecord {
+                    parent_ts: ts,
+                    parent,
+                    props: HashMap::new(),
+                },
+            );
+        }
+        self.note_lamport(ts);
+        true
+    }
+
+    /// Remove a live node. Children that pointed at it become world-rooted
+    /// (`parent = None`; `parent_ts` unchanged). Does **not** enqueue
+    /// [`SimPatch::FreeSlot`] (→ x00e1). Returns `false` if missing.
+    ///
+    /// Cost: O(n) orphan scan over dense nodes (no child index yet — memo for
+    /// x00e1 if despawn volume warrants a reverse map).
+    pub fn remove_node(&mut self, entity_id: EntityId) -> bool {
+        if !self.nodes.contains(entity_id) {
+            return false;
+        }
+        let orphans: Vec<EntityId> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.parent == Some(entity_id))
+            .map(|(id, _)| id)
+            .collect();
+        let _ = self.nodes.remove(entity_id);
+        for id in orphans {
+            if let Some(rec) = self.nodes.get_mut(id) {
+                rec.parent = None;
+            }
+        }
+        true
     }
 
     /// Enqueue a dense patch (transform / bits / box / free). Does not touch
@@ -142,18 +212,34 @@ impl SceneStore {
         std::mem::take(&mut self.patches)
     }
 
-    /// Apply one host-ordered op. Reject outcomes leave the store unchanged
-    /// and do **not** enqueue patches.
+    /// Apply one host-ordered op. Successful Spawn / Move enqueue [`SimPatch`].
+    /// Reject outcomes leave the store unchanged and do **not** enqueue.
     pub fn apply(&mut self, op: CrdtOp) -> ApplyOutcome {
+        self.apply_inner(op, true)
+    }
+
+    /// Sparse LWW only — **no** [`SimPatch`] enqueue.
+    ///
+    /// Host LiveEdit facade uses this while FrameBridge owns the dense
+    /// Reparent/SetField path. When Arena drain is wired from the ledger SSoT,
+    /// switch facade callers to [`Self::apply`] (or drain this queue) so patches
+    /// are not double-applied.
+    pub fn apply_sparse(&mut self, op: CrdtOp) -> ApplyOutcome {
+        self.apply_inner(op, false)
+    }
+
+    fn apply_inner(&mut self, op: CrdtOp, enqueue_patches: bool) -> ApplyOutcome {
         let ts = op.timestamp();
         if !ts.within_drift(self.max_lamport) {
             return ApplyOutcome::RejectedClockDrift;
         }
         match op {
-            CrdtOp::SpawnNode { node, parent, .. } => self.apply_spawn(ts, node, parent),
+            CrdtOp::SpawnNode { node, parent, .. } => {
+                self.apply_spawn(ts, node, parent, enqueue_patches)
+            }
             CrdtOp::MoveNode {
                 node, new_parent, ..
-            } => self.apply_move(ts, node, new_parent),
+            } => self.apply_move(ts, node, new_parent, enqueue_patches),
             CrdtOp::SetProperty {
                 node,
                 prop_key,
@@ -168,6 +254,7 @@ impl SceneStore {
         ts: OpTimestamp,
         node: EntityId,
         parent: Option<EntityId>,
+        enqueue_patches: bool,
     ) -> ApplyOutcome {
         if !valid_entity_id(node) {
             return ApplyOutcome::RejectedInvalidId;
@@ -191,8 +278,7 @@ impl SceneStore {
             // Live re-Spawn ≠ regenerate: parent LWW only; props stay.
             // Phase 1b provisional (host resend / newer parent ts); dedicated
             // "already live" hard-error remains optional for a later slice.
-            // apply_move enqueues SetParent on success.
-            return match self.apply_move(ts, node, parent) {
+            return match self.apply_move(ts, node, parent, enqueue_patches) {
                 ApplyOutcome::Applied => ApplyOutcome::AppliedAsReparent,
                 other => other,
             };
@@ -207,10 +293,12 @@ impl SceneStore {
             },
         );
         self.note_lamport(ts);
-        self.patches.push(SimPatch::AllocateSlot {
-            slot: entity_as_slot(node),
-            parent: parent.map(entity_as_slot),
-        });
+        if enqueue_patches {
+            self.patches.push(SimPatch::AllocateSlot {
+                slot: entity_as_slot(node),
+                parent: parent.map(entity_as_slot),
+            });
+        }
         ApplyOutcome::Applied
     }
 
@@ -219,6 +307,7 @@ impl SceneStore {
         ts: OpTimestamp,
         node: EntityId,
         new_parent: Option<EntityId>,
+        enqueue_patches: bool,
     ) -> ApplyOutcome {
         if !valid_entity_id(node) {
             return ApplyOutcome::RejectedInvalidId;
@@ -250,10 +339,12 @@ impl SceneStore {
             record.parent = new_parent;
         }
         self.note_lamport(ts);
-        self.patches.push(SimPatch::SetParent {
-            slot: entity_as_slot(node),
-            parent: new_parent.map(entity_as_slot),
-        });
+        if enqueue_patches {
+            self.patches.push(SimPatch::SetParent {
+                slot: entity_as_slot(node),
+                parent: new_parent.map(entity_as_slot),
+            });
+        }
         ApplyOutcome::Applied
     }
 
@@ -665,6 +756,87 @@ mod tests {
             ApplyOutcome::RejectedDepthExceeded
         );
         assert_eq!(store.parent(outsider), None);
+    }
+
+    #[test]
+    fn seed_node_allows_missing_parent_and_skips_patches() {
+        let mut store = SceneStore::new();
+        assert!(store.seed_node(2, Some(1))); // parent 1 not live yet
+        assert!(store.contains(2));
+        assert_eq!(store.parent(2), Some(1));
+        assert!(store.pending_patches().is_empty());
+        assert!(store.seed_node(1, None));
+        assert_eq!(store.entity_ids().len(), 2);
+        assert!(!store.seed_node(u32::MAX, None));
+        assert!(!store.seed_node(3, Some(3)));
+    }
+
+    #[test]
+    fn seed_node_rejects_cycle_on_reseed_under_descendant() {
+        let mut store = SceneStore::new();
+        assert!(store.seed_node(1, None));
+        assert!(store.seed_node(2, Some(1)));
+        // Re-seed 1 under 2 would cycle.
+        assert!(!store.seed_node(1, Some(2)));
+        assert_eq!(store.parent(1), None);
+    }
+
+    #[test]
+    fn seed_node_rejects_fresh_insert_cycle_via_forward_ref_parent() {
+        let mut store = SceneStore::new();
+        // A → B while B not live yet (forward-ref).
+        assert!(store.seed_node(1, Some(2)));
+        // Fresh B under A would close 1↔2.
+        assert!(!store.seed_node(2, Some(1)));
+        assert!(!store.contains(2));
+        assert_eq!(store.parent(1), Some(2));
+    }
+
+    #[test]
+    fn apply_sparse_mutates_without_enqueueing_patches() {
+        let mut store = SceneStore::new();
+        assert_eq!(
+            store.apply_sparse(CrdtOp::SpawnNode {
+                ts: ts(1, 1),
+                node: 1,
+                parent: None,
+            }),
+            ApplyOutcome::Applied
+        );
+        assert_eq!(
+            store.apply_sparse(CrdtOp::SpawnNode {
+                ts: ts(2, 1),
+                node: 2,
+                parent: Some(1),
+            }),
+            ApplyOutcome::Applied
+        );
+        assert!(store.pending_patches().is_empty());
+        assert_eq!(
+            store.apply_sparse(CrdtOp::MoveNode {
+                ts: ts(3, 1),
+                node: 2,
+                new_parent: None,
+            }),
+            ApplyOutcome::Applied
+        );
+        assert_eq!(store.parent(2), None);
+        assert!(store.pending_patches().is_empty());
+    }
+
+    #[test]
+    fn remove_node_clears_orphan_parents() {
+        let mut store = SceneStore::new();
+        spawn(&mut store, 1, 1, None);
+        spawn(&mut store, 2, 2, Some(1));
+        spawn(&mut store, 3, 3, Some(1));
+        store.drain_patches();
+        assert!(store.remove_node(1));
+        assert!(!store.contains(1));
+        assert_eq!(store.parent(2), None);
+        assert_eq!(store.parent(3), None);
+        assert!(store.pending_patches().is_empty());
+        assert!(!store.remove_node(1));
     }
 
     #[test]

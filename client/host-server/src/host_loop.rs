@@ -379,22 +379,38 @@ impl HostLoop {
                             std::process::exit(78);
                         }
                     };
-                    led.note_spawn(entry_id, entry_flags, entry_color, entry_blake3);
-                    led.note_pending_spawn(crate::live_edit::PendingSpawn {
-                        entry: pending_entry,
-                        spawn_ticket,
-                    });
-                    // Tip⇔Commit 一体。publisher 欠落は miswire → fail-closed abort.
-                    if let Some(proposal) = edit_proposal.as_ref() {
-                        let tip = led.bump_tip();
-                        self.require_live_commit().publish_accept(proposal, tip);
+                    if !led.note_spawn(entry_id, entry_flags, entry_color, entry_blake3) {
+                        // Fail-closed: physics/scene succeeded but SSoT seed refused
+                        // (e.g. entity_id == u32::MAX). Do not tip-bump / accept.
+                        // Same shape as the xpbd-refuse path below (despawn + scene
+                        // remove + reject); `force_reseal` was already set by
+                        // `apply_ready_spawn` and is left as-is.
+                        drop(led);
+                        let _ = self.physics.despawn_mesh_entity(entry_id);
+                        let _ = remove_local_scene_entry(&self.shared_scene, entry_id);
+                        self.reject_spawn_apply(entry_id, edit_proposal.as_ref());
+                        log::warn!(
+                            "spawn rolled back entity_id={} blake3={} (ledger note_spawn failed; reject APPLY if edit)",
+                            out.entity_id,
+                            &blake3[..8.min(blake3.len())]
+                        );
+                    } else {
+                        led.note_pending_spawn(crate::live_edit::PendingSpawn {
+                            entry: pending_entry,
+                            spawn_ticket,
+                        });
+                        // Tip⇔Commit 一体。publisher 欠落は miswire → fail-closed abort.
+                        if let Some(proposal) = edit_proposal.as_ref() {
+                            let tip = led.bump_tip();
+                            self.require_live_commit().publish_accept(proposal, tip);
+                        }
+                        drop(led);
+                        log::info!(
+                            "spawn applied entity_id={} blake3={} (xpbd+local scene+reseal; x00b9)",
+                            out.entity_id,
+                            &blake3[..8.min(blake3.len())]
+                        );
                     }
-                    drop(led);
-                    log::info!(
-                        "spawn applied entity_id={} blake3={} (xpbd+local scene+reseal; x00b9)",
-                        out.entity_id,
-                        &blake3[..8.min(blake3.len())]
-                    );
                 }
                 Ok(out) if out.scene_applied => {
                     let _ = remove_local_scene_entry(&self.shared_scene, entry_id);
@@ -474,11 +490,16 @@ impl HostLoop {
         }
 
         // x00b3: drain live Ready → FrameBridge. Tip/Commit only after barrier Ok.
+        // On queue failure: LIFO-rollback + reject the failed op **and** the rest of
+        // this drain (edit thread already applied them to the ledger; continuing
+        // would desync SSoT vs FrameBridge on dependent Reparents).
         const LIVE_EDIT_DRAIN_MAX: usize = 8;
         debug_assert!(self.live_awaiting_barrier.is_empty());
         self.live_awaiting_barrier.clear();
-        for ready in self.live_inbox.try_recv_n(LIVE_EDIT_DRAIN_MAX) {
-            let queue_ok = match &ready {
+        let mut batch = self.live_inbox.try_recv_n(LIVE_EDIT_DRAIN_MAX);
+        let mut fail_at: Option<(usize, String)> = None;
+        for (i, ready) in batch.iter().enumerate() {
+            let queue_ok = match ready {
                 crate::live_edit::ReadyLiveEdit::Reparent { op, .. } => self
                     .physics
                     .queue_live_reparent(op.child_entity_id, op.new_parent_entity_id),
@@ -487,28 +508,45 @@ impl HostLoop {
                     .queue_live_set_field(op.entity_id, op.field_id, &op.value),
             };
             if let Err(e) = queue_ok {
-                let tip = match self.live_edit.lock() {
-                    Ok(mut led) => {
-                        led.rollback_mirrors(&ready);
-                        led.tip
-                    }
-                    Err(_) => {
-                        log::error!("LiveEditLedger poisoned on queue fail; aborting host");
-                        std::process::exit(78);
-                    }
-                };
-                self.require_live_commit().publish_reject(
-                    ready.proposal(),
-                    alchemy_protocol::edit_reject::APPLY,
-                    tip,
-                );
-                log::warn!(
-                    "live edit queue failed ({e}); rolled back mirrors + reject APPLY (tip={tip})"
-                );
-            } else {
-                self.live_awaiting_barrier.push(ready);
+                fail_at = Some((i, e.to_string()));
+                break;
             }
         }
+        if let Some((fail_idx, err)) = fail_at {
+            let reject_tail: Vec<_> = batch.split_off(fail_idx);
+            let reject_n = reject_tail.len();
+            let queued_n = batch.len();
+            let tip = match self.live_edit.lock() {
+                Ok(mut led) => {
+                    // Policy: tip unchanged + reject even if some rollbacks fail
+                    // (rollback_mirrors already logs; count surfaced here).
+                    let mut rb_fail = 0usize;
+                    for ready in reject_tail.iter().rev() {
+                        if !led.rollback_mirrors(ready) {
+                            rb_fail += 1;
+                        }
+                    }
+                    if rb_fail > 0 {
+                        log::warn!(
+                            "live edit queue-fail rollback: {rb_fail}/{reject_n} compensating apply(s) failed; tip unchanged, reject still published"
+                        );
+                    }
+                    led.tip
+                }
+                Err(_) => {
+                    log::error!("LiveEditLedger poisoned on queue fail; aborting host");
+                    std::process::exit(78);
+                }
+            };
+            let pubber = self.require_live_commit();
+            for ready in &reject_tail {
+                pubber.publish_reject(ready.proposal(), alchemy_protocol::edit_reject::APPLY, tip);
+            }
+            log::warn!(
+                "live edit queue failed ({err}); LIFO rolled back {reject_n} drain op(s) + reject APPLY (tip={tip}; kept {queued_n} queued)"
+            );
+        }
+        self.live_awaiting_barrier = batch;
 
         // x003d: credentials / seal live on the worker; physics reads gate + hard expiry.
         let pub_snap = read_publish_gate(&self.publish_snapshot, now);
@@ -646,10 +684,21 @@ impl HostLoop {
                 }
             }
         } else if !awaiting.is_empty() {
+            let awaiting_n = awaiting.len();
             let tip = match self.live_edit.lock() {
                 Ok(mut led) => {
-                    for ready in &awaiting {
-                        led.rollback_mirrors(ready);
+                    // LIFO: same-child multi Reparent in one tick must unwind newest first.
+                    // Tip stays put and reject is published even if compensating apply fails.
+                    let mut rb_fail = 0usize;
+                    for ready in awaiting.iter().rev() {
+                        if !led.rollback_mirrors(ready) {
+                            rb_fail += 1;
+                        }
+                    }
+                    if rb_fail > 0 {
+                        log::warn!(
+                            "live edit barrier-fail rollback: {rb_fail}/{awaiting_n} compensating apply(s) failed; tip unchanged, reject still published"
+                        );
                     }
                     led.tip
                 }
@@ -663,8 +712,7 @@ impl HostLoop {
                 pubber.publish_reject(ready.proposal(), alchemy_protocol::edit_reject::APPLY, tip);
             }
             log::warn!(
-                "live edit barrier failed; rolled back {} mirror(s) + reject APPLY (tip={tip})",
-                awaiting.len()
+                "live edit barrier failed; rolled back {awaiting_n} mirror(s) + reject APPLY (tip={tip})"
             );
         }
         self.physics_steps = self.physics_steps.wrapping_add(1);

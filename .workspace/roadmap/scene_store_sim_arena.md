@@ -20,8 +20,8 @@
 
 | 場所 | 予定名 / 現行 | 持つもの | 持たないもの |
 |:---|:---|:---|:---|
-| `shared-sim` | **`scene_store/`**（新） | SparseSet・親子木・LWW/循環・`SimPatch` 生成・決定論 Undo 逆 Op 計算 | Room Token 検証・Zenoh put・`actor_id` 上書き・Save HTTP |
-| `host-server` | **`LiveEditLedger` → 薄い facade** | 検疫ゲート、`scene_rev` 採番、edit ワイヤ、Save 折込、facade が `scene_store` を呼ぶ | 疎コンポーネントの第二コピー（並存禁止） |
+| `shared-sim` | **`scene_store/`**（x00dd–x00e0） | SparseSet・親子木・LWW/循環・`SimPatch` 生成・決定論 Undo 逆 Op 計算 | Room Token 検証・Zenoh put・`actor_id` 上書き・Save HTTP |
+| `host-server` | **`LiveEditLedger` facade**（x00e0） | 検疫ゲート、`scene_rev` 採番、edit ワイヤ、Save 折込、facade が `scene_store` を呼ぶ | 疎コンポーネントの第二コピー（並存禁止） |
 | `shared-sim` | **`sim_arena/`**（新） | 3 面 SoA・Carry-Over・bitmask・Depth Bucket | ネットワーク・時計 |
 | `shared-sim` | `mvcc/` → **`sim_pages/`** | ページプール資産（opt-in） | 品質本線 SSoT |
 | `shared-sim` / host | 既存 `FrameBridge` / `EpochSnapshotPair`（`arc-swap`） | Prev/Published **出版**（読取側ロック待ちゼロ） | Sim Arena 内部の Work 面を直接公開しない |
@@ -34,7 +34,7 @@
 |:---|:---|:---|
 | `shared-sim/src/mvcc/` | **`sim_pages/`** | ページ単位 SoA プール・学習／opt-in 資産 |
 | （未実装）実行面 3 面 | **`sim_arena/`** | Prev / Published / Work |
-| （未実装）疎ストア | **`scene_store/`**（shared-sim） | Host-Sequenced + SparseSet。host `LiveEditLedger` は facade |
+| （実装済）疎ストア | **`scene_store/`** | Host-Sequenced + SparseSet。host `LiveEditLedger` は facade（x00e0） |
 
 ---
 
@@ -140,7 +140,7 @@ flowchart TB
 | 層 | SSoT? | 担当 | 現行の器 | 方針 |
 | :--- | :--- | :--- | :--- | :--- |
 | **A. 永続・権限** | **永続 SSoT** | seal/save できる内容、canonical バイト | world `canonical` + `session_overlay`、ManifestSeal | 維持。Save で B から書き出す |
-| **B. セッション構造** | **セッション疎 SSoT** | 親子・属性・spawn/despawn・Undo・連番 | 現行 host `LiveEditLedger`；目標 **`shared-sim::scene_store` + host facade** | host に第二コピーを残さない（§冒頭の配置表） |
+| **B. セッション構造** | **セッション疎 SSoT** | 親子・属性・spawn/despawn・Undo・連番 | **`shared-sim::scene_store` + host `LiveEditLedger` facade**（x00e0；Undo 閉じは x00e1） | host に第二コピーを残さない（§冒頭の配置表） |
 | **C. 60Hz 密実行** | **実行面 SSoT** | 座標・delta・bitmask・物理パラメータ | `EpochSheet` / FrameBridge（目標: Sim Arena 3 面） | B から `SimPatch`。密 Transform を CRDT に載せない |
 | **D. ワイヤ投影** | **否** | 配送用の見え方 | SceneManifest、RenderFrame、cell/lod | B/C から生成。正本を名乗らせない |
 | **E. ページプール** | **否** | opt-in / 学習資産 | `mvcc/` → **`sim_pages`** | 品質本線の座を奪わない |
@@ -398,7 +398,7 @@ pub struct NetTransformDelta {
 | [x00dd](slices/x00dd-scene-store-sparseset.md) | 1b | scene-store-sparseset | done | SparseSet + scene_store 骨格 |
 | [x00de](slices/x00de-scene-store-lww-cycle.md) | 1b | scene-store-lww-cycle | done | LWW + 循環防止 |
 | [x00df](slices/x00df-scene-store-sim-patch.md) | 1b | scene-store-sim-patch | done | SimPatch → Arena Drain |
-| [x00e0](slices/x00e0-live-edit-facade.md) | 1b | live-edit-facade | planned | LiveEditLedger facade |
+| [x00e0](slices/x00e0-live-edit-facade.md) | 1b | live-edit-facade | done | LiveEditLedger facade |
 | [x00e1](slices/x00e1-scene-store-undo-despawn.md) | 1b 閉じ | scene-store-undo-despawn | planned | Undo + pending_despawns |
 | [x00e2](slices/x00e2-soft-lease-edit-lock.md) | 1c | soft-lease-edit-lock | planned | SoftLease |
 | [x00e3](slices/x00e3-trash-uuid-gc.md) | 1c | trash-uuid-gc | planned | TRASH_UUID + GC |
@@ -409,7 +409,7 @@ pub struct NetTransformDelta {
 | [x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md) | 2 | avatar-rig-buffer-xpbd | planned | AvatarRigBuffer XPBD |
 | [x00e9](slices/x00e9-rigid-solver-boundary.md) | 3 | rigid-solver-boundary | planned | RigidSolver 境界のみ |
 
-**次の着手:** [x00e0](slices/x00e0-live-edit-facade.md)（[x00df](slices/x00df-scene-store-sim-patch.md) done · SimPatch → Arena Drain）。
+**次の着手:** [x00e1](slices/x00e1-scene-store-undo-despawn.md)（[x00e0](slices/x00e0-live-edit-facade.md) done · LiveEditLedger → scene_store facade）。
 
 ### Phase 1a（最小垂直切片・最優先）：Sim Arena 3 面 ＋ Carry-Over ＋ 既存出版
 * **目的**: 先祖返りゼロと Arena バリア（Carry-Over → publish → rotate）を、既存 `EpochSnapshotPair`（arc-swap）上で閉じる。**Phase 1a の Ring3 SSoT は host の f64 Epoch sheet（`start` / `world.curr`）**；Arena は Carry-Over / TELEPORT 寿命の補助（面を sheet に overlay しない）。物理・CRDT・SoftLease・3層 UUID は入れない。

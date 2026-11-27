@@ -1,13 +1,14 @@
-//! Deterministic edit lane (`…/edit`) — Spawn/Despawn + live Reparent/SetField + Save (x00b2–x00b9).
+//! Deterministic edit lane (`…/edit`) — Spawn/Despawn + live Reparent/SetField + Save
+//! (x00b2–x00b9 / x00e0 facade).
 //!
 //! Guarantees: AEAD `EditProposal` → session Ed25519 → Dual-auth / shared control rate /
 //! `control_seq`; single op.
 //! Spawn/Despawn (x00b9): host-local id + pending ticket/despawn (no live overlay CAS);
 //! inbox enqueue only here; **tip + accept Commit after physics/local apply in HostLoop**
 //! (inbox closed / apply fail → reject `APPLY` + `release_reserved`, tip unchanged).
-//! Reparent/SetField: optimistic ledger mirrors only; **tip + accept Commit after**
-//! FrameBridge queue **and** barrier — never rewind tip; queue/barrier/inbox fail →
-//! reject `APPLY`.
+//! Reparent/SetField: quarantine then optimistic [`LiveEditLedger`] → `scene_store` apply;
+//! **tip + accept Commit after** FrameBridge queue **and** barrier — never rewind tip;
+//! queue/barrier/inbox fail → reject `APPLY`.
 //! Save (x00b7–x00b9): world packed CAS folds pending spawns/despawns + parent/SetField;
 //! install shared scene + `force_reseal` when packed revision advances; **tip unchanged**;
 //! accept Commit with current tip.
@@ -36,7 +37,9 @@ use zenoh::Wait;
 use crate::control_rate::SharedControlRate;
 use crate::inventory_despawn::ReadyDespawn;
 use crate::inventory_spawn::ReadySpawn;
-use crate::live_edit::{current_field_value, ReadyLiveEdit, SharedLiveEdit};
+use alchemy_shared_sim::PropValue;
+
+use crate::live_edit::{current_field_value, edit_reject_for_apply, ReadyLiveEdit, SharedLiveEdit};
 use crate::room_aead::{self, SharedRoomAead};
 use crate::room_token::{
     install_shared_scene_if_newer, save_overlay_to_canonical, RoomScene, SceneFieldPatch,
@@ -174,7 +177,13 @@ pub fn edit_listener(
                         if live_tx.send(ready.clone()).is_err() {
                             let tip = match live_edit.lock() {
                                 Ok(mut led) => {
-                                    led.rollback_mirrors(&ready);
+                                    // Tip unchanged + reject APPLY even if compensating apply fails.
+                                    if !led.rollback_mirrors(&ready) {
+                                        log::warn!(
+                                            "live inbox closed: rollback_mirrors failed op_id={}; tip unchanged, reject still published",
+                                            ready.proposal().op_id
+                                        );
+                                    }
                                     led.tip
                                 }
                                 Err(_) => {
@@ -570,17 +579,19 @@ fn save_patches_from_ledger(
         let eid = pending.entry.entity_id;
         let mut entry = pending.entry.clone();
         entry.parent_entity_id = led.parent_of(eid);
-        if let Some(&flags) = led.flags.get(&eid) {
+        if let Some(flags) = led.flags_of(eid) {
             entry.flags = flags;
         }
-        if let Some(&color) = led.colors.get(&eid) {
+        if let Some(color) = led.color_of(eid) {
             entry.r = color[0];
             entry.g = color[1];
             entry.b = color[2];
             entry.a = color[3];
         }
-        if let Some(blake3) = led.blake3.get(&eid) {
-            entry.blake3 = blake3.clone();
+        if let Some(bytes) = led.blake3_bytes(eid) {
+            if let Ok(hex) = std::str::from_utf8(bytes) {
+                entry.blake3 = hex.to_owned();
+            }
         }
         spawns.push(SceneSpawnPatch {
             entry,
@@ -588,7 +599,7 @@ fn save_patches_from_ledger(
         });
     }
 
-    for &eid in &led.entities {
+    for &eid in led.entity_ids() {
         // Pending spawns carry full entry in `spawns`; skip parent/field diffs for them
         // (already folded into the spawn payload above).
         if led.pending_spawns.contains_key(&eid) {
@@ -615,14 +626,14 @@ fn save_patches_from_ledger(
         };
         let mut dirty = false;
 
-        if let Some(&live_flags) = led.flags.get(&eid) {
+        if let Some(live_flags) = led.flags_of(eid) {
             let canon_flags = canon.map(|e| e.flags).unwrap_or(0);
             if live_flags != canon_flags {
                 field.flags = Some(live_flags);
                 dirty = true;
             }
         }
-        if let Some(&live_color) = led.colors.get(&eid) {
+        if let Some(live_color) = led.color_of(eid) {
             let (cr, cg, cb, ca) = match canon {
                 Some(e) => (e.r, e.g, e.b, if e.a == 0.0 { 1.0 } else { e.a }),
                 None => (0.0, 0.0, 0.0, 1.0),
@@ -635,11 +646,13 @@ fn save_patches_from_ledger(
                 dirty = true;
             }
         }
-        if let Some(live_blake3) = led.blake3.get(&eid) {
-            let canon_blake3 = canon.map(|e| e.blake3.as_str()).unwrap_or("");
-            if live_blake3 != canon_blake3 {
-                field.blake3 = Some(live_blake3.clone());
-                dirty = true;
+        if let Some(bytes) = led.blake3_bytes(eid) {
+            if let Ok(live_blake3) = std::str::from_utf8(bytes) {
+                let canon_blake3 = canon.map(|e| e.blake3.as_str()).unwrap_or("");
+                if live_blake3 != canon_blake3 {
+                    field.blake3 = Some(live_blake3.to_owned());
+                    dirty = true;
+                }
             }
         }
 
@@ -668,13 +681,13 @@ fn apply_reparent(
         .lock()
         .map_err(|_| anyhow!("LiveEditLedger poisoned"))?;
     let tip = led.tip;
-    if !led.entities.contains(&r.child_entity_id) {
+    if !led.contains_entity(r.child_entity_id) {
         return Ok((
             Some(reject_commit(proposal, edit_reject::NOT_FOUND, tip)),
             None,
         ));
     }
-    if r.new_parent_entity_id != 0 && !led.entities.contains(&r.new_parent_entity_id) {
+    if r.new_parent_entity_id != 0 && !led.contains_entity(r.new_parent_entity_id) {
         return Ok((
             Some(reject_commit(proposal, edit_reject::NOT_FOUND, tip)),
             None,
@@ -690,12 +703,15 @@ fn apply_reparent(
             None,
         ));
     }
-    if led.would_cycle(r.child_entity_id, r.new_parent_entity_id) {
-        return Ok((Some(reject_commit(proposal, edit_reject::CYCLE, tip)), None));
-    }
     let prev_parent = led.parent_of(r.child_entity_id);
-    led.parents
-        .insert(r.child_entity_id, r.new_parent_entity_id);
+    let outcome = led.apply_reparent(r.child_entity_id, r.new_parent_entity_id);
+    if !outcome.is_success() {
+        // Store is SSoT for cycle / depth / residual stale-missing after quarantine.
+        return Ok((
+            Some(reject_commit(proposal, edit_reject_for_apply(outcome), tip)),
+            None,
+        ));
+    }
     // Tip + accept Commit deferred until HostLoop barrier succeeds.
     Ok((
         None,
@@ -722,7 +738,7 @@ fn apply_set_field(
             None,
         ));
     }
-    if !led.entities.contains(&f.entity_id) {
+    if !led.contains_entity(f.entity_id) {
         return Ok((
             Some(reject_commit(proposal, edit_reject::NOT_FOUND, tip)),
             None,
@@ -746,7 +762,7 @@ fn apply_set_field(
         ));
     }
     let prev_value = cur;
-    match f.field_id {
+    let prop = match f.field_id {
         alchemy_protocol::edit_field_id::FLAGS => {
             let Some(flags) = decode_flags(&f.value) else {
                 return Ok((
@@ -754,7 +770,7 @@ fn apply_set_field(
                     None,
                 ));
             };
-            led.flags.insert(f.entity_id, flags);
+            PropValue::U32(flags)
         }
         alchemy_protocol::edit_field_id::COLOR_RGBA => {
             let Some(rgba) = decode_color_rgba(&f.value) else {
@@ -763,7 +779,7 @@ fn apply_set_field(
                     None,
                 ));
             };
-            led.colors.insert(f.entity_id, rgba);
+            PropValue::F32x4(rgba)
         }
         alchemy_protocol::edit_field_id::BLAKE3 => {
             let Ok(hex) = std::str::from_utf8(&f.value) else {
@@ -779,7 +795,7 @@ fn apply_set_field(
                     None,
                 ));
             }
-            led.blake3.insert(f.entity_id, hex);
+            PropValue::Bytes(hex.into_bytes())
         }
         _ => {
             return Ok((
@@ -787,6 +803,17 @@ fn apply_set_field(
                 None,
             ));
         }
+    };
+    let set_outcome = led.apply_set_field(f.entity_id, f.field_id, prop);
+    if !set_outcome.is_success() {
+        return Ok((
+            Some(reject_commit(
+                proposal,
+                edit_reject_for_apply(set_outcome),
+                tip,
+            )),
+            None,
+        ));
     }
     // Tip + accept Commit deferred until HostLoop barrier succeeds.
     Ok((
@@ -896,10 +923,9 @@ mod tests {
         let live = new_shared_live_edit();
         {
             let mut led = live.lock().unwrap();
-            led.entities.insert(10);
-            led.entities.insert(1);
-            led.entities.insert(2);
-            led.parents.insert(10, 1);
+            assert!(led.note_spawn_with_parent(1, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+            assert!(led.note_spawn_with_parent(2, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+            assert!(led.note_spawn_with_parent(10, 1, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
         }
         let key = generate_signing_key();
         let mut p1 = EditProposal {
@@ -964,10 +990,8 @@ mod tests {
         let live = new_shared_live_edit();
         {
             let mut led = live.lock().unwrap();
-            led.entities.insert(10);
-            led.entities.insert(11);
-            led.flags.insert(10, 0);
-            led.flags.insert(11, 0);
+            assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+            assert!(led.note_spawn_with_parent(11, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
         }
         let key = generate_signing_key();
         let mk = |entity: u32, op_id: u64| {
@@ -1008,8 +1032,8 @@ mod tests {
         assert!(r2.is_some());
         let led = live.lock().unwrap();
         assert_eq!(led.tip, 0);
-        assert_eq!(led.flags.get(&10).copied(), Some(1));
-        assert_eq!(led.flags.get(&11).copied(), Some(1));
+        assert_eq!(led.flags_of(10), Some(1));
+        assert_eq!(led.flags_of(11), Some(1));
     }
 
     #[test]
