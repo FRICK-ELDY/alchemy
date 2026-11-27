@@ -390,7 +390,7 @@ pub struct NetTransformDelta {
 | ID | Phase | slug | 状態 | 詳細 |
 |:---|:---|:---|:---|:---|
 | [x00da](slices/x00da-sim-arena-scaffold.md) | 1a | sim-arena-scaffold | done | `sim_arena/` 3 面骨格 |
-| [x00db](slices/x00db-sim-arena-carry-over.md) | 1a | sim-arena-carry-over | planned | prev/prev2 Carry-Over + dirty_epoch |
+| [x00db](slices/x00db-sim-arena-carry-over.md) | 1a | sim-arena-carry-over | done | prev/prev2 Carry-Over + dirty_epoch |
 | [x00dc](slices/x00dc-sim-arena-bridge-publish.md) | 1a 閉じ | sim-arena-bridge-publish | planned | FrameBridge / 既存 arc-swap 出版 |
 | [x00dd](slices/x00dd-scene-store-sparseset.md) | 1b | scene-store-sparseset | planned | SparseSet + scene_store 骨格 |
 | [x00de](slices/x00de-scene-store-lww-cycle.md) | 1b | scene-store-lww-cycle | planned | LWW + 循環防止 |
@@ -406,7 +406,7 @@ pub struct NetTransformDelta {
 | [x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md) | 2 | avatar-rig-buffer-xpbd | planned | AvatarRigBuffer XPBD |
 | [x00e9](slices/x00e9-rigid-solver-boundary.md) | 3 | rigid-solver-boundary | planned | RigidSolver 境界のみ |
 
-**次の着手:** [x00db](slices/x00db-sim-arena-carry-over.md)（[x00da](slices/x00da-sim-arena-scaffold.md) done）。
+**次の着手:** [x00dc](slices/x00dc-sim-arena-bridge-publish.md)（[x00db](slices/x00db-sim-arena-carry-over.md) done）。
 
 ### Phase 1a（最小垂直切片・最優先）：Sim Arena 3 面 ＋ Carry-Over ＋ 既存出版
 * **目的**: 先祖返りゼロと Prev/Published の `arc-swap` 出版を、既存 Epoch/RenderFrame ブリッジ上で閉じる。物理・CRDT・SoftLease・3層 UUID は入れない。
@@ -450,10 +450,10 @@ pub struct NetTransformDelta {
 
 ```text
 @.workspace/roadmap/scene_store_sim_arena.md と
-@.workspace/roadmap/slices/x00db-sim-arena-carry-over.md を読み込んでください（品質本線・次スライス）。
+@.workspace/roadmap/slices/x00dc-sim-arena-bridge-publish.md を読み込んでください（品質本線・次スライス）。
 
-次は x00db（prev_dirty + prev2_dirty Carry-Over + dirty_epoch + 先祖返り 3 tick 単体テスト）だけを実装してください。
-FrameBridge 本線配線（x00dc）・1b/1c・物理は入れません。
+次は x00dc（FrameBridge / 既存 arc-swap 出版への Sim Arena 配線）だけを実装してください。
+1b/1c・物理は入れません。
 
 変更ファイル一覧と本スライス DoD を確認してからコードを書いてください。
 ```
