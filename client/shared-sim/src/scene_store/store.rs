@@ -1,9 +1,11 @@
 //! Host-Sequenced apply engine: Property-level LWW + cycle MoveNode Reject (x00de)
-//! + SimPatch queue generation (x00df) + FreeSlot on remove (x00e1).
+//! + SimPatch queue generation (x00df) + FreeSlot on remove (x00e1)
+//! + TRASH MoveNode logical delete (x00e3).
 
 use std::collections::HashMap;
 
 use super::sparse_set::SparseSet;
+use super::trash::{is_trash_entity_id, TRASH_ENTITY_ID};
 use super::{CrdtOp, EntityId, OpTimestamp, PropValue, SimPatch};
 use crate::sim_arena::LocalSlotId;
 
@@ -72,9 +74,9 @@ struct NodeRecord {
 /// Successful Spawn / Move / reparent enqueue [`SimPatch`] for Arena Step 0
 /// Drain; dense transform / bits / box go via [`Self::enqueue_patch`] (not CRDT).
 /// Keys = [`EntityId`].
-/// Non-guarantees: edit wire / Zenoh / Save I/O (host facade); TRASH_UUID /
-/// `op_chain_hash`; SoftLease acquisition (host gate; type in soft_lease);
-/// Dual-auth JWT path; SlotUndo Intent wire (see [`crate::slot_undo`] + host facade).
+/// Non-guarantees: edit wire / Zenoh / Save I/O (host facade); `op_chain_hash`;
+/// SoftLease acquisition (host gate; type in soft_lease); Dual-auth JWT path;
+/// SlotUndo Intent wire (see [`crate::slot_undo`] + host facade).
 #[derive(Clone, Debug, Default)]
 pub struct SceneStore {
     nodes: SparseSet<NodeRecord>,
@@ -112,11 +114,26 @@ impl SceneStore {
     }
 
     /// Parent of `entity_id` (`None` if missing or world-rooted).
+    ///
+    /// Trashed nodes report [`TRASH_ENTITY_ID`] as parent.
     pub fn parent(&self, entity_id: EntityId) -> Option<EntityId> {
         self.nodes.get(entity_id).and_then(|n| n.parent)
     }
 
-    /// Packed live entity ids (dense walk order).
+    /// `true` when the node is present and parented under the virtual trash.
+    #[inline]
+    pub fn is_trashed(&self, entity_id: EntityId) -> bool {
+        matches!(self.parent(entity_id), Some(p) if is_trash_entity_id(p))
+    }
+
+    /// Present in the sparse set **and** not under trash (edit / Save live walk).
+    #[inline]
+    pub fn is_live(&self, entity_id: EntityId) -> bool {
+        self.nodes.contains(entity_id) && !self.is_trashed(entity_id)
+    }
+
+    /// Packed entity ids currently in the sparse set (includes trashed rows).
+    /// Prefer [`Self::is_live`] when excluding logical deletes.
     #[inline]
     pub fn entity_ids(&self) -> &[EntityId] {
         self.nodes.dense_slots()
@@ -142,13 +159,23 @@ impl SceneStore {
     /// [`CrdtOp::MoveNode`] (fresh or re-seed). Fresh insert can still cycle if
     /// an ancestor already forward-refs `node` as its parent. Missing parent
     /// skips the gate — caller must not leave a permanent cycle after the
-    /// full seed pass. Rejects invalid ids (`u32::MAX`, self-parent).
+    /// full seed pass. Rejects invalid ids (`u32::MAX`, [`TRASH_ENTITY_ID`],
+    /// self-parent, parent = trash / trashed node, **already-trashed `node`**).
+    ///
+    /// Trashed rows must be hard-removed (or revived via host
+    /// `trash.forget` + remove + re-seed) — silent un-trash is forbidden.
     pub fn seed_node(&mut self, node: EntityId, parent: Option<EntityId>) -> bool {
-        if !valid_entity_id(node) {
+        if !valid_spawn_id(node) {
+            return false;
+        }
+        if self.is_trashed(node) {
             return false;
         }
         if let Some(p) = parent {
-            if !valid_entity_id(p) || p == node {
+            if !valid_parent_id(p) || p == node {
+                return false;
+            }
+            if self.is_trashed(p) {
                 return false;
             }
             if self.nodes.contains(p) && self.cycle_check(node, p).is_err() {
@@ -194,10 +221,107 @@ impl SceneStore {
 
     /// Remove a live node **without** [`SimPatch::FreeSlot`].
     ///
-    /// Host `LiveEditLedger` / `pending_despawns` path: dense free stays with
+    /// Trash GC / host hard-delete path: dense free stays with
     /// FrameBridge/physics until Arena drain is the sole free owner.
     pub fn remove_node_sparse(&mut self, entity_id: EntityId) -> bool {
         self.remove_node_inner(entity_id, false)
+    }
+
+    /// Logical delete: reparent direct children under a **live** restore parent
+    /// (this node's live parent, else world root), then MoveNode under
+    /// [`TRASH_ENTITY_ID`].
+    ///
+    /// Child 退避 is **all-or-nothing**: preflight then apply; any failure rolls
+    /// children back to `entity_id` (direct parent_ts restore — not a CRDT op).
+    /// Already-trashed → [`ApplyOutcome::RejectedStale`] (no `Ok(TRASH)` misuse).
+    ///
+    /// Does **not** enqueue [`SimPatch`] (facade / FrameBridge dense free).
+    ///
+    /// Returns the parent to restore on Undo (`None` = world root). Dangling /
+    /// trashed recorded parents collapse to `None` so Undo never targets a hole.
+    pub fn move_to_trash_sparse(
+        &mut self,
+        entity_id: EntityId,
+        ts: OpTimestamp,
+    ) -> Result<Option<EntityId>, ApplyOutcome> {
+        if !valid_spawn_id(entity_id) {
+            return Err(ApplyOutcome::RejectedInvalidId);
+        }
+        if !ts.within_drift(self.max_lamport) {
+            return Err(ApplyOutcome::RejectedClockDrift);
+        }
+        if !self.nodes.contains(entity_id) {
+            return Err(ApplyOutcome::RejectedMissing);
+        }
+        if self.is_trashed(entity_id) {
+            return Err(ApplyOutcome::RejectedStale);
+        }
+
+        let restore_parent = match self.parent(entity_id) {
+            Some(p) if self.is_live(p) => Some(p),
+            _ => None,
+        };
+
+        let snapshots: Vec<(EntityId, Option<EntityId>, OpTimestamp)> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.parent == Some(entity_id))
+            .map(|(id, n)| (id, n.parent, n.parent_ts))
+            .collect();
+
+        // Preflight: one ts must beat every touched parent_ts; evacuate dest ok.
+        {
+            let Some(rec) = self.nodes.get(entity_id) else {
+                return Err(ApplyOutcome::RejectedMissing);
+            };
+            if ts <= rec.parent_ts {
+                return Err(ApplyOutcome::RejectedStale);
+            }
+        }
+        for &(child, _, child_ts) in &snapshots {
+            if ts <= child_ts {
+                return Err(ApplyOutcome::RejectedStale);
+            }
+            if let Some(p) = restore_parent {
+                if let Err(outcome) = self.cycle_check(child, p) {
+                    return Err(outcome);
+                }
+            }
+        }
+
+        let lamport_before = self.max_lamport;
+        for &(child, _, _) in &snapshots {
+            match self.apply_move(ts, child, restore_parent, false) {
+                ApplyOutcome::Applied => {}
+                other => {
+                    self.restore_child_parents(&snapshots, lamport_before);
+                    return Err(other);
+                }
+            }
+        }
+
+        match self.apply_move(ts, entity_id, Some(TRASH_ENTITY_ID), false) {
+            ApplyOutcome::Applied => Ok(restore_parent),
+            other => {
+                self.restore_child_parents(&snapshots, lamport_before);
+                Err(other)
+            }
+        }
+    }
+
+    /// Compensate a failed multi-child evacuate (parent / parent_ts / max_lamport).
+    fn restore_child_parents(
+        &mut self,
+        snapshots: &[(EntityId, Option<EntityId>, OpTimestamp)],
+        lamport_before: u64,
+    ) {
+        for &(child, old_parent, old_ts) in snapshots {
+            if let Some(rec) = self.nodes.get_mut(child) {
+                rec.parent = old_parent;
+                rec.parent_ts = old_ts;
+            }
+        }
+        self.max_lamport = lamport_before;
     }
 
     fn remove_node_inner(&mut self, entity_id: EntityId, enqueue_patches: bool) -> bool {
@@ -281,22 +405,25 @@ impl SceneStore {
         parent: Option<EntityId>,
         enqueue_patches: bool,
     ) -> ApplyOutcome {
-        if !valid_entity_id(node) {
+        if !valid_spawn_id(node) {
             return ApplyOutcome::RejectedInvalidId;
         }
         if let Some(p) = parent {
-            if !valid_entity_id(p) {
+            if !valid_parent_id(p) {
                 return ApplyOutcome::RejectedInvalidId;
             }
             if p == node {
                 return ApplyOutcome::RejectedCycle;
             }
-            if !self.nodes.contains(p) {
+            if !self.nodes.contains(p) || self.is_trashed(p) {
                 return ApplyOutcome::RejectedMissing;
             }
         }
 
         if let Some(existing) = self.nodes.get(node) {
+            if self.is_trashed(node) {
+                return ApplyOutcome::RejectedMissing;
+            }
             if ts <= existing.parent_ts {
                 return ApplyOutcome::RejectedStale;
             }
@@ -334,22 +461,34 @@ impl SceneStore {
         new_parent: Option<EntityId>,
         enqueue_patches: bool,
     ) -> ApplyOutcome {
-        if !valid_entity_id(node) {
+        if !valid_spawn_id(node) {
             return ApplyOutcome::RejectedInvalidId;
         }
         if !self.nodes.contains(node) {
             return ApplyOutcome::RejectedMissing;
         }
         if let Some(p) = new_parent {
-            if !valid_entity_id(p) {
-                return ApplyOutcome::RejectedInvalidId;
-            }
-            if !self.nodes.contains(p) {
-                return ApplyOutcome::RejectedMissing;
-            }
-            match self.cycle_check(node, p) {
-                Ok(()) => {}
-                Err(outcome) => return outcome,
+            if is_trash_entity_id(p) {
+                // Virtual trash parent: no sparse row, no descendant cycle walk.
+                if p == node {
+                    return ApplyOutcome::RejectedCycle;
+                }
+            } else {
+                if !valid_parent_id(p) {
+                    return ApplyOutcome::RejectedInvalidId;
+                }
+                if !self.nodes.contains(p) {
+                    return ApplyOutcome::RejectedMissing;
+                }
+                // Refuse parenting under a logically deleted node (GC would
+                // orphan grandchildren to world root).
+                if self.is_trashed(p) {
+                    return ApplyOutcome::RejectedMissing;
+                }
+                match self.cycle_check(node, p) {
+                    Ok(()) => {}
+                    Err(outcome) => return outcome,
+                }
             }
         }
 
@@ -365,9 +504,12 @@ impl SceneStore {
         }
         self.note_lamport(ts);
         if enqueue_patches {
+            // Arena has no trash slot — emit SetParent with None (detached) for
+            // trash, matching logical hide until FreeSlot on GC.
+            let patch_parent = new_parent.filter(|p| !is_trash_entity_id(*p));
             self.patches.push(SimPatch::SetParent {
                 slot: entity_as_slot(node),
-                parent: new_parent.map(entity_as_slot),
+                parent: patch_parent.map(entity_as_slot),
             });
         }
         ApplyOutcome::Applied
@@ -380,7 +522,7 @@ impl SceneStore {
         prop_key: u32,
         value: PropValue,
     ) -> ApplyOutcome {
-        if !valid_entity_id(node) {
+        if !valid_spawn_id(node) {
             return ApplyOutcome::RejectedInvalidId;
         }
         {
@@ -424,9 +566,16 @@ impl SceneStore {
     }
 }
 
+/// Spawnable / movable node id (not ABSENT, not virtual trash).
 #[inline]
-fn valid_entity_id(id: EntityId) -> bool {
-    id != u32::MAX
+fn valid_spawn_id(id: EntityId) -> bool {
+    id != u32::MAX && !is_trash_entity_id(id)
+}
+
+/// Normal parent id (world root is `None`; trash is handled separately in Move).
+#[inline]
+fn valid_parent_id(id: EntityId) -> bool {
+    id != u32::MAX && !is_trash_entity_id(id)
 }
 
 /// Phase 1b: Arena slot index == Scene Store entity id (numerically).
@@ -934,5 +1083,164 @@ mod tests {
         let drained = store.drain_patches();
         assert_eq!(drained.len(), before);
         assert!(store.pending_patches().is_empty());
+    }
+
+    #[test]
+    fn move_to_trash_sparse_reparents_children_and_marks_trashed() {
+        let mut store = SceneStore::new();
+        spawn(&mut store, 1, 1, None);
+        spawn(&mut store, 2, 2, Some(1));
+        spawn(&mut store, 3, 3, Some(2));
+        store.drain_patches();
+        let prev = store
+            .move_to_trash_sparse(2, ts(10, 1))
+            .expect("trash ok");
+        assert_eq!(prev, Some(1));
+        assert!(store.is_trashed(2));
+        assert!(!store.is_live(2));
+        assert!(store.contains(2));
+        assert_eq!(store.parent(2), Some(TRASH_ENTITY_ID));
+        // Child 退避 under grandparent.
+        assert_eq!(store.parent(3), Some(1));
+        assert!(store.is_live(3));
+        assert!(store.pending_patches().is_empty());
+    }
+
+    #[test]
+    fn move_node_to_trash_virtual_parent_without_sparse_row() {
+        let mut store = SceneStore::new();
+        spawn(&mut store, 1, 1, None);
+        assert_eq!(
+            store.apply(CrdtOp::MoveNode {
+                ts: ts(2, 1),
+                node: 1,
+                new_parent: Some(TRASH_ENTITY_ID),
+            }),
+            ApplyOutcome::Applied
+        );
+        assert!(store.is_trashed(1));
+        // Patch parent filtered to None (no trash Arena slot).
+        assert_eq!(
+            store.pending_patches().last(),
+            Some(&SimPatch::SetParent {
+                slot: 1,
+                parent: None,
+            })
+        );
+    }
+
+    #[test]
+    fn spawn_rejects_trash_entity_id() {
+        let mut store = SceneStore::new();
+        assert_eq!(
+            store.apply(CrdtOp::SpawnNode {
+                ts: ts(1, 1),
+                node: TRASH_ENTITY_ID,
+                parent: None,
+            }),
+            ApplyOutcome::RejectedInvalidId
+        );
+        spawn(&mut store, 1, 1, None);
+        assert_eq!(
+            store.apply(CrdtOp::SpawnNode {
+                ts: ts(2, 1),
+                node: 2,
+                parent: Some(TRASH_ENTITY_ID),
+            }),
+            ApplyOutcome::RejectedInvalidId
+        );
+    }
+
+    #[test]
+    fn move_rejects_trashed_node_as_parent() {
+        let mut store = SceneStore::new();
+        spawn(&mut store, 1, 1, None);
+        spawn(&mut store, 2, 2, Some(1));
+        spawn(&mut store, 3, 3, None);
+        assert!(store
+            .move_to_trash_sparse(2, ts(10, 1))
+            .expect("trash")
+            .is_some());
+        assert_eq!(
+            store.apply(CrdtOp::MoveNode {
+                ts: ts(11, 1),
+                node: 3,
+                new_parent: Some(2),
+            }),
+            ApplyOutcome::RejectedMissing
+        );
+        assert_eq!(store.parent(3), None);
+    }
+
+    #[test]
+    fn move_to_trash_already_trashed_is_stale_not_ok_trash() {
+        let mut store = SceneStore::new();
+        spawn(&mut store, 1, 1, None);
+        assert_eq!(store.move_to_trash_sparse(1, ts(2, 1)), Ok(None));
+        assert_eq!(
+            store.move_to_trash_sparse(1, ts(3, 1)),
+            Err(ApplyOutcome::RejectedStale)
+        );
+        assert!(store.is_trashed(1));
+    }
+
+    #[test]
+    fn seed_node_rejects_trashed_target_and_trashed_parent() {
+        let mut store = SceneStore::new();
+        spawn(&mut store, 1, 1, None);
+        spawn(&mut store, 2, 2, None);
+        assert_eq!(store.move_to_trash_sparse(1, ts(3, 1)), Ok(None));
+        assert!(!store.seed_node(1, None), "silent un-trash forbidden");
+        assert!(store.is_trashed(1));
+        assert!(!store.seed_node(3, Some(1)), "trashed parent forbidden");
+        assert!(!store.contains(3));
+    }
+
+    #[test]
+    fn spawn_rejects_trashed_parent() {
+        let mut store = SceneStore::new();
+        spawn(&mut store, 1, 1, None);
+        assert_eq!(store.move_to_trash_sparse(1, ts(2, 1)), Ok(None));
+        assert_eq!(
+            store.apply(CrdtOp::SpawnNode {
+                ts: ts(3, 1),
+                node: 2,
+                parent: Some(1),
+            }),
+            ApplyOutcome::RejectedMissing
+        );
+    }
+
+    #[test]
+    fn move_to_trash_with_dangling_parent_evacuates_children_to_root() {
+        // seed_node may leave parent == Some(missing); evacuate must not
+        // partially apply then Err.
+        let mut store = SceneStore::new();
+        assert!(store.seed_node(10, Some(999))); // dangling parent
+        assert!(store.seed_node(11, Some(10)));
+        assert!(store.seed_node(12, Some(10)));
+        let restore = store
+            .move_to_trash_sparse(10, ts(5, 1))
+            .expect("trash despite dangling parent");
+        assert_eq!(restore, None);
+        assert!(store.is_trashed(10));
+        assert_eq!(store.parent(11), None);
+        assert_eq!(store.parent(12), None);
+    }
+
+    #[test]
+    fn move_to_trash_stale_ts_leaves_children_untouched() {
+        let mut store = SceneStore::new();
+        spawn(&mut store, 1, 1, None);
+        spawn(&mut store, 2, 2, Some(1));
+        spawn(&mut store, 3, 3, Some(2));
+        // ts=2 is stale vs node 2's parent_ts from spawn at lamport 2.
+        assert_eq!(
+            store.move_to_trash_sparse(2, ts(2, 1)),
+            Err(ApplyOutcome::RejectedStale)
+        );
+        assert_eq!(store.parent(2), Some(1));
+        assert_eq!(store.parent(3), Some(2));
+        assert!(!store.is_trashed(2));
     }
 }

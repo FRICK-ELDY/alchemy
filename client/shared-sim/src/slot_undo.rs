@@ -1,13 +1,15 @@
-//! Per-operator session undo/redo for Slot reparent transitions (x005b / x00b3 / x00e1).
+//! Per-operator session undo/redo for Slot reparent transitions (x005b / x00b3 / x00e1 / x00e3).
 //!
 //! Guarantees: reverse/reapply last reparent recorded for an operator stack;
 //! stack cap with drop-oldest on overflow; cycle/depth apply failures restore the
-//! entry; [`UndoError::Stale`] (parent mismatch, missing node, or store LWW stale /
-//! missing) **discards** the popped entry; Scene Store path applies the inverse as a
+//! entry; [`UndoError::Stale`] (parent mismatch, or store LWW stale) **discards**
+//! the popped entry; missing child after Trash GC is **No-op** on **undo and redo**
+//! (`Ok(None)`, entry discarded); Scene Store path applies the inverse as a
 //! **fresh** [`CrdtOp::MoveNode`] (latest lamport, caller `actor_id`).
 //! Non-guarantees: persistence across leave; undoing another operator's moves;
 //! physics velocity restore; Undo Intent / tip / FrameBridge wire (host peel is
-//! test-only until Intent); TRASH_UUID (→ x00e3); SoftLease is host edit gate (x00e2).
+//! test-only until Intent); SoftLease is host edit gate (x00e2);
+//! restoring a trashed parent does **not** re-attach evacuated children (退避).
 
 use std::collections::VecDeque;
 
@@ -17,9 +19,10 @@ use crate::slot_graph::{ReparentError, SlotGraph};
 /// Undo precondition / apply failure (x00b3 / x00e1 / mvcc_xpbd §4.7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UndoError {
-    /// Lost stack entry: parent ≠ recorded `to`, child/parent missing after
-    /// despawn, or store [`ApplyOutcome::RejectedStale`]. **Entry is discarded**
-    /// (not restored) — UI must treat as dropped, not "stack unchanged".
+    /// Lost stack entry: parent ≠ recorded `to`, or store
+    /// [`ApplyOutcome::RejectedStale`]. **Entry is discarded** (not restored) —
+    /// UI must treat as dropped, not "stack unchanged". Missing child after
+    /// Trash GC is **not** this variant — undo returns `Ok(None)` (No-op).
     Stale,
     /// Underlying [`SlotGraph::reparent`] / store cycle·depth rejected the inverse
     /// (**entry restored** on the stack).
@@ -213,9 +216,13 @@ impl SlotUndoStack {
         let Some(t) = self.undo.pop_back() else {
             return Ok(None);
         };
-        // Missing child: `parent()` is always `None`, which would falsely match
-        // `t.to == None` (world-root reparent) and jam the stack on RejectedMissing.
-        if checked && (!store.contains(t.child) || store.parent(t.child) != t.to) {
+        // Missing child (Trash GC / hard remove): No-op — entry already popped.
+        // Do **not** treat as Stale (parent() is always None and would false-match
+        // world-root `t.to == None`).
+        if checked && !store.contains(t.child) {
+            return Ok(None);
+        }
+        if checked && store.parent(t.child) != t.to {
             return Err(UndoError::Stale);
         }
         let inv = t.inverse();
@@ -225,6 +232,8 @@ impl SlotUndoStack {
                 Ok(Some(inv))
             }
             // Stale = discard popped entry (do not restore / jam).
+            // Missing maps to Stale via [`map_store_outcome`]; GC No-op is the
+            // `!contains` check above (do not special-case RejectedMissing here).
             Err(UndoError::Stale) => Err(UndoError::Stale),
             Err(e) => {
                 self.undo.push_back(t);
@@ -242,6 +251,10 @@ impl SlotUndoStack {
         let Some(t) = self.redo.pop_back() else {
             return Ok(None);
         };
+        // Trash GC / hard remove: same No-op as undo (do not jam redo stack).
+        if !store.contains(t.child) {
+            return Ok(None);
+        }
         match apply_move(store, actor_id, t.child, t.to, enqueue_patches) {
             Ok(()) => {
                 self.undo.push_back(t);
@@ -499,9 +512,9 @@ mod tests {
     }
 
     #[test]
-    fn scene_store_undo_checked_discards_when_root_reparent_then_despawn() {
-        // Regression: parent() of missing id is None, which equals t.to == None
-        // and used to slip past stale → RejectedMissing restored → stack jam.
+    fn scene_store_undo_checked_noop_when_child_gc_after_root_reparent() {
+        // Missing child (Trash GC / hard remove) → Ok(None) No-op, entry discarded.
+        // Must not jam: parent() of missing id is None == t.to (world-root).
         let mut store = SceneStore::new();
         let mut stack = SlotUndoStack::new(8);
         spawn(&mut store, 1, 1, None);
@@ -519,10 +532,7 @@ mod tests {
             to: None,
         });
         assert!(store.remove_node_sparse(10));
-        assert_eq!(
-            stack.undo_checked_store(&mut store, 1),
-            Err(UndoError::Stale)
-        );
+        assert_eq!(stack.undo_checked_store(&mut store, 1), Ok(None));
         assert_eq!(stack.undo_len(), 0);
         // Later entries still reachable.
         stack.push(SlotTransition {
@@ -531,6 +541,67 @@ mod tests {
             to: Some(1),
         });
         assert_eq!(stack.undo_len(), 1);
+    }
+
+    #[test]
+    fn scene_store_undo_restores_from_trash_then_noop_after_gc() {
+        use crate::scene_store::TRASH_ENTITY_ID;
+        let mut store = SceneStore::new();
+        let mut stack = SlotUndoStack::new(8);
+        spawn(&mut store, 1, 1, None);
+        spawn(&mut store, 2, 10, Some(1));
+        let prev = store
+            .move_to_trash_sparse(10, OpTimestamp::new(3, 1))
+            .expect("trash");
+        assert_eq!(prev, Some(1));
+        stack.push(SlotTransition {
+            child: 10,
+            from: Some(1),
+            to: Some(TRASH_ENTITY_ID),
+        });
+        let inv = stack
+            .undo_checked_store_sparse(&mut store, 1)
+            .expect("undo")
+            .expect("restored");
+        assert_eq!(inv.to, Some(1));
+        assert!(store.is_live(10));
+        // Re-trash and GC hard-remove → undo No-op.
+        let re_ts = OpTimestamp::new(store.max_lamport().saturating_add(1), 1);
+        let _ = store.move_to_trash_sparse(10, re_ts).expect("re-trash");
+        stack.push(SlotTransition {
+            child: 10,
+            from: Some(1),
+            to: Some(TRASH_ENTITY_ID),
+        });
+        assert!(store.remove_node_sparse(10));
+        assert_eq!(stack.undo_checked_store_sparse(&mut store, 1), Ok(None));
+        assert_eq!(stack.undo_len(), 0);
+    }
+
+    #[test]
+    fn scene_store_redo_noop_when_child_gc() {
+        use crate::scene_store::TRASH_ENTITY_ID;
+        let mut store = SceneStore::new();
+        let mut stack = SlotUndoStack::new(8);
+        spawn(&mut store, 1, 1, None);
+        spawn(&mut store, 2, 10, Some(1));
+        let _ = store
+            .move_to_trash_sparse(10, OpTimestamp::new(3, 1))
+            .expect("trash");
+        stack.push(SlotTransition {
+            child: 10,
+            from: Some(1),
+            to: Some(TRASH_ENTITY_ID),
+        });
+        // Undo restore → entry on redo; then GC and redo must No-op (not jam).
+        assert!(stack
+            .undo_checked_store_sparse(&mut store, 1)
+            .unwrap()
+            .is_some());
+        assert_eq!(stack.redo_len(), 1);
+        assert!(store.remove_node_sparse(10));
+        assert_eq!(stack.redo_store_sparse(&mut store, 1), Ok(None));
+        assert_eq!(stack.redo_len(), 0);
     }
 
     #[test]

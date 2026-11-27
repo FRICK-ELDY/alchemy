@@ -1,6 +1,6 @@
-//! Host live edit facade over `shared-sim::scene_store` (x00e0 / x00e1 / x00e2).
+//! Host live edit facade over `shared-sim::scene_store` (x00e0 / x00e1 / x00e2 / x00e3).
 //!
-//! Contract (x00b3 / x00b9 / x00e0 / x00e1 / x00e2):
+//! Contract (x00b3 / x00b9 / x00e0 / x00e1 / x00e2 / x00e3):
 //! - Sparse SSoT is [`SceneStore`] (parents / fields / entities) — **no** host
 //!   HashMap second copy.
 //! - Host keeps quarantine, `tip` (`scene_rev`) sequencing, pending spawn/despawn
@@ -12,11 +12,16 @@
 //! - Queue / barrier / inbox failure → `rollback_mirrors` + reject `EditCommit`
 //!   (`APPLY`); tip untouched.
 //! - Per-operator [`SlotUndoStack`] **records** barrier-confirmed Reparents
-//!   (`note_reparent_undo`). Applying undo/redo as tip/`EditCommit`/FrameBridge
-//!   ops is **not** wired yet (§3.3 Intent) — see `undo_reparent` / `redo_reparent`
-//!   (`cfg(test)` peel only; must not be called from production).
-//! - Despawn stays **`pending_despawns`** + sparse remove (no TRASH_UUID);
-//!   live despawn **prunes** that child's undo/redo entries (x00e1; TRASH GC → x00e3).
+//!   (`note_reparent_undo`) and optional despawn→trash (`note_despawn_undo`).
+//!   Applying undo/redo as tip/`EditCommit`/FrameBridge ops is **not** wired yet
+//!   (§3.3 Intent) — see `undo_reparent` / `redo_reparent` (`cfg(test)` peel only).
+//! - Logical delete = MoveNode to [`TRASH_ENTITY_ID`] + [`TrashStore`] GC
+//!   (count/TTL). Save body still projects **`pending_despawns`** (1b→1c bridge).
+//!   Session spawn cancel → freelist hard remove (not trash). GC hard-remove →
+//!   Undo/Redo of that child is No-op (`Ok(None)`). GC'd ids stay reserved for
+//!   alloc via `pending_despawns` until [`Self::clear_save_pending`].
+//! - Child 退避: direct children move under the live restore parent (or root);
+//!   despawn Undo restores **only the trashed node**, not evacuated children.
 //! - [`SoftLeaseTable`] gates concurrent structural edits (Reparent / SetField) at
 //!   the edit entrance (`allows` before mutate, `try_acquire` only after sparse
 //!   success). Barrier / APPLY rollback keeps SoftLease so the same actor can
@@ -28,9 +33,13 @@
 //! from this ledger. Barrier / queue failure rolls back **LIFO** (reverse apply order).
 //!
 //! Non-guarantees: crash durability of unsaved pending; Spatial VCS flush;
-//! TRASH_UUID; Undo Intent / tip bump / EditCommit path; leave-time
-//! `undo_stacks` eviction (empty stacks pruned on despawn only); Arena SimPatch
-//! drain wiring; SoftLease ↔ physical grab integration.
+//! Undo Intent / tip bump / EditCommit path; **production despawn does not call
+//! [`Self::note_despawn_undo`]** (test peel only until Intent wires operator +
+//! `from_parent`); HostLoop despawn [`NoteLiveDespawn::Failed`] rejects tip but
+//! does **not** restore already-applied scene/physics rows (sparse may stay live
+//! → rare SSoT skew until operator retry / Leave); leave-time `undo_stacks`
+//! eviction; Arena SimPatch drain wiring; SoftLease ↔ physical grab integration;
+//! StableUuid full path (→ x00e4).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -43,8 +52,9 @@ use alchemy_protocol::{
     EditReparent, EditSetField, Message, SceneEntry,
 };
 use alchemy_shared_sim::{
-    ApplyOutcome, CrdtOp, OpTimestamp, PropValue, SceneStore, SlotTransition, SlotUndoStack,
-    SoftLeaseConflict, SoftLeaseTable, SOFT_LEASE_TTL_TICKS,
+    is_trash_entity_id, ApplyOutcome, CrdtOp, OpTimestamp, PropValue, SceneStore, SlotTransition,
+    SlotUndoStack, SoftLeaseConflict, SoftLeaseTable, TrashStore, SOFT_LEASE_TTL_TICKS,
+    TRASH_ENTITY_ID,
 };
 #[cfg(test)]
 use alchemy_shared_sim::{SoftLease, UndoError};
@@ -62,6 +72,21 @@ pub struct PendingSpawn {
     pub spawn_ticket: String,
 }
 
+/// Outcome of [`LiveEditLedger::note_live_despawn`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoteLiveDespawn {
+    /// Canonical id moved to trash (or already trashed; pending kept).
+    ///
+    /// `restore_parent`: on **first** trash, `None` = was world root. On
+    /// **idempotent re-entry**, always `None` and **must not** be used as Undo
+    /// `from_parent` — keep the first-trash value separately.
+    Trashed { restore_parent: Option<u32> },
+    /// Unsaved session spawn cancelled → freelist hard remove.
+    SessionRecycled,
+    /// Sparse still live; Save projection not claimed.
+    Failed,
+}
+
 /// Shared live working-tree tip + scene_store facade (edit lane + physics).
 #[derive(Debug, Default)]
 pub struct LiveEditLedger {
@@ -71,19 +96,22 @@ pub struct LiveEditLedger {
     store: SceneStore,
     /// Unsaved session spawns (Save body `spawns`); ticket kept until Save or local despawn.
     pub pending_spawns: HashMap<u32, PendingSpawn>,
-    /// Canonical entities hidden live; Save body `despawns` deletes from positive.
+    /// Save-body `despawns` projection for canonical entities moved to trash
+    /// (1b→1c bridge; live SSoT is TRASH MoveNode + [`TrashStore`]).
     pub pending_despawns: HashSet<u32>,
     /// Recycled ids from cancelled session spawns only (not canonical pending_despawns).
     pub freelist: Vec<u32>,
     /// Allocated ids not yet in the store / scene (concurrent spawn race).
     pub reserved: HashSet<u32>,
     /// Per-operator session undo (key = `session_pub` bytes). Populated on
-    /// barrier-confirmed Reparent; not persisted across leave. Leave/Save do
-    /// not clear this map (non-guarantee); despawn prunes per-child entries.
+    /// barrier-confirmed Reparent / despawn→trash; not persisted across leave.
+    /// Leave/Save do not clear this map (non-guarantee). Trash GC → Undo No-op.
     undo_stacks: HashMap<Vec<u8>, SlotUndoStack>,
     /// SoftLease table (entity → holder). Advanced by [`Self::advance_lease_tick`].
     soft_leases: SoftLeaseTable,
-    /// Host tick clock for SoftLease expiry (not `tip` / scene_rev).
+    /// Logical-delete index (FIFO count/TTL GC). Advanced with SoftLease tick.
+    trash: TrashStore,
+    /// Host tick clock for SoftLease / Trash TTL (not `tip` / scene_rev).
     lease_tick: u64,
 }
 
@@ -109,10 +137,34 @@ impl LiveEditLedger {
         self.tip
     }
 
-    /// Advance SoftLease clock (call once per host physics tick).
+    /// Advance SoftLease + Trash GC clock (call once per host physics tick).
     pub fn advance_lease_tick(&mut self) {
         self.lease_tick = self.lease_tick.saturating_add(1);
         self.soft_leases.purge_expired(self.lease_tick);
+        self.gc_trash();
+    }
+
+    /// Hard-remove TrashStore GC candidates (`remove_node_sparse`).
+    ///
+    /// [`Self::pending_despawns`] is **kept** until Save folds them. Undo of a
+    /// GC'd child is No-op (`Ok(None)`).
+    fn gc_trash(&mut self) {
+        for entity_id in self.trash.gc(self.lease_tick) {
+            let _ = self.store.remove_node_sparse(entity_id);
+            self.soft_leases.clear(entity_id);
+        }
+    }
+
+    /// Test helper: force Trash GC with custom TTL/cap (does not advance tick).
+    #[cfg(test)]
+    fn gc_trash_with_limits(&mut self, ttl_ticks: u64, max_entries: usize) {
+        for entity_id in self
+            .trash
+            .gc_with_limits(self.lease_tick, ttl_ticks, max_entries)
+        {
+            let _ = self.store.remove_node_sparse(entity_id);
+            self.soft_leases.clear(entity_id);
+        }
     }
 
     /// SoftLease conflict check (no TTL refresh). Call before sparse mutate.
@@ -154,12 +206,17 @@ impl LiveEditLedger {
         self.store.parent(child).unwrap_or(0)
     }
 
+    /// Live (editable) entity — present and **not** under trash.
     #[inline]
     pub fn contains_entity(&self, entity_id: u32) -> bool {
-        self.store.contains(entity_id)
+        self.store.is_live(entity_id)
     }
 
-    /// Dense live entity ids (save diff walk).
+    /// Dense sparse ids (**includes trashed** rows still awaiting GC / Save clear).
+    ///
+    /// For editable / Save live diffs use [`Self::contains_entity`] (`is_live`)
+    /// as a filter — this slice keeps one packed walk; a dedicated live-only
+    /// API is deferred.
     #[inline]
     pub fn entity_ids(&self) -> &[u32] {
         self.store.entity_ids()
@@ -191,7 +248,18 @@ impl LiveEditLedger {
     ///
     /// Uses [`SceneStore::apply_sparse`] so Move does not enqueue `SimPatch`
     /// (FrameBridge dense path). Cycle / depth / stale / missing come from the store.
+    /// `new_parent == TRASH_ENTITY_ID` / non-live ids are rejected — use
+    /// [`Self::note_live_despawn`] for logical delete.
     pub fn apply_reparent(&mut self, child: u32, new_parent: u32) -> ApplyOutcome {
+        if is_trash_entity_id(new_parent) || is_trash_entity_id(child) {
+            return ApplyOutcome::RejectedInvalidId;
+        }
+        if !self.store.is_live(child) {
+            return ApplyOutcome::RejectedMissing;
+        }
+        if new_parent != 0 && !self.store.is_live(new_parent) {
+            return ApplyOutcome::RejectedMissing;
+        }
         self.store.apply_sparse(CrdtOp::MoveNode {
             ts: self.next_ts(),
             node: child,
@@ -200,18 +268,40 @@ impl LiveEditLedger {
     }
 
     /// Apply quarantined SetField into scene_store (optimistic; tip unchanged).
+    ///
+    /// Non-live / trashed targets → [`ApplyOutcome::RejectedMissing`].
     pub fn apply_set_field(
         &mut self,
         entity_id: u32,
         field_id: u32,
         value: PropValue,
     ) -> ApplyOutcome {
+        if is_trash_entity_id(entity_id) || !self.store.is_live(entity_id) {
+            return ApplyOutcome::RejectedMissing;
+        }
         self.store.apply_sparse(CrdtOp::SetProperty {
             ts: self.next_ts(),
             node: entity_id,
             prop_key: field_id,
             value,
         })
+    }
+
+    /// Drop trash index + Save projection (and hard-remove if still under trash)
+    /// so [`SceneStore::seed_node`] can insert cleanly (no silent un-trash /
+    /// no stale `pending_despawns` after GC).
+    fn clear_trashed_for_reseed(&mut self, entity_id: u32) {
+        let under_trash = self.store.is_trashed(entity_id);
+        let pending = self.pending_despawns.contains(&entity_id);
+        if !under_trash && !pending {
+            return;
+        }
+        self.trash.forget(entity_id);
+        self.pending_despawns.remove(&entity_id);
+        self.soft_leases.clear(entity_id);
+        if under_trash {
+            let _ = self.store.remove_node_sparse(entity_id);
+        }
     }
 
     /// Record a newly spawned entity. Preserves an existing live parent if already set
@@ -222,6 +312,8 @@ impl LiveEditLedger {
     /// **Re-note** (`!fresh`): any props already applied in this call are **left
     /// as-is** (no snapshot undo); caller sees `false` and must not treat the note
     /// as fully successful. Same contract as [`Self::note_spawn_with_parent`].
+    /// Trashed / pending-despawn ids are cleared (forget + optional hard remove)
+    /// before seed — including GC'd rows that only linger in `pending_despawns`.
     #[must_use = "seed/props failure; do not ignore"]
     pub fn note_spawn(
         &mut self,
@@ -230,6 +322,7 @@ impl LiveEditLedger {
         color: [f32; 4],
         blake3: String,
     ) -> bool {
+        self.clear_trashed_for_reseed(entity_id);
         let fresh = !self.store.contains(entity_id);
         if fresh && !self.store.seed_node(entity_id, None) {
             return false;
@@ -250,6 +343,7 @@ impl LiveEditLedger {
     /// **Re-seed** (`was_live`): parent link from `seed_node` and any props already
     /// applied in this call are **left as-is** (no snapshot undo); caller sees
     /// `false` and must not treat the note as fully successful.
+    /// Trashed / pending-despawn ids are cleared before seed (see [`Self::note_spawn`]).
     #[must_use = "seed/props failure; do not ignore"]
     pub fn note_spawn_with_parent(
         &mut self,
@@ -259,7 +353,8 @@ impl LiveEditLedger {
         color: [f32; 4],
         blake3: String,
     ) -> bool {
-        let was_live = self.store.contains(entity_id);
+        self.clear_trashed_for_reseed(entity_id);
+        let was_live = self.store.is_live(entity_id);
         if !self
             .store
             .seed_node(entity_id, wire_parent(parent_entity_id))
@@ -314,13 +409,47 @@ impl LiveEditLedger {
         true
     }
 
-    pub fn note_despawn(&mut self, entity_id: u32) {
-        // Sparse: FrameBridge / physics own dense free; avoid FreeSlot backlog.
-        // Do **not** call [`SceneStore::remove_node`] here (that enqueues FreeSlot
-        // for Arena drain — would double-free against FrameBridge).
-        let _ = self.store.remove_node_sparse(entity_id);
-        self.soft_leases.clear(entity_id);
-        self.prune_undo_for_entity(entity_id);
+    /// Logical delete: MoveNode to trash (no FreeSlot; FrameBridge owns dense free).
+    ///
+    /// On **first** success returns the restore parent for Undo (`None` = world
+    /// root) and records [`TrashStore`]. Does **not** prune undo (use
+    /// [`Self::note_despawn_undo`]). Caller owns [`Self::pending_despawns`].
+    ///
+    /// **Idempotent re-entry** (already trashed): returns `Some(None)` — this is
+    /// **not** a restore parent. Intent wiring must keep `from_parent` from the
+    /// first trash (or `note_despawn_undo`), never from a later re-entry.
+    ///
+    /// On failure the store is left unchanged (child 退避 is atomic). Missing /
+    /// invalid ids only clear SoftLease / trash index — **no** hard remove of a
+    /// still-present node after a failed evacuate.
+    #[must_use = "prev_parent needed for note_despawn_undo (first trash only)"]
+    pub fn note_despawn(&mut self, entity_id: u32) -> Option<Option<u32>> {
+        if is_trash_entity_id(entity_id) || entity_id == u32::MAX {
+            return None;
+        }
+        // Idempotent: already trashed — keep index / SoftLease clear; no Ok(TRASH).
+        // `Some(None)` ≠ "was world-rooted"; do not feed Undo from_parent.
+        if self.store.is_trashed(entity_id) {
+            self.trash.note(entity_id, self.lease_tick);
+            self.soft_leases.clear(entity_id);
+            return Some(None);
+        }
+        let ts = self.next_ts();
+        match self.store.move_to_trash_sparse(entity_id, ts) {
+            Ok(restore_parent) => {
+                self.trash.note(entity_id, self.lease_tick);
+                self.soft_leases.clear(entity_id);
+                Some(restore_parent)
+            }
+            Err(ApplyOutcome::RejectedMissing) | Err(ApplyOutcome::RejectedInvalidId) => {
+                if !self.store.contains(entity_id) {
+                    self.trash.forget(entity_id);
+                    self.soft_leases.clear(entity_id);
+                }
+                None
+            }
+            Err(_) => None,
+        }
     }
 
     /// Record a barrier-confirmed Reparent for the operator's undo stack (x00e1).
@@ -329,8 +458,8 @@ impl LiveEditLedger {
     /// Recording only — applying inverse still requires Intent / edit lane
     /// (tip + EditCommit + FrameBridge) before production use.
     ///
-    /// No-op when `child` is no longer live (e.g. despawn raced ahead of barrier
-    /// Ok) so pruned / missing ids do not re-enter the stack.
+    /// No-op when `child` is no longer live (e.g. trash / GC raced ahead of
+    /// barrier Ok) so missing ids do not re-enter the stack.
     pub fn note_reparent_undo(
         &mut self,
         operator: &[u8],
@@ -338,7 +467,11 @@ impl LiveEditLedger {
         from_parent: u32,
         to_parent: u32,
     ) {
-        if !self.store.contains(child) {
+        if !self.store.is_live(child) {
+            return;
+        }
+        if is_trash_entity_id(to_parent) {
+            // Despawn undo uses [`Self::note_despawn_undo`].
             return;
         }
         let t = SlotTransition {
@@ -355,11 +488,34 @@ impl LiveEditLedger {
         }
     }
 
-    /// Drop undo/redo entries whose **`child`** is `entity_id` (live despawn).
+    /// Record logical delete for undo (MoveNode → [`TRASH_ENTITY_ID`]).
+    ///
+    /// Call after a successful [`Self::note_despawn`] / [`Self::note_live_despawn`]
+    /// while the node is still under trash (before GC). `from_parent` is the wire
+    /// parent before trash (`0` = world root).
+    pub fn note_despawn_undo(&mut self, operator: &[u8], child: u32, from_parent: u32) {
+        if !self.store.is_trashed(child) {
+            return;
+        }
+        let t = SlotTransition {
+            child,
+            from: wire_parent(from_parent),
+            to: Some(TRASH_ENTITY_ID),
+        };
+        if let Some(stack) = self.undo_stacks.get_mut(operator) {
+            stack.push(t);
+        } else {
+            let mut stack = SlotUndoStack::default();
+            stack.push(t);
+            self.undo_stacks.insert(operator.to_vec(), stack);
+        }
+    }
+
+    /// Drop undo/redo entries whose **`child`** is `entity_id` (session spawn cancel).
     ///
     /// Does **not** strip entries that only mention the id as `from` / `to`
-    /// (parent role). Those stay until undo hits Missing→Stale discard, or
-    /// Intent-era GC; x00e1 jam-prevention is child-keyed only.
+    /// (parent role). Canonical trash deletes keep stack entries for restore /
+    /// GC No-op.
     fn prune_undo_for_entity(&mut self, entity_id: u32) {
         self.undo_stacks.retain(|_, stack| {
             stack.discard_child(entity_id);
@@ -391,6 +547,13 @@ impl LiveEditLedger {
             return Ok(None);
         };
         let result = stack.undo_checked_store_sparse(&mut self.store, actor_id);
+        if let Ok(Some(inv)) = &result {
+            // Restore-from-trash: drop Save projection + trash index.
+            if self.store.is_live(inv.child) {
+                self.trash.forget(inv.child);
+                self.pending_despawns.remove(&inv.child);
+            }
+        }
         if stack.undo_len() > 0 || stack.redo_len() > 0 {
             self.undo_stacks.insert(operator.to_vec(), stack);
         }
@@ -436,31 +599,65 @@ impl LiveEditLedger {
         }
     }
 
-    /// Live despawn: drop unsaved spawn, or mark canonical id for Save `despawns`.
-    pub fn note_live_despawn(&mut self, entity_id: u32) {
+    /// Live despawn: session spawn cancel → freelist hard remove; canonical →
+    /// trash MoveNode + Save `pending_despawns` projection.
+    ///
+    /// Already-trashed re-entry keeps `pending_despawns` (idempotent
+    /// [`NoteLiveDespawn::Trashed`]). Production HostLoop does **not** record
+    /// despawn Undo yet (non-guarantee; Intent).
+    #[must_use = "outcome distinguishes trash / recycle / failure for tip Accept"]
+    pub fn note_live_despawn(&mut self, entity_id: u32) -> NoteLiveDespawn {
         self.reserved.remove(&entity_id);
         if self.pending_spawns.remove(&entity_id).is_some() {
             self.freelist.push(entity_id);
+            let _ = self.store.remove_node_sparse(entity_id);
+            self.trash.forget(entity_id);
+            self.soft_leases.clear(entity_id);
+            self.prune_undo_for_entity(entity_id);
+            NoteLiveDespawn::SessionRecycled
         } else {
             self.pending_despawns.insert(entity_id);
+            match self.note_despawn(entity_id) {
+                Some(restore_parent) => NoteLiveDespawn::Trashed { restore_parent },
+                None => {
+                    if self.store.is_trashed(entity_id) {
+                        // Race: still trashed — keep Save projection.
+                        NoteLiveDespawn::Trashed {
+                            restore_parent: None,
+                        }
+                    } else {
+                        // Never left the live tree — do not claim a Save delete.
+                        self.pending_despawns.remove(&entity_id);
+                        NoteLiveDespawn::Failed
+                    }
+                }
+            }
         }
-        self.note_despawn(entity_id);
     }
 
     /// Clear Save-folded pending after successful world Save.
+    ///
+    /// Hard-removes any still-trashed ids that were projected in `despawns`
+    /// (Save already deleted them from positive world).
     pub fn clear_save_pending(&mut self) {
         self.pending_spawns.clear();
-        self.pending_despawns.clear();
+        for entity_id in self.pending_despawns.drain() {
+            let _ = self.store.remove_node_sparse(entity_id);
+            self.trash.forget(entity_id);
+            self.soft_leases.clear(entity_id);
+        }
     }
 
     /// Host-local entity id (scene max+1 / freelist; skip user_root + pending_despawns).
-    /// Never returns `u32::MAX` (scene_store sparse ABSENT sentinel).
+    /// Never returns `u32::MAX` (sparse ABSENT) or [`TRASH_ENTITY_ID`].
     ///
     /// Id-space exhaustion panics (host abort). A `Result` / edit reject path is a
     /// possible later refinement; not in this slice.
     pub fn alloc_entity_id(&mut self, scene_entries: &[SceneEntry]) -> u32 {
         while let Some(id) = self.freelist.pop() {
-            if id != u32::MAX && !self.id_in_use(id, scene_entries) && !scene_entry_is_user_root(id)
+            if Self::is_allocable_id(id)
+                && !self.id_in_use(id, scene_entries)
+                && !scene_entry_is_user_root(id)
             {
                 self.reserved.insert(id);
                 return id;
@@ -472,14 +669,19 @@ impl LiveEditLedger {
             .chain(self.store.entity_ids().iter().copied())
             .chain(self.pending_despawns.iter().copied())
             .chain(self.reserved.iter().copied())
-            .filter(|id| !scene_entry_is_user_root(*id) && *id != u32::MAX)
+            .filter(|id| !scene_entry_is_user_root(*id) && Self::is_allocable_id(*id))
             .max()
             .unwrap_or(0);
         let mut candidate = max_content.saturating_add(1).max(100);
         let start = candidate;
         loop {
-            if candidate == u32::MAX {
-                candidate = 100;
+            if !Self::is_allocable_id(candidate) {
+                // Skip ABSENT + TRASH sentinels; wrap after ABSENT.
+                candidate = if candidate == u32::MAX {
+                    100
+                } else {
+                    candidate.saturating_add(1)
+                };
             } else if scene_entry_is_user_root(candidate) {
                 candidate = user_root_entity_last().saturating_add(1);
             } else if self.id_in_use(candidate, scene_entries) {
@@ -496,6 +698,11 @@ impl LiveEditLedger {
                 );
             }
         }
+    }
+
+    #[inline]
+    fn is_allocable_id(id: u32) -> bool {
+        id != u32::MAX && !is_trash_entity_id(id)
     }
 
     fn id_in_use(&self, id: u32, scene_entries: &[SceneEntry]) -> bool {
@@ -973,15 +1180,30 @@ mod tests {
     }
 
     #[test]
-    fn facade_despawn_keeps_pending_despawns_without_trash() {
+    fn facade_despawn_moves_to_trash_and_keeps_pending_despawns() {
         let mut led = LiveEditLedger::default();
         assert!(led.note_spawn_with_parent(100, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
-        // Canonical id (not in pending_spawns) → pending_despawns for Save.
-        led.note_live_despawn(100);
+        // Canonical id (not in pending_spawns) → trash + pending_despawns for Save.
+        assert_eq!(
+            led.note_live_despawn(100),
+            NoteLiveDespawn::Trashed {
+                restore_parent: None
+            }
+        );
         assert!(!led.contains_entity(100));
+        assert!(led.store().is_trashed(100));
         assert!(led.pending_despawns.contains(&100));
         assert!(led.store().pending_patches().is_empty());
-        // Session spawn cancel recycles freelist instead of pending_despawns.
+        // Idempotent re-despawn keeps Save projection.
+        assert_eq!(
+            led.note_live_despawn(100),
+            NoteLiveDespawn::Trashed {
+                restore_parent: None
+            }
+        );
+        assert!(led.pending_despawns.contains(&100));
+        assert!(led.store().is_trashed(100));
+        // Session spawn cancel recycles freelist instead of trash / pending_despawns.
         assert!(led.note_spawn_with_parent(200, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
         led.note_pending_spawn(PendingSpawn {
             entry: SceneEntry {
@@ -1007,34 +1229,95 @@ mod tests {
             },
             spawn_ticket: "t".into(),
         });
-        led.note_live_despawn(200);
+        assert_eq!(led.note_live_despawn(200), NoteLiveDespawn::SessionRecycled);
         assert!(!led.pending_despawns.contains(&200));
         assert!(led.freelist.contains(&200));
+        assert!(!led.store().contains(200));
     }
 
     #[test]
-    fn facade_despawn_prunes_undo_entries_for_child() {
+    fn facade_despawn_undo_restores_then_gc_is_noop() {
         let op_a = b"operator-a";
         let mut led = LiveEditLedger::default();
         assert!(led.note_spawn_with_parent(1, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
         assert!(led.note_spawn_with_parent(10, 1, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
-        assert!(led.apply_reparent(10, 0).is_success());
-        led.note_reparent_undo(op_a, 10, 1, 0);
+        let NoteLiveDespawn::Trashed {
+            restore_parent: prev,
+        } = led.note_live_despawn(10)
+        else {
+            panic!("expected trash");
+        };
+        assert_eq!(prev, Some(1));
+        led.note_despawn_undo(op_a, 10, prev.unwrap_or(0));
         assert_eq!(led.undo_len_for(op_a), 1);
-        led.note_live_despawn(10);
+        let restored = led.undo_reparent(op_a).expect("undo");
+        assert!(restored.is_some());
+        assert!(led.contains_entity(10));
+        assert_eq!(led.parent_of(10), 1);
+        assert!(!led.pending_despawns.contains(&10));
+        // Re-trash, record undo, force GC → No-op.
+        let NoteLiveDespawn::Trashed {
+            restore_parent: prev2,
+        } = led.note_live_despawn(10)
+        else {
+            panic!("expected re-trash");
+        };
+        led.note_despawn_undo(op_a, 10, prev2.unwrap_or(0));
+        led.gc_trash_with_limits(0, 0);
+        assert!(!led.store().contains(10));
+        assert_eq!(led.undo_reparent(op_a), Ok(None));
         assert_eq!(led.undo_len_for(op_a), 0);
-        // Stack map drops empty operator keys.
-        assert!(led.undo_stacks.is_empty());
     }
 
     #[test]
-    fn note_reparent_undo_skips_missing_child_after_despawn_race() {
+    fn facade_reseed_after_trash_clears_pending_and_trash_index() {
+        let mut led = LiveEditLedger::default();
+        assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(matches!(
+            led.note_live_despawn(10),
+            NoteLiveDespawn::Trashed { .. }
+        ));
+        assert!(led.pending_despawns.contains(&10));
+        assert!(led.store().is_trashed(10));
+        // Re-seed must not leave a live node that GC / clear_save would delete.
+        assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.contains_entity(10));
+        assert!(!led.store().is_trashed(10));
+        assert!(!led.pending_despawns.contains(&10));
+        led.gc_trash_with_limits(0, 0);
+        assert!(led.contains_entity(10), "GC must not remove revived id");
+    }
+
+    #[test]
+    fn facade_reseed_after_gc_clears_stale_pending_despawns() {
+        let mut led = LiveEditLedger::default();
+        assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(matches!(
+            led.note_live_despawn(10),
+            NoteLiveDespawn::Trashed { .. }
+        ));
+        led.gc_trash_with_limits(0, 0);
+        assert!(!led.store().contains(10));
+        assert!(led.pending_despawns.contains(&10), "Save projection until clear");
+        assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.contains_entity(10));
+        assert!(
+            !led.pending_despawns.contains(&10),
+            "re-seed must drop GC'd pending projection"
+        );
+    }
+
+    #[test]
+    fn note_reparent_undo_skips_trashed_child_after_despawn_race() {
         let op_a = b"operator-a";
         let mut led = LiveEditLedger::default();
         assert!(led.note_spawn_with_parent(1, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
         assert!(led.note_spawn_with_parent(10, 1, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
-        led.note_live_despawn(10);
-        // Barrier Ok after despawn must not re-seed the stack.
+        assert!(matches!(
+            led.note_live_despawn(10),
+            NoteLiveDespawn::Trashed { .. }
+        ));
+        // Barrier Ok after trash must not re-seed the stack.
         led.note_reparent_undo(op_a, 10, 1, 0);
         assert_eq!(led.undo_len_for(op_a), 0);
         assert!(led.undo_stacks.is_empty());
@@ -1086,9 +1369,13 @@ mod tests {
         let mut led = LiveEditLedger::default();
         assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
         assert!(led.try_acquire_soft_lease(10, 1).is_ok());
-        led.note_live_despawn(10);
-        // Entity gone; lease row cleared — re-acquire after re-spawn is free.
+        assert!(matches!(
+            led.note_live_despawn(10),
+            NoteLiveDespawn::Trashed { .. }
+        ));
+        // Entity trashed; lease row cleared — re-seed clears trash/pending first.
         assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(!led.pending_despawns.contains(&10));
         assert!(led.try_acquire_soft_lease(10, 2).is_ok());
     }
 

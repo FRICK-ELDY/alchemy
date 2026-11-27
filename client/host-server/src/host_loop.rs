@@ -464,23 +464,42 @@ impl HostLoop {
                             std::process::exit(78);
                         }
                     };
-                    led.note_live_despawn(entity_id);
-                    // Tip⇔Commit 一体。publisher 欠落は miswire → fail-closed abort.
-                    if let Some(proposal) = edit_proposal.as_ref() {
-                        let tip = led.bump_tip();
-                        self.require_live_commit().publish_accept(proposal, tip);
-                    }
-                    drop(led);
-                    if out.physics_ok {
-                        log::info!(
-                            "despawn applied entity_id={} (xpbd+local scene+reseal; x00b9)",
-                            out.entity_id
-                        );
-                    } else {
-                        log::warn!(
-                            "despawn entity_id={} local scene ok but xpbd miss; pending recorded",
-                            out.entity_id
-                        );
+                    // Logical trash + pending_despawns. Despawn Undo
+                    // (`note_despawn_undo`) is Intent-era non-guarantee — not
+                    // recorded here (no operator / barrier pair yet).
+                    let despawn_out = led.note_live_despawn(entity_id);
+                    match despawn_out {
+                        crate::live_edit::NoteLiveDespawn::Trashed { .. }
+                        | crate::live_edit::NoteLiveDespawn::SessionRecycled => {
+                            // Tip⇔Commit 一体。publisher 欠落は miswire → fail-closed abort.
+                            if let Some(proposal) = edit_proposal.as_ref() {
+                                let tip = led.bump_tip();
+                                self.require_live_commit().publish_accept(proposal, tip);
+                            }
+                            drop(led);
+                            if out.physics_ok {
+                                log::info!(
+                                    "despawn applied entity_id={} (xpbd+local scene+reseal; x00b9)",
+                                    out.entity_id
+                                );
+                            } else {
+                                log::warn!(
+                                    "despawn entity_id={} local scene ok but xpbd miss; pending recorded",
+                                    out.entity_id
+                                );
+                            }
+                        }
+                        crate::live_edit::NoteLiveDespawn::Failed => {
+                            // Tip reject only — does **not** restore scene/physics
+                            // rows already dropped (non-guarantee SSoT skew; see
+                            // live_edit module docs). Sparse may remain live.
+                            drop(led);
+                            self.reject_edit_apply(edit_proposal.as_ref());
+                            log::error!(
+                                "despawn scene ok but live_edit trash failed entity_id={}; reject APPLY (no scene/physics compensate)",
+                                out.entity_id
+                            );
+                        }
                     }
                 }
                 Ok(out) => {

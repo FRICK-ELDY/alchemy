@@ -2,7 +2,7 @@
 
 > **ID:** `x00e2` · **slug:** `soft-lease-edit-lock` · **status:** `done` · **area:** `[host, sim]` · **depends_on:** `[x00e1]`  
 > **優先度:** 品質本線 **Phase 1c**（1a/1b Green 後・DoD 必須外の枠）  
-> **後続:** [x00e3](x00e3-trash-uuid-gc.md)
+> **後続:** [x00e3](x00e3-trash-uuid-gc.md)（**done**）
 
 目標: host 入口に短命 **`SoftLease`** を置き、inspector / Reparent 等の同時構造編集奪い合いを防ぐ。物理掴み SSoT（`holder_slot` / `STATE_IS_GRABBED`）とは別概念で二重化しない。
 
