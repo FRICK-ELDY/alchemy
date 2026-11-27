@@ -74,9 +74,10 @@ struct NodeRecord {
 /// Successful Spawn / Move / reparent enqueue [`SimPatch`] for Arena Step 0
 /// Drain; dense transform / bits / box go via [`Self::enqueue_patch`] (not CRDT).
 /// Keys = [`EntityId`].
-/// Non-guarantees: edit wire / Zenoh / Save I/O (host facade); `op_chain_hash`;
-/// SoftLease acquisition (host gate; type in soft_lease); Dual-auth JWT path;
-/// SlotUndo Intent wire (see [`crate::slot_undo`] + host facade).
+/// Non-guarantees: edit wire / Zenoh / Save I/O (host facade); wire carriage of
+/// `op_chain_hash` (fold/types in [`super::op_chain`]; host tip-path fold is
+/// facade); SoftLease acquisition (host gate; type in soft_lease); Dual-auth
+/// JWT path; SlotUndo Intent wire (see [`crate::slot_undo`] + host facade).
 #[derive(Clone, Debug, Default)]
 pub struct SceneStore {
     nodes: SparseSet<NodeRecord>,
@@ -144,6 +145,22 @@ impl SceneStore {
         self.nodes
             .get(entity_id)
             .and_then(|n| n.props.get(&prop_key).map(|p| &p.value))
+    }
+
+    /// All LWW props for `entity_id`, sorted by `prop_key` (RoomSnapshot export).
+    ///
+    /// Missing entity → empty vec. Values are cloned.
+    pub fn properties(&self, entity_id: EntityId) -> Vec<(u32, PropValue)> {
+        let Some(record) = self.nodes.get(entity_id) else {
+            return Vec::new();
+        };
+        let mut out: Vec<(u32, PropValue)> = record
+            .props
+            .iter()
+            .map(|(k, v)| (*k, v.value.clone()))
+            .collect();
+        out.sort_by_key(|(k, _)| *k);
+        out
     }
 
     /// Pending dense patches (not yet drained for Arena Step 0).

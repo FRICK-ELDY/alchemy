@@ -62,8 +62,8 @@ pub mod wire_aead;
 pub mod wire_crypto;
 
 pub use edit_field::{
-    decode_color_rgba, decode_flags, encode_color_rgba, encode_flags, field_value_hash,
-    hash_blake3_hex, hash_color_rgba, hash_flags, known_field_id,
+    blake3_hash_32, decode_color_rgba, decode_flags, encode_color_rgba, encode_flags,
+    field_value_hash, hash_blake3_hex, hash_color_rgba, hash_flags, known_field_id,
 };
 
 /// Bump when `proto/` has an incompatible wire change.

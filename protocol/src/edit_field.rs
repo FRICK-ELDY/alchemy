@@ -39,9 +39,19 @@ pub fn decode_color_rgba(value: &[u8]) -> Option<[f32; 4]> {
     Some(rgba)
 }
 
-/// BLAKE3-256 of a SetField value blob (optimistic lock).
-pub fn field_value_hash(value: &[u8]) -> [u8; 32] {
+/// General-purpose BLAKE3-256 of arbitrary bytes.
+///
+/// Prefer this over [`field_value_hash`] when the caller is **not** SetField
+/// optimistic locking (e.g. op_chain digests). Same algorithm; clearer ownership.
+pub fn blake3_hash_32(value: &[u8]) -> [u8; 32] {
     *blake3::hash(value).as_bytes()
+}
+
+/// BLAKE3-256 of a SetField value blob (optimistic lock).
+///
+/// Thin alias of [`blake3_hash_32`] — SetField callers keep this name.
+pub fn field_value_hash(value: &[u8]) -> [u8; 32] {
+    blake3_hash_32(value)
 }
 
 /// Hash for the current FLAGS value.

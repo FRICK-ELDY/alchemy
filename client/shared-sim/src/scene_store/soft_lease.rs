@@ -6,7 +6,7 @@
 //! apply); [`actor_id_from_sub`] is a stable numeric map of Room Token `sub`
 //! (Dual-auth still uses the string).
 //! Non-guarantees: physical grab (`holder_slot` / `STATE_IS_GRABBED`); JWT /
-//! Dual-auth itself; 3-layer IDs / `op_chain_hash`; FNV-1a collision resistance
+//! Dual-auth itself; wire carriage of `op_chain_hash` (see op_chain); FNV-1a collision resistance
 //! (hash is **not** an auth substitute — colliding `sub`s share a SoftLease
 //! holder id and weaken mutual exclusion).
 

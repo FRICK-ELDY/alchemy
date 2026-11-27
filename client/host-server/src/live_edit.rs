@@ -1,10 +1,13 @@
-//! Host live edit facade over `shared-sim::scene_store` (x00e0 / x00e1 / x00e2 / x00e3).
+//! Host live edit facade over `shared-sim::scene_store` (x00e0…x00e5).
 //!
-//! Contract (x00b3 / x00b9 / x00e0 / x00e1 / x00e2 / x00e3):
+//! Contract (x00b3 / x00b9 / x00e0 / x00e1 / x00e2 / x00e3 / x00e5):
 //! - Sparse SSoT is [`SceneStore`] (parents / fields / entities) — **no** host
 //!   HashMap second copy.
 //! - Host keeps quarantine, `tip` (`scene_rev`) sequencing, pending spawn/despawn
 //!   / freelist / reserved, edit + Save I/O.
+//! - [`Self::op_chain_hash`] + [`Self::fold_confirmed_op`] are the Phase 1c
+//!   chain-tip update口 (call **after** [`Self::bump_tip`]). host_loop does
+//!   **not** auto-fold yet (wire / Verifier carriage is a later slice).
 //! - Optimistic store mutates on live accept; **`tip` is NOT bumped** until
 //!   FrameBridge queue **and** barrier succeed (Reparent/SetField).
 //!   Spawn/Despawn tip bumps after inbox send / physics-ok.
@@ -39,7 +42,8 @@
 //! does **not** restore already-applied scene/physics rows (sparse may stay live
 //! → rare SSoT skew until operator retry / Leave); leave-time `undo_stacks`
 //! eviction; Arena SimPatch drain wiring; SoftLease ↔ physical grab integration;
-//! StableUuid full path (→ x00e4).
+//! StableUuid full path (→ x00e4); host_loop tip-path auto-fold of
+//! `op_chain_hash` (→ later Reliable Op / Verifier wiring).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -52,8 +56,9 @@ use alchemy_protocol::{
     EditReparent, EditSetField, Message, SceneEntry,
 };
 use alchemy_shared_sim::{
-    is_trash_entity_id, ApplyOutcome, CrdtOp, OpTimestamp, PropValue, SceneStore, SlotTransition,
-    SlotUndoStack, SoftLeaseConflict, SoftLeaseTable, TrashStore, SOFT_LEASE_TTL_TICKS,
+    fold_op_chain, is_trash_entity_id, ApplyOutcome, CrdtOp, OpTimestamp, PropValue, SceneStore,
+    SequencedOp, SlotTransition, SlotUndoStack, SoftLeaseConflict, SoftLeaseTable, TrashStore,
+    SOFT_LEASE_TTL_TICKS,
 };
 #[cfg(test)]
 use alchemy_shared_sim::{SoftLease, UndoError, TRASH_ENTITY_ID};
@@ -91,6 +96,11 @@ pub enum NoteLiveDespawn {
 pub struct LiveEditLedger {
     /// Monotonic EditCommit tip (advanced only after barrier success).
     pub tip: u64,
+    /// Host-sequenced op chain tip (x00e5 枠). Updated only via
+    /// [`Self::fold_confirmed_op`] after tip bump — not on the wire yet.
+    // x00e5 枠: host_loop tip-path fold not wired yet (bin dead_code; used in tests).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub op_chain_hash: [u8; 32],
     /// Session sparse SSoT (parents / fields / entities).
     store: SceneStore,
     /// Unsaved session spawns (Save body `spawns`); ticket kept until Save or local despawn.
@@ -134,6 +144,38 @@ impl LiveEditLedger {
     pub fn bump_tip(&mut self) -> u64 {
         self.tip = self.tip.saturating_add(1);
         self.tip
+    }
+
+    /// Fold a confirmed op into [`Self::op_chain_hash`] and return the matching
+    /// [`SequencedOp`] (hash + payload are the same fold).
+    ///
+    /// Call **after** [`Self::bump_tip`] so `room_seq` matches the accepted
+    /// `scene_rev`. Does not publish to Zenoh / EditCommit (枠 only).
+    ///
+    /// Edit* → [`CrdtOp`] rebuild map (host_loop tip wiring):
+    /// - Spawn → [`CrdtOp::SpawnNode`]
+    /// - Despawn / [`NoteLiveDespawn::Trashed`] → [`CrdtOp::MoveNode`] to
+    ///   trash (`TRASH_ENTITY_ID`)
+    /// - Despawn / [`NoteLiveDespawn::SessionRecycled`] → hard remove + freelist
+    ///   (unsaved session cancel). **Not** MoveNode(TRASH). `bump_tip` may
+    ///   still run; do **not** fold a TRASH MoveNode for this path (dedicated
+    ///   chain expression undefined — skip fold until one exists).
+    /// - Reparent → [`CrdtOp::MoveNode`]
+    /// - SetField → [`CrdtOp::SetProperty`]
+    // x00e5 枠: host_loop tip-path fold not wired yet (bin dead_code; used in tests).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn fold_confirmed_op(&mut self, host_epoch: u64, op: CrdtOp) -> SequencedOp {
+        debug_assert!(
+            self.tip > 0,
+            "fold_confirmed_op requires bump_tip first (room_seq must be > 0)"
+        );
+        self.op_chain_hash = fold_op_chain(&self.op_chain_hash, host_epoch, self.tip, &op);
+        SequencedOp {
+            host_epoch,
+            room_seq: self.tip,
+            op_chain_hash: self.op_chain_hash,
+            op,
+        }
     }
 
     /// Advance SoftLease + Trash GC clock (call once per host physics tick).
@@ -1397,6 +1439,52 @@ mod tests {
             led.soft_lease_of(10).unwrap().lease_expires_tick,
             expires,
             "allows must not extend TTL"
+        );
+    }
+
+    #[test]
+    fn fold_confirmed_op_after_bump_updates_chain_tip() {
+        let mut led = LiveEditLedger::default();
+        assert_eq!(led.op_chain_hash, [0u8; 32]);
+        let tip = led.bump_tip();
+        assert_eq!(tip, 1);
+        let op = CrdtOp::SpawnNode {
+            ts: OpTimestamp {
+                lamport: 1,
+                actor_id: HOST_ACTOR_ID,
+            },
+            node: 10,
+            parent: None,
+        };
+        let seq1 = led.fold_confirmed_op(42, op.clone());
+        assert_ne!(seq1.op_chain_hash, [0u8; 32]);
+        assert_eq!(led.op_chain_hash, seq1.op_chain_hash);
+        assert_eq!(seq1.host_epoch, 42);
+        assert_eq!(seq1.room_seq, 1);
+        assert_eq!(seq1.op, op);
+
+        let tip2 = led.bump_tip();
+        assert_eq!(tip2, 2);
+        let op2 = CrdtOp::MoveNode {
+            ts: OpTimestamp {
+                lamport: 2,
+                actor_id: HOST_ACTOR_ID,
+            },
+            node: 10,
+            new_parent: Some(1),
+        };
+        let seq2 = led.fold_confirmed_op(42, op2.clone());
+        assert_ne!(seq2.op_chain_hash, seq1.op_chain_hash);
+        assert_eq!(seq2.room_seq, 2);
+        assert_eq!(seq2.op, op2);
+        assert_eq!(led.op_chain_hash, seq2.op_chain_hash);
+
+        // Same inputs → same fold (deterministic).
+        let mut led2 = LiveEditLedger::default();
+        let _ = led2.bump_tip();
+        assert_eq!(
+            led2.fold_confirmed_op(42, op).op_chain_hash,
+            seq1.op_chain_hash
         );
     }
 }
