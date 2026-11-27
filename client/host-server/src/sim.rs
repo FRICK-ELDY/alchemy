@@ -38,9 +38,9 @@ use alchemy_shared_sim::delta_codec::{
 #[cfg(test)]
 use alchemy_shared_sim::mvcc::KinematicPoseF32;
 use alchemy_shared_sim::mvcc::{HotPhysicsPage, PageXpbdAdapter, ENTITIES_PER_PAGE, NO_HOLDER};
+use alchemy_shared_sim::sim_arena::SimArena;
 use alchemy_shared_sim::spatial::SceneBounds;
 use alchemy_shared_sim::xpbd::{self, XpbdWorld};
-use alchemy_shared_sim::sim_arena::SimArena;
 use alchemy_shared_sim::{
     classify_scene_entry, publish_arena_then_rotate, scene_entry_color_rgba, seed_arena_from_sheet,
     sync_dirty_sheet_to_arena_work, ColliderShape, EntityKind, EpochSheet, EpochSnapshotPair,
@@ -2189,10 +2189,7 @@ mod tests {
         }
         let live = world.world.curr.world_transforms[row].position;
         let published = world.snapshots().load_curr().world_transforms[row].position;
-        assert_eq!(
-            live, published,
-            "MvccXpbd Ring3 curr must track live sheet"
-        );
+        assert_eq!(live, published, "MvccXpbd Ring3 curr must track live sheet");
         assert!(
             (published[0] - 42.0).abs() > 1.0 || (published[1] - 42.0).abs() > 1.0,
             "published pose must have left the planted stale seed (got {published:?})"

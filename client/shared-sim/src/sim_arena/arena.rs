@@ -338,14 +338,7 @@ impl SimArena {
     ///
     /// # Panics
     /// If `slot` is out of range (same contract as [`Self::mark_dirty`]).
-    pub fn seed_slot(
-        &mut self,
-        slot: LocalSlotId,
-        x: f32,
-        y: f32,
-        z: f32,
-        rot: [f32; 4],
-    ) {
+    pub fn seed_slot(&mut self, slot: LocalSlotId, x: f32, y: f32, z: f32, rot: [f32; 4]) {
         let i = slot as usize;
         assert!(
             i < self.slot_count(),

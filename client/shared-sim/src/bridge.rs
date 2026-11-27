@@ -565,7 +565,8 @@ mod tests {
             arena_bridge_tick(&mut arena, &snaps, |_| {});
             let curr = snaps.load_curr().world_transforms[slot as usize].position;
             assert_eq!(
-                curr, [20.0, 1.0, 0.0],
+                curr,
+                [20.0, 1.0, 0.0],
                 "idle bridge tick {tick}: Ring3 curr must not ancestor-regress"
             );
             assert_eq!(
