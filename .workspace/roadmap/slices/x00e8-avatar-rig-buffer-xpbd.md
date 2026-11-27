@@ -1,6 +1,6 @@
 # x00e8 — AvatarRigBuffer 揺れもの XPBD（Phase 2）
 
-> **ID:** `x00e8` · **slug:** `avatar-rig-buffer-xpbd` · **status:** `planned` · **area:** `[sim, client]` · **depends_on:** `[x00e1]`  
+> **ID:** `x00e8` · **slug:** `avatar-rig-buffer-xpbd` · **status:** `done` · **area:** `[sim, client]` · **depends_on:** `[x00e1]`  
 > **優先度:** 品質本線 **Phase 2**（1a–1c の後）  
 > **後続:** [x00e9](x00e9-rigid-solver-boundary.md)
 
@@ -16,6 +16,14 @@
 |:---|:---|
 | `AvatarRigBuffer` と揺れもの XPBD の最小経路；Slot 非管理 | 空間 Slot へのボーン全登録 |
 | Phase 1 の scene_store / sim_arena 契約を壊さない | rapier3d、規模 KPI 宣言 |
+
+## 触ったファイル
+
+- `client/shared-sim/src/avatar_rig/mod.rs` — 境界 docs + Slot 非爆発 / XPBD テスト
+- `client/shared-sim/src/avatar_rig/buffer.rs` — `AvatarRigBuffer` SoA / `AvatarSpatialAnchors`
+- `client/shared-sim/src/avatar_rig/xpbd_step.rs` — ローカル soft-distance `step`（EpochSheet 非依存）
+- `client/shared-sim/src/lib.rs` — `pub mod avatar_rig`；crate docs
+- [scene_store_sim_arena.md](../scene_store_sim_arena.md) / [README.md](../README.md) — status・次着手
 
 ## 完了条件
 

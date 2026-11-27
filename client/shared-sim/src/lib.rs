@@ -12,7 +12,9 @@
 //! [`SoftLease`] edit lock (x00e2); logical delete via [`TRASH_ENTITY_ID`] +
 //! [`TrashStore`] GC (x00e3; host Save still projects `pending_despawns`);
 //! 3-layer IDs + [`WireToLocal`] skeleton (x00e4; edit/PROTOCOL_PIN still
-//! `entity_id: u32`); [`SequencedOp`] / op_chain fold + [`RoomSnapshot`] 枠 (x00e5).
+//! `entity_id: u32`); [`SequencedOp`] / op_chain fold + [`RoomSnapshot`] 枠 (x00e5);
+//! [`avatar_rig::AvatarRigBuffer`] secondary-bone XPBD outside Scene Store slots
+//! (x00e8; host tick unwired).
 //! Non-guarantees: Rapier / Dual-AST Kernel / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); Zenoh edit / Save I/O (host `LiveEditLedger` facade);
@@ -30,6 +32,7 @@ use std::collections::{HashMap, HashSet};
 
 use alchemy_protocol::{scene_entry_grabbable, scene_entry_is_user_root, SceneEntry};
 
+pub mod avatar_rig;
 pub mod bridge;
 pub mod delta_codec;
 pub mod demo;
