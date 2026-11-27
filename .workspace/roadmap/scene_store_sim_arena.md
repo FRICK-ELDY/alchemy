@@ -403,7 +403,7 @@ pub struct NetTransformDelta {
 | [x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md) | 2 | avatar-rig-buffer-xpbd | done | AvatarRigBuffer XPBD |
 | [x00e9](slices/x00e9-rigid-solver-boundary.md) | 3 | rigid-solver-boundary | done | RigidSolver 境界のみ |
 
-**次の着手:** 品質本線 Phase 1–3 枠は [x00e9](slices/x00e9-rigid-solver-boundary.md) **done** でクローズ（次の品質スライス ID なし；空きは `x00ea`）。剛体ソルバ本体・rapier/AVBD は別決（人承認）。並行候補は [README.md](README.md)。
+**次の着手:** 品質本線 Phase 1–3 枠は [x00e9](slices/x00e9-rigid-solver-boundary.md) **done** でクローズ。体験・配線の後継は [feel_edit_experience.md](feel_edit_experience.md)（空き ID `x00ea`〜）。剛体ソルバ本体・rapier/AVBD は別決（人承認）。並行候補は [README.md](README.md)。
 
 ### Phase 1a（最小垂直切片・最優先）：Sim Arena 3 面 ＋ Carry-Over ＋ 既存出版
 * **目的**: 先祖返りゼロと Arena バリア（Carry-Over → publish → rotate）を、既存 `EpochSnapshotPair`（arc-swap）上で閉じる。**Phase 1a の Ring3 SSoT は host の f64 Epoch sheet（`start` / `world.curr`）**；Arena は Carry-Over / TELEPORT 寿命の補助（面を sheet に overlay しない）。物理・CRDT・SoftLease・3層 UUID は入れない。

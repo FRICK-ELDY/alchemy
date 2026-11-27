@@ -4,6 +4,7 @@
 * **注記（2026-11-27）**: `MvccPageArena` 前提は**旧**。品質本線は [`../scene_store_sim_arena.md`](../scene_store_sim_arena.md)（Sim Arena / `sim_pages`）。旧文書は [`../archive/2026-11-27/mvcc_xpbd.md`](../archive/2026-11-27/mvcc_xpbd.md)
 * **対象外（本メモでは扱わない）**: 決定論 math、SHM IPC、Dual-AST→Wasm/WGSL、Spatial AoI、HKDF 階層鍵
   → それぞれ [`../scene_store_sim_arena.md`](../scene_store_sim_arena.md) / [`spatial_interest.md`](../spatial_interest.md) / 既存 Room AEAD・epoch に委譲
+* **体験本線（配線・レーザー・文字・Facet）**: [`../feel_edit_experience.md`](../feel_edit_experience.md)（E1/E2 はそちらの §4.7 から参照）
 * **目的**: VR ヒッチ根絶とクリエイト／長時間運用に効く、現行ロードマップで言語化が薄い4束を固定する
 
 ---
