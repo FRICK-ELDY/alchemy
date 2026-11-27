@@ -98,14 +98,16 @@ defmodule AuthWeb.Plugs.Authenticate do
         :error
       )
 
-  defp classify_failure(reason),
-    do:
-      failure(
-        :unauthorized,
-        :unexpected_authentication_failure,
-        %{reason: inspect(reason)},
-        :error
-      )
+  # Catch-all for atoms/`term()` not matched above. Only `:unknown_kid` is special-cased:
+  # `Token.verify/1` returns it bare. `:missing_kid` from `peek_kid/1` is wrapped as
+  # `{:token_validation_failed, :missing_kid}` and becomes `:invalid_token` above.
+  defp classify_failure(reason) do
+    code = known_unexpected_code(reason)
+    failure(:unauthorized, code, %{reason: inspect(reason)}, :error)
+  end
+
+  defp known_unexpected_code(:unknown_kid), do: :unknown_kid
+  defp known_unexpected_code(_reason), do: :unexpected_authentication_failure
 
   defp expired_reason?(:token_expired), do: true
 

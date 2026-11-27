@@ -132,13 +132,16 @@ defmodule Auth.Social do
           Friendship.accept(row)
       end
     else
-      {:error, _} = err -> err
+      result -> coerce_friendship_error(result)
     end
   end
 
   @spec reject_friend(user_id(), user_id()) ::
           :ok | {:error, :not_found | :already_friends | term()}
   def reject_friend(actor_id, other_id) do
+    # No `coerce_friendship_error/1`: unlike `unfriend` (with-match on `:accepted`) /
+    # `accept_friend` (shared fail-closed sink), failures here are already `{:error, _}`
+    # from cast/fetch, and friendship states are exhausted in the `case` below.
     with {:ok, actor_id} <- cast_id(actor_id),
          {:ok, other_id} <- cast_id(other_id),
          {lo, hi} <- pair(actor_id, other_id),
@@ -175,8 +178,7 @@ defmodule Auth.Social do
           {:error, reason}
       end
     else
-      {:error, _} = err -> err
-      _ -> {:error, :not_found}
+      result -> coerce_friendship_error(result)
     end
   end
 
@@ -396,4 +398,9 @@ defmodule Auth.Social do
       String.contains?(message, "already been taken") or
       String.contains?(message, "UNIQUE")
   end
+
+  # Keep fail-closed for unexpected `with` shapes (`accept_friend` / `unfriend` share this).
+  @spec coerce_friendship_error(term()) :: {:error, term()}
+  defp coerce_friendship_error({:error, _} = err), do: err
+  defp coerce_friendship_error(_), do: {:error, :not_found}
 end

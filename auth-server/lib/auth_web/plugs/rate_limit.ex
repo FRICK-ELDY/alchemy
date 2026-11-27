@@ -44,6 +44,7 @@ defmodule AuthWeb.Plugs.RateLimit do
     end
   end
 
+  # Refresh is handled here (IP then token), not via `rate_limit_keys/2`.
   defp first_exceeded_axis(conn, :refresh, limits) do
     ip = AuthWeb.ClientIp.from_conn(conn)
 
@@ -130,8 +131,6 @@ defmodule AuthWeb.Plugs.RateLimit do
       end
     end)
   end
-
-  # `:refresh` uses `first_exceeded_axis/3` + `check_refresh_token_limit/2` (not this helper).
 
   defp rate_limit_keys(conn, :resend_verification) do
     with_ip(conn, fn ip ->

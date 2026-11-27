@@ -115,6 +115,11 @@ defmodule Auth.Token do
          {:user, {:ok, user}} <- {:user, ensure_user_active(claims["sub"])} do
       {:ok, claims, user}
     else
+      # Guarantee: clauses below must stay exhaustive for every value `ensure_not_revoked/1`
+      # and `ensure_user_active/1` can return. Changing those helpers' return shapes without
+      # updating this `else` yields `WithClauseError` (no `other ->`: it is type-unreachable
+      # today and fails `mix compile --warnings-as-errors`). `verify/1` keeps `other ->`
+      # because peek/Joken can yield non-`{:error, _}` values.
       {:revocation, {:error, :revoked}} -> {:error, :revoked}
       {:revocation, {:error, error}} -> {:error, {:revocation_check_failed, error}}
       {:user, {:error, :unauthorized}} -> {:error, :unauthorized}
