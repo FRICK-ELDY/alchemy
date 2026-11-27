@@ -67,7 +67,7 @@
 | P3-5 | Dual-AST / Wake / OSC / LOD ビルド / audio | 目標 | 減点しない |
 | P3-6 | 署名付き installer / SBOM / 自動更新 | 提案 | OS vault 後の配布 trust |
 | P3-7 | Spatial Interest 深化（AOI snapshot・規模 gate） | 規模本線 | 正本 [`spatial_interest.md`](../../roadmap/spatial_interest.md) |
-| P3-8 | ~~MVCC default 切替・複数 page~~ → **凍結** | 品質本線 | 旧正本 archived。後任は [`scene_store_sim_arena.md`](../../roadmap/scene_store_sim_arena.md) Phase 1（LiveEditLedger → Scene Store）。`mvcc/` は `sim_pages` へ改称予定（SSoT にしない） |
+| P3-8 | ~~MVCC default 切替・複数 page~~ → **凍結** | 品質本線 | 旧正本 archived。後任は [`scene_store_sim_arena.md`](../../roadmap/scene_store_sim_arena.md) Phase 1（LiveEditLedger → Scene Store）。`mvcc/` → `sim_pages` 改称は [x00e7](../../roadmap/slices/x00e7-mvcc-rename-sim-pages.md) **done**（SSoT にしない） |
 
 ---
 

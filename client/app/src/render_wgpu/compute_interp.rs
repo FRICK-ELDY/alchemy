@@ -1,6 +1,6 @@
 //! naga validation + layout helpers for [`super::shaders::INTERP_WGSL`] (x00ac).
 
-use alchemy_shared_sim::mvcc::GpuTransferableSoA;
+use alchemy_shared_sim::sim_pages::GpuTransferableSoA;
 
 use super::shaders::INTERP_WGSL;
 
@@ -52,7 +52,7 @@ mod tests {
 
     #[test]
     fn soa_entity_cap_matches_shader_arrays() {
-        assert_eq!(alchemy_shared_sim::mvcc::ENTITIES_PER_PAGE, 1024);
+        assert_eq!(alchemy_shared_sim::sim_pages::ENTITIES_PER_PAGE, 1024);
         assert!(INTERP_WGSL.contains("array<f32, 1024>"));
         let _ = GpuTransferableSoA::zeroed();
         assert!(gpu_soa_bytes() > 64 * 1024);

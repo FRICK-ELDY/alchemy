@@ -4,7 +4,7 @@
 //! [`ManifestIndex`] one-pass mesh / box / grabbable maps; shared interaction +
 //! demo id constants; [`scene_entry_color_rgba`]; runtime held slots via
 //! [`slot_graph::SlotGraph`] (x0056); Zero-Base spatial lifecycle primitives in
-//! [`tape`] / [`topology`] / [`spatial`] / [`xpbd`] / [`bridge`] / [`mvcc`] (x00a3);
+//! [`tape`] / [`topology`] / [`spatial`] / [`xpbd`] / [`bridge`] / [`sim_pages`] (x00a3);
 //! Sim Arena 3-face + Carry-Over + bridge publish in [`sim_arena`] / [`bridge`]
 //! (x00da / x00db / x00dc); Scene Store SparseSet + LWW / cycle reject +
 //! [`SimPatch`] queue → Arena Drain in [`scene_store`] / [`sim_arena`]
@@ -19,7 +19,7 @@
 //! GPU wiring (client `epoch_view`); PROTOCOL_PIN quantized pose（[`delta_codec`]
 //! は x00ae；host dirty 30Hz は x00b1; not V_ack/XOR）; cross-arch determinism (Q2).
 //! Host `SimBackend` + contact-on wiring is x00ad (`host-server`);
-//! MVCC gate x00a6–x00a9 + Phase 2 app x00aa–x00ac are in [`mvcc`] / client;
+//! MVCC gate x00a6–x00a9 + Phase 2 app x00aa–x00ac are in [`sim_pages`] / client;
 //! SoA inertia SIMD (x00a5) is not on the tick path yet; physical grab remains
 //! `holder_slot` (SoftLease is structural only); full StableUuid wire/Save cutover;
 //! wire carriage of `op_chain_hash`; `…/snapshot` / `…/sim_state` replacement.
@@ -34,9 +34,9 @@ pub mod bridge;
 pub mod delta_codec;
 pub mod demo;
 pub mod ids;
-pub mod mvcc;
 pub mod scene_store;
 pub mod sim_arena;
+pub mod sim_pages;
 pub mod slot_graph;
 pub mod slot_undo;
 pub mod spatial;

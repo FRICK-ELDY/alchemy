@@ -3,7 +3,7 @@
 //! Guarantees: page-path body-body contacts via existing [`crate::xpbd::step`] + LBVH;
 //! prev reconstructed from `frame_delta` (`pos - delta`); cell_origin f64 + local f32;
 //! **page-face `DYNAMIC` ≡ `inv_mass > 0`** on pull (x00ad).
-//! Non-guarantees: zero heap inside XPBD scratch; history is fixed [`crate::mvcc::SnapshotSlot`]
+//! Non-guarantees: zero heap inside XPBD scratch; history is fixed [`crate::sim_pages::SnapshotSlot`]
 //! (not a per-commit page `Vec` growth); SIMD/`wide` on this path; preserving a sheet
 //! `DYNAMIC` bit when `inv_mass == 0` (needs an explicit page mask later);
 //! app 描画本線の page SoA 置換（Epoch 経路並存）; dirty コーデック直結.
@@ -365,8 +365,8 @@ pub fn pages_bit_equal(a: &HotPhysicsPage, b: &HotPhysicsPage) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mvcc::arena::MvccPageArena;
-    use crate::mvcc::page::HISTORY_TICKS;
+    use crate::sim_pages::arena::MvccPageArena;
+    use crate::sim_pages::page::HISTORY_TICKS;
 
     fn box_shape(half: f32) -> ColliderShape {
         ColliderShape {

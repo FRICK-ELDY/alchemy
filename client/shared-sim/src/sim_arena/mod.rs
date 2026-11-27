@@ -18,7 +18,7 @@
 //! — atomic co-publish is a later slice).
 //! Non-guarantees: scene_store CRDT apply; physics; Depth Bucket rebuild;
 //! §6 `COMP_*` / `STATE_IS_GRABBED` (intentional defer — grab SSoT stays on
-//! `mvcc` / Epoch); SoftLease / drag volatile stream; per-column dirty_epoch for
+//! `sim_pages` / Epoch); SoftLease / drag volatile stream; per-column dirty_epoch for
 //! procedural-box (roadmap §4.1 low-freq columns — deferred); durable↔Published
 //! atomic snapshot for Ring3.
 //!

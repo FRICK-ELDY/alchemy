@@ -44,7 +44,7 @@
 * host `network_worker`: dirty upsert を `CellId` でバケットしセルごと sign / soft-seal / soft-put（本スライス時点の入口は `bucket_upsert_indices_by_cell`）
 * **x00c2 以降**: 入口は `plan_cell_frame_buckets`（`bucket_upsert_indices_by_cell(..., exclude)` + exit removes）→ `materialize_cell_soft_puts` → soft-put。Room `removes` 交差 id は cell upsert から除外
 * `NetworkWorkerConfig`: `session` + `wire_cap` + LRU publisher キャッシュ（64）
-* セル判定は `alchemy_shared_sim::mvcc::CellId`（protocol に `CELL_SIZE` を複製しない）
+* セル判定は `alchemy_shared_sim::sim_pages::CellId`（protocol に `CELL_SIZE` を複製しない）
 * 統計: `cell_ok` / `cell_fail` + `cell_skip`（LRU eviction 回数）
 * client: `WorldView.last_frame_from_room` + Room 同 tick 上書き（x00bf 併読維持）
 

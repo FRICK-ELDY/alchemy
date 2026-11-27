@@ -190,8 +190,8 @@ fn chunk8(col: &[f32; ENTITIES_PER_PAGE], base: usize) -> [f32; LANES] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mvcc::adapter::pages_bit_equal;
-    use crate::mvcc::page::KinematicPoseF32;
+    use crate::sim_pages::adapter::pages_bit_equal;
+    use crate::sim_pages::page::KinematicPoseF32;
 
     fn seed_pair() -> (HotPhysicsPage, HotPhysicsPage) {
         let mut curr = HotPhysicsPage::zeroed_page();
@@ -320,7 +320,7 @@ mod tests {
     fn dirty_mask_only_for_moved_lanes() {
         let (mut page, prev) = seed_pair();
         // Clear dirty from try_set_kinematic_pose so we observe inertia marks alone.
-        page.dirty_entity_mask = [0; crate::mvcc::page::BITMASK_WORDS];
+        page.dirty_entity_mask = [0; crate::sim_pages::page::BITMASK_WORDS];
         let before = page.dirty_entity_mask;
         step_inertia(&mut page, &prev, [0.0, -9.81, 0.0], 1.0 / 60.0);
         assert_ne!(page.dirty_entity_mask, before);

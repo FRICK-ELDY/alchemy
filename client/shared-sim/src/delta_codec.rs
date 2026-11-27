@@ -9,7 +9,7 @@
 //! Non-guarantees: PROTOCOL_PIN quantized pose bump; host wiring is x00b1 (`host-server`);
 //! `…/sim_state`; K>1 redundancy window (Q6); Spatial Interest.
 
-use crate::mvcc::{HotPhysicsPage, MvccPageArena, BITMASK_WORDS, ENTITIES_PER_PAGE};
+use crate::sim_pages::{HotPhysicsPage, MvccPageArena, BITMASK_WORDS, ENTITIES_PER_PAGE};
 
 /// One entity pose delta for a publish (entity_id is authoritative on the wire).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -29,8 +29,8 @@ pub enum DirtyAccumError {
 
 /// OR-accumulator keyed by page **pool** index (`PageId.0`; contract A: clear on alloc/reuse).
 ///
-/// Capacity must equal [`crate::mvcc::MvccPageArena`] pool size (often
-/// `HISTORY_TICKS + N`, not [`crate::mvcc::MAX_PAGES_PER_SNAPSHOT`]). Snapshot page
+/// Capacity must equal [`crate::sim_pages::MvccPageArena`] pool size (often
+/// `HISTORY_TICKS + N`, not [`crate::sim_pages::MAX_PAGES_PER_SNAPSHOT`]). Snapshot page
 /// count is a per-commit bound; pool slots can be `>= 64`.
 pub struct WireDirtyAccumulator {
     acc: Box<[[u64; BITMASK_WORDS]]>,
@@ -300,7 +300,7 @@ pub fn extract_dirty_records_into(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mvcc::KinematicPoseF32;
+    use crate::sim_pages::KinematicPoseF32;
 
     fn identity_pose(px: f32, py: f32, pz: f32) -> KinematicPoseF32 {
         KinematicPoseF32 {

@@ -374,7 +374,7 @@ impl MvccPageArena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mvcc::page::{KinematicPoseF32, NO_HOLDER};
+    use crate::sim_pages::page::{KinematicPoseF32, NO_HOLDER};
 
     #[test]
     fn arena_alloc_commit_transfer() {

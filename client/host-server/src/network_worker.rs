@@ -12,7 +12,7 @@
 //! `put` failure on Room `…/frame` is fail-closed via `process::exit(78)` (same
 //! severity as former main-loop `?`, without returning to physics).
 //! x00c0: after a successful Room frame put, dirty upserts are bucketed by
-//! [`alchemy_shared_sim::mvcc::CellId`] and each non-empty cell is soft-put as a
+//! [`alchemy_shared_sim::sim_pages::CellId`] and each non-empty cell is soft-put as a
 //! **separately sealed** `…/frame/cell/{cx}_{cy}_{cz}` frame (same `net_tick`).
 //! x00c2: `last_wire_cell` tracks the last published delivery cell per entity; on
 //! cell-boundary cross or Room `removes` / `removes_only`, the **old cell** also
@@ -50,7 +50,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use zenoh::Wait;
 
-use alchemy_shared_sim::mvcc::{CellId, BITMASK_WORDS};
+use alchemy_shared_sim::sim_pages::{CellId, BITMASK_WORDS};
 
 /// Max cached cell-frame publishers (x00c0). Overflow: declare the new cell, then **LRU-evict**.
 pub const CELL_PUBLISHER_CACHE_MAX: usize = 64;
