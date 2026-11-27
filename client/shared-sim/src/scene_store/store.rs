@@ -1092,9 +1092,7 @@ mod tests {
         spawn(&mut store, 2, 2, Some(1));
         spawn(&mut store, 3, 3, Some(2));
         store.drain_patches();
-        let prev = store
-            .move_to_trash_sparse(2, ts(10, 1))
-            .expect("trash ok");
+        let prev = store.move_to_trash_sparse(2, ts(10, 1)).expect("trash ok");
         assert_eq!(prev, Some(1));
         assert!(store.is_trashed(2));
         assert!(!store.is_live(2));

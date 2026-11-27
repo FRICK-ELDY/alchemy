@@ -1298,7 +1298,10 @@ mod tests {
         ));
         led.gc_trash_with_limits(0, 0);
         assert!(!led.store().contains(10));
-        assert!(led.pending_despawns.contains(&10), "Save projection until clear");
+        assert!(
+            led.pending_despawns.contains(&10),
+            "Save projection until clear"
+        );
         assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
         assert!(led.contains_entity(10));
         assert!(
