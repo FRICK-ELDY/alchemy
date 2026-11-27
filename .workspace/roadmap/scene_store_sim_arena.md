@@ -283,7 +283,7 @@ pub const COMP_SDF_VISUAL: u64          = 1 << 2; // プロシージャル BOX �
 pub const COMP_MESH_RENDER: u64         = 1 << 3;
 pub const COMP_COLLIDER: u64            = 1 << 5; // Static / Dynamic 共通コライダー
 pub const COMP_GRABBABLE: u64           = 1 << 6;
-pub const COMP_RIGID_BODY: u64          = 1 << 9; // Phase 3 枠（実装は別決）
+pub const COMP_RIGID_BODY: u64          = 1 << 9; // Phase 3 枠；コード実体は shared-sim::rigid_solver（マスク族の共有モジュール化まではここに閉じる・二重定義禁止）
 pub const STATE_IS_GRABBED: u64         = 1 << 10; // 物理掴み（holder_slot と整合）
 pub const STATE_TELEPORT_THIS_TICK: u64 = 1 << 11; // 生成・SetParent・ワープ時の GPU 補間無効化
 
@@ -401,9 +401,9 @@ pub struct NetTransformDelta {
 | [x00e6](slices/x00e6-pending-local-ops.md) | 1c | pending-local-ops | done | PendingLocalOps（app） |
 | [x00e7](slices/x00e7-mvcc-rename-sim-pages.md) | 改称 | mvcc-rename-sim-pages | done | `mvcc/` → `sim_pages/` |
 | [x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md) | 2 | avatar-rig-buffer-xpbd | done | AvatarRigBuffer XPBD |
-| [x00e9](slices/x00e9-rigid-solver-boundary.md) | 3 | rigid-solver-boundary | planned | RigidSolver 境界のみ |
+| [x00e9](slices/x00e9-rigid-solver-boundary.md) | 3 | rigid-solver-boundary | done | RigidSolver 境界のみ |
 
-**次の着手:** [x00e9](slices/x00e9-rigid-solver-boundary.md)（Phase 3 RigidSolver 境界のみ。[x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md) **done**）。
+**次の着手:** 品質本線 Phase 1–3 枠は [x00e9](slices/x00e9-rigid-solver-boundary.md) **done** でクローズ（次の品質スライス ID なし；空きは `x00ea`）。剛体ソルバ本体・rapier/AVBD は別決（人承認）。並行候補は [README.md](README.md)。
 
 ### Phase 1a（最小垂直切片・最優先）：Sim Arena 3 面 ＋ Carry-Over ＋ 既存出版
 * **目的**: 先祖返りゼロと Arena バリア（Carry-Over → publish → rotate）を、既存 `EpochSnapshotPair`（arc-swap）上で閉じる。**Phase 1a の Ring3 SSoT は host の f64 Epoch sheet（`start` / `world.curr`）**；Arena は Carry-Over / TELEPORT 寿命の補助（面を sheet に overlay しない）。物理・CRDT・SoftLease・3層 UUID は入れない。
@@ -425,7 +425,7 @@ pub struct NetTransformDelta {
 * 1a–1c の後。空間 Slot に載せない。スライス: [x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md) **done**（`shared-sim::avatar_rig`；host tick 未配線）
 
 ### Phase 3：剛体物理（枠のみ・実装は別決）
-* `RigidSolver` 境界のみ可。**rapier3d / AVBD は未採択**。スライス: [x00e9](slices/x00e9-rigid-solver-boundary.md)
+* `RigidSolver` 境界のみ可。**rapier3d / AVBD は未採択**。スライス: [x00e9](slices/x00e9-rigid-solver-boundary.md) **done**（`shared-sim::rigid_solver`；host tick 未配線 / Noop）
 
 ---
 
