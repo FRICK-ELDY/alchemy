@@ -385,24 +385,50 @@ pub struct NetTransformDelta {
 
 着手は**縦スライス単位**。Phase 1 を一枚岩で実装しない。
 
+### 実装スライス（`slices/`・着手順）
+
+| ID | Phase | slug | 状態 | 詳細 |
+|:---|:---|:---|:---|:---|
+| [x00da](slices/x00da-sim-arena-scaffold.md) | 1a | sim-arena-scaffold | done | `sim_arena/` 3 面骨格 |
+| [x00db](slices/x00db-sim-arena-carry-over.md) | 1a | sim-arena-carry-over | planned | prev/prev2 Carry-Over + dirty_epoch |
+| [x00dc](slices/x00dc-sim-arena-bridge-publish.md) | 1a 閉じ | sim-arena-bridge-publish | planned | FrameBridge / 既存 arc-swap 出版 |
+| [x00dd](slices/x00dd-scene-store-sparseset.md) | 1b | scene-store-sparseset | planned | SparseSet + scene_store 骨格 |
+| [x00de](slices/x00de-scene-store-lww-cycle.md) | 1b | scene-store-lww-cycle | planned | LWW + 循環防止 |
+| [x00df](slices/x00df-scene-store-sim-patch.md) | 1b | scene-store-sim-patch | planned | SimPatch → Arena Drain |
+| [x00e0](slices/x00e0-live-edit-facade.md) | 1b | live-edit-facade | planned | LiveEditLedger facade |
+| [x00e1](slices/x00e1-scene-store-undo-despawn.md) | 1b 閉じ | scene-store-undo-despawn | planned | Undo + pending_despawns |
+| [x00e2](slices/x00e2-soft-lease-edit-lock.md) | 1c | soft-lease-edit-lock | planned | SoftLease |
+| [x00e3](slices/x00e3-trash-uuid-gc.md) | 1c | trash-uuid-gc | planned | TRASH_UUID + GC |
+| [x00e4](slices/x00e4-three-layer-ids.md) | 1c | three-layer-ids | planned | 3層 ID |
+| [x00e5](slices/x00e5-op-chain-room-snapshot.md) | 1c | op-chain-room-snapshot | planned | op_chain_hash + RoomSnapshot 枠 |
+| [x00e6](slices/x00e6-pending-local-ops.md) | 1c | pending-local-ops | planned | PendingLocalOps（app） |
+| [x00e7](slices/x00e7-mvcc-rename-sim-pages.md) | 改称 | mvcc-rename-sim-pages | planned | `mvcc/` → `sim_pages/` |
+| [x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md) | 2 | avatar-rig-buffer-xpbd | planned | AvatarRigBuffer XPBD |
+| [x00e9](slices/x00e9-rigid-solver-boundary.md) | 3 | rigid-solver-boundary | planned | RigidSolver 境界のみ |
+
+**次の着手:** [x00db](slices/x00db-sim-arena-carry-over.md)（[x00da](slices/x00da-sim-arena-scaffold.md) done）。
+
 ### Phase 1a（最小垂直切片・最優先）：Sim Arena 3 面 ＋ Carry-Over ＋ 既存出版
 * **目的**: 先祖返りゼロと Prev/Published の `arc-swap` 出版を、既存 Epoch/RenderFrame ブリッジ上で閉じる。物理・CRDT・SoftLease・3層 UUID は入れない。
 * **タスク**: `sim_arena`（または Epoch 進化）に `Prev`/`Published`/`Work`、**`prev_dirty_slots` + `prev2_dirty_slots`**、カラム `dirty_epoch`、`STATE_TELEPORT_THIS_TICK`、既存 FrameBridge 出版。
+* **スライス**: [x00da](slices/x00da-sim-arena-scaffold.md) → [x00db](slices/x00db-sim-arena-carry-over.md) → [x00dc](slices/x00dc-sim-arena-bridge-publish.md)
 * **DoD**: 静止後 3 tick で先祖返りしない単体テスト。CI rust Green。新規クレートなし。
 
 ### Phase 1b：`shared-sim::scene_store` ＋ host `LiveEditLedger` facade
 * **目的**: セッション疎 SSoT を shared-sim に一本化。host は検疫・`scene_rev`・edit/Save I/O のみ。
 * **タスク**: SparseSet（**sparse キー = `entity_id: u32`**）、循環防止、Property-level LWW、`SimPatch` → Arena、LiveEditLedger を facade 化（第二コピー禁止）。個人 Undo は既存 `SlotUndoStack` 接続から。**削除は現行 `pending_despawns` 維持**。
+* **スライス**: [x00dd](slices/x00dd-scene-store-sparseset.md) → [x00de](slices/x00de-scene-store-lww-cycle.md) → [x00df](slices/x00df-scene-store-sim-patch.md) → [x00e0](slices/x00e0-live-edit-facade.md) → [x00e1](slices/x00e1-scene-store-undo-despawn.md)
 * **DoD**: 循環 Reject・LWW・facade 経由の Reparent / Despawn（pending 系）。`actor_id`/ManifestSeal/lamport は現行ゲート維持。**TRASH_UUID / Trash GC / SoftLease / StableUuid / `op_chain_hash` は含めない**。
 
 ### Phase 1c（枠・後続スライス）：SoftLease / `op_chain_hash` / 3層 ID / `TRASH_UUID` / RoomSnapshot / PendingLocalOps
 * **DoD 必須にしない**（1a/1b Green 後）。削除モデルを `TRASH_UUID` MoveNode へ移行してよいのはここから。`SoftLease` は編集ロック（物理 `holder_slot` と別）。
+* **スライス**: [x00e2](slices/x00e2-soft-lease-edit-lock.md) … [x00e6](slices/x00e6-pending-local-ops.md)；改称 [x00e7](slices/x00e7-mvcc-rename-sim-pages.md)
 
 ### Phase 2：アバター揺れもの（XPBD × `AvatarRigBuffer`）
-* 1a–1c の後。空間 Slot に載せない。
+* 1a–1c の後。空間 Slot に載せない。スライス: [x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md)
 
 ### Phase 3：剛体物理（枠のみ・実装は別決）
-* `RigidSolver` 境界のみ可。**rapier3d / AVBD は未採択**。
+* `RigidSolver` 境界のみ可。**rapier3d / AVBD は未採択**。スライス: [x00e9](slices/x00e9-rigid-solver-boundary.md)
 
 ---
 
@@ -423,10 +449,11 @@ pub struct NetTransformDelta {
 ## 付録：Cursor へのスタートアップ指示プロンプト
 
 ```text
-@.workspace/roadmap/scene_store_sim_arena.md を読み込んでください（品質本線）。
+@.workspace/roadmap/scene_store_sim_arena.md と
+@.workspace/roadmap/slices/x00db-sim-arena-carry-over.md を読み込んでください（品質本線・次スライス）。
 
-まず Phase 1a（Sim Arena 3面 + prev/prev2 Carry-Over + 既存 arc-swap 出版 + RenderFrame ブリッジ）だけを計画してください。
-1b（scene_store + LiveEditLedger facade）・1c（SoftLease / op_chain_hash / StableUuid）・物理は入れません。
+次は x00db（prev_dirty + prev2_dirty Carry-Over + dirty_epoch + 先祖返り 3 tick 単体テスト）だけを実装してください。
+FrameBridge 本線配線（x00dc）・1b/1c・物理は入れません。
 
-まだコードは書かず、現行 Epoch/FrameBridge/mvcc・CI を調査し、1a のファイル一覧と先祖返りテスト設計を提示してください。
+変更ファイル一覧と本スライス DoD を確認してからコードを書いてください。
 ```

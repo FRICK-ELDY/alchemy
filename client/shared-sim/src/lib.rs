@@ -4,7 +4,8 @@
 //! [`ManifestIndex`] one-pass mesh / box / grabbable maps; shared interaction +
 //! demo id constants; [`scene_entry_color_rgba`]; runtime held slots via
 //! [`slot_graph::SlotGraph`] (x0056); Zero-Base spatial lifecycle primitives in
-//! [`tape`] / [`topology`] / [`spatial`] / [`xpbd`] / [`bridge`] / [`mvcc`] (x00a3).
+//! [`tape`] / [`topology`] / [`spatial`] / [`xpbd`] / [`bridge`] / [`mvcc`] (x00a3);
+//! Sim Arena 3-face scaffold in [`sim_arena`] (x00da; Carry-Over → x00db).
 //! Non-guarantees: Rapier / Dual-AST Kernel / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); CRDT / Zenoh / GPU wiring (client `epoch_view`);
@@ -24,6 +25,7 @@ pub mod bridge;
 pub mod delta_codec;
 pub mod demo;
 pub mod mvcc;
+pub mod sim_arena;
 pub mod slot_graph;
 pub mod slot_undo;
 pub mod spatial;
