@@ -283,9 +283,7 @@ impl SceneStore {
                 return Err(ApplyOutcome::RejectedStale);
             }
             if let Some(p) = restore_parent {
-                if let Err(outcome) = self.cycle_check(child, p) {
-                    return Err(outcome);
-                }
+                self.cycle_check(child, p)?;
             }
         }
 
