@@ -1,9 +1,11 @@
-//! Host-Sequenced apply engine: Property-level LWW + cycle MoveNode Reject (x00de).
+//! Host-Sequenced apply engine: Property-level LWW + cycle MoveNode Reject (x00de)
+//! + SimPatch queue generation (x00df).
 
 use std::collections::HashMap;
 
 use super::sparse_set::SparseSet;
-use super::{CrdtOp, EntityId, OpTimestamp, PropValue};
+use super::{CrdtOp, EntityId, OpTimestamp, PropValue, SimPatch};
+use crate::sim_arena::LocalSlotId;
 
 /// Bound ancestor walks so a corrupt / ultra-deep parent chain cannot loop forever.
 ///
@@ -59,7 +61,7 @@ struct NodeRecord {
     props: HashMap<u32, LwwValue>,
 }
 
-/// Sparse Scene Store with Host-Sequenced CRDT apply.
+/// Sparse Scene Store with Host-Sequenced CRDT apply + SimPatch queue.
 ///
 /// Guarantees: Property-level LWW on [`CrdtOp::SetProperty`]; parent LWW on
 /// Spawn/Move; cyclic [`CrdtOp::MoveNode`] → [`ApplyOutcome::RejectedCycle`]
@@ -67,9 +69,12 @@ struct NodeRecord {
 /// → [`ApplyOutcome::RejectedClockDrift`] (**reject**, not clamp — no drift
 /// ladder). Live re-[`CrdtOp::SpawnNode`] is parent LWW only
 /// ([`ApplyOutcome::AppliedAsReparent`]; props kept — **not** regenerate).
+/// Successful Spawn / Move / reparent enqueue [`SimPatch`] for Arena Step 0
+/// Drain; dense transform / bits / box go via [`Self::enqueue_patch`] (not CRDT).
 /// Keys = [`EntityId`].
-/// Non-guarantees: `SimPatch` queue (→ x00df); LiveEditLedger facade / edit
-/// wire; TRASH_UUID / SoftLease / `op_chain_hash`; JWT `sub` → actor_id.
+/// Non-guarantees: LiveEditLedger facade / edit wire; TRASH_UUID / SoftLease /
+/// `op_chain_hash`; JWT `sub` → actor_id; FreeSlot auto-enqueue (→ x00e1
+/// pending_despawns).
 #[derive(Clone, Debug, Default)]
 pub struct SceneStore {
     nodes: SparseSet<NodeRecord>,
@@ -77,6 +82,8 @@ pub struct SceneStore {
     /// Raised only on `Applied` / `AppliedAsReparent` — never on reject, never
     /// by clamping a far-future clock into the store.
     max_lamport: u64,
+    /// Dense diffs for Sim Arena Step 0 Drain (tick-boundary Lost Update barrier).
+    patches: Vec<SimPatch>,
 }
 
 impl SceneStore {
@@ -116,7 +123,27 @@ impl SceneStore {
             .and_then(|n| n.props.get(&prop_key).map(|p| &p.value))
     }
 
-    /// Apply one host-ordered op. Reject outcomes leave the store unchanged.
+    /// Pending dense patches (not yet drained for Arena Step 0).
+    #[inline]
+    pub fn pending_patches(&self) -> &[SimPatch] {
+        &self.patches
+    }
+
+    /// Enqueue a dense patch (transform / bits / box / free). Does not touch
+    /// sparse LWW state. Spawn/Move auto-enqueue; callers push the rest here.
+    #[inline]
+    pub fn enqueue_patch(&mut self, patch: SimPatch) {
+        self.patches.push(patch);
+    }
+
+    /// Take the patch queue for Arena Drain (leaves the store queue empty).
+    #[inline]
+    pub fn drain_patches(&mut self) -> Vec<SimPatch> {
+        std::mem::take(&mut self.patches)
+    }
+
+    /// Apply one host-ordered op. Reject outcomes leave the store unchanged
+    /// and do **not** enqueue patches.
     pub fn apply(&mut self, op: CrdtOp) -> ApplyOutcome {
         let ts = op.timestamp();
         if !ts.within_drift(self.max_lamport) {
@@ -164,6 +191,7 @@ impl SceneStore {
             // Live re-Spawn ≠ regenerate: parent LWW only; props stay.
             // Phase 1b provisional (host resend / newer parent ts); dedicated
             // "already live" hard-error remains optional for a later slice.
+            // apply_move enqueues SetParent on success.
             return match self.apply_move(ts, node, parent) {
                 ApplyOutcome::Applied => ApplyOutcome::AppliedAsReparent,
                 other => other,
@@ -179,6 +207,10 @@ impl SceneStore {
             },
         );
         self.note_lamport(ts);
+        self.patches.push(SimPatch::AllocateSlot {
+            slot: entity_as_slot(node),
+            parent: parent.map(entity_as_slot),
+        });
         ApplyOutcome::Applied
     }
 
@@ -218,6 +250,10 @@ impl SceneStore {
             record.parent = new_parent;
         }
         self.note_lamport(ts);
+        self.patches.push(SimPatch::SetParent {
+            slot: entity_as_slot(node),
+            parent: new_parent.map(entity_as_slot),
+        });
         ApplyOutcome::Applied
     }
 
@@ -275,6 +311,12 @@ impl SceneStore {
 #[inline]
 fn valid_entity_id(id: EntityId) -> bool {
     id != u32::MAX
+}
+
+/// Phase 1b: Arena slot index == Scene Store entity id (numerically).
+#[inline]
+const fn entity_as_slot(id: EntityId) -> LocalSlotId {
+    id
 }
 
 #[cfg(test)]
@@ -623,5 +665,65 @@ mod tests {
             ApplyOutcome::RejectedDepthExceeded
         );
         assert_eq!(store.parent(outsider), None);
+    }
+
+    #[test]
+    fn successful_spawn_and_move_enqueue_sim_patches_reject_does_not() {
+        let mut store = SceneStore::new();
+        spawn(&mut store, 1, 1, None);
+        spawn(&mut store, 2, 2, Some(1));
+        assert_eq!(
+            store.pending_patches(),
+            &[
+                SimPatch::AllocateSlot {
+                    slot: 1,
+                    parent: None,
+                },
+                SimPatch::AllocateSlot {
+                    slot: 2,
+                    parent: Some(1),
+                },
+            ]
+        );
+
+        assert_eq!(
+            store.apply(CrdtOp::MoveNode {
+                ts: ts(3, 1),
+                node: 2,
+                new_parent: None,
+            }),
+            ApplyOutcome::Applied
+        );
+        assert_eq!(
+            store.pending_patches().last(),
+            Some(&SimPatch::SetParent {
+                slot: 2,
+                parent: None,
+            })
+        );
+
+        // Re-attach 2 under 1, then try to cycle 1 under 2.
+        assert_eq!(
+            store.apply(CrdtOp::MoveNode {
+                ts: ts(4, 1),
+                node: 2,
+                new_parent: Some(1),
+            }),
+            ApplyOutcome::Applied
+        );
+        let before = store.pending_patches().len();
+        assert_eq!(
+            store.apply(CrdtOp::MoveNode {
+                ts: ts(5, 1),
+                node: 1,
+                new_parent: Some(2),
+            }),
+            ApplyOutcome::RejectedCycle
+        );
+        assert_eq!(store.pending_patches().len(), before);
+
+        let drained = store.drain_patches();
+        assert_eq!(drained.len(), before);
+        assert!(store.pending_patches().is_empty());
     }
 }

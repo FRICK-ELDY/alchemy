@@ -1,6 +1,6 @@
 # x00df — SimPatch キュー → Arena Drain
 
-> **ID:** `x00df` · **slug:** `scene-store-sim-patch` · **status:** `planned` · **area:** `[sim, client]` · **depends_on:** `[x00de, x00dc]`  
+> **ID:** `x00df` · **slug:** `scene-store-sim-patch` · **status:** `done` · **area:** `[sim, client]` · **depends_on:** `[x00de, x00dc]`  
 > **優先度:** 品質本線 Phase 1b（Ring1→Ring2 合流）  
 > **後続:** LiveEditLedger facade は [x00e0](x00e0-live-edit-facade.md)
 
@@ -18,10 +18,22 @@
 | Tick 境界一括適用；Lost Update なし合流テスト | SoftLease、ドラッグ揮発ストリーム本線、Depth Bucket 本実装必須化 |
 | Arena 既存 Carry-Over 契約を壊さない | LiveEditLedger 第二コピー解消（→ [x00e0](x00e0-live-edit-facade.md)） |
 
-## 触るファイル（予定）
+## 触ったファイル
 
-- `client/shared-sim/src/scene_store/*`
-- `client/shared-sim/src/sim_arena/*`（Drain 入口）
+- `client/shared-sim/src/scene_store/patch.rs` — `SimPatch` enum（新）
+- `client/shared-sim/src/scene_store/store.rs` — キュー生成（Spawn/Move）・`enqueue_patch` / `drain_patches`
+- `client/shared-sim/src/scene_store/mod.rs` / `lib.rs` — 配線・re-export
+- `client/shared-sim/src/sim_arena/arena.rs` — `apply_patches` / `step0_carry_and_apply_patches` + durable カラム
+- `client/shared-sim/src/sim_arena/mod.rs` — Step 0 順コメント
+- host facade / edit ワイヤ — **変更なし**
+
+## Phase
+
+| Phase | 内容 | 状態 |
+|:---|:---|:---|
+| 0 | Slice 文書 | **done** |
+| 1 | `SimPatch` + Scene Store キュー + Arena Drain | **done** |
+| 2 | 同一 slot 連続 patch 最終値テスト Green | **done** |
 
 ## 完了条件
 

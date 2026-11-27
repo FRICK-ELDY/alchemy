@@ -1,4 +1,5 @@
-//! Sim Arena — 3-face SoA buffer + 2-frame dirty Carry-Over (x00da / x00db).
+//! Sim Arena — 3-face SoA buffer + 2-frame dirty Carry-Over + SimPatch Drain
+//! (x00da / x00db / x00df).
 //!
 //! Guarantees: `Prev` / `Published` / `Work` face roles rotate at tick end;
 //! [`LocalSlotId`]; [`STATE_TELEPORT_THIS_TICK`]; minimal transform SoA columns
@@ -8,17 +9,29 @@
 //! [`SimArena::transform_dirty_epoch`] / [`SimArena::state_bits_dirty_epoch`];
 //! Carry-Over clears `STATE_TELEPORT_THIS_TICK` on those **Work** rows;
 //! [`SimArena::rotate_faces`] clears it on the face **leaving Published**
-//! (lifetime = one Published epoch; prevents 3rd-face sticky snap).
-//! Non-guarantees: scene_store / CRDT; physics; Depth Bucket; §6 `COMP_*` /
-//! `STATE_IS_GRABBED` (intentional defer — grab SSoT stays on `mvcc` / Epoch).
+//! (lifetime = one Published epoch; prevents 3rd-face sticky snap);
+//! [`SimArena::apply_patches`] / [`SimArena::step0_carry_and_apply_patches`]
+//! drain [`crate::scene_store::SimPatch`] onto Work after Carry-Over (no page
+//! swap; pos/rot/scale/parent/masks/box → last write wins; **teleport is sticky
+//! OR** — `false` does not clear). Durable parent/scale/masks/box are
+//! **Arena-internal** (not face-rotated; not Ring3-published with Published pose
+//! — atomic co-publish is a later slice).
+//! Non-guarantees: scene_store CRDT apply; physics; Depth Bucket rebuild;
+//! §6 `COMP_*` / `STATE_IS_GRABBED` (intentional defer — grab SSoT stays on
+//! `mvcc` / Epoch); SoftLease / drag volatile stream; per-column dirty_epoch for
+//! procedural-box (roadmap §4.1 low-freq columns — deferred); durable↔Published
+//! atomic snapshot for Ring3.
 //!
 //! Ring3 readers must not touch Work — publish via
 //! [`crate::bridge::publish_arena_then_rotate`] into `EpochSnapshotPair`
-//! (x00dc; owned sheets, then rotate).
+//! (x00dc; owned sheets, then rotate). Durable accessors
+//! ([`SimArena::parent`] / [`SimArena::scale`] / …) are Work-update-side only
+//! until a later publish barrier.
 //!
 //! # Tick order
 //!
-//! 1. [`SimArena::carry_over`] (Step 0)
+//! 1. Step 0: [`SimArena::carry_over`] then [`SimArena::apply_patches`]
+//!    (or [`SimArena::step0_carry_and_apply_patches`])
 //! 2. Work writers ([`SimArena::write_pos`] / [`SimArena::write_rot`] /
 //!    [`SimArena::write_teleport`]; raw [`SimArena::work_mut`] **must**
 //!    [`SimArena::mark_dirty`] — without it the slot misses Carry-Over **and**
