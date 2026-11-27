@@ -8,8 +8,6 @@ defmodule Auth.WorldNotify do
   Non-guarantees: already-issued Room Token JWT revoke; world availability latency bound.
   """
 
-  require Logger
-
   alias Auth.WorldNotify.Dispatcher
   alias Auth.WorldNotify.Outbox
 

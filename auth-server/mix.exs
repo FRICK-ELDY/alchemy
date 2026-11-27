@@ -59,7 +59,7 @@ defmodule Auth.MixProject do
       {:alchemy_client_ip, path: "../shared/alchemy_client_ip"},
       {:alchemy_rate_limit, path: "../shared/alchemy_rate_limit"},
       {:remote_ip, "~> 1.2"},
-      {:ash, "~> 3.37"},
+      {:ash, "~> 3.38"},
       {:ash_postgres, "~> 2.6"},
       {:argon2_elixir, "~> 4.0"},
       {:joken, "~> 2.6"},

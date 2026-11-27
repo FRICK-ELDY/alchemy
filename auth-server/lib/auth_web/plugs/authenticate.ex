@@ -45,15 +45,6 @@ defmodule AuthWeb.Plugs.Authenticate do
     else
       {:error, reason} ->
         {:error, classify_failure(reason)}
-
-      other ->
-        {:error,
-         failure(
-           :unauthorized,
-           :unexpected_authenticate_result,
-           %{result: inspect(other)},
-           :error
-         )}
     end
   rescue
     error ->
@@ -68,9 +59,6 @@ defmodule AuthWeb.Plugs.Authenticate do
 
   defp classify_failure(:missing_token),
     do: failure(:unauthorized, :missing_token, %{reason: :missing_token})
-
-  defp classify_failure(:invalid_token),
-    do: failure(:unauthorized, :invalid_token, %{reason: :invalid_token})
 
   defp classify_failure(:revoked),
     do: failure(:unauthorized, :revoked_token, %{reason: :revoked})
@@ -106,15 +94,6 @@ defmodule AuthWeb.Plugs.Authenticate do
       failure(
         :unauthorized,
         :unexpected_token_validation_result,
-        %{result: inspect(result)},
-        :error
-      )
-
-  defp classify_failure({:unexpected_claim_verification_result, result}),
-    do:
-      failure(
-        :unauthorized,
-        :unexpected_claim_verification_result,
         %{result: inspect(result)},
         :error
       )
