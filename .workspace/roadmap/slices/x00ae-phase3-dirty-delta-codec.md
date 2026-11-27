@@ -1,12 +1,12 @@
-# x00ae — Phase 3: dirty デルタ codec（`WireDirtyAccumulator`）
+﻿# x00ae — Phase 3: dirty デルタ codec（`WireDirtyAccumulator`）
 
 > **ID:** `x00ae` · **slug:** `phase3-dirty-delta-codec` · **status:** `done` · **area:** `[sim, docs]` · **depends_on:** `[x00ad]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 3 残り（dirty → PROTOCOL_PIN → `sim_state`）  
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) Phase 3 残り（dirty → PROTOCOL_PIN → `sim_state`）  
 > **後続（本スライス外）:** PROTOCOL_PIN 一括 · `…/sim_state` · 確定レーン `…/edit`（次空き `x00af`〜）
 
 目標: `shared-sim` に **直前 publish 以降の dirty 合成**と **Smallest-Three 回転量子化**を置き、§4.5 の reuse クリア契約（既定 A）とスキップ net tick 蓄積をヘッドレスで Green にする。host 本番 frame の dirty 専用ペイロード切替・PROTOCOL_PIN 変更は入れない。
 
-根拠: [mvcc_xpbd.md](../mvcc_xpbd.md) §4.5 / §5 Phase 3 · x0024（欠落は snapshot・`V_ack` 禁止）
+根拠: [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §4.5 / §5 Phase 3 · x0024（欠落は snapshot・`V_ack` 禁止）
 
 ---
 

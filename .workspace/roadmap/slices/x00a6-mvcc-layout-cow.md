@@ -1,11 +1,11 @@
-# x00a6 — MVCC レイアウト予約 + 真の CoW
+﻿# x00a6 — MVCC レイアウト予約 + 真の CoW
 
 > **ID:** `x00a6` · **slug:** `mvcc-layout-cow` · **status:** `done` · **area:** `[client, docs]` · **depends_on:** `[x00a5]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 2 着手ゲート（レイアウト予約・真の CoW）
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) Phase 2 着手ゲート（レイアウト予約・真の CoW）
 
 目標: `GpuTransferableSoA` / `HotPhysicsPage` に回転変位・慣性・holder 列を予約し、`make_mut` による真の CoW と固定長 `SnapshotSlot`（`MAX_PAGES_PER_SNAPSHOT` 超過は Err）を入れる。剛体回転 XPBD・host/app 本線は触らない。
 
-根拠: [mvcc_xpbd.md](../mvcc_xpbd.md) §4.3 / §5 · [improvement-plan-2026-11-12.md](../../0_doc/evaluation/improvement-plan-2026-11-12.md)
+根拠: [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §4.3 / §5 · [improvement-plan-2026-11-12.md](../../0_doc/evaluation/improvement-plan-2026-11-12.md)
 
 ---
 

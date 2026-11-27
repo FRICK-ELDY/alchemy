@@ -1,4 +1,4 @@
-# x00b6 — Dash Room タブ（薄い B）
+﻿# x00b6 — Dash Room タブ（薄い B）
 
 > **ID:** `x00b6` · **slug:** `dash-room-tab` · **status:** `done` · **area:** `[client, system_ui, docs]` · **surface:** `[desktop, vr]` · **depends_on:** `[x000f, x007c, x007f]`  
 > **優先度:** 明示 Save（後続）の器。Resonite Session タブ相当を **Room** と呼ぶ  
@@ -6,7 +6,7 @@
 
 目標: Dash 下部に英語ラベル **`Room`** タブを追加し、入室中だけ開けるようにする。中身は Settings / Users / Permissions の薄いサブメニュー枠。現行 session shell（Leave / Rejoin / host CTA）を Room → Settings へ移し、Save Changes は disabled プレースホルダのみ。
 
-正本: [client.md](../../0_doc/architecture/client.md) · [world-server.md](../../0_doc/architecture/world-server.md) · [mvcc_xpbd.md](../mvcc_xpbd.md) §4.7
+正本: [client.md](../../0_doc/architecture/client.md) · [world-server.md](../../0_doc/architecture/world-server.md) · [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §4.7
 
 ## 保証する / しない
 

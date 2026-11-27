@@ -1,7 +1,7 @@
-# x00ab — 手元予測（Grab Keep·Blend·Snap）
+﻿# x00ab — 手元予測（Grab Keep·Blend·Snap）
 
 > **ID:** `x00ab` · **slug:** `owned-prediction` · **status:** `done` · **area:** `[client, docs]` · **depends_on:** `[x00aa]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 2
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) Phase 2
 
 目標: 自分が掴んでいる物はローカル即時予測し、Applied Frame 権威で Keep / Blend / Snap。Grab 拒否は Snap。ヒット・箱/mesh 描画も予測 TRS を使う（`display_pose_for` + `model_override`）。
 

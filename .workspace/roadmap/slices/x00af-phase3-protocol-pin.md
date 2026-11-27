@@ -1,12 +1,12 @@
-# x00af — Phase 3: PROTOCOL_PIN 一括（sim_tick / holder / release）
+﻿# x00af — Phase 3: PROTOCOL_PIN 一括（sim_tick / holder / release）
 
 > **ID:** `x00af` · **slug:** `phase3-protocol-pin` · **status:** `done` · **area:** `[protocol, host, client, docs]` · **depends_on:** `[x00ae]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 3 残り（PROTOCOL_PIN → `sim_state`）  
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) Phase 3 残り（PROTOCOL_PIN → `sim_state`）  
 > **後続:** `…/sim_state`（次空き `x00b0`）·（並走可）確定レーン `…/edit`
 
 目標: Phase 3 で必要なワイヤ拡張を **PROTOCOL_PIN 1 回**で固定する。`sim_tick` / `redundancy` / `acked_intent_seq` / `Entity.holder` / Intent `release_v*/w*` を proto に載せ、host / app は既定値または最小配線で encode・decode する。
 
-根拠: [mvcc_xpbd.md](../mvcc_xpbd.md) §4.5 / §5 Phase 3 · [mvcc_xpbd_review_proposal.md](../mvcc_xpbd_review_proposal.md) 指摘 1/3/4 · x0024（`tick` = net_tick・欠落は snapshot）
+根拠: [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §4.5 / §5 Phase 3 · [mvcc_xpbd_review_proposal.md](../archive/2026-11-27/mvcc_xpbd_review_proposal.md) 指摘 1/3/4 · x0024（`tick` = net_tick・欠落は snapshot）
 
 ---
 

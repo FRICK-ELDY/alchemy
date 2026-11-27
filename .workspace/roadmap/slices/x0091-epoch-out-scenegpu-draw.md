@@ -1,11 +1,11 @@
-# x0091 — Epoch `out` → SceneGpu draw（vertex/storage）
+﻿# x0091 — Epoch `out` → SceneGpu draw（vertex/storage）
 
 > **ID:** `x0091` · **slug:** `epoch-out-scenegpu-draw` · **status:** `done` · **area:** `[client, sim]` · **depends_on:** `[x0090]`  
 > **優先度:** Zero-Base Spatial 本線（x0090 の「次」）
 
 目標: `sync_epoch_gpu` の interpolate 結果 `out` を SceneGpu の mesh/box 描画が **GPU readback なし**で読む。画面上の TRS 権威を wire Curr `EntityPose` から **Epoch display 面（α / ABA）** へ移す。Grab OBB も同じ面に揃える。
 
-根拠: [x0090](x0090-client-epoch-scenegpu-bind.md)「やらない／次」· [alchemy_zero_base_spatial_lifecycle_architecture.md](../alchemy_zero_base_spatial_lifecycle_architecture.md) Step 5
+根拠: [x0090](x0090-client-epoch-scenegpu-bind.md)「やらない／次」· [alchemy_zero_base_spatial_lifecycle_architecture.md](../archive/2026-11-27/alchemy_zero_base_spatial_lifecycle_architecture.md) Step 5
 
 ---
 

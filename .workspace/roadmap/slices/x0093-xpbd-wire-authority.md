@@ -1,11 +1,11 @@
-# x0093 — XPBD wire 権威へ収束（Rapier 影並走廃止）
+﻿# x0093 — XPBD wire 権威へ収束（Rapier 影並走廃止）
 
 > **ID:** `x0093` · **slug:** `xpbd-wire-authority` · **status:** `done` · **area:** `[host, sim]` · **depends_on:** `[x008f, x0092]`  
 > **優先度:** Zero-Base Spatial 本線（x008f 影並走の収束）
 
 目標: host 60Hz の wire Frame TRS 権威を Rapier から **Native XPBD（EpochSheet）** へ移す。Intent / Grab / loco / spawn・despawn を tape 一本化し、`physics.step`（Rapier）と kinematic mirror（`tick_mirror_publish`）を廃止する。
 
-根拠: [x008f](x008f-host-frame-bridge.md)「やらない／次」· [alchemy_zero_base_spatial_lifecycle_architecture.md](../alchemy_zero_base_spatial_lifecycle_architecture.md) · roadmap「現在の次」
+根拠: [x008f](x008f-host-frame-bridge.md)「やらない／次」· [alchemy_zero_base_spatial_lifecycle_architecture.md](../archive/2026-11-27/alchemy_zero_base_spatial_lifecycle_architecture.md) · roadmap「現在の次」
 
 ---
 

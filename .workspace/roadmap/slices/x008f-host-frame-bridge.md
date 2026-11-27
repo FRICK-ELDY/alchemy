@@ -1,11 +1,11 @@
-# x008f — host 60Hz FrameBridge 配線（Rapier 影並走）
+﻿# x008f — host 60Hz FrameBridge 配線（Rapier 影並走）
 
 > **ID:** `x008f` · **slug:** `host-frame-bridge` · **status:** `done` · **area:** `[host, sim]` · **depends_on:** `[x008e, x0006]`  
 > **優先度:** Zero-Base Spatial 本線（x008e の「次」）· improvement **P2-6**（tick 切り出し）を同帯で吸収可
 
 目標: host の **60Hz Rapier ループに `FrameBridge::tick_mirror_publish` を本番配線**し、`EpochSnapshotPair`（Prev/Curr）を **変化時（TRS dirty / membership）** に公開する。ワイヤ Frame / Pose の権威は **引き続き Rapier**。影経路では **XPBD / LBVH / contact を回さない**（kinematic mirror: `inv_mass=0`・`DYNAMIC` なし）。
 
-根拠: [x008e](x008e-zero-base-spatial-lifecycle.md)「やらない／次」先頭 · [alchemy_zero_base_spatial_lifecycle_architecture.md](../alchemy_zero_base_spatial_lifecycle_architecture.md) · [improvement-plan-2026-11-05.md](../../0_doc/evaluation/improvement-plan-2026-11-05.md) **P2-6**
+根拠: [x008e](x008e-zero-base-spatial-lifecycle.md)「やらない／次」先頭 · [alchemy_zero_base_spatial_lifecycle_architecture.md](../archive/2026-11-27/alchemy_zero_base_spatial_lifecycle_architecture.md) · [improvement-plan-2026-11-05.md](../../0_doc/evaluation/improvement-plan-2026-11-05.md) **P2-6**
 
 ---
 
@@ -78,6 +78,6 @@ EpochBridgeHost::tick_after_rapier
 
 - [x008e-zero-base-spatial-lifecycle.md](x008e-zero-base-spatial-lifecycle.md)
 - [x0006-rapier-finite-tick.md](x0006-rapier-finite-tick.md)
-- [alchemy_zero_base_spatial_lifecycle_architecture.md](../alchemy_zero_base_spatial_lifecycle_architecture.md)
+- [alchemy_zero_base_spatial_lifecycle_architecture.md](../archive/2026-11-27/alchemy_zero_base_spatial_lifecycle_architecture.md)
 
 ← [目次](../README.md)

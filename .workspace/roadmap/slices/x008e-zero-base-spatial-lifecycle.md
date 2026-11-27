@@ -1,7 +1,7 @@
-# x008e — Zero-Base Spatial Lifecycle（Tape / Topology / LBVH / XPBD / Bridge）
+﻿# x008e — Zero-Base Spatial Lifecycle（Tape / Topology / LBVH / XPBD / Bridge）
 
 > **ID:** `x008e` · **slug:** `zero-base-spatial-lifecycle` · **status:** `done` · **area:** `[sim, client, host]` · **depends_on:** `[x0030, x0056]`  
-> **正本仕様:** [alchemy_zero_base_spatial_lifecycle_architecture.md](../alchemy_zero_base_spatial_lifecycle_architecture.md)
+> **正本仕様:** [alchemy_zero_base_spatial_lifecycle_architecture.md](../archive/2026-11-27/alchemy_zero_base_spatial_lifecycle_architecture.md)
 
 目標: VR 共同編集向けに、外部物理エンジン二重状態を廃し、`EpochSheet`（MVCC SoA）＋ Flat Topology ＋ Morton LBVH ＋ 統合 XPBD ＋フレーム境界 Bridge を `alchemy-shared-sim` に実装する。Ring3 向けに `arc-swap` スナップショットと client `epoch_view`（補間 WGSL / Hierarchy / X-Ray）を接続する。
 
@@ -135,7 +135,7 @@
 
 ## 関連
 
-- [alchemy_zero_base_spatial_lifecycle_architecture.md](../alchemy_zero_base_spatial_lifecycle_architecture.md)
+- [alchemy_zero_base_spatial_lifecycle_architecture.md](../archive/2026-11-27/alchemy_zero_base_spatial_lifecycle_architecture.md)
 - [x0030-shared-sim-entity-kind.md](x0030-shared-sim-entity-kind.md)
 - [x0056-shared-sim-held-slot.md](x0056-shared-sim-held-slot.md)
 - [x0006-rapier-finite-tick.md](x0006-rapier-finite-tick.md)（現行 Rapier 経路・置換対象）

@@ -1,21 +1,22 @@
 # Alchemy 拡張ギャップメモ — 体感・運用4点
 
 * **種別**: `memo/` 提案。正本ではない
+* **注記（2026-11-27）**: `MvccPageArena` 前提は**旧**。品質本線は [`../scene_store_sim_arena.md`](../scene_store_sim_arena.md)（Sim Arena / `sim_pages`）。旧文書は [`../archive/2026-11-27/mvcc_xpbd.md`](../archive/2026-11-27/mvcc_xpbd.md)
 * **対象外（本メモでは扱わない）**: 決定論 math、SHM IPC、Dual-AST→Wasm/WGSL、Spatial AoI、HKDF 階層鍵
-  → それぞれ [`mvcc_xpbd.md`](../mvcc_xpbd.md) / [`spatial_interest.md`](../spatial_interest.md) / 既存 Room AEAD・epoch に委譲
+  → それぞれ [`../scene_store_sim_arena.md`](../scene_store_sim_arena.md) / [`spatial_interest.md`](../spatial_interest.md) / 既存 Room AEAD・epoch に委譲
 * **目的**: VR ヒッチ根絶とクリエイト／長時間運用に効く、現行ロードマップで言語化が薄い4束を固定する
 
 ---
 
 ## 1. 優先度（Expansion Wave）
 
-品質本線（MVCC）・規模本線（Spatial Interest）の **P0〜** とは番号を共有しない。ここでは **E1 / E2** のみ。
+品質本線（Scene Store × Sim Arena）・規模本線（Spatial Interest）の **P0〜** とは番号を共有しない。ここでは **E1 / E2** のみ。
 
 ### E1：ヒッチ根絶 + アバター描画メモリ
 
 | ID | 項目 | 導入対象 | 要点 |
 | :--- | :--- | :--- | :--- |
-| **E1-1** | **スキニングのメモリ設計**<br>(MVCC Skinning & GPU Morph) | `client/shared-sim`<br>`client/app` (render) | ボーン変形・BlendShape を `MvccPageArena` の専用 SoA ページ（`SkeletonPosePage` / Morph 重み）に置き、`wgpu` Compute 一括スキニング → Multi-Draw Indirect へ直結する。 |
+| **E1-1** | **スキニングのメモリ設計**<br>(SoA Skinning & GPU Morph) | `client/shared-sim`<br>`client/app` (render) | ボーン変形・BlendShape を **Sim Arena / `sim_pages` 同系**の専用 SoA（`SkeletonPosePage` / Morph 重み）に置き、`wgpu` Compute 一括スキニング → Multi-Draw Indirect へ直結する（旧 `MvccPageArena` 前提は廃止）。 |
 | **E1-2** | **PSO の非同期ビルド**<br>(Async Pipeline & Fallback) | `client/app` (render) | カスタムシェーダーの `RenderPipeline` 生成を裏スレッドへ。完了までは標準 PBR で代替し、描画スレッド停止を避ける。 |
 | **E1-3** | **LOD ビルドの負荷分離**<br>(Low-Priority Builder) | `client/app` または将来 `asset-worker` | GLB 検証・ポリゴン削減・KTX2 を 90〜120Hz 描画から切り離す。**最初は同一プロセス内の低優先度ジョブでよい**；不足が実測されたら独立プロセスへ昇格。 |
 
@@ -98,7 +99,7 @@ flowchart LR
 
 | 項目 | 依存 |
 | :--- | :--- |
-| E1-1 | MVCC ページ／出版契約が使えること（`HotPhysicsPage` と同系の世代・転送） |
+| E1-1 | Sim Arena / `sim_pages` の出版契約が使えること（世代面・転送が物理 SoA と同系） |
 | E1-2 | ユーザー／カスタム WGSL 投入路があること（無くても「将来ヒッチしない器」として先行可） |
 | E1-3 | 既存 GLB decode budget（x0085 系）と矛盾させない。プロセス分離は実測後 |
 | E2-1 | `system_ui` / OpenXR セッション上のテキスト入力面 |

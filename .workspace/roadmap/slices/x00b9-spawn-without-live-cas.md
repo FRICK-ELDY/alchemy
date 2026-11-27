@@ -1,7 +1,7 @@
-# x00b9 — Spawn 即 CAS 見直し（C）
+﻿# x00b9 — Spawn 即 CAS 見直し（C）
 
 > **ID:** `x00b9` · **slug:** `spawn-without-live-cas` · **status:** `done` · **area:** `[host, world, client, docs]` · **depends_on:** `[x00b7, x00b8, x00b3, x00b5]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) §4.7 VCS 負債の解消（案 B の例外を閉じる）  
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §4.7 VCS 負債の解消（案 B の例外を閉じる）  
 > **後続:** Save As / Copy · Spatial VCS · Undo UI
 
 目標: **`…/edit` Spawn/Despawn と inventory spawn/despawn が world への即時 overlay CAS をしない**。ライブ working tree は host 内だけ進め、永続は既存の明示 Save（x00b7/x00b8）に閉じる。Reparent/SetField と同型の「ライブ ≠ 永続」に揃える。

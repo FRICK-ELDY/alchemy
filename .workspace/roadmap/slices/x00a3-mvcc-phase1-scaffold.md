@@ -1,12 +1,12 @@
-# x00a3 — MVCC×XPBD Phase 1 scaffold（着手）
+﻿# x00a3 — MVCC×XPBD Phase 1 scaffold（着手）
 
 > **ID:** `x00a3` · **slug:** `mvcc-phase1-scaffold` · **status:** `done` · **area:** `[client, docs]` · **depends_on:** `[x00a0, x00a1, x00a2]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 1 着手（P1-2 / P1-3 吸収の土台）  
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) Phase 1 着手（P1-2 / P1-3 吸収の土台）  
 > **後続:** DoD は [x00a4](x00a4-mvcc-phase1-dod.md) で閉じた
 
 目標: ゲート P1-1 / P1-4 / P1-5 closed 後、既存 `client/shared-sim` に **`mvcc`** モジュールを追加し、`HotPhysicsPage` / `MvccPageArena` の最小骨格と NaN 検疫・ゼロ初期化テストを載せる。現行 `EpochSheet` / `xpbd` 本線はまだ置換しない（段階共存）。
 
-根拠: [improvement-plan-2026-11-12.md](../../0_doc/evaluation/improvement-plan-2026-11-12.md) · [mvcc_xpbd.md](../mvcc_xpbd.md) §0 / §4.3
+根拠: [improvement-plan-2026-11-12.md](../../0_doc/evaluation/improvement-plan-2026-11-12.md) · [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §0 / §4.3
 
 ---
 

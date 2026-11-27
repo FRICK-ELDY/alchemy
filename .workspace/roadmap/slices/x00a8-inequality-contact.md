@@ -1,7 +1,7 @@
-# x00a8 — 不等式接触（引き寄せ禁止）
+﻿# x00a8 — 不等式接触（引き寄せ禁止）
 
 > **ID:** `x00a8` · **slug:** `inequality-contact` · **status:** `done` · **area:** `[client, docs]` · **depends_on:** `[x00a4]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) P1-2 / 🚫6（等式距離流用禁止）
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) P1-2 / 🚫6（等式距離流用禁止）
 
 目標: LBVH 接触を `FLAG_INEQUALITY` にし、離れている物体を引き寄せない。`contact_never_attracts` 回帰。host `bounds: Some` は Phase 3。
 

@@ -1,12 +1,16 @@
+> **status: archived**（2026-11-27）  
+> **実装指示として使わない。** 後任の品質本線は [`../../scene_store_sim_arena.md`](../../scene_store_sim_arena.md)。  
+> 本ファイルはページ CoW MVCC × XPBD 時代の歴史文書。規模本線は [`../../spatial_interest.md`](../../spatial_interest.md)。
+
 # `FRICK-ELDY/alchemy` 向け「MVCC $\times$ XPBD」空間物理・同期基盤 統合実装指示書
 
 * **対象リポジトリ**: `https://github.com/FRICK-ELDY/alchemy`
 * **対象コンポーネント**: `client/` ワークスペース（**既存** `shared-sim` の進化、`host-server`, `app`）、`protocol/`
-* **改善計画上の位置**: [improvement-plan-2026-11-12.md](../0_doc/evaluation/improvement-plan-2026-11-12.md) — **P1-1 / P1-4 / P1-5 完了後**に Phase 1。**P1-2** = Phase 1（shared-sim 能力）+ Phase 3（host 配線）で閉じる、**P1-3** = Phase 1、**P3-2** = Phase 2 に吸収
-* **本線の役割**: **品質本線**（近傍物理・ゼロアロ・handover 速度・補間）。同一 Room の大規模 CCU（1000 人 horizon）は規模本線 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**）
+* **改善計画上の位置**: [improvement-plan-2026-11-12.md](../../../0_doc/evaluation/archive/2026-11-12/improvement-plan-2026-11-12.md) — **P1-1 / P1-4 / P1-5 完了後**に Phase 1。**P1-2** = Phase 1（shared-sim 能力）+ Phase 3（host 配線）で閉じる、**P1-3** = Phase 1、**P3-2** = Phase 2 に吸収
+* **本線の役割（当時）**: 近傍物理・ゼロアロ・handover 速度・補間。同一 Room の大規模 CCU は規模本線 [spatial_interest.md](../../spatial_interest.md)（**P3-7**）。**現行品質本線は後任** [`../../scene_store_sim_arena.md`](../../scene_store_sim_arena.md)
 * **関連スライス**: `x0020` (Desktop 正本), `x0039` (`ManifestSeal`), `x0053` (体感並行補間), `x0067` (Zenoh 非対称 ACL), `x0068` (短命 mTLS), `x0069` (Room 鍵 AEAD), `x0024`（frame tick 連番 + 欠落時 snapshot）
 * **レビュー取り込み**: [mvcc_xpbd_review_proposal.md](mvcc_xpbd_review_proposal.md)（2026-11-13）の P0/P1 を本版に反映。未決事項は §6
-* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜dirty 30Hz（x00ad–[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)）+ 確定レーン土台 [x00b2](slices/x00b2-phase3-edit-lane-foundation.md) **done** + ライブ Reparent/SetField [x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md)（案 B / VCS 前提）+ Room タブ器 [x00b6](slices/x00b6-dash-room-tab.md) + 明示 Save [x00b7](slices/x00b7-overlay-canonical-save.md)/[x00b8](slices/x00b8-save-parent-setfield-persist.md) + Spawn 即 CAS 見直し [x00b9](slices/x00b9-spawn-without-live-cas.md) **done** + 規模本線 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)/[x00bf](slices/x00bf-client-near-cell-frame-sub.md)/[x00c0](slices/x00c0-host-cell-dirty-filter.md)/[x00c1](slices/x00c1-client-cell-follow-resub.md)/[x00c2](slices/x00c2-cell-exit-remove.md)/[x00c3](slices/x00c3-multi-cell-same-tick-merge.md)/[x00c4](slices/x00c4-opt-in-cell-frame-mainline.md)/[x00c5](slices/x00c5-default-cell-frame-mainline.md)（既定 cell 本線）。残り: avatar LOD / dual-publish 縮小 / Spatial VCS。
+* **現状**: 着手ゲート〜Phase 1–2（x00a3–x00ac）+ Phase 3 着手〜dirty 30Hz（x00ad–[x00b1](../../slices/x00b1-phase3-dirty-30hz-cutover.md)）+ 確定レーン土台 [x00b2](../../slices/x00b2-phase3-edit-lane-foundation.md) **done** + ライブ Reparent/SetField [x00b3](../../slices/x00b3-phase3-edit-ops-live-bridge.md)（案 B / VCS 前提）+ Room タブ器 [x00b6](../../slices/x00b6-dash-room-tab.md) + 明示 Save [x00b7](../../slices/x00b7-overlay-canonical-save.md)/[x00b8](../../slices/x00b8-save-parent-setfield-persist.md) + Spawn 即 CAS 見直し [x00b9](../../slices/x00b9-spawn-without-live-cas.md) **done** + 規模本線 [x00be](../../slices/x00be-spatial-interest-cell-frame-foundation.md)/[x00bf](../../slices/x00bf-client-near-cell-frame-sub.md)/[x00c0](../../slices/x00c0-host-cell-dirty-filter.md)/[x00c1](../../slices/x00c1-client-cell-follow-resub.md)/[x00c2](../../slices/x00c2-cell-exit-remove.md)/[x00c3](../../slices/x00c3-multi-cell-same-tick-merge.md)/[x00c4](../../slices/x00c4-opt-in-cell-frame-mainline.md)/[x00c5](../../slices/x00c5-default-cell-frame-mainline.md)（既定 cell 本線）。残り: avatar LOD / dual-publish 縮小 / Spatial VCS。
 * **最優先規約**: 全 Rust クレートにおいて `#![forbid(unsafe_code)]` を**クレート直下（`lib.rs` / 該当 `main.rs`）**に宣言し、既存の `./.scripts/ci.sh rust`・`./.scripts/ci.sh protocol`・`make smoke-desktop-handthrough` を常に Green に保つこと。差分配信の用語は **dirty 合成 + x0024 snapshot**（`V_ack` / 「XOR デルタ」は使わない）。
 
 ---
@@ -38,7 +42,7 @@ P1-6 / P2（vault・UI/docs/CI）は並走可。P3-1 / P3-3 以降は独立。
 **作業の性質**: `shared-sim` は既に存在する（`EpochSheet` / XPBD / LBVH / FrameBridge）。Phase 1 はクレート**新設ではなく**、現行テープ → `HotPhysicsPage` / `MvccPageArena` への**段階置換・進化**である。現行 XPBD はまだ `EpochSheet` 上で動き、ページ経路は `PageXpbdAdapter`；`drot`/`holder`/`EntityDirectory`/`make_mut` は x00a6–x00a7 で予約済み。本番本線切替は Phase 3。
 
 **依存・ビルド注意**:
-* `wide` / `glam` は **人承認済み**（§6 Q5；2026-11-14）かつ **x00a5 で shared-sim に配線済み**。SoA 慣性は [`step_inertia`](../../client/shared-sim/src/mvcc/inertia.rs)（SIMD 既定）＋スカラー参照。拘束ソルバー全体の SIMD 化は未着手。
+* `wide` / `glam` は **人承認済み**（§6 Q5；2026-11-14）かつ **x00a5 で shared-sim に配線済み**。SoA 慣性は [`step_inertia`](../../../client/shared-sim/src/mvcc/inertia.rs)（SIMD 既定）＋スカラー参照。拘束ソルバー全体の SIMD 化は未着手。
 * `.cargo/config.toml` のターゲット別 `rustflags` はワークスペース全体に効くため、Phase 1 ではまず単体テスト用フィーチャ／局所設定から段階導入し、一括強制しない。Rust/LLVM は `a*b+c` を暗黙 FMA 化しないため、`-fma` の有無だけでは決定論は変わらない（明示 `mul_add` と `libm` 固定・演算順の方が効く）。
 * Quest 最優先のため、決定論の厳密化より先に **`aarch64-linux-android` の CI ビルド 1 本**を入れる（§5 Phase 1）。
 
@@ -48,13 +52,13 @@ P1-6 / P2（vault・UI/docs/CI）は並走可。P3-1 / P3-3 以降は独立。
 
 本指示書は、近傍物理の品質と 60〜120fps の低遅延 VR/Desktop 体験のための**物理・状態本線**として、**Ring-Buffer MVCC（多版同時実行制御）** と **決定論的 SIMD XPBD（拡張位置ベースダイナミクス）**、および **`wgpu` Compute Shader 補間パイプライン** を現在の `alchemy` アーキテクチャへ無理なく統合するための実装仕様書である。
 
-同一 Room の大規模 CCU（horizon としての 1,000 人）は本指示書 Phase 1–3 では保証しない。規模本線は [spatial_interest.md](spatial_interest.md)（AOI / セル購読 / avatar LOD）である。
+同一 Room の大規模 CCU（horizon としての 1,000 人）は本指示書 Phase 1–3 では保証しない。規模本線は [spatial_interest.md](../../spatial_interest.md)（AOI / セル購読 / avatar LOD）である。
 
 この統合により、以下の技術的メリットを達成する（いずれも**品質 KPI**；規模 KPI ではない）：
 1. **実行時アロケーション $0\text{ bytes/frame}$**: 事前確保された**固定サイズ** SoA ページと Dirty Bitmask による真の Copy-on-Write（`make_mut` / retain・release 対称の `commit_snapshot`）。サイズ目安: 現行 `GpuTransferableSoA` 約 49KB → 回転列予約後 **SoA 約 73KB**；`holder_*` 込みの **`HotPhysicsPage` 全体は約 79KB+**（「64KB 必須」ではない）。
 2. **描画スレッドを sim から外した 120fps GPU 補間**: `client (app)` が確定スナップショット（$V_{t-1}$ と $V_t$）を `wgpu` Storage Buffer へ転送し、Compute Shader 上で位置 Lerp・回転 Slerp を完結。**出版契約**は Phase 2 で `arc-swap`（承認済み依存）＋事前確保 `Arc` 再利用として明示する。§4.3 のアリーナ API は `&mut`；Phase 1 の参照カウントは通常の `u16` で十分（アトミックは出版契約と同時に意味を持つ）。
 3. **計画的 handover 時の物理速度復元**: 60Hz 1ティック分の変位 $\Delta \mathbf{x}$（および予約する $\Delta \theta$）をページに保持し、**描画用 frame とは別の `…/sim_state`（§4.8）**で旧ホストから量子化なし状態を渡す。**crash 時**は §4.8 の正本規則（accept 候補の last-good／snapshot 供給源／取れないときの非起動）に従い、速度は近似または 0。完全復元は保証しない（Q1 採用済み）。
-4. **O(popcnt) 差分抽出による帯域圧縮（フルメッシュ前提）**: 直前に **publish した frame（全員共通）** 以降の dirty 合成と Smallest-Three 量子化によりペイロードを圧縮する。受信者別 `V_ack` は使わない（x0024: tick 連番・欠落は `…/snapshot`）。大規模 CCU は [spatial_interest.md](spatial_interest.md) が担当する。
+4. **O(popcnt) 差分抽出による帯域圧縮（フルメッシュ前提）**: 直前に **publish した frame（全員共通）** 以降の dirty 合成と Smallest-Three 量子化によりペイロードを圧縮する。受信者別 `V_ack` は使わない（x0024: tick 連番・欠落は `…/snapshot`）。大規模 CCU は [spatial_interest.md](../../spatial_interest.md) が担当する。
 5. **構造変更の確定レーン（§4.7）**: 生成・削除・親子・プロパティ編集は inventory の「提案→検証→確定」を一般化し、物理ページ（毎ティック姿勢）と分離する。VR 内共同創作の前提。
 
 ---
@@ -85,14 +89,14 @@ Cursor エージェントは実装にあたり、以下の **7つのアーキテ
 
 ### 🚫 6. VR 特化機能（Raycast・Grab・親子 Slot 階層・接触の正しさ）の欠落禁止
 * 単純な均一サイズ球体/カプセルの空間ハッシュだけでは VR 空間は成立しない。以下を必ず組み込むこと：
-  1. **空間ハッシュ（近傍衝突・AOI 用）＋ Flat LBVH（30-bit モートン曲線ソートによる VR レーザー UI Raycast・異種サイズ AABB 判定用）** の併用。ここでの「AOI」は**物理近傍・Raycast**であり、配信 interest の完成を意味しない → 🚫7 / [spatial_interest.md](spatial_interest.md)。
+  1. **空間ハッシュ（近傍衝突・AOI 用）＋ Flat LBVH（30-bit モートン曲線ソートによる VR レーザー UI Raycast・異種サイズ AABB 判定用）** の併用。ここでの「AOI」は**物理近傍・Raycast**であり、配信 interest の完成を意味しない → 🚫7 / [spatial_interest.md](../../spatial_interest.md)。
   2. **`holder_slot` + `is_grabbed_mask`**: 誰が掴んでいるかをページが持つ（`NO_HOLDER = u8::MAX`）。`is_grabbed_mask` は要約ビット。現行 host の先着・横取り禁止・手渡しを明文化し、同時要求は**スロット番号が小さい方**（決定論タイブレーク）。リース期限で切断時の固着を防ぐ（§6 Q7）。
   3. **Depth バケット順の親子 Slot 階層伝播**: XPBD 解決後、フラット化されたトポロジ配列を走査してワールド座標を一括更新。Undo は前提条件付き（他人の変更を上書きしない）。
   4. **接触は不等式制約**（離れていれば何もしない＝引き寄せない）。箱は外接球近似のまま積まない；箱 vs 平面／球 vs 箱から始め、箱 vs 箱へ（P1-2）。等式距離制約の流用で閉じない。
 
 ### 🚫 7. Phase 1–3 完了をもって大規模 CCU / フルメッシュ同期を保証しない
 * Phase 1–3 の DoD に「同一 Room 1000 人」「Room 全体フルメッシュのままスケール」を入れない。
-* AOI / セル購読分割 / avatar sync LOD /（後段の）権威セル分割は **[spatial_interest.md](spatial_interest.md)** が第一級仕様である。
+* AOI / セル購読分割 / avatar sync LOD /（後段の）権威セル分割は **[spatial_interest.md](../../spatial_interest.md)** が第一級仕様である。
 * 本指示書の dirty デルタはフルメッシュ前提のペイロード最適化に留まる。規模を宣言する PR・文書では必ず規模本線を参照すること。
 * 差分の基準は **x0024**（直前 publish・欠落は snapshot）。受信者別 ACK や独自 reliable チャネルを新設しない。
 * 1 スナップショットあたりページ数が `MAX_PAGES_PER_SNAPSHOT` を超えたら **Err**（切り捨て・黙殺しない）。大規模は規模本線のセル分割と同時に上限を見直す。
@@ -189,7 +193,7 @@ flowchart TB
     Zenoh ===>|"空間ストリーム"| ClientNet
 ```
 
-> **規模注記**: 上図の `30Hz frame` は現行どおり**フルメッシュ**である。セル購読分割・avatar LOD は [spatial_interest.md](spatial_interest.md)。**差分基準は受信者別 ACK ではなく直前 publish（x0024）**。
+> **規模注記**: 上図の `30Hz frame` は現行どおり**フルメッシュ**である。セル購読分割・avatar LOD は [spatial_interest.md](../../spatial_interest.md)。**差分基準は受信者別 ACK ではなく直前 publish（x0024）**。
 
 ---
 
@@ -349,7 +353,7 @@ impl MvccPageArena {
 }
 ```
 
-**EntityDirectory（Phase 1 設計・P0）**: wire の正 ID は `entity_id: u32`。`local` はページ配置ヒント。セル越えは同一ティック内で「A から外す → B に入れる」を原子的に行い、ヒステリシスでフラッピングを防ぐ。規模本線の配信セルと同じ系にする（[spatial_interest.md](spatial_interest.md)）。
+**EntityDirectory（Phase 1 設計・P0）**: wire の正 ID は `entity_id: u32`。`local` はページ配置ヒント。セル越えは同一ティック内で「A から外す → B に入れる」を原子的に行い、ヒステリシスでフラッピングを防ぐ。規模本線の配信セルと同じ系にする（[spatial_interest.md](../../spatial_interest.md)）。
 
 ### 4.4 決定論的数学関数と XPBD ソルバー（`shared-sim/src/xpbd/math_det.rs`, `solver.rs`）
 
@@ -594,13 +598,13 @@ flowchart LR
 既存の CI や E2E を一切壊さずに導入するため、必ず以下の **3 フェーズ順** に実装とテストを進めること。  
 §0 の着手ゲートを満たす前に次 Phase へ進まないこと。improvement-plan の **P1-2 / P1-3 / P3-2** はここで閉じる。
 
-**DoD に含めないもの**: 同一 Room の大規模 CCU・フルメッシュ解除・interest キー族。それらは [spatial_interest.md](spatial_interest.md) のマイルストーン（32→64→128、1000 は horizon）が担当する。
+**DoD に含めないもの**: 同一 Room の大規模 CCU・フルメッシュ解除・interest キー族。それらは [spatial_interest.md](../../spatial_interest.md) のマイルストーン（32→64→128、1000 は horizon）が担当する。
 
-**現状**: Phase 1–2 + Phase 3 着手〜dirty 30Hz + 確定レーン（x00a3–[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md)）+ Save [x00b7](slices/x00b7-overlay-canonical-save.md)–[x00b9](slices/x00b9-spawn-without-live-cas.md) **done** + [x00b6](slices/x00b6-dash-room-tab.md) Room タブ器 + 規模本線 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)/[x00bf](slices/x00bf-client-near-cell-frame-sub.md)/[x00c0](slices/x00c0-host-cell-dirty-filter.md)/[x00c1](slices/x00c1-client-cell-follow-resub.md)/[x00c2](slices/x00c2-cell-exit-remove.md)/[x00c3](slices/x00c3-multi-cell-same-tick-merge.md)/[x00c4](slices/x00c4-opt-in-cell-frame-mainline.md)/[x00c5](slices/x00c5-default-cell-frame-mainline.md)（既定 cell 本線）+ [x00c6](slices/x00c6-spatial-interest-vr-delivery-contract.md) VR delivery **done**。[x00c7](slices/x00c7-avatar-sync-lod-mid-band.md) Avatar sync LOD **done**。後続: G1 実測 / dual-publish 縮小 / Spatial VCS。
+**現状**: Phase 1–2 + Phase 3 着手〜dirty 30Hz + 確定レーン（x00a3–[x00b3](../../slices/x00b3-phase3-edit-ops-live-bridge.md)）+ Save [x00b7](../../slices/x00b7-overlay-canonical-save.md)–[x00b9](../../slices/x00b9-spawn-without-live-cas.md) **done** + [x00b6](../../slices/x00b6-dash-room-tab.md) Room タブ器 + 規模本線 [x00be](../../slices/x00be-spatial-interest-cell-frame-foundation.md)/[x00bf](../../slices/x00bf-client-near-cell-frame-sub.md)/[x00c0](../../slices/x00c0-host-cell-dirty-filter.md)/[x00c1](../../slices/x00c1-client-cell-follow-resub.md)/[x00c2](../../slices/x00c2-cell-exit-remove.md)/[x00c3](../../slices/x00c3-multi-cell-same-tick-merge.md)/[x00c4](../../slices/x00c4-opt-in-cell-frame-mainline.md)/[x00c5](../../slices/x00c5-default-cell-frame-mainline.md)（既定 cell 本線）+ [x00c6](../../slices/x00c6-spatial-interest-vr-delivery-contract.md) VR delivery **done**。[x00c7](../../slices/x00c7-avatar-sync-lod-mid-band.md) Avatar sync LOD **done**。後続: G1 実測 / dual-publish 縮小 / Spatial VCS。
 
 ### Phase 1: 既存 `shared-sim` の進化とヘッドレス決定論テスト（host/app 本線は触らない）
 
-**状態**: **closed**（[x00a3](slices/x00a3-mvcc-phase1-scaffold.md)–[x00a8](slices/x00a8-inequality-contact.md)）。レイアウト予約・真 CoW・Directory・不等式接触・`forbid`・Android CI 含む。`xpbd/` モジュール分割・拘束 SIMD・`delta_codec` は後続強化。host/app 本線は未配線。  
+**状態**: **closed**（[x00a3](../../slices/x00a3-mvcc-phase1-scaffold.md)–[x00a8](../../slices/x00a8-inequality-contact.md)）。レイアウト予約・真 CoW・Directory・不等式接触・`forbid`・Android CI 含む。`xpbd/` モジュール分割・拘束 SIMD・`delta_codec` は後続強化。host/app 本線は未配線。  
 **前提**: improvement-plan **P1-1 / P1-4 / P1-5** closed。  
 **吸収**: **P1-2** の *shared-sim 側能力*（不等式接触＋箱形状のヘッドレス保証）、**P1-3**（hot-path zero-alloc）。  
 **スコープ境界**: host の `step_dt(..., bounds: None)` は **意図的に触らない**。host で接触をオンにする（`bounds: Some`）・本番経路の回帰は **Phase 3**（P1-2 の host 配線完了）。
@@ -609,7 +613,7 @@ flowchart LR
 
 **前提**: Phase 1 ゲート Green（x00a6–x00a8）。  
 **吸収**: improvement-plan **P3-2**（Frame 補間 / jitter buffer）。  
-**状態**: **closed**（[x00a9](slices/x00a9-phase2-publish-foundation.md)–[x00ac](slices/x00ac-interp-wgsl.md)）。Epoch 描画経路は並存；host 本線切替は Phase 3。
+**状態**: **closed**（[x00a9](../../slices/x00a9-phase2-publish-foundation.md)–[x00ac](../../slices/x00ac-interp-wgsl.md)）。Epoch 描画経路は並存；host 本線切替は Phase 3。
 
 1. **作業内容**:
    * 既存 `epoch_mirror` / Prev-Curr を `MvccPageArena` / `PublishedPair` アダプタへ寄せる。
@@ -627,14 +631,14 @@ flowchart LR
 **前提**: Phase 2 DoD Green。Room AEAD / wire_cap 契約が明示。handover は §4.8 に従う（**Q1 採用済み** — 追加の「合意待ち」ゲートは設けない）。
 
 **スライス分割（着手順）**:
-* **[x00ad](slices/x00ad-phase3-host-sim-backend.md)** — `SimBackend` + **接触オン**（P1-2 host）— **done**。
-* **[x00ae](slices/x00ae-phase3-dirty-delta-codec.md)** — `delta_codec` + dirty 合成 + Smallest-Three — **done**。
-* **[x00af](slices/x00af-phase3-protocol-pin.md)** — PROTOCOL_PIN 一括（`sim_tick` / `holder` / `release_*`）— **done**。
-* **[x00b0](slices/x00b0-phase3-sim-state.md)** — `…/sim_state` 計画的 handover + crash fail-closed — **done**。
-* **[x00b1](slices/x00b1-phase3-dirty-30hz-cutover.md)** — host dirty 30Hz 本番切替 — **done**。
-* **[x00b2](slices/x00b2-phase3-edit-lane-foundation.md)** — 確定レーン土台（`…/edit` + Spawn/Despawn）— **done**。
-* **[x00b3](slices/x00b3-phase3-edit-ops-live-bridge.md)** — ライブ Reparent/SetField + FrameBridge + snapshot `scene_rev`（案 B）— **done**。
-* 後続: Spatial VCS / Save As / Undo UI / spatial_interest 後続 / WorldRoot Lens。Spawn 即 CAS 見直しは [x00b9](slices/x00b9-spawn-without-live-cas.md) **done**。Spatial Lens 個人パネルは [x00ba](slices/x00ba-spatial-lens-uber-sdf.md)–[x00bd](slices/x00bd-spatial-panel-hit-stickiness.md) **done**。親子/SetField 永続は [x00b8](slices/x00b8-save-parent-setfield-persist.md) **done**。overlay→canonical Save は [x00b7](slices/x00b7-overlay-canonical-save.md) **done**。Room タブ器は [x00b6](slices/x00b6-dash-room-tab.md) **done**。`x00b4` / `x00b5` は assets 所有権の穴塞ぎ（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §14.4）に使用済み。規模本線 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)/[x00bf](slices/x00bf-client-near-cell-frame-sub.md)/[x00c0](slices/x00c0-host-cell-dirty-filter.md)/[x00c1](slices/x00c1-client-cell-follow-resub.md)/[x00c2](slices/x00c2-cell-exit-remove.md)/[x00c3](slices/x00c3-multi-cell-same-tick-merge.md)/[x00c4](slices/x00c4-opt-in-cell-frame-mainline.md)/[x00c5](slices/x00c5-default-cell-frame-mainline.md) **done**。次空き **`x00c6`**。
+* **[x00ad](../../slices/x00ad-phase3-host-sim-backend.md)** — `SimBackend` + **接触オン**（P1-2 host）— **done**。
+* **[x00ae](../../slices/x00ae-phase3-dirty-delta-codec.md)** — `delta_codec` + dirty 合成 + Smallest-Three — **done**。
+* **[x00af](../../slices/x00af-phase3-protocol-pin.md)** — PROTOCOL_PIN 一括（`sim_tick` / `holder` / `release_*`）— **done**。
+* **[x00b0](../../slices/x00b0-phase3-sim-state.md)** — `…/sim_state` 計画的 handover + crash fail-closed — **done**。
+* **[x00b1](../../slices/x00b1-phase3-dirty-30hz-cutover.md)** — host dirty 30Hz 本番切替 — **done**。
+* **[x00b2](../../slices/x00b2-phase3-edit-lane-foundation.md)** — 確定レーン土台（`…/edit` + Spawn/Despawn）— **done**。
+* **[x00b3](../../slices/x00b3-phase3-edit-ops-live-bridge.md)** — ライブ Reparent/SetField + FrameBridge + snapshot `scene_rev`（案 B）— **done**。
+* 後続: Spatial VCS / Save As / Undo UI / spatial_interest 後続 / WorldRoot Lens。Spawn 即 CAS 見直しは [x00b9](../../slices/x00b9-spawn-without-live-cas.md) **done**。Spatial Lens 個人パネルは [x00ba](../../slices/x00ba-spatial-lens-uber-sdf.md)–[x00bd](../../slices/x00bd-spatial-panel-hit-stickiness.md) **done**。親子/SetField 永続は [x00b8](../../slices/x00b8-save-parent-setfield-persist.md) **done**。overlay→canonical Save は [x00b7](../../slices/x00b7-overlay-canonical-save.md) **done**。Room タブ器は [x00b6](../../slices/x00b6-dash-room-tab.md) **done**。`x00b4` / `x00b5` は assets 所有権の穴塞ぎ（[assets-vcs-draft.md](../../../0_doc/architecture/assets-vcs-draft.md) §14.4）に使用済み。規模本線 [x00be](../../slices/x00be-spatial-interest-cell-frame-foundation.md)/[x00bf](../../slices/x00bf-client-near-cell-frame-sub.md)/[x00c0](../../slices/x00c0-host-cell-dirty-filter.md)/[x00c1](../../slices/x00c1-client-cell-follow-resub.md)/[x00c2](../../slices/x00c2-cell-exit-remove.md)/[x00c3](../../slices/x00c3-multi-cell-same-tick-merge.md)/[x00c4](../../slices/x00c4-opt-in-cell-frame-mainline.md)/[x00c5](../../slices/x00c5-default-cell-frame-mainline.md) **done**。次空き **`x00c6`**。
 
 1. **作業内容**:
    * `ALCHEMY_SIM_BACKEND=mvcc_xpbd|epoch_xpbd` で切替可能な権威ループ。Ingress 検疫 → Fork/`make_mut` → XPBD（**接触オン＝`bounds: Some`**）→ 階層 → Commit。ここで P1-2 の host 配線を閉じる（**→ x00ad**）。
@@ -670,7 +674,7 @@ flowchart TB
 
 ### 次文書（規模本線）
 
-Phase 3 DoD Green の後（アウトライン整備は並走可）、配信の空間インデックス実装は **[spatial_interest.md](spatial_interest.md)**（improvement-plan **P3-7**）に従う。本指示書を増やすことでフルメッシュ同期のままスケールしたことにしてはならない。
+Phase 3 DoD Green の後（アウトライン整備は並走可）、配信の空間インデックス実装は **[spatial_interest.md](../../spatial_interest.md)**（improvement-plan **P3-7**）に従う。本指示書を増やすことでフルメッシュ同期のままスケールしたことにしてはならない。
 
 ---
 

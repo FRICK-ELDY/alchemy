@@ -1,7 +1,7 @@
-# x00aa — Phase 2 sim_tick jitter + PublishedPair 配線
+﻿# x00aa — Phase 2 sim_tick jitter + PublishedPair 配線
 
 > **ID:** `x00aa` · **slug:** `phase2-sim-jitter` · **status:** `done` · **area:** `[client, docs]` · **depends_on:** `[x00a9]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) Phase 2 / improvement-plan **P3-2**
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) Phase 2 / improvement-plan **P3-2**
 
 目標: app が `PublishedPair` を消費し、補間 α を受信時刻基準から **`sim_tick` / `host_time_ms` + 1 frame jitter** に寄せる。Epoch 描画経路は並存（破壊しない）。
 

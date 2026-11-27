@@ -2,9 +2,9 @@
 
 * **種別**: 規模本線の仕様正本。実装第一波は [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)（キー契約 + ACL + dual-publish）。第二波は [x00bf](slices/x00bf-client-near-cell-frame-sub.md)（client 近傍セル opt-in 併読）。第三波は [x00c0](slices/x00c0-host-cell-dirty-filter.md)（host セル別 dirty / 複数セル soft-put）。第四波は [x00c1](slices/x00c1-client-cell-follow-resub.md)（自位置追従の cell 購読切替）。第五波は [x00c2](slices/x00c2-cell-exit-remove.md)（セル退出 remove）。第六波は [x00c3](slices/x00c3-multi-cell-same-tick-merge.md)（多 cell 同一 tick 合流）。第七波は [x00c4](slices/x00c4-opt-in-cell-frame-mainline.md)（opt-in cell 本線・Room frame 非購読）。第八波は [x00c5](slices/x00c5-default-cell-frame-mainline.md)（既定 cell 本線・`ALCHEMY_ROOM_FRAME` オプトアウト）。第九波は [x00c6](slices/x00c6-spatial-interest-vr-delivery-contract.md)（VR delivery 契約: Moore per-key · Interest enter 収束 · 自アバター応答）。第十波は [x00c7](slices/x00c7-avatar-sync-lod-mid-band.md)（Avatar sync LOD: 中距離 `frame/lod` · 粗い格子）
 * **改善計画上の位置**: [improvement-plan-2026-11-12.md](../0_doc/evaluation/improvement-plan-2026-11-12.md) **P3-7**
-* **品質本線（物理・状態）**: [mvcc_xpbd.md](mvcc_xpbd.md) Phase 1–3（dirty デルタ・SoA ページが前提）
+* **品質本線（同期・状態）**: [scene_store_sim_arena.md](scene_store_sim_arena.md)（Scene Store × Sim Arena；密デルタは dirty + x0024）
 * **現行配送契約**: [protocol/peer-delivery.md](../../protocol/peer-delivery.md)（x0024）· [architecture/client.md](../0_doc/architecture/client.md) · [architecture/protocol.md](../0_doc/architecture/protocol.md)
-* **関連**: x0067（非対称 ACL）· x0069（Room 鍵 AEAD）· `HotPhysicsPage.cell_origin`（[mvcc_xpbd.md](mvcc_xpbd.md) §4.3）· 自アバター予測 x00ab
+* **関連**: x0067（非対称 ACL）· x0069（Room 鍵 AEAD）· `cell_origin` / セル局所座標（品質本線 Sim Arena；既存 page 資産は `sim_pages`）· 自アバター予測 x00ab
 
 > **注記（番号衝突）**: 本 P3-7（Spatial Interest）は、roadmap README に残る旧メモ「P3-7 BLAKE3 ストリーミングはマージしない」とは**無関係**。BLAKE3 ストリーミング禁止は引き続き有効。
 
@@ -12,13 +12,13 @@
 
 ## 0. なぜ第一級仕様か
 
-[mvcc_xpbd.md](mvcc_xpbd.md) は近傍物理品質・ゼロアロ・handover 速度復元・GPU 補間の**品質本線**である。  
+[scene_store_sim_arena.md](scene_store_sim_arena.md) はセッション同期・シーン構造・実行面メモリ（および段階物理の枠）の**品質本線**である。  
 同一 Room の大規模 CCU（horizon として 1,000 人）は、dirty bitmask や量子化だけでは届かない。現行は Room 単位の単一 `…/{wire_cap}/frame` を全員が購読する**フルメッシュ**であり、リレー送信と各クライアント受信が物理より先に死ぬ。
 
 **規模の主戦場は「誰に・何を・何 Hz で送るか」（interest）である。** 本ドキュメントがその正本。
 
 ```text
-品質本線: mvcc_xpbd Phase 1–3
+品質本線: scene_store_sim_arena（Store × Arena）
   → dirty / AEAD デルタが使える
 規模本線: spatial_interest（本ファイル）
   → セル購読分割 + avatar LOD
@@ -75,7 +75,7 @@ Avatar sync LOD: §6（x00c7）
 
 | 層 | 単位 | 役割 |
 |:---|:---|:---|
-| 物理（品質本線） | `HotPhysicsPage` + `cell_origin_* : f64`（局所 `f32` ±32 m） | XPBD・MVCC・GPU 転送 |
+| 物理／実行面（品質本線） | `cell_origin_* : f64` + 局所 `f32`（Epoch / Sim Arena；page 資産は `sim_pages`） | XPBD・dirty・GPU 転送 |
 | 配信（規模本線） | **同一系のセル ID**（`cell_id: [i32; 3]` または origin から導出） | 近傍購読・cell publish |
 | 配信 LOD（規模） | **同一原点の粗い LodCell**（`floor_div(cell, LOD_CELL_STRIDE)` · stride=3） | 中距離 sync LOD キー |
 | 権威（当面） | **1 Room = 1 host** | セルは購読分割の単位であり、権威分割の単位ではない |
@@ -86,7 +86,7 @@ Avatar sync LOD: §6（x00c7）
 
 ## 4. キー契約（実装固定 · x00be〜x00c7）
 
-1. **独自トランスポート禁止**（[mvcc_xpbd.md](mvcc_xpbd.md) 🚫1 と同型）。`relay-server` / `relay-agent` / `wire_cap` ACL / Room AEAD を通す。
+1. **独自トランスポート禁止**（[scene_store_sim_arena.md](scene_store_sim_arena.md) §8 と同型）。`relay-server` / `relay-agent` / `wire_cap` ACL / Room AEAD を通す。
 2. **方向 A（確定）**: セル修飾サフィックス  
    `alchemy/dev/room/{room_id}/{wire_cap}/frame/cell/{cx}_{cy}_{cz}`  
    セグメントは `format_cell_id_segment`（例: `0_0_0`, `-1_2_0`, `-1_-2_0`）。索引は shared-sim `CellId`（`CELL_SIZE_M=64` center origin）と同系。
@@ -235,12 +235,12 @@ Far:  no lod/cell subscribe · presence assignment only
 
 | ゲート | CCU 目安 | 合格の意味（例） |
 |:---|:---|:---|
-| G0 | ≤32 | 現行契約 + MVCC Phase 3 デルタで安定 |
+| G0 | ≤32 | 現行契約 + dirty/AEAD デルタで安定 |
 | G1 | 64 | interest（近傍セル購読）無しでは不合格になりうることを計測で示すか、interest 試作で通過 |
 | G2 | 128 | cell 購読 + avatar LOD が本線。フルメッシュ禁止を運用で固定 |
 | Horizon | 1000 | interest・予算・（必要なら）権威拡張が揃った**将来目標**。到達保証ではない |
 
-「MVCC Phase 完了 = 1000 人」と書かない。規模 KPI は本ファイル、品質 KPI は [mvcc_xpbd.md](mvcc_xpbd.md)。
+「品質本線完了 = 1000 人」と書かない。規模 KPI は本ファイル、品質 KPI は [scene_store_sim_arena.md](scene_store_sim_arena.md)。
 
 ---
 
@@ -248,7 +248,7 @@ Far:  no lod/cell subscribe · presence assignment only
 
 | 依存 | 理由 |
 |:---|:---|
-| [mvcc_xpbd.md](mvcc_xpbd.md) **Phase 3** DoD Green | dirty デルタ・host 権威ループ・AEAD 配信が品質として使えること |
+| [scene_store_sim_arena.md](scene_store_sim_arena.md) Phase 1 土台 + 既存 dirty/AEAD | 同期・edit・実行面ブリッジが品質として使えること（旧 MVCC Phase 3 DoD の後継） |
 | x0024 delivery-class | latest / snapshot 再同期語彙 |
 | x0067 / x0069 | ACL・部屋機密を壊さない拡張 |
 | x00ab owned prediction | 自アバター応答の実装前提（§5.4） |
@@ -256,8 +256,8 @@ Far:  no lod/cell subscribe · presence assignment only
 
 | 作業 | 条件 |
 |:---|:---|
-| **本ファイル（アウトライン正本）** | いつでも。MVCC Phase と**並走可** |
-| **実装スライス群** | **MVCC Phase 3 DoD Green 後**。第一波 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)〜第十波 [x00c7](slices/x00c7-avatar-sync-lod-mid-band.md) **done**（§5 VR delivery · §6 Avatar sync LOD）。dual-publish 縮小・CCU 天井拡大・G1 実測は後続 |
+| **本ファイル（アウトライン正本）** | いつでも。品質本線と**並走可** |
+| **実装スライス群** | 第一波 [x00be](slices/x00be-spatial-interest-cell-frame-foundation.md)〜第十波 [x00c7](slices/x00c7-avatar-sync-lod-mid-band.md) **done**（§5 VR delivery · §6 Avatar sync LOD）。dual-publish 縮小・CCU 天井拡大・G1 実測は後続 |
 
 ---
 
@@ -265,7 +265,7 @@ Far:  no lod/cell subscribe · presence assignment only
 
 * 独自 UDP / quinn / WebTransport で帯域を稼ぐ
 * 検証スキップ・Room AEAD / ManifestSeal バイパス
-* MVCC だけで大規模 CCU を宣言する文書・PR 説明
+* 品質本線（旧 MVCC / 現行 Scene Store）だけで大規模 CCU を宣言する文書・PR 説明
 * フルメッシュのまま Phase を増やして「スケールした」ことにする
 * 既定本線として `…/frame/cell/*` を規模解決と呼ぶこと（受信量が dirty cell に線形）
 * 同一 `frame/cell` 環拡大を Avatar sync LOD と呼ぶこと（案 A）

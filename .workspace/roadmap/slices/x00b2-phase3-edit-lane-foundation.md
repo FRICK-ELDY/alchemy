@@ -1,12 +1,12 @@
-# x00b2 — Phase 3: 確定レーン土台（`…/edit` + EditCommit + Spawn/Despawn 一般化）
+﻿# x00b2 — Phase 3: 確定レーン土台（`…/edit` + EditCommit + Spawn/Despawn 一般化）
 
 > **ID:** `x00b2` · **slug:** `phase3-edit-lane-foundation` · **status:** `done` · **area:** `[protocol, host, relay, client, docs]` · **depends_on:** `[x00b1]`  
-> **優先度:** [mvcc_xpbd.md](../mvcc_xpbd.md) §4.7 確定レーン（inventory 一般化）  
+> **優先度:** [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §4.7 確定レーン（inventory 一般化）  
 > **後続:** `x00b3` Reparent/SetField + FrameBridge · snapshot `scene_rev` / gap · `undo_checked` · 旧 inventory キー廃止
 
 目標: 既存 inventory spawn/despawn の「提案 → 検証 → 確定」を **`…/edit` + `EditProposal` / `EditCommit`** に一般化する。本スライスは **Spawn / Despawn のみ**。ライブ確定順は host（`scene_rev`）、永続は world overlay CAS（Q3 暫定）。
 
-根拠: [mvcc_xpbd.md](../mvcc_xpbd.md) §4.7 / §5 Phase 3 · [mvcc_xpbd_review_proposal.md](../mvcc_xpbd_review_proposal.md) 指摘 6 · x006d / x007b / x0081
+根拠: [mvcc_xpbd.md](../archive/2026-11-27/mvcc_xpbd.md) §4.7 / §5 Phase 3 · [mvcc_xpbd_review_proposal.md](../archive/2026-11-27/mvcc_xpbd_review_proposal.md) 指摘 6 · x006d / x007b / x0081
 
 ---
 
