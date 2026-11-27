@@ -54,10 +54,9 @@ use alchemy_protocol::{
 use alchemy_shared_sim::{
     is_trash_entity_id, ApplyOutcome, CrdtOp, OpTimestamp, PropValue, SceneStore, SlotTransition,
     SlotUndoStack, SoftLeaseConflict, SoftLeaseTable, TrashStore, SOFT_LEASE_TTL_TICKS,
-    TRASH_ENTITY_ID,
 };
 #[cfg(test)]
-use alchemy_shared_sim::{SoftLease, UndoError};
+use alchemy_shared_sim::{SoftLease, UndoError, TRASH_ENTITY_ID};
 use zenoh::Wait;
 
 use crate::room_aead::{self, SharedRoomAead};
@@ -493,6 +492,10 @@ impl LiveEditLedger {
     /// Call after a successful [`Self::note_despawn`] / [`Self::note_live_despawn`]
     /// while the node is still under trash (before GC). `from_parent` is the wire
     /// parent before trash (`0` = world root).
+    ///
+    /// **Test / Intent peel only** — HostLoop does not call this yet; drop
+    /// `cfg(test)` when Undo Intent wires operator + first-trash `from_parent`.
+    #[cfg(test)]
     pub fn note_despawn_undo(&mut self, operator: &[u8], child: u32, from_parent: u32) {
         if !self.store.is_trashed(child) {
             return;
