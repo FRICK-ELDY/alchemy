@@ -1,6 +1,6 @@
 # x00e9 — RigidSolver 境界のみ（Phase 3 枠）
 
-> **ID:** `x00e9` · **slug:** `rigid-solver-boundary` · **status:** `planned` · **area:** `[sim]` · **depends_on:** `[x00e8]`  
+> **ID:** `x00e9` · **slug:** `rigid-solver-boundary` · **status:** `done` · **area:** `[sim]` · **depends_on:** `[x00e8]`  
 > **優先度:** 品質本線 **Phase 3**（枠のみ・実装は別決）  
 > **注意:** **rapier3d / AVBD は未採択**（guardrails: 新規依存は人承認）
 
@@ -15,7 +15,16 @@
 | 保証する | 保証しない |
 |:---|:---|
 | RigidSolver 境界（trait / モジュール口）と「実装は別決」の明示 | rapier3d / AVBD の再導入・実装 |
-| 現行 Native XPBD／不等式接触を無断削除しない | 規模本線 CCU KPI |
+| 安定契約: Work/sheet 等は `Self` 注入、`step(dt)` のみ（呼び出し時面参照へ黙って広げない） | 規模本線 CCU KPI |
+| 現行 Native XPBD／不等式接触を無断削除しない | |
+
+## 触ったファイル
+
+- `client/shared-sim/src/rigid_solver/mod.rs` — 境界 docs + Noop / dyn / bit テスト
+- `client/shared-sim/src/rigid_solver/solver.rs` — `RigidSolver` + `NoopRigidSolver` + `COMP_RIGID_BODY`
+- `client/shared-sim/src/lib.rs` — `pub mod rigid_solver`；crate docs
+- `client/shared-sim/src/avatar_rig/mod.rs` — Non-guarantees を境界 vs 実装で整合
+- [scene_store_sim_arena.md](../scene_store_sim_arena.md) / [README.md](../README.md) — status・次着手
 
 ## 完了条件
 

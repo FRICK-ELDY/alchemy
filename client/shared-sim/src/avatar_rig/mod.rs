@@ -6,7 +6,8 @@
 //! secondary bones never call Scene Store `AllocateSlot` / SparseSet insert
 //! ([`AvatarRigBuffer`] has no Scene Store / Arena API surface).
 //! Non-guarantees: host 60Hz wiring; GPU skinning; full-body IK UX; rapier3d;
-//! Scale / CCU KPI; RigidSolver (x00e9); EpochSheet / Grab / LBVH reuse.
+//! Scale / CCU KPI; RigidSolver **implementation** (boundary is
+//! [`crate::rigid_solver`]; x00e9); EpochSheet / Grab / LBVH reuse.
 //!
 //! # Ring 2 placement
 //!

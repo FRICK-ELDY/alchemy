@@ -14,7 +14,9 @@
 //! 3-layer IDs + [`WireToLocal`] skeleton (x00e4; edit/PROTOCOL_PIN still
 //! `entity_id: u32`); [`SequencedOp`] / op_chain fold + [`RoomSnapshot`] 枠 (x00e5);
 //! [`avatar_rig::AvatarRigBuffer`] secondary-bone XPBD outside Scene Store slots
-//! (x00e8; host tick unwired).
+//! (x00e8; host tick unwired);
+//! [`rigid_solver::RigidSolver`] Ring 2 Step 2 boundary + [`rigid_solver::NoopRigidSolver`]
+//! (x00e9; host tick unwired / Noop — solver body は別決).
 //! Non-guarantees: Rapier / Dual-AST Kernel / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); Zenoh edit / Save I/O (host `LiveEditLedger` facade);
@@ -37,6 +39,7 @@ pub mod bridge;
 pub mod delta_codec;
 pub mod demo;
 pub mod ids;
+pub mod rigid_solver;
 pub mod scene_store;
 pub mod sim_arena;
 pub mod sim_pages;
