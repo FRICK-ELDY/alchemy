@@ -8,16 +8,16 @@
 //!
 //! # Module placement
 //!
-//! This module imports [`LocalSlotId`] from `sim_arena` while Arena Drain imports
-//! [`SimPatch`] here (Phase 1b `u32` alias cycle). Newtype / shared id mod lands
-//! with 3-layer IDs (→ x00e4).
+//! [`LocalSlotId`] is owned by [`crate::ids`] (x00e4); Arena Drain imports
+//! [`SimPatch`] here. Live edit still uses numeric identity with [`super::EntityId`].
 
-use crate::sim_arena::LocalSlotId;
+use crate::ids::LocalSlotId;
 
 /// Dense diff from Scene Store (Ring 1) to Sim Arena Work (Ring 2).
 ///
-/// Phase 1b: [`LocalSlotId`] equals Scene Store [`super::EntityId`] numerically
-/// (wire id = slot). Dedicated newtypes arrive with 3-layer IDs (→ x00e4).
+/// Phase 1b / x00e4 coexistence: [`LocalSlotId`] equals Scene Store
+/// [`super::EntityId`] numerically unless a [`crate::ids::WireToLocal`] remap
+/// is applied at the host/bridge boundary (not yet on the live edit path).
 ///
 /// Guarantees: variants cover Allocate / Free / SetParent / transform / bit
 /// masks / procedural box (roadmap §6). Non-guarantees: SoftLease; drag

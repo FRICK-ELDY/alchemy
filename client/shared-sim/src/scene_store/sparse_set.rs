@@ -1,11 +1,12 @@
 //! Typed SparseSet: entity_id → dense pack (x00dd).
 
 use super::EntityId;
+use crate::ids::SLOT_ABSENT;
 
 /// Sentinel in [`SparseSet::sparse`]: no live dense entry for that entity id.
 ///
-/// Reserved: [`EntityId`] must never equal this value (`u32::MAX`).
-const ABSENT: u32 = u32::MAX;
+/// Same value as [`crate::ids::SLOT_ABSENT`] (`u32::MAX`).
+const ABSENT: u32 = SLOT_ABSENT;
 
 /// Typed sparse set: sparse key → dense slot, plus packed values.
 ///
@@ -19,8 +20,9 @@ const ABSENT: u32 = u32::MAX;
 ///
 /// - Sparse grows to `max(entity_id)+1`. Ids must be **host/quarantine-bounded**
 ///   (Manifest / edit gate). Huge or near-`u32::MAX` ids can OOM via sparse grow.
-/// - [`EntityId`] **must not** be `u32::MAX` — reserved as the sparse absent
-///   sentinel ([`ABSENT`]). Insert of that id is rejected (no-op, returns `None`).
+/// - [`EntityId`] **must not** be [`crate::ids::SLOT_ABSENT`] (`u32::MAX`) —
+///   reserved as the sparse absent sentinel ([`ABSENT`]). Insert of that id is
+///   rejected (no-op, returns `None`).
 #[derive(Clone, Debug)]
 pub struct SparseSet<T> {
     /// `entity_id as usize` → dense index, or [`ABSENT`]. Length ≥ max id + 1.
