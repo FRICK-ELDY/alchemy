@@ -6,11 +6,11 @@
 //! [`slot_graph::SlotGraph`] (x0056); Zero-Base spatial lifecycle primitives in
 //! [`tape`] / [`topology`] / [`spatial`] / [`xpbd`] / [`bridge`] / [`mvcc`] (x00a3);
 //! Sim Arena 3-face + Carry-Over + bridge publish in [`sim_arena`] / [`bridge`]
-//! (x00da / x00db / x00dc); Scene Store SparseSet skeleton in [`scene_store`]
-//! (x00dd).
+//! (x00da / x00db / x00dc); Scene Store SparseSet + LWW / cycle reject in
+//! [`scene_store`] (x00dd / x00de).
 //! Non-guarantees: Rapier / Dual-AST Kernel / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
-//! Slot graphs (→ x0059); CRDT LWW / cycle / LiveEdit facade (→ x00de+); Zenoh /
+//! Slot graphs (→ x0059); `SimPatch` / LiveEdit facade (→ x00df+); Zenoh /
 //! GPU wiring (client `epoch_view`); PROTOCOL_PIN quantized pose（[`delta_codec`]
 //! は x00ae；host dirty 30Hz は x00b1; not V_ack/XOR）; cross-arch determinism (Q2).
 //! Host `SimBackend` + contact-on wiring is x00ad (`host-server`);
@@ -46,7 +46,10 @@ pub use tape::{
 };
 pub use topology::FlatTopology;
 
-pub use scene_store::{EntityId, SparseSet};
+pub use scene_store::{
+    ApplyOutcome, CrdtOp, EntityId, OpTimestamp, PropValue, SceneStore, SparseSet,
+    MAX_LAMPORT_DRIFT, MAX_PARENT_HOPS,
+};
 pub use slot_graph::{ReparentError, SlotGraph};
 pub use slot_undo::{SlotTransition, SlotUndoStack, UndoError};
 

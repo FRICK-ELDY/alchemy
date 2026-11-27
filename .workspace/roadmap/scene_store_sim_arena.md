@@ -251,7 +251,7 @@ Sim Arena は GPU の 120fps 補間（`Prev` と `Published` の同時読取）�
 |:---|:---|:---|
 | `actor_id` 強制上書き | **1b（必須）** | 申告値を信用せず Room Token `sub` から導出（現行 Intent/edit ゲートと同型） |
 | ManifestSeal 照合 | **1b（必須・host）** | アセット参照 SetProperty / Spawn は seal 済みハッシュのみ（現行 x0039）。**ゲスト描画直前の二重破棄は本線後続**（現行 Frame 経路には無い。将来の防御強化） |
-| lamport ドリフトクランプ | **1b（必須）** | 未来時計の LWW 乗っ取り遮断 |
+| lamport ドリフトゲート | **1b（必須）** | 未来時計の LWW 乗っ取り遮断（`max_lamport + DRIFT` 超過は Reject。梯子登りクランプ禁止） |
 | **`op_chain_hash`** | **1c（枠のみ・DoD 外）** | 連鎖ハッシュ更新口と `World.Verifier` Behaviour への将来入力。Phase 1a/1b Green に必須としない |
 | Spot-Check 統計 | **本線外** | Proprietary。OSS は Noop 注入点のみ |
 
@@ -396,7 +396,7 @@ pub struct NetTransformDelta {
 | [x00db](slices/x00db-sim-arena-carry-over.md) | 1a | sim-arena-carry-over | done | prev/prev2 Carry-Over + dirty_epoch |
 | [x00dc](slices/x00dc-sim-arena-bridge-publish.md) | 1a 閉じ | sim-arena-bridge-publish | done | FrameBridge / 既存 arc-swap 出版 |
 | [x00dd](slices/x00dd-scene-store-sparseset.md) | 1b | scene-store-sparseset | done | SparseSet + scene_store 骨格 |
-| [x00de](slices/x00de-scene-store-lww-cycle.md) | 1b | scene-store-lww-cycle | planned | LWW + 循環防止 |
+| [x00de](slices/x00de-scene-store-lww-cycle.md) | 1b | scene-store-lww-cycle | done | LWW + 循環防止 |
 | [x00df](slices/x00df-scene-store-sim-patch.md) | 1b | scene-store-sim-patch | planned | SimPatch → Arena Drain |
 | [x00e0](slices/x00e0-live-edit-facade.md) | 1b | live-edit-facade | planned | LiveEditLedger facade |
 | [x00e1](slices/x00e1-scene-store-undo-despawn.md) | 1b 閉じ | scene-store-undo-despawn | planned | Undo + pending_despawns |
@@ -409,7 +409,7 @@ pub struct NetTransformDelta {
 | [x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md) | 2 | avatar-rig-buffer-xpbd | planned | AvatarRigBuffer XPBD |
 | [x00e9](slices/x00e9-rigid-solver-boundary.md) | 3 | rigid-solver-boundary | planned | RigidSolver 境界のみ |
 
-**次の着手:** [x00de](slices/x00de-scene-store-lww-cycle.md)（[x00dd](slices/x00dd-scene-store-sparseset.md) done · Phase 1b SparseSet）。
+**次の着手:** [x00df](slices/x00df-scene-store-sim-patch.md)（[x00de](slices/x00de-scene-store-lww-cycle.md) done · Phase 1b LWW / 循環）。
 
 ### Phase 1a（最小垂直切片・最優先）：Sim Arena 3 面 ＋ Carry-Over ＋ 既存出版
 * **目的**: 先祖返りゼロと Arena バリア（Carry-Over → publish → rotate）を、既存 `EpochSnapshotPair`（arc-swap）上で閉じる。**Phase 1a の Ring3 SSoT は host の f64 Epoch sheet（`start` / `world.curr`）**；Arena は Carry-Over / TELEPORT 寿命の補助（面を sheet に overlay しない）。物理・CRDT・SoftLease・3層 UUID は入れない。
