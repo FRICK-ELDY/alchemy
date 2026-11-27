@@ -677,8 +677,22 @@ impl HostLoop {
                     }
                 };
                 // Tip⇔Commit 一体。publisher は Commit を出すときだけ必須。
+                // Confirmed Reparent also feeds per-operator SlotUndoStack (x00e1).
                 let pubber = self.require_live_commit();
                 for ready in awaiting {
+                    if let crate::live_edit::ReadyLiveEdit::Reparent {
+                        proposal,
+                        op,
+                        prev_parent,
+                    } = &ready
+                    {
+                        led.note_reparent_undo(
+                            &proposal.session_pub,
+                            op.child_entity_id,
+                            *prev_parent,
+                            op.new_parent_entity_id,
+                        );
+                    }
                     let tip = led.bump_tip();
                     pubber.publish_accept(ready.proposal(), tip);
                 }

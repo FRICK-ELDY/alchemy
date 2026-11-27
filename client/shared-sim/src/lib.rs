@@ -8,7 +8,8 @@
 //! Sim Arena 3-face + Carry-Over + bridge publish in [`sim_arena`] / [`bridge`]
 //! (x00da / x00db / x00dc); Scene Store SparseSet + LWW / cycle reject +
 //! [`SimPatch`] queue → Arena Drain in [`scene_store`] / [`sim_arena`]
-//! (x00dd / x00de / x00df / x00e0).
+//! (x00dd / x00de / x00df / x00e0); [`slot_undo`] ↔ Scene Store + host
+//! `pending_despawns` (x00e1 Phase 1b close).
 //! Non-guarantees: Rapier / Dual-AST Kernel / prediction; Elixir `DemoScene` codegen
 //! (Rust mirror in [`demo`]; seal drift caught by x0079 vector); arbitrary-depth
 //! Slot graphs (→ x0059); Zenoh edit / Save I/O (host `LiveEditLedger` facade);

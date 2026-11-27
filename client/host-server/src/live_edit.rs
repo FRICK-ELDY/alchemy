@@ -1,6 +1,6 @@
-//! Host live edit facade over `shared-sim::scene_store` (x00e0).
+//! Host live edit facade over `shared-sim::scene_store` (x00e0 / x00e1).
 //!
-//! Contract (x00b3 / x00b9 / x00e0):
+//! Contract (x00b3 / x00b9 / x00e0 / x00e1):
 //! - Sparse SSoT is [`SceneStore`] (parents / fields / entities) — **no** host
 //!   HashMap second copy.
 //! - Host keeps quarantine, `tip` (`scene_rev`) sequencing, pending spawn/despawn
@@ -11,13 +11,21 @@
 //! - Accept `EditCommit` only after that success (never rewind tip).
 //! - Queue / barrier / inbox failure → `rollback_mirrors` + reject `EditCommit`
 //!   (`APPLY`); tip untouched.
+//! - Per-operator [`SlotUndoStack`] **records** barrier-confirmed Reparents
+//!   (`note_reparent_undo`). Applying undo/redo as tip/`EditCommit`/FrameBridge
+//!   ops is **not** wired yet (§3.3 Intent) — see `undo_reparent` / `redo_reparent`
+//!   (`cfg(test)` peel only; must not be called from production).
+//! - Despawn stays **`pending_despawns`** + sparse remove (no TRASH_UUID);
+//!   live despawn **prunes** that child's undo/redo entries (x00e1; TRASH GC → x00e3).
 //!
 //! Facade structural ops use [`SceneStore::apply_sparse`] (no `SimPatch` enqueue):
 //! FrameBridge already owns dense Reparent/SetField until Arena drain is wired
 //! from this ledger. Barrier / queue failure rolls back **LIFO** (reverse apply order).
 //!
 //! Non-guarantees: crash durability of unsaved pending; Spatial VCS flush;
-//! TRASH_UUID / SoftLease / SlotUndoStack (→ x00e1); Arena SimPatch drain wiring.
+//! TRASH_UUID / SoftLease; Undo Intent / tip bump / EditCommit path; leave-time
+//! `undo_stacks` eviction (empty stacks pruned on despawn only); Arena SimPatch
+//! drain wiring.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -29,7 +37,11 @@ use alchemy_protocol::{
     edit_field_id, scene_entry_is_user_root, user_root_entity_last, EditCommit, EditProposal,
     EditReparent, EditSetField, Message, SceneEntry,
 };
-use alchemy_shared_sim::{ApplyOutcome, CrdtOp, OpTimestamp, PropValue, SceneStore};
+#[cfg(test)]
+use alchemy_shared_sim::UndoError;
+use alchemy_shared_sim::{
+    ApplyOutcome, CrdtOp, OpTimestamp, PropValue, SceneStore, SlotTransition, SlotUndoStack,
+};
 use zenoh::Wait;
 
 use crate::room_aead::{self, SharedRoomAead};
@@ -59,6 +71,10 @@ pub struct LiveEditLedger {
     pub freelist: Vec<u32>,
     /// Allocated ids not yet in the store / scene (concurrent spawn race).
     pub reserved: HashSet<u32>,
+    /// Per-operator session undo (key = `session_pub` bytes). Populated on
+    /// barrier-confirmed Reparent; not persisted across leave. Leave/Save do
+    /// not clear this map (non-guarantee); despawn prunes per-child entries.
+    undo_stacks: HashMap<Vec<u8>, SlotUndoStack>,
 }
 
 pub type SharedLiveEdit = Arc<Mutex<LiveEditLedger>>;
@@ -157,7 +173,7 @@ impl LiveEditLedger {
     /// (`seed` with root only when absent — does not clobber a prior Reparent on re-note).
     /// Returns `false` if seed or props apply fails.
     ///
-    /// Rollback on props failure: **fresh** insert → `remove_node` (no half-write).
+    /// Rollback on props failure: **fresh** insert → `remove_node_sparse` (no half-write).
     /// **Re-note** (`!fresh`): any props already applied in this call are **left
     /// as-is** (no snapshot undo); caller sees `false` and must not treat the note
     /// as fully successful. Same contract as [`Self::note_spawn_with_parent`].
@@ -175,7 +191,7 @@ impl LiveEditLedger {
         }
         if !self.write_spawn_props(entity_id, flags, color, blake3) {
             if fresh {
-                let _ = self.store.remove_node(entity_id);
+                let _ = self.store.remove_node_sparse(entity_id);
             }
             return false;
         }
@@ -185,7 +201,7 @@ impl LiveEditLedger {
     /// Seed or overwrite including creative parent (x00b8 boot / scene install).
     /// Returns `false` if seed or props apply fails.
     ///
-    /// Rollback on props failure: **fresh** insert → `remove_node` (no half-write).
+    /// Rollback on props failure: **fresh** insert → `remove_node_sparse` (no half-write).
     /// **Re-seed** (`was_live`): parent link from `seed_node` and any props already
     /// applied in this call are **left as-is** (no snapshot undo); caller sees
     /// `false` and must not treat the note as fully successful.
@@ -207,7 +223,7 @@ impl LiveEditLedger {
         }
         if !self.write_spawn_props(entity_id, flags, color, blake3) {
             if !was_live {
-                let _ = self.store.remove_node(entity_id);
+                let _ = self.store.remove_node_sparse(entity_id);
             }
             return false;
         }
@@ -254,7 +270,109 @@ impl LiveEditLedger {
     }
 
     pub fn note_despawn(&mut self, entity_id: u32) {
-        let _ = self.store.remove_node(entity_id);
+        // Sparse: FrameBridge / physics own dense free; avoid FreeSlot backlog.
+        // Do **not** call [`SceneStore::remove_node`] here (that enqueues FreeSlot
+        // for Arena drain — would double-free against FrameBridge).
+        let _ = self.store.remove_node_sparse(entity_id);
+        self.prune_undo_for_entity(entity_id);
+    }
+
+    /// Record a barrier-confirmed Reparent for the operator's undo stack (x00e1).
+    ///
+    /// `from_parent` / `to_parent` are wire parents (`0` = world root).
+    /// Recording only — applying inverse still requires Intent / edit lane
+    /// (tip + EditCommit + FrameBridge) before production use.
+    ///
+    /// No-op when `child` is no longer live (e.g. despawn raced ahead of barrier
+    /// Ok) so pruned / missing ids do not re-enter the stack.
+    pub fn note_reparent_undo(
+        &mut self,
+        operator: &[u8],
+        child: u32,
+        from_parent: u32,
+        to_parent: u32,
+    ) {
+        if !self.store.contains(child) {
+            return;
+        }
+        let t = SlotTransition {
+            child,
+            from: wire_parent(from_parent),
+            to: wire_parent(to_parent),
+        };
+        if let Some(stack) = self.undo_stacks.get_mut(operator) {
+            stack.push(t);
+        } else {
+            let mut stack = SlotUndoStack::default();
+            stack.push(t);
+            self.undo_stacks.insert(operator.to_vec(), stack);
+        }
+    }
+
+    /// Drop undo/redo entries whose **`child`** is `entity_id` (live despawn).
+    ///
+    /// Does **not** strip entries that only mention the id as `from` / `to`
+    /// (parent role). Those stay until undo hits Missing→Stale discard, or
+    /// Intent-era GC; x00e1 jam-prevention is child-keyed only.
+    fn prune_undo_for_entity(&mut self, entity_id: u32) {
+        self.undo_stacks.retain(|_, stack| {
+            stack.discard_child(entity_id);
+            stack.undo_len() > 0 || stack.redo_len() > 0
+        });
+    }
+
+    /// **Test / library peel only** — sparse Move without tip / EditCommit /
+    /// FrameBridge. Production must not call this until Undo Intent is wired
+    /// (§3.3). Uses host-sequenced `actor_id` (0); operator key is `session_pub`.
+    #[cfg(test)]
+    pub fn undo_reparent(&mut self, operator: &[u8]) -> Result<Option<SlotTransition>, UndoError> {
+        self.undo_reparent_sparse_peel(operator, HOST_ACTOR_ID)
+    }
+
+    /// **Test / library peel only** — see [`Self::undo_reparent`].
+    #[cfg(test)]
+    pub fn redo_reparent(&mut self, operator: &[u8]) -> Result<Option<SlotTransition>, UndoError> {
+        self.redo_reparent_sparse_peel(operator, HOST_ACTOR_ID)
+    }
+
+    #[cfg(test)]
+    fn undo_reparent_sparse_peel(
+        &mut self,
+        operator: &[u8],
+        actor_id: u64,
+    ) -> Result<Option<SlotTransition>, UndoError> {
+        let Some(mut stack) = self.undo_stacks.remove(operator) else {
+            return Ok(None);
+        };
+        let result = stack.undo_checked_store_sparse(&mut self.store, actor_id);
+        if stack.undo_len() > 0 || stack.redo_len() > 0 {
+            self.undo_stacks.insert(operator.to_vec(), stack);
+        }
+        result
+    }
+
+    #[cfg(test)]
+    fn redo_reparent_sparse_peel(
+        &mut self,
+        operator: &[u8],
+        actor_id: u64,
+    ) -> Result<Option<SlotTransition>, UndoError> {
+        let Some(mut stack) = self.undo_stacks.remove(operator) else {
+            return Ok(None);
+        };
+        let result = stack.redo_store_sparse(&mut self.store, actor_id);
+        if stack.undo_len() > 0 || stack.redo_len() > 0 {
+            self.undo_stacks.insert(operator.to_vec(), stack);
+        }
+        result
+    }
+
+    #[cfg(test)]
+    fn undo_len_for(&self, operator: &[u8]) -> usize {
+        self.undo_stacks
+            .get(operator)
+            .map(|s| s.undo_len())
+            .unwrap_or(0)
     }
 
     /// Record a physics-ok session spawn for later Save (x00b9).
@@ -767,5 +885,130 @@ mod tests {
         // SSoT is the store only; facade Move/Set leave no SimPatch backlog.
         assert_eq!(led.store().len(), 1);
         assert!(led.store().pending_patches().is_empty());
+    }
+
+    #[test]
+    fn facade_reparent_undo_redo_restores_parent() {
+        let op_a = b"operator-a";
+        let mut led = LiveEditLedger::default();
+        assert!(led.note_spawn_with_parent(1, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.note_spawn_with_parent(2, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.note_spawn_with_parent(10, 1, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.apply_reparent(10, 2).is_success());
+        led.note_reparent_undo(op_a, 10, 1, 2);
+        assert_eq!(led.parent_of(10), 2);
+        assert_eq!(led.undo_len_for(op_a), 1);
+
+        let applied = led.undo_reparent(op_a).unwrap().unwrap();
+        assert_eq!(applied.to, Some(1));
+        assert_eq!(led.parent_of(10), 1);
+        assert!(led.store().pending_patches().is_empty());
+
+        let applied = led.redo_reparent(op_a).unwrap().unwrap();
+        assert_eq!(applied.to, Some(2));
+        assert_eq!(led.parent_of(10), 2);
+    }
+
+    #[test]
+    fn facade_undo_stale_after_foreign_reparent() {
+        let op_a = b"operator-a";
+        let mut led = LiveEditLedger::default();
+        assert!(led.note_spawn_with_parent(1, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.note_spawn_with_parent(2, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.note_spawn_with_parent(3, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.note_spawn_with_parent(10, 1, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.apply_reparent(10, 2).is_success());
+        led.note_reparent_undo(op_a, 10, 1, 2);
+        // Foreign operator wins parent.
+        assert!(led.apply_reparent(10, 3).is_success());
+        assert_eq!(led.undo_reparent(op_a), Err(UndoError::Stale));
+        assert_eq!(led.parent_of(10), 3);
+        assert_eq!(led.undo_len_for(op_a), 0);
+    }
+
+    #[test]
+    fn facade_despawn_keeps_pending_despawns_without_trash() {
+        let mut led = LiveEditLedger::default();
+        assert!(led.note_spawn_with_parent(100, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        // Canonical id (not in pending_spawns) → pending_despawns for Save.
+        led.note_live_despawn(100);
+        assert!(!led.contains_entity(100));
+        assert!(led.pending_despawns.contains(&100));
+        assert!(led.store().pending_patches().is_empty());
+        // Session spawn cancel recycles freelist instead of pending_despawns.
+        assert!(led.note_spawn_with_parent(200, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        led.note_pending_spawn(PendingSpawn {
+            entry: SceneEntry {
+                entity_id: 200,
+                blake3: String::new(),
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                half_extent: 0.0,
+                flags: 0,
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+                qx: 0.0,
+                qy: 0.0,
+                qz: 0.0,
+                qw: 1.0,
+                sx: 1.0,
+                sy: 1.0,
+                sz: 1.0,
+                parent_entity_id: 0,
+            },
+            spawn_ticket: "t".into(),
+        });
+        led.note_live_despawn(200);
+        assert!(!led.pending_despawns.contains(&200));
+        assert!(led.freelist.contains(&200));
+    }
+
+    #[test]
+    fn facade_despawn_prunes_undo_entries_for_child() {
+        let op_a = b"operator-a";
+        let mut led = LiveEditLedger::default();
+        assert!(led.note_spawn_with_parent(1, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.note_spawn_with_parent(10, 1, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.apply_reparent(10, 0).is_success());
+        led.note_reparent_undo(op_a, 10, 1, 0);
+        assert_eq!(led.undo_len_for(op_a), 1);
+        led.note_live_despawn(10);
+        assert_eq!(led.undo_len_for(op_a), 0);
+        // Stack map drops empty operator keys.
+        assert!(led.undo_stacks.is_empty());
+    }
+
+    #[test]
+    fn note_reparent_undo_skips_missing_child_after_despawn_race() {
+        let op_a = b"operator-a";
+        let mut led = LiveEditLedger::default();
+        assert!(led.note_spawn_with_parent(1, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.note_spawn_with_parent(10, 1, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        led.note_live_despawn(10);
+        // Barrier Ok after despawn must not re-seed the stack.
+        led.note_reparent_undo(op_a, 10, 1, 0);
+        assert_eq!(led.undo_len_for(op_a), 0);
+        assert!(led.undo_stacks.is_empty());
+    }
+
+    #[test]
+    fn facade_cycle_reject_leaves_parent_unchanged() {
+        let mut led = LiveEditLedger::default();
+        assert!(led.note_spawn_with_parent(1, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.note_spawn_with_parent(2, 1, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        assert!(led.note_spawn_with_parent(3, 2, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        // 1 → 2 → 3; moving 1 under 3 would cycle.
+        let outcome = led.apply_reparent(1, 3);
+        assert_eq!(outcome, ApplyOutcome::RejectedCycle);
+        assert_eq!(
+            edit_reject_for_apply(outcome),
+            alchemy_protocol::edit_reject::CYCLE
+        );
+        assert_eq!(led.parent_of(1), 0);
+        assert_eq!(led.parent_of(2), 1);
+        assert_eq!(led.parent_of(3), 2);
     }
 }
