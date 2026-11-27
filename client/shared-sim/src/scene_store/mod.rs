@@ -10,10 +10,12 @@
 //! [`SceneStore::enqueue_patch`]) for Arena Step 0 Drain;
 //! host boot / physics-ok seed via [`SceneStore::seed_node`] (no patch);
 //! host facade live ops via [`SceneStore::apply_sparse`] (LWW, no patch enqueue);
-//! [`SceneStore::remove_node`] clears orphan parents (no FreeSlot yet).
+//! [`SceneStore::remove_node`] clears orphan parents + enqueues [`SimPatch::FreeSlot`];
+//! facade despawn uses [`SceneStore::remove_node_sparse`] (no FreeSlot; host
+//! `pending_despawns` + FrameBridge own dense free).
 //! Non-guarantees: Zenoh edit / Save I/O / tip 採番 (host facade);
 //! TRASH_UUID / SoftLease / 3-layer IDs; JWT `sub` → `actor_id` (host gate);
-//! FreeSlot auto-enqueue (→ x00e1 pending_despawns).
+//! SlotUndo Intent wire (library + host facade peel in x00e1).
 //!
 //! # Live re-Spawn
 //!

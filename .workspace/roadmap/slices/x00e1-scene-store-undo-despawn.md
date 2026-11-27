@@ -1,6 +1,6 @@
 # x00e1 — scene_store Undo 接続 ＋ pending_despawns（Phase 1b 閉じ）
 
-> **ID:** `x00e1` · **slug:** `scene-store-undo-despawn` · **status:** `planned` · **area:** `[host, sim, client]` · **depends_on:** `[x00e0]`  
+> **ID:** `x00e1` · **slug:** `scene-store-undo-despawn` · **status:** `done` · **area:** `[host, sim, client]` · **depends_on:** `[x00e0]`  
 > **優先度:** 品質本線 **Phase 1b DoD 閉じ**  
 > **後続:** Phase 1c 枠は [x00e2](x00e2-soft-lease-edit-lock.md) 以降
 

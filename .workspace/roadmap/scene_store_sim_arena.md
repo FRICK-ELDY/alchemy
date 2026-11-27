@@ -140,7 +140,7 @@ flowchart TB
 | 層 | SSoT? | 担当 | 現行の器 | 方針 |
 | :--- | :--- | :--- | :--- | :--- |
 | **A. 永続・権限** | **永続 SSoT** | seal/save できる内容、canonical バイト | world `canonical` + `session_overlay`、ManifestSeal | 維持。Save で B から書き出す |
-| **B. セッション構造** | **セッション疎 SSoT** | 親子・属性・spawn/despawn・Undo・連番 | **`shared-sim::scene_store` + host `LiveEditLedger` facade**（x00e0；Undo 閉じは x00e1） | host に第二コピーを残さない（§冒頭の配置表） |
+| **B. セッション構造** | **セッション疎 SSoT** | 親子・属性・spawn/despawn・Undo・連番 | **`shared-sim::scene_store` + host `LiveEditLedger` facade**（x00e0 / x00e1 done · Phase 1b 閉じ） | host に第二コピーを残さない（§冒頭の配置表） |
 | **C. 60Hz 密実行** | **実行面 SSoT** | 座標・delta・bitmask・物理パラメータ | `EpochSheet` / FrameBridge（目標: Sim Arena 3 面） | B から `SimPatch`。密 Transform を CRDT に載せない |
 | **D. ワイヤ投影** | **否** | 配送用の見え方 | SceneManifest、RenderFrame、cell/lod | B/C から生成。正本を名乗らせない |
 | **E. ページプール** | **否** | opt-in / 学習資産 | `mvcc/` → **`sim_pages`** | 品質本線の座を奪わない |
@@ -399,7 +399,7 @@ pub struct NetTransformDelta {
 | [x00de](slices/x00de-scene-store-lww-cycle.md) | 1b | scene-store-lww-cycle | done | LWW + 循環防止 |
 | [x00df](slices/x00df-scene-store-sim-patch.md) | 1b | scene-store-sim-patch | done | SimPatch → Arena Drain |
 | [x00e0](slices/x00e0-live-edit-facade.md) | 1b | live-edit-facade | done | LiveEditLedger facade |
-| [x00e1](slices/x00e1-scene-store-undo-despawn.md) | 1b 閉じ | scene-store-undo-despawn | planned | Undo + pending_despawns |
+| [x00e1](slices/x00e1-scene-store-undo-despawn.md) | 1b 閉じ | scene-store-undo-despawn | done | Undo + pending_despawns |
 | [x00e2](slices/x00e2-soft-lease-edit-lock.md) | 1c | soft-lease-edit-lock | planned | SoftLease |
 | [x00e3](slices/x00e3-trash-uuid-gc.md) | 1c | trash-uuid-gc | planned | TRASH_UUID + GC |
 | [x00e4](slices/x00e4-three-layer-ids.md) | 1c | three-layer-ids | planned | 3層 ID |
@@ -409,7 +409,7 @@ pub struct NetTransformDelta {
 | [x00e8](slices/x00e8-avatar-rig-buffer-xpbd.md) | 2 | avatar-rig-buffer-xpbd | planned | AvatarRigBuffer XPBD |
 | [x00e9](slices/x00e9-rigid-solver-boundary.md) | 3 | rigid-solver-boundary | planned | RigidSolver 境界のみ |
 
-**次の着手:** [x00e1](slices/x00e1-scene-store-undo-despawn.md)（[x00e0](slices/x00e0-live-edit-facade.md) done · LiveEditLedger → scene_store facade）。
+**次の着手:** [x00e2](slices/x00e2-soft-lease-edit-lock.md)（Phase 1c 枠 · SoftLease。Phase 1b = [x00e1](slices/x00e1-scene-store-undo-despawn.md) **done**）。
 
 ### Phase 1a（最小垂直切片・最優先）：Sim Arena 3 面 ＋ Carry-Over ＋ 既存出版
 * **目的**: 先祖返りゼロと Arena バリア（Carry-Over → publish → rotate）を、既存 `EpochSnapshotPair`（arc-swap）上で閉じる。**Phase 1a の Ring3 SSoT は host の f64 Epoch sheet（`start` / `world.curr`）**；Arena は Carry-Over / TELEPORT 寿命の補助（面を sheet に overlay しない）。物理・CRDT・SoftLease・3層 UUID は入れない。

@@ -1,5 +1,5 @@
 //! Host-Sequenced apply engine: Property-level LWW + cycle MoveNode Reject (x00de)
-//! + SimPatch queue generation (x00df).
+//! + SimPatch queue generation (x00df) + FreeSlot on remove (x00e1).
 
 use std::collections::HashMap;
 
@@ -73,8 +73,8 @@ struct NodeRecord {
 /// Drain; dense transform / bits / box go via [`Self::enqueue_patch`] (not CRDT).
 /// Keys = [`EntityId`].
 /// Non-guarantees: edit wire / Zenoh / Save I/O (host facade); TRASH_UUID /
-/// SoftLease / `op_chain_hash`; JWT `sub` → actor_id; FreeSlot auto-enqueue
-/// (→ x00e1 pending_despawns).
+/// SoftLease / `op_chain_hash`; JWT `sub` → actor_id; SlotUndo Intent wire
+/// (see [`crate::slot_undo`] + host facade).
 #[derive(Clone, Debug, Default)]
 pub struct SceneStore {
     nodes: SparseSet<NodeRecord>,
@@ -174,13 +174,33 @@ impl SceneStore {
         true
     }
 
-    /// Remove a live node. Children that pointed at it become world-rooted
-    /// (`parent = None`; `parent_ts` unchanged). Does **not** enqueue
-    /// [`SimPatch::FreeSlot`] (→ x00e1). Returns `false` if missing.
+    /// Remove a live node and enqueue [`SimPatch::FreeSlot`] (**Arena drain path**).
     ///
-    /// Cost: O(n) orphan scan over dense nodes (no child index yet — memo for
-    /// x00e1 if despawn volume warrants a reverse map).
+    /// Children that pointed at it become world-rooted (`parent = None`;
+    /// `parent_ts` unchanged).
+    ///
+    /// # Who should call this
+    ///
+    /// Only callers that **drain** [`Self::drain_patches`] into Sim Arena (and do
+    /// **not** also free via FrameBridge/physics). Host live despawn must use
+    /// [`Self::remove_node_sparse`] — calling this from the facade while
+    /// FrameBridge still owns dense free → **double FreeSlot**.
+    ///
+    /// Cost: O(n) orphan scan over dense nodes (no child index yet — reverse
+    /// map only if despawn volume warrants it).
     pub fn remove_node(&mut self, entity_id: EntityId) -> bool {
+        self.remove_node_inner(entity_id, true)
+    }
+
+    /// Remove a live node **without** [`SimPatch::FreeSlot`].
+    ///
+    /// Host `LiveEditLedger` / `pending_despawns` path: dense free stays with
+    /// FrameBridge/physics until Arena drain is the sole free owner.
+    pub fn remove_node_sparse(&mut self, entity_id: EntityId) -> bool {
+        self.remove_node_inner(entity_id, false)
+    }
+
+    fn remove_node_inner(&mut self, entity_id: EntityId, enqueue_patches: bool) -> bool {
         if !self.nodes.contains(entity_id) {
             return false;
         }
@@ -195,6 +215,11 @@ impl SceneStore {
             if let Some(rec) = self.nodes.get_mut(id) {
                 rec.parent = None;
             }
+        }
+        if enqueue_patches {
+            self.patches.push(SimPatch::FreeSlot {
+                slot: entity_as_slot(entity_id),
+            });
         }
         true
     }
@@ -825,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_node_clears_orphan_parents() {
+    fn remove_node_clears_orphan_parents_and_enqueues_free_slot() {
         let mut store = SceneStore::new();
         spawn(&mut store, 1, 1, None);
         spawn(&mut store, 2, 2, Some(1));
@@ -835,8 +860,20 @@ mod tests {
         assert!(!store.contains(1));
         assert_eq!(store.parent(2), None);
         assert_eq!(store.parent(3), None);
-        assert!(store.pending_patches().is_empty());
+        assert_eq!(store.pending_patches(), &[SimPatch::FreeSlot { slot: 1 }]);
         assert!(!store.remove_node(1));
+    }
+
+    #[test]
+    fn remove_node_sparse_skips_free_slot_patch() {
+        let mut store = SceneStore::new();
+        spawn(&mut store, 1, 1, None);
+        spawn(&mut store, 2, 2, Some(1));
+        store.drain_patches();
+        assert!(store.remove_node_sparse(1));
+        assert!(!store.contains(1));
+        assert_eq!(store.parent(2), None);
+        assert!(store.pending_patches().is_empty());
     }
 
     #[test]
