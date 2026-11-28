@@ -1,7 +1,7 @@
 //! Inspector POS scrub → `…/edit` SetField Commit (x00f2).
 //!
 //! Guarantees: build signed SetField from Epoch expected hash; one Commit per release.
-//! Non-guarantees: SoftLease UI; XR scrub; Save pose fold.
+//! Non-guarantees: SoftLease chrome (→ extract / x00f3); XR scrub; Save pose fold.
 
 #![forbid(unsafe_code)]
 

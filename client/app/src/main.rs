@@ -42,6 +42,7 @@ mod render_wgpu;
 mod room;
 mod scene;
 mod sim_jitter;
+mod soft_lease_hint;
 mod spatial_lens;
 mod surface;
 mod system_ui;
@@ -165,6 +166,7 @@ fn main() -> Result<()> {
         last_edit_scene_rev: Mutex::new(None),
         pending_save_op_id: Mutex::new(None),
         room_save_status: Mutex::new(None),
+        soft_lease_hints: Mutex::new(crate::soft_lease_hint::SoftLeaseHintTable::default()),
         last_world_seal: Mutex::new(None),
         presence_gen_rev: Mutex::new(None),
         liveliness: Mutex::new(None),

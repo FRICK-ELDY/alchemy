@@ -79,7 +79,8 @@ pub use edit_field::{
 /// x00b7: `EditSave` overlay→canonical; Commit tip unchanged on Save.
 /// x00b8: `SceneEntry.parent_entity_id`; Save folds live parent/SetField.
 /// x00f2 POS_X/Y/Z is additive on `EditSetField.field_id` (no pin bump; unknown → OP_UNSUPPORTED).
-pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.24.0-x00b8";
+/// x00f3: `EditCommit.lease_holder_actor_id` SoftLease visibility.
+pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.25.0-x00f3";
 
 /// `EditCommit.reject_reason` codes (x00b2 / x00b3 / x00b7).
 pub mod edit_reject {

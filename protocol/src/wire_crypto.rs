@@ -420,6 +420,7 @@ mod tests {
                 op: Some(Op::Despawn(EditDespawn { entity_id: 9 })),
             }],
             host_sig: vec![],
+            lease_holder_actor_id: 0,
         };
         sign_edit_commit(&host, &mut commit);
         assert!(verify_edit_commit(&public_key_bytes(&host), &commit).is_ok());

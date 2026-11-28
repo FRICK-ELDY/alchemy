@@ -480,6 +480,8 @@ pub struct SharedState {
     /// Display only; never mutates Published / EpochSnapshotPair.
     /// Sole mutation API: [`crate::pending_local_ops::PendingLocalGate`] methods.
     pub pending_local: crate::pending_local_ops::PendingLocalGate,
+    /// SoftLease chrome hints from EditCommit (x00f3). Display only; not physical Grab.
+    pub soft_lease_hints: Mutex<crate::soft_lease_hint::SoftLeaseHintTable>,
     /// FPS eye TRS frozen with [`Self::begin_display_frame`] (x0092; avoid N× lock per frame).
     /// Keyed by `local_user_root` id so Presence races cannot serve a stale anchor.
     pub(crate) eye_pose_cache: Mutex<Option<(u32, EntityPose)>>,

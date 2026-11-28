@@ -1,10 +1,11 @@
-//! Spatial Lens — Resonite-like spatial inspector without UIX-as-slots (x00ba–x00bd / x00ed / x00f2).
+//! Spatial Lens — Resonite-like spatial inspector without UIX-as-slots (x00ba–x00bd / x00ed / x00f2 / x00f3).
 //!
 //! Guarantees: 1 panel = 1 board; GpuUiPrim packing; Uber-SDF draw; Hierarchy/Inspector
 //! extract from Epoch; panel OBB→UV hit + Stickiness; G0 glass tokens (x00ec);
-//! Tier-1 Static MSDF atlas + MsdfGlyph (x00ed); Inspector POS scrub → SetField Commit (x00f2).
+//! Tier-1 Static MSDF atlas + MsdfGlyph (x00ed); Inspector POS scrub → SetField Commit (x00f2);
+//! SoftLease chrome (`LK` + holder · x00f3).
 //! Non-guarantees: WorldRoot CRDT sync; Tear-Off; CJK atlas; CustomUIX flex; scene UI entities;
-//! SoftLease chrome (F1-2); background blur (G1); full Dash board migration (U0).
+//! background blur (G1); full Dash board migration (U0).
 
 #![forbid(unsafe_code)]
 

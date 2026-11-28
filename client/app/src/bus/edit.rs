@@ -1,8 +1,9 @@
-//! EditCommit subscriber (x00b2 / x00b3).
+//! EditCommit subscriber (x00b2 / x00b3 / x00f3 SoftLease hint).
 //!
 //! Guarantees: AEAD open as `EditCommit` → decode → **`host_pub` required** (fail-closed,
 //! same as Frame/Presence) → verify `host_sig` → update live tip watermark on accept.
 //! On accept tip gap (`scene_rev > last+1`) → `fetch_snapshot` and adopt snapshot `scene_rev`.
+//! SoftLease holder from Commit → [`crate::soft_lease_hint::SoftLeaseHintTable`] (x00f3).
 //!
 //! Non-guarantees: Undo UI; predictive local apply of Reparent/SetField; full offline VCS.
 
@@ -21,6 +22,13 @@ use super::wire::open_zenoh_payload;
 use crate::scene::SharedState;
 
 const EDIT_GAP_SNAPSHOT_COOLDOWN: Duration = Duration::from_millis(500);
+
+fn note_soft_lease_hint(shared: &SharedState, commit: &EditCommit) {
+    let Ok(mut table) = shared.soft_lease_hints.lock() else {
+        return;
+    };
+    table.note_commit(commit, Instant::now());
+}
 
 /// Subscribe to `…/edit` and decode host `EditCommit` envelopes (proposals ignored via AEAD kind).
 pub fn spawn_edit_commit_subscriber(
@@ -87,10 +95,12 @@ pub fn spawn_edit_commit_subscriber(
                         *slot = Some(next);
                     }
                     note_save_commit(&shared, &commit, true);
+                    note_soft_lease_hint(&shared, &commit);
                     log::info!(
-                        "EditCommit accepted op_id={} scene_rev={}",
+                        "EditCommit accepted op_id={} scene_rev={} lease_holder={}",
                         commit.op_id,
-                        commit.scene_rev
+                        commit.scene_rev,
+                        commit.lease_holder_actor_id
                     );
                 } else {
                     // APPLY = Ready/queue/barrier fail (tip unchanged) → immediate retry OK.
@@ -100,14 +110,17 @@ pub fn spawn_edit_commit_subscriber(
                         alchemy_protocol::edit_reject::STALE_PRECONDITION => "stale_refresh_first",
                         alchemy_protocol::edit_reject::SAVE_FORBIDDEN => "save_forbidden",
                         alchemy_protocol::edit_reject::SAVE_CONFLICT => "save_conflict",
+                        alchemy_protocol::edit_reject::SOFT_LEASE => "soft_lease",
                         _ => "other",
                     };
                     note_save_commit(&shared, &commit, false);
+                    note_soft_lease_hint(&shared, &commit);
                     log::info!(
-                        "EditCommit rejected op_id={} reason={} scene_rev={} hint={hint}",
+                        "EditCommit rejected op_id={} reason={} scene_rev={} lease_holder={} hint={hint}",
                         commit.op_id,
                         commit.reject_reason,
-                        commit.scene_rev
+                        commit.scene_rev,
+                        commit.lease_holder_actor_id
                     );
                 }
             }
