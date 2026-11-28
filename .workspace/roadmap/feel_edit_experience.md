@@ -51,9 +51,9 @@
 
 | 領域 | 状態 | 体験への意味 |
 |:---|:---|:---|
-| Scene Store / Sim Arena / SoftLease / PendingLocalOps | **done** | 共同編集・楽観予測の**器** |
+| Scene Store / Sim Arena / SoftLease / PendingLocalOps | **done**（Grab 配線は [x00f1](slices/x00f1-pending-local-ops-wire.md)） | 共同編集・楽観予測の器＋Grab ミラー |
 | TELEPORT → GPU snap | **done**（[x00eb](slices/x00eb-teleport-gpu-snap.md)） | 生成・Reparent の残像・ちぎれを Curr へ即スナップ |
-| Depth Bucket / bitmask edge | Arena **非保証** | 親子編集・Enabled 切替の手触り |
+| Depth Bucket / bitmask edge | **done**（[x00ef](slices/x00ef-depth-bucket-hierarchy.md) / [x00f0](slices/x00f0-bitmask-edge-observer.md)） | 親子追従・Enabled ON 初速リセット |
 | AvatarRig / RigidSolver | 境界 **done**・host tick **未配線** | 揺れもの・剛体が画面に出ない |
 | Inspector（x00bc） | 数値表示まで | スクラブ → `…/edit` Commit は非保証 |
 | XR レーザー | **L0+L1 done**（Primary ゲート＋Settings 永続） | ShowInDesktop 可視化ビームは → L3；XR smooth → L2 |
@@ -88,7 +88,7 @@ E1  ヒッチ根絶（スキニング / Async PSO / LOD builder）
 Fc6  Settings 行 → Facet 化
 ```
 
-**次の着手:** [x00ee](slices/x00ee-laser-settings-l1.md) L1 **done**。[x00ed](slices/x00ed-static-msdf-t1.md) T1 **done**。[x00ec](slices/x00ec-glass-material-g0.md) G0 **done**。[x00eb](slices/x00eb-teleport-gpu-snap.md) F0-1 **done**。次候補 **`x00ef` = F0-2**（Depth Bucket 階層伝播；L1 と直交し並行可）。
+**次の着手:** F0 枠 **done**（[x00eb](slices/x00eb-teleport-gpu-snap.md) F0-1 · [x00ef](slices/x00ef-depth-bucket-hierarchy.md) F0-2 · [x00f0](slices/x00f0-bitmask-edge-observer.md) F0-3 · [x00f1](slices/x00f1-pending-local-ops-wire.md) F0-4）。次候補 **`x00f2` = F1-1**（Inspector スクラブ → SetField Commit）。L1/T1/G0 も done。
 
 ---
 
@@ -99,9 +99,9 @@ Fc6  Settings 行 → Facet 化
 | ID | 内容 | なぜ先か | 根拠・注意 |
 |:---|:---|:---|:---|
 | **F0-1** | **TELEPORT → GPU snap**（[x00eb](slices/x00eb-teleport-gpu-snap.md) **done**） | SetParent・ワープの残像が編集を壊す | Arena → sheet `FLAG_TELEPORT` → Epoch lerp/WGSL スナップ。**新規生成**は pack ABA。ワイヤ Frame bit / PendingLocalOps 自動供給は非保証 |
-| **F0-2** | **Depth Bucket 階層伝播** | 親子編集のワールド座標 | Arena Step 3。アバター末端は Slot に載せない |
-| **F0-3** | **bitmask edge Observer** | Enabled ON 初速リセット等 | Step 1。物理掴み SSoT は `holder_slot`（SoftLease と二重化しない） |
-| **F0-4** | **PendingLocalOps を実操作へ** | x00e6 は器。Grab/編集経路へ接続 | Published 非汚染を崩さない |
+| **F0-2** | **Depth Bucket 階層伝播**（[x00ef](slices/x00ef-depth-bucket-hierarchy.md) **done**） | 親子編集のワールド座標 | host Step 3：**depth 順一巡**（祖先確定→dirty invert→compose）。子も Grab/動力学可。伝播は pos/scale のみ。Reparent 契約 A |
+| **F0-3** | **bitmask edge Observer**（[x00f0](slices/x00f0-bitmask-edge-observer.md) **done**） | Enabled ON 初速リセット等 | Step 1。物理掴み SSoT は `holder_slot`（SoftLease と二重化しない） |
+| **F0-4** | **PendingLocalOps を実操作へ**（[x00f1](slices/x00f1-pending-local-ops-wire.md) **done**） | x00e6 は器。Grab 経路へ接続 | Published 非汚染を崩さない。Inspector Commit は → F1 |
 | **F1-1** | Inspector スクラブ → SetField Commit | x00bc が明示的に保証していない穴 | SoftLease と整合 |
 | **F1-2** | SoftLease の見える化 | 編集ロックの「誰が握っているか」 | 物理 Grab と別概念 |
 | **F1-3** | ドラッグ揮発 ↔ Commit 1 回 | 密座標を CRDT に載せない契約の UI 側 | 既存 grab / edit レーン |
@@ -334,3 +334,5 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 | 2026-11-28 | [x00ee](slices/x00ee-laser-settings-l1.md) L1 done（Settings Laser 節・laser.json・Desktop/XR cfg 反映）。次候補 x00ef F0-2 |
 | 2026-11-28 | x00ee レビュー追随: 体感文を XR=Primary / Desktop=smooth·stick に揃える・Laser レイアウト定数一本化・prefs 非同期 coalesce・非有限 clamp |
 | 2026-11-28 | x00ee prefs: spawn 失敗 sync drain・`flush_blocking`（exit）・FLUSHING 中 kick 抑止・join を lock 外へ |
+| 2026-11-28 | [x00ef](slices/x00ef-depth-bucket-hierarchy.md) F0-2 Depth Bucket done（locals・契約 A・Step 3）。次 [x00f0](slices/x00f0-bitmask-edge-observer.md) |
+| 2026-11-28 | [x00f0](slices/x00f0-bitmask-edge-observer.md) F0-3 bitmask edge done。[x00f1](slices/x00f1-pending-local-ops-wire.md) F0-4 Grab↔PendingLocalOps done。次候補 F1-1 |

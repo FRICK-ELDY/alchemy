@@ -133,11 +133,13 @@ impl OwnedPrediction {
 
     /// Update pose for the **existing** hold only. Never starts a hold and never
     /// clears `grab_rejected` (avoids resurrecting after Applied-Frame reject).
-    pub fn predict_held(&mut self, entity_id: u32, pose: PredictionPose) {
+    /// Returns `true` when the pose was stored (mirrors must only push then).
+    pub fn predict_held(&mut self, entity_id: u32, pose: PredictionPose) -> bool {
         if self.grab_rejected || self.held_entity != Some(entity_id) {
-            return;
+            return false;
         }
         self.held_pose = Some(pose);
+        true
     }
 
     /// Missing authority entity (despawn / gap) → same as host reject.

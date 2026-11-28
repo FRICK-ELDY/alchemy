@@ -16,11 +16,14 @@
 //! OR** — `false` does not clear). Durable parent/scale/masks/box are
 //! **Arena-internal** (not face-rotated; not Ring3-published with Published pose
 //! — atomic co-publish is a later slice).
-//! Non-guarantees: scene_store CRDT apply; physics; Depth Bucket rebuild;
-//! §6 `COMP_*` / `STATE_IS_GRABBED` (intentional defer — grab SSoT stays on
+//! Non-guarantees: scene_store CRDT apply; physics; Depth Bucket **rebuild inside
+//! Arena** on SetParent (host `FlatTopology` + Step 3 propagate is x00ef — not this
+//! module); §6 `COMP_*` / `STATE_IS_GRABBED` (intentional defer — grab SSoT stays on
 //! `sim_pages` / Epoch); SoftLease / drag volatile stream; per-column dirty_epoch for
 //! procedural-box (roadmap §4.1 low-freq columns — deferred); durable↔Published
-//! atomic snapshot for Ring3.
+//! atomic snapshot for Ring3. Bitmask edge Observer:
+//! [`SimArena::take_enabled_rising_edges_into`] (x00f0); TELEPORT write stays after
+//! Carry-Over on the host path.
 //!
 //! Ring3 readers must not touch Work — publish via
 //! [`crate::bridge::publish_arena_then_rotate`] into `EpochSnapshotPair`
@@ -36,10 +39,12 @@
 //!    [`SimArena::write_teleport`]; raw [`SimArena::work_mut`] **must**
 //!    [`SimArena::mark_dirty`] — without it the slot misses Carry-Over **and**
 //!    Published-leave TELEPORT clear)
-//! 3. **host/bridge (x00dc):** [`crate::bridge::publish_arena_then_rotate`] —
+//! 3. **host Step 3 (x00ef):** [`crate::topology::propagate_world_transforms`] via
+//!    host `FlatTopology` + `local_transforms` (not Arena-internal buckets)
+//! 4. **host/bridge (x00dc):** [`crate::bridge::publish_arena_then_rotate`] —
 //!    publish **caller-owned Epoch sheets** (Phase 1a Ring3 SSoT = sheet
 //!    `start`/`curr`; not Arena face overlay), then rotate
-//! 4. [`SimArena::rotate_faces`] (invoked inside step 3; role + dirty-ring shift +
+//! 5. [`SimArena::rotate_faces`] (invoked inside publish; role + dirty-ring shift +
 //!    Published-leave TELEPORT clear)
 //!
 //! # `STATE_TELEPORT_THIS_TICK` clear ownership

@@ -223,10 +223,58 @@ fn bake_euler_tour(topo: &mut FlatTopology) -> Result<(), TopologyError> {
     Ok(())
 }
 
+/// Recompute child **local** from preserved **world** under a new parent (F0-2 contract A).
+///
+/// Translation-first: `local.pos = child.world.pos - parent.world.pos`, scale divide.
+/// Rotation composition is deferred (child rotation bits are kept as-is).
+///
+/// Returns `(local, needs_teleport)`. Non-finite results yield identity-at-origin
+/// local and `needs_teleport = true` — **caller must** stamp TELEPORT (else the
+/// child snaps to the parent origin with a lerp ghost).
+pub fn recompute_local_from_world(
+    parent_world: &WorldTransformf64,
+    child_world: &WorldTransformf64,
+) -> (WorldTransformf64, bool) {
+    let mut local = *child_world;
+    local.position = [
+        child_world.position[0] - parent_world.position[0],
+        child_world.position[1] - parent_world.position[1],
+        child_world.position[2] - parent_world.position[2],
+    ];
+    const EPS: f32 = 1e-8;
+    local.scale = [
+        if parent_world.scale[0].abs() > EPS {
+            child_world.scale[0] / parent_world.scale[0]
+        } else {
+            child_world.scale[0]
+        },
+        if parent_world.scale[1].abs() > EPS {
+            child_world.scale[1] / parent_world.scale[1]
+        } else {
+            child_world.scale[1]
+        },
+        if parent_world.scale[2].abs() > EPS {
+            child_world.scale[2] / parent_world.scale[2]
+        } else {
+            child_world.scale[2]
+        },
+    ];
+    if !local.is_finite() {
+        return (WorldTransformf64::identity_at([0.0, 0.0, 0.0]), true);
+    }
+    (local, false)
+}
+
 /// Propagate parent world transforms into children (depth-bucket SoA loop).
 ///
-/// Local translation is stored in `locals`; output written to `sheet.world_transforms`.
-/// Rows themselves are never reordered.
+/// Local translation/scale live in `locals`. Only **position + scale** are written
+/// into `sheet.world_transforms` — `inv_mass` / `rotation` / `frame_delta_xyz` /
+/// `flags` on the sheet row are preserved (Grab / XPBD / wire delta must not be
+/// clobbered by local copies). Rows themselves are never reordered. Dirty is
+/// marked only when position / scale change.
+///
+/// Prefer [`resolve_hierarchy_depth_bucket`] on the host tick path when dirty
+/// parented writers must invert against **already-finalized** ancestor worlds.
 pub fn propagate_world_transforms(
     topo: &FlatTopology,
     locals: &[WorldTransformf64],
@@ -242,29 +290,107 @@ pub fn propagate_world_transforms(
     for &row in &topo.depth_sorted_rows {
         let idx = row as usize;
         let parent = topo.parent_of[idx];
-        if parent == u32::MAX {
-            sheet.world_transforms[idx] = locals[idx];
+        let (new_pos, new_scale) = if parent == u32::MAX {
+            (locals[idx].position, locals[idx].scale)
         } else {
-            let p = &sheet.world_transforms[parent as usize];
-            let l = &locals[idx];
-            let mut world = *l;
-            world.position = [
-                p.position[0] + l.position[0],
-                p.position[1] + l.position[1],
-                p.position[2] + l.position[2],
-            ];
-            // Scale multiply (rotation composition deferred — translation-first Phase).
-            world.scale = [
-                p.scale[0] * l.scale[0],
-                p.scale[1] * l.scale[1],
-                p.scale[2] * l.scale[2],
-            ];
-            if !world.is_finite() {
-                world = *p;
-            }
-            sheet.world_transforms[idx] = world;
-        }
+            compose_pos_scale(&sheet.world_transforms[parent as usize], &locals[idx])
+        };
+        apply_pos_scale(sheet, row, new_pos, new_scale);
+    }
+    Ok(())
+}
+
+#[inline]
+fn compose_pos_scale(
+    parent: &WorldTransformf64,
+    local: &WorldTransformf64,
+) -> ([f64; 3], [f32; 3]) {
+    let pos = [
+        parent.position[0] + local.position[0],
+        parent.position[1] + local.position[1],
+        parent.position[2] + local.position[2],
+    ];
+    let scale = [
+        parent.scale[0] * local.scale[0],
+        parent.scale[1] * local.scale[1],
+        parent.scale[2] * local.scale[2],
+    ];
+    if pos.iter().all(|v| v.is_finite()) && scale.iter().all(|v| v.is_finite()) {
+        (pos, scale)
+    } else {
+        (parent.position, parent.scale)
+    }
+}
+
+#[inline]
+fn apply_pos_scale(sheet: &mut EpochSheet, row: u32, new_pos: [f64; 3], new_scale: [f32; 3]) {
+    let idx = row as usize;
+    let prev = &mut sheet.world_transforms[idx];
+    let changed = prev.position != new_pos || prev.scale != new_scale;
+    prev.position = new_pos;
+    prev.scale = new_scale;
+    if changed {
         sheet.mark_dirty(row);
+    }
+}
+
+/// Depth-bucket hierarchy resolve (x00ef host Step 3).
+///
+/// Single shallow→deep pass:
+/// 1. Roots: `local = world` (writer absolute).
+/// 2. Parented: if `dirty_mask[row]`, invert **desired world → local** against the
+///    **already finalized** parent world (ancestor follow applied earlier in this
+///    pass); then write `world.pos/scale = parent ⊕ local`.
+/// 3. Idle parented: keep prior local; compose against finalized parent.
+///
+/// `dirty_mask` must be the pre-pass snapshot (length ≥ row count).
+/// `teleport_out` receives rows whose local invert was non-finite (caller stamps).
+///
+/// **Failure policy:** length mismatch fails **before** any write (`Ok`/`Empty`
+/// aside). A mid-loop `OutOfBounds` (corrupt `parent_of` index) can leave
+/// shallower rows already updated — callers treat that as a logic bug on a
+/// baked topo (no transactional rollback; host logs and continues).
+pub fn resolve_hierarchy_depth_bucket(
+    topo: &FlatTopology,
+    locals: &mut [WorldTransformf64],
+    sheet: &mut EpochSheet,
+    dirty_mask: &[bool],
+    teleport_out: &mut Vec<u32>,
+) -> Result<(), TopologyError> {
+    let n = topo.parent_of.len();
+    if locals.len() != n || sheet.world_transforms.len() < n || dirty_mask.len() < n {
+        return Err(TopologyError::OutOfBounds);
+    }
+    if n == 0 {
+        return Err(TopologyError::Empty);
+    }
+    teleport_out.clear();
+    for &row in &topo.depth_sorted_rows {
+        let idx = row as usize;
+        let parent = topo.parent_of[idx];
+        if parent == u32::MAX {
+            locals[idx] = sheet.world_transforms[idx];
+            let loc = locals[idx];
+            apply_pos_scale(sheet, row, loc.position, loc.scale);
+            continue;
+        }
+        let pidx = parent as usize;
+        if pidx >= n {
+            // Partial updates may already exist for shallower depths — see failure policy.
+            return Err(TopologyError::OutOfBounds);
+        }
+        // Parent world is finalized (earlier depth). Invert dirty writers against it.
+        if dirty_mask[idx] {
+            let desired = sheet.world_transforms[idx];
+            let parent_w = sheet.world_transforms[pidx];
+            let (local, needs_tp) = recompute_local_from_world(&parent_w, &desired);
+            locals[idx] = local;
+            if needs_tp {
+                teleport_out.push(row);
+            }
+        }
+        let (new_pos, new_scale) = compose_pos_scale(&sheet.world_transforms[pidx], &locals[idx]);
+        apply_pos_scale(sheet, row, new_pos, new_scale);
     }
     Ok(())
 }
@@ -347,5 +473,96 @@ mod tests {
         assert_eq!(sheet.world_transforms[1].position, [11.0, 2.0, 0.0]);
         // row slots unchanged
         assert_eq!(sheet.len(), 2);
+    }
+
+    #[test]
+    fn recompute_local_preserves_world_under_new_parent() {
+        let parent = WorldTransformf64::identity_at([10.0, 0.0, 0.0]);
+        let child_world = WorldTransformf64::identity_at([13.0, 2.0, 0.0]);
+        let (local, tp) = recompute_local_from_world(&parent, &child_world);
+        assert!(!tp);
+        assert_eq!(local.position, [3.0, 2.0, 0.0]);
+        let topo = FlatTopology::from_parents(vec![u32::MAX, 0]).unwrap();
+        let mut sheet = EpochSheet::with_capacity(2);
+        let _ = sheet.alloc_row();
+        let _ = sheet.alloc_row();
+        let locals = vec![parent, local];
+        propagate_world_transforms(&topo, &locals, &mut sheet).unwrap();
+        assert_eq!(sheet.world_transforms[1].position, child_world.position);
+    }
+
+    #[test]
+    fn propagate_parent_move_follows_child_local() {
+        let topo = FlatTopology::from_parents(vec![u32::MAX, 0]).unwrap();
+        let mut sheet = EpochSheet::with_capacity(2);
+        let _ = sheet.alloc_row();
+        let _ = sheet.alloc_row();
+        let mut locals = vec![
+            WorldTransformf64::identity_at([0.0, 0.0, 0.0]),
+            WorldTransformf64::identity_at([1.0, 0.0, 0.0]),
+        ];
+        propagate_world_transforms(&topo, &locals, &mut sheet).unwrap();
+        assert_eq!(sheet.world_transforms[1].position, [1.0, 0.0, 0.0]);
+        locals[0] = WorldTransformf64::identity_at([5.0, 0.0, 0.0]);
+        propagate_world_transforms(&topo, &locals, &mut sheet).unwrap();
+        assert_eq!(sheet.world_transforms[1].position, [6.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn propagate_preserves_child_delta_inv_mass_flags() {
+        let topo = FlatTopology::from_parents(vec![u32::MAX, 0]).unwrap();
+        let mut sheet = EpochSheet::with_capacity(2);
+        let _ = sheet.alloc_row();
+        let _ = sheet.alloc_row();
+        sheet.world_transforms[1].inv_mass = 0.0;
+        sheet.world_transforms[1].frame_delta_xyz = [0.5, 0.0, 0.0];
+        sheet.world_transforms[1].flags = WorldTransformf64::FLAG_TELEPORT;
+        sheet.world_transforms[1].rotation = [0.0, 0.0, 0.0, 1.0];
+        let mut local_child = WorldTransformf64::identity_at([1.0, 0.0, 0.0]);
+        local_child.inv_mass = 1.0;
+        local_child.frame_delta_xyz = [9.0, 9.0, 9.0];
+        local_child.flags = 0;
+        let locals = vec![
+            WorldTransformf64::identity_at([10.0, 0.0, 0.0]),
+            local_child,
+        ];
+        propagate_world_transforms(&topo, &locals, &mut sheet).unwrap();
+        assert_eq!(sheet.world_transforms[1].position, [11.0, 0.0, 0.0]);
+        assert_eq!(sheet.world_transforms[1].inv_mass, 0.0);
+        assert_eq!(sheet.world_transforms[1].frame_delta_xyz, [0.5, 0.0, 0.0]);
+        assert!(sheet.world_transforms[1].is_teleport());
+    }
+
+    #[test]
+    fn resolve_dirty_child_keeps_world_when_grandparent_moves() {
+        // G(root) dirty move + P(idle) + C(dirty absolute) — C must stay at aim.
+        // Bug: invert against P_old then compose with P_new shifts C by ancestor delta.
+        let topo = FlatTopology::from_parents(vec![u32::MAX, 0, 1]).unwrap();
+        let mut sheet = EpochSheet::with_capacity(3);
+        let _ = sheet.alloc_row();
+        let _ = sheet.alloc_row();
+        let _ = sheet.alloc_row();
+        sheet.world_transforms[0] = WorldTransformf64::identity_at([0.0, 0.0, 0.0]);
+        sheet.world_transforms[1] = WorldTransformf64::identity_at([1.0, 0.0, 0.0]);
+        sheet.world_transforms[2] = WorldTransformf64::identity_at([5.0, 0.0, 0.0]);
+        let mut locals = vec![
+            sheet.world_transforms[0],
+            recompute_local_from_world(&sheet.world_transforms[0], &sheet.world_transforms[1]).0,
+            recompute_local_from_world(&sheet.world_transforms[1], &sheet.world_transforms[2]).0,
+        ];
+        // Same-tick writers: G → 10, C insists on world 5; P idle.
+        sheet.world_transforms[0] = WorldTransformf64::identity_at([10.0, 0.0, 0.0]);
+        sheet.world_transforms[2] = WorldTransformf64::identity_at([5.0, 0.0, 0.0]);
+        let dirty = [true, false, true];
+        let mut teleport = Vec::new();
+        resolve_hierarchy_depth_bucket(&topo, &mut locals, &mut sheet, &dirty, &mut teleport)
+            .unwrap();
+        assert_eq!(sheet.world_transforms[1].position, [11.0, 0.0, 0.0]);
+        assert_eq!(
+            sheet.world_transforms[2].position,
+            [5.0, 0.0, 0.0],
+            "dirty child absolute must survive ancestor follow"
+        );
+        assert!(teleport.is_empty());
     }
 }
