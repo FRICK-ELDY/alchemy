@@ -295,7 +295,7 @@ depends_on: [x0006]
 | x00f3 | — | done | 体験本線 F1-2: SoftLease 見える化 | [x00f3-soft-lease-visibility.md](slices/x00f3-soft-lease-visibility.md) |
 | x00f4 | — | done | 体験本線 F1-3: ドラッグ揮発 ↔ Commit 1 回（多軸まとめ） | [x00f4-drag-volatile-commit.md](slices/x00f4-drag-volatile-commit.md) |
 
-**現在の次:** 体験本線 [feel_edit_experience.md](feel_edit_experience.md) — F1-3 **done**（[x00f4](slices/x00f4-drag-volatile-commit.md)）。次候補 **Fc0** / **L2**（推奨着手順）。後続（未発行）: Inspector ネット揮発スクラブ / Grab 離し姿勢 Commit。L1/T1/G0 / F0 / F1 枠 **done**。品質本線 Phase 1–3 枠は [x00e9](slices/x00e9-rigid-solver-boundary.md) で **クローズ**。剛体ソルバ本体・rapier/AVBD は別決（人承認）。並行候補: Drive Git 詳細パネル / shared-sim⇔Tree / clone·fetch 等（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §18.7+）。
+**現在の次:** 体験本線 [feel_edit_experience.md](feel_edit_experience.md) — **L2**（XR ビーム角度変調スムージング；想定 `x00f5`）。F0 / F1 / L0 / L1 / T1 / G0 **done**。**Fc 帯は deferred（枠のみ・当面実装しない）**（再開条件は [feel §4.5](feel_edit_experience.md)＝要望＋マウント信頼境界。実行可能 Facet は別決）。後続（未発行）: Inspector ネット揮発スクラブ / Grab 離し姿勢 Commit。品質本線 Phase 1–3 枠は [x00e9](slices/x00e9-rigid-solver-boundary.md) で **クローズ**。剛体ソルバ本体・rapier/AVBD は別決（人承認）。並行候補: Drive Git 詳細パネル / shared-sim⇔Tree / clone·fetch 等（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §18.7+）。
 **規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；x00be〜x00c7 **done**）。
 
 次の空き番号は **`x00f5`**。
@@ -306,7 +306,7 @@ depends_on: [x0006]
 |:---|:---|
 | [ローカル CI](ci.md) | `make ci` など |
 | [scene_store_sim_arena.md](scene_store_sim_arena.md) | **品質本線**（Scene Store × Sim Arena / Host-Sequenced CRDT） |
-| [feel_edit_experience.md](feel_edit_experience.md) | **体験本線**（体感・編集・レーザー・文字・ガラス Dash・Facet / UIX） |
+| [feel_edit_experience.md](feel_edit_experience.md) | **体験本線**（体感・編集・レーザー・文字・ガラス Dash・Facet 枠 deferred / UIX） |
 | [spatial_interest.md](spatial_interest.md) | 規模本線（配信の空間インデックス / P3-7） |
 | [archive/2026-11-27/](archive/2026-11-27/) | 旧品質本線（`mvcc_xpbd` / zero_base / review）— 実装指示に使わない |
 | [inventory-ladder.md](inventory-ladder.md) | インベントリ B+2→C+3 交互ラダー |
