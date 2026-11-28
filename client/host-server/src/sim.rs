@@ -145,6 +145,8 @@ pub struct PhysicsWorld {
     pending_colors: Vec<(u32, [f32; 4])>,
     /// FLAGS deferred to tick barrier (scene_flags + box grabbable mirror).
     pending_flags: Vec<(u32, u32)>,
+    /// POS axis writes deferred to tick barrier (entity_id, axis 0..2, value) · x00f2.
+    pending_pos: Vec<(u32, u8, f64)>,
     /// Rows that need Arena `write_teleport` after Carry-Over (x00eb; reparent / warp).
     pending_teleport_rows: Vec<u32>,
     /// Local poses parallel to sheet rows (x00ef F0-2). Roots: `local == world`.
@@ -521,6 +523,7 @@ impl PhysicsWorld {
             scene_flags,
             pending_colors: Vec::new(),
             pending_flags: Vec::new(),
+            pending_pos: Vec::new(),
             pending_teleport_rows: Vec::new(),
             local_transforms: Vec::new(),
             enabled_rising_scratch: Vec::new(),
@@ -1229,11 +1232,13 @@ impl PhysicsWorld {
     /// [`PendingPatch::SetReadiness`] (that would clobber ALLOCATED/DYNAMIC).
     /// COLOR is tape-external (`colors` HashMap) but still deferred to the barrier
     /// so it shares the same tick-boundary contract as FLAGS/BLAKE3/Reparent.
+    /// POS_* verifies `expected_hash` against the current Epoch axis (x00f2).
     pub fn queue_live_set_field(
         &mut self,
         entity_id: u32,
         field_id: u32,
         value: &[u8],
+        expected_hash: &[u8],
     ) -> Result<(), &'static str> {
         let handle = self.entity_rows.get(&entity_id).ok_or("entity missing")?;
         let row_id = handle.row_id;
@@ -1256,6 +1261,22 @@ impl PhysicsWorld {
                     row_id,
                     blake3: atom,
                 });
+            }
+            alchemy_protocol::edit_field_id::POS_X
+            | alchemy_protocol::edit_field_id::POS_Y
+            | alchemy_protocol::edit_field_id::POS_Z => {
+                let axis = alchemy_protocol::pos_field_axis(field_id).ok_or("bad pos field")?;
+                let row = row_id as usize;
+                if row >= self.world.curr.world_transforms.len() {
+                    return Err("pos row oob");
+                }
+                let cur = self.world.curr.world_transforms[row].position[axis];
+                let cur_hash = alchemy_protocol::hash_f64(cur);
+                if expected_hash != cur_hash.as_slice() {
+                    return Err("stale pose");
+                }
+                let new_v = alchemy_protocol::decode_f64(value).ok_or("bad pos")?;
+                self.pending_pos.push((entity_id, axis as u8, new_v));
             }
             _ => return Err("unknown field"),
         }
@@ -1349,10 +1370,52 @@ impl PhysicsWorld {
                 .insert(entity_id, (rgba[0], rgba[1], rgba[2], rgba[3]));
         }
         // `publish_dirty` only after the whole barrier succeeds (never on fail paths).
+        // POS_* is applied **after** XPBD (see [`Self::apply_pending_inspector_pos`]) so
+        // gravity / Verlet cannot overwrite the Inspector Commit in the same tick (x00f2).
         if touched {
             self.publish_dirty = true;
         }
         Ok(())
+    }
+
+    /// Apply Inspector POS SetField after physics so Commit wins the tick (x00f2).
+    fn apply_pending_inspector_pos(&mut self) {
+        let poses = std::mem::take(&mut self.pending_pos);
+        if poses.is_empty() {
+            return;
+        }
+        self.ensure_locals_len(self.world.curr.len());
+        for (entity_id, axis, v) in poses {
+            let Some(handle) = self.entity_rows.get(&entity_id) else {
+                continue;
+            };
+            let row = handle.row_id as usize;
+            if row >= self.world.curr.world_transforms.len() || axis > 2 {
+                continue;
+            }
+            self.world.curr.world_transforms[row].position[axis as usize] = v;
+            self.world.curr.world_transforms[row].frame_delta_xyz = [0.0, 0.0, 0.0];
+            if row < self.world.prev.world_transforms.len() {
+                self.world.prev.world_transforms[row].position =
+                    self.world.curr.world_transforms[row].position;
+            }
+            let world_xf = self.world.curr.world_transforms[row];
+            let parent = self.topo.parent_of.get(row).copied().unwrap_or(u32::MAX);
+            if parent == u32::MAX {
+                self.local_transforms[row] = world_xf;
+            } else if (parent as usize) < self.world.curr.world_transforms.len() {
+                let (local, _needs_tp) = recompute_local_from_world(
+                    &self.world.curr.world_transforms[parent as usize],
+                    &world_xf,
+                );
+                self.local_transforms[row] = local;
+            } else {
+                self.local_transforms[row] = world_xf;
+            }
+            self.world.curr.mark_dirty(handle.row_id);
+            self.queue_teleport_row(handle.row_id);
+            self.publish_dirty = true;
+        }
     }
 
     fn abandon_live_pending(&mut self) {
@@ -1361,6 +1424,7 @@ impl PhysicsWorld {
         self.frame_bridge.pending.clear();
         self.pending_flags.clear();
         self.pending_colors.clear();
+        self.pending_pos.clear();
         self.pending_teleport_rows.clear();
     }
 
@@ -1401,6 +1465,8 @@ impl PhysicsWorld {
         // Re-run sleep against tick-start pose (step's update_sleeping saw Verlet prev).
         self.copy_positions_into_prev(&start);
         xpbd::update_sleeping(&mut self.world);
+        // x00f2: Inspector POS Commit after XPBD so the scrub value is not gravity-eaten.
+        self.apply_pending_inspector_pos();
         // x00ef Step 3: depth-ordered ancestor finalize + dirty invert + compose.
         // frame_delta is written **after** so parent-follow displacement is included.
         self.step3_hierarchy_resolve();
@@ -2857,6 +2923,51 @@ mod tests {
     }
 
     #[test]
+    fn set_field_pos_x_updates_world_and_teleports() {
+        use alchemy_protocol::{encode_f64, hash_f64};
+        let mut world = test_world();
+        world.ensure_topo_len();
+        let id = world.boxes.entity_ids[0];
+        let row = world.entity_rows.get(&id).unwrap().row_id as usize;
+        let before = world.world.curr.world_transforms[row].position[0];
+        let next = before + 1.25;
+        world
+            .queue_live_set_field(
+                id,
+                alchemy_protocol::edit_field_id::POS_X,
+                &encode_f64(next),
+                &hash_f64(before),
+            )
+            .expect("queue POS_X");
+        world.step();
+        let after = world.world.curr.world_transforms[row].position[0];
+        assert!((after - next).abs() < 1e-9, "pos x={after} want={next}");
+        let curr = world.snapshots.load_curr();
+        assert!(
+            curr.world_transforms[row].is_teleport(),
+            "POS SetField should stamp TELEPORT for GPU snap"
+        );
+    }
+
+    #[test]
+    fn set_field_pos_stale_hash_rejects_queue() {
+        use alchemy_protocol::{encode_f64, hash_f64};
+        let mut world = test_world();
+        let id = world.boxes.entity_ids[0];
+        let row = world.entity_rows.get(&id).unwrap().row_id as usize;
+        let before = world.world.curr.world_transforms[row].position[0];
+        let err = world
+            .queue_live_set_field(
+                id,
+                alchemy_protocol::edit_field_id::POS_X,
+                &encode_f64(before + 1.0),
+                &hash_f64(before + 9.0),
+            )
+            .expect_err("stale expected_hash");
+        assert_eq!(err, "stale pose");
+    }
+
+    #[test]
     fn set_field_flags_does_not_clobber_readiness() {
         use alchemy_protocol::{encode_flags, SCENE_FLAG_GRABBABLE};
         let mut world = test_world();
@@ -2865,7 +2976,12 @@ mod tests {
         let before = world.world.curr.readiness[row];
         assert!(before.0 & ReadinessMask::ALLOCATED != 0);
         world
-            .queue_live_set_field(id, alchemy_protocol::edit_field_id::FLAGS, &encode_flags(0))
+            .queue_live_set_field(
+                id,
+                alchemy_protocol::edit_field_id::FLAGS,
+                &encode_flags(0),
+                &[],
+            )
             .unwrap();
         world.step();
         let after = world.world.curr.readiness[row];
@@ -2879,6 +2995,7 @@ mod tests {
                 id,
                 alchemy_protocol::edit_field_id::FLAGS,
                 &encode_flags(SCENE_FLAG_GRABBABLE),
+                &[],
             )
             .unwrap();
         world.step();
@@ -2900,7 +3017,12 @@ mod tests {
         let atom_before = world.world.curr.asset_atoms[row as usize];
         let epoch_before = world.world.curr.epoch_id;
         world
-            .queue_live_set_field(id, alchemy_protocol::edit_field_id::FLAGS, &encode_flags(1))
+            .queue_live_set_field(
+                id,
+                alchemy_protocol::edit_field_id::FLAGS,
+                &encode_flags(1),
+                &[],
+            )
             .unwrap();
         // First patch would succeed; second is OOB → barrier Err + compensate first.
         world.frame_bridge.queue_patch(PendingPatch::SetAssetAtom {

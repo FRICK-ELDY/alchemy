@@ -4,8 +4,10 @@
 //! Guarantees: angle-modulated smooth + sticky UV lock without heap alloc;
 //! Primary visibility gate (`laser_show_primary_min`, default 0.1) separate from Grab≈0.7;
 //! Settings-exposed fields + clamp/step for L1 prefs UI.
-//! Non-guarantees: bezier laser draw; haptics; double-click; CRDT scrub commit;
+//! Non-guarantees: bezier laser draw; haptics; double-click;
 //! Desktop beam overlay when `show_lasers_in_desktop_mode` (→ L3); XR smooth wiring (→ L2).
+//! Inspector POS scrub UV is **not** driven by this module (Desktop uses panel hit /
+//! `last_uv`; press-lock here stays for Hierarchy/click stickiness · x00f2).
 
 #![forbid(unsafe_code)]
 
