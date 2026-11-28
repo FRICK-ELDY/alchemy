@@ -925,6 +925,45 @@ impl SystemUi {
                 log::info!("turn mode → {}", self.state.turn.mode.label());
                 UiAction::None
             }
+            WidgetId::LaserShowInDesktopToggle => {
+                self.state.laser.show_lasers_in_desktop_mode =
+                    !self.state.laser.show_lasers_in_desktop_mode;
+                self.mark_dash_chrome_dirty();
+                self.rebuild();
+                log::info!(
+                    "laser show_in_desktop → {}",
+                    self.state.laser.show_lasers_in_desktop_mode
+                );
+                UiAction::LaserConfigChanged
+            }
+            WidgetId::LaserSmoothDec
+            | WidgetId::LaserSmoothInc
+            | WidgetId::LaserModStartDec
+            | WidgetId::LaserModStartInc
+            | WidgetId::LaserModEndDec
+            | WidgetId::LaserModEndInc
+            | WidgetId::LaserModExpDec
+            | WidgetId::LaserModExpInc
+            | WidgetId::LaserModMulDec
+            | WidgetId::LaserModMulInc
+            | WidgetId::LaserStickDec
+            | WidgetId::LaserStickInc
+            | WidgetId::LaserPrimaryMinDec
+            | WidgetId::LaserPrimaryMinInc => {
+                let (param, dir) = dash::laser_float_nudge(hit).expect("laser float widget");
+                if self.state.laser.nudge_float(param, dir) {
+                    self.mark_dash_chrome_dirty();
+                    self.rebuild();
+                    log::info!(
+                        "laser {} → {:.3}",
+                        param.label(),
+                        self.state.laser.get_float(param)
+                    );
+                    UiAction::LaserConfigChanged
+                } else {
+                    UiAction::None
+                }
+            }
             WidgetId::HotswitchAutoToggle => {
                 // PresentationGate is SoT; surface writes Gate from UiAction.
                 self.state.toggle_hotswitch_auto();
@@ -1470,6 +1509,8 @@ pub enum UiAction {
     HotswitchAutoChanged,
     /// Settings: Server Operator toggled (persist to onboarding prefs).
     ServerOperatorChanged,
+    /// Settings Laser knobs changed (persist to laser prefs · x00ee).
+    LaserConfigChanged,
     /// Inventory: tab opened — sync scene mesh list from SharedState (x006e).
     InventoryOpen,
     /// Inventory: reload Drive nodes from assets (x006d).
@@ -2010,6 +2051,9 @@ mod tests {
             .hits
             .iter()
             .any(|(id, _)| *id == WidgetId::SettingsStartSession));
+        // Laser block (x00ee) pushes Server Operator below the first panel page.
+        ui.state.scroll_settings_by(400.0);
+        ui.rebuild();
         assert!(ui
             .tree
             .hits
@@ -2224,6 +2268,8 @@ mod tests {
         ui.state.server_operator = false;
         ui.state.canvas_w = 960.0;
         ui.state.canvas_h = 540.0;
+        // Laser block (x00ee) pushes Server Operator below the first panel page.
+        ui.state.scroll_settings_by(400.0);
         ui.rebuild();
         let rect = ui
             .tree
@@ -2235,6 +2281,43 @@ mod tests {
         let action = ui.on_click(rect.x + 1.0, rect.y + 1.0);
         assert_eq!(action, UiAction::ServerOperatorChanged);
         assert!(ui.state.server_operator);
+    }
+
+    #[test]
+    fn settings_laser_show_in_desktop_and_nudge() {
+        let mut ui = SystemUi::new();
+        ui.state.open = true;
+        ui.state.shell = OnboardingShell::Dash;
+        ui.state.tab = DashTab::Settings;
+        ui.state.home_logged_in_as = Some("alice".into());
+        ui.state.canvas_w = 960.0;
+        ui.state.canvas_h = 540.0;
+        ui.rebuild();
+        let show = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::LaserShowInDesktopToggle)
+            .map(|(_, r)| *r)
+            .expect("laser show in desktop");
+        assert_eq!(
+            ui.on_click(show.x + 1.0, show.y + 1.0),
+            UiAction::LaserConfigChanged
+        );
+        assert!(ui.state.laser.show_lasers_in_desktop_mode);
+        let before = ui.state.laser.laser_smooth_speed;
+        let inc = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::LaserSmoothInc)
+            .map(|(_, r)| *r)
+            .expect("smooth speed +");
+        assert_eq!(
+            ui.on_click(inc.x + 1.0, inc.y + 1.0),
+            UiAction::LaserConfigChanged
+        );
+        assert!(ui.state.laser.laser_smooth_speed > before);
     }
 
     #[test]

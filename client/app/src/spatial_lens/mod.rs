@@ -24,5 +24,5 @@ pub use extract::{
 pub use glass::GlassColor;
 pub use gpu::SpatialLensGpu;
 pub use hit::pick_panel;
-pub use laser::{HandLaserState, InteractionLaserConfig};
+pub use laser::{HandLaserState, InteractionLaserConfig, LaserFloatParam};
 pub use prim::{GpuPanelHeader, GpuUiPrim};

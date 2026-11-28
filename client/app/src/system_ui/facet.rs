@@ -84,6 +84,21 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::TurnModeToggle
         | WidgetId::HotswitchAutoToggle
         | WidgetId::ServerOperatorToggle
+        | WidgetId::LaserShowInDesktopToggle
+        | WidgetId::LaserSmoothDec
+        | WidgetId::LaserSmoothInc
+        | WidgetId::LaserModStartDec
+        | WidgetId::LaserModStartInc
+        | WidgetId::LaserModEndDec
+        | WidgetId::LaserModEndInc
+        | WidgetId::LaserModExpDec
+        | WidgetId::LaserModExpInc
+        | WidgetId::LaserModMulDec
+        | WidgetId::LaserModMulInc
+        | WidgetId::LaserStickDec
+        | WidgetId::LaserStickInc
+        | WidgetId::LaserPrimaryMinDec
+        | WidgetId::LaserPrimaryMinInc
         | WidgetId::SettingsScrollUp
         | WidgetId::SettingsScrollDown
         | WidgetId::SettingsRoomId

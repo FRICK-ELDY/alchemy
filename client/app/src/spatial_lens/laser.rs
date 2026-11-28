@@ -1,12 +1,78 @@
-//! Resonite-style interaction laser state (x00bd Stickiness / press-lock; x00ea Primary gate).
+//! Resonite-style interaction laser state (x00bd Stickiness / press-lock; x00ea Primary gate;
+//! x00ee Settings ↔ prefs).
 //!
 //! Guarantees: angle-modulated smooth + sticky UV lock without heap alloc;
-//! Primary visibility gate (`laser_show_primary_min`, default 0.1) separate from Grab≈0.7.
-//! Non-guarantees: bezier laser draw; haptics; double-click; CRDT scrub commit; Settings UI (L1).
+//! Primary visibility gate (`laser_show_primary_min`, default 0.1) separate from Grab≈0.7;
+//! Settings-exposed fields + clamp/step for L1 prefs UI.
+//! Non-guarantees: bezier laser draw; haptics; double-click; CRDT scrub commit;
+//! Desktop beam overlay when `show_lasers_in_desktop_mode` (→ L3); XR smooth wiring (→ L2).
 
 #![forbid(unsafe_code)]
 
-#[derive(Clone, Copy, Debug)]
+use serde::{Deserialize, Serialize};
+
+/// Float knobs exposed in Settings (± buttons · x00ee).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaserFloatParam {
+    SmoothSpeed,
+    ModulateStartAngle,
+    ModulateEndAngle,
+    ModulateExponent,
+    ModulateSpeedMultiplier,
+    Stickiness,
+    ShowPrimaryMin,
+}
+
+impl LaserFloatParam {
+    pub const ALL: [Self; 7] = [
+        Self::SmoothSpeed,
+        Self::ModulateStartAngle,
+        Self::ModulateEndAngle,
+        Self::ModulateExponent,
+        Self::ModulateSpeedMultiplier,
+        Self::Stickiness,
+        Self::ShowPrimaryMin,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SmoothSpeed => "SmoothSpeed",
+            Self::ModulateStartAngle => "ModulateStartAngle",
+            Self::ModulateEndAngle => "ModulateEndAngle",
+            Self::ModulateExponent => "ModulateExponent",
+            Self::ModulateSpeedMultiplier => "ModulateSpeedMultiplier",
+            Self::Stickiness => "StickThreshold",
+            Self::ShowPrimaryMin => "ShowPrimaryMin",
+        }
+    }
+
+    pub fn step(self) -> f32 {
+        match self {
+            Self::SmoothSpeed => 1.0,
+            Self::ModulateStartAngle => 0.5,
+            Self::ModulateEndAngle => 1.0,
+            Self::ModulateExponent => 0.1,
+            Self::ModulateSpeedMultiplier => 0.5,
+            Self::Stickiness => 0.05,
+            Self::ShowPrimaryMin => 0.05,
+        }
+    }
+
+    pub fn range(self) -> (f32, f32) {
+        match self {
+            Self::SmoothSpeed => (0.0, 60.0),
+            Self::ModulateStartAngle => (0.0, 45.0),
+            Self::ModulateEndAngle => (1.0, 90.0),
+            Self::ModulateExponent => (0.1, 8.0),
+            Self::ModulateSpeedMultiplier => (1.0, 32.0),
+            Self::Stickiness => (0.0, 1.0),
+            Self::ShowPrimaryMin => (0.0, 1.0),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct InteractionLaserConfig {
     pub laser_smooth_speed: f32,
     pub modulate_start_angle_deg: f32,
@@ -16,6 +82,8 @@ pub struct InteractionLaserConfig {
     pub laser_stickiness: f32,
     /// XR beam drawn only when aiming-hand Primary ≥ this (x00ea L0). Not Grab/UI click.
     pub laser_show_primary_min: f32,
+    /// Resonite ShowInDesktop (x00ee). Desktop beam overlay is L3; does not gate Lens pick.
+    pub show_lasers_in_desktop_mode: bool,
 }
 
 impl Default for InteractionLaserConfig {
@@ -28,6 +96,7 @@ impl Default for InteractionLaserConfig {
             modulate_speed_multiplier: 8.0,
             laser_stickiness: 0.5,
             laser_show_primary_min: 0.1,
+            show_lasers_in_desktop_mode: false,
         }
     }
 }
@@ -37,6 +106,76 @@ impl InteractionLaserConfig {
     #[inline]
     pub fn beam_visible(&self, primary: f32) -> bool {
         primary >= self.laser_show_primary_min
+    }
+
+    /// Clamp all floats into Settings ranges (prefs load / ± nudges).
+    /// Non-finite values fall back to [`Default`] so chrome `PartialEq` stays stable.
+    pub fn clamp(mut self) -> Self {
+        let defaults = Self::default();
+        for p in LaserFloatParam::ALL {
+            let (lo, hi) = p.range();
+            let raw = self.get_float(p);
+            let v = if raw.is_finite() {
+                raw.clamp(lo, hi)
+            } else {
+                defaults.get_float(p)
+            };
+            self.set_float(p, v);
+        }
+        if self.modulate_end_angle_deg < self.modulate_start_angle_deg {
+            self.modulate_end_angle_deg = self.modulate_start_angle_deg;
+        }
+        self
+    }
+
+    pub fn get_float(self, param: LaserFloatParam) -> f32 {
+        match param {
+            LaserFloatParam::SmoothSpeed => self.laser_smooth_speed,
+            LaserFloatParam::ModulateStartAngle => self.modulate_start_angle_deg,
+            LaserFloatParam::ModulateEndAngle => self.modulate_end_angle_deg,
+            LaserFloatParam::ModulateExponent => self.modulate_exponent,
+            LaserFloatParam::ModulateSpeedMultiplier => self.modulate_speed_multiplier,
+            LaserFloatParam::Stickiness => self.laser_stickiness,
+            LaserFloatParam::ShowPrimaryMin => self.laser_show_primary_min,
+        }
+    }
+
+    pub fn set_float(&mut self, param: LaserFloatParam, value: f32) {
+        match param {
+            LaserFloatParam::SmoothSpeed => self.laser_smooth_speed = value,
+            LaserFloatParam::ModulateStartAngle => self.modulate_start_angle_deg = value,
+            LaserFloatParam::ModulateEndAngle => self.modulate_end_angle_deg = value,
+            LaserFloatParam::ModulateExponent => self.modulate_exponent = value,
+            LaserFloatParam::ModulateSpeedMultiplier => self.modulate_speed_multiplier = value,
+            LaserFloatParam::Stickiness => self.laser_stickiness = value,
+            LaserFloatParam::ShowPrimaryMin => self.laser_show_primary_min = value,
+        }
+    }
+
+    /// Nudge a float by ±step and clamp. Returns true if the value changed.
+    pub fn nudge_float(&mut self, param: LaserFloatParam, dir: i8) -> bool {
+        let before = *self;
+        let step = param.step() * (dir as f32).signum();
+        let next = self.get_float(param) + step;
+        self.set_float(param, next);
+        *self = self.clamp();
+        *self != before
+    }
+
+    pub fn format_float_label(self, param: LaserFloatParam) -> String {
+        let v = self.get_float(param);
+        match param {
+            LaserFloatParam::SmoothSpeed => format!("{}: {v:.0}", param.label()),
+            LaserFloatParam::ModulateStartAngle | LaserFloatParam::ModulateEndAngle => {
+                format!("{}: {v:.1}°", param.label())
+            }
+            LaserFloatParam::ModulateExponent
+            | LaserFloatParam::ModulateSpeedMultiplier
+            | LaserFloatParam::Stickiness
+            | LaserFloatParam::ShowPrimaryMin => {
+                format!("{}: {v:.2}", param.label())
+            }
+        }
     }
 }
 
@@ -240,5 +379,51 @@ mod tests {
             ..Default::default()
         };
         assert!(!tight.beam_visible(0.2));
+    }
+
+    #[test]
+    fn show_in_desktop_defaults_off() {
+        assert!(!InteractionLaserConfig::default().show_lasers_in_desktop_mode);
+    }
+
+    #[test]
+    fn nudge_float_clamps() {
+        let mut cfg = InteractionLaserConfig::default();
+        for _ in 0..100 {
+            cfg.nudge_float(LaserFloatParam::Stickiness, 1);
+        }
+        assert!((cfg.laser_stickiness - 1.0).abs() < 1e-5);
+        for _ in 0..100 {
+            cfg.nudge_float(LaserFloatParam::Stickiness, -1);
+        }
+        assert!((cfg.laser_stickiness - 0.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn serde_roundtrip_defaults() {
+        let cfg = InteractionLaserConfig::default();
+        let raw = serde_json::to_string(&cfg).unwrap();
+        let back: InteractionLaserConfig = serde_json::from_str(&raw).unwrap();
+        assert_eq!(cfg, back);
+    }
+
+    #[test]
+    fn serde_missing_keys_use_default() {
+        let back: InteractionLaserConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(back, InteractionLaserConfig::default());
+    }
+
+    #[test]
+    fn clamp_replaces_non_finite() {
+        let cfg = InteractionLaserConfig {
+            laser_smooth_speed: f32::NAN,
+            laser_stickiness: f32::INFINITY,
+            ..Default::default()
+        }
+        .clamp();
+        let d = InteractionLaserConfig::default();
+        assert_eq!(cfg.laser_smooth_speed, d.laser_smooth_speed);
+        assert_eq!(cfg.laser_stickiness, d.laser_stickiness);
+        assert_eq!(cfg, cfg); // PartialEq stable after clamp
     }
 }

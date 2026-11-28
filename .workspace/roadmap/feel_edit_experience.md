@@ -7,7 +7,7 @@
 * **拡張ギャップ（ヒッチ・IME）**: [memo/alchemy-expansion.md](memo/alchemy-expansion.md)（**E1 / E2** — 本線番号と非共有）
 * **アバター見た目・ダンス**: [memo/avatar-animation-ux.md](memo/avatar-animation-ux.md)（本線番号と非共有）
 * **既存 Facet 最小**: [slices/x000f-dash-facet-minimal.md](slices/x000f-dash-facet-minimal.md)（語彙のみ。並べ替え・ユーザー追加は非保証）
-* **空きスライス ID**: **`x00ee`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
+* **空きスライス ID**: **`x00ef`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
 
 ### 番号規約
 
@@ -56,8 +56,8 @@
 | Depth Bucket / bitmask edge | Arena **非保証** | 親子編集・Enabled 切替の手触り |
 | AvatarRig / RigidSolver | 境界 **done**・host tick **未配線** | 揺れもの・剛体が画面に出ない |
 | Inspector（x00bc） | 数値表示まで | スクラブ → `…/edit` Commit は非保証 |
-| XR レーザー | **L0 done**（Primary ≥ 0.1 で表示） | Settings 未露出（→ L1）・ShowInDesktop 未 |
-| `InteractionLaserConfig` | 変調＋stickiness はコードあり | Settings 未露出・`ShowInDesktop` 未 |
+| XR レーザー | **L0+L1 done**（Primary ゲート＋Settings 永続） | ShowInDesktop 可視化ビームは → L3；XR smooth → L2 |
+| `InteractionLaserConfig` | Settings 露出＋`laser.json` 永続（[x00ee](slices/x00ee-laser-settings-l1.md)） | Desktop ビーム描画本体（→ L3） |
 | Dash | CPU Canvas blit（仮）＋G0 色トークン共有 | 板経路の角丸・glow は Lens 済み；Dash 全板移行は U0 |
 | Facet | `FacetId` / Pinned Exit のみ | グリッド装着・ユーザー追加は非保証 |
 | 文字 | DirectNumber ＋ Lens Static MSDF（[x00ed](slices/x00ed-static-msdf-t1.md)）＋ Dash 5×7 | CJK / 文言カタログは未（→ T2） |
@@ -88,7 +88,7 @@ E1  ヒッチ根絶（スキニング / Async PSO / LOD builder）
 Fc6  Settings 行 → Facet 化
 ```
 
-**次の着手:** [x00ed](slices/x00ed-static-msdf-t1.md) T1 **done**。[x00ec](slices/x00ec-glass-material-g0.md) G0 **done**。[x00eb](slices/x00eb-teleport-gpu-snap.md) F0-1 **done**。次候補 **`x00ee` = F0-2**（Depth Bucket 階層伝播；L1 等と直交し並行可）。
+**次の着手:** [x00ee](slices/x00ee-laser-settings-l1.md) L1 **done**。[x00ed](slices/x00ed-static-msdf-t1.md) T1 **done**。[x00ec](slices/x00ec-glass-material-g0.md) G0 **done**。[x00eb](slices/x00eb-teleport-gpu-snap.md) F0-1 **done**。次候補 **`x00ef` = F0-2**（Depth Bucket 階層伝播；L1 と直交し並行可）。
 
 ---
 
@@ -116,7 +116,7 @@ Fc6  Settings 行 → Facet 化
 | ID | 内容 | 備考 |
 |:---|:---|:---|
 | **L0** | **Primary 表示ゲート** | `primary < laser_show_primary_min`（既定 **0.1**）でビーム非描画。`≥ 0.1` で表示。Grab/UI 二値しきい値（現行 ≈0.7）とは **別パラメータ** |
-| **L1** | Settings に Laser 項目を露出・永続化 | 下表写像 → `InteractionLaserConfig` |
+| **L1** | Settings に Laser 項目を露出・永続化 | [x00ee](slices/x00ee-laser-settings-l1.md) **done**。下表写像 → `InteractionLaserConfig` / `laser.json` |
 | **L2** | XR ビーム向きに角度変調スムージング本配線 | 現状は Lens Desktop 寄り |
 | **L3** | ベジェ描画・ShowInDesktop・Cursor 倍率 | x00bd 非保証の仕上げ |
 
@@ -330,3 +330,7 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 | 2026-11-28 | G0 レビュー修正: Shell `glow_pad` インセット、active＝hover のみ、LOD2 リテラル同期、GlassColor packed 導出、正本陳腐記述削除 |
 | 2026-11-28 | G0: inset=`border_t+6×glow`（active 固定）・`shell_glow_extent_wgsl_expr` 同期・hover でシェル枠非ジャンプ |
 | 2026-11-28 | [x00ed](slices/x00ed-static-msdf-t1.md) T1 Static MSDF done（512² atlas・MsdfGlyph・DirectNumber アトラス桁）。次候補 x00ee F0-2 |
+| 2026-11-28 | [x00ee](slices/x00ee-laser-settings-l1.md) L1 Settings ↔ InteractionLaserConfig 着手。次候補 x00ef F0-2 |
+| 2026-11-28 | [x00ee](slices/x00ee-laser-settings-l1.md) L1 done（Settings Laser 節・laser.json・Desktop/XR cfg 反映）。次候補 x00ef F0-2 |
+| 2026-11-28 | x00ee レビュー追随: 体感文を XR=Primary / Desktop=smooth·stick に揃える・Laser レイアウト定数一本化・prefs 非同期 coalesce・非有限 clamp |
+| 2026-11-28 | x00ee prefs: spawn 失敗 sync drain・`flush_blocking`（exit）・FLUSHING 中 kick 抑止・join を lock 外へ |
