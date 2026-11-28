@@ -530,14 +530,14 @@ impl HostLoop {
                 crate::live_edit::ReadyLiveEdit::Reparent { op, .. } => self
                     .physics
                     .queue_live_reparent(op.child_entity_id, op.new_parent_entity_id),
-                crate::live_edit::ReadyLiveEdit::SetField { op, .. } => self
-                    .physics
-                    .queue_live_set_field(
+                crate::live_edit::ReadyLiveEdit::SetField { op, .. } => {
+                    self.physics.queue_live_set_field(
                         op.entity_id,
                         op.field_id,
                         &op.value,
                         &op.expected_value_hash,
-                    ),
+                    )
+                }
             };
             if let Err(e) = queue_ok {
                 // POS Epoch hash miss → STALE (same vocabulary as FLAGS expected_hash).

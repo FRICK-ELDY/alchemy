@@ -162,9 +162,10 @@ pub fn scrub_selected_row(state: &mut SpatialLensState, epoch: &EpochViewState) 
             state.selected_row = None;
         }
     }
-    let drop_scrub = state.scrub.as_ref().is_some_and(|s| {
-        state.selected_row != Some(s.row) || !row_is_live(epoch, s.row)
-    });
+    let drop_scrub = state
+        .scrub
+        .as_ref()
+        .is_some_and(|s| state.selected_row != Some(s.row) || !row_is_live(epoch, s.row));
     if drop_scrub {
         state.scrub.take().map(|s| s.entity_id)
     } else {

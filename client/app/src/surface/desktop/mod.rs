@@ -48,11 +48,11 @@ use crate::context_radial::{self, ContextEvent, ContextItemId, ContextRadialStat
 use crate::host_supervisor;
 use crate::mesh::CpuMesh;
 use crate::operator_prefs;
+use crate::pending_local_ops::PendingPose;
 use crate::scene::{
     create_depth_view, create_wgpu_for_window, CameraLook, EntityPose, MoveIntent, SceneGpu,
     SharedState,
 };
-use crate::pending_local_ops::PendingPose;
 use crate::spatial_lens::extract::{
     entity_id_for_row, inspector_pos_axis, world_pos_axis, world_pos_xyz, InspectorScrub,
     INSPECTOR_SCRUB_M_PER_PX,
@@ -60,8 +60,8 @@ use crate::spatial_lens::extract::{
 use crate::spatial_lens::inspector_edit::{expected_hash_for_axis, publish_inspector_pos_commit};
 use crate::spatial_lens::{
     decode_hierarchy_binding, decode_inspector_pos_binding, pack_personal_lens,
-    place_in_front_of_eye, row_is_live, scrub_selected_row, HandLaserState,
-    InteractionLaserConfig, SpatialLensGpu, SpatialLensState,
+    place_in_front_of_eye, row_is_live, scrub_selected_row, HandLaserState, InteractionLaserConfig,
+    SpatialLensGpu, SpatialLensState,
 };
 use crate::surface::hotswitch::DesktopRole;
 use crate::system_ui::{DashTab, LayoutTree, OnboardingShell, SystemUi, UiAction};
