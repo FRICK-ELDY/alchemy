@@ -4,7 +4,9 @@
 //! Guarantees: angle-modulated smooth + sticky UV lock without heap alloc;
 //! Primary visibility gate (`laser_show_primary_min`, default 0.1) separate from Grab≈0.7;
 //! Settings-exposed fields + clamp/step for L1 prefs UI;
-//! XR session applies `update_smoothed_direction` to world/UI beam aim (x00f5).
+//! XR session applies `update_smoothed_direction` to world/UI beam aim (x00f5);
+//! Default baseline (x00f5 retune): Smooth 5 / Start 2° / End 45° / Exp 0.75 / Mul 8 /
+//! Stick 0.2（旧例示 12 / 1.5° / 18° / 1.8 / 0.5 から変更。Reset 先もこの値）.
 //! Non-guarantees: bezier laser draw; haptics; double-click;
 //! Desktop beam overlay when `show_lasers_in_desktop_mode` (→ L3); XR Stickiness.
 //! Inspector POS scrub UV is **not** driven by this module (Desktop uses panel hit /
@@ -92,12 +94,12 @@ pub struct InteractionLaserConfig {
 impl Default for InteractionLaserConfig {
     fn default() -> Self {
         Self {
-            laser_smooth_speed: 12.0,
-            modulate_start_angle_deg: 1.5,
-            modulate_end_angle_deg: 18.0,
-            modulate_exponent: 1.8,
+            laser_smooth_speed: 5.0,
+            modulate_start_angle_deg: 2.0,
+            modulate_end_angle_deg: 45.0,
+            modulate_exponent: 0.75,
             modulate_speed_multiplier: 8.0,
-            laser_stickiness: 0.5,
+            laser_stickiness: 0.2,
             laser_show_primary_min: 0.1,
             show_lasers_in_desktop_mode: false,
         }
@@ -165,12 +167,22 @@ impl InteractionLaserConfig {
         *self != before
     }
 
+    /// Restore Alchemy Laser defaults (Settings Reset). Returns true if anything changed.
+    pub fn reset_to_defaults(&mut self) -> bool {
+        let next = Self::default();
+        if *self == next {
+            return false;
+        }
+        *self = next;
+        true
+    }
+
     pub fn format_float_label(self, param: LaserFloatParam) -> String {
         let v = self.get_float(param);
         match param {
             LaserFloatParam::SmoothSpeed => format!("{}: {v:.0}", param.label()),
             LaserFloatParam::ModulateStartAngle | LaserFloatParam::ModulateEndAngle => {
-                format!("{}: {v:.1}°", param.label())
+                format!("{}: {v:.2}°", param.label())
             }
             LaserFloatParam::ModulateExponent
             | LaserFloatParam::ModulateSpeedMultiplier
@@ -429,6 +441,33 @@ mod tests {
             cfg.nudge_float(LaserFloatParam::Stickiness, -1);
         }
         assert!((cfg.laser_stickiness - 0.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn defaults_match_alchemy_laser_baseline() {
+        let d = InteractionLaserConfig::default();
+        assert!((d.laser_smooth_speed - 5.0).abs() < 1e-5);
+        assert!((d.modulate_start_angle_deg - 2.0).abs() < 1e-5);
+        assert!((d.modulate_end_angle_deg - 45.0).abs() < 1e-5);
+        assert!((d.modulate_exponent - 0.75).abs() < 1e-5);
+        assert!((d.modulate_speed_multiplier - 8.0).abs() < 1e-5);
+        assert!((d.laser_stickiness - 0.2).abs() < 1e-5);
+        assert!((d.laser_show_primary_min - 0.1).abs() < 1e-5);
+        assert!(!d.show_lasers_in_desktop_mode);
+    }
+
+    #[test]
+    fn reset_to_defaults_restores_baseline() {
+        let mut cfg = InteractionLaserConfig {
+            laser_smooth_speed: 40.0,
+            modulate_start_angle_deg: 10.0,
+            laser_stickiness: 0.9,
+            show_lasers_in_desktop_mode: true,
+            ..InteractionLaserConfig::default()
+        };
+        assert!(cfg.reset_to_defaults());
+        assert_eq!(cfg, InteractionLaserConfig::default());
+        assert!(!cfg.reset_to_defaults());
     }
 
     #[test]
