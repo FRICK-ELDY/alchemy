@@ -7,7 +7,7 @@
 * **拡張ギャップ（ヒッチ・IME）**: [memo/alchemy-expansion.md](memo/alchemy-expansion.md)（**E1 / E2** — 本線番号と非共有）
 * **アバター見た目・ダンス**: [memo/avatar-animation-ux.md](memo/avatar-animation-ux.md)（本線番号と非共有）
 * **既存 Facet 最小**: [slices/x000f-dash-facet-minimal.md](slices/x000f-dash-facet-minimal.md)（語彙のみ。並べ替え・ユーザー追加は非保証）
-* **空きスライス ID**: **`x00eb`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
+* **空きスライス ID**: **`x00ec`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
 
 ### 番号規約
 
@@ -52,7 +52,7 @@
 | 領域 | 状態 | 体験への意味 |
 |:---|:---|:---|
 | Scene Store / Sim Arena / SoftLease / PendingLocalOps | **done** | 共同編集・楽観予測の**器** |
-| TELEPORT → GPU snap | **後続**（Arena 面のみ） | 生成・Reparent の残像・ちぎれ |
+| TELEPORT → GPU snap | **done**（[x00eb](slices/x00eb-teleport-gpu-snap.md)） | 生成・Reparent の残像・ちぎれを Curr へ即スナップ |
 | Depth Bucket / bitmask edge | Arena **非保証** | 親子編集・Enabled 切替の手触り |
 | AvatarRig / RigidSolver | 境界 **done**・host tick **未配線** | 揺れもの・剛体が画面に出ない |
 | Inspector（x00bc） | 数値表示まで | スクラブ → `…/edit` Commit は非保証 |
@@ -88,7 +88,7 @@ E1  ヒッチ根絶（スキニング / Async PSO / LOD builder）
 Fc6  Settings 行 → Facet 化
 ```
 
-**次の着手:** [x00ea](slices/x00ea-laser-primary-visibility.md) L0 **done**。次は **`x00eb` = F0-1**（TELEPORT GPU snap）を第一候補とする（L1 / G0 等と直交し並行可）。
+**次の着手:** [x00eb](slices/x00eb-teleport-gpu-snap.md) F0-1 **done**。次は **`x00ec` = F0-2**（Depth Bucket 階層伝播）を第一候補とする（L1 / G0 等と直交し並行可）。
 
 ---
 
@@ -98,7 +98,7 @@ Fc6  Settings 行 → Facet 化
 
 | ID | 内容 | なぜ先か | 根拠・注意 |
 |:---|:---|:---|:---|
-| **F0-1** | **TELEPORT → GPU snap** | 生成・SetParent・ワープの残像が編集を壊す | [scene_store_sim_arena.md](scene_store_sim_arena.md) Ring3「TELEPORT GPU snap は後続」。Arena 寿命契約は既存 |
+| **F0-1** | **TELEPORT → GPU snap**（[x00eb](slices/x00eb-teleport-gpu-snap.md) **done**） | SetParent・ワープの残像が編集を壊す | Arena → sheet `FLAG_TELEPORT` → Epoch lerp/WGSL スナップ。**新規生成**は pack ABA。ワイヤ Frame bit / PendingLocalOps 自動供給は非保証 |
 | **F0-2** | **Depth Bucket 階層伝播** | 親子編集のワールド座標 | Arena Step 3。アバター末端は Slot に載せない |
 | **F0-3** | **bitmask edge Observer** | Enabled ON 初速リセット等 | Step 1。物理掴み SSoT は `holder_slot`（SoftLease と二重化しない） |
 | **F0-4** | **PendingLocalOps を実操作へ** | x00e6 は器。Grab/編集経路へ接続 | Published 非汚染を崩さない |
@@ -215,7 +215,7 @@ Fc6  Settings 行 → Facet 化
 | 候補 ID | slug 案 | Wave | DoD 要約 |
 |:---|:---|:---|:---|
 | x00ea | `laser-primary-visibility` | L0 | Primary &lt; 0.1 で XR ビーム非描画。Grab 二値しきい値は不変 |
-| x00eb | `teleport-gpu-snap` | F0-1 | `STATE_TELEPORT_THIS_TICK`（または同等）で補間スキップ／スナップ。残像回帰テスト |
+| x00eb | `teleport-gpu-snap` | F0-1 | `STATE_TELEPORT_THIS_TICK` → sheet `FLAG_TELEPORT` → GPU snap。残像回帰テスト |
 
 ---
 
@@ -245,3 +245,4 @@ Fc6  Settings 行 → Facet 化
 |:---|:---|
 | 2026-11-28 | 初版。品質本線クローズ後の体験本線として F/L/T/G/Fc/U/E を固定。次着手候補 L0 / F0-1 |
 | 2026-11-28 | x00ea L0 発行・done。次着手候補 x00eb F0-1 |
+| 2026-11-28 | x00eb F0-1 TELEPORT GPU snap done。次着手候補 x00ec F0-2 |

@@ -45,9 +45,11 @@
 //! # `STATE_TELEPORT_THIS_TICK` clear ownership
 //!
 //! - **Set**: Work writer / `SimPatch` apply (Spawn, SetParent, warp, enabled ON).
-//! - **Observe (Phase 1a)**: Arena faces / Observer only — **not** EpochSheet /
-//!   Ring3 GPU yet. Ring 2 Step 1 bitmask edge Observer *detects* the bit; it
-//!   does not own lifetime.
+//! - **Observe / Ring3 (x00eb)**: Arena Work → publish clone
+//!   [`crate::bridge::stamp_teleport_flags_from_arena_work`] →
+//!   [`crate::tape::WorldTransformf64::FLAG_TELEPORT`] → Epoch GPU snap.
+//!   Ring 2 Step 1 bitmask edge Observer *detects* the bit; it does not own
+//!   lifetime. Wire Frame teleport bit is still out of scope.
 //! - **Work→Published**: bit **survives** rotate for one Arena Published epoch.
 //! - **Published→Prev (rotate)**: [`SimArena::rotate_faces`] **clears** the bit on
 //!   `prev_dirty_slots` of the face leaving Published (sparse, not O(n) full

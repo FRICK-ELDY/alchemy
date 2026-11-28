@@ -52,7 +52,8 @@ pub mod xpbd;
 
 pub use bridge::{
     epoch_sheet_from_sim_face, publish_arena_then_rotate, seed_arena_from_sheet,
-    sync_dirty_sheet_to_arena_work, EpochFaces, EpochSnapshotPair, FrameBridge,
+    stamp_teleport_flags_from_arena_work, sync_dirty_sheet_to_arena_work, EpochFaces,
+    EpochSnapshotPair, FrameBridge,
 };
 pub use tape::{
     ColliderShape, EpochSheet, NodeHandle, PendingPatch, ReadinessMask, WorldTransformf64,

@@ -3,7 +3,8 @@
 
 struct EpochRow {
     pos: vec3<f32>,
-    _pad0: f32,
+    // Layout twin of GpuEpochRow.teleport (vertex path ignores the value).
+    teleport: f32,
     rot: vec4<f32>,
     scale: vec3<f32>,
     row_id: u32,

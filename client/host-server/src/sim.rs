@@ -45,9 +45,9 @@ use alchemy_shared_sim::spatial::SceneBounds;
 use alchemy_shared_sim::xpbd::{self, XpbdWorld};
 use alchemy_shared_sim::{
     classify_scene_entry, publish_arena_then_rotate, scene_entry_color_rgba, seed_arena_from_sheet,
-    sync_dirty_sheet_to_arena_work, ColliderShape, EntityKind, EpochSheet, EpochSnapshotPair,
-    FlatTopology, FrameBridge, NodeHandle, PendingPatch, ReadinessMask, SlotGraph,
-    WorldTransformf64, PHYS_BALL_RADIUS,
+    stamp_teleport_flags_from_arena_work, sync_dirty_sheet_to_arena_work, ColliderShape,
+    EntityKind, EpochSheet, EpochSnapshotPair, FlatTopology, FrameBridge, NodeHandle, PendingPatch,
+    ReadinessMask, SlotGraph, WorldTransformf64, PHYS_BALL_RADIUS,
 };
 
 use crate::network_worker::Pose;
@@ -144,6 +144,8 @@ pub struct PhysicsWorld {
     pending_colors: Vec<(u32, [f32; 4])>,
     /// FLAGS deferred to tick barrier (scene_flags + box grabbable mirror).
     pending_flags: Vec<(u32, u32)>,
+    /// Rows that need Arena `write_teleport` after Carry-Over (x00eb; reparent / warp).
+    pending_teleport_rows: Vec<u32>,
     loco_mode: LocoMode,
     move_speed: f32,
     grabs: [Option<ActiveGrab>; USER_ROOT_SLOTS_MAX],
@@ -508,6 +510,7 @@ impl PhysicsWorld {
             scene_flags,
             pending_colors: Vec::new(),
             pending_flags: Vec::new(),
+            pending_teleport_rows: Vec::new(),
             loco_mode,
             move_speed: speed,
             grabs: [None; USER_ROOT_SLOTS_MAX],
@@ -876,6 +879,8 @@ impl PhysicsWorld {
         self.meshes.push(entry.entity_id);
         // Grow topo with new roots; do not wipe existing creative parents.
         self.ensure_topo_len();
+        // x00eb: no pending_teleport — fresh rows rely on pack ABA (Prev←Curr).
+        // Reparent/warp on an existing row still goes through `queue_teleport_row`.
         self.publish_dirty = true;
         true
     }
@@ -1104,7 +1109,16 @@ impl PhysicsWorld {
         }
         parents[idx] = parent_row;
         self.frame_bridge.queue_reparent(parents);
+        // GPU snap after sync+Carry-Over (x00eb); barrier only queues topo.
+        self.queue_teleport_row(child_row);
         Ok(())
+    }
+
+    /// Deduped enqueue for Arena `write_teleport` after sheet→Arena sync (x00eb).
+    fn queue_teleport_row(&mut self, row: u32) {
+        if !self.pending_teleport_rows.contains(&row) {
+            self.pending_teleport_rows.push(row);
+        }
     }
 
     /// Queue SetField for the next tick boundary.
@@ -1239,6 +1253,7 @@ impl PhysicsWorld {
         self.frame_bridge.pending.clear();
         self.pending_flags.clear();
         self.pending_colors.clear();
+        self.pending_teleport_rows.clear();
     }
 
     /// Returns `Err` when the FrameBridge reparent barrier fail-closed (physics still stepped).
@@ -1288,21 +1303,32 @@ impl PhysicsWorld {
             || self.has_active_grab();
         if moved {
             // x00dc: Carry-Over → sync sheet dirty into Arena Work → publish **sheet**
-            // SSoT (start / curr) as-is → rotate. Arena f32 is never overlaid onto Ring3
-            // (Phase 1a contract; keeps f64 sheet / live `epoch_id` aligned).
+            // SSoT (start / curr) as-is → rotate. Arena f32 poses are never overlaid onto
+            // Ring3 (keeps f64 sheet / live `epoch_id` aligned). x00eb stamps teleport
+            // **flags only** onto a publish clone (live curr stays clean).
             // MvccXpbd page→sheet marks dirty on pose change so this Arena sync stays fed.
             //
             // Idle (`moved == false`) skips carry/rotate entirely: Arena dirty window and
             // TELEPORT Published lifetime advance on **publish count**, not every sim tick.
             // Intentional — matches the pre-x00dc skip-publish policy for Ring3 faces.
             self.arena.carry_over();
+            // Grow Arena to sheet first — pending rows from same-tick spawn+reparent
+            // are past the pre-sync slot_count and would be silently dropped (x00eb review).
             sync_dirty_sheet_to_arena_work(&mut self.arena, &self.world.curr);
-            publish_arena_then_rotate(
-                &mut self.arena,
-                &self.snapshots,
-                start,
-                self.world.curr.clone(),
-            );
+            // After Carry-Over cleared Work TELEPORT: re-assert snap for queued reparents.
+            for row in std::mem::take(&mut self.pending_teleport_rows) {
+                if (row as usize) < self.arena.slot_count() {
+                    self.arena.write_teleport(row, true);
+                } else {
+                    log::warn!(
+                        "pending_teleport_rows row {row} oob after sync (arena={}); drop",
+                        self.arena.slot_count()
+                    );
+                }
+            }
+            let mut curr_pub = self.world.curr.clone();
+            stamp_teleport_flags_from_arena_work(&mut curr_pub, &self.arena);
+            publish_arena_then_rotate(&mut self.arena, &self.snapshots, start, curr_pub);
             self.publishes = self.publishes.wrapping_add(1);
             self.publish_dirty = false;
         }
@@ -1737,6 +1763,7 @@ impl PhysicsWorld {
         if idx < self.world.prev.len() {
             self.world.prev.world_transforms[idx] = xf;
         }
+        self.queue_teleport_row(handle.row_id);
         self.publish_dirty = true;
     }
 
@@ -2459,6 +2486,89 @@ mod tests {
         assert!(world.slot_graph().is_held_by(id, holder));
         world.release_slot(0);
         assert_eq!(world.slot_graph().parent(id), None);
+    }
+
+    #[test]
+    fn reparent_stamps_teleport_flag_on_published_curr() {
+        // x00eb: live reparent → sync → write_teleport → flags stamp on publish clone.
+        let mut world = test_world();
+        world.ensure_topo_len();
+        let child = *world.meshes.first().expect("mesh");
+        let parent = world.boxes.entity_ids[0];
+        let child_row = world.entity_rows.get(&child).unwrap().row_id;
+        world
+            .queue_live_reparent(child, parent)
+            .expect("queue reparent");
+        world.step();
+        let curr = world.snapshots.load_curr();
+        assert!(
+            curr.world_transforms[child_row as usize].is_teleport(),
+            "published Curr must carry FLAG_TELEPORT for GPU snap"
+        );
+        assert!(
+            !world.world.curr.world_transforms[child_row as usize].is_teleport(),
+            "live world.curr must not sticky-carry FLAG_TELEPORT"
+        );
+        // Next publish without reparent clears the stamp on Curr.
+        world.publish_dirty = true;
+        world.step();
+        let curr2 = world.snapshots.load_curr();
+        assert!(
+            !curr2.world_transforms[child_row as usize].is_teleport(),
+            "teleport lifetime is one publish epoch"
+        );
+    }
+
+    #[test]
+    fn spawn_then_reparent_same_tick_stamps_teleport_after_arena_grow() {
+        // x00eb review: write_teleport must run after sync_dirty (arena.resize).
+        use alchemy_protocol::SceneEntry;
+        let mut world = test_world();
+        world.ensure_topo_len();
+        let arena_before = world.arena.slot_count();
+        let parent = world.boxes.entity_ids[0];
+        let new_id = 9_001u32;
+        let entry = SceneEntry {
+            entity_id: new_id,
+            blake3: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+            half_extent: 0.0,
+            flags: 0,
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            qw: 1.0,
+            sx: 1.0,
+            sy: 1.0,
+            sz: 1.0,
+            parent_entity_id: 0,
+        };
+        assert!(world.spawn_mesh_entry(&entry), "spawn must grow sheet");
+        let child_row = world.entity_rows.get(&new_id).unwrap().row_id;
+        assert!(
+            world.world.curr.len() > arena_before,
+            "fixture should stress grow: arena_before={arena_before} sheet={}",
+            world.world.curr.len()
+        );
+        world
+            .queue_live_reparent(new_id, parent)
+            .expect("queue reparent on freshly spawned row");
+        world.step();
+        let curr = world.snapshots.load_curr();
+        assert!(
+            (child_row as usize) < curr.world_transforms.len(),
+            "child row must be on published sheet"
+        );
+        assert!(
+            curr.world_transforms[child_row as usize].is_teleport(),
+            "grow-path reparent must not drop pending_teleport_rows before sync resize"
+        );
     }
 
     #[test]

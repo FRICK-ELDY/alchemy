@@ -10,13 +10,15 @@
 //! Prev/Curr contract for Ring3: publish **start-of-tick Prev** and **end-of-tick Curr**
 //! (distinct faces for α-lerp), then commit Prev←Curr for the next tick's velocity.
 //!
-//! **Phase 1a Ring3 SSoT** is the Epoch sheet pair the caller passes (host:
-//! tick-start `start` + `world.curr`). Arena is Carry-Over / TELEPORT auxiliary —
-//! [`publish_arena_then_rotate`] does **not** overlay Arena f32 faces onto those
-//! sheets (stale Work must not clobber f64 curr). Host `MvccXpbd` marks sheet dirty
-//! on page→sheet pose change so Arena sync stays aligned; Ring3 still publishes
-//! the sheet as-is. Pure-Arena tests build sheets from faces via
-//! [`epoch_sheet_from_sim_face`] before calling publish.
+//! **Ring3 SSoT** is the Epoch sheet pair the caller passes (host: tick-start
+//! `start` + `world.curr`). Arena is Carry-Over / TELEPORT lifetime auxiliary —
+//! [`publish_arena_then_rotate`] does **not** overlay Arena f32 poses onto those
+//! sheets (stale Work must not clobber f64 curr). Teleport for GPU snap is a
+//! **flags-only** stamp via [`stamp_teleport_flags_from_arena_work`] onto a
+//! **publish clone** (x00eb; live `world.curr` stays clean). Host `MvccXpbd`
+//! marks sheet dirty on page→sheet pose change so Arena sync stays aligned.
+//! Pure-Arena tests build sheets from faces via [`epoch_sheet_from_sim_face`]
+//! before calling publish.
 //!
 //! [`FrameBridge::tick`] / [`FrameBridge::tick_mirror_publish`] remain the legacy
 //! XPBD-only publish path (no Carry-Over). Host `sim.rs` is the Arena-wired barrier.
@@ -212,6 +214,8 @@ impl FrameBridge {
 }
 
 /// Build a minimal allocated Epoch sheet whose poses match `face` (Phase 1a tests / seed).
+///
+/// Copies Arena teleport → [`WorldTransformf64::FLAG_TELEPORT`] (x00eb GPU snap).
 pub fn epoch_sheet_from_sim_face(face: &SimFace, epoch_id: u64) -> EpochSheet {
     let n = face.slot_count();
     let mut sheet = EpochSheet::with_capacity(n);
@@ -226,6 +230,7 @@ pub fn epoch_sheet_from_sim_face(face: &SimFace, epoch_id: u64) -> EpochSheet {
             f64::from(pos[2]),
         ]);
         xf.rotation = rot;
+        xf.set_teleport(face.is_teleport(slot));
         sheet.world_transforms[h.row_id as usize] = xf;
         sheet.readiness[h.row_id as usize] =
             ReadinessMask(ReadinessMask::ALLOCATED | ReadinessMask::TRANSFORM);
@@ -233,6 +238,31 @@ pub fn epoch_sheet_from_sim_face(face: &SimFace, epoch_id: u64) -> EpochSheet {
     sheet.epoch_id = epoch_id;
     sheet.clear_dirty();
     sheet
+}
+
+/// Copy Arena **Work** teleport bits onto sheet [`WorldTransformf64::flags`] (x00eb).
+///
+/// Pose columns are untouched (Phase 1a / x00dc as-is contract). Call on a
+/// **publish clone** so live `world.curr` does not sticky-carry `FLAG_TELEPORT`
+/// into the next tick's Prev via `commit_prev_from_curr`.
+///
+/// Sparse over [`SimArena::this_tick_dirty`] (not O(n) full scan): teleport is
+/// only set via `write_teleport` / SimPatch, which always `mark_dirty`. Live
+/// publish clones start with flags cleared, so non-dirty rows need no clear pass.
+pub fn stamp_teleport_flags_from_arena_work(sheet: &mut EpochSheet, arena: &SimArena) {
+    let n = sheet
+        .world_transforms
+        .len()
+        .min(arena.slot_count())
+        .min(sheet.readiness.len());
+    let work = arena.work();
+    for &slot in arena.this_tick_dirty() {
+        let i = slot as usize;
+        if i >= n {
+            continue;
+        }
+        sheet.world_transforms[i].set_teleport(work.is_teleport(slot));
+    }
 }
 
 /// x00dc barrier tail: publish owned Epoch sheets, then rotate Arena faces.
@@ -580,8 +610,8 @@ mod tests {
 
     #[test]
     fn arena_bridge_keeps_teleport_on_published_for_one_epoch() {
-        // Phase 1a: TELEPORT lifetime is Arena-Published only; Ring3 sheet carries pose,
-        // not the TELEPORT bit (pure-Arena test builds sheets from faces for pose check).
+        // Arena TELEPORT survives one Published epoch. Pure-Arena bridge builds sheets
+        // via `epoch_sheet_from_sim_face` (full face copy) — not host sparse stamp.
         let slot = 0u32;
         let mut arena = SimArena::with_slots(1);
         let snaps = EpochSnapshotPair::new(EpochSheet::default(), EpochSheet::default());
@@ -596,17 +626,48 @@ mod tests {
             snaps.load_curr().world_transforms[slot as usize].position,
             [1.0, 0.0, 0.0]
         );
+        assert!(
+            snaps.load_curr().world_transforms[slot as usize].is_teleport(),
+            "x00eb: epoch_sheet_from_sim_face must copy FLAG_TELEPORT for Ring3 snap"
+        );
 
         arena_bridge_tick(&mut arena, &snaps, |_| {});
         assert!(
             !arena.published().is_teleport(slot),
             "Published-leave clear must run on rotate after the snap was taken"
         );
-        // Sheet pose from the idle tick; TELEPORT is not a Ring3/sheet field in Phase 1a.
+        assert!(
+            !snaps.load_curr().world_transforms[slot as usize].is_teleport(),
+            "idle tick Work has no teleport → epoch_sheet_from_sim_face rebuilds Curr without FLAG"
+        );
         assert_eq!(
             snaps.load_curr().world_transforms[slot as usize].position,
             [1.0, 0.0, 0.0]
         );
+    }
+
+    #[test]
+    fn stamp_teleport_flags_from_arena_work_does_not_rewrite_pose() {
+        let mut arena = SimArena::with_slots(1);
+        arena.carry_over();
+        arena.write_pos(0, 7.0, 8.0, 9.0);
+        arena.write_teleport(0, true);
+        let mut sheet = EpochSheet::with_capacity(1);
+        let h = sheet.alloc_row();
+        sheet
+            .set_transform(h.row_id, WorldTransformf64::identity_at([1.0, 2.0, 3.0]))
+            .unwrap();
+        assert!(!sheet.world_transforms[0].is_teleport());
+        stamp_teleport_flags_from_arena_work(&mut sheet, &arena);
+        assert!(sheet.world_transforms[0].is_teleport());
+        assert_eq!(
+            sheet.world_transforms[0].position,
+            [1.0, 2.0, 3.0],
+            "stamp is flags-only; f64 pose SSoT stays on the sheet"
+        );
+        arena.write_teleport(0, false);
+        stamp_teleport_flags_from_arena_work(&mut sheet, &arena);
+        assert!(!sheet.world_transforms[0].is_teleport());
     }
 
     #[test]

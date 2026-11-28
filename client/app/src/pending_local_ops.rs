@@ -4,9 +4,11 @@
 //! Snap **removes** the pending entry so display falls back to Epoch / GPU path;
 //! never mutates Published / [`EpochSnapshotPair`] Arcs (no stored refs to sheets;
 //! reconcile takes poses by value).
-//! Non-guarantees: host authority loop changes; Arena `TELEPORT_THIS_TICK` → GPU
-//! wiring; laser / physical-button live paths; replacing Grab [`crate::owned_prediction`];
-//! rotation-only error metric (translation distance only — same as owned_prediction).
+//! Non-guarantees: host authority loop changes; laser / physical-button live paths;
+//! replacing Grab [`crate::owned_prediction`]; rotation-only error metric
+//! (translation distance only — same as owned_prediction).
+//! Arena `TELEPORT_THIS_TICK` → Epoch GPU snap is x00eb (this module still snaps
+//! pending entries on `teleport=true` reconcile).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -225,8 +227,8 @@ impl PendingLocalOps {
     ///
     /// Keep / Blend → update predicted in place. Snap (incl. `teleport`) →
     /// **remove** the entry so Epoch / GPU path owns display again.
-    /// Until Arena TELEPORT reaches GPU interp, that fallback may still lerp for
-    /// a frame (slice non-guarantee). Never touches Published Arcs.
+    /// With x00eb, Epoch GPU snap honors sheet `FLAG_TELEPORT` so the fallback
+    /// path does not ghost across the same tick. Never touches Published Arcs.
     pub fn reconcile(
         &mut self,
         entity_id: u32,

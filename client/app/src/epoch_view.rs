@@ -26,11 +26,14 @@ use crate::mvcc_mirror::MvccFrameMirror;
 use crate::sim_jitter::SimJitterState;
 
 /// GPU-side packed transform (f32) for storage-buffer interpolate — no CPU readback.
+///
+/// `teleport != 0` → skip Prev→Curr lerp (x00eb; sheet [`WorldTransformf64::FLAG_TELEPORT`]).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
 pub struct GpuEpochRow {
     pub pos: [f32; 3],
-    pub _pad0: f32,
+    /// Non-zero: snap to Curr (maps `FLAG_TELEPORT`). Cleared on interpolate out.
+    pub teleport: f32,
     pub rot: [f32; 4],
     pub scale: [f32; 3],
     pub row_id: u32,
@@ -44,7 +47,7 @@ impl GpuEpochRow {
                 xf.position[1] as f32,
                 xf.position[2] as f32,
             ],
-            _pad0: 0.0,
+            teleport: if xf.is_teleport() { 1.0 } else { 0.0 },
             rot: xf.rotation,
             scale: xf.scale,
             row_id,
@@ -56,7 +59,7 @@ impl GpuEpochRow {
 pub const INTERPOLATE_WGSL: &str = r#"
 struct EpochRow {
     pos: vec3<f32>,
-    _pad0: f32,
+    teleport: f32,
     rot: vec4<f32>,
     scale: vec3<f32>,
     row_id: u32,
@@ -81,6 +84,16 @@ fn interpolate(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = prev_rows[i];
     let c = curr_rows[i];
     var o: EpochRow;
+    o.row_id = c.row_id;
+    o.teleport = 0.0;
+    // x00eb: Curr teleport → snap to Curr (Ring3 Published face; skip Lerp/Slerp).
+    if (c.teleport != 0.0) {
+        o.pos = c.pos;
+        o.rot = c.rot;
+        o.scale = c.scale;
+        out_rows[i] = o;
+        return;
+    }
     o.pos = mix(p.pos, c.pos, a);
     // Hemisphere-aware nlerp: flip prev quat if dot < 0 so we take the short arc.
     var pr = p.rot;
@@ -94,8 +107,6 @@ fn interpolate(@builtin(global_invocation_id) gid: vec3<u32>) {
         sc = vec3<f32>(1.0, 1.0, 1.0);
     }
     o.scale = sc;
-    o.row_id = c.row_id;
-    o._pad0 = 0.0;
     out_rows[i] = o;
 }
 "#;
@@ -384,7 +395,18 @@ pub fn fill_entity_pack_index(
 }
 
 /// CPU twin of [`INTERPOLATE_WGSL`] (hemisphere-aware nlerp). No GPU readback.
+///
+/// Curr `teleport != 0` → snap to Curr (x00eb; skip ghosting across Spawn/Reparent/warp).
 pub fn lerp_gpu_rows(prev: &GpuEpochRow, curr: &GpuEpochRow, alpha: f32) -> GpuEpochRow {
+    if curr.teleport != 0.0 {
+        return GpuEpochRow {
+            pos: curr.pos,
+            teleport: 0.0,
+            rot: curr.rot,
+            scale: curr.scale,
+            row_id: curr.row_id,
+        };
+    }
     let a = alpha.clamp(0.0, 1.0);
     let mut pr = prev.rot;
     let cr = curr.rot;
@@ -418,7 +440,7 @@ pub fn lerp_gpu_rows(prev: &GpuEpochRow, curr: &GpuEpochRow, alpha: f32) -> GpuE
             prev.pos[1] + (curr.pos[1] - prev.pos[1]) * a,
             prev.pos[2] + (curr.pos[2] - prev.pos[2]) * a,
         ],
-        _pad0: 0.0,
+        teleport: 0.0,
         rot,
         scale,
         row_id: curr.row_id,
@@ -1101,6 +1123,10 @@ mod tests {
         assert!(INTERPOLATE_WGSL.contains("@compute"));
         assert!(INTERPOLATE_WGSL.contains("fn interpolate"));
         assert!(INTERPOLATE_WGSL.contains("dot(pr, c.rot)"));
+        assert!(
+            INTERPOLATE_WGSL.contains("c.teleport != 0.0"),
+            "x00eb snap gate must stay in WGSL twin"
+        );
         assert_eq!(std::mem::size_of::<GpuEpochRow>() % 16, 0);
     }
 
@@ -1162,6 +1188,57 @@ mod tests {
         assert!((mid.pos[0] - 1.0).abs() < 1e-5);
         assert!((mid.pos[1] - 2.0).abs() < 1e-5);
         assert!((mid.pos[2] - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn lerp_gpu_rows_teleport_snaps_to_curr_at_mid_alpha() {
+        // Ghosting regression (x00eb): Spawn/Reparent jump must not mix Prev→Curr.
+        let prev = GpuEpochRow {
+            pos: [0.0, 0.0, 0.0],
+            rot: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+            row_id: 1,
+            ..Default::default()
+        };
+        let curr = GpuEpochRow {
+            pos: [10.0, 20.0, 30.0],
+            teleport: 1.0,
+            rot: [0.0, 0.0, 0.0, 1.0],
+            scale: [2.0, 2.0, 2.0],
+            row_id: 1,
+        };
+        let out = lerp_gpu_rows(&prev, &curr, 0.5);
+        assert_eq!(out.pos, [10.0, 20.0, 30.0]);
+        assert_eq!(out.scale, [2.0, 2.0, 2.0]);
+        assert_eq!(out.teleport, 0.0);
+    }
+
+    #[test]
+    fn display_frame_teleport_pose_ignores_alpha() {
+        let mut prev = EpochSheet::with_capacity(1);
+        let mut curr = EpochSheet::with_capacity(1);
+        let hp = prev.alloc_row();
+        let hc = curr.alloc_row();
+        assert_eq!(hp.row_id, hc.row_id);
+        prev.owner_scope[hp.row_id as usize] = 7;
+        curr.owner_scope[hc.row_id as usize] = 7;
+        prev.set_transform(hp.row_id, WorldTransformf64::identity_at([0.0, 0.0, 0.0]))
+            .unwrap();
+        let mut xf = WorldTransformf64::identity_at([5.0, 0.0, 0.0]);
+        xf.set_teleport(true);
+        curr.set_transform(hc.row_id, xf).unwrap();
+        let faces = Arc::new(EpochFaces {
+            prev: Arc::new(prev),
+            curr: Arc::new(curr),
+            published_at_ns: 0,
+        });
+        let frame = build_display_frame_with_alpha(faces, 0.25);
+        let pose = frame.poses.get(&7).expect("entity 7");
+        assert!(
+            (pose.pos[0] - 5.0).abs() < 1e-5,
+            "teleport must snap to Curr even at α=0.25; got {:?}",
+            pose.pos
+        );
     }
 
     #[test]
