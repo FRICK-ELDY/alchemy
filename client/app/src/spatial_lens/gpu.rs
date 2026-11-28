@@ -324,5 +324,18 @@ mod tests {
         assert!(UBER_SDF_WGSL.contains("sample_direct_number"));
         assert!(UBER_SDF_WGSL.contains("u64_div10"));
         assert!(UBER_SDF_WGSL.contains("payload.y"));
+        // G0 glass: glow payload + LOD2 ShellFill + inner gradient.
+        assert!(UBER_SDF_WGSL.contains("payload.z"));
+        assert!(UBER_SDF_WGSL.contains("grad"));
+        let lod2 = crate::spatial_lens::glass::lod2_wgsl_vec4_literal();
+        assert!(
+            UBER_SDF_WGSL.contains(&lod2),
+            "uber_sdf LOD2 must match glass::LOD2_SHELL literal {lod2}"
+        );
+        let glow_stmt = crate::spatial_lens::glass::shell_glow_extent_wgsl_stmt();
+        assert!(
+            UBER_SDF_WGSL.contains(&glow_stmt),
+            "uber_sdf soft-edge stmt must match glass::shell_glow_extent_wgsl_stmt `{glow_stmt}`"
+        );
     }
 }

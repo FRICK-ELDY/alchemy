@@ -70,8 +70,8 @@ pub fn unpack_kind(panel_and_kind: u32) -> UiPrimKind {
 
 /// RGBA8 → packed u32 (R in low byte).
 #[inline]
-pub fn pack_rgba8(r: u8, g: u8, b: u8, a: u8) -> u32 {
-    u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16) | (u32::from(a) << 24)
+pub const fn pack_rgba8(r: u8, g: u8, b: u8, a: u8) -> u32 {
+    (r as u32) | ((g as u32) << 8) | ((b as u32) << 16) | ((a as u32) << 24)
 }
 
 /// Pack `value` as DirectNumber payload without heap string alloc.

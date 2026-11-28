@@ -9,9 +9,12 @@
 
 use glam::{Mat4, Quat, Vec3};
 
+use super::glass::{
+    card_payload, control_payload, shell_payload, shell_rect_inset, CARD_FILL, CHROME_FILL,
+    CONTROL_HOT, CONTROL_IDLE, ROW_SELECT, SHELL_BORDER, SHELL_FILL, TEXT,
+};
 use super::prim::{
-    pack_direct_number, pack_panel_kind, pack_rgba8, rounded_box_payload, GpuPanelHeader,
-    GpuUiPrim, UiPrimKind,
+    pack_direct_number, pack_panel_kind, pack_rgba8, GpuPanelHeader, GpuUiPrim, UiPrimKind,
 };
 use crate::epoch_view::{hierarchy_panel_rows, EpochViewState, HierarchyRowView};
 use crate::scene::{CameraLook, EntityPose};
@@ -68,7 +71,14 @@ pub const INSPECT_FIELD_POS_Z: u32 = 0x8000_0003;
 pub const INSPECT_FIELD_READY: u32 = 0x8000_0004;
 
 const ROW_H: f32 = 28.0;
-const PAD: f32 = 8.0;
+/// Preferred content margin from board edge (px).
+const PAD_MIN: f32 = 8.0;
+
+/// Content pad ≥ shell inset so chrome/rows cannot sit outside shell fill if glow SCALE grows.
+#[inline]
+fn content_pad() -> f32 {
+    PAD_MIN.max(super::glass::shell_board_inset_pad())
+}
 
 /// Whether `row` is live on Curr (not TOMBSTONE / missing).
 pub fn row_is_live(epoch: &EpochViewState, row: u32) -> bool {
@@ -136,12 +146,12 @@ fn prim_box(
     color: u32,
     border: u32,
     binding: u32,
-    radius: f32,
+    payload: [u32; 4],
 ) -> GpuUiPrim {
     GpuUiPrim {
         rect,
         clip_rect: clip,
-        payload: rounded_box_payload(radius, 1.0, 0.0),
+        payload,
         panel_and_kind: pack_panel_kind(panel, UiPrimKind::RoundedBox, 0),
         color_rgba: color,
         border_rgba: border,
@@ -197,38 +207,40 @@ pub fn pack_personal_lens(
     let row_count = rows.len();
 
     let clip = [0.0, 0.0, state.width_px, state.height_px];
-    let bg = pack_rgba8(18, 22, 30, 235);
-    let border = pack_rgba8(70, 90, 120, 255);
-    let row_bg = pack_rgba8(32, 40, 54, 255);
-    let row_sel = pack_rgba8(48, 90, 140, 255);
-    let row_hov = pack_rgba8(40, 70, 110, 255);
-    let num_col = pack_rgba8(220, 230, 245, 255);
-    let title_bg = pack_rgba8(28, 48, 72, 255);
+    let border = SHELL_BORDER.packed();
+    let row_bg = CONTROL_IDLE.packed();
+    let row_sel = ROW_SELECT.packed();
+    let row_hov = CONTROL_HOT.packed();
+    let num_col = TEXT.packed();
+    // G0: active glow = laser/hover on this front-most board (Lens danger ②).
+    // Visible alone stays at idle (0.20); selection does not raise shell glow.
+    // Inset pad is always active-sized so hover does not jump the shell vs chrome/rows.
+    let shell_active = state.hovered_binding != 0;
 
     out_prims.push(prim_box(
         0,
-        [0.0, 0.0, state.width_px, state.height_px],
+        shell_rect_inset(state.width_px, state.height_px),
         clip,
-        bg,
+        SHELL_FILL.packed(),
         border,
         0,
-        12.0,
+        shell_payload(shell_active),
     ));
+
+    let pad = content_pad();
+    let chrome_h = 32.0;
+    // Vertical margins use the same `pad` as horizontal (shell inset safe).
+    let chrome_y = state.height_px - pad - chrome_h;
 
     // Title chrome (MSDF later). Number = selected entity_id, or -1 when none.
     out_prims.push(prim_box(
         0,
-        [
-            PAD,
-            state.height_px - 40.0,
-            state.width_px - 2.0 * PAD,
-            32.0,
-        ],
+        [pad, chrome_y, state.width_px - 2.0 * pad, chrome_h],
         clip,
-        title_bg,
+        CHROME_FILL.packed(),
         border,
         0,
-        6.0,
+        control_payload(),
     ));
     let title_val = state
         .selected_row
@@ -244,7 +256,7 @@ pub fn pack_personal_lens(
         .unwrap_or(-1.0);
     out_prims.push(prim_number(
         0,
-        [PAD + 8.0, state.height_px - 36.0, 160.0, 24.0],
+        [pad + 8.0, chrome_y + 4.0, 160.0, 24.0],
         clip,
         title_val,
         0,
@@ -252,11 +264,11 @@ pub fn pack_personal_lens(
         0,
     ));
 
-    let mut y = state.height_px - 48.0 - ROW_H;
+    let mut y = chrome_y - pad - ROW_H;
 
     for row in &rows {
         let binding = hierarchy_binding(row.row_id);
-        let indent = PAD + (row.depth as f32) * 14.0;
+        let indent = pad + (row.depth as f32) * 14.0;
         let mut fill = row_bg;
         if state.selected_row == Some(row.row_id) {
             fill = row_sel;
@@ -265,12 +277,12 @@ pub fn pack_personal_lens(
         }
         out_prims.push(prim_box(
             0,
-            [indent, y, state.width_px - indent - PAD, ROW_H - 2.0],
+            [indent, y, state.width_px - indent - pad, ROW_H - 2.0],
             clip,
             fill,
             border,
             binding,
-            4.0,
+            control_payload(),
         ));
         out_prims.push(prim_number(
             0,
@@ -284,15 +296,15 @@ pub fn pack_personal_lens(
         y -= ROW_H;
     }
 
-    y -= 8.0;
+    y -= pad;
     out_prims.push(prim_box(
         0,
-        [PAD, 8.0, state.width_px - 2.0 * PAD, y.max(8.0)],
+        [pad, pad, state.width_px - 2.0 * pad, y.max(pad)],
         clip,
-        pack_rgba8(24, 28, 36, 255),
+        CARD_FILL.packed(),
         border,
         0,
-        6.0,
+        card_payload(),
     ));
 
     if let Some(row_id) = state.selected_row {
@@ -353,15 +365,16 @@ fn pack_inspector_fields(
         (INSPECT_FIELD_POS_Z, xf.position[2], 3),
         (INSPECT_FIELD_READY, ready, 0),
     ];
-    let mut y = (*y_top - 8.0).min(clip[3] - 40.0);
+    let pad = content_pad();
+    let mut y = (*y_top - pad).min(clip[3] - pad - 32.0);
     for (binding, value, dec) in fields {
         y -= ROW_H;
-        if y < 12.0 {
+        if y < pad {
             break;
         }
         out.push(prim_number(
             0,
-            [PAD * 2.0, y, width_px - 4.0 * PAD, ROW_H - 4.0],
+            [pad * 2.0, y, width_px - 4.0 * pad, ROW_H - 4.0],
             clip,
             value,
             dec,
@@ -385,12 +398,12 @@ pub fn pack_demo_panel(
     let clip = [0.0, 0.0, w, h];
     out_prims.push(prim_box(
         0,
-        [0.0, 0.0, w, h],
+        shell_rect_inset(w, h),
         clip,
-        pack_rgba8(20, 24, 32, 240),
-        pack_rgba8(80, 120, 180, 255),
+        SHELL_FILL.packed(),
+        SHELL_BORDER.packed(),
         0,
-        10.0,
+        shell_payload(true),
     ));
     out_prims.push(prim_number(
         0,
@@ -398,7 +411,7 @@ pub fn pack_demo_panel(
         clip,
         tick,
         3,
-        pack_rgba8(230, 240, 255, 255),
+        TEXT.packed(),
         1,
     ));
     let m = Mat4::from_translation(Vec3::new(0.0, 1.4, -1.5));
@@ -458,6 +471,54 @@ mod tests {
         state.hovered_binding = hierarchy_binding(0);
         pack_personal_lens(&mut state, &epoch, &mut headers, &mut prims);
         assert_eq!(headers[0].prim_count as usize, prims.len());
+    }
+
+    #[test]
+    fn pack_lens_shell_insets_for_glow_and_idle_until_hover() {
+        use super::super::glass::{
+            shell_board_inset_pad, shell_payload, shell_rect_inset, SHELL_FILL, SHELL_GLOW_ACTIVE,
+        };
+        use super::super::prim::unpack_kind;
+
+        let epoch = epoch_with_one_row();
+        let mut state = SpatialLensState {
+            visible: true,
+            selected_row: Some(0),
+            hovered_binding: 0,
+            ..Default::default()
+        };
+        let mut headers = Vec::new();
+        let mut prims = Vec::new();
+        pack_personal_lens(&mut state, &epoch, &mut headers, &mut prims);
+        let shell = prims
+            .iter()
+            .find(|p| {
+                unpack_kind(p.panel_and_kind) == UiPrimKind::RoundedBox
+                    && p.binding_id == 0
+                    && p.color_rgba == SHELL_FILL.packed()
+            })
+            .expect("shell RoundedBox");
+        let expected_rect = shell_rect_inset(state.width_px, state.height_px);
+        // Selection alone keeps idle glow; inset always active-sized (no hover jump).
+        assert_eq!(shell.payload, shell_payload(false));
+        assert_eq!(shell.rect, expected_rect);
+        let pad = shell_board_inset_pad();
+        assert!((shell.rect[0] - pad).abs() < 1e-4);
+        assert!(shell.rect[0] + shell.rect[2] + pad <= state.width_px + 1e-3);
+
+        state.hovered_binding = hierarchy_binding(0);
+        pack_personal_lens(&mut state, &epoch, &mut headers, &mut prims);
+        let shell = prims
+            .iter()
+            .find(|p| {
+                unpack_kind(p.panel_and_kind) == UiPrimKind::RoundedBox
+                    && p.binding_id == 0
+                    && p.color_rgba == SHELL_FILL.packed()
+            })
+            .expect("shell RoundedBox active");
+        assert_eq!(shell.payload, shell_payload(true));
+        assert_eq!(f32::from_bits(shell.payload[2]), SHELL_GLOW_ACTIVE);
+        assert_eq!(shell.rect, expected_rect);
     }
 
     #[test]

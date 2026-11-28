@@ -875,19 +875,25 @@ impl DashState {
 
 const TOP_H: f32 = 44.0;
 const BOTTOM_H: f32 = 72.0;
-const BG: Color = Color::rgba(0.06, 0.07, 0.09, 0.92);
-const BAR: Color = Color::rgba(0.10, 0.11, 0.14, 0.96);
-const ACCENT: Color = Color::rgba(0.35, 0.45, 0.95, 1.0);
-const DANGER: Color = Color::rgba(0.75, 0.20, 0.22, 1.0);
-const TEXT: Color = Color::rgba(0.92, 0.93, 0.95, 1.0);
-const MUTED: Color = Color::rgba(0.65, 0.68, 0.72, 1.0);
-const TAB_ON: Color = Color::rgba(0.55, 0.15, 0.18, 0.95);
-const BTN: Color = Color::rgba(0.14, 0.16, 0.20, 1.0);
-const BTN_DANGER: Color = Color::rgba(0.22, 0.12, 0.12, 1.0);
-const CLOSE_BTN: Color = Color::rgba(0.18, 0.19, 0.22, 1.0);
-const ICON_HOT: Color = Color::rgba(0.22, 0.24, 0.30, 0.95);
-const FIELD: Color = Color::rgba(0.10, 0.11, 0.14, 1.0);
-const FIELD_FOCUS: Color = Color::rgba(0.16, 0.22, 0.34, 1.0);
+
+/// G0 glass tokens → CPU Canvas transitional RGB/α (board path owns corner/glow).
+const fn glass_color(c: crate::spatial_lens::GlassColor) -> Color {
+    Color::rgba(c.rgba[0], c.rgba[1], c.rgba[2], c.rgba[3])
+}
+
+const BG: Color = glass_color(crate::spatial_lens::glass::SHELL_FILL);
+const BAR: Color = glass_color(crate::spatial_lens::glass::CHROME_FILL);
+const ACCENT: Color = glass_color(crate::spatial_lens::glass::ACCENT);
+const DANGER: Color = glass_color(crate::spatial_lens::glass::DANGER);
+const TEXT: Color = glass_color(crate::spatial_lens::glass::TEXT);
+const MUTED: Color = glass_color(crate::spatial_lens::glass::MUTED);
+const TAB_ON: Color = glass_color(crate::spatial_lens::glass::TAB_ON);
+const BTN: Color = glass_color(crate::spatial_lens::glass::CONTROL_IDLE);
+const BTN_DANGER: Color = glass_color(crate::spatial_lens::glass::CONTROL_DANGER);
+const CLOSE_BTN: Color = glass_color(crate::spatial_lens::glass::CONTROL_CLOSE);
+const ICON_HOT: Color = glass_color(crate::spatial_lens::glass::CONTROL_HOT);
+const FIELD: Color = glass_color(crate::spatial_lens::glass::FIELD_IDLE);
+const FIELD_FOCUS: Color = glass_color(crate::spatial_lens::glass::FIELD_FOCUS);
 
 fn field_value(state: &DashState, field: HomeField) -> String {
     match field {

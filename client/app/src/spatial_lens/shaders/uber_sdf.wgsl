@@ -176,8 +176,9 @@ fn sample_direct_number(payload: vec4<u32>, local_uv: vec2<f32>) -> f32 {
 @fragment
 fn fs_uber_sdf(in: VsOut) -> @location(0) vec4<f32> {
     let p = panels[in.panel_index];
+    // G0 LOD2: must match glass.rs LOD2_SHELL / lod2_wgsl_vec4_literal(). No blur.
     if (p.lod_level >= 2u) {
-        return vec4(0.05, 0.06, 0.08, 0.85);
+        return vec4(0.06, 0.07, 0.09, 0.85);
     }
     let px = in.panel_uv * p.dimensions.xy;
     var color = vec4(0.0);
@@ -195,13 +196,19 @@ fn fs_uber_sdf(in: VsOut) -> @location(0) vec4<f32> {
             i = i + 1u;
             continue;
         }
-        if (px.x < rect.x || px.y < rect.y || px.x > rect.x + rect.z || px.y > rect.y + rect.w) {
-            i = i + 1u;
-            continue;
-        }
 
         if (kind == 0u) {
-            // RoundedBox SDF in prim-local px.
+            // RoundedBox SDF: fill + inner gradient + border + optional outer glow (G0).
+            // Shell prims are CPU-inset by active glow_w so soft edge stays inside panel clip.
+            // glow_w stmt must match glass::shell_glow_extent_wgsl_stmt() (code line, not comment).
+            let glow = bitcast<f32>(prim.payload.z);
+            let border_t = bitcast<f32>(prim.payload.y);
+            let glow_w = select(0.0, border_t + 6.0 * glow, glow > 0.0);
+            if (px.x < rect.x - glow_w || px.y < rect.y - glow_w
+                || px.x > rect.x + rect.z + glow_w || px.y > rect.y + rect.w + glow_w) {
+                i = i + 1u;
+                continue;
+            }
             let half = rect.zw * 0.5;
             let center = rect.xy + half;
             let local = px - center;
@@ -209,17 +216,37 @@ fn fs_uber_sdf(in: VsOut) -> @location(0) vec4<f32> {
             let d = sd_rounded_box(local, half, radius);
             let fill = unpack_rgba(prim.color_rgba);
             let border = unpack_rgba(prim.border_rgba);
-            let border_t = bitcast<f32>(prim.payload.y);
+            // Pixel Y grows downward → low y (top) slightly brighter.
+            let local_uv = (px - rect.xy) / max(rect.zw, vec2(1.0));
+            let grad = mix(1.06, 0.94, clamp(local_uv.y, 0.0, 1.0));
+            let fill_g = vec4(fill.rgb * grad, fill.a);
             let inside = 1.0 - smoothstep(-0.75, 0.75, d);
             let edge = 1.0 - smoothstep(-0.75, 0.75, abs(d) - border_t);
-            var c = fill * inside;
+            var c = fill_g * inside;
             c = mix(c, border, edge * border.a);
+            if (glow > 0.0) {
+                let outer = (1.0 - smoothstep(-0.5, glow_w, d)) * (1.0 - inside);
+                let glow_a = border.a * glow * outer;
+                c = vec4(
+                    mix(c.rgb, border.rgb, glow_a),
+                    max(c.a, glow_a),
+                );
+            }
             color = mix(color, c, c.a);
         } else if (kind == 2u) {
+            if (px.x < rect.x || px.y < rect.y || px.x > rect.x + rect.z || px.y > rect.y + rect.w) {
+                i = i + 1u;
+                continue;
+            }
             let local_uv = (px - rect.xy) / max(rect.zw, vec2(1.0));
             let g = sample_direct_number(prim.payload, local_uv);
             let fill = unpack_rgba(prim.color_rgba);
             color = mix(color, vec4(fill.rgb, fill.a * g), fill.a * g);
+        } else {
+            if (px.x < rect.x || px.y < rect.y || px.x > rect.x + rect.z || px.y > rect.y + rect.w) {
+                i = i + 1u;
+                continue;
+            }
         }
         i = i + 1u;
     }
