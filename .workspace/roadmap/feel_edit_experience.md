@@ -6,7 +6,7 @@
 * **UI 第一原理**: [alchemy_zero_base_spatial_ui_lens_uix_architecture.md](alchemy_zero_base_spatial_ui_lens_uix_architecture.md)（Spatial Lens / Uber-SDF / Zero-String / CustomUIX）
 * **拡張ギャップ（ヒッチ・IME）**: [memo/alchemy-expansion.md](memo/alchemy-expansion.md)（**E1 / E2** — 本線番号と非共有）
 * **アバター見た目・ダンス**: [memo/avatar-animation-ux.md](memo/avatar-animation-ux.md)（本線番号と非共有）
-* **既存 Facet 最小**: [slices/x000f-dash-facet-minimal.md](slices/x000f-dash-facet-minimal.md)（語彙のみ。並べ替え・ユーザー追加は非保証）
+* **既存 Facet 最小**: [slices/x000f-dash-facet-minimal.md](slices/x000f-dash-facet-minimal.md)（公式語彙のみ。**Fc 拡張は deferred** — §4.5）
 * **空きスライス ID**: **`x00f5`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
 
 ### 番号規約
@@ -19,8 +19,8 @@
 | **L** | Laser — Resonite 流インタラクションレーザー |
 | **T** | Text — Zero-String / MSDF / CJK / 文言カタログ |
 | **G** | Glass — 公式ダッシュの本番見た目（安価ガラス） |
-| **Fc** | Facet — ダッシュにモジュールを足せる土台（UIX 中身より先） |
-| **U** | UIX — 誰でも編集できるパネル中身（CustomUIX） |
+| **Fc** | Facet — ダッシュにモジュールを足せる土台（**枠のみ・本線着手外 / deferred** · §4.5） |
+| **U** | UIX — 公式 UI 経路＋将来 CustomUIX（ユーザー拡張は信頼境界が要る） |
 | **E** | Expansion — [memo/alchemy-expansion.md](memo/alchemy-expansion.md) のまま（ヒッチ根絶・IME・CAS GC） |
 
 ---
@@ -30,7 +30,7 @@
 ### 目的
 
 1. 品質本線で置いた **器（Scene Store / Sim Arena / SoftLease / PendingLocalOps / AvatarRig 境界 / RigidSolver 境界）を、遊べる・編める経路まで配線**する。
-2. VR レーザー・公式ダッシュ見た目・文字・Facet 装着を、**Resonite 相当の体験目標**として段階化する（クローン実装はしない）。
+2. VR レーザー・**公式固定ダッシュ**の見た目・文字を、**Resonite 相当の体験目標**として段階化する（クローン実装はしない。Facet ユーザー装着は **当面しない / deferred** — §4.5）。
 3. 「やることが多すぎる」状態を、**1 体感バグ＝1 スライス**の着手順に落とす。
 
 ### 非目的（本正本では扱わない / 他へ委譲）
@@ -44,6 +44,7 @@
 | rapier3d / AVBD 再導入 | 人承認・別決（guardrails） |
 | Proprietary 検疫閾値 | OSS に置かない（licence-and-boundaries） |
 | Dual-AST Kernel / ProtoFlux 本丸 | overview 目標・本線外 |
+| **Facet 拡張**（ユーザー装着・並べ替え・Spawn・Anchors 等） | **枠は §4.5（deferred）**。再開条件は同節。スライス未発行 |
 
 ---
 
@@ -59,7 +60,7 @@
 | XR レーザー | **L0+L1 done**（Primary ゲート＋Settings 永続） | ShowInDesktop 可視化ビームは → L3；XR smooth → L2 |
 | `InteractionLaserConfig` | Settings 露出＋`laser.json` 永続（[x00ee](slices/x00ee-laser-settings-l1.md)） | Desktop ビーム描画本体（→ L3） |
 | Dash | CPU Canvas blit（仮）＋G0 色トークン共有 | 板経路の角丸・glow は Lens 済み；Dash 全板移行は U0 |
-| Facet | `FacetId` / Pinned Exit のみ | グリッド装着・ユーザー追加は非保証 |
+| Facet | 公式 `FacetId` / Pinned Exit のみ（[x000f](slices/x000f-dash-facet-minimal.md)） | **Fc 拡張は deferred**（§4.5）。グリッド装着・ユーザー追加は当面やらない |
 | 文字 | DirectNumber ＋ Lens Static MSDF（[x00ed](slices/x00ed-static-msdf-t1.md)）＋ Dash 5×7 | CJK / 文言カタログは未（→ T2） |
 
 **原則:** 新アルゴリズムより、**既存契約を Ring2→Ring3 / UI まで通す**。Phase 飛び越し禁止の精神は維持（品質本線の契約を壊さない）。
@@ -75,20 +76,18 @@ G0  軽量ガラス語彙（シェル＋Card/Control・ブラーなし）＋板�
 T1  Static MSDF（ASCII / 数字 / アイコン）
 L1  Settings ↔ InteractionLaserConfig（Resonite LaserSettings 写像）
 F1  Inspector Commit / SoftLease 見える化 / ドラッグ揮発↔Commit
-Fc0–Fc1  FacetSlot ＋ UI Edit Mode（公式だけ並べ替え）
 L2  XR ビームへ角度変調スムージング本配線
-Fc2–Fc3  レイアウト永続 ＋ マウント API
 T2 / E2-1  CJK オンデマンド atlas ＋ XR IME（依存は人承認）
-U1  公式 UI データ駆動
+U0 / U1  公式 Dash 板経路 ＋ 公式 UI データ駆動
 F2  AvatarRig host 配線 / アバター見た目 A / 剛体は別決
-Fc4–Fc5  Inventory Spawn Facet / Facet Anchors
-U2  CustomUIX（誰でも編集できる中身）
+U2  CustomUIX（ユーザー中身 — 信頼境界が要る・後段）
 G1  アクティブ板だけの任意 blur（実測後）
 E1  ヒッチ根絶（スキニング / Async PSO / LOD builder）
-Fc6  Settings 行 → Facet 化
+───
+Fc0–Fc6  枠のみ・deferred（§4.5）。本線フローに入れない
 ```
 
-**次の着手:** F1-3 **done**（[x00f4](slices/x00f4-drag-volatile-commit.md)）。次候補 **Fc0** / **L2**。F0 / F1 / L1 / T1 / G0 **done**。後続（未発行）: Inspector ネット揮発スクラブ / Grab 離し姿勢 Commit。
+**次の着手:** **L2**（XR ビーム角度変調スムージング）。F0 / F1 / L0 / L1 / T1 / G0 **done**。後続（未発行）: Inspector ネット揮発スクラブ / Grab 離し姿勢 Commit。**Fc 拡張は deferred**（枠は §4.5）。
 
 ---
 
@@ -124,8 +123,18 @@ Fc6  Settings 行 → Facet 化
 |:---|:---|:---|
 | **L0** | **Primary 表示ゲート** | `primary < laser_show_primary_min`（既定 **0.1**）でビーム非描画。`≥ 0.1` で表示。Grab/UI 二値しきい値（現行 ≈0.7）とは **別パラメータ** |
 | **L1** | Settings に Laser 項目を露出・永続化 | [x00ee](slices/x00ee-laser-settings-l1.md) **done**。下表写像 → `InteractionLaserConfig` / `laser.json` |
-| **L2** | XR ビーム向きに角度変調スムージング本配線 | 現状は Lens Desktop 寄り |
+| **L2** | XR ビーム向きに角度変調スムージング本配線（**次着手**・スライス未発行 → 想定 `x00f5`） | 下表。現状は Lens Desktop 寄り |
 | **L3** | ベジェ描画・ShowInDesktop・Cursor 倍率 | x00bd 非保証の仕上げ |
+
+**L2 発行時の契約メモ（スライス未発行）**
+
+| 保証する（想定） | 保証しない（想定） |
+|:---|:---|
+| XR ワールド／UI レーザーの向きに、L1 の `laser_smooth_speed` / modulate_* を本配線 | Desktop 経路の新規スムージング（既存 Desktop 挙動は非対象のまま） |
+| Settings / `laser.json` の既存キーを読み、XR セッション側へ反映 | L3（ベジェ・ShowInDesktop ビーム描画・Cursor 倍率） |
+| Primary 表示ゲート（L0）・Grab/UI 二値しきい値は不変 | 新規クレート；プロトコル変更 |
+
+触る候補: `client/app/src/spatial_lens/laser.rs` · `client/app/src/surface/xr/wgpu_session.rs`（および既存 Laser cfg 配線）。DoD 体感文案: XR でコントローラーを振ったときビームが設定どおり滑らかに追従する。
 
 **LaserSettings 写像**
 
@@ -172,7 +181,7 @@ Fc6  Settings 行 → Facet 化
 | 役割トークン（下表）と RoundedBox payload 意味（角丸・縁・glow） | 背景ブラー / grab-pass / downsample glass（→ G1） |
 | Uber-SDF 1 パスでの内側縦グラデ＋縁 soft glow | Dash 全コンテンツの板移行完了（→ U0） |
 | Desktop / XR / 将来 Web で **同一トークン＋同一 WGSL** | DOM/CSS `backdrop-filter`・プラットフォーム別マテリアル |
-| LOD2 板色を `ShellFill` 系に揃えること | MSDF / CJK（→ T）・Facet 並べ替え（→ Fc） |
+| LOD2 板色を `ShellFill` 系に揃えること | MSDF / CJK（→ T）・Facet 並べ替え（→ Fc・**deferred**） |
 
 #### 役割トークン（既存 `dash.rs` 色を基準に正規化）
 
@@ -241,14 +250,26 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 | ID | 保証 | 非保証 |
 |:---|:---|:---|
 | **G0** | トークン＋RoundedBox 見た目（グラデ・glow・α）の契約と実装 | Dash 全板移行完了、blur |
-| **U0** | 公式 Dash を 1 板＋`GpuUiPrim` へ寄せる配線（G0 と一体でも可） | Facet 並べ替え・CustomUIX |
+| **U0** | 公式 Dash を 1 板＋`GpuUiPrim` へ寄せる配線（G0 と一体でも可） | Facet 拡張（deferred）・CustomUIX |
 | **G1** | アクティブ 1 枚の任意 blur（実測後） | 本線初期 |
 
-### 4.5 Fc — Facet 土台（UIX より先）
+### 4.5 Fc — Facet 土台（**deferred・枠のみ**）
+
+> **status:** `deferred` · **スライス未発行・本線では当面実装しない**（枠は残す。恒久廃止ではない）  
+> 既存の公式語彙（[x000f](slices/x000f-dash-facet-minimal.md) `FacetId` / Pinned Exit / `DashRoot`）は維持。並べ替え・ユーザー追加・装着 API は開かない。
+
+**理由:** ダッシュには認証・Room・権限など触られたくない情報が多い。ユーザー拡張 Facet を開けると、公式シェルへの近接・将来の「プログラム付き Facet」へ進んだときの監査・対応コストが跳ね上がる。需要確定まで拡張しない。
+
+**再開条件（Fc0–Fc6 枠・いずれも満たすまで着手しない）:**
+
+1. 強いユーザー要望  
+2. **マウント信頼境界の設計** — 誰が何をダッシュ／個人空間に載せられるか・公式シェル（auth / Room / 権限 UI）との隔離。Fc0–Fc6 の設計対象は **並べ替え・装着 API・レイアウト**まで  
+
+**含めない（別決・より高いハードル）:** 実行可能 Facet／任意コード実行。defer の動機には挙げるが、Fc0–Fc6 再開の必須設計対象にはしない。必要なら別帯・別人承認。
 
 参照: [Resonite Facets](https://wiki.resonite.com/Facets) · 既存 [x000f](slices/x000f-dash-facet-minimal.md)
 
-| ID | 内容 |
+| ID | 内容（枠・未実装） |
 |:---|:---|
 | **Fc0** | `FacetInstance` / `DashGrid` スロットモデル（個人・Room 非公開）。Pinned Exit 維持 |
 | **Fc1** | UI Edit Mode ＋ 公式 Facet のグリッド装着・並べ替え・リサイズ |
@@ -258,9 +279,9 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 | **Fc5** | Facet Anchors（Hand / Forearm / View）。userspace・自分だけ |
 | **Fc6** | Settings 行 → Facet 化（六点 tear-off 相当） |
 
-**契約:** UI 部品を空間 Slot にしない。Dash 変更は Room に載せない。Pinned は外し不可。
+**契約（枠を再開する場合も維持）:** UI 部品を空間 Slot にしない。Dash 変更は Room に載せない。Pinned は外し不可。
 
-### 4.6 U — UIX（誰でも編集）
+### 4.6 U — UIX（公式経路 → 後段のユーザー中身）
 
 参照: [Resonite UIX](https://wiki.resonite.com/UIX) · Lens 正本 `CustomUIX` · 危険④（dirty 時のみ Flex）
 
@@ -269,9 +290,9 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 | **U0** | 公式 Dash を板＋`GpuUiPrim` 経路へ（G0 と一体でも可） |
 | **U1** | 公式 UI のデータ駆動（コードハードコードから剥がす） |
 | **U2** | ユーザー CustomUIX（Scene Store 疎データで共同編集可能な中身） |
-| **U3** | Facet／ワールド制御盤の本格結線（Dual-AST は別本線） |
+| **U3** | ワールド制御盤の本格結線（Dual-AST は別本線。Facet 拡張とは独立） |
 
-**U2 より前に Resonite 流 Slot ツリー UIX を再発明しない。** Fc0–Fc3 の装着土台が先。
+**U0 / U1** は公式 UI のまま進められる（Fc 前提ではない）。**U2** は Facet 拡張と同系の信頼境界（誰の中身をどこに載せるか）が要る — Fc deferred 中は本線優先にしない。**U2 より前に Resonite 流 Slot ツリー UIX を再発明しない。**
 
 ### 4.7 E — Expansion（並走・後段）
 
@@ -296,12 +317,11 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 5. セキュリティ境界（Room Token / ManifestSeal / actor_id / AEAD）を弱めない。
 6. 発行したら [README.md](README.md) 目次・本節「次の着手」・必要なら品質本線の「次の着手」一文を更新する。
 
-### 推奨最初のスライス案
+### 推奨次スライス案（未発行）
 
 | 候補 ID | slug 案 | Wave | DoD 要約 |
 |:---|:---|:---|:---|
-| x00ea | `laser-primary-visibility` | L0 | Primary &lt; 0.1 で XR ビーム非描画。Grab 二値しきい値は不変 |
-| x00eb | `teleport-gpu-snap` | F0-1 | `STATE_TELEPORT_THIS_TICK` → sheet `FLAG_TELEPORT` → GPU snap。残像回帰テスト |
+| **x00f5** | `laser-xr-smooth-l2`（仮） | **L2** | XR ビーム向きに L1 cfg（smooth / modulate_*）本配線。Desktop 既存は非対象。L0 ゲート不変。詳細は §4.2 L2 契約メモ |
 
 ---
 
@@ -348,3 +368,5 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 | 2026-11-28 | [x00f4](slices/x00f4-drag-volatile-commit.md) F1-3 着手（多軸まとめ＋契約固定）。後続未発行: ネット揮発スクラブ / Grab 離し姿勢 Commit |
 | 2026-11-28 | [x00f4](slices/x00f4-drag-volatile-commit.md) F1-3 done（POS 多軸 1 proposal・2D scrub・Host バッチ）。後続未発行: ネット揮発スクラブ / Grab 離し姿勢 Commit。次候補 Fc0 / L2 |
 | 2026-11-28 | x00f4 レビュー追随: POS 多軸 verify-all-then-queue・Curr プレビュー追従・secondary デッドゾーン・原子性回帰 |
+| 2026-11-28 | **Fc 拡張を deferred**（枠 Fc0–Fc6 は残す・本線着手外）。理由: Dash 機密／将来プログラム Facet の信頼境界未整備。次着手 **L2**。U0/U1 は Fc 非依存に整理 |
+| 2026-11-28 | レビュー追随: 目的文を「当面／deferred」に揃え・L2 契約メモ・§5 次スライスを x00f5/L2 へ・Fc 再開条件をマウント境界に限定（実行可能 Facet は別決） |

@@ -2,7 +2,9 @@
 
 > **ID:** `x000f` · **slug:** `dash-facet-minimal` · **status:** done · **area:** `[client, system_ui]` · **surface:** `[desktop, vr]` · **depends_on:** `[x0007, x000e]`
 
-目標: Resonite Facet に近い **個人ダッシュ**の器を切る。UI ランタイム（Canvas / Button・hover・press）は将来の World UI と共通化しつつ、**所有・同期境界は `DashRoot`（個人・非公開）と `WorldRoot`（空間・共有）で分ける**。本 Slice では公式デフォルト Facet＋**Pinned Exit**＋Button ホバー色まで。並べ替え・ユーザー Facet 追加は後続。（完了）
+目標: Resonite Facet に近い **個人ダッシュ**の器を切る。UI ランタイム（Canvas / Button・hover・press）は将来の World UI と共通化しつつ、**所有・同期境界は `DashRoot`（個人・非公開）と `WorldRoot`（空間・共有）で分ける**。本 Slice では公式デフォルト Facet＋**Pinned Exit**＋Button ホバー色まで。（完了）
+
+> **後続 Fc 拡張（並べ替え・ユーザー追加・装着 API 等）は [feel_edit_experience.md](../feel_edit_experience.md) §4.5 で `deferred`。** 本スライスの done 範囲は公式語彙まで。需要確定＋マウント信頼境界の設計まで拡張スライスは発行しない（実行可能 Facet は別決）。
 
 正本: [client.md](../../0_doc/architecture/client.md) · [overview.md](../../0_doc/architecture/overview.md)（system_ui / Dual は目標）
 
@@ -47,9 +49,9 @@
 
 ## やらない（後続）
 
-- Facet スロットのドラッグ並べ替え・インベントリからの取り付け
-- ユーザー自作 Facet / 非必須公式 Facet の削除
-- Dash レイアウトのディスク／Vault 永続化
+- Facet スロットのドラッグ並べ替え・インベントリからの取り付け（**Fc deferred**）
+- ユーザー自作 Facet / 非必須公式 Facet の削除（**Fc deferred**）
+- Dash レイアウトのディスク／Vault 永続化（**Fc deferred**）
 - `WorldRoot` 上の同一ランタイム実装（ワールドと同じ感覚の本格編集）
 - system_ui への XR 知識流入
 
