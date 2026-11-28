@@ -7,7 +7,7 @@
 * **拡張ギャップ（ヒッチ・IME）**: [memo/alchemy-expansion.md](memo/alchemy-expansion.md)（**E1 / E2** — 本線番号と非共有）
 * **アバター見た目・ダンス**: [memo/avatar-animation-ux.md](memo/avatar-animation-ux.md)（本線番号と非共有）
 * **既存 Facet 最小**: [slices/x000f-dash-facet-minimal.md](slices/x000f-dash-facet-minimal.md)（語彙のみ。並べ替え・ユーザー追加は非保証）
-* **空きスライス ID**: **`x00ea`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
+* **空きスライス ID**: **`x00eb`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
 
 ### 番号規約
 
@@ -56,7 +56,7 @@
 | Depth Bucket / bitmask edge | Arena **非保証** | 親子編集・Enabled 切替の手触り |
 | AvatarRig / RigidSolver | 境界 **done**・host tick **未配線** | 揺れもの・剛体が画面に出ない |
 | Inspector（x00bc） | 数値表示まで | スクラブ → `…/edit` Commit は非保証 |
-| XR レーザー | aim があれば**常時ビーム** | Primary=0 で消えない |
+| XR レーザー | **L0 done**（Primary ≥ 0.1 で表示） | Settings 未露出（→ L1）・ShowInDesktop 未 |
 | `InteractionLaserConfig` | 変調＋stickiness はコードあり | Settings 未露出・`ShowInDesktop` 未 |
 | Dash | CPU Canvas blit（仮） | ガラス風本番見た目は未 |
 | Facet | `FacetId` / Pinned Exit のみ | グリッド装着・ユーザー追加は非保証 |
@@ -88,7 +88,7 @@ E1  ヒッチ根絶（スキニング / Async PSO / LOD builder）
 Fc6  Settings 行 → Facet 化
 ```
 
-**次の着手（固定）:** スライス発行時は **`x00ea` = L0（Primary レーザー表示ゲート）** を第一候補とする。並行で F0-1（TELEPORT GPU snap）を切ってよい（依存がほぼ直交）。
+**次の着手:** [x00ea](slices/x00ea-laser-primary-visibility.md) L0 **done**。次は **`x00eb` = F0-1**（TELEPORT GPU snap）を第一候補とする（L1 / G0 等と直交し並行可）。
 
 ---
 
@@ -244,3 +244,4 @@ Fc6  Settings 行 → Facet 化
 | 日付 | 内容 |
 |:---|:---|
 | 2026-11-28 | 初版。品質本線クローズ後の体験本線として F/L/T/G/Fc/U/E を固定。次着手候補 L0 / F0-1 |
+| 2026-11-28 | x00ea L0 発行・done。次着手候補 x00eb F0-1 |

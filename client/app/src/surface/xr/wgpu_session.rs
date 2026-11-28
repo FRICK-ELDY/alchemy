@@ -33,6 +33,7 @@ use super::wgpu_overlays::{GpuController, XrOverlays};
 use crate::context_radial::{self, ContextEvent, ContextItemId, ContextRadialState, HandSide};
 use crate::mesh::CpuMesh;
 use crate::scene::{create_depth_view, MoveIntent, SceneGpu, SharedState, BOX_HALF_EXTENT};
+use crate::spatial_lens::InteractionLaserConfig;
 use crate::system_ui::{InventoryPeerRequest, LayoutTree, SystemUi, UiAction};
 use crate::turn::{update_turn_yaw, TURN_DEADZONE};
 use crate::world_hit::ray_hit_grabbable_boxes_with_extents;
@@ -269,6 +270,8 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
     let mut view_yaw = 0.0_f32;
     let mut snap_armed = true;
     let mut was_vr_active = true;
+    // L0: session-held cfg (Desktop と同型)。L1 で Settings 永続をここに接続する。
+    let spatial_laser_cfg = InteractionLaserConfig::default();
 
     'main_loop: loop {
         if shared.presentation.exit_requested() {
@@ -856,30 +859,47 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             }
         }
 
+        // x00ea L0: reuse hit/UI aim; gate draw on that hand's Primary (≠ Grab≈0.7).
         let laser_draw = {
             let laser_aim = if context_radial.open {
                 owner_aim
             } else {
                 aim_pose
             };
-            laser_aim.map(|(aim_pos, aim_orient)| {
-                let stage_ray = pose_to_ray(aim_pos, aim_orient);
-                let len = if ui.state.open {
-                    laser_length(
-                        head_pos,
-                        head_orient,
-                        stage_ray,
-                        UI_CANVAS_W as f32,
-                        UI_CANVAS_H as f32,
-                    )
-                } else if let (true, Some((c, o))) = (context_radial.open, context_board) {
-                    laser_length_context_board(c, o, stage_ray)
-                } else {
-                    let world_ray = ray_to_world(stage_ray, floor_model);
-                    laser_length_world(world_ray, &grabbable_boxes)
-                };
-                laser_model(aim_pos, aim_orient, len)
-            })
+            let laser_primary = match (context_radial.open, context_radial.owner) {
+                (true, Some(HandSide::Left)) => trigger_l,
+                (true, Some(HandSide::Right)) => trigger_r,
+                // Closed / owner None: same hand preference as locate_ui_aim (right then left).
+                _ => {
+                    if aim_right_pose.is_some() {
+                        trigger_r
+                    } else {
+                        trigger_l
+                    }
+                }
+            };
+            if spatial_laser_cfg.beam_visible(laser_primary) {
+                laser_aim.map(|(aim_pos, aim_orient)| {
+                    let stage_ray = pose_to_ray(aim_pos, aim_orient);
+                    let len = if ui.state.open {
+                        laser_length(
+                            head_pos,
+                            head_orient,
+                            stage_ray,
+                            UI_CANVAS_W as f32,
+                            UI_CANVAS_H as f32,
+                        )
+                    } else if let (true, Some((c, o))) = (context_radial.open, context_board) {
+                        laser_length_context_board(c, o, stage_ray)
+                    } else {
+                        let world_ray = ray_to_world(stage_ray, floor_model);
+                        laser_length_world(world_ray, &grabbable_boxes)
+                    };
+                    laser_model(aim_pos, aim_orient, len)
+                })
+            } else {
+                None
+            }
         };
 
         if ui.state.open {
