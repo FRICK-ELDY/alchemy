@@ -1,7 +1,8 @@
-//! GpuUiPrim / GpuPanelHeader layout contract (x00ba).
+//! GpuUiPrim / GpuPanelHeader layout contract (x00ba / x00ed).
 //!
-//! Guarantees: 64-byte prims, Pod cast to storage buffers, DirectNumber fixed-point pack.
-//! Non-guarantees: MSDF atlas contents; CRDT panel sync; scene entities per widget.
+//! Guarantees: 64-byte prims, Pod cast to storage buffers, DirectNumber fixed-point pack,
+//! MsdfGlyph UV payload bits (`[u0,v0,u1,v1]`).
+//! Non-guarantees: atlas pixel contents (see `msdf`); CRDT panel sync; scene entities per widget.
 
 #![forbid(unsafe_code)]
 

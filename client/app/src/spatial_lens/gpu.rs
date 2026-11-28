@@ -1,7 +1,8 @@
-//! Uber-SDF wgpu pipeline for Spatial Lens panels (x00ba).
+//! Uber-SDF wgpu pipeline for Spatial Lens panels (x00ba / x00ed).
 //!
-//! Guarantees: naga-valid WGSL; upload headers/prims; cached bind group; α without depth write.
-//! Non-guarantees: MSDF atlas bind; XR CompositionLayerQuad; multi-eye UBO split.
+//! Guarantees: naga-valid WGSL; upload headers/prims; cached bind group; α without depth write;
+//! Tier-1 Static MSDF atlas bind (texture + sampler).
+//! Non-guarantees: XR CompositionLayerQuad; multi-eye UBO split; CJK dynamic atlas.
 
 #![forbid(unsafe_code)]
 
@@ -9,6 +10,7 @@ use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 
+use super::msdf::{bake_static_atlas, ATLAS_SIZE};
 use super::prim::{GpuPanelHeader, GpuUiPrim};
 use super::shaders::UBER_SDF_WGSL;
 
@@ -44,6 +46,8 @@ pub struct SpatialLensGpu {
     frame_buf: wgpu::Buffer,
     panel_buf: wgpu::Buffer,
     prim_buf: wgpu::Buffer,
+    msdf_view: wgpu::TextureView,
+    msdf_samp: wgpu::Sampler,
     bind_group: wgpu::BindGroup,
     panel_cap: u64,
     prim_cap: u64,
@@ -51,7 +55,11 @@ pub struct SpatialLensGpu {
 }
 
 impl SpatialLensGpu {
-    pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Result<Self> {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface_format: wgpu::TextureFormat,
+    ) -> Result<Self> {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("spatial-lens-uber-sdf"),
             source: wgpu::ShaderSource::Wgsl(UBER_SDF_WGSL.into()),
@@ -88,6 +96,22 @@ impl SpatialLensGpu {
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
             ],
@@ -143,6 +167,8 @@ impl SpatialLensGpu {
             mapped_at_creation: false,
         });
 
+        let (msdf_view, msdf_samp) = create_msdf_atlas(device, queue);
+
         let panel_cap = 4u64;
         let prim_cap = 256u64;
         let panel_buf = empty_storage(
@@ -161,6 +187,8 @@ impl SpatialLensGpu {
             &frame_buf,
             &panel_buf,
             &prim_buf,
+            &msdf_view,
+            &msdf_samp,
         );
 
         Ok(Self {
@@ -169,6 +197,8 @@ impl SpatialLensGpu {
             frame_buf,
             panel_buf,
             prim_buf,
+            msdf_view,
+            msdf_samp,
             bind_group,
             panel_cap,
             prim_cap,
@@ -222,6 +252,8 @@ impl SpatialLensGpu {
                 &self.frame_buf,
                 &self.panel_buf,
                 &self.prim_buf,
+                &self.msdf_view,
+                &self.msdf_samp,
             );
         }
     }
@@ -270,12 +302,66 @@ impl SpatialLensGpu {
     }
 }
 
+fn create_msdf_atlas(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> (wgpu::TextureView, wgpu::Sampler) {
+    let pixels = bake_static_atlas();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("spatial-lens-msdf-atlas"),
+        size: wgpu::Extent3d {
+            width: ATLAS_SIZE,
+            height: ATLAS_SIZE,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(ATLAS_SIZE * 4),
+            rows_per_image: Some(ATLAS_SIZE),
+        },
+        wgpu::Extent3d {
+            width: ATLAS_SIZE,
+            height: ATLAS_SIZE,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let samp = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("spatial-lens-msdf-samp"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
+    (view, samp)
+}
+
 fn make_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     frame: &wgpu::Buffer,
     panels: &wgpu::Buffer,
     prims: &wgpu::Buffer,
+    msdf_view: &wgpu::TextureView,
+    msdf_samp: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("spatial-lens-bg"),
@@ -292,6 +378,14 @@ fn make_bind_group(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: prims.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(msdf_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(msdf_samp),
             },
         ],
     })
@@ -337,5 +431,48 @@ mod tests {
             UBER_SDF_WGSL.contains(&glow_stmt),
             "uber_sdf soft-edge stmt must match glass::shell_glow_extent_wgsl_stmt `{glow_stmt}`"
         );
+        // T1 Static MSDF.
+        assert!(UBER_SDF_WGSL.contains("sample_msdf"));
+        assert!(UBER_SDF_WGSL.contains("msdf_atlas"));
+        assert!(UBER_SDF_WGSL.contains("@binding(3)"));
+        assert!(UBER_SDF_WGSL.contains("@binding(4)"));
+        assert!(UBER_SDF_WGSL.contains("kind == 1u"));
+        assert!(UBER_SDF_WGSL.contains("direct_number_code_uv"));
+        // Derivative-uniform sampling inside `sample_msdf` only (RoundedBox may use fwidth later).
+        assert!(UBER_SDF_WGSL.contains("textureSampleLevel"));
+        assert!(
+            !UBER_SDF_WGSL.contains("textureSample(msdf_atlas"),
+            "msdf must use textureSampleLevel, not textureSample"
+        );
+        let sample_msdf_fn = {
+            let start = UBER_SDF_WGSL
+                .find("fn sample_msdf(")
+                .expect("sample_msdf fn");
+            let rest = &UBER_SDF_WGSL[start..];
+            let end = rest.find("\nfn ").unwrap_or(rest.len());
+            &rest[..end]
+        };
+        assert!(
+            !sample_msdf_fn.contains("fwidth("),
+            "sample_msdf must not call fwidth (non-uniform prim paths)"
+        );
+        // Atlas contract literals must match msdf.rs (G0-style sync).
+        use crate::spatial_lens::msdf::{
+            atlas_aa_half_wgsl_const, atlas_ascii_base_wgsl_const, atlas_cell_wgsl_const,
+            atlas_grid_wgsl_const, atlas_pad_wgsl_const, atlas_size_wgsl_const,
+        };
+        for lit in [
+            atlas_size_wgsl_const(),
+            atlas_cell_wgsl_const(),
+            atlas_pad_wgsl_const(),
+            atlas_grid_wgsl_const(),
+            atlas_ascii_base_wgsl_const(),
+            atlas_aa_half_wgsl_const(),
+        ] {
+            assert!(
+                UBER_SDF_WGSL.contains(&lit),
+                "uber_sdf missing atlas contract literal `{lit}`"
+            );
+        }
     }
 }

@@ -7,7 +7,7 @@
 * **拡張ギャップ（ヒッチ・IME）**: [memo/alchemy-expansion.md](memo/alchemy-expansion.md)（**E1 / E2** — 本線番号と非共有）
 * **アバター見た目・ダンス**: [memo/avatar-animation-ux.md](memo/avatar-animation-ux.md)（本線番号と非共有）
 * **既存 Facet 最小**: [slices/x000f-dash-facet-minimal.md](slices/x000f-dash-facet-minimal.md)（語彙のみ。並べ替え・ユーザー追加は非保証）
-* **空きスライス ID**: **`x00ed`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
+* **空きスライス ID**: **`x00ee`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
 
 ### 番号規約
 
@@ -60,7 +60,7 @@
 | `InteractionLaserConfig` | 変調＋stickiness はコードあり | Settings 未露出・`ShowInDesktop` 未 |
 | Dash | CPU Canvas blit（仮）＋G0 色トークン共有 | 板経路の角丸・glow は Lens 済み；Dash 全板移行は U0 |
 | Facet | `FacetId` / Pinned Exit のみ | グリッド装着・ユーザー追加は非保証 |
-| 文字 | DirectNumber ＋ Dash 5×7 ASCII | MSDF / CJK / 文言カタログは未 |
+| 文字 | DirectNumber ＋ Lens Static MSDF（[x00ed](slices/x00ed-static-msdf-t1.md)）＋ Dash 5×7 | CJK / 文言カタログは未（→ T2） |
 
 **原則:** 新アルゴリズムより、**既存契約を Ring2→Ring3 / UI まで通す**。Phase 飛び越し禁止の精神は維持（品質本線の契約を壊さない）。
 
@@ -88,7 +88,7 @@ E1  ヒッチ根絶（スキニング / Async PSO / LOD builder）
 Fc6  Settings 行 → Facet 化
 ```
 
-**次の着手:** [x00ec](slices/x00ec-glass-material-g0.md) G0 **done**。[x00eb](slices/x00eb-teleport-gpu-snap.md) F0-1 **done**。次候補 **`x00ed` = F0-2**（Depth Bucket 階層伝播；L1 等と直交し並行可）。
+**次の着手:** [x00ed](slices/x00ed-static-msdf-t1.md) T1 **done**。[x00ec](slices/x00ec-glass-material-g0.md) G0 **done**。[x00eb](slices/x00eb-teleport-gpu-snap.md) F0-1 **done**。次候補 **`x00ee` = F0-2**（Depth Bucket 階層伝播；L1 等と直交し並行可）。
 
 ---
 
@@ -140,7 +140,7 @@ Fc6  Settings 行 → Facet 化
 | 層 | 対象 | 設計 | 現状 |
 |:---|:---|:---|:---|
 | **A** | ライブ数値 | **Zero-String / DirectNumber**（`format!` 禁止） | **実装済み**（x00bc） |
-| **B / T1** | ASCII・数字・アイコン | Tier 1 Static MSDF Atlas → `MsdfGlyph` | 種別のみ・アトラス未 |
+| **B / T1** | ASCII・数字・アイコン | Tier 1 Static MSDF Atlas → `MsdfGlyph` | **done**（[x00ed](slices/x00ed-static-msdf-t1.md)；疑似 MSDF R=G=B） |
 | **C / T2** | CJK・絵文字・ノード名・チャット | Tier 2 オンデマンド SDF + LRU（表示中のみ） | 未。`cosmic-text` / `etagere` は **人承認** |
 | **文言カタログ** | 公式 UI 固定文言 | message id → ロケール解決 → **解決後 UTF-8 を MsdfGlyph へ** | client 正本なし（描画器の後でよい） |
 | **入力** | Active Focus 1 枠 / XR IME | 危険③ · E2-1 | 未 |
@@ -329,3 +329,4 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 | 2026-11-28 | [x00ec](slices/x00ec-glass-material-g0.md) G0 done（glass トークン・Uber-SDF glow/グラデ・Dash 過渡色）。次候補 x00ed F0-2 |
 | 2026-11-28 | G0 レビュー修正: Shell `glow_pad` インセット、active＝hover のみ、LOD2 リテラル同期、GlassColor packed 導出、正本陳腐記述削除 |
 | 2026-11-28 | G0: inset=`border_t+6×glow`（active 固定）・`shell_glow_extent_wgsl_expr` 同期・hover でシェル枠非ジャンプ |
+| 2026-11-28 | [x00ed](slices/x00ed-static-msdf-t1.md) T1 Static MSDF done（512² atlas・MsdfGlyph・DirectNumber アトラス桁）。次候補 x00ee F0-2 |

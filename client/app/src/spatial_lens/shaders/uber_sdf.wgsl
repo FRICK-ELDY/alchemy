@@ -1,5 +1,6 @@
-// Spatial Lens Uber-SDF (x00ba). Layout matches GpuUiPrim / GpuPanelHeader in prim.rs.
+// Spatial Lens Uber-SDF (x00ba) + Static MSDF (x00ed). Layout matches GpuUiPrim / GpuPanelHeader.
 // Entry: vs_panel_quad / fs_uber_sdf
+// Atlas layout must match spatial_lens::msdf (512², cell 32, ASCII 0x20 base).
 
 struct GpuUiPrim {
     rect: vec4<f32>,
@@ -27,6 +28,8 @@ struct FrameUniforms {
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
 @group(0) @binding(1) var<storage, read> panels: array<GpuPanelHeader>;
 @group(0) @binding(2) var<storage, read> prims: array<GpuUiPrim>;
+@group(0) @binding(3) var msdf_atlas: texture_2d<f32>;
+@group(0) @binding(4) var msdf_samp: sampler;
 
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
@@ -72,27 +75,54 @@ fn sd_rounded_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
     return length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
 }
 
-fn digit_glyph(d: u32, uv: vec2<f32>) -> f32 {
-    // Tiny 3x5 bitmap digits 0-9 (procedural, no atlas).
-    var bits: u32 = 0u;
-    switch d {
-        case 0u: { bits = 0x7B6Fu; }
-        case 1u: { bits = 0x2492u; }
-        case 2u: { bits = 0x73E7u; }
-        case 3u: { bits = 0x73CFu; }
-        case 4u: { bits = 0x5BC9u; }
-        case 5u: { bits = 0x79CFu; }
-        case 6u: { bits = 0x79EFu; }
-        case 7u: { bits = 0x7249u; }
-        case 8u: { bits = 0x7BEFu; }
-        case 9u: { bits = 0x7BCFu; }
-        default: { bits = 0u; }
+fn median3(a: f32, b: f32, c: f32) -> f32 {
+    return max(min(a, b), min(max(a, b), c));
+}
+
+// Static atlas contract — must match msdf.rs ATLAS_SIZE/CELL/CELL_PAD/ASCII_BASE/GRID
+// (enforced by gpu::tests via msdf::atlas_*_wgsl_* helpers).
+const MSDF_ATLAS: f32 = 512.0;
+const MSDF_CELL: f32 = 32.0;
+const MSDF_PAD: f32 = 4.0;
+const MSDF_GRID: u32 = 16u;
+const MSDF_ASCII_BASE: u32 = 0x20u;
+// Constant AA half-width in SDF space (0.5 mid). No screen-space derivatives:
+// prim-loop continues break uniformity (WGSL/Vulkan). Match msdf::MSDF_AA_HALF_WIDTH.
+const MSDF_AA_HALF: f32 = 0.06;
+
+fn atlas_uv_for_slot(slot: u32) -> vec4<f32> {
+    let col = f32(slot % MSDF_GRID);
+    let row = f32(slot / MSDF_GRID);
+    let u0 = (col * MSDF_CELL + MSDF_PAD) / MSDF_ATLAS;
+    let v0 = (row * MSDF_CELL + MSDF_PAD) / MSDF_ATLAS;
+    let u1 = (col * MSDF_CELL + MSDF_CELL - MSDF_PAD) / MSDF_ATLAS;
+    let v1 = (row * MSDF_CELL + MSDF_CELL - MSDF_PAD) / MSDF_ATLAS;
+    return vec4(u0, v0, u1, v1);
+}
+
+fn sample_msdf(atlas_uv: vec2<f32>) -> f32 {
+    // Explicit LOD 0: safe inside non-uniform prim clip/rect continue paths.
+    let s = textureSampleLevel(msdf_atlas, msdf_samp, atlas_uv, 0.0);
+    let sd = median3(s.r, s.g, s.b);
+    return smoothstep(0.5 - MSDF_AA_HALF, 0.5 + MSDF_AA_HALF, sd);
+}
+
+fn sample_msdf_rect(uv_rect: vec4<f32>, local_uv: vec2<f32>) -> f32 {
+    let atlas_uv = mix(uv_rect.xy, uv_rect.zw, clamp(local_uv, vec2(0.0), vec2(1.0)));
+    return sample_msdf(atlas_uv);
+}
+
+// Digit / sign codes used by DirectNumber: 0-9, 10='-', 11='.'.
+fn direct_number_code_uv(code: u32) -> vec4<f32> {
+    var ch: u32 = 0x30u; // '0'
+    if (code == 10u) {
+        ch = 0x2du; // '-'
+    } else if (code == 11u) {
+        ch = 0x2eu; // '.'
+    } else {
+        ch = 0x30u + min(code, 9u);
     }
-    let x = i32(clamp(floor(uv.x * 3.0), 0.0, 2.0));
-    let y = i32(clamp(floor((1.0 - uv.y) * 5.0), 0.0, 4.0));
-    let bit = u32(y * 3 + x);
-    let on = (bits >> bit) & 1u;
-    return select(0.0, 1.0, on == 1u);
+    return atlas_uv_for_slot(ch - MSDF_ASCII_BASE);
 }
 
 // Two-limb unsigned /10 for DirectNumber int_hi:int_lo (little-endian u64).
@@ -121,7 +151,6 @@ fn sample_direct_number(payload: vec4<u32>, local_uv: vec2<f32>) -> f32 {
     var digits: array<u32, 12>;
     var n = 0u;
     if (neg == 1u) {
-        // Encode '-' as 10
         digits[n] = 10u;
         n = n + 1u;
     }
@@ -146,7 +175,6 @@ fn sample_direct_number(payload: vec4<u32>, local_uv: vec2<f32>) -> f32 {
         digits[n] = 11u; // '.'
         n = n + 1u;
         var frac = payload.z; // x10000
-        // Emit up to `decimals` leading digits of frac_x10000.
         var place = 1000u;
         var d = 0u;
         while (d < decimals && d < 4u && n < 12u) {
@@ -163,14 +191,7 @@ fn sample_direct_number(payload: vec4<u32>, local_uv: vec2<f32>) -> f32 {
     let idx = u32(clamp(floor(local_uv.x / cell_w), 0.0, f32(n - 1u)));
     let guv = vec2((local_uv.x - f32(idx) * cell_w) / cell_w, local_uv.y);
     let code = digits[idx];
-    if (code == 10u) {
-        // minus
-        return select(0.0, 1.0, abs(guv.y - 0.5) < 0.12 && guv.x > 0.15 && guv.x < 0.85);
-    }
-    if (code == 11u) {
-        return select(0.0, 1.0, length(guv - vec2(0.5, 0.15)) < 0.12);
-    }
-    return digit_glyph(code, guv);
+    return sample_msdf_rect(direct_number_code_uv(code), guv);
 }
 
 @fragment
@@ -233,6 +254,22 @@ fn fs_uber_sdf(in: VsOut) -> @location(0) vec4<f32> {
                 );
             }
             color = mix(color, c, c.a);
+        } else if (kind == 1u) {
+            // MsdfGlyph: payload = [u0, v0, u1, v1] as f32 bits.
+            if (px.x < rect.x || px.y < rect.y || px.x > rect.x + rect.z || px.y > rect.y + rect.w) {
+                i = i + 1u;
+                continue;
+            }
+            let local_uv = (px - rect.xy) / max(rect.zw, vec2(1.0));
+            let uv_rect = vec4(
+                bitcast<f32>(prim.payload.x),
+                bitcast<f32>(prim.payload.y),
+                bitcast<f32>(prim.payload.z),
+                bitcast<f32>(prim.payload.w),
+            );
+            let g = sample_msdf_rect(uv_rect, local_uv);
+            let fill = unpack_rgba(prim.color_rgba);
+            color = mix(color, vec4(fill.rgb, fill.a * g), fill.a * g);
         } else if (kind == 2u) {
             if (px.x < rect.x || px.y < rect.y || px.x > rect.x + rect.z || px.y > rect.y + rect.w) {
                 i = i + 1u;
