@@ -62,6 +62,22 @@ pub enum WidgetId {
     HotswitchAutoToggle,
     /// Settings: enable local host / Organizing (Server Operator mode).
     ServerOperatorToggle,
+    /// Settings Laser (x00ee): ShowInDesktop toggle.
+    LaserShowInDesktopToggle,
+    LaserSmoothDec,
+    LaserSmoothInc,
+    LaserModStartDec,
+    LaserModStartInc,
+    LaserModEndDec,
+    LaserModEndInc,
+    LaserModExpDec,
+    LaserModExpInc,
+    LaserModMulDec,
+    LaserModMulInc,
+    LaserStickDec,
+    LaserStickInc,
+    LaserPrimaryMinDec,
+    LaserPrimaryMinInc,
     /// Settings panel scroll (overflow above bottom tabs).
     SettingsScrollUp,
     SettingsScrollDown,

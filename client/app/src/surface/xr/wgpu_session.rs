@@ -33,7 +33,6 @@ use super::wgpu_overlays::{GpuController, XrOverlays};
 use crate::context_radial::{self, ContextEvent, ContextItemId, ContextRadialState, HandSide};
 use crate::mesh::CpuMesh;
 use crate::scene::{create_depth_view, MoveIntent, SceneGpu, SharedState, BOX_HALF_EXTENT};
-use crate::spatial_lens::InteractionLaserConfig;
 use crate::system_ui::{InventoryPeerRequest, LayoutTree, SystemUi, UiAction};
 use crate::turn::{update_turn_yaw, TURN_DEADZONE};
 use crate::world_hit::ray_hit_grabbable_boxes_with_extents;
@@ -222,6 +221,8 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         let prefs = crate::operator_prefs::load();
         ui.state.server_operator = prefs.server_operator;
     }
+    // Laser prefs (x00ee); chrome pull may overwrite from Desktop later.
+    ui.state.laser = crate::laser_prefs::load();
     if shared.overlay_asset_home_status(&mut ui.state.home_status) {
         ui.state.open = true;
         ui.state.tab = crate::system_ui::DashTab::Home;
@@ -270,9 +271,6 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
     let mut view_yaw = 0.0_f32;
     let mut snap_armed = true;
     let mut was_vr_active = true;
-    // L0: session-held cfg (Desktop と同型)。L1 で Settings 永続をここに接続する。
-    let spatial_laser_cfg = InteractionLaserConfig::default();
-
     'main_loop: loop {
         if shared.presentation.exit_requested() {
             exit_requested = true;
@@ -859,8 +857,9 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             }
         }
 
-        // x00ea L0: reuse hit/UI aim; gate draw on that hand's Primary (≠ Grab≈0.7).
+        // x00ea L0 + x00ee: DashState.laser SoT; gate draw on Primary (≠ Grab≈0.7).
         let laser_draw = {
+            let spatial_laser_cfg = ui.state.laser;
             let laser_aim = if context_radial.open {
                 owner_aim
             } else {
@@ -1251,6 +1250,9 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                                 prefs.server_operator = server_operator;
                             });
                         }
+                        UiAction::LaserConfigChanged => {
+                            crate::laser_prefs::save(&ui.state.laser);
+                        }
                         UiAction::HierarchyCollapseToggle(row) => {
                             ui.apply_hierarchy_collapse_toggle(&shared, row);
                         }
@@ -1288,6 +1290,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
     drop(session);
     drop(bridge);
     let _ = entry;
+    crate::laser_prefs::flush_blocking();
     Ok(())
 }
 

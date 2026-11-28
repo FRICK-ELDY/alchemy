@@ -787,6 +787,8 @@ impl App {
             self.shared.epoch.set_xray_row(Some(row));
         }
 
+        // DashState.laser is SoT (Settings + chrome sync · x00ee).
+        self.spatial_laser_cfg = self.ui.state.laser;
         let (eye, look) = self.eye_and_look();
         let ray = desktop_look_ray(eye, look);
         let dir = [ray.dir.x, ray.dir.y, ray.dir.z];
@@ -1146,6 +1148,7 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
+                crate::laser_prefs::flush_blocking();
                 self.shared.presentation.request_exit();
                 event_loop.exit();
             }
@@ -1522,6 +1525,7 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.poll_presentation_requests();
         if self.shared.presentation.exit_requested() {
+            crate::laser_prefs::flush_blocking();
             event_loop.exit();
             return;
         }
@@ -1598,12 +1602,22 @@ fn handle_ui_action(
             });
             log::info!("server operator prefs → {server_operator}");
         }
+        UiAction::LaserConfigChanged => {
+            crate::laser_prefs::save(&ui.state.laser);
+            log::info!(
+                "laser prefs → primary_min={:.2} stick={:.2} show_desktop={}",
+                ui.state.laser.laser_show_primary_min,
+                ui.state.laser.laser_stickiness,
+                ui.state.laser.show_lasers_in_desktop_mode
+            );
+        }
         UiAction::ExitClientOnly | UiAction::ExitClientAndHost => {
             // Intentional thin glue (x00d0): host stop is session_flow; process teardown
             // needs `ActiveEventLoop` so it stays in the dispatcher (not a flow).
             // Exit Client only abolished: stop supervisor-owned host only.
             log::info!("system_ui: exit (handover stub + stop supervised host if any)");
             session_flow::exit_stop_supervised_host(shared);
+            crate::laser_prefs::flush_blocking();
             shared.presentation.request_exit();
             event_loop.exit();
         }
@@ -1661,6 +1675,8 @@ pub fn run(
     ui.state.operator = prefs.operator;
     ui.state.custom_host = prefs.custom_host.clone();
     ui.state.server_operator = prefs.server_operator;
+    let laser_cfg = crate::laser_prefs::load();
+    ui.state.laser = laser_cfg;
     ui.state.hotswitch_available = role == DesktopRole::Companion;
     ui.state.hotswitch_auto = shared
         .presentation
@@ -1752,7 +1768,7 @@ pub fn run(
         room_bind_progress_painted: false,
         spatial_lens: SpatialLensState::default(),
         spatial_laser: HandLaserState::default(),
-        spatial_laser_cfg: InteractionLaserConfig::default(),
+        spatial_laser_cfg: laser_cfg,
         spatial_headers: Vec::new(),
         spatial_prims: Vec::new(),
         spatial_lens_hit_panel: false,

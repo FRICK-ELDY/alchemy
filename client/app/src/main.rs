@@ -29,6 +29,7 @@ mod host_supervisor;
 mod intent_session;
 mod inventory;
 mod jwt_sub;
+mod laser_prefs;
 mod mesh;
 mod metrics;
 mod mvcc_mirror;

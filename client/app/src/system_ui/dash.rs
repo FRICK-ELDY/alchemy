@@ -12,6 +12,7 @@ use super::facet::{facet_of, DashRoot, FacetId};
 use super::layout::{Color, LayoutTree, Rect, WidgetId};
 use crate::access_level::AccessLevel;
 use crate::operator_prefs::{OperatorKind, CUSTOM_DEFAULT_HOST};
+use crate::spatial_lens::{InteractionLaserConfig, LaserFloatParam};
 use crate::turn::{TurnSettings, DEFAULT_SMOOTH_TURN_DEG_PER_SEC, DEFAULT_SNAP_DEGREES};
 
 /// Full-screen onboarding / hub phases (before or instead of classic Dash tabs).
@@ -117,6 +118,8 @@ pub struct DashState {
     pub turn_mode_label: String,
     pub snap_degrees_label: String,
     pub smooth_turn_label: String,
+    /// Interaction laser knobs (x00ee); prefs-backed, chrome-synced Desktop↔XR.
+    pub laser: InteractionLaserConfig,
     /// XR companion present (x0053); when false, hotswitch row is muted.
     pub hotswitch_available: bool,
     pub hotswitch_auto: bool,
@@ -256,6 +259,7 @@ impl Default for DashState {
             turn_mode_label: format!("Turn: {} (tap to toggle)", turn.mode.label()),
             snap_degrees_label: format!("Snap angle: {DEFAULT_SNAP_DEGREES:.0}°"),
             smooth_turn_label: format!("Smooth rate: {DEFAULT_SMOOTH_TURN_DEG_PER_SEC:.0}°/s"),
+            laser: InteractionLaserConfig::default(),
             hotswitch_available: false,
             hotswitch_auto: true,
             hotswitch_suppressed: false,
@@ -359,6 +363,7 @@ pub struct SharedDashLogic {
     pub turn_mode_label: String,
     pub snap_degrees_label: String,
     pub smooth_turn_label: String,
+    pub laser: InteractionLaserConfig,
     pub home_mode: HomeMode,
     pub home_focus: Option<HomeField>,
     pub home_identifier: String,
@@ -424,6 +429,7 @@ impl SharedDashLogic {
             turn_mode_label: s.turn_mode_label.clone(),
             snap_degrees_label: s.snap_degrees_label.clone(),
             smooth_turn_label: s.smooth_turn_label.clone(),
+            laser: s.laser,
             home_mode: s.home_mode,
             home_focus: s.home_focus,
             home_identifier: s.home_identifier.clone(),
@@ -459,6 +465,7 @@ impl SharedDashLogic {
             && self.turn_mode_label == s.turn_mode_label
             && self.snap_degrees_label == s.snap_degrees_label
             && self.smooth_turn_label == s.smooth_turn_label
+            && self.laser == s.laser
             && self.server_operator == s.server_operator
             && self.in_session == dash_in_session_for_store(s)
             && self.inventory_live == dash_inventory_live_for_store(s)
@@ -497,6 +504,7 @@ impl SharedDashLogic {
         self.turn_mode_label = s.turn_mode_label.clone();
         self.snap_degrees_label = s.snap_degrees_label.clone();
         self.smooth_turn_label = s.smooth_turn_label.clone();
+        self.laser = s.laser;
         self.server_operator = s.server_operator;
         self.in_session = dash_in_session_for_store(s);
         self.inventory_live = dash_inventory_live_for_store(s);
@@ -601,6 +609,10 @@ impl SharedDashLogic {
         }
         if s.smooth_turn_label != self.smooth_turn_label {
             s.smooth_turn_label = self.smooth_turn_label.clone();
+            changed = true;
+        }
+        if s.laser != self.laser {
+            s.laser = self.laser;
             changed = true;
         }
         if s.server_operator != self.server_operator {
@@ -1231,10 +1243,27 @@ impl DashState {
     }
 }
 
+/// Settings Laser layout (single SSoT for rebuild + content height · x00ee).
+const SETTINGS_LASER_Y: f32 = 236.0;
+/// Offset from `SETTINGS_LASER_Y` to first float row (title + ShowInDesktop + gap).
+const SETTINGS_LASER_ROWS_TOP: f32 = 80.0;
+const SETTINGS_LASER_ROW_H: f32 = 54.0;
+const SETTINGS_LASER_PAD_AFTER: f32 = 12.0;
+
+fn settings_laser_block_h() -> f32 {
+    SETTINGS_LASER_ROWS_TOP
+        + (LaserFloatParam::ALL.len() as f32) * SETTINGS_LASER_ROW_H
+        + SETTINGS_LASER_PAD_AFTER
+}
+
+fn settings_server_operator_y() -> f32 {
+    SETTINGS_LASER_Y + settings_laser_block_h()
+}
+
 /// Local content height for Settings (from panel top). Derived from layout offsets —
 /// includes optional in-session status banner under Server Operator.
 fn settings_content_height(state: &DashState) -> f32 {
-    let so = 240.0;
+    let so = settings_server_operator_y();
     let adv = if state.session_shell_active() && !state.home_status.is_empty() {
         so + 152.0
     } else {
@@ -1254,6 +1283,45 @@ fn settings_content_height(state: &DashState) -> f32 {
     };
     // join/start row + status + Hierarchy + optional X-Ray + bottom pad
     btn + 48.0 + 18.0 + hierarchy + xray + 12.0
+}
+
+/// Map Settings Laser ± WidgetIds to `(param, direction)`.
+pub fn laser_float_nudge(id: WidgetId) -> Option<(LaserFloatParam, i8)> {
+    match id {
+        WidgetId::LaserSmoothDec => Some((LaserFloatParam::SmoothSpeed, -1)),
+        WidgetId::LaserSmoothInc => Some((LaserFloatParam::SmoothSpeed, 1)),
+        WidgetId::LaserModStartDec => Some((LaserFloatParam::ModulateStartAngle, -1)),
+        WidgetId::LaserModStartInc => Some((LaserFloatParam::ModulateStartAngle, 1)),
+        WidgetId::LaserModEndDec => Some((LaserFloatParam::ModulateEndAngle, -1)),
+        WidgetId::LaserModEndInc => Some((LaserFloatParam::ModulateEndAngle, 1)),
+        WidgetId::LaserModExpDec => Some((LaserFloatParam::ModulateExponent, -1)),
+        WidgetId::LaserModExpInc => Some((LaserFloatParam::ModulateExponent, 1)),
+        WidgetId::LaserModMulDec => Some((LaserFloatParam::ModulateSpeedMultiplier, -1)),
+        WidgetId::LaserModMulInc => Some((LaserFloatParam::ModulateSpeedMultiplier, 1)),
+        WidgetId::LaserStickDec => Some((LaserFloatParam::Stickiness, -1)),
+        WidgetId::LaserStickInc => Some((LaserFloatParam::Stickiness, 1)),
+        WidgetId::LaserPrimaryMinDec => Some((LaserFloatParam::ShowPrimaryMin, -1)),
+        WidgetId::LaserPrimaryMinInc => Some((LaserFloatParam::ShowPrimaryMin, 1)),
+        _ => None,
+    }
+}
+
+fn laser_float_widgets(param: LaserFloatParam) -> (WidgetId, WidgetId) {
+    match param {
+        LaserFloatParam::SmoothSpeed => (WidgetId::LaserSmoothDec, WidgetId::LaserSmoothInc),
+        LaserFloatParam::ModulateStartAngle => {
+            (WidgetId::LaserModStartDec, WidgetId::LaserModStartInc)
+        }
+        LaserFloatParam::ModulateEndAngle => (WidgetId::LaserModEndDec, WidgetId::LaserModEndInc),
+        LaserFloatParam::ModulateExponent => (WidgetId::LaserModExpDec, WidgetId::LaserModExpInc),
+        LaserFloatParam::ModulateSpeedMultiplier => {
+            (WidgetId::LaserModMulDec, WidgetId::LaserModMulInc)
+        }
+        LaserFloatParam::Stickiness => (WidgetId::LaserStickDec, WidgetId::LaserStickInc),
+        LaserFloatParam::ShowPrimaryMin => {
+            (WidgetId::LaserPrimaryMinDec, WidgetId::LaserPrimaryMinInc)
+        }
+    }
 }
 
 const HIERARCHY_ROW_IDS: [WidgetId; 8] = [
@@ -3124,8 +3192,69 @@ fn rebuild_settings(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32,
         tree.register_hit(WidgetId::HotswitchAutoToggle, hs);
     }
 
+    // Laser (x00ee): Resonite LaserSettings ↔ InteractionLaserConfig.
+    let laser_y = y0 + SETTINGS_LASER_Y;
+    tree.push_label(
+        Rect::new(cx + 24.0, laser_y, cw - 48.0, 22.0),
+        "Laser",
+        TEXT,
+        1.8,
+    );
+    tree.push_label(
+        Rect::new(cx + 24.0, laser_y + 22.0, cw - 48.0, 16.0),
+        "XR: ShowPrimaryMin now. Smooth/Stick → Desktop Lens (XR feel → L2).",
+        MUTED,
+        0.95,
+    );
+    let show_d = Rect::new(cx + 24.0, laser_y + 40.0, (cw - 48.0).min(520.0), 36.0);
+    tree.push_rect(
+        show_d,
+        state.interact(WidgetId::LaserShowInDesktopToggle, ACCENT),
+    );
+    tree.push_label(
+        Rect::new(show_d.x + 16.0, show_d.y + 8.0, show_d.w - 32.0, 20.0),
+        if state.laser.show_lasers_in_desktop_mode {
+            "ShowInDesktop: ON (beam overlay → L3)"
+        } else {
+            "ShowInDesktop: OFF"
+        },
+        TEXT,
+        1.3,
+    );
+    tree.register_hit(WidgetId::LaserShowInDesktopToggle, show_d);
+    let mut row_y = laser_y + SETTINGS_LASER_ROWS_TOP;
+    for param in LaserFloatParam::ALL {
+        let label = state.laser.format_float_label(param);
+        tree.push_label(
+            Rect::new(cx + 24.0, row_y, cw - 48.0, 18.0),
+            &label,
+            TEXT,
+            1.1,
+        );
+        let (dec_id, inc_id) = laser_float_widgets(param);
+        let dec = Rect::new(cx + 24.0, row_y + 20.0, 44.0, 28.0);
+        tree.push_rect(dec, state.interact(dec_id, BTN));
+        tree.push_label(
+            Rect::new(dec.x + 14.0, dec.y + 6.0, 20.0, 16.0),
+            "-",
+            TEXT,
+            1.3,
+        );
+        tree.register_hit(dec_id, dec);
+        let inc = Rect::new(cx + 76.0, row_y + 20.0, 44.0, 28.0);
+        tree.push_rect(inc, state.interact(inc_id, BTN));
+        tree.push_label(
+            Rect::new(inc.x + 14.0, inc.y + 6.0, 20.0, 16.0),
+            "+",
+            TEXT,
+            1.3,
+        );
+        tree.register_hit(inc_id, inc);
+        row_y += SETTINGS_LASER_ROW_H;
+    }
+
     // Server Operator: local HostSupervisor / Organizing (distinct from Step1 OperatorKind).
-    let so_y = y0 + 240.0;
+    let so_y = y0 + settings_server_operator_y();
     tree.push_label(
         Rect::new(cx + 24.0, so_y, cw - 48.0, 22.0),
         "Server Operator",
