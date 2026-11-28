@@ -18,7 +18,7 @@
 | SoftLease 競合 hint を SharedState 経由で Lens が読める | 物理 Grab / `holder_slot` / `Entity.holder` との統合 |
 | accept Commit の holder は **acquiring actor を Ready に固定**（表再参照しない；同 tick clear でも 0 にしない） | host Hz ≠ 60 時の wall-clock hint TTL 厳密一致 |
 | `PROTOCOL_PIN` = `alchemy-protocol/0.25.0-x00f3` | chrome は holder **下位 32bit** のみ（Zero-String）；Presence 名 |
-| Despawn accept で entity hint を消す | ドラッグ揮発↔Commit 最適化（→ F1-3） |
+| Despawn accept で entity hint を消す | ドラッグ揮発↔Commit 最適化は [x00f4](x00f4-drag-volatile-commit.md)；ネット揮発／Grab 離し Commit は後続 |
 
 ## 完了条件
 

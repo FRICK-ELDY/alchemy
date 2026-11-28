@@ -530,13 +530,9 @@ impl HostLoop {
                 crate::live_edit::ReadyLiveEdit::Reparent { op, .. } => self
                     .physics
                     .queue_live_reparent(op.child_entity_id, op.new_parent_entity_id),
-                crate::live_edit::ReadyLiveEdit::SetField { op, .. } => {
-                    self.physics.queue_live_set_field(
-                        op.entity_id,
-                        op.field_id,
-                        &op.value,
-                        &op.expected_value_hash,
-                    )
+                crate::live_edit::ReadyLiveEdit::SetField { ops, .. } => {
+                    // x00f4: POS multi-op is verify-all-then-queue (no partial pending_pos).
+                    self.physics.queue_live_set_field_ops(ops)
                 }
             };
             if let Err(e) = queue_ok {

@@ -14,7 +14,7 @@
 |:---|:---|
 | Desktop Lens: POS_X/Y/Z を **rising-edge** press〜release で 1 軸スクラブ → 離し時 1 回 `EditSetField` | readiness（R）編集；quaternion / scale |
 | スクラブ UV = **パネル hit UV**；primary 保持中の miss は `last_uv` 継続（press-lock / miss→`[0,0]` 非使用） | SoftLease の UI 見える化（→ F1-2） |
-| `edit_field_id::POS_{X,Y,Z}`（f64 LE）＋ SoftLease のみ（**sparse 非書き込み**；Epoch が pose SSoT） | 高頻度揮発ストリーム最適化・多軸まとめ（→ F1-3） |
+| `edit_field_id::POS_{X,Y,Z}`（f64 LE）＋ SoftLease のみ（**sparse 非書き込み**；Epoch が pose SSoT） | 高頻度揮発ストリーム最適化（後続）・多軸まとめは [x00f4](x00f4-drag-volatile-commit.md) |
 | ドラッグ中は CRDT 非送信（Lens draft ＋ PendingLocal）；行死亡時 pending clear | pose の Save 永続（x00b8 非保証のまま） |
 | queue 時 Epoch 軸ハッシュ；不一致は head のみ `STALE_PRECONDITION`（abort 尾は APPLY） | XR Inspector スクラブ本配線；新規クレート |
 | 離し時 `expected_hash` を Curr 再取得（物理ドリフト許容；Grab 競合は SoftLease 非対象） | 物理 Grab との楽観ロック統合 |

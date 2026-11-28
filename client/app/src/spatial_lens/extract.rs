@@ -1,10 +1,11 @@
-//! Hierarchy / Inspector → GpuUiPrim packing (x00bb / x00bc / x00ed / x00f2 / x00f3).
+//! Hierarchy / Inspector → GpuUiPrim packing (x00bb / x00bc / x00ed / x00f2 / x00f3 / x00f4).
 //!
 //! Guarantees: viewport-window extract only; DirectNumber pose fields without String;
 //! short ASCII MsdfGlyph labels (Tier-1 Static MSDF); selected_row scrub when row is not live;
 //! scroll clamp to non-empty window; Inspector POS scrub draft preview (x00f2);
-//! SoftLease chrome (`LK` + holder; mine/other color · x00f3).
-//! Non-guarantees: CJK labels; multi-axis Commit (→ F1-3);
+//! SoftLease chrome (`LK` + holder; mine/other color · x00f3);
+//! multi-axis draft_xyz + 2D scrub (x00f4).
+//! Non-guarantees: CJK labels; Zenoh volatile scrub stream; Grab release pose Commit;
 //! WorldRoot sync; Lens-side collapse toggle (collapse set is shared with Settings; Lens MVP reads only).
 
 #![forbid(unsafe_code)]
@@ -23,18 +24,22 @@ use super::prim::{
 use crate::epoch_view::{hierarchy_panel_rows, EpochViewState, HierarchyRowView};
 use crate::scene::{CameraLook, EntityPose};
 
-/// Active Inspector POS scrub (drag → release Commit · x00f2). Local only.
+/// Active Inspector POS scrub (drag → release Commit · x00f2 / x00f4). Local only.
 #[derive(Clone, Debug)]
 pub struct InspectorScrub {
+    /// Primary axis binding that started the scrub (UV Δu).
     pub field_binding: u32,
     pub row: u32,
     pub entity_id: u32,
-    pub start_uv_x: f32,
+    pub start_uv: [f32; 2],
     /// Last panel-hit UV; reused while primary held and the ray misses the board.
     pub last_uv: [f32; 2],
-    pub base_value: f64,
-    pub draft_value: f64,
-    pub expected_hash: [u8; 32],
+    pub base_xyz: [f64; 3],
+    pub draft_xyz: [f64; 3],
+    /// Per-axis dirty vs base (2D scrub may mark primary + cyclic next).
+    pub dirty: [bool; 3],
+    /// Expected hashes at scrub begin (refreshed from Curr on release).
+    pub expected_hash: [[u8; 32]; 3],
 }
 
 /// SoftLease chrome for the selected entity (x00f3). Filled by surface tick.
@@ -105,6 +110,9 @@ pub const INSPECT_FIELD_READY: u32 = 0x8000_0004;
 /// Meters of world translation per Lens UV pixel while scrubbing (x00f2).
 pub const INSPECTOR_SCRUB_M_PER_PX: f64 = 0.01;
 
+/// UV px dead-zone for secondary-axis (Δv) dirty; primary uses only `f64::EPSILON` (x00f4).
+pub const INSPECTOR_SCRUB_SECONDARY_DEADZONE_PX: f64 = 2.0;
+
 /// Map Inspector binding → `edit_field_id::POS_*` (readiness is not editable).
 pub fn decode_inspector_pos_binding(binding: u32) -> Option<u32> {
     match binding {
@@ -125,17 +133,28 @@ pub fn inspector_pos_axis(binding: u32) -> Option<usize> {
     }
 }
 
+/// Cyclic next axis for 2D scrub secondary (Δv): X→Y, Y→Z, Z→X (x00f4).
+#[inline]
+pub fn inspector_secondary_axis(primary: usize) -> usize {
+    (primary + 1) % 3
+}
+
+/// Wire `edit_field_id::POS_*` for axis 0..2.
+#[inline]
+pub fn pos_field_id_for_axis(axis: usize) -> Option<u32> {
+    match axis {
+        0 => Some(alchemy_protocol::edit_field_id::POS_X),
+        1 => Some(alchemy_protocol::edit_field_id::POS_Y),
+        2 => Some(alchemy_protocol::edit_field_id::POS_Z),
+        _ => None,
+    }
+}
+
 /// Wire `entity_id` for a live tape row (`owner_scope`), if present.
 pub fn entity_id_for_row(epoch: &EpochViewState, row: u32) -> Option<u32> {
     let curr = epoch.snapshots.load_curr();
     let eid = *curr.owner_scope.get(row as usize)?;
     (eid != 0).then_some(eid)
-}
-
-/// World-position axis value on Curr for `row` (finite only).
-pub fn world_pos_axis(epoch: &EpochViewState, row: u32, axis: usize) -> Option<f64> {
-    let xyz = world_pos_xyz(epoch, row)?;
-    (axis <= 2).then_some(xyz[axis])
 }
 
 /// World XYZ on Curr for `row` (one Curr load; all finite).
@@ -508,11 +527,15 @@ fn pack_inspector_fields(
     let mut py = xf.position[1];
     let mut pz = xf.position[2];
     if let Some(s) = draft {
-        match s.field_binding {
-            INSPECT_FIELD_POS_X => px = s.draft_value,
-            INSPECT_FIELD_POS_Y => py = s.draft_value,
-            INSPECT_FIELD_POS_Z => pz = s.draft_value,
-            _ => {}
+        // Dirty axes: absolute draft; clean axes keep Curr (physics drift · x00f4).
+        if s.dirty[0] {
+            px = s.draft_xyz[0];
+        }
+        if s.dirty[1] {
+            py = s.draft_xyz[1];
+        }
+        if s.dirty[2] {
+            pz = s.draft_xyz[2];
         }
     }
 
@@ -714,6 +737,20 @@ mod tests {
     }
 
     #[test]
+    fn secondary_axis_cycles_and_world_pos_helpers() {
+        assert_eq!(inspector_secondary_axis(0), 1);
+        assert_eq!(inspector_secondary_axis(1), 2);
+        assert_eq!(inspector_secondary_axis(2), 0);
+        assert_eq!(
+            pos_field_id_for_axis(0),
+            Some(alchemy_protocol::edit_field_id::POS_X)
+        );
+        let epoch = epoch_with_one_row();
+        assert_eq!(world_pos_xyz(&epoch, 0), Some([1.25, 2.5, -3.0]));
+        assert_eq!(entity_id_for_row(&epoch, 0), Some(42));
+    }
+
+    #[test]
     fn scrub_selected_row_clears_tombstone() {
         let epoch = epoch_with_one_row();
         let mut state = SpatialLensState {
@@ -742,11 +779,12 @@ mod tests {
                 field_binding: INSPECT_FIELD_POS_X,
                 row: 0,
                 entity_id: 42,
-                start_uv_x: 0.0,
+                start_uv: [0.0, 0.0],
                 last_uv: [10.0, 20.0],
-                base_value: 0.0,
-                draft_value: 0.0,
-                expected_hash: [0; 32],
+                base_xyz: [0.0, 0.0, 0.0],
+                draft_xyz: [0.0, 0.0, 0.0],
+                dirty: [false; 3],
+                expected_hash: [[0; 32]; 3],
             }),
             ..Default::default()
         };

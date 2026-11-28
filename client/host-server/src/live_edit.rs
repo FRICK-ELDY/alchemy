@@ -778,12 +778,24 @@ impl LiveEditLedger {
             } => self
                 .apply_reparent(op.child_entity_id, *prev_parent)
                 .is_success(),
-            ReadyLiveEdit::SetField { op, prev_value, .. } => {
-                // x00f2 POS: SoftLease-only accept path leaves `prev_value` empty
-                // (no sparse write) — rollback is a no-op for the store.
-                if alchemy_protocol::is_pos_field_id(op.field_id) && prev_value.is_empty() {
-                    true
-                } else {
+            ReadyLiveEdit::SetField {
+                ops, prev_values, ..
+            } => {
+                // Reverse order so multi-axis POS / multi-field batches undo LIFO.
+                if ops.len() != prev_values.len() {
+                    log::error!(
+                        "live edit rollback: ops/prev_values len mismatch {} vs {}",
+                        ops.len(),
+                        prev_values.len()
+                    );
+                    return false;
+                }
+                let mut ok = true;
+                for (op, prev_value) in ops.iter().zip(prev_values.iter()).rev() {
+                    // x00f2/x00f4 POS: SoftLease-only — empty prev → store no-op.
+                    if alchemy_protocol::is_pos_field_id(op.field_id) && prev_value.is_empty() {
+                        continue;
+                    }
                     let Some(value) = prop_from_field_bytes(op.field_id, prev_value) else {
                         log::error!(
                             "live edit rollback: cannot decode prev_value field_id={} entity={}",
@@ -792,9 +804,14 @@ impl LiveEditLedger {
                         );
                         return false;
                     };
-                    self.apply_set_field(op.entity_id, op.field_id, value)
+                    if !self
+                        .apply_set_field(op.entity_id, op.field_id, value)
                         .is_success()
+                    {
+                        ok = false;
+                    }
                 }
+                ok
             }
         };
         if !ok {
@@ -862,8 +879,10 @@ pub enum ReadyLiveEdit {
     },
     SetField {
         proposal: EditProposal,
-        op: EditSetField,
-        prev_value: Vec<u8>,
+        /// One or more SetField ops (x00f4: POS batch 1..=3 same entity).
+        ops: Vec<EditSetField>,
+        /// Parallel to `ops`; POS SoftLease-only uses empty blobs (x00f2).
+        prev_values: Vec<Vec<u8>>,
         /// Acquiring actor fixed on Ready (x00f3 accept Commit; not table re-lookup).
         lease_holder_actor_id: u64,
     },
@@ -1088,13 +1107,13 @@ mod tests {
             .is_success());
         let ready = ReadyLiveEdit::SetField {
             proposal: proposal(),
-            op: EditSetField {
+            ops: vec![EditSetField {
                 entity_id: 10,
                 field_id: edit_field_id::FLAGS,
                 value: encode_flags(7).to_vec(),
                 expected_value_hash: vec![],
-            },
-            prev_value: prev,
+            }],
+            prev_values: vec![prev],
             lease_holder_actor_id: 1,
         };
         assert!(led.rollback_mirrors(&ready));

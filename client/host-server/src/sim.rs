@@ -1265,22 +1265,77 @@ impl PhysicsWorld {
             alchemy_protocol::edit_field_id::POS_X
             | alchemy_protocol::edit_field_id::POS_Y
             | alchemy_protocol::edit_field_id::POS_Z => {
-                let axis = alchemy_protocol::pos_field_axis(field_id).ok_or("bad pos field")?;
-                let row = row_id as usize;
-                if row >= self.world.curr.world_transforms.len() {
-                    return Err("pos row oob");
-                }
-                let cur = self.world.curr.world_transforms[row].position[axis];
-                let cur_hash = alchemy_protocol::hash_f64(cur);
-                if expected_hash != cur_hash.as_slice() {
-                    return Err("stale pose");
-                }
-                let new_v = alchemy_protocol::decode_f64(value).ok_or("bad pos")?;
-                self.pending_pos.push((entity_id, axis as u8, new_v));
+                // Single-axis path; multi-axis SoftLease batches use
+                // [`Self::queue_live_set_field_ops`] (verify-all-then-queue · x00f4).
+                let prepared = self.prepare_pos_queue(entity_id, field_id, value, expected_hash)?;
+                self.pending_pos.push(prepared);
             }
             _ => return Err("unknown field"),
         }
         Ok(())
+    }
+
+    /// Queue one Ready's SetField ops atomically (x00f4).
+    ///
+    /// POS_* ops are **verify-all-then-push**: on any stale/decode error, nothing from
+    /// this call is appended to `pending_pos` (no half-applied multi-axis batch).
+    /// Non-POS ops (len 1) use the single-field path.
+    pub fn queue_live_set_field_ops(
+        &mut self,
+        ops: &[alchemy_protocol::EditSetField],
+    ) -> Result<(), &'static str> {
+        if ops.is_empty() {
+            return Err("empty set_field ops");
+        }
+        let all_pos = ops
+            .iter()
+            .all(|op| alchemy_protocol::is_pos_field_id(op.field_id));
+        if all_pos {
+            let mut prepared = Vec::with_capacity(ops.len());
+            for op in ops {
+                prepared.push(self.prepare_pos_queue(
+                    op.entity_id,
+                    op.field_id,
+                    &op.value,
+                    &op.expected_value_hash,
+                )?);
+            }
+            self.pending_pos.extend(prepared);
+            return Ok(());
+        }
+        if ops.len() != 1 {
+            return Err("non-pos multi set_field");
+        }
+        let op = &ops[0];
+        self.queue_live_set_field(
+            op.entity_id,
+            op.field_id,
+            &op.value,
+            &op.expected_value_hash,
+        )
+    }
+
+    /// Validate one POS axis against Curr without mutating `pending_pos`.
+    fn prepare_pos_queue(
+        &self,
+        entity_id: u32,
+        field_id: u32,
+        value: &[u8],
+        expected_hash: &[u8],
+    ) -> Result<(u32, u8, f64), &'static str> {
+        let handle = self.entity_rows.get(&entity_id).ok_or("entity missing")?;
+        let axis = alchemy_protocol::pos_field_axis(field_id).ok_or("bad pos field")?;
+        let row = handle.row_id as usize;
+        if row >= self.world.curr.world_transforms.len() {
+            return Err("pos row oob");
+        }
+        let cur = self.world.curr.world_transforms[row].position[axis];
+        let cur_hash = alchemy_protocol::hash_f64(cur);
+        if expected_hash != cur_hash.as_slice() {
+            return Err("stale pose");
+        }
+        let new_v = alchemy_protocol::decode_f64(value).ok_or("bad pos")?;
+        Ok((entity_id, axis as u8, new_v))
     }
 
     /// Apply pending live edits at the tick boundary with **physical + Commit** atomicity:
@@ -2965,6 +3020,74 @@ mod tests {
             )
             .expect_err("stale expected_hash");
         assert_eq!(err, "stale pose");
+    }
+
+    #[test]
+    fn set_field_pos_batch_stale_second_axis_leaves_pending_clean() {
+        // x00f4: verify-all-then-queue — second-axis stale must not leave first axis queued.
+        use alchemy_protocol::{encode_f64, hash_f64, EditSetField};
+        let mut world = test_world();
+        let id = world.boxes.entity_ids[0];
+        let row = world.entity_rows.get(&id).unwrap().row_id as usize;
+        let px = world.world.curr.world_transforms[row].position[0];
+        let py = world.world.curr.world_transforms[row].position[1];
+        let ops = [
+            EditSetField {
+                entity_id: id,
+                field_id: alchemy_protocol::edit_field_id::POS_X,
+                value: encode_f64(px + 1.0).to_vec(),
+                expected_value_hash: hash_f64(px).to_vec(),
+            },
+            EditSetField {
+                entity_id: id,
+                field_id: alchemy_protocol::edit_field_id::POS_Y,
+                value: encode_f64(py + 1.0).to_vec(),
+                expected_value_hash: hash_f64(py + 9.0).to_vec(), // stale
+            },
+        ];
+        let err = world
+            .queue_live_set_field_ops(&ops)
+            .expect_err("second axis stale");
+        assert_eq!(err, "stale pose");
+        assert!(
+            world.pending_pos.is_empty(),
+            "failed multi-axis batch must not contaminate pending_pos"
+        );
+        world.step();
+        let after = world.world.curr.world_transforms[row].position;
+        assert!(
+            (after[0] - px).abs() < 1e-9 && (after[1] - py).abs() < 1e-9,
+            "reject must not apply any axis of the batch"
+        );
+    }
+
+    #[test]
+    fn set_field_pos_batch_both_axes_apply() {
+        use alchemy_protocol::{encode_f64, hash_f64, EditSetField};
+        let mut world = test_world();
+        let id = world.boxes.entity_ids[0];
+        let row = world.entity_rows.get(&id).unwrap().row_id as usize;
+        let px = world.world.curr.world_transforms[row].position[0];
+        let py = world.world.curr.world_transforms[row].position[1];
+        let ops = [
+            EditSetField {
+                entity_id: id,
+                field_id: alchemy_protocol::edit_field_id::POS_X,
+                value: encode_f64(px + 0.5).to_vec(),
+                expected_value_hash: hash_f64(px).to_vec(),
+            },
+            EditSetField {
+                entity_id: id,
+                field_id: alchemy_protocol::edit_field_id::POS_Y,
+                value: encode_f64(py + 0.75).to_vec(),
+                expected_value_hash: hash_f64(py).to_vec(),
+            },
+        ];
+        world.queue_live_set_field_ops(&ops).expect("batch ok");
+        world.step();
+        let after = world.world.curr.world_transforms[row].position;
+        assert!((after[0] - (px + 0.5)).abs() < 1e-9);
+        assert!((after[1] - (py + 0.75)).abs() < 1e-9);
     }
 
     #[test]

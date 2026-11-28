@@ -7,7 +7,7 @@
 * **拡張ギャップ（ヒッチ・IME）**: [memo/alchemy-expansion.md](memo/alchemy-expansion.md)（**E1 / E2** — 本線番号と非共有）
 * **アバター見た目・ダンス**: [memo/avatar-animation-ux.md](memo/avatar-animation-ux.md)（本線番号と非共有）
 * **既存 Facet 最小**: [slices/x000f-dash-facet-minimal.md](slices/x000f-dash-facet-minimal.md)（語彙のみ。並べ替え・ユーザー追加は非保証）
-* **空きスライス ID**: **`x00ef`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
+* **空きスライス ID**: **`x00f5`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
 
 ### 番号規約
 
@@ -55,7 +55,7 @@
 | TELEPORT → GPU snap | **done**（[x00eb](slices/x00eb-teleport-gpu-snap.md)） | 生成・Reparent の残像・ちぎれを Curr へ即スナップ |
 | Depth Bucket / bitmask edge | **done**（[x00ef](slices/x00ef-depth-bucket-hierarchy.md) / [x00f0](slices/x00f0-bitmask-edge-observer.md)） | 親子追従・Enabled ON 初速リセット |
 | AvatarRig / RigidSolver | 境界 **done**・host tick **未配線** | 揺れもの・剛体が画面に出ない |
-| Inspector（x00bc / [x00f2](slices/x00f2-inspector-setfield-commit.md) / [x00f3](slices/x00f3-soft-lease-visibility.md)） | Desktop POS スクラブ → SetField Commit；SoftLease chrome | XR スクラブは非保証；Presence 表示名は非保証 |
+| Inspector（x00bc / [x00f2](slices/x00f2-inspector-setfield-commit.md) / [x00f3](slices/x00f3-soft-lease-visibility.md) / [x00f4](slices/x00f4-drag-volatile-commit.md)） | Desktop POS 2D スクラブ → 多軸 1 Commit；SoftLease chrome | XR スクラブ・ネット揮発・Presence 名は非保証 |
 | XR レーザー | **L0+L1 done**（Primary ゲート＋Settings 永続） | ShowInDesktop 可視化ビームは → L3；XR smooth → L2 |
 | `InteractionLaserConfig` | Settings 露出＋`laser.json` 永続（[x00ee](slices/x00ee-laser-settings-l1.md)） | Desktop ビーム描画本体（→ L3） |
 | Dash | CPU Canvas blit（仮）＋G0 色トークン共有 | 板経路の角丸・glow は Lens 済み；Dash 全板移行は U0 |
@@ -88,7 +88,7 @@ E1  ヒッチ根絶（スキニング / Async PSO / LOD builder）
 Fc6  Settings 行 → Facet 化
 ```
 
-**次の着手:** F1-2 **done**（[x00f3](slices/x00f3-soft-lease-visibility.md)）。次候補 **F1-3** ドラッグ揮発 ↔ Commit 1 回（空き ID **`x00f4`**）。F0 / L1 / T1 / G0 / F1-1 も done。
+**次の着手:** F1-3 **done**（[x00f4](slices/x00f4-drag-volatile-commit.md)）。次候補 **Fc0** / **L2**。F0 / F1 / L1 / T1 / G0 **done**。後続（未発行）: Inspector ネット揮発スクラブ / Grab 離し姿勢 Commit。
 
 ---
 
@@ -104,10 +104,17 @@ Fc6  Settings 行 → Facet 化
 | **F0-4** | **PendingLocalOps を実操作へ**（[x00f1](slices/x00f1-pending-local-ops-wire.md) **done**） | x00e6 は器。Grab 経路へ接続 | Published 非汚染を崩さない。Inspector Commit は → F1 |
 | **F1-1** | Inspector スクラブ → SetField Commit（[x00f2](slices/x00f2-inspector-setfield-commit.md) **done**） | x00bc が明示的に保証していない穴 | SoftLease ゲート流用。Save pose 永続は非保証 |
 | **F1-2** | SoftLease の見える化（[x00f3](slices/x00f3-soft-lease-visibility.md) **done**） | 編集ロックの「誰が握っているか」 | 物理 Grab と別概念。Commit `lease_holder_actor_id` → Lens `LK` chrome |
-| **F1-3** | ドラッグ揮発 ↔ Commit 1 回 | 密座標を CRDT に載せない契約の UI 側 | 既存 grab / edit レーン |
+| **F1-3** | ドラッグ揮発 ↔ Commit 1 回（[x00f4](slices/x00f4-drag-volatile-commit.md) **done**） | 密座標を CRDT に載せない契約の UI 側 | 多軸 1 proposal。**非保証→後続:** ネット揮発スクラブ / Grab 離し姿勢 Commit |
 | **F2-1** | AvatarRig → host tick 配線 | XPBD が画面に出る | Slot 爆発禁止 |
 | **F2-2** | アバター見た目 A（root 静的 GLB） | ボックス→人型 | [avatar-animation-ux.md](memo/avatar-animation-ux.md) 段 A |
 | **F2-3** | 剛体ソルバ本体 | **人承認・別決**。当面既存 XPBD 接触可 | rapier/AVBD 未採択 |
+
+**F1-3 後続（未発行スライス）**
+
+| 候補 | 内容 | 注意 |
+|:---|:---|:---|
+| Inspector ネット揮発スクラブ | ドラッグ中を Intent/Frame 等の揮発ストリームへ（他者可視）。離しは従来どおり CRDT/`…/edit` 1 回 | Lens 正本 §4.4 理想。CRDT には載せない。SoftLease/Grab SSoT 非破壊 |
+| Grab 離し姿勢の構造 Commit | 物理 Grab 手放しで姿勢を Scene Store へ 1 回確定 | 現行は Epoch/Frame が pose SSoT。必須化は契約変更 |
 
 ### 4.2 L — Laser（Resonite 流）
 
@@ -338,3 +345,6 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 | 2026-11-28 | [x00f0](slices/x00f0-bitmask-edge-observer.md) F0-3 bitmask edge done。[x00f1](slices/x00f1-pending-local-ops-wire.md) F0-4 Grab↔PendingLocalOps done。次候補 F1-1 |
 | 2026-11-28 | [x00f2](slices/x00f2-inspector-setfield-commit.md) F1-1 Inspector POS スクラブ → SetField Commit done。次候補 F1-2 |
 | 2026-11-28 | [x00f3](slices/x00f3-soft-lease-visibility.md) F1-2 SoftLease 見える化 done（EditCommit holder・Lens chrome）。次候補 F1-3 |
+| 2026-11-28 | [x00f4](slices/x00f4-drag-volatile-commit.md) F1-3 着手（多軸まとめ＋契約固定）。後続未発行: ネット揮発スクラブ / Grab 離し姿勢 Commit |
+| 2026-11-28 | [x00f4](slices/x00f4-drag-volatile-commit.md) F1-3 done（POS 多軸 1 proposal・2D scrub・Host バッチ）。後続未発行: ネット揮発スクラブ / Grab 離し姿勢 Commit。次候補 Fc0 / L2 |
+| 2026-11-28 | x00f4 レビュー追随: POS 多軸 verify-all-then-queue・Curr プレビュー追従・secondary デッドゾーン・原子性回帰 |
