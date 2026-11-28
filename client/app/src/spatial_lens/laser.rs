@@ -1,7 +1,8 @@
-//! Resonite-style interaction laser state (x00bd Stickiness / press-lock).
+//! Resonite-style interaction laser state (x00bd Stickiness / press-lock; x00ea Primary gate).
 //!
-//! Guarantees: angle-modulated smooth + sticky UV lock without heap alloc.
-//! Non-guarantees: bezier laser draw; haptics; double-click; CRDT scrub commit.
+//! Guarantees: angle-modulated smooth + sticky UV lock without heap alloc;
+//! Primary visibility gate (`laser_show_primary_min`, default 0.1) separate from Grab≈0.7.
+//! Non-guarantees: bezier laser draw; haptics; double-click; CRDT scrub commit; Settings UI (L1).
 
 #![forbid(unsafe_code)]
 
@@ -13,6 +14,8 @@ pub struct InteractionLaserConfig {
     pub modulate_exponent: f32,
     pub modulate_speed_multiplier: f32,
     pub laser_stickiness: f32,
+    /// XR beam drawn only when aiming-hand Primary ≥ this (x00ea L0). Not Grab/UI click.
+    pub laser_show_primary_min: f32,
 }
 
 impl Default for InteractionLaserConfig {
@@ -24,7 +27,16 @@ impl Default for InteractionLaserConfig {
             modulate_exponent: 1.8,
             modulate_speed_multiplier: 8.0,
             laser_stickiness: 0.5,
+            laser_show_primary_min: 0.1,
         }
+    }
+}
+
+impl InteractionLaserConfig {
+    /// Whether the XR interaction beam should be drawn for this Primary analog.
+    #[inline]
+    pub fn beam_visible(&self, primary: f32) -> bool {
+        primary >= self.laser_show_primary_min
     }
 }
 
@@ -211,5 +223,22 @@ mod tests {
         let (_uv2, id2) =
             h.apply_stickiness_and_press_lock([100.0, 100.0], 0, [0.0; 4], 0.5, &cfg, 0.01);
         assert_eq!(id2, 7);
+    }
+
+    #[test]
+    fn beam_visible_gates_on_primary_min() {
+        let cfg = InteractionLaserConfig::default();
+        assert!((cfg.laser_show_primary_min - 0.1).abs() < 1e-6);
+        assert!(!cfg.beam_visible(0.0));
+        assert!(!cfg.beam_visible(0.099));
+        assert!(cfg.beam_visible(0.1));
+        assert!(cfg.beam_visible(0.7));
+        // Grab/UI threshold stays independent: visibility can be true below 0.7.
+        assert!(cfg.beam_visible(0.2));
+        let tight = InteractionLaserConfig {
+            laser_show_primary_min: 0.5,
+            ..Default::default()
+        };
+        assert!(!tight.beam_visible(0.2));
     }
 }
