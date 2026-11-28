@@ -7,7 +7,7 @@
 * **拡張ギャップ（ヒッチ・IME）**: [memo/alchemy-expansion.md](memo/alchemy-expansion.md)（**E1 / E2** — 本線番号と非共有）
 * **アバター見た目・ダンス**: [memo/avatar-animation-ux.md](memo/avatar-animation-ux.md)（本線番号と非共有）
 * **既存 Facet 最小**: [slices/x000f-dash-facet-minimal.md](slices/x000f-dash-facet-minimal.md)（公式語彙のみ。**Fc 拡張は deferred** — §4.5）
-* **空きスライス ID**: **`x00f5`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
+* **空きスライス ID**: **`x00f6`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
 
 ### 番号規約
 
@@ -57,7 +57,7 @@
 | Depth Bucket / bitmask edge | **done**（[x00ef](slices/x00ef-depth-bucket-hierarchy.md) / [x00f0](slices/x00f0-bitmask-edge-observer.md)） | 親子追従・Enabled ON 初速リセット |
 | AvatarRig / RigidSolver | 境界 **done**・host tick **未配線** | 揺れもの・剛体が画面に出ない |
 | Inspector（x00bc / [x00f2](slices/x00f2-inspector-setfield-commit.md) / [x00f3](slices/x00f3-soft-lease-visibility.md) / [x00f4](slices/x00f4-drag-volatile-commit.md)） | Desktop POS 2D スクラブ → 多軸 1 Commit；SoftLease chrome | XR スクラブ・ネット揮発・Presence 名は非保証 |
-| XR レーザー | **L0+L1 done**（Primary ゲート＋Settings 永続） | ShowInDesktop 可視化ビームは → L3；XR smooth → L2 |
+| XR レーザー | **L0+L1+L2 done**（Primary＋Settings＋XR smooth） | ShowInDesktop 可視化ビームは → L3；XR Stickiness は非保証 |
 | `InteractionLaserConfig` | Settings 露出＋`laser.json` 永続（[x00ee](slices/x00ee-laser-settings-l1.md)） | Desktop ビーム描画本体（→ L3） |
 | Dash | CPU Canvas blit（仮）＋G0 色トークン共有 | 板経路の角丸・glow は Lens 済み；Dash 全板移行は U0 |
 | Facet | 公式 `FacetId` / Pinned Exit のみ（[x000f](slices/x000f-dash-facet-minimal.md)） | **Fc 拡張は deferred**（§4.5）。グリッド装着・ユーザー追加は当面やらない |
@@ -87,7 +87,7 @@ E1  ヒッチ根絶（スキニング / Async PSO / LOD builder）
 Fc0–Fc6  枠のみ・deferred（§4.5）。本線フローに入れない
 ```
 
-**次の着手:** **L2**（XR ビーム角度変調スムージング）。F0 / F1 / L0 / L1 / T1 / G0 **done**。後続（未発行）: Inspector ネット揮発スクラブ / Grab 離し姿勢 Commit。**Fc 拡張は deferred**（枠は §4.5）。
+**次の着手:** **T2 / E2-1**（CJK オンデマンド atlas ＋ XR IME・依存は人承認）または **U0**（公式 Dash 板経路）。F0 / F1 / L0 / L1 / L2 / T1 / G0 **done**。後続（未発行）: Inspector ネット揮発スクラブ / Grab 離し姿勢 Commit。**Fc 拡張は deferred**（枠は §4.5）。
 
 ---
 
@@ -123,18 +123,18 @@ Fc0–Fc6  枠のみ・deferred（§4.5）。本線フローに入れない
 |:---|:---|:---|
 | **L0** | **Primary 表示ゲート** | `primary < laser_show_primary_min`（既定 **0.1**）でビーム非描画。`≥ 0.1` で表示。Grab/UI 二値しきい値（現行 ≈0.7）とは **別パラメータ** |
 | **L1** | Settings に Laser 項目を露出・永続化 | [x00ee](slices/x00ee-laser-settings-l1.md) **done**。下表写像 → `InteractionLaserConfig` / `laser.json` |
-| **L2** | XR ビーム向きに角度変調スムージング本配線（**次着手**・スライス未発行 → 想定 `x00f5`） | 下表。現状は Lens Desktop 寄り |
+| **L2** | XR ビーム向きに角度変調スムージング本配線（[x00f5](slices/x00f5-laser-xr-smooth-l2.md) **done**） | draw／Dash／Grab／Context 同一レイ；open は snap→smooth freeze |
 | **L3** | ベジェ描画・ShowInDesktop・Cursor 倍率 | x00bd 非保証の仕上げ |
 
-**L2 発行時の契約メモ（スライス未発行）**
+**L2 契約（[x00f5](slices/x00f5-laser-xr-smooth-l2.md)）**
 
-| 保証する（想定） | 保証しない（想定） |
+| 保証する | 保証しない |
 |:---|:---|
 | XR ワールド／UI レーザーの向きに、L1 の `laser_smooth_speed` / modulate_* を本配線 | Desktop 経路の新規スムージング（既存 Desktop 挙動は非対象のまま） |
-| Settings / `laser.json` の既存キーを読み、XR セッション側へ反映 | L3（ベジェ・ShowInDesktop ビーム描画・Cursor 倍率） |
-| Primary 表示ゲート（L0）・Grab/UI 二値しきい値は不変 | 新規クレート；プロトコル変更 |
-
-触る候補: `client/app/src/spatial_lens/laser.rs` · `client/app/src/surface/xr/wgpu_session.rs`（および既存 Laser cfg 配線）。DoD 体感文案: XR でコントローラーを振ったときビームが設定どおり滑らかに追従する。
+| Settings / `laser.json` の既存キーを読み、XR セッション側へ反映（描画＋同一レイの Dash／Grab／Context ヒット） | L3（ベジェ・ShowInDesktop ビーム描画・Cursor 倍率） |
+| Context open／re-anchor は当該手を `snap_direction` してから **smooth 向きで freeze**（leave／draw と同一レイ） | XR Stickiness；新規クレート；プロトコル変更 |
+| トラッキング再取得・hotswitch 復帰、および **連続 N フレーム** `!should_render` 後の復帰で `snap_direction`（短い空フレームでは smooth 維持） | |
+| Primary 表示ゲート（L0）・Grab/UI 二値しきい値は不変；既存 `update_smoothed_direction` 再利用 | |
 
 **LaserSettings 写像**
 
@@ -321,7 +321,7 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 
 | 候補 ID | slug 案 | Wave | DoD 要約 |
 |:---|:---|:---|:---|
-| **x00f5** | `laser-xr-smooth-l2`（仮） | **L2** | XR ビーム向きに L1 cfg（smooth / modulate_*）本配線。Desktop 既存は非対象。L0 ゲート不変。詳細は §4.2 L2 契約メモ |
+| **x00f6** | （未定） | **T2 / E2-1** または **U0** | CJK atlas＋IME（人承認）／公式 Dash 板経路。次空きは `x00f6` |
 
 ---
 
@@ -370,3 +370,7 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 | 2026-11-28 | x00f4 レビュー追随: POS 多軸 verify-all-then-queue・Curr プレビュー追従・secondary デッドゾーン・原子性回帰 |
 | 2026-11-28 | **Fc 拡張を deferred**（枠 Fc0–Fc6 は残す・本線着手外）。理由: Dash 機密／将来プログラム Facet の信頼境界未整備。次着手 **L2**。U0/U1 は Fc 非依存に整理 |
 | 2026-11-28 | レビュー追随: 目的文を「当面／deferred」に揃え・L2 契約メモ・§5 次スライスを x00f5/L2 へ・Fc 再開条件をマウント境界に限定（実行可能 Facet は別決） |
+| 2026-11-28 | [x00f5](slices/x00f5-laser-xr-smooth-l2.md) L2 done（XR smooth / modulate_* 本配線・描画＝Dash／Grab 同一レイ）。次着手 T2/E2-1 または U0（`x00f6`） |
+| 2026-11-28 | x00f5 レビュー追随: Context freeze＝snap→smooth（同一レイ）・reacquire/hotswitch snap・near-opposite フォールバック |
+| 2026-11-28 | x00f5 追随: `snap_and_freeze_context` 集約・`!should_render` でも had クリア・§4.2 L2 表をスライスに揃える |
+| 2026-11-28 | x00f5 追随: empty は連続 N のみ snap・`XrLaserHands` に smooth state 集約 |

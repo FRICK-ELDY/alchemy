@@ -64,6 +64,8 @@ pub enum WidgetId {
     ServerOperatorToggle,
     /// Settings Laser (x00ee): ShowInDesktop toggle.
     LaserShowInDesktopToggle,
+    /// Settings Laser: restore `InteractionLaserConfig::default`.
+    LaserResetDefaults,
     LaserSmoothDec,
     LaserSmoothInc,
     LaserModStartDec,

@@ -1256,6 +1256,27 @@ fn settings_laser_block_h() -> f32 {
         + SETTINGS_LASER_PAD_AFTER
 }
 
+/// ShowInDesktop / Reset widths for one Settings row. Never panics; never overflows `row_w`.
+fn laser_show_reset_widths(row_w: f32) -> (f32, f32, f32) {
+    let gap = 12.0_f32;
+    if row_w <= 0.0 {
+        return (0.0, gap, 0.0);
+    }
+    if row_w < gap + 40.0 {
+        return (row_w, gap, 0.0);
+    }
+    let mut reset_w = if row_w < 200.0 {
+        // Prefer ≤72 without `clamp(72, cap)` (cap may be <72 on narrow rows).
+        (row_w * 0.4).min(72.0)
+    } else {
+        (row_w * 0.35).clamp(120.0, 168.0)
+    };
+    reset_w = reset_w.min(row_w - gap).max(0.0);
+    let show_w = (row_w - reset_w - gap).clamp(0.0, 360.0);
+    debug_assert!(show_w + gap + reset_w <= row_w + 1e-3);
+    (show_w, gap, reset_w)
+}
+
 fn settings_server_operator_y() -> f32 {
     SETTINGS_LASER_Y + settings_laser_block_h()
 }
@@ -3202,26 +3223,52 @@ fn rebuild_settings(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32,
     );
     tree.push_label(
         Rect::new(cx + 24.0, laser_y + 22.0, cw - 48.0, 16.0),
-        "XR: ShowPrimaryMin now. Smooth/Stick → Desktop Lens (XR feel → L2).",
+        "XR: ShowPrimaryMin + Smooth/Modulate. Stick → Desktop Lens (XR Stick → later).",
         MUTED,
         0.95,
     );
-    let show_d = Rect::new(cx + 24.0, laser_y + 40.0, (cw - 48.0).min(520.0), 36.0);
-    tree.push_rect(
-        show_d,
-        state.interact(WidgetId::LaserShowInDesktopToggle, ACCENT),
-    );
-    tree.push_label(
-        Rect::new(show_d.x + 16.0, show_d.y + 8.0, show_d.w - 32.0, 20.0),
-        if state.laser.show_lasers_in_desktop_mode {
-            "ShowInDesktop: ON (beam overlay → L3)"
-        } else {
-            "ShowInDesktop: OFF"
-        },
-        TEXT,
-        1.3,
-    );
-    tree.register_hit(WidgetId::LaserShowInDesktopToggle, show_d);
+    // ShowInDesktop + Reset share one row so Reset stays in the clipped panel (no scroll).
+    let row_w = (cw - 48.0).max(0.0);
+    let (show_w, gap, reset_w) = laser_show_reset_widths(row_w);
+    let show_d = Rect::new(cx + 24.0, laser_y + 40.0, show_w, 36.0);
+    if show_w > 0.0 {
+        tree.push_rect(
+            show_d,
+            state.interact(WidgetId::LaserShowInDesktopToggle, ACCENT),
+        );
+        tree.push_label(
+            Rect::new(
+                show_d.x + 12.0,
+                show_d.y + 8.0,
+                (show_d.w - 24.0).max(0.0),
+                20.0,
+            ),
+            if state.laser.show_lasers_in_desktop_mode {
+                "ShowInDesktop: ON (→ L3)"
+            } else {
+                "ShowInDesktop: OFF"
+            },
+            TEXT,
+            1.2,
+        );
+        tree.register_hit(WidgetId::LaserShowInDesktopToggle, show_d);
+    }
+    if reset_w > 0.0 {
+        let reset = Rect::new(show_d.x + show_d.w + gap, laser_y + 40.0, reset_w, 36.0);
+        tree.push_rect(reset, state.interact(WidgetId::LaserResetDefaults, BTN));
+        tree.push_label(
+            Rect::new(
+                reset.x + 10.0,
+                reset.y + 8.0,
+                (reset.w - 20.0).max(0.0),
+                20.0,
+            ),
+            "Reset defaults",
+            TEXT,
+            1.15,
+        );
+        tree.register_hit(WidgetId::LaserResetDefaults, reset);
+    }
     let mut row_y = laser_y + SETTINGS_LASER_ROWS_TOP;
     for param in LaserFloatParam::ALL {
         let label = state.laser.format_float_label(param);
@@ -3535,6 +3582,25 @@ fn rebuild_settings(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32,
 mod tests {
     use super::super::layout::DrawCmd;
     use super::*;
+
+    #[test]
+    fn laser_show_reset_widths_never_overflow_or_panic() {
+        for row_w in [0.0_f32, 50.0, 100.0, 150.0, 199.0, 200.0, 400.0, 800.0] {
+            let (show_w, gap, reset_w) = laser_show_reset_widths(row_w);
+            assert!(show_w >= 0.0 && reset_w >= 0.0 && gap >= 0.0);
+            if reset_w == 0.0 {
+                assert!(
+                    (show_w - row_w.max(0.0)).abs() < 1e-3,
+                    "show-only row_w={row_w} show={show_w}"
+                );
+            } else {
+                assert!(
+                    show_w + gap + reset_w <= row_w + 1e-3,
+                    "overflow row_w={row_w} show={show_w} gap={gap} reset={reset_w}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn open_exit_tab_has_exit_hits() {

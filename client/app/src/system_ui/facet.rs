@@ -85,6 +85,7 @@ pub fn facet_of(widget: WidgetId) -> FacetId {
         | WidgetId::HotswitchAutoToggle
         | WidgetId::ServerOperatorToggle
         | WidgetId::LaserShowInDesktopToggle
+        | WidgetId::LaserResetDefaults
         | WidgetId::LaserSmoothDec
         | WidgetId::LaserSmoothInc
         | WidgetId::LaserModStartDec

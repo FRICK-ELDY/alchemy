@@ -936,6 +936,16 @@ impl SystemUi {
                 );
                 UiAction::LaserConfigChanged
             }
+            WidgetId::LaserResetDefaults => {
+                if self.state.laser.reset_to_defaults() {
+                    self.mark_dash_chrome_dirty();
+                    self.rebuild();
+                    log::info!("laser reset → defaults");
+                    UiAction::LaserConfigChanged
+                } else {
+                    UiAction::None
+                }
+            }
             WidgetId::LaserSmoothDec
             | WidgetId::LaserSmoothInc
             | WidgetId::LaserModStartDec
@@ -1562,6 +1572,7 @@ fn chrono_lite_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spatial_lens::InteractionLaserConfig;
 
     #[test]
     fn on_pointer_sets_hover_on_open_dash() {
@@ -2318,6 +2329,18 @@ mod tests {
             UiAction::LaserConfigChanged
         );
         assert!(ui.state.laser.laser_smooth_speed > before);
+        let reset = ui
+            .tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::LaserResetDefaults)
+            .map(|(_, r)| *r)
+            .expect("laser reset");
+        assert_eq!(
+            ui.on_click(reset.x + 1.0, reset.y + 1.0),
+            UiAction::LaserConfigChanged
+        );
+        assert_eq!(ui.state.laser, InteractionLaserConfig::default());
     }
 
     #[test]
