@@ -248,7 +248,8 @@ impl HandLaserState {
     ) -> [f32; 3] {
         if cfg.laser_smooth_speed <= 0.0 {
             // Passthrough only — do not clear stickiness / press-lock (unlike `snap_direction`).
-            let len_sq = raw_dir[0] * raw_dir[0] + raw_dir[1] * raw_dir[1] + raw_dir[2] * raw_dir[2];
+            let len_sq =
+                raw_dir[0] * raw_dir[0] + raw_dir[1] * raw_dir[1] + raw_dir[2] * raw_dir[2];
             if len_sq < 1e-12 {
                 self.smoothed_dir = [0.0, 0.0, -1.0];
             } else {
