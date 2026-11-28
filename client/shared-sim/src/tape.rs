@@ -119,6 +119,11 @@ pub struct WorldTransformf64 {
 }
 
 impl WorldTransformf64 {
+    /// Ring3 GPU lerp must snap to Curr (maps Arena [`crate::sim_arena::STATE_TELEPORT_THIS_TICK`]).
+    ///
+    /// Not SceneEntry / readiness flags — sheet pose only (x00eb).
+    pub const FLAG_TELEPORT: u32 = 1 << 0;
+
     /// Identity-ish default: unit quat, unit scale, dynamic mass.
     pub fn identity_at(position: [f64; 3]) -> Self {
         Self {
@@ -130,6 +135,20 @@ impl WorldTransformf64 {
             flags: 0,
             _pad0: 0,
             _pad1: [0; 4],
+        }
+    }
+
+    #[inline]
+    pub fn is_teleport(self) -> bool {
+        (self.flags & Self::FLAG_TELEPORT) != 0
+    }
+
+    #[inline]
+    pub fn set_teleport(&mut self, on: bool) {
+        if on {
+            self.flags |= Self::FLAG_TELEPORT;
+        } else {
+            self.flags &= !Self::FLAG_TELEPORT;
         }
     }
 
