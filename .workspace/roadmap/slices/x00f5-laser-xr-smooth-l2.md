@@ -18,7 +18,7 @@
 | トラッキング再取得・hotswitch、および連続 N フレーム `!should_render` 後の復帰で `snap_direction`（短い空フレームは smooth 維持） | 新規クレート；プロトコル変更 |
 | Primary 表示ゲート（L0）・Grab/UI 二値しきい値は不変；既存 `update_smoothed_direction` 再利用 | |
 | Settings **Reset defaults**（`InteractionLaserConfig::default` へ復帰・永続） | |
-| Alchemy Laser Default 体感チューニング（Smooth 5 / Start 2° / End 45° / Exp 0.75 / Mul 8 / Stick 0.2；旧例示 12/1.5/18/1.8/0.5 から変更） | 既存 `laser.json` の自動移行（明示 Reset まで旧値維持） |
+| Alchemy Laser Default（後続 Empiric: Smooth/Start/Stick **0**・`≤0` raw。x00f5 当時は 5/2°/45°/…。Resonite 出荷値は未ピン） | 既存 `laser.json` の自動移行（明示 Reset まで旧値維持） |
 
 ## 完了条件
 

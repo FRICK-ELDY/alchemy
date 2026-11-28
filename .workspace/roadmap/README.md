@@ -15,7 +15,7 @@
 | **見出し** | `# xNNNN — …` | `# x0007 — system_ui ダッシュ` |
 
 - ID は **発行後に変えない**（並べ替え・参照の安定性）。例外: **非 hex 採番の訂正のみ**（例: 誤 `x00ag` → 正 [`x00b0`](slices/x00b0-phase3-sim-state.md)；`0-9a-f` 外の桁は ID として無効）
-- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x00f6`**）
+- 次の空き番号は目次の最大 ID + 1（いまは次 = **`x00f7`**）
 - 旧 A〜E 表記は互換のための別名。新規文書・ブランチ・コミットでは **`xNNNN` を使う**
 
 ### タグ（front matter / ファイル先頭メタ）
@@ -295,11 +295,12 @@ depends_on: [x0006]
 | x00f3 | — | done | 体験本線 F1-2: SoftLease 見える化 | [x00f3-soft-lease-visibility.md](slices/x00f3-soft-lease-visibility.md) |
 | x00f4 | — | done | 体験本線 F1-3: ドラッグ揮発 ↔ Commit 1 回（多軸まとめ） | [x00f4-drag-volatile-commit.md](slices/x00f4-drag-volatile-commit.md) |
 | x00f5 | — | done | 体験本線 L2: XR ビーム角度変調スムージング | [x00f5-laser-xr-smooth-l2.md](slices/x00f5-laser-xr-smooth-l2.md) |
+| x00f6 | — | done | 体験本線 U0: 公式 Dash 板経路（シェル＋Chrome） | [x00f6-dash-plate-u0.md](slices/x00f6-dash-plate-u0.md) |
 
-**現在の次:** 体験本線 [feel_edit_experience.md](feel_edit_experience.md) — **T2 / E2-1**（CJK＋IME・人承認）または **U0**（公式 Dash 板経路）。F0 / F1 / L0 / L1 / L2 / T1 / G0 **done**。**Fc 帯は deferred（枠のみ・当面実装しない）**（再開条件は [feel §4.5](feel_edit_experience.md)＝要望＋マウント信頼境界。実行可能 Facet は別決）。後続（未発行）: Inspector ネット揮発スクラブ / Grab 離し姿勢 Commit。品質本線 Phase 1–3 枠は [x00e9](slices/x00e9-rigid-solver-boundary.md) で **クローズ**。剛体ソルバ本体・rapier/AVBD は別決（人承認）。並行候補: Drive Git 詳細パネル / shared-sim⇔Tree / clone·fetch 等（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §18.7+）。
+**現在の次:** 体験本線 [feel_edit_experience.md](feel_edit_experience.md) — **U0.1**（Facet 本文 prim 化）または **T2 / E2-1**（CJK＋IME・人承認）。F0 / F1 / L0 / L1 / L2 / T1 / G0 / **U0** **done**。**Fc 帯は deferred（枠のみ・当面実装しない）**（再開条件は [feel §4.5](feel_edit_experience.md)＝要望＋マウント信頼境界。実行可能 Facet は別決）。後続（未発行）: Inspector ネット揮発スクラブ / Grab 離し姿勢 Commit。品質本線 Phase 1–3 枠は [x00e9](slices/x00e9-rigid-solver-boundary.md) で **クローズ**。剛体ソルバ本体・rapier/AVBD は別決（人承認）。並行候補: Drive Git 詳細パネル / shared-sim⇔Tree / clone·fetch 等（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §18.7+）。
 **規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；x00be〜x00c7 **done**）。
 
-次の空き番号は **`x00f6`**。
+次の空き番号は **`x00f7`**。
 
 ## 関連
 

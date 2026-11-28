@@ -240,6 +240,9 @@ pub struct DashState {
     pub hierarchy_scroll: usize,
     /// Selected Hierarchy `row_id` (drives X-Ray). Collapse set lives on EpochViewState.
     pub hierarchy_selected: Option<u32>,
+    /// XR plate path (x00f6): Shell/Chrome bar＋tab fills transparent; GPU Uber-SDF owns glass.
+    /// Desktop stays `false` — fullscreen CPU overlay keeps dim＋chrome (board≠overlay).
+    pub plate_chrome: bool,
 }
 
 impl Default for DashState {
@@ -329,6 +332,7 @@ impl Default for DashState {
             hierarchy_rows: Vec::new(),
             hierarchy_scroll: 0,
             hierarchy_selected: None,
+            plate_chrome: false,
         }
     }
 }
@@ -885,8 +889,51 @@ impl DashState {
     }
 }
 
-const TOP_H: f32 = 44.0;
-const BOTTOM_H: f32 = 72.0;
+/// Top chrome height (px). Shared with `spatial_lens::dash_board` (x00f6).
+pub const TOP_H: f32 = crate::spatial_lens::DASH_TOP_H;
+/// Bottom tab bar height (px). Shared with `spatial_lens::dash_board` (x00f6).
+pub const BOTTOM_H: f32 = crate::spatial_lens::DASH_BOTTOM_H;
+
+/// Build Spatial Lens Dash pack view from local dash state (x00f6).
+pub fn official_dash_view(
+    state: &DashState,
+    world_matrix: glam::Mat4,
+    shell_active: bool,
+) -> crate::spatial_lens::OfficialDashView {
+    use crate::spatial_lens::{OfficialDashTab, OfficialDashView, DASH_HEIGHT_M, DASH_WIDTH_M};
+    let show_bottom_tabs = matches!(
+        state.shell,
+        OnboardingShell::Dash | OnboardingShell::MainHub
+    );
+    let active_tab = match state.tab {
+        DashTab::Home | DashTab::Worlds => OfficialDashTab::Home,
+        DashTab::Inventory => OfficialDashTab::Inventory,
+        DashTab::Room => OfficialDashTab::Room,
+        DashTab::Settings => OfficialDashTab::Settings,
+        DashTab::Exit => OfficialDashTab::Exit,
+    };
+    // Match CPU `hover || pressed` hot chrome so press-lock keeps GPU tab hot.
+    let hot_id = state.pressed.or(state.hover);
+    let hovered_tab = match hot_id {
+        Some(WidgetId::TabHome) => Some(OfficialDashTab::Home),
+        Some(WidgetId::TabInventory) => Some(OfficialDashTab::Inventory),
+        Some(WidgetId::TabRoom) => Some(OfficialDashTab::Room),
+        Some(WidgetId::TabSettings) => Some(OfficialDashTab::Settings),
+        Some(WidgetId::TabExit) => Some(OfficialDashTab::Exit),
+        _ => None,
+    };
+    OfficialDashView {
+        width_px: state.canvas_w.max(1.0),
+        height_px: state.canvas_h.max(1.0),
+        width_m: DASH_WIDTH_M,
+        height_m: DASH_HEIGHT_M,
+        world_matrix,
+        shell_active,
+        show_bottom_tabs,
+        active_tab,
+        hovered_tab,
+    }
+}
 
 /// G0 glass tokens → CPU Canvas transitional RGB/α (board path owns corner/glow).
 const fn glass_color(c: crate::spatial_lens::GlassColor) -> Color {
@@ -895,6 +942,25 @@ const fn glass_color(c: crate::spatial_lens::GlassColor) -> Color {
 
 const BG: Color = glass_color(crate::spatial_lens::glass::SHELL_FILL);
 const BAR: Color = glass_color(crate::spatial_lens::glass::CHROME_FILL);
+
+#[inline]
+fn plate_shell_bg(plate: bool) -> Color {
+    // Always keep dim on Desktop (plate=false). XR plate path: shell fill is GPU.
+    if plate {
+        Color::rgba(0.0, 0.0, 0.0, 0.0)
+    } else {
+        BG
+    }
+}
+
+#[inline]
+fn plate_chrome_bar(plate: bool) -> Color {
+    if plate {
+        Color::rgba(0.0, 0.0, 0.0, 0.0)
+    } else {
+        BAR
+    }
+}
 const ACCENT: Color = glass_color(crate::spatial_lens::glass::ACCENT);
 const DANGER: Color = glass_color(crate::spatial_lens::glass::DANGER);
 const TEXT: Color = glass_color(crate::spatial_lens::glass::TEXT);
@@ -2826,13 +2892,15 @@ pub fn rebuild(tree: &mut LayoutTree, state: &mut DashState) {
                 | OnboardingShell::MainHub
         );
 
+    let plate = state.plate_chrome;
     // Dimmed full-canvas backdrop (still part of one Canvas / DashRoot).
-    tree.push_rect(Rect::new(0.0, 0.0, w, h), BG);
+    // XR plate path: transparent shell — Uber-SDF owns glass. Desktop always dims.
+    tree.push_rect(Rect::new(0.0, 0.0, w, h), plate_shell_bg(plate));
 
     // --- Facet: Chrome (top bar) ---
     debug_assert_eq!(facet_of(WidgetId::Mic), FacetId::Chrome);
     debug_assert!(DashRoot::official_facets().contains(&FacetId::Chrome));
-    tree.push_rect(Rect::new(0.0, 0.0, w, TOP_H), BAR);
+    tree.push_rect(Rect::new(0.0, 0.0, w, TOP_H), plate_chrome_bar(plate));
     let icon = 28.0_f32;
     let mut x = 12.0_f32;
     let iy = (TOP_H - icon) * 0.5;
@@ -3051,7 +3119,8 @@ pub fn rebuild(tree: &mut LayoutTree, state: &mut DashState) {
     // Bottom bar last: paints over center overflow and wins hit tests in the strip.
     if show_bottom_tabs {
         tree.clip = None;
-        tree.push_rect(Rect::new(0.0, by, w, BOTTOM_H), BAR);
+        // XR plate path: transparent bar — GPU Chrome + tab Controls own glass.
+        tree.push_rect(Rect::new(0.0, by, w, BOTTOM_H), plate_chrome_bar(plate));
 
         let tab_w = 72.0;
         let gap = 8.0;
@@ -3068,7 +3137,8 @@ pub fn rebuild(tree: &mut LayoutTree, state: &mut DashState) {
                         active_color: Color| {
             let r = Rect::new(x, by + 8.0, tab_w, BOTTOM_H - 16.0);
             let hot = state.hover == Some(id) || state.pressed == Some(id);
-            if state.tab == tab || hot {
+            // Plate path: tab RoundedBox + MsdfGlyph on Uber-SDF; CPU keeps icon + hit only.
+            if !state.plate_chrome && (state.tab == tab || hot) {
                 let base = if state.tab == tab {
                     active_color
                 } else {
@@ -3080,12 +3150,14 @@ pub fn rebuild(tree: &mut LayoutTree, state: &mut DashState) {
                 Rect::new(x + (tab_w - 32.0) * 0.5, by + 12.0, 32.0, 32.0),
                 icon,
             );
-            tree.push_label(
-                Rect::new(x + 4.0, by + 46.0, tab_w - 8.0, 14.0),
-                label,
-                TEXT,
-                1.0,
-            );
+            if !state.plate_chrome {
+                tree.push_label(
+                    Rect::new(x + 4.0, by + 46.0, tab_w - 8.0, 14.0),
+                    label,
+                    TEXT,
+                    1.0,
+                );
+            }
             tree.register_hit(id, r);
         };
 
@@ -3849,7 +3921,7 @@ mod tests {
             .find(|(id, _)| *id == WidgetId::TabRoom)
             .map(|(_, r)| *r)
             .expect("TabRoom");
-        // Selected tabs get a background rect; healed Home should, stale Room must not.
+        // Desktop default (`plate_chrome=false`): selected tabs get a CPU background rect.
         assert!(
             tree.draws
                 .iter()
@@ -3862,6 +3934,56 @@ mod tests {
                 .iter()
                 .any(|d| { matches!(d, DrawCmd::Rect { rect, .. } if *rect == room_hit) }),
             "Room tab must not keep active highlight after heal"
+        );
+    }
+
+    #[test]
+    fn plate_chrome_suppresses_cpu_tab_fill_and_label() {
+        use crate::spatial_lens::{pack_official_dash, OfficialDashView};
+        let mut tree = LayoutTree::default();
+        let mut state = DashState {
+            open: true,
+            shell: OnboardingShell::Dash,
+            tab: DashTab::Home,
+            plate_chrome: true,
+            canvas_w: 960.0,
+            canvas_h: 540.0,
+            ..Default::default()
+        };
+        rebuild(&mut tree, &mut state);
+        let home_hit = tree
+            .hits
+            .iter()
+            .find(|(id, _)| *id == WidgetId::TabHome)
+            .map(|(_, r)| *r)
+            .expect("TabHome");
+        assert!(
+            !tree
+                .draws
+                .iter()
+                .any(|d| { matches!(d, DrawCmd::Rect { rect, .. } if *rect == home_hit) }),
+            "plate_chrome: no CPU tab fill"
+        );
+        let tab_label_y0 = state.canvas_h - BOTTOM_H + 46.0;
+        assert!(
+            !tree.draws.iter().any(|d| {
+                matches!(d, DrawCmd::Label { rect, text, .. } if (rect.y - tab_label_y0).abs() < 1.0
+                    && matches!(text.as_str(), "Home" | "Inventory" | "Room" | "Settings" | "Exit"))
+            }),
+            "plate_chrome: CPU bottom-tab labels suppressed (MSDF owns them)"
+        );
+        let view = OfficialDashView {
+            active_tab: crate::spatial_lens::OfficialDashTab::Home,
+            show_bottom_tabs: true,
+            ..OfficialDashView::default()
+        };
+        let mut headers = Vec::new();
+        let mut prims = Vec::new();
+        pack_official_dash(&view, 0, &mut headers, &mut prims);
+        assert_eq!(headers.len(), 1);
+        assert!(
+            prims.len() > 3,
+            "GPU plate emits shell/chrome/tabs for active Home"
         );
     }
 

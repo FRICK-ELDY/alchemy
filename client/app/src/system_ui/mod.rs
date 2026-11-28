@@ -9,9 +9,11 @@
 //! hover / password stay per-surface. Chrome/form push are field-split with
 //! chrome CAS; `PresentationGate` is SoT for hotswitch auto/suppressed.
 //! Hierarchy virtual lens (x0094) mounts in Settings from Epoch `euler_order`.
+//! Plate path (x00f6): XR sets `DashState.plate_chrome` — Shell/Chrome glass via Uber-SDF;
+//! CPU suppresses bar/tab fills+labels. Desktop keeps fullscreen dim+chrome overlay.
 //! Non-guarantees: OpenXR types inside this module, user Facet rearrange, Vault layout
 //! persist, WorldRoot, XR virtual keyboard, auth/world HTTP (surface modules), final UI art,
-//! Uber-SDF Spatial Lens panels, Federation directory / friends active-session list (future).
+//! Desktop Dash-on-board (U0.1), Facet body full prim migration, Federation directory.
 
 mod dash;
 pub mod facet;
@@ -24,8 +26,9 @@ mod layout;
 #[allow(unused_imports)] // public re-export; store.logic type for callers
 pub use dash::SharedDashLogic;
 pub use dash::{
-    access_level_from_widget, fresh_create_room_id, DashState, DashTab, HomeField, HomeMode,
-    MainHubTab, OnboardingShell, RoomSubTab, SharedDashStore, SESSION_NAME_MAX,
+    access_level_from_widget, fresh_create_room_id, official_dash_view, DashState, DashTab,
+    HomeField, HomeMode, MainHubTab, OnboardingShell, RoomSubTab, SharedDashStore,
+    SESSION_NAME_MAX,
 };
 pub use gpu::UiGpu;
 pub use inventory_peer::{

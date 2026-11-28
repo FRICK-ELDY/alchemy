@@ -3,7 +3,7 @@
 //! Guarantees: single SSoT for Shell/Chrome/Card/Control/Field/Accent RGBA + RoundedBox
 //! geometry; same values for Desktop/XR now and Web later; `packed()` derived from `rgba`
 //! (no hand-synced second channel).
-//! Non-guarantees: background blur (G1); full Dash → board migration (U0); CSS glass.
+//! Non-guarantees: background blur (G1); Facet body full prim migration (U0.1); CSS glass.
 //!
 //! LOD2 plate color in `uber_sdf.wgsl` must stay equal to [`LOD2_SHELL`] — enforced by
 //! `gpu` tests via [`lod2_wgsl_vec4_literal`].
