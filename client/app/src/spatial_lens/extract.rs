@@ -426,6 +426,7 @@ pub fn pack_personal_lens(
     row_count
 }
 
+#[allow(clippy::too_many_arguments)] // layout + draft scrub; keep flat like other pack helpers
 fn pack_inspector_fields(
     epoch: &EpochViewState,
     row_id: u32,

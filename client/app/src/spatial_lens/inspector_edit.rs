@@ -5,13 +5,17 @@
 
 #![forbid(unsafe_code)]
 
-use alchemy_protocol::{encode_f64, hash_f64, EditProposal};
+use alchemy_protocol::{encode_f64, hash_f64};
 use anyhow::{anyhow, Result};
 
-use crate::intent_session::IntentSession;
 use crate::inventory::publish_edit_proposal;
 use crate::scene::SharedState;
 use crate::spatial_lens::extract::InspectorScrub;
+
+#[cfg(test)]
+use crate::intent_session::IntentSession;
+#[cfg(test)]
+use alchemy_protocol::EditProposal;
 
 /// Sign + put SetField for a finished Inspector scrub.
 pub fn publish_inspector_pos_commit(

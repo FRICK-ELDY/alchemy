@@ -36,3 +36,6 @@ path = "src/bin/vcs_object.rs"
 [build-dependencies]
 prost-build = "0.14"
 protoc-bin-vendored = "3"
+
+# Path dep of client workspace; not a workspace member — do not inherit workspace.lints.
+[lints]
