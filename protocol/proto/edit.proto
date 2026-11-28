@@ -87,4 +87,7 @@ message EditCommit {
   repeated EditOp ops = 6;
   // Ed25519 over encode with `host_sig` cleared.
   bytes host_sig = 7;
+  // SoftLease holder for the op's entity (x00f3). 0 = none / unknown.
+  // SOFT_LEASE reject → current holder; SoftLease-gated accept → acquiring actor.
+  uint64 lease_holder_actor_id = 8;
 }

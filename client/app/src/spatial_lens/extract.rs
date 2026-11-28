@@ -1,9 +1,10 @@
-//! Hierarchy / Inspector → GpuUiPrim packing (x00bb / x00bc / x00ed / x00f2).
+//! Hierarchy / Inspector → GpuUiPrim packing (x00bb / x00bc / x00ed / x00f2 / x00f3).
 //!
 //! Guarantees: viewport-window extract only; DirectNumber pose fields without String;
 //! short ASCII MsdfGlyph labels (Tier-1 Static MSDF); selected_row scrub when row is not live;
-//! scroll clamp to non-empty window; Inspector POS scrub draft preview (x00f2).
-//! Non-guarantees: CJK labels; SoftLease UI chrome (→ F1-2); multi-axis Commit (→ F1-3);
+//! scroll clamp to non-empty window; Inspector POS scrub draft preview (x00f2);
+//! SoftLease chrome (`LK` + holder; mine/other color · x00f3).
+//! Non-guarantees: CJK labels; multi-axis Commit (→ F1-3);
 //! WorldRoot sync; Lens-side collapse toggle (collapse set is shared with Settings; Lens MVP reads only).
 
 #![forbid(unsafe_code)]
@@ -11,8 +12,9 @@
 use glam::{Mat4, Quat, Vec3};
 
 use super::glass::{
-    card_payload, control_payload, shell_payload, shell_rect_inset, CARD_FILL, CHROME_FILL,
-    CONTROL_HOT, CONTROL_IDLE, ROW_SELECT, SHELL_BORDER, SHELL_FILL, TEXT,
+    card_payload, control_payload, shell_payload, shell_rect_inset, ACCENT, CARD_FILL, CHROME_FILL,
+    CONTROL_DANGER, CONTROL_HOT, CONTROL_IDLE, DANGER, MUTED, ROW_SELECT, SHELL_BORDER, SHELL_FILL,
+    TEXT,
 };
 use super::msdf::{push_ascii_glyphs, AsciiGlyphBlit};
 use super::prim::{
@@ -35,6 +37,14 @@ pub struct InspectorScrub {
     pub expected_hash: [u8; 32],
 }
 
+/// SoftLease chrome for the selected entity (x00f3). Filled by surface tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SoftLeaseChrome {
+    pub holder_actor_id: u64,
+    /// True when `holder_actor_id` matches local Room Token `sub` hash.
+    pub is_mine: bool,
+}
+
 /// Personal spatial lens runtime (local only).
 #[derive(Clone, Debug)]
 pub struct SpatialLensState {
@@ -51,6 +61,8 @@ pub struct SpatialLensState {
     pub hovered_binding: u32,
     /// In-flight POS scrub (None when idle).
     pub scrub: Option<InspectorScrub>,
+    /// SoftLease hint for current selection (None = unlocked / unknown).
+    pub soft_lease: Option<SoftLeaseChrome>,
 }
 
 impl Default for SpatialLensState {
@@ -67,6 +79,7 @@ impl Default for SpatialLensState {
             selected_row: None,
             hovered_binding: 0,
             scrub: None,
+            soft_lease: None,
         }
     }
 }
@@ -307,13 +320,22 @@ pub fn pack_personal_lens(
     // Vertical margins use the same `pad` as horizontal (shell inset safe).
     let chrome_y = state.height_px - pad - chrome_h;
 
-    // Title chrome: "ID" MsdfGlyph + selected owner_scope DirectNumber (or -1).
+    // Title chrome: "ID" + entity; SoftLease → tint + "LK" + holder (x00f3).
+    let (chrome_fill, chrome_border, lease_label_col) = match state.soft_lease {
+        Some(SoftLeaseChrome { is_mine: true, .. }) => {
+            (CHROME_FILL.packed(), ACCENT.packed(), ACCENT.packed())
+        }
+        Some(SoftLeaseChrome { is_mine: false, .. }) => {
+            (CONTROL_DANGER.packed(), DANGER.packed(), DANGER.packed())
+        }
+        None => (CHROME_FILL.packed(), border, MUTED.packed()),
+    };
     out_prims.push(prim_box(
         0,
         [pad, chrome_y, state.width_px - 2.0 * pad, chrome_h],
         clip,
-        CHROME_FILL.packed(),
-        border,
+        chrome_fill,
+        chrome_border,
         0,
         control_payload(),
     ));
@@ -345,13 +367,43 @@ pub fn pack_personal_lens(
         .unwrap_or(-1.0);
     out_prims.push(prim_number(
         0,
-        [pad + 40.0, chrome_y + 4.0, 160.0, 24.0],
+        [pad + 40.0, chrome_y + 4.0, 120.0, 24.0],
         clip,
         title_val,
         0,
         num_col,
         0,
     ));
+    if let Some(lease) = state.soft_lease {
+        let lk_x = pad + 170.0;
+        push_ascii_glyphs(
+            out_prims,
+            AsciiGlyphBlit {
+                panel: 0,
+                origin_x: lk_x,
+                origin_y: chrome_y + 6.0,
+                glyph_w: 14.0,
+                glyph_h: 20.0,
+                clip,
+                color_rgba: lease_label_col,
+                binding_id: 0,
+                text: "LK",
+            },
+        );
+        // Zero-String: DirectNumber is f64-scaled int; chrome shows **lower 32 bits only**.
+        // Distinct FNV actor_ids that collide in the low 32 bits look identical here
+        // (full u64 / Presence name is non-guarantee · x00f3).
+        let holder_lo = (lease.holder_actor_id & 0xffff_ffff) as f64;
+        out_prims.push(prim_number(
+            0,
+            [lk_x + 36.0, chrome_y + 4.0, 160.0, 24.0],
+            clip,
+            holder_lo,
+            0,
+            lease_label_col,
+            0,
+        ));
+    }
 
     let mut y = chrome_y - pad - ROW_H;
 
@@ -745,6 +797,46 @@ mod tests {
         assert!(
             msdf.iter().all(|p| p.binding_id == 0),
             "MsdfGlyph labels must use binding_id=0"
+        );
+    }
+
+    #[test]
+    fn pack_lens_soft_lease_chrome_emits_lk_and_danger_fill() {
+        use super::super::glass::CONTROL_DANGER;
+        use super::super::prim::unpack_kind;
+
+        let epoch = epoch_with_one_row();
+        let mut state = SpatialLensState {
+            visible: true,
+            selected_row: Some(0),
+            soft_lease: Some(SoftLeaseChrome {
+                holder_actor_id: 0x1234_5678_9abc_def0,
+                is_mine: false,
+            }),
+            ..Default::default()
+        };
+        let mut headers = Vec::new();
+        let mut prims = Vec::new();
+        pack_personal_lens(&mut state, &epoch, &mut headers, &mut prims);
+        assert!(
+            prims.iter().any(|p| {
+                unpack_kind(p.panel_and_kind) == UiPrimKind::RoundedBox
+                    && p.color_rgba == CONTROL_DANGER.packed()
+            }),
+            "other SoftLease chrome uses CONTROL_DANGER"
+        );
+        let msdf: Vec<_> = prims.iter().filter(|p| unpack_is_msdf(p)).collect();
+        // "ID" (2) + "LK" (2) + inspector labels.
+        assert!(msdf.len() >= 8, "msdf_n={}", msdf.len());
+        // Lower 32 bits of holder as DirectNumber.
+        let holder_lo = 0x9abc_def0u32 as f64;
+        assert!(
+            prims.iter().any(|p| {
+                unpack_is_number(p)
+                    && p.binding_id == 0
+                    && (super::super::prim::unpack_direct_number(p.payload) - holder_lo).abs() < 0.5
+            }),
+            "holder DirectNumber missing"
         );
     }
 

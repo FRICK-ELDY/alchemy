@@ -7,10 +7,10 @@
 //! inbox enqueue only here; **tip + accept Commit after physics/local apply in HostLoop**
 //! (inbox closed / apply fail → reject `APPLY` + `release_reserved`, tip unchanged).
 //! Reparent/SetField: SoftLease gate (x00e2) then quarantine then optimistic
-//! [`LiveEditLedger`] → `scene_store` apply; SoftLease conflict → reject `SOFT_LEASE`;
-//! `TRASH_ENTITY_ID` as reparent parent → `NOT_FOUND` (despawn path only; x00e3);
-//! **tip + accept Commit after** FrameBridge queue **and** barrier — never rewind tip;
-//! queue/barrier/inbox fail → reject `APPLY`.
+//! [`LiveEditLedger`] → `scene_store` apply; SoftLease conflict → reject `SOFT_LEASE`
+//! with `lease_holder_actor_id` (x00f3); `TRASH_ENTITY_ID` as reparent parent →
+//! `NOT_FOUND` (despawn path only; x00e3); **tip + accept Commit after** FrameBridge
+//! queue **and** barrier — never rewind tip; queue/barrier/inbox fail → reject `APPLY`.
 //! Save (x00b7–x00b9): world packed CAS folds pending spawns/despawns + parent/SetField;
 //! install shared scene + `force_reseal` when packed revision advances; **tip unchanged**;
 //! accept Commit with current tip.
@@ -734,7 +734,7 @@ fn apply_reparent(
     }
     if led.soft_lease_allows(r.child_entity_id, actor_id).is_err() {
         return Ok((
-            Some(reject_commit(proposal, edit_reject::SOFT_LEASE, tip)),
+            Some(reject_soft_lease(proposal, tip, &led, r.child_entity_id)),
             None,
         ));
     }
@@ -755,6 +755,7 @@ fn apply_reparent(
         proposal: proposal.clone(),
         op: r,
         prev_parent,
+        lease_holder_actor_id: actor_id,
     };
     if led.try_acquire_soft_lease(child, actor_id).is_err() {
         if !led.rollback_mirrors(&ready) {
@@ -763,10 +764,7 @@ fn apply_reparent(
                 ready.proposal().op_id
             );
         }
-        return Ok((
-            Some(reject_commit(proposal, edit_reject::SOFT_LEASE, tip)),
-            None,
-        ));
+        return Ok((Some(reject_soft_lease(proposal, tip, &led, child)), None));
     }
     // Tip + accept Commit deferred until HostLoop barrier succeeds.
     Ok((None, Some(ReadyEdit::Live(ready))))
@@ -881,7 +879,7 @@ fn apply_set_field_pos(
     }
     if led.soft_lease_allows(f.entity_id, actor_id).is_err() {
         return Ok((
-            Some(reject_commit(proposal, edit_reject::SOFT_LEASE, tip)),
+            Some(reject_soft_lease(proposal, tip, led, f.entity_id)),
             None,
         ));
     }
@@ -891,12 +889,10 @@ fn apply_set_field_pos(
         op: f,
         // Empty = no sparse POS row to restore on queue/barrier fail.
         prev_value: Vec::new(),
+        lease_holder_actor_id: actor_id,
     };
     if led.try_acquire_soft_lease(entity_id, actor_id).is_err() {
-        return Ok((
-            Some(reject_commit(proposal, edit_reject::SOFT_LEASE, tip)),
-            None,
-        ));
+        return Ok((Some(reject_soft_lease(proposal, tip, led, entity_id)), None));
     }
     Ok((None, Some(ReadyEdit::Live(ready))))
 }
@@ -912,7 +908,7 @@ fn finish_set_field_ready(
 ) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
     if led.soft_lease_allows(f.entity_id, actor_id).is_err() {
         return Ok((
-            Some(reject_commit(proposal, edit_reject::SOFT_LEASE, tip)),
+            Some(reject_soft_lease(proposal, tip, led, f.entity_id)),
             None,
         ));
     }
@@ -934,6 +930,7 @@ fn finish_set_field_ready(
         proposal: proposal.clone(),
         op: f,
         prev_value,
+        lease_holder_actor_id: actor_id,
     };
     if led.try_acquire_soft_lease(entity_id, actor_id).is_err() {
         if !led.rollback_mirrors(&ready) {
@@ -942,10 +939,7 @@ fn finish_set_field_ready(
                 ready.proposal().op_id
             );
         }
-        return Ok((
-            Some(reject_commit(proposal, edit_reject::SOFT_LEASE, tip)),
-            None,
-        ));
+        return Ok((Some(reject_soft_lease(proposal, tip, led, entity_id)), None));
     }
     // Tip + accept Commit deferred until HostLoop barrier succeeds.
     Ok((None, Some(ReadyEdit::Live(ready))))
@@ -960,7 +954,23 @@ fn reject_commit(proposal: &EditProposal, reason: u32, scene_rev: u64) -> EditCo
         reject_reason: reason,
         ops: proposal.ops.clone(),
         host_sig: vec![],
+        lease_holder_actor_id: 0,
     }
+}
+
+/// SoftLease conflict Commit with current holder (x00f3).
+fn reject_soft_lease(
+    proposal: &EditProposal,
+    scene_rev: u64,
+    led: &LiveEditLedger,
+    entity_id: u32,
+) -> EditCommit {
+    let mut commit = reject_commit(proposal, edit_reject::SOFT_LEASE, scene_rev);
+    commit.lease_holder_actor_id = led
+        .soft_lease_of(entity_id)
+        .map(|l| l.holder_actor_id)
+        .unwrap_or(0);
+    commit
 }
 
 fn accept_commit(proposal: &EditProposal, scene_rev: u64) -> EditCommit {
@@ -972,6 +982,7 @@ fn accept_commit(proposal: &EditProposal, scene_rev: u64) -> EditCommit {
         reject_reason: edit_reject::NONE,
         ops: proposal.ops.clone(),
         host_sig: vec![],
+        lease_holder_actor_id: 0,
     }
 }
 
@@ -1199,7 +1210,24 @@ mod tests {
         let bob = actor_id_from_sub("bob");
         let (c1, ready) = apply_reparent(&p1, r, &live, alice).unwrap();
         assert!(c1.is_none());
-        assert!(ready.is_some());
+        let ready = match ready.expect("SoftLease-gated Ready") {
+            ReadyEdit::Live(r) => r,
+            _ => panic!("expected live Ready"),
+        };
+        // DoD: Reparent Ready fixes acquiring actor (not table re-lookup · x00f3).
+        assert_eq!(ready.lease_holder_actor_id(), alice);
+        {
+            let mut led = live.lock().unwrap();
+            led.clear_soft_lease_for_test(10);
+            assert!(led.soft_lease_of(10).is_none());
+            assert_eq!(
+                ready.lease_holder_actor_id(),
+                alice,
+                "Reparent Ready holder survives same-tick SoftLease clear"
+            );
+            // Restore lease so the conflict reject below still exercises SoftLease.
+            assert!(led.try_acquire_soft_lease(10, alice).is_ok());
+        }
 
         let mut p2 = p1.clone();
         p2.op_id = 2;
@@ -1226,6 +1254,10 @@ mod tests {
         let c2 = c2.expect("SoftLease reject Commit");
         assert!(!c2.accepted);
         assert_eq!(c2.reject_reason, edit_reject::SOFT_LEASE);
+        assert_eq!(
+            c2.lease_holder_actor_id, alice,
+            "x00f3 holder on SoftLease reject"
+        );
         assert!(ready2.is_none());
         let led = live.lock().unwrap();
         assert_eq!(led.parent_of(10), 2, "parent unchanged on SoftLease reject");
@@ -1265,7 +1297,23 @@ mod tests {
         };
         let (c1, ready) = apply_set_field(&p1, f1, &live, alice).unwrap();
         assert!(c1.is_none());
-        assert!(ready.is_some());
+        let ready = match ready.expect("SoftLease-gated Ready") {
+            ReadyEdit::Live(r) => r,
+            _ => panic!("expected live Ready"),
+        };
+        // DoD: SetField Ready also fixes acquiring actor (not table re-lookup · x00f3).
+        assert_eq!(ready.lease_holder_actor_id(), alice);
+        {
+            let mut led = live.lock().unwrap();
+            led.clear_soft_lease_for_test(10);
+            assert!(led.soft_lease_of(10).is_none());
+            assert_eq!(
+                ready.lease_holder_actor_id(),
+                alice,
+                "SetField Ready holder survives same-tick SoftLease clear"
+            );
+            assert!(led.try_acquire_soft_lease(10, alice).is_ok());
+        }
 
         let mut p2 = p1.clone();
         p2.op_id = 2;
@@ -1286,6 +1334,10 @@ mod tests {
         let c2 = c2.expect("SoftLease reject Commit");
         assert!(!c2.accepted);
         assert_eq!(c2.reject_reason, edit_reject::SOFT_LEASE);
+        assert_eq!(
+            c2.lease_holder_actor_id, alice,
+            "x00f3 holder on SoftLease reject"
+        );
         assert!(ready2.is_none());
         let led = live.lock().unwrap();
         assert_eq!(

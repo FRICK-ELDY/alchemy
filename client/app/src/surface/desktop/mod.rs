@@ -775,6 +775,7 @@ impl App {
             if let Some(prev) = self.spatial_lens.scrub.take() {
                 self.shared.pending_local.clear(prev.entity_id);
             }
+            self.spatial_lens.soft_lease = None;
             self.spatial_headers.clear();
             self.spatial_prims.clear();
             self.spatial_lens.hovered_binding = 0;
@@ -801,6 +802,7 @@ impl App {
         if let Some(row) = self.spatial_lens.selected_row {
             self.shared.epoch.set_xray_row(Some(row));
         }
+        self.refresh_soft_lease_chrome();
 
         // DashState.laser is SoT (Settings + chrome sync · x00ee).
         self.spatial_laser_cfg = self.ui.state.laser;
@@ -849,6 +851,42 @@ impl App {
         // miss while primary held → last-good UV (never miss sentinel `[0,0]`).
         let panel_hit = hit.as_ref().map(|h| (h.uv_px, h.binding_id));
         self.tick_inspector_scrub(panel_hit);
+    }
+
+    /// SoftLease chrome for selected entity (x00f3). Physical Grab 非対象.
+    fn refresh_soft_lease_chrome(&mut self) {
+        use crate::spatial_lens::extract::SoftLeaseChrome;
+        let Some(row) = self.spatial_lens.selected_row else {
+            self.spatial_lens.soft_lease = None;
+            return;
+        };
+        let Some(entity_id) = entity_id_for_row(&self.shared.epoch, row) else {
+            self.spatial_lens.soft_lease = None;
+            return;
+        };
+        let now = std::time::Instant::now();
+        let holder = self
+            .shared
+            .soft_lease_hints
+            .lock()
+            .ok()
+            .and_then(|mut t| t.holder_of(entity_id, now));
+        let Some(holder_actor_id) = holder else {
+            self.spatial_lens.soft_lease = None;
+            return;
+        };
+        let local_actor = self
+            .shared
+            .auth
+            .lock()
+            .ok()
+            .and_then(|g| g.local_sub.clone())
+            .map(|sub| alchemy_shared_sim::actor_id_from_sub(&sub));
+        let is_mine = local_actor == Some(holder_actor_id);
+        self.spatial_lens.soft_lease = Some(SoftLeaseChrome {
+            holder_actor_id,
+            is_mine,
+        });
     }
 
     /// Desktop Inspector POS scrub: drag updates draft; release → 1× SetField (x00f2).
@@ -1453,6 +1491,8 @@ impl ApplicationHandler for App {
                             {
                                 self.shared.pending_local.clear(eid);
                             }
+                            // SoftLease chrome before first pack (avoid 1–2 frame lag · x00f3).
+                            self.refresh_soft_lease_chrome();
                             let _ = pack_personal_lens(
                                 &mut self.spatial_lens,
                                 &self.shared.epoch,

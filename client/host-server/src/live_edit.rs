@@ -57,11 +57,11 @@ use alchemy_protocol::{
 };
 use alchemy_shared_sim::{
     fold_op_chain, is_trash_entity_id, ApplyOutcome, CrdtOp, OpTimestamp, PropValue, SceneStore,
-    SequencedOp, SlotTransition, SlotUndoStack, SoftLeaseConflict, SoftLeaseTable, TrashStore,
-    SOFT_LEASE_TTL_TICKS,
+    SequencedOp, SlotTransition, SlotUndoStack, SoftLease, SoftLeaseConflict, SoftLeaseTable,
+    TrashStore, SOFT_LEASE_TTL_TICKS,
 };
 #[cfg(test)]
-use alchemy_shared_sim::{SoftLease, UndoError, TRASH_ENTITY_ID};
+use alchemy_shared_sim::{UndoError, TRASH_ENTITY_ID};
 use zenoh::Wait;
 
 use crate::room_aead::{self, SharedRoomAead};
@@ -232,9 +232,18 @@ impl LiveEditLedger {
             .try_acquire(entity_id, actor_id, self.lease_tick, SOFT_LEASE_TTL_TICKS)
     }
 
+    /// Active SoftLease for `entity_id` (x00f3 visibility / SoftLease reject fill).
+    #[inline]
+    pub fn soft_lease_of(&self, entity_id: u32) -> Option<SoftLease> {
+        self.soft_leases
+            .get(entity_id)
+            .filter(|l| l.is_active(self.lease_tick))
+    }
+
+    /// Test helper: drop SoftLease without despawn (same-tick race with accept Commit).
     #[cfg(test)]
-    pub(crate) fn soft_lease_of(&self, entity_id: u32) -> Option<SoftLease> {
-        self.soft_leases.get(entity_id)
+    pub(crate) fn clear_soft_lease_for_test(&mut self, entity_id: u32) {
+        self.soft_leases.clear(entity_id);
     }
 
     #[inline]
@@ -848,11 +857,15 @@ pub enum ReadyLiveEdit {
         proposal: EditProposal,
         op: EditReparent,
         prev_parent: u32,
+        /// Acquiring actor fixed on Ready (x00f3 accept Commit; not table re-lookup).
+        lease_holder_actor_id: u64,
     },
     SetField {
         proposal: EditProposal,
         op: EditSetField,
         prev_value: Vec<u8>,
+        /// Acquiring actor fixed on Ready (x00f3 accept Commit; not table re-lookup).
+        lease_holder_actor_id: u64,
     },
 }
 
@@ -860,6 +873,21 @@ impl ReadyLiveEdit {
     pub fn proposal(&self) -> &EditProposal {
         match self {
             Self::Reparent { proposal, .. } | Self::SetField { proposal, .. } => proposal,
+        }
+    }
+
+    /// Acquiring actor fixed when Ready is built (barrier accept; not SoftLease table re-lookup).
+    #[inline]
+    pub fn lease_holder_actor_id(&self) -> u64 {
+        match self {
+            Self::Reparent {
+                lease_holder_actor_id,
+                ..
+            }
+            | Self::SetField {
+                lease_holder_actor_id,
+                ..
+            } => *lease_holder_actor_id,
         }
     }
 }
@@ -950,21 +978,34 @@ impl LiveCommitPublisher {
         }
     }
 
-    pub fn publish_accept(&self, proposal: &EditProposal, scene_rev: u64) {
+    pub fn publish_accept(
+        &self,
+        proposal: &EditProposal,
+        scene_rev: u64,
+        lease_holder_actor_id: u64,
+    ) {
         self.publish(
             proposal,
             scene_rev,
             true,
             alchemy_protocol::edit_reject::NONE,
+            lease_holder_actor_id,
         );
     }
 
     /// Queue / barrier / inbox failure NACK (tip unchanged).
     pub fn publish_reject(&self, proposal: &EditProposal, reason: u32, scene_rev: u64) {
-        self.publish(proposal, scene_rev, false, reason);
+        self.publish(proposal, scene_rev, false, reason, 0);
     }
 
-    fn publish(&self, proposal: &EditProposal, scene_rev: u64, accepted: bool, reject_reason: u32) {
+    fn publish(
+        &self,
+        proposal: &EditProposal,
+        scene_rev: u64,
+        accepted: bool,
+        reject_reason: u32,
+        lease_holder_actor_id: u64,
+    ) {
         let mut commit = EditCommit {
             scene_rev,
             op_id: proposal.op_id,
@@ -973,6 +1014,7 @@ impl LiveCommitPublisher {
             reject_reason,
             ops: proposal.ops.clone(),
             host_sig: vec![],
+            lease_holder_actor_id,
         };
         sign_edit_commit(&self.host_key, &mut commit);
         let plain = commit.encode_to_vec();
@@ -1023,6 +1065,7 @@ mod tests {
                 new_parent_entity_id: 2,
             },
             prev_parent: 1,
+            lease_holder_actor_id: 1,
         };
         assert!(led.note_spawn_with_parent(2, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
         assert!(led.apply_reparent(10, 2).is_success());
@@ -1052,6 +1095,7 @@ mod tests {
                 expected_value_hash: vec![],
             },
             prev_value: prev,
+            lease_holder_actor_id: 1,
         };
         assert!(led.rollback_mirrors(&ready));
         assert_eq!(led.tip, 3);
@@ -1076,6 +1120,7 @@ mod tests {
                 new_parent_entity_id: 2,
             },
             prev_parent: 1,
+            lease_holder_actor_id: 1,
         };
         assert!(led.apply_reparent(10, 3).is_success());
         let r2 = ReadyLiveEdit::Reparent {
@@ -1086,6 +1131,7 @@ mod tests {
                 new_parent_entity_id: 3,
             },
             prev_parent: 2,
+            lease_holder_actor_id: 1,
         };
         // Simulate: r1 queued OK; r2 queue fails → rollback tail [r2] only.
         let batch = [r1, r2];
@@ -1119,6 +1165,7 @@ mod tests {
                 new_parent_entity_id: 2,
             },
             prev_parent: 1,
+            lease_holder_actor_id: 1,
         };
         assert!(led.apply_reparent(10, 3).is_success());
         let r2 = ReadyLiveEdit::Reparent {
@@ -1129,6 +1176,7 @@ mod tests {
                 new_parent_entity_id: 3,
             },
             prev_parent: 2,
+            lease_holder_actor_id: 1,
         };
         assert_eq!(led.parent_of(10), 3);
         // FIFO would leave parent=2; LIFO restores 1.

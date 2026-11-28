@@ -410,7 +410,7 @@ impl HostLoop {
                         // Tip⇔Commit 一体。publisher 欠落は miswire → fail-closed abort.
                         if let Some(proposal) = edit_proposal.as_ref() {
                             let tip = led.bump_tip();
-                            self.require_live_commit().publish_accept(proposal, tip);
+                            self.require_live_commit().publish_accept(proposal, tip, 0);
                         }
                         drop(led);
                         log::info!(
@@ -474,7 +474,7 @@ impl HostLoop {
                             // Tip⇔Commit 一体。publisher 欠落は miswire → fail-closed abort.
                             if let Some(proposal) = edit_proposal.as_ref() {
                                 let tip = led.bump_tip();
-                                self.require_live_commit().publish_accept(proposal, tip);
+                                self.require_live_commit().publish_accept(proposal, tip, 0);
                             }
                             drop(led);
                             if out.physics_ok {
@@ -729,6 +729,7 @@ impl HostLoop {
                         proposal,
                         op,
                         prev_parent,
+                        ..
                     } = &ready
                     {
                         led.note_reparent_undo(
@@ -739,7 +740,8 @@ impl HostLoop {
                         );
                     }
                     let tip = led.bump_tip();
-                    pubber.publish_accept(ready.proposal(), tip);
+                    // SoftLease acquiring actor fixed on Ready (x00f3); not table re-lookup.
+                    pubber.publish_accept(ready.proposal(), tip, ready.lease_holder_actor_id());
                 }
             }
         } else if !awaiting.is_empty() {

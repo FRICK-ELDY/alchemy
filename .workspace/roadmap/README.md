@@ -292,11 +292,12 @@ depends_on: [x0006]
 | x00f0 | — | done | 体験本線 F0-3: bitmask edge Observer | [x00f0-bitmask-edge-observer.md](slices/x00f0-bitmask-edge-observer.md) |
 | x00f1 | — | done | 体験本線 F0-4: PendingLocalOps 実操作接続 | [x00f1-pending-local-ops-wire.md](slices/x00f1-pending-local-ops-wire.md) |
 | x00f2 | — | done | 体験本線 F1-1: Inspector スクラブ → SetField Commit | [x00f2-inspector-setfield-commit.md](slices/x00f2-inspector-setfield-commit.md) |
+| x00f3 | — | done | 体験本線 F1-2: SoftLease 見える化 | [x00f3-soft-lease-visibility.md](slices/x00f3-soft-lease-visibility.md) |
 
-**現在の次:** 体験本線 [feel_edit_experience.md](feel_edit_experience.md) — F1-1 **done**（[x00f2](slices/x00f2-inspector-setfield-commit.md)）。次候補 **F1-2** SoftLease 見える化。L1/T1/G0 / F0 枠 **done**。品質本線 Phase 1–3 枠は [x00e9](slices/x00e9-rigid-solver-boundary.md) で **クローズ**。剛体ソルバ本体・rapier/AVBD は別決（人承認）。並行候補: Drive Git 詳細パネル / shared-sim⇔Tree / clone·fetch 等（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §18.7+）。
+**現在の次:** 体験本線 [feel_edit_experience.md](feel_edit_experience.md) — F1-2 **done**（[x00f3](slices/x00f3-soft-lease-visibility.md)）。次候補 **F1-3** ドラッグ揮発 ↔ Commit。L1/T1/G0 / F0 / F1-1 枠 **done**。品質本線 Phase 1–3 枠は [x00e9](slices/x00e9-rigid-solver-boundary.md) で **クローズ**。剛体ソルバ本体・rapier/AVBD は別決（人承認）。並行候補: Drive Git 詳細パネル / shared-sim⇔Tree / clone·fetch 等（[assets-vcs-draft.md](../0_doc/architecture/assets-vcs-draft.md) §18.7+）。
 **規模本線**は正本 [spatial_interest.md](spatial_interest.md)（improvement-plan **P3-7**；x00be〜x00c7 **done**）。
 
-次の空き番号は **`x00f3`**。
+次の空き番号は **`x00f4`**。
 
 ## 関連
 
