@@ -2,6 +2,8 @@
 //!
 //! Guarantees: 512² RGBA8 resident atlas; ASCII printable + basic icons; UV lookup;
 //! MsdfGlyph payload pack; bake without new crates (pseudo-MSDF R=G=B from 5×7 bits).
+//! Atlas cell: `v0` is glyph **top** (image row 0). Board local UV is bottom-left / y-up —
+//! `uber_sdf::sample_msdf_rect` flips V; bake / UV pack stay image-space.
 //! Non-guarantees: true msdfgen multi-channel quality; CJK / emoji / LRU dynamic atlas;
 //! message catalog / locale.
 

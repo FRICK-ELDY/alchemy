@@ -1,6 +1,7 @@
 // Spatial Lens Uber-SDF (x00ba) + Static MSDF (x00ed). Layout matches GpuUiPrim / GpuPanelHeader.
 // Entry: vs_panel_quad / fs_uber_sdf
 // Atlas layout must match spatial_lens::msdf (512², cell 32, ASCII 0x20 base).
+// Board UV: bottom-left origin, y up. Output: premultiplied RGBA.
 
 struct GpuUiPrim {
     rect: vec4<f32>,
@@ -43,6 +44,15 @@ fn unpack_rgba(c: u32) -> vec4<f32> {
     let b = f32((c >> 16u) & 0xffu) / 255.0;
     let a = f32((c >> 24u) & 0xffu) / 255.0;
     return vec4(r, g, b, a);
+}
+
+fn to_premul(c: vec4<f32>) -> vec4<f32> {
+    return vec4(c.rgb * c.a, c.a);
+}
+
+// Premultiplied src over dst (both premul). Matches wgpu PREMULTIPLIED_ALPHA_BLENDING.
+fn over_premul(dst: vec4<f32>, src: vec4<f32>) -> vec4<f32> {
+    return src + dst * (1.0 - src.a);
 }
 
 @vertex
@@ -108,7 +118,10 @@ fn sample_msdf(atlas_uv: vec2<f32>) -> f32 {
 }
 
 fn sample_msdf_rect(uv_rect: vec4<f32>, local_uv: vec2<f32>) -> f32 {
-    let atlas_uv = mix(uv_rect.xy, uv_rect.zw, clamp(local_uv, vec2(0.0), vec2(1.0)));
+    // Board local_uv: bottom-left origin, y up. Atlas cell: v0 = glyph top (image row 0).
+    // Flip V so panel-bottom samples glyph-bottom.
+    let uv = vec2(local_uv.x, 1.0 - local_uv.y);
+    let atlas_uv = mix(uv_rect.xy, uv_rect.zw, clamp(uv, vec2(0.0), vec2(1.0)));
     return sample_msdf(atlas_uv);
 }
 
@@ -198,11 +211,13 @@ fn sample_direct_number(payload: vec4<u32>, local_uv: vec2<f32>) -> f32 {
 fn fs_uber_sdf(in: VsOut) -> @location(0) vec4<f32> {
     let p = panels[in.panel_index];
     // G0 LOD2: must match glass.rs LOD2_SHELL / lod2_wgsl_vec4_literal(). No blur.
+    // Token is straight RGBA; output is premultiplied for the pipeline blend.
     if (p.lod_level >= 2u) {
-        return vec4(0.06, 0.07, 0.09, 0.85);
+        let lod2 = vec4(0.06, 0.07, 0.09, 0.85);
+        return to_premul(lod2);
     }
     let px = in.panel_uv * p.dimensions.xy;
-    var color = vec4(0.0);
+    var color = vec4(0.0); // premul accumulator
 
     let start = p.prim_start_index;
     let count = p.prim_count;
@@ -237,23 +252,24 @@ fn fs_uber_sdf(in: VsOut) -> @location(0) vec4<f32> {
             let d = sd_rounded_box(local, half, radius);
             let fill = unpack_rgba(prim.color_rgba);
             let border = unpack_rgba(prim.border_rgba);
-            // Pixel Y grows downward → low y (top) slightly brighter.
+            // Board local Y is up (bottom-left origin) → high y (top) slightly brighter.
             let local_uv = (px - rect.xy) / max(rect.zw, vec2(1.0));
-            let grad = mix(1.06, 0.94, clamp(local_uv.y, 0.0, 1.0));
+            let grad = mix(0.94, 1.06, clamp(local_uv.y, 0.0, 1.0));
             let fill_g = vec4(fill.rgb * grad, fill.a);
             let inside = 1.0 - smoothstep(-0.75, 0.75, d);
             let edge = 1.0 - smoothstep(-0.75, 0.75, abs(d) - border_t);
-            var c = fill_g * inside;
-            c = mix(c, border, edge * border.a);
+            // Prim-local composite stays premul (one coverage factor, like MsdfGlyph).
+            let fill_a = fill_g.a * inside;
+            var c = vec4(fill_g.rgb * fill_a, fill_a);
+            let edge_a = edge * border.a;
+            c = over_premul(c, vec4(border.rgb * edge_a, edge_a));
             if (glow > 0.0) {
                 let outer = (1.0 - smoothstep(-0.5, glow_w, d)) * (1.0 - inside);
-                let glow_a = border.a * glow * outer;
-                c = vec4(
-                    mix(c.rgb, border.rgb, glow_a),
-                    max(c.a, glow_a),
-                );
+                // Clamp: glow contract is ≤1, but out-of-band values must not make premul α>1.
+                let glow_a = min(border.a * glow * outer, 1.0);
+                c = over_premul(c, vec4(border.rgb * glow_a, glow_a));
             }
-            color = mix(color, c, c.a);
+            color = over_premul(color, c);
         } else if (kind == 1u) {
             // MsdfGlyph: payload = [u0, v0, u1, v1] as f32 bits.
             if (px.x < rect.x || px.y < rect.y || px.x > rect.x + rect.z || px.y > rect.y + rect.w) {
@@ -269,7 +285,8 @@ fn fs_uber_sdf(in: VsOut) -> @location(0) vec4<f32> {
             );
             let g = sample_msdf_rect(uv_rect, local_uv);
             let fill = unpack_rgba(prim.color_rgba);
-            color = mix(color, vec4(fill.rgb, fill.a * g), fill.a * g);
+            let a = fill.a * g;
+            color = over_premul(color, vec4(fill.rgb * a, a));
         } else if (kind == 2u) {
             if (px.x < rect.x || px.y < rect.y || px.x > rect.x + rect.z || px.y > rect.y + rect.w) {
                 i = i + 1u;
@@ -278,7 +295,8 @@ fn fs_uber_sdf(in: VsOut) -> @location(0) vec4<f32> {
             let local_uv = (px - rect.xy) / max(rect.zw, vec2(1.0));
             let g = sample_direct_number(prim.payload, local_uv);
             let fill = unpack_rgba(prim.color_rgba);
-            color = mix(color, vec4(fill.rgb, fill.a * g), fill.a * g);
+            let a = fill.a * g;
+            color = over_premul(color, vec4(fill.rgb * a, a));
         } else {
             if (px.x < rect.x || px.y < rect.y || px.x > rect.x + rect.z || px.y > rect.y + rect.w) {
                 i = i + 1u;
