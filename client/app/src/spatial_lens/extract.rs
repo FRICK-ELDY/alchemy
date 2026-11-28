@@ -1,10 +1,10 @@
-//! Hierarchy / Inspector → GpuUiPrim packing (x00bb / x00bc / x00ed).
+//! Hierarchy / Inspector → GpuUiPrim packing (x00bb / x00bc / x00ed / x00f2).
 //!
 //! Guarantees: viewport-window extract only; DirectNumber pose fields without String;
 //! short ASCII MsdfGlyph labels (Tier-1 Static MSDF); selected_row scrub when row is not live;
-//! scroll clamp to non-empty window.
-//! Non-guarantees: CJK labels; SetField scrub commit; WorldRoot sync; Lens-side collapse
-//! toggle (collapse set is shared with Settings; Lens MVP reads only).
+//! scroll clamp to non-empty window; Inspector POS scrub draft preview (x00f2).
+//! Non-guarantees: CJK labels; SoftLease UI chrome (→ F1-2); multi-axis Commit (→ F1-3);
+//! WorldRoot sync; Lens-side collapse toggle (collapse set is shared with Settings; Lens MVP reads only).
 
 #![forbid(unsafe_code)]
 
@@ -21,6 +21,20 @@ use super::prim::{
 use crate::epoch_view::{hierarchy_panel_rows, EpochViewState, HierarchyRowView};
 use crate::scene::{CameraLook, EntityPose};
 
+/// Active Inspector POS scrub (drag → release Commit · x00f2). Local only.
+#[derive(Clone, Debug)]
+pub struct InspectorScrub {
+    pub field_binding: u32,
+    pub row: u32,
+    pub entity_id: u32,
+    pub start_uv_x: f32,
+    /// Last panel-hit UV; reused while primary held and the ray misses the board.
+    pub last_uv: [f32; 2],
+    pub base_value: f64,
+    pub draft_value: f64,
+    pub expected_hash: [u8; 32],
+}
+
 /// Personal spatial lens runtime (local only).
 #[derive(Clone, Debug)]
 pub struct SpatialLensState {
@@ -35,6 +49,8 @@ pub struct SpatialLensState {
     pub hierarchy_window: usize,
     pub selected_row: Option<u32>,
     pub hovered_binding: u32,
+    /// In-flight POS scrub (None when idle).
+    pub scrub: Option<InspectorScrub>,
 }
 
 impl Default for SpatialLensState {
@@ -50,6 +66,7 @@ impl Default for SpatialLensState {
             hierarchy_window: 12,
             selected_row: None,
             hovered_binding: 0,
+            scrub: None,
         }
     }
 }
@@ -72,6 +89,50 @@ pub const INSPECT_FIELD_POS_Y: u32 = 0x8000_0002;
 pub const INSPECT_FIELD_POS_Z: u32 = 0x8000_0003;
 pub const INSPECT_FIELD_READY: u32 = 0x8000_0004;
 
+/// Meters of world translation per Lens UV pixel while scrubbing (x00f2).
+pub const INSPECTOR_SCRUB_M_PER_PX: f64 = 0.01;
+
+/// Map Inspector binding → `edit_field_id::POS_*` (readiness is not editable).
+pub fn decode_inspector_pos_binding(binding: u32) -> Option<u32> {
+    match binding {
+        INSPECT_FIELD_POS_X => Some(alchemy_protocol::edit_field_id::POS_X),
+        INSPECT_FIELD_POS_Y => Some(alchemy_protocol::edit_field_id::POS_Y),
+        INSPECT_FIELD_POS_Z => Some(alchemy_protocol::edit_field_id::POS_Z),
+        _ => None,
+    }
+}
+
+/// Axis index 0..2 for an Inspector POS binding.
+pub fn inspector_pos_axis(binding: u32) -> Option<usize> {
+    match binding {
+        INSPECT_FIELD_POS_X => Some(0),
+        INSPECT_FIELD_POS_Y => Some(1),
+        INSPECT_FIELD_POS_Z => Some(2),
+        _ => None,
+    }
+}
+
+/// Wire `entity_id` for a live tape row (`owner_scope`), if present.
+pub fn entity_id_for_row(epoch: &EpochViewState, row: u32) -> Option<u32> {
+    let curr = epoch.snapshots.load_curr();
+    let eid = *curr.owner_scope.get(row as usize)?;
+    (eid != 0).then_some(eid)
+}
+
+/// World-position axis value on Curr for `row` (finite only).
+pub fn world_pos_axis(epoch: &EpochViewState, row: u32, axis: usize) -> Option<f64> {
+    let xyz = world_pos_xyz(epoch, row)?;
+    (axis <= 2).then_some(xyz[axis])
+}
+
+/// World XYZ on Curr for `row` (one Curr load; all finite).
+pub fn world_pos_xyz(epoch: &EpochViewState, row: u32) -> Option<[f64; 3]> {
+    let curr = epoch.snapshots.load_curr();
+    let xf = curr.world_transforms.get(row as usize)?;
+    let p = xf.position;
+    (p[0].is_finite() && p[1].is_finite() && p[2].is_finite()).then_some(p)
+}
+
 const ROW_H: f32 = 28.0;
 /// Preferred content margin from board edge (px).
 const PAD_MIN: f32 = 8.0;
@@ -92,11 +153,22 @@ pub fn row_is_live(epoch: &EpochViewState, row: u32) -> bool {
 }
 
 /// Clear Lens selection when the row is tombstoned / gone (mirror [`crate::epoch_view::scrub_xray_row`]).
-pub fn scrub_selected_row(state: &mut SpatialLensState, epoch: &EpochViewState) {
+///
+/// Returns `entity_id` of a dropped Inspector scrub so the caller can clear
+/// [`crate::pending_local_ops::PendingLocalGate`] (extract has no SharedState).
+pub fn scrub_selected_row(state: &mut SpatialLensState, epoch: &EpochViewState) -> Option<u32> {
     if let Some(row) = state.selected_row {
         if !row_is_live(epoch, row) {
             state.selected_row = None;
         }
+    }
+    let drop_scrub = state.scrub.as_ref().is_some_and(|s| {
+        state.selected_row != Some(s.row) || !row_is_live(epoch, s.row)
+    });
+    if drop_scrub {
+        state.scrub.take().map(|s| s.entity_id)
+    } else {
+        None
     }
 }
 
@@ -324,6 +396,7 @@ pub fn pack_personal_lens(
     ));
 
     if let Some(row_id) = state.selected_row {
+        let draft = state.scrub.as_ref().filter(|s| s.row == row_id);
         pack_inspector_fields(
             epoch,
             row_id,
@@ -332,6 +405,7 @@ pub fn pack_personal_lens(
             state.width_px,
             out_prims,
             num_col,
+            draft,
         );
     }
 
@@ -359,6 +433,7 @@ fn pack_inspector_fields(
     width_px: f32,
     out: &mut Vec<GpuUiPrim>,
     num_col: u32,
+    draft: Option<&InspectorScrub>,
 ) {
     let faces = epoch.snapshots.load_pair();
     let idx = row_id as usize;
@@ -375,10 +450,22 @@ fn pack_inspector_fields(
         .map(|m| m.0 as f64)
         .unwrap_or(0.0);
 
+    let mut px = xf.position[0];
+    let mut py = xf.position[1];
+    let mut pz = xf.position[2];
+    if let Some(s) = draft {
+        match s.field_binding {
+            INSPECT_FIELD_POS_X => px = s.draft_value,
+            INSPECT_FIELD_POS_Y => py = s.draft_value,
+            INSPECT_FIELD_POS_Z => pz = s.draft_value,
+            _ => {}
+        }
+    }
+
     let fields = [
-        (INSPECT_FIELD_POS_X, "X", xf.position[0], 3u8),
-        (INSPECT_FIELD_POS_Y, "Y", xf.position[1], 3),
-        (INSPECT_FIELD_POS_Z, "Z", xf.position[2], 3),
+        (INSPECT_FIELD_POS_X, "X", px, 3u8),
+        (INSPECT_FIELD_POS_Y, "Y", py, 3),
+        (INSPECT_FIELD_POS_Z, "Z", pz, 3),
         (INSPECT_FIELD_READY, "R", ready, 0),
     ];
     let pad = content_pad();
@@ -587,8 +674,37 @@ mod tests {
                 .snapshots
                 .publish_arcs(Arc::new(live.clone()), Arc::new(live), 2);
         }
-        scrub_selected_row(&mut state, &epoch);
+        assert_eq!(scrub_selected_row(&mut state, &epoch), None);
         assert_eq!(state.selected_row, None);
+    }
+
+    #[test]
+    fn scrub_selected_row_returns_entity_when_scrub_dropped() {
+        let epoch = epoch_with_one_row();
+        let mut state = SpatialLensState {
+            visible: true,
+            selected_row: Some(0),
+            scrub: Some(InspectorScrub {
+                field_binding: INSPECT_FIELD_POS_X,
+                row: 0,
+                entity_id: 42,
+                start_uv_x: 0.0,
+                last_uv: [10.0, 20.0],
+                base_value: 0.0,
+                draft_value: 0.0,
+                expected_hash: [0; 32],
+            }),
+            ..Default::default()
+        };
+        {
+            let mut live = (*epoch.snapshots.load_curr()).clone();
+            live.readiness[0] = ReadinessMask(ReadinessMask::TOMBSTONE);
+            epoch
+                .snapshots
+                .publish_arcs(Arc::new(live.clone()), Arc::new(live), 2);
+        }
+        assert_eq!(scrub_selected_row(&mut state, &epoch), Some(42));
+        assert!(state.scrub.is_none());
     }
 
     fn unpack_is_number(p: &GpuUiPrim) -> bool {

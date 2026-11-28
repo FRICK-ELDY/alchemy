@@ -770,16 +770,22 @@ impl LiveEditLedger {
                 .apply_reparent(op.child_entity_id, *prev_parent)
                 .is_success(),
             ReadyLiveEdit::SetField { op, prev_value, .. } => {
-                let Some(value) = prop_from_field_bytes(op.field_id, prev_value) else {
-                    log::error!(
-                        "live edit rollback: cannot decode prev_value field_id={} entity={}",
-                        op.field_id,
-                        op.entity_id
-                    );
-                    return false;
-                };
-                self.apply_set_field(op.entity_id, op.field_id, value)
-                    .is_success()
+                // x00f2 POS: SoftLease-only accept path leaves `prev_value` empty
+                // (no sparse write) — rollback is a no-op for the store.
+                if alchemy_protocol::is_pos_field_id(op.field_id) && prev_value.is_empty() {
+                    true
+                } else {
+                    let Some(value) = prop_from_field_bytes(op.field_id, prev_value) else {
+                        log::error!(
+                            "live edit rollback: cannot decode prev_value field_id={} entity={}",
+                            op.field_id,
+                            op.entity_id
+                        );
+                        return false;
+                    };
+                    self.apply_set_field(op.entity_id, op.field_id, value)
+                        .is_success()
+                }
             }
         };
         if !ok {
@@ -830,6 +836,7 @@ fn prop_from_field_bytes(field_id: u32, bytes: &[u8]) -> Option<PropValue> {
             let hex = std::str::from_utf8(bytes).ok()?.to_ascii_lowercase();
             Some(PropValue::Bytes(hex.into_bytes()))
         }
+        // POS_* is SoftLease-only (no sparse write / no rollback blob · x00f2).
         _ => None,
     }
 }
@@ -890,6 +897,8 @@ impl LiveEditInbox {
 }
 
 /// Field bytes currently stored for `field_id` (for hash compare).
+///
+/// POS_* is not a sparse property (Epoch is pose SSoT · x00f2) — returns `None`.
 pub fn current_field_value(
     ledger: &LiveEditLedger,
     entity_id: u32,

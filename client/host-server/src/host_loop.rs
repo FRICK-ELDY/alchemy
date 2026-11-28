@@ -524,7 +524,7 @@ impl HostLoop {
         debug_assert!(self.live_awaiting_barrier.is_empty());
         self.live_awaiting_barrier.clear();
         let mut batch = self.live_inbox.try_recv_n(LIVE_EDIT_DRAIN_MAX);
-        let mut fail_at: Option<(usize, String)> = None;
+        let mut fail_at: Option<(usize, String, u32)> = None;
         for (i, ready) in batch.iter().enumerate() {
             let queue_ok = match ready {
                 crate::live_edit::ReadyLiveEdit::Reparent { op, .. } => self
@@ -532,14 +532,25 @@ impl HostLoop {
                     .queue_live_reparent(op.child_entity_id, op.new_parent_entity_id),
                 crate::live_edit::ReadyLiveEdit::SetField { op, .. } => self
                     .physics
-                    .queue_live_set_field(op.entity_id, op.field_id, &op.value),
+                    .queue_live_set_field(
+                        op.entity_id,
+                        op.field_id,
+                        &op.value,
+                        &op.expected_value_hash,
+                    ),
             };
             if let Err(e) = queue_ok {
-                fail_at = Some((i, e.to_string()));
+                // POS Epoch hash miss → STALE (same vocabulary as FLAGS expected_hash).
+                let reason = if e == "stale pose" {
+                    alchemy_protocol::edit_reject::STALE_PRECONDITION
+                } else {
+                    alchemy_protocol::edit_reject::APPLY
+                };
+                fail_at = Some((i, e.to_string(), reason));
                 break;
             }
         }
-        if let Some((fail_idx, err)) = fail_at {
+        if let Some((fail_idx, err, reject_reason)) = fail_at {
             let reject_tail: Vec<_> = batch.split_off(fail_idx);
             let reject_n = reject_tail.len();
             let queued_n = batch.len();
@@ -566,11 +577,18 @@ impl HostLoop {
                 }
             };
             let pubber = self.require_live_commit();
-            for ready in &reject_tail {
-                pubber.publish_reject(ready.proposal(), alchemy_protocol::edit_reject::APPLY, tip);
+            // Only the failing head keeps the specific reason (e.g. STALE); the
+            // rest of the abort tail were cancelled, not independently stale.
+            for (j, ready) in reject_tail.iter().enumerate() {
+                let reason = if j == 0 {
+                    reject_reason
+                } else {
+                    alchemy_protocol::edit_reject::APPLY
+                };
+                pubber.publish_reject(ready.proposal(), reason, tip);
             }
             log::warn!(
-                "live edit queue failed ({err}); LIFO rolled back {reject_n} drain op(s) + reject APPLY (tip={tip}; kept {queued_n} queued)"
+                "live edit queue failed ({err}); LIFO rolled back {reject_n} drain op(s) + head reject reason={reject_reason} (tip={tip}; kept {queued_n} queued)"
             );
         }
         self.live_awaiting_barrier = batch;

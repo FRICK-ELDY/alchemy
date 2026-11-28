@@ -62,8 +62,9 @@ pub mod wire_aead;
 pub mod wire_crypto;
 
 pub use edit_field::{
-    blake3_hash_32, decode_color_rgba, decode_flags, encode_color_rgba, encode_flags,
-    field_value_hash, hash_blake3_hex, hash_color_rgba, hash_flags, known_field_id,
+    blake3_hash_32, decode_color_rgba, decode_f64, decode_flags, encode_color_rgba, encode_f64,
+    encode_flags, field_value_hash, hash_blake3_hex, hash_color_rgba, hash_f64, hash_flags,
+    is_pos_field_id, known_field_id, pos_field_axis,
 };
 
 /// Bump when `proto/` has an incompatible wire change.
@@ -77,6 +78,7 @@ pub use edit_field::{
 /// x00b3: Reparent/SetField + `RenderFrame.scene_rev`; Commit tip = host live_scene_rev.
 /// x00b7: `EditSave` overlay→canonical; Commit tip unchanged on Save.
 /// x00b8: `SceneEntry.parent_entity_id`; Save folds live parent/SetField.
+/// x00f2 POS_X/Y/Z is additive on `EditSetField.field_id` (no pin bump; unknown → OP_UNSUPPORTED).
 pub const PROTOCOL_PIN: &str = "alchemy-protocol/0.24.0-x00b8";
 
 /// `EditCommit.reject_reason` codes (x00b2 / x00b3 / x00b7).
@@ -104,7 +106,7 @@ pub mod edit_reject {
     pub const SOFT_LEASE: u32 = 14;
 }
 
-/// `EditSetField.field_id` (x00b3). Value encodings are little-endian / UTF-8 as noted.
+/// `EditSetField.field_id` (x00b3 / x00f2). Value encodings are little-endian / UTF-8 as noted.
 pub mod edit_field_id {
     /// `u32` LE flags (`SceneEntry.flags` / live mirror).
     pub const FLAGS: u32 = 1;
@@ -112,6 +114,12 @@ pub mod edit_field_id {
     pub const COLOR_RGBA: u32 = 2;
     /// 64-char lowercase hex blake3 (UTF-8), same as `SceneEntry.blake3`.
     pub const BLAKE3: u32 = 3;
+    /// World position X (`f64` LE) — Inspector scrub Commit (x00f2).
+    pub const POS_X: u32 = 4;
+    /// World position Y (`f64` LE).
+    pub const POS_Y: u32 = 5;
+    /// World position Z (`f64` LE).
+    pub const POS_Z: u32 = 6;
 }
 
 /// Wire `Entity.holder`: nobody holds the entity.

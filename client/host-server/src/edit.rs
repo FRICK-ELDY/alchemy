@@ -26,8 +26,9 @@ use alchemy_protocol::wire_crypto::{
     sign_edit_commit, verify_edit_proposal, SigningKey, PUBLIC_KEY_LENGTH,
 };
 use alchemy_protocol::{
-    decode_color_rgba, decode_flags, edit_reject, field_value_hash, known_field_id, EditCommit,
-    EditProposal, EditReparent, EditSetField, EditSpawn, Message, SceneEntry,
+    decode_color_rgba, decode_f64, decode_flags, edit_reject, field_value_hash, is_pos_field_id,
+    known_field_id, EditCommit, EditProposal, EditReparent, EditSetField, EditSpawn, Message,
+    SceneEntry,
 };
 use anyhow::{anyhow, Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,7 +42,9 @@ use crate::inventory_despawn::ReadyDespawn;
 use crate::inventory_spawn::ReadySpawn;
 use alchemy_shared_sim::PropValue;
 
-use crate::live_edit::{current_field_value, edit_reject_for_apply, ReadyLiveEdit, SharedLiveEdit};
+use crate::live_edit::{
+    current_field_value, edit_reject_for_apply, LiveEditLedger, ReadyLiveEdit, SharedLiveEdit,
+};
 use crate::room_aead::{self, SharedRoomAead};
 use crate::room_token::{
     install_shared_scene_if_newer, save_overlay_to_canonical, RoomScene, SceneFieldPatch,
@@ -791,6 +794,10 @@ fn apply_set_field(
             None,
         ));
     }
+    // POS_*: SoftLease here; Epoch axis hash at physics queue (no sparse write · x00f2).
+    if is_pos_field_id(f.field_id) {
+        return apply_set_field_pos(proposal, f, &mut led, actor_id, tip);
+    }
     let Some(cur) = current_field_value(&led, f.entity_id, f.field_id) else {
         return Ok((
             Some(reject_commit(proposal, edit_reject::NOT_FOUND, tip)),
@@ -852,6 +859,57 @@ fn apply_set_field(
             ));
         }
     };
+    finish_set_field_ready(proposal, f, &mut led, actor_id, tip, prev_value, prop)
+}
+
+/// Inspector world-position SetField (x00f2). SoftLease here; Epoch hash at queue.
+///
+/// Does **not** write a sparse POS mirror (Epoch is pose SSoT). Avoids fabricating
+/// `0.0` prev on rollback when the property was never set.
+fn apply_set_field_pos(
+    proposal: &EditProposal,
+    f: EditSetField,
+    led: &mut LiveEditLedger,
+    actor_id: u64,
+    tip: u64,
+) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
+    if decode_f64(&f.value).is_none() {
+        return Ok((
+            Some(reject_commit(proposal, edit_reject::PAYLOAD, tip)),
+            None,
+        ));
+    }
+    if led.soft_lease_allows(f.entity_id, actor_id).is_err() {
+        return Ok((
+            Some(reject_commit(proposal, edit_reject::SOFT_LEASE, tip)),
+            None,
+        ));
+    }
+    let entity_id = f.entity_id;
+    let ready = ReadyLiveEdit::SetField {
+        proposal: proposal.clone(),
+        op: f,
+        // Empty = no sparse POS row to restore on queue/barrier fail.
+        prev_value: Vec::new(),
+    };
+    if led.try_acquire_soft_lease(entity_id, actor_id).is_err() {
+        return Ok((
+            Some(reject_commit(proposal, edit_reject::SOFT_LEASE, tip)),
+            None,
+        ));
+    }
+    Ok((None, Some(ReadyEdit::Live(ready))))
+}
+
+fn finish_set_field_ready(
+    proposal: &EditProposal,
+    f: EditSetField,
+    led: &mut LiveEditLedger,
+    actor_id: u64,
+    tip: u64,
+    prev_value: Vec<u8>,
+    prop: PropValue,
+) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
     if led.soft_lease_allows(f.entity_id, actor_id).is_err() {
         return Ok((
             Some(reject_commit(proposal, edit_reject::SOFT_LEASE, tip)),

@@ -52,9 +52,16 @@ use crate::scene::{
     create_depth_view, create_wgpu_for_window, CameraLook, EntityPose, MoveIntent, SceneGpu,
     SharedState,
 };
+use crate::pending_local_ops::PendingPose;
+use crate::spatial_lens::extract::{
+    entity_id_for_row, inspector_pos_axis, world_pos_axis, world_pos_xyz, InspectorScrub,
+    INSPECTOR_SCRUB_M_PER_PX,
+};
+use crate::spatial_lens::inspector_edit::{expected_hash_for_axis, publish_inspector_pos_commit};
 use crate::spatial_lens::{
-    decode_hierarchy_binding, pack_personal_lens, place_in_front_of_eye, row_is_live,
-    scrub_selected_row, HandLaserState, InteractionLaserConfig, SpatialLensGpu, SpatialLensState,
+    decode_hierarchy_binding, decode_inspector_pos_binding, pack_personal_lens,
+    place_in_front_of_eye, row_is_live, scrub_selected_row, HandLaserState,
+    InteractionLaserConfig, SpatialLensGpu, SpatialLensState,
 };
 use crate::surface::hotswitch::DesktopRole;
 use crate::system_ui::{DashTab, LayoutTree, OnboardingShell, SystemUi, UiAction};
@@ -284,6 +291,8 @@ struct App {
     spatial_lens_last_tick: Option<std::time::Instant>,
     /// `I` open already packed this frame — skip the next tick pack (avoid double walk).
     spatial_lens_fresh_pack: bool,
+    /// Prior-frame `primary_down` for Inspector scrub rising-edge begin (x00f2).
+    inspector_scrub_primary_was_down: bool,
 }
 
 impl App {
@@ -763,12 +772,16 @@ impl App {
     /// Pack Hierarchy/Inspector prims + Stickiness hover (x00bb–x00bd).
     fn tick_spatial_lens(&mut self) {
         if !self.spatial_lens.visible {
+            if let Some(prev) = self.spatial_lens.scrub.take() {
+                self.shared.pending_local.clear(prev.entity_id);
+            }
             self.spatial_headers.clear();
             self.spatial_prims.clear();
             self.spatial_lens.hovered_binding = 0;
             self.spatial_lens_hit_panel = false;
             self.spatial_lens_last_tick = None;
             self.spatial_lens_fresh_pack = false;
+            self.inspector_scrub_primary_was_down = false;
             return;
         }
         let now = std::time::Instant::now();
@@ -779,7 +792,9 @@ impl App {
             .clamp(1.0 / 240.0, 0.05);
         self.spatial_lens_last_tick = Some(now);
 
-        scrub_selected_row(&mut self.spatial_lens, &self.shared.epoch);
+        if let Some(eid) = scrub_selected_row(&mut self.spatial_lens, &self.shared.epoch) {
+            self.shared.pending_local.clear(eid);
+        }
         crate::epoch_view::scrub_xray_row(&self.shared.epoch);
         // Intentional: while Lens holds a live selection, it owns Tape X-Ray
         // (Settings Hierarchy click also writes xray_row; Lens wins each tick when selected).
@@ -821,7 +836,7 @@ impl App {
             None => ([0.0, 0.0], 0, [0.0; 4]),
         };
         let trigger = if self.primary_down { 0.5 } else { 0.0 };
-        let (_uv, binding) = self.spatial_laser.apply_stickiness_and_press_lock(
+        let (_sticky_uv, binding) = self.spatial_laser.apply_stickiness_and_press_lock(
             raw_uv,
             hovered,
             rect,
@@ -830,14 +845,133 @@ impl App {
             dt,
         );
         self.spatial_lens.hovered_binding = binding;
+        // Scrub UV is independent of stickiness/press-lock: panel hit → live UV;
+        // miss while primary held → last-good UV (never miss sentinel `[0,0]`).
+        let panel_hit = hit.as_ref().map(|h| (h.uv_px, h.binding_id));
+        self.tick_inspector_scrub(panel_hit);
+    }
+
+    /// Desktop Inspector POS scrub: drag updates draft; release → 1× SetField (x00f2).
+    ///
+    /// UV source while scrubbing: **panel hit UV** (not press-lock). On miss with
+    /// primary held, reuse [`InspectorScrub::last_uv`]. Begin only on rising edge
+    /// with a real panel hit on a POS field.
+    fn tick_inspector_scrub(&mut self, panel_hit: Option<([f32; 2], u32)>) {
+        let rising = self.primary_down && !self.inspector_scrub_primary_was_down;
+        self.inspector_scrub_primary_was_down = self.primary_down;
+
+        if self.primary_down {
+            if self.spatial_lens.scrub.is_none() && rising {
+                let Some((uv, binding)) = panel_hit else {
+                    return;
+                };
+                if decode_inspector_pos_binding(binding).is_none() {
+                    return;
+                }
+                let Some(row) = self.spatial_lens.selected_row else {
+                    return;
+                };
+                let Some(axis) = inspector_pos_axis(binding) else {
+                    return;
+                };
+                let Some(entity_id) = entity_id_for_row(&self.shared.epoch, row) else {
+                    return;
+                };
+                let Some(base) = world_pos_axis(&self.shared.epoch, row, axis) else {
+                    return;
+                };
+                self.spatial_lens.scrub = Some(InspectorScrub {
+                    field_binding: binding,
+                    row,
+                    entity_id,
+                    start_uv_x: uv[0],
+                    last_uv: uv,
+                    base_value: base,
+                    draft_value: base,
+                    expected_hash: expected_hash_for_axis(base),
+                });
+            }
+
+            let preview = {
+                let Some(scrub) = self.spatial_lens.scrub.as_mut() else {
+                    return;
+                };
+                let uv = match panel_hit {
+                    Some((uv, _)) => {
+                        scrub.last_uv = uv;
+                        uv
+                    }
+                    None => scrub.last_uv,
+                };
+                let delta = (uv[0] - scrub.start_uv_x) as f64;
+                scrub.draft_value = scrub.base_value + delta * INSPECTOR_SCRUB_M_PER_PX;
+                if !scrub.draft_value.is_finite() {
+                    scrub.draft_value = scrub.base_value;
+                }
+                (
+                    scrub.entity_id,
+                    scrub.row,
+                    scrub.field_binding,
+                    scrub.draft_value,
+                )
+            };
+            let (entity_id, row, field_binding, draft) = preview;
+            let Some(axis) = inspector_pos_axis(field_binding) else {
+                return;
+            };
+            // Non-finite / missing Curr → clear stale preview rather than freeze last pose.
+            let Some(xyz) = world_pos_xyz(&self.shared.epoch, row) else {
+                self.shared.pending_local.clear(entity_id);
+                return;
+            };
+            // Preview uses f32 PendingPose; Commit stays f64 (axis written = draft).
+            let mut pose = PendingPose::xyz(xyz[0] as f32, xyz[1] as f32, xyz[2] as f32);
+            match axis {
+                0 => pose.x = draft as f32,
+                1 => pose.y = draft as f32,
+                2 => pose.z = draft as f32,
+                _ => {}
+            }
+            self.shared.pending_local.push_pose(entity_id, pose);
+            return;
+        }
+
+        // Release: refresh expected_hash from live Epoch (physics drift OK; Inspector
+        // absolute draft wins). SoftLease still serializes multi-actor structural edits;
+        // physical Grab is a separate SSoT (not detected by this hash).
+        let Some(mut scrub) = self.spatial_lens.scrub.take() else {
+            return;
+        };
+        self.shared.pending_local.clear(scrub.entity_id);
+        let Some(field_id) = decode_inspector_pos_binding(scrub.field_binding) else {
+            return;
+        };
+        let Some(axis) = inspector_pos_axis(scrub.field_binding) else {
+            return;
+        };
+        if let Some(cur) = world_pos_axis(&self.shared.epoch, scrub.row, axis) {
+            scrub.expected_hash = expected_hash_for_axis(cur);
+        }
+        let Some(zenoh) = self.zenoh.as_ref() else {
+            log::warn!("inspector scrub commit skipped: no zenoh");
+            return;
+        };
+        if let Err(err) = publish_inspector_pos_commit(&self.shared, zenoh, &scrub, field_id) {
+            log::warn!("inspector scrub commit failed: {err:#}");
+        }
     }
 
     /// `F` while lens visible: select hierarchy row under sticky binding.
     fn activate_spatial_lens_binding(&mut self) {
-        scrub_selected_row(&mut self.spatial_lens, &self.shared.epoch);
+        if let Some(eid) = scrub_selected_row(&mut self.spatial_lens, &self.shared.epoch) {
+            self.shared.pending_local.clear(eid);
+        }
         let binding = self.spatial_lens.hovered_binding;
         if let Some(row) = decode_hierarchy_binding(binding) {
             if row_is_live(&self.shared.epoch, row) {
+                if let Some(prev) = self.spatial_lens.scrub.take() {
+                    self.shared.pending_local.clear(prev.entity_id);
+                }
                 self.spatial_lens.selected_row = Some(row);
                 self.shared.epoch.set_xray_row(Some(row));
                 log::info!("spatial_lens select row={row}");
@@ -1314,7 +1448,11 @@ impl ApplicationHandler for App {
                             let ray = desktop_look_ray(eye, look);
                             self.spatial_laser
                                 .snap_direction([ray.dir.x, ray.dir.y, ray.dir.z]);
-                            scrub_selected_row(&mut self.spatial_lens, &self.shared.epoch);
+                            if let Some(eid) =
+                                scrub_selected_row(&mut self.spatial_lens, &self.shared.epoch)
+                            {
+                                self.shared.pending_local.clear(eid);
+                            }
                             let _ = pack_personal_lens(
                                 &mut self.spatial_lens,
                                 &self.shared.epoch,
@@ -1336,6 +1474,10 @@ impl ApplicationHandler for App {
                             self.spatial_lens_fresh_pack = true;
                             self.spatial_lens_last_tick = Some(std::time::Instant::now());
                         } else {
+                            if let Some(prev) = self.spatial_lens.scrub.take() {
+                                self.shared.pending_local.clear(prev.entity_id);
+                            }
+                            self.inspector_scrub_primary_was_down = false;
                             self.spatial_headers.clear();
                             self.spatial_prims.clear();
                             self.spatial_lens_hit_panel = false;
@@ -1774,6 +1916,7 @@ pub fn run(
         spatial_lens_hit_panel: false,
         spatial_lens_last_tick: None,
         spatial_lens_fresh_pack: false,
+        inspector_scrub_primary_was_down: false,
     };
     // silent / remember-me MainHub entry — same catalog load as LoginOk / RegisterOk.
     if boot_catalog {

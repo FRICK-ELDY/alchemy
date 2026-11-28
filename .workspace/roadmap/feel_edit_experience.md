@@ -55,7 +55,7 @@
 | TELEPORT → GPU snap | **done**（[x00eb](slices/x00eb-teleport-gpu-snap.md)） | 生成・Reparent の残像・ちぎれを Curr へ即スナップ |
 | Depth Bucket / bitmask edge | **done**（[x00ef](slices/x00ef-depth-bucket-hierarchy.md) / [x00f0](slices/x00f0-bitmask-edge-observer.md)） | 親子追従・Enabled ON 初速リセット |
 | AvatarRig / RigidSolver | 境界 **done**・host tick **未配線** | 揺れもの・剛体が画面に出ない |
-| Inspector（x00bc） | 数値表示まで | スクラブ → `…/edit` Commit は非保証 |
+| Inspector（x00bc / [x00f2](slices/x00f2-inspector-setfield-commit.md)） | Desktop POS スクラブ → SetField Commit | SoftLease 見える化は → F1-2；XR スクラブは非保証 |
 | XR レーザー | **L0+L1 done**（Primary ゲート＋Settings 永続） | ShowInDesktop 可視化ビームは → L3；XR smooth → L2 |
 | `InteractionLaserConfig` | Settings 露出＋`laser.json` 永続（[x00ee](slices/x00ee-laser-settings-l1.md)） | Desktop ビーム描画本体（→ L3） |
 | Dash | CPU Canvas blit（仮）＋G0 色トークン共有 | 板経路の角丸・glow は Lens 済み；Dash 全板移行は U0 |
@@ -88,7 +88,7 @@ E1  ヒッチ根絶（スキニング / Async PSO / LOD builder）
 Fc6  Settings 行 → Facet 化
 ```
 
-**次の着手:** F0 枠 **done**（[x00eb](slices/x00eb-teleport-gpu-snap.md) F0-1 · [x00ef](slices/x00ef-depth-bucket-hierarchy.md) F0-2 · [x00f0](slices/x00f0-bitmask-edge-observer.md) F0-3 · [x00f1](slices/x00f1-pending-local-ops-wire.md) F0-4）。次候補 **`x00f2` = F1-1**（Inspector スクラブ → SetField Commit）。L1/T1/G0 も done。
+**次の着手:** F1-1 **done**（[x00f2](slices/x00f2-inspector-setfield-commit.md)）。次候補 **F1-2** SoftLease 見える化（空き ID **`x00f3`**）。F0 / L1 / T1 / G0 も done。
 
 ---
 
@@ -102,7 +102,7 @@ Fc6  Settings 行 → Facet 化
 | **F0-2** | **Depth Bucket 階層伝播**（[x00ef](slices/x00ef-depth-bucket-hierarchy.md) **done**） | 親子編集のワールド座標 | host Step 3：**depth 順一巡**（祖先確定→dirty invert→compose）。子も Grab/動力学可。伝播は pos/scale のみ。Reparent 契約 A |
 | **F0-3** | **bitmask edge Observer**（[x00f0](slices/x00f0-bitmask-edge-observer.md) **done**） | Enabled ON 初速リセット等 | Step 1。物理掴み SSoT は `holder_slot`（SoftLease と二重化しない） |
 | **F0-4** | **PendingLocalOps を実操作へ**（[x00f1](slices/x00f1-pending-local-ops-wire.md) **done**） | x00e6 は器。Grab 経路へ接続 | Published 非汚染を崩さない。Inspector Commit は → F1 |
-| **F1-1** | Inspector スクラブ → SetField Commit | x00bc が明示的に保証していない穴 | SoftLease と整合 |
+| **F1-1** | Inspector スクラブ → SetField Commit（[x00f2](slices/x00f2-inspector-setfield-commit.md) **done**） | x00bc が明示的に保証していない穴 | SoftLease ゲート流用。Save pose 永続は非保証 |
 | **F1-2** | SoftLease の見える化 | 編集ロックの「誰が握っているか」 | 物理 Grab と別概念 |
 | **F1-3** | ドラッグ揮発 ↔ Commit 1 回 | 密座標を CRDT に載せない契約の UI 側 | 既存 grab / edit レーン |
 | **F2-1** | AvatarRig → host tick 配線 | XPBD が画面に出る | Slot 爆発禁止 |
@@ -336,3 +336,4 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 | 2026-11-28 | x00ee prefs: spawn 失敗 sync drain・`flush_blocking`（exit）・FLUSHING 中 kick 抑止・join を lock 外へ |
 | 2026-11-28 | [x00ef](slices/x00ef-depth-bucket-hierarchy.md) F0-2 Depth Bucket done（locals・契約 A・Step 3）。次 [x00f0](slices/x00f0-bitmask-edge-observer.md) |
 | 2026-11-28 | [x00f0](slices/x00f0-bitmask-edge-observer.md) F0-3 bitmask edge done。[x00f1](slices/x00f1-pending-local-ops-wire.md) F0-4 Grab↔PendingLocalOps done。次候補 F1-1 |
+| 2026-11-28 | [x00f2](slices/x00f2-inspector-setfield-commit.md) F1-1 Inspector POS スクラブ → SetField Commit done。次候補 F1-2 |
