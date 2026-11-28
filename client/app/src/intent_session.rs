@@ -288,6 +288,43 @@ impl IntentSession {
         proposal
     }
 
+    /// Build a signed multi-axis POS SetField proposal (x00f4).
+    ///
+    /// Advances `control_seq` / `op_id` **once** per proposal regardless of axis count.
+    pub fn sign_edit_set_fields_pos(
+        &mut self,
+        room_id: &str,
+        base_scene_rev: u64,
+        entity_id: u32,
+        axes: &[crate::spatial_lens::inspector_edit::PosAxisCommit],
+    ) -> EditProposal {
+        debug_assert!(!axes.is_empty());
+        debug_assert!(axes.len() <= 3);
+        self.control_seq = self.control_seq.saturating_add(1);
+        let ops = axes
+            .iter()
+            .map(|a| EditOp {
+                op: Some(Op::SetField(alchemy_protocol::EditSetField {
+                    entity_id,
+                    field_id: a.field_id,
+                    value: alchemy_protocol::encode_f64(a.value).to_vec(),
+                    expected_value_hash: a.expected_hash.to_vec(),
+                })),
+            })
+            .collect();
+        let mut proposal = EditProposal {
+            session_pub: public_key_bytes(&self.key),
+            control_seq: self.control_seq,
+            base_scene_rev,
+            op_id: self.control_seq,
+            ops,
+            sig: vec![],
+            room_id: room_id.to_string(),
+        };
+        sign_edit_proposal(&self.key, &mut proposal);
+        proposal
+    }
+
     /// Build a signed `EditProposal` Save (x00b7; advances `control_seq`).
     pub fn sign_edit_save(&mut self, room_id: &str, base_scene_rev: u64) -> EditProposal {
         self.control_seq = self.control_seq.saturating_add(1);

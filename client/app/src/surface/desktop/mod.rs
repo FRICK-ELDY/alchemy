@@ -54,8 +54,8 @@ use crate::scene::{
     SharedState,
 };
 use crate::spatial_lens::extract::{
-    entity_id_for_row, inspector_pos_axis, world_pos_axis, world_pos_xyz, InspectorScrub,
-    INSPECTOR_SCRUB_M_PER_PX,
+    entity_id_for_row, inspector_pos_axis, inspector_secondary_axis, world_pos_xyz, InspectorScrub,
+    INSPECTOR_SCRUB_M_PER_PX, INSPECTOR_SCRUB_SECONDARY_DEADZONE_PX,
 };
 use crate::spatial_lens::inspector_edit::{expected_hash_for_axis, publish_inspector_pos_commit};
 use crate::spatial_lens::{
@@ -889,11 +889,13 @@ impl App {
         });
     }
 
-    /// Desktop Inspector POS scrub: drag updates draft; release → 1× SetField (x00f2).
+    /// Desktop Inspector POS scrub: drag updates draft; release → 1× proposal (x00f2 / x00f4).
     ///
     /// UV source while scrubbing: **panel hit UV** (not press-lock). On miss with
     /// primary held, reuse [`InspectorScrub::last_uv`]. Begin only on rising edge
     /// with a real panel hit on a POS field.
+    ///
+    /// 2D scrub (x00f4): `Δu` → primary axis; `Δv` → cyclic next axis.
     fn tick_inspector_scrub(&mut self, panel_hit: Option<([f32; 2], u32)>) {
         let rising = self.primary_down && !self.inspector_scrub_primary_was_down;
         self.inspector_scrub_primary_was_down = self.primary_down;
@@ -909,24 +911,29 @@ impl App {
                 let Some(row) = self.spatial_lens.selected_row else {
                     return;
                 };
-                let Some(axis) = inspector_pos_axis(binding) else {
+                if inspector_pos_axis(binding).is_none() {
                     return;
-                };
+                }
                 let Some(entity_id) = entity_id_for_row(&self.shared.epoch, row) else {
                     return;
                 };
-                let Some(base) = world_pos_axis(&self.shared.epoch, row, axis) else {
+                let Some(base_xyz) = world_pos_xyz(&self.shared.epoch, row) else {
                     return;
                 };
+                let mut expected_hash = [[0u8; 32]; 3];
+                for (i, &v) in base_xyz.iter().enumerate() {
+                    expected_hash[i] = expected_hash_for_axis(v);
+                }
                 self.spatial_lens.scrub = Some(InspectorScrub {
                     field_binding: binding,
                     row,
                     entity_id,
-                    start_uv_x: uv[0],
+                    start_uv: uv,
                     last_uv: uv,
-                    base_value: base,
-                    draft_value: base,
-                    expected_hash: expected_hash_for_axis(base),
+                    base_xyz,
+                    draft_xyz: base_xyz,
+                    dirty: [false; 3],
+                    expected_hash,
                 });
             }
 
@@ -934,6 +941,10 @@ impl App {
                 let Some(scrub) = self.spatial_lens.scrub.as_mut() else {
                     return;
                 };
+                let Some(primary) = inspector_pos_axis(scrub.field_binding) else {
+                    return;
+                };
+                let secondary = inspector_secondary_axis(primary);
                 let uv = match panel_hit {
                     Some((uv, _)) => {
                         scrub.last_uv = uv;
@@ -941,34 +952,54 @@ impl App {
                     }
                     None => scrub.last_uv,
                 };
-                let delta = (uv[0] - scrub.start_uv_x) as f64;
-                scrub.draft_value = scrub.base_value + delta * INSPECTOR_SCRUB_M_PER_PX;
-                if !scrub.draft_value.is_finite() {
-                    scrub.draft_value = scrub.base_value;
+                let du = (uv[0] - scrub.start_uv[0]) as f64;
+                let dv = (uv[1] - scrub.start_uv[1]) as f64;
+                // Dirty vs press-time base (Commit absolute). Preview blends Curr for
+                // non-dirty axes so physics drift follows until release (x00f2 / x00f4).
+                scrub.dirty = [false; 3];
+                let mut primary_v = scrub.base_xyz[primary] + du * INSPECTOR_SCRUB_M_PER_PX;
+                if !primary_v.is_finite() {
+                    primary_v = scrub.base_xyz[primary];
                 }
-                (
-                    scrub.entity_id,
-                    scrub.row,
-                    scrub.field_binding,
-                    scrub.draft_value,
-                )
+                if (primary_v - scrub.base_xyz[primary]).abs() > f64::EPSILON {
+                    scrub.dirty[primary] = true;
+                    scrub.draft_xyz[primary] = primary_v;
+                } else {
+                    scrub.draft_xyz[primary] = scrub.base_xyz[primary];
+                }
+                let secondary_v = scrub.base_xyz[secondary] + dv * INSPECTOR_SCRUB_M_PER_PX;
+                if secondary_v.is_finite()
+                    && dv.abs() >= INSPECTOR_SCRUB_SECONDARY_DEADZONE_PX
+                    && (secondary_v - scrub.base_xyz[secondary]).abs() > f64::EPSILON
+                {
+                    scrub.dirty[secondary] = true;
+                    scrub.draft_xyz[secondary] = secondary_v;
+                } else {
+                    scrub.draft_xyz[secondary] = scrub.base_xyz[secondary];
+                }
+                // Third axis stays at base for Commit; Curr overlay happens below.
+                let third = 3 - primary - secondary;
+                scrub.dirty[third] = false;
+                scrub.draft_xyz[third] = scrub.base_xyz[third];
+                (scrub.entity_id, scrub.row, scrub.draft_xyz, scrub.dirty)
             };
-            let (entity_id, row, field_binding, draft) = preview;
-            let Some(axis) = inspector_pos_axis(field_binding) else {
-                return;
-            };
-            // Non-finite / missing Curr → clear stale preview rather than freeze last pose.
-            let Some(xyz) = world_pos_xyz(&self.shared.epoch, row) else {
+            let (entity_id, row, draft_xyz, dirty) = preview;
+            // Non-finite / missing Curr → drop scrub (no stale Commit on release).
+            let Some(curr) = world_pos_xyz(&self.shared.epoch, row) else {
+                self.spatial_lens.scrub = None;
                 self.shared.pending_local.clear(entity_id);
                 return;
             };
-            // Preview uses f32 PendingPose; Commit stays f64 (axis written = draft).
-            let mut pose = PendingPose::xyz(xyz[0] as f32, xyz[1] as f32, xyz[2] as f32);
-            match axis {
-                0 => pose.x = draft as f32,
-                1 => pose.y = draft as f32,
-                2 => pose.z = draft as f32,
-                _ => {}
+            // Preview: Curr for clean axes, draft for dirty (f32 PendingPose; Commit f64).
+            let mut pose = PendingPose::xyz(curr[0] as f32, curr[1] as f32, curr[2] as f32);
+            if dirty[0] {
+                pose.x = draft_xyz[0] as f32;
+            }
+            if dirty[1] {
+                pose.y = draft_xyz[1] as f32;
+            }
+            if dirty[2] {
+                pose.z = draft_xyz[2] as f32;
             }
             self.shared.pending_local.push_pose(entity_id, pose);
             return;
@@ -981,20 +1012,21 @@ impl App {
             return;
         };
         self.shared.pending_local.clear(scrub.entity_id);
-        let Some(field_id) = decode_inspector_pos_binding(scrub.field_binding) else {
+        if !scrub.dirty.iter().any(|&d| d) {
             return;
-        };
-        let Some(axis) = inspector_pos_axis(scrub.field_binding) else {
-            return;
-        };
-        if let Some(cur) = world_pos_axis(&self.shared.epoch, scrub.row, axis) {
-            scrub.expected_hash = expected_hash_for_axis(cur);
+        }
+        if let Some(cur) = world_pos_xyz(&self.shared.epoch, scrub.row) {
+            for (i, &is_dirty) in scrub.dirty.iter().enumerate() {
+                if is_dirty {
+                    scrub.expected_hash[i] = expected_hash_for_axis(cur[i]);
+                }
+            }
         }
         let Some(zenoh) = self.zenoh.as_ref() else {
             log::warn!("inspector scrub commit skipped: no zenoh");
             return;
         };
-        if let Err(err) = publish_inspector_pos_commit(&self.shared, zenoh, &scrub, field_id) {
+        if let Err(err) = publish_inspector_pos_commit(&self.shared, zenoh, &scrub) {
             log::warn!("inspector scrub commit failed: {err:#}");
         }
     }
@@ -1040,6 +1072,9 @@ impl App {
     ///
     /// Spec (x00ab): after host reject, **re-Grab is forbidden until the grab button
     /// is released** (no press-and-hold retry loop / Intent spam).
+    ///
+    /// x00f4 / F1-3: dense grab coords stay on Intent (not `…/edit`). Release does
+    /// **not** SetField-commit pose (Epoch/Frame SSoT; Grab release Commit = 後続).
     fn update_grab_hold(&mut self) {
         // Host reject Snap (x00ab heuristic until Phase 3 acked_intent_seq / holder).
         let just_rejected = self

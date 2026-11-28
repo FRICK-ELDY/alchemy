@@ -2,7 +2,8 @@
 //! (x00b2–x00b9 / x00e0 facade / x00e2 SoftLease / x00e3 TRASH).
 //!
 //! Guarantees: AEAD `EditProposal` → session Ed25519 → Dual-auth / shared control rate /
-//! `control_seq`; single op.
+//! `control_seq`; **one structural op**, or **POS_* batch** (x00f4: 1..=3 same-entity
+//! unique axes in one proposal).
 //! Spawn/Despawn (x00b9): host-local id + pending ticket/despawn (no live overlay CAS);
 //! inbox enqueue only here; **tip + accept Commit after physics/local apply in HostLoop**
 //! (inbox closed / apply fail → reject `APPLY` + `release_reserved`, tip unchanged).
@@ -15,7 +16,7 @@
 //! install shared scene + `force_reseal` when packed revision advances; **tip unchanged**;
 //! accept Commit with current tip.
 //!
-//! Non-guarantees: multi-op batch; Undo UI; old inventory key removal; Spatial VCS;
+//! Non-guarantees: arbitrary multi-op mixes; Undo UI; old inventory key removal; Spatial VCS;
 //! crash durability of unsaved pending; SoftLease ↔ physical grab;
 //! **`control_seq` is committed before physics/apply** — later HostLoop `APPLY` reject
 //! still leaves seq advanced (same window as inventory HTTP-era; wider now that tip waits).
@@ -281,35 +282,10 @@ fn process_proposal(
             None,
         ));
     }
-    if proposal.ops.len() != 1 {
-        return Ok((
-            Some(reject_commit(&proposal, edit_reject::OPS_COUNT, reject_rev)),
-            None,
-        ));
-    }
-    let op = match proposal.ops[0].op.as_ref() {
-        Some(Op::Spawn(s)) => {
-            if !spawn_payload_ok(s) {
-                return Ok((
-                    Some(reject_commit(&proposal, edit_reject::PAYLOAD, reject_rev)),
-                    None,
-                ));
-            }
-            OpKind::Spawn(s.clone())
-        }
-        Some(Op::Despawn(d)) => OpKind::Despawn(d.entity_id),
-        Some(Op::Reparent(r)) => OpKind::Reparent(*r),
-        Some(Op::SetField(f)) => OpKind::SetField(f.clone()),
-        Some(Op::Save(_)) => OpKind::Save,
-        None => {
-            return Ok((
-                Some(reject_commit(
-                    &proposal,
-                    edit_reject::OP_UNSUPPORTED,
-                    reject_rev,
-                )),
-                None,
-            ));
+    let op = match classify_ops(&proposal) {
+        Ok(op) => op,
+        Err(reason) => {
+            return Ok((Some(reject_commit(&proposal, reason, reject_rev)), None));
         }
     };
 
@@ -393,6 +369,9 @@ fn process_proposal(
         OpKind::Despawn(entity_id) => apply_despawn(&proposal, entity_id, shared_scene, live_edit),
         OpKind::Reparent(r) => apply_reparent(&proposal, r, live_edit, actor_id),
         OpKind::SetField(f) => apply_set_field(&proposal, f, live_edit, actor_id),
+        OpKind::SetFieldsPos(fields) => {
+            apply_set_fields_pos(&proposal, fields, live_edit, actor_id)
+        }
         OpKind::Save => apply_save(
             &proposal,
             room_id,
@@ -411,7 +390,71 @@ enum OpKind {
     Despawn(u32),
     Reparent(EditReparent),
     SetField(EditSetField),
+    /// Same-entity unique POS_* axes (x00f4); len 1..=3.
+    SetFieldsPos(Vec<EditSetField>),
     Save,
+}
+
+/// Classify proposal ops: single structural op, or POS_* batch (x00f4).
+fn classify_ops(proposal: &EditProposal) -> Result<OpKind, u32> {
+    let n = proposal.ops.len();
+    if n == 0 || n > 3 {
+        return Err(edit_reject::OPS_COUNT);
+    }
+
+    let mut pos_batch: Vec<EditSetField> = Vec::with_capacity(n);
+    let mut all_pos = true;
+    for edit_op in &proposal.ops {
+        match edit_op.op.as_ref() {
+            Some(Op::SetField(f)) if is_pos_field_id(f.field_id) => {
+                pos_batch.push(f.clone());
+            }
+            _ => {
+                all_pos = false;
+                break;
+            }
+        }
+    }
+    if all_pos && !pos_batch.is_empty() {
+        return validate_pos_batch(pos_batch);
+    }
+    if n != 1 {
+        return Err(edit_reject::OPS_COUNT);
+    }
+    match proposal.ops[0].op.as_ref() {
+        Some(Op::Spawn(s)) => {
+            if !spawn_payload_ok(s) {
+                return Err(edit_reject::PAYLOAD);
+            }
+            Ok(OpKind::Spawn(s.clone()))
+        }
+        Some(Op::Despawn(d)) => Ok(OpKind::Despawn(d.entity_id)),
+        Some(Op::Reparent(r)) => Ok(OpKind::Reparent(*r)),
+        Some(Op::SetField(f)) => {
+            // POS already handled above; remaining SetField is FLAGS/COLOR/BLAKE3.
+            Ok(OpKind::SetField(f.clone()))
+        }
+        Some(Op::Save(_)) => Ok(OpKind::Save),
+        None => Err(edit_reject::OP_UNSUPPORTED),
+    }
+}
+
+fn validate_pos_batch(fields: Vec<EditSetField>) -> Result<OpKind, u32> {
+    let entity_id = fields[0].entity_id;
+    let mut seen_axis = [false; 3];
+    for f in &fields {
+        if f.entity_id != entity_id {
+            return Err(edit_reject::OPS_COUNT);
+        }
+        let Some(axis) = alchemy_protocol::pos_field_axis(f.field_id) else {
+            return Err(edit_reject::OP_UNSUPPORTED);
+        };
+        if seen_axis[axis] {
+            return Err(edit_reject::OPS_COUNT);
+        }
+        seen_axis[axis] = true;
+    }
+    Ok(OpKind::SetFieldsPos(fields))
 }
 
 fn is_blake3_hex(s: &str) -> bool {
@@ -792,9 +835,10 @@ fn apply_set_field(
             None,
         ));
     }
-    // POS_*: SoftLease here; Epoch axis hash at physics queue (no sparse write · x00f2).
+    // POS_*: SoftLease here; Epoch axis hash at physics queue (no sparse write · x00f2/x00f4).
+    // (process_proposal routes POS batches here via SetFieldsPos; this arm is defensive.)
     if is_pos_field_id(f.field_id) {
-        return apply_set_field_pos(proposal, f, &mut led, actor_id, tip);
+        return apply_set_fields_pos_locked(proposal, vec![f], &mut led, actor_id, tip);
     }
     let Some(cur) = current_field_value(&led, f.entity_id, f.field_id) else {
         return Ok((
@@ -860,35 +904,59 @@ fn apply_set_field(
     finish_set_field_ready(proposal, f, &mut led, actor_id, tip, prev_value, prop)
 }
 
-/// Inspector world-position SetField (x00f2). SoftLease here; Epoch hash at queue.
-///
+/// Inspector world-position SetField batch (x00f2 / x00f4). SoftLease once; Epoch hash at queue.
+fn apply_set_fields_pos(
+    proposal: &EditProposal,
+    fields: Vec<EditSetField>,
+    live_edit: &SharedLiveEdit,
+    actor_id: u64,
+) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
+    let mut led = live_edit
+        .lock()
+        .map_err(|_| anyhow!("LiveEditLedger poisoned"))?;
+    let tip = led.tip;
+    apply_set_fields_pos_locked(proposal, fields, &mut led, actor_id, tip)
+}
+
 /// Does **not** write a sparse POS mirror (Epoch is pose SSoT). Avoids fabricating
 /// `0.0` prev on rollback when the property was never set.
-fn apply_set_field_pos(
+fn apply_set_fields_pos_locked(
     proposal: &EditProposal,
-    f: EditSetField,
+    fields: Vec<EditSetField>,
     led: &mut LiveEditLedger,
     actor_id: u64,
     tip: u64,
 ) -> Result<(Option<EditCommit>, Option<ReadyEdit>)> {
-    if decode_f64(&f.value).is_none() {
+    if fields.is_empty() || fields.len() > 3 {
         return Ok((
-            Some(reject_commit(proposal, edit_reject::PAYLOAD, tip)),
+            Some(reject_commit(proposal, edit_reject::OPS_COUNT, tip)),
             None,
         ));
     }
-    if led.soft_lease_allows(f.entity_id, actor_id).is_err() {
-        return Ok((
-            Some(reject_soft_lease(proposal, tip, led, f.entity_id)),
-            None,
-        ));
+    let entity_id = fields[0].entity_id;
+    for f in &fields {
+        if !led.contains_entity(f.entity_id) {
+            return Ok((
+                Some(reject_commit(proposal, edit_reject::NOT_FOUND, tip)),
+                None,
+            ));
+        }
+        if decode_f64(&f.value).is_none() {
+            return Ok((
+                Some(reject_commit(proposal, edit_reject::PAYLOAD, tip)),
+                None,
+            ));
+        }
     }
-    let entity_id = f.entity_id;
+    if led.soft_lease_allows(entity_id, actor_id).is_err() {
+        return Ok((Some(reject_soft_lease(proposal, tip, led, entity_id)), None));
+    }
+    let prev_values = vec![Vec::new(); fields.len()];
     let ready = ReadyLiveEdit::SetField {
         proposal: proposal.clone(),
-        op: f,
+        ops: fields,
         // Empty = no sparse POS row to restore on queue/barrier fail.
-        prev_value: Vec::new(),
+        prev_values,
         lease_holder_actor_id: actor_id,
     };
     if led.try_acquire_soft_lease(entity_id, actor_id).is_err() {
@@ -928,8 +996,8 @@ fn finish_set_field_ready(
     let entity_id = f.entity_id;
     let ready = ReadyLiveEdit::SetField {
         proposal: proposal.clone(),
-        op: f,
-        prev_value,
+        ops: vec![f],
+        prev_values: vec![prev_value],
         lease_holder_actor_id: actor_id,
     };
     if led.try_acquire_soft_lease(entity_id, actor_id).is_err() {
@@ -1417,5 +1485,177 @@ mod tests {
         let mut bad_scale = good;
         bad_scale.sx = 0.0;
         assert!(!spawn_payload_ok(&bad_scale));
+    }
+
+    fn pos_field(entity_id: u32, field_id: u32, value: f64, expected: f64) -> EditSetField {
+        EditSetField {
+            entity_id,
+            field_id,
+            value: alchemy_protocol::encode_f64(value).to_vec(),
+            expected_value_hash: alchemy_protocol::hash_f64(expected).to_vec(),
+        }
+    }
+
+    #[test]
+    fn pos_batch_two_axes_one_soft_lease_ready() {
+        let live = new_shared_live_edit();
+        {
+            let mut led = live.lock().unwrap();
+            assert!(led.note_spawn_with_parent(10, 0, 0, [1.0, 1.0, 1.0, 1.0], String::new()));
+        }
+        let key = generate_signing_key();
+        let alice = actor_id_from_sub("alice");
+        let mut p = EditProposal {
+            session_pub: public_key_bytes(&key),
+            control_seq: 1,
+            base_scene_rev: 0,
+            op_id: 1,
+            ops: vec![
+                EditOp {
+                    op: Some(Op::SetField(pos_field(
+                        10,
+                        alchemy_protocol::edit_field_id::POS_X,
+                        1.5,
+                        0.0,
+                    ))),
+                },
+                EditOp {
+                    op: Some(Op::SetField(pos_field(
+                        10,
+                        alchemy_protocol::edit_field_id::POS_Y,
+                        2.5,
+                        0.0,
+                    ))),
+                },
+            ],
+            sig: vec![],
+            room_id: "local".into(),
+        };
+        sign_edit_proposal(&key, &mut p);
+        assert!(matches!(
+            classify_ops(&p).unwrap(),
+            OpKind::SetFieldsPos(ref f) if f.len() == 2
+        ));
+        let fields = match classify_ops(&p).unwrap() {
+            OpKind::SetFieldsPos(f) => f,
+            _ => unreachable!(),
+        };
+        let (c, ready) = apply_set_fields_pos(&p, fields, &live, alice).unwrap();
+        assert!(c.is_none());
+        let ready = match ready.expect("POS batch Ready") {
+            ReadyEdit::Live(r) => r,
+            _ => panic!("expected live Ready"),
+        };
+        match &ready {
+            ReadyLiveEdit::SetField {
+                ops, prev_values, ..
+            } => {
+                assert_eq!(ops.len(), 2);
+                assert_eq!(prev_values.len(), 2);
+                assert!(prev_values.iter().all(|v| v.is_empty()));
+            }
+            _ => panic!("expected SetField"),
+        }
+        assert_eq!(ready.lease_holder_actor_id(), alice);
+        let led = live.lock().unwrap();
+        assert_eq!(
+            led.soft_lease_of(10).map(|l| l.holder_actor_id),
+            Some(alice),
+            "one SoftLease for multi-axis POS"
+        );
+    }
+
+    #[test]
+    fn pos_batch_rejects_duplicate_axis_and_mixed_ops() {
+        let key = generate_signing_key();
+        let mut dup = EditProposal {
+            session_pub: public_key_bytes(&key),
+            control_seq: 1,
+            base_scene_rev: 0,
+            op_id: 1,
+            ops: vec![
+                EditOp {
+                    op: Some(Op::SetField(pos_field(
+                        10,
+                        alchemy_protocol::edit_field_id::POS_X,
+                        1.0,
+                        0.0,
+                    ))),
+                },
+                EditOp {
+                    op: Some(Op::SetField(pos_field(
+                        10,
+                        alchemy_protocol::edit_field_id::POS_X,
+                        2.0,
+                        0.0,
+                    ))),
+                },
+            ],
+            sig: vec![],
+            room_id: "local".into(),
+        };
+        sign_edit_proposal(&key, &mut dup);
+        assert_eq!(classify_ops(&dup).err(), Some(edit_reject::OPS_COUNT));
+
+        let mut mixed = EditProposal {
+            session_pub: public_key_bytes(&key),
+            control_seq: 2,
+            base_scene_rev: 0,
+            op_id: 2,
+            ops: vec![
+                EditOp {
+                    op: Some(Op::SetField(pos_field(
+                        10,
+                        alchemy_protocol::edit_field_id::POS_X,
+                        1.0,
+                        0.0,
+                    ))),
+                },
+                EditOp {
+                    op: Some(Op::SetField(EditSetField {
+                        entity_id: 10,
+                        field_id: alchemy_protocol::edit_field_id::FLAGS,
+                        value: alchemy_protocol::encode_flags(1).to_vec(),
+                        expected_value_hash: alchemy_protocol::hash_flags(0).to_vec(),
+                    })),
+                },
+            ],
+            sig: vec![],
+            room_id: "local".into(),
+        };
+        sign_edit_proposal(&key, &mut mixed);
+        assert_eq!(classify_ops(&mixed).err(), Some(edit_reject::OPS_COUNT));
+
+        let mut other_entity = EditProposal {
+            session_pub: public_key_bytes(&key),
+            control_seq: 3,
+            base_scene_rev: 0,
+            op_id: 3,
+            ops: vec![
+                EditOp {
+                    op: Some(Op::SetField(pos_field(
+                        10,
+                        alchemy_protocol::edit_field_id::POS_X,
+                        1.0,
+                        0.0,
+                    ))),
+                },
+                EditOp {
+                    op: Some(Op::SetField(pos_field(
+                        11,
+                        alchemy_protocol::edit_field_id::POS_Y,
+                        2.0,
+                        0.0,
+                    ))),
+                },
+            ],
+            sig: vec![],
+            room_id: "local".into(),
+        };
+        sign_edit_proposal(&key, &mut other_entity);
+        assert_eq!(
+            classify_ops(&other_entity).err(),
+            Some(edit_reject::OPS_COUNT)
+        );
     }
 }
