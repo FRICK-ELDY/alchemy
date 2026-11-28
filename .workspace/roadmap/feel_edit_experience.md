@@ -149,6 +149,19 @@ Fc0–Fc6  枠のみ・deferred（§4.5）。本線フローに入れない
 | ShowInDesktop | `show_lasers_in_desktop_mode`（**追加**） |
 | （Alchemy）表示しきい値 | `laser_show_primary_min`（既定 0.1）（**追加**） |
 
+**Alchemy Laser Default（x00f5 体感チューニング・Settings Reset 先）**
+
+| 項目 | 現行既定 | 旧例示（〜L1 ドキュメント） |
+|:---|---:|---:|
+| `laser_smooth_speed` | **5.0** | 12.0 |
+| `modulate_start_angle_deg` | **2.0** | 1.5 |
+| `modulate_end_angle_deg` | **45.0** | 18.0 |
+| `modulate_exponent` | **0.75** | 1.8 |
+| `modulate_speed_multiplier` | **8.0** | 8.0 |
+| `laser_stickiness` | **0.2** | 0.5 |
+
+新規 boot・欠損 `laser.json`・**Reset defaults** は現行既定へ。既存 `laser.json` は上書きしない（明示 Reset まで旧値維持）。
+
 ### 4.3 T — Text / 多言語（描画とカタログを分離）
 
 正本: Lens アーキ §4.2 / §5 危険①③ · Expansion **E2-1**
@@ -374,3 +387,4 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 | 2026-11-28 | x00f5 レビュー追随: Context freeze＝snap→smooth（同一レイ）・reacquire/hotswitch snap・near-opposite フォールバック |
 | 2026-11-28 | x00f5 追随: `snap_and_freeze_context` 集約・`!should_render` でも had クリア・§4.2 L2 表をスライスに揃える |
 | 2026-11-28 | x00f5 追随: empty は連続 N のみ snap・`XrLaserHands` に smooth state 集約 |
+| 2026-11-28 | Laser Default を XR 体感寄せ（5/2°/45°/0.75/8/0.2）＋ Settings Reset；旧 12/18 例示との差を §4.2 表で明示 |
