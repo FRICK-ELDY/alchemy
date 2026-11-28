@@ -1,8 +1,9 @@
-//! Hierarchy / Inspector → GpuUiPrim packing (x00bb / x00bc).
+//! Hierarchy / Inspector → GpuUiPrim packing (x00bb / x00bc / x00ed).
 //!
 //! Guarantees: viewport-window extract only; DirectNumber pose fields without String;
-//! selected_row scrub when row is not live; scroll clamp to non-empty window.
-//! Non-guarantees: MSDF labels; SetField scrub commit; WorldRoot sync; Lens-side collapse
+//! short ASCII MsdfGlyph labels (Tier-1 Static MSDF); selected_row scrub when row is not live;
+//! scroll clamp to non-empty window.
+//! Non-guarantees: CJK labels; SetField scrub commit; WorldRoot sync; Lens-side collapse
 //! toggle (collapse set is shared with Settings; Lens MVP reads only).
 
 #![forbid(unsafe_code)]
@@ -13,6 +14,7 @@ use super::glass::{
     card_payload, control_payload, shell_payload, shell_rect_inset, CARD_FILL, CHROME_FILL,
     CONTROL_HOT, CONTROL_IDLE, ROW_SELECT, SHELL_BORDER, SHELL_FILL, TEXT,
 };
+use super::msdf::{push_ascii_glyphs, AsciiGlyphBlit};
 use super::prim::{
     pack_direct_number, pack_panel_kind, pack_rgba8, GpuPanelHeader, GpuUiPrim, UiPrimKind,
 };
@@ -232,7 +234,7 @@ pub fn pack_personal_lens(
     // Vertical margins use the same `pad` as horizontal (shell inset safe).
     let chrome_y = state.height_px - pad - chrome_h;
 
-    // Title chrome (MSDF later). Number = selected entity_id, or -1 when none.
+    // Title chrome: "ID" MsdfGlyph + selected owner_scope DirectNumber (or -1).
     out_prims.push(prim_box(
         0,
         [pad, chrome_y, state.width_px - 2.0 * pad, chrome_h],
@@ -242,6 +244,20 @@ pub fn pack_personal_lens(
         0,
         control_payload(),
     ));
+    push_ascii_glyphs(
+        out_prims,
+        AsciiGlyphBlit {
+            panel: 0,
+            origin_x: pad + 8.0,
+            origin_y: chrome_y + 6.0,
+            glyph_w: 14.0,
+            glyph_h: 20.0,
+            clip,
+            color_rgba: num_col,
+            binding_id: 0,
+            text: "ID",
+        },
+    );
     let title_val = state
         .selected_row
         .and_then(|row| {
@@ -256,7 +272,7 @@ pub fn pack_personal_lens(
         .unwrap_or(-1.0);
     out_prims.push(prim_number(
         0,
-        [pad + 8.0, chrome_y + 4.0, 160.0, 24.0],
+        [pad + 40.0, chrome_y + 4.0, 160.0, 24.0],
         clip,
         title_val,
         0,
@@ -360,21 +376,42 @@ fn pack_inspector_fields(
         .unwrap_or(0.0);
 
     let fields = [
-        (INSPECT_FIELD_POS_X, xf.position[0], 3u8),
-        (INSPECT_FIELD_POS_Y, xf.position[1], 3),
-        (INSPECT_FIELD_POS_Z, xf.position[2], 3),
-        (INSPECT_FIELD_READY, ready, 0),
+        (INSPECT_FIELD_POS_X, "X", xf.position[0], 3u8),
+        (INSPECT_FIELD_POS_Y, "Y", xf.position[1], 3),
+        (INSPECT_FIELD_POS_Z, "Z", xf.position[2], 3),
+        (INSPECT_FIELD_READY, "R", ready, 0),
     ];
     let pad = content_pad();
     let mut y = (*y_top - pad).min(clip[3] - pad - 32.0);
-    for (binding, value, dec) in fields {
+    let label_w = 16.0;
+    for (binding, label, value, dec) in fields {
         y -= ROW_H;
         if y < pad {
             break;
         }
+        // Labels are decoration-only (hit goes to the DirectNumber field).
+        push_ascii_glyphs(
+            out,
+            AsciiGlyphBlit {
+                panel: 0,
+                origin_x: pad * 2.0,
+                origin_y: y + 4.0,
+                glyph_w: label_w,
+                glyph_h: ROW_H - 8.0,
+                clip,
+                color_rgba: num_col,
+                binding_id: 0,
+                text: label,
+            },
+        );
         out.push(prim_number(
             0,
-            [pad * 2.0, y, width_px - 4.0 * pad, ROW_H - 4.0],
+            [
+                pad * 2.0 + label_w + 4.0,
+                y,
+                width_px - 4.0 * pad - label_w - 4.0,
+                ROW_H - 4.0,
+            ],
             clip,
             value,
             dec,
@@ -405,6 +442,20 @@ pub fn pack_demo_panel(
         0,
         shell_payload(true),
     ));
+    push_ascii_glyphs(
+        out_prims,
+        AsciiGlyphBlit {
+            panel: 0,
+            origin_x: 24.0,
+            origin_y: 36.0,
+            glyph_w: 18.0,
+            glyph_h: 28.0,
+            clip,
+            color_rgba: TEXT.packed(),
+            binding_id: 0,
+            text: "MSDF",
+        },
+    );
     out_prims.push(prim_number(
         0,
         [24.0, 80.0, 200.0, 36.0],
@@ -551,6 +602,32 @@ mod tests {
         pack_demo_panel(12.345, &mut h, &mut p);
         assert_eq!(h.len(), 1);
         assert!(p.iter().any(unpack_is_number));
+        assert!(p.iter().any(unpack_is_msdf));
+    }
+
+    fn unpack_is_msdf(p: &GpuUiPrim) -> bool {
+        super::super::prim::unpack_kind(p.panel_and_kind) == UiPrimKind::MsdfGlyph
+    }
+
+    #[test]
+    fn pack_lens_emits_msdf_title_and_inspector_labels() {
+        let epoch = epoch_with_one_row();
+        let mut state = SpatialLensState {
+            visible: true,
+            selected_row: Some(0),
+            ..Default::default()
+        };
+        let mut headers = Vec::new();
+        let mut prims = Vec::new();
+        pack_personal_lens(&mut state, &epoch, &mut headers, &mut prims);
+        let msdf: Vec<_> = prims.iter().filter(|p| unpack_is_msdf(p)).collect();
+        // "ID" (2) + X/Y/Z/R labels (4) minimum when inspector open.
+        assert!(msdf.len() >= 6, "msdf_n={}", msdf.len());
+        // Decoration must not steal laser hits from DirectNumber fields.
+        assert!(
+            msdf.iter().all(|p| p.binding_id == 0),
+            "MsdfGlyph labels must use binding_id=0"
+        );
     }
 
     fn eye_at_origin() -> EntityPose {

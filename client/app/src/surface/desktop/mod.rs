@@ -90,7 +90,7 @@ impl DesktopGpu {
             create_wgpu_for_window(Arc::clone(&window)).await?;
         let depth_view = create_depth_view(&device, config.width, config.height);
         let scene = SceneGpu::from_device(device, queue, format, mesh, shared)?;
-        let spatial_lens = SpatialLensGpu::new(&scene.device, format)?;
+        let spatial_lens = SpatialLensGpu::new(&scene.device, &scene.queue, format)?;
         Ok(Self {
             surface,
             scene,
