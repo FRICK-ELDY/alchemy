@@ -21,9 +21,10 @@ use alchemy_protocol::{input_buttons, DEFAULT_MOVE_SPEED};
 
 use super::super::hotswitch::{HotswitchConfig, HotswitchController};
 use super::input::{
-    classify_context_board_ray, context_board_model_at, dash_quad_model, freeze_context_board,
-    laser_length, laser_length_context_board, laser_length_world, laser_model,
-    openxr_pose_to_isometry, pose_to_ray, ray_hit_dash_quad, ContextBoardRayHit, Ray,
+    aim_orient_from_smoothed_dir, classify_context_board_ray, context_board_model_at,
+    dash_quad_model, freeze_context_board, laser_length, laser_length_context_board,
+    laser_length_world, laser_model, openxr_pose_to_isometry, pose_to_ray, ray_hit_dash_quad,
+    ContextBoardRayHit, Ray,
 };
 use super::loco::{combine_turn_axes, intent_from_sticks, stage_move_to_world, STICK_DEADZONE};
 use super::math::{projection_from_fov_default, view_from_pose};
@@ -33,6 +34,7 @@ use super::wgpu_overlays::{GpuController, XrOverlays};
 use crate::context_radial::{self, ContextEvent, ContextItemId, ContextRadialState, HandSide};
 use crate::mesh::CpuMesh;
 use crate::scene::{create_depth_view, MoveIntent, SceneGpu, SharedState, BOX_HALF_EXTENT};
+use crate::spatial_lens::{HandLaserState, InteractionLaserConfig};
 use crate::system_ui::{InventoryPeerRequest, LayoutTree, SystemUi, UiAction};
 use crate::turn::{update_turn_yaw, TURN_DEADZONE};
 use crate::world_hit::ray_hit_grabbable_boxes_with_extents;
@@ -43,12 +45,92 @@ const UI_CANVAS_W: u32 = 960;
 const CONTEXT_SAVE_TIMEOUT: Duration = Duration::from_secs(15);
 const UI_CANVAS_H: u32 = 540;
 const GRAB_SQUEEZE_THRESHOLD: f32 = 0.7;
+/// Consecutive `!should_render` empties before clearing laser had-tracking (x00f5).
+/// Short compositor blanks keep smooth; longer gaps snap on resume (~3 frames @90Hz).
+const LASER_EMPTY_SNAP_FRAMES: u32 = 3;
 const WORLD_CLEAR: wgpu::Color = wgpu::Color {
     r: 0.05,
     g: 0.12,
     b: 0.16,
     a: 1.0,
 };
+
+/// Per-session XR laser smooth state (both hands · x00f5).
+#[derive(Default)]
+struct XrLaserHands {
+    left: HandLaserState,
+    right: HandLaserState,
+    had_left: bool,
+    had_right: bool,
+    empty_streak: u32,
+}
+
+impl XrLaserHands {
+    fn clear_had(&mut self) {
+        self.had_left = false;
+        self.had_right = false;
+    }
+
+    fn note_empty_frame(&mut self) {
+        self.empty_streak = self.empty_streak.saturating_add(1);
+        if self.empty_streak >= LASER_EMPTY_SNAP_FRAMES {
+            self.clear_had();
+        }
+    }
+
+    fn note_rendered_frame(&mut self) {
+        self.empty_streak = 0;
+    }
+
+    fn snap_hand(&mut self, hand: HandSide, raw: (Vec3, Quat)) -> (Vec3, Quat) {
+        match hand {
+            HandSide::Left => {
+                let s = snap_hand_aim(raw, &mut self.left);
+                self.had_left = true;
+                s
+            }
+            HandSide::Right => {
+                let s = snap_hand_aim(raw, &mut self.right);
+                self.had_right = true;
+                s
+            }
+        }
+    }
+
+    fn smooth_hand(
+        &mut self,
+        hand: HandSide,
+        pose: Option<(Vec3, Quat)>,
+        cfg: &InteractionLaserConfig,
+        dt: f32,
+    ) -> Option<(Vec3, Quat)> {
+        let (state, had) = match hand {
+            HandSide::Left => (&mut self.left, &mut self.had_left),
+            HandSide::Right => (&mut self.right, &mut self.had_right),
+        };
+        match pose {
+            Some(raw) => {
+                if !*had {
+                    *had = true;
+                    Some(snap_hand_aim(raw, state))
+                } else {
+                    let (pos, orient) = raw;
+                    let dir = pose_to_ray(pos, orient).dir;
+                    let smoothed = state.update_smoothed_direction([dir.x, dir.y, dir.z], cfg, dt);
+                    let sm_orient = aim_orient_from_smoothed_dir(
+                        orient,
+                        Vec3::new(smoothed[0], smoothed[1], smoothed[2]),
+                    );
+                    Some((pos, sm_orient))
+                }
+            }
+            None => {
+                *had = false;
+                None
+            }
+        }
+    }
+}
 
 pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
     let running = Arc::new(AtomicBool::new(true));
@@ -271,6 +353,8 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
     let mut view_yaw = 0.0_f32;
     let mut snap_armed = true;
     let mut was_vr_active = true;
+    // x00f5 L2: per-hand angle-modulated smooth (draw + same-ray UI/grab hits).
+    let mut laser = XrLaserHands::default();
     'main_loop: loop {
         if shared.presentation.exit_requested() {
             exit_requested = true;
@@ -404,9 +488,13 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         }
 
         let vr_active = shared.presentation.vr_active();
+        let resuming_vr = !was_vr_active && vr_active;
         if was_vr_active && !vr_active {
             held_grab = None;
             shared.clear_move_intent();
+            // Next VR present will snap laser dirs (stale smooth from yield gap).
+            laser.clear_had();
+            laser.empty_streak = 0;
             log::info!("hotswitch: XR cleared Intent / yielded to Desktop");
         }
         was_vr_active = vr_active;
@@ -422,10 +510,15 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         // Desktop companion owns present: keep session timed but submit no layers.
         // Still publish/pull dash logic so hotswitch keeps shell/settings in sync.
         if !vr_active || !xr_frame_state.should_render {
+            // Long empty streak → snap on resume; short compositor blanks keep smooth.
+            if !xr_frame_state.should_render {
+                laser.note_empty_frame();
+            }
             ui.push_dash_logic(&shared);
             frame_end.end_empty()?;
             continue;
         }
+        laser.note_rendered_frame();
 
         session.sync_actions(&[(&action_set).into()])?;
         if let Err(err) = render_models.refresh_if_dirty(&session) {
@@ -443,6 +536,10 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         }
 
         // Comfort turn + Intent before projection.
+        let dt = {
+            let ns = xr_frame_state.predicted_display_period.as_nanos();
+            ((ns as f64) / 1_000_000_000.0).clamp(0.001, 0.1) as f32
+        };
         {
             let left_stick = thumbstick_action.state(&session, hands[0])?.current_state;
             let right_stick = thumbstick_action.state(&session, hands[1])?.current_state;
@@ -467,10 +564,6 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             let dash_open = ui.state.open;
             let max_speed = ui.state.max_speed;
             let turn_settings = ui.state.turn;
-            let dt = {
-                let ns = xr_frame_state.predicted_display_period.as_nanos();
-                ((ns as f64) / 1_000_000_000.0).clamp(0.001, 0.1) as f32
-            };
             let mut intent = MoveIntent {
                 suppress: dash_open,
                 ..Default::default()
@@ -551,12 +644,15 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         let (head_pos, head_orient) = openxr_pose_to_isometry(head_located.pose);
         let aim_left_pose = locate_aim(&aim_left, &stage, xr_frame_state.predicted_display_time);
         let aim_right_pose = locate_aim(&aim_right, &stage, xr_frame_state.predicted_display_time);
-        let aim_pose = locate_ui_aim(
-            &aim_right,
-            &aim_left,
-            &stage,
-            xr_frame_state.predicted_display_time,
-        );
+        // x00f5: smooth both tracked hands (draw + same-ray hits). Owner pick is later.
+        // UI aim preference remains right-then-left via `smooth_right.or(smooth_left)`.
+        // Reacquire / hotswitch resume → snap (Desktop Lens open snap 相当).
+        if resuming_vr {
+            laser.clear_had();
+        }
+        let laser_cfg = ui.state.laser;
+        let mut smooth_left = laser.smooth_hand(HandSide::Left, aim_left_pose, &laser_cfg, dt);
+        let mut smooth_right = laser.smooth_hand(HandSide::Right, aim_right_pose, &laser_cfg, dt);
 
         let menu_down = menu_action.state(&session, xr::Path::NULL)?.current_state;
         if menu_down && !menu_was_down {
@@ -590,17 +686,13 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                     if let Some(gpu) = ui.gpu.as_mut() {
                         gpu.clear_context_overlay_cache();
                     }
-                } else if let Some((aim_pos, aim_orient)) = aim_left_pose {
+                } else if let Some(raw) = aim_left_pose {
                     context_pending_anchor = None;
                     let _ = context_radial.toggle_or_reanchor(HandSide::Left);
-                    let (c, o, _) = freeze_context_board(
-                        aim_pos,
-                        aim_orient,
-                        head_orient,
-                        UI_CANVAS_W as f32,
-                        UI_CANVAS_H as f32,
-                    );
-                    context_board = Some((c, o));
+                    let (board, snapped) =
+                        snap_and_freeze_context(&mut laser, HandSide::Left, raw, head_orient);
+                    smooth_left = Some(snapped);
+                    context_board = Some(board);
                     context_leave_miss = 0;
                 } else {
                     context_pending_anchor = Some((HandSide::Left, CONTEXT_AIM_PENDING_FRAMES));
@@ -617,17 +709,13 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                     if let Some(gpu) = ui.gpu.as_mut() {
                         gpu.clear_context_overlay_cache();
                     }
-                } else if let Some((aim_pos, aim_orient)) = aim_right_pose {
+                } else if let Some(raw) = aim_right_pose {
                     context_pending_anchor = None;
                     let _ = context_radial.toggle_or_reanchor(HandSide::Right);
-                    let (c, o, _) = freeze_context_board(
-                        aim_pos,
-                        aim_orient,
-                        head_orient,
-                        UI_CANVAS_W as f32,
-                        UI_CANVAS_H as f32,
-                    );
-                    context_board = Some((c, o));
+                    let (board, snapped) =
+                        snap_and_freeze_context(&mut laser, HandSide::Right, raw, head_orient);
+                    smooth_right = Some(snapped);
+                    context_board = Some(board);
                     context_leave_miss = 0;
                 } else {
                     context_pending_anchor = Some((HandSide::Right, CONTEXT_AIM_PENDING_FRAMES));
@@ -639,19 +727,18 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                     HandSide::Left => aim_left_pose,
                     HandSide::Right => aim_right_pose,
                 };
-                if let Some((aim_pos, aim_orient)) = aim {
+                if let Some(raw) = aim {
                     // Same-hand close while buffered: drop pending (close already handled on edge).
                     let same_hand_close = context_radial.open && context_radial.owner == Some(hand);
                     if !same_hand_close {
                         let _ = context_radial.toggle_or_reanchor(hand);
-                        let (c, o, _) = freeze_context_board(
-                            aim_pos,
-                            aim_orient,
-                            head_orient,
-                            UI_CANVAS_W as f32,
-                            UI_CANVAS_H as f32,
-                        );
-                        context_board = Some((c, o));
+                        let (board, snapped) =
+                            snap_and_freeze_context(&mut laser, hand, raw, head_orient);
+                        match hand {
+                            HandSide::Left => smooth_left = Some(snapped),
+                            HandSide::Right => smooth_right = Some(snapped),
+                        }
+                        context_board = Some(board);
                         context_leave_miss = 0;
                     }
                     context_pending_anchor = None;
@@ -667,13 +754,15 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         context_was_down_l = ctx_l;
         context_was_down_r = ctx_r;
 
-        let owner_aim = match context_radial.owner {
-            Some(HandSide::Left) => aim_left_pose,
-            Some(HandSide::Right) => aim_right_pose,
-            None => aim_pose,
+        // Refresh after Context open/re-anchor snaps so leave/draw share the freeze pose.
+        let mut smooth_aim_pose = smooth_right.or(smooth_left);
+        let mut smooth_owner_aim = match context_radial.owner {
+            Some(HandSide::Left) => smooth_left,
+            Some(HandSide::Right) => smooth_right,
+            None => smooth_aim_pose,
         };
         let world_hit_id = if !ui.state.open && !context_radial.open {
-            aim_pose.and_then(|(aim_pos, aim_orient)| {
+            smooth_aim_pose.and_then(|(aim_pos, aim_orient)| {
                 let stage_ray = pose_to_ray(aim_pos, aim_orient);
                 let world_ray = ray_to_world(stage_ray, floor_model);
                 ray_hit_grabbable_boxes_with_extents(world_ray, &grabbable_boxes, |id| {
@@ -726,7 +815,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             }
         }
         if let Ok(mut slot) = shared.intent.lock() {
-            if let (Some(id), Some((aim_pos, aim_orient))) = (held_grab, aim_pose) {
+            if let (Some(id), Some((aim_pos, aim_orient))) = (held_grab, smooth_aim_pose) {
                 let world_origin =
                     ray_to_world(pose_to_ray(aim_pos, aim_orient), floor_model).origin;
                 slot.buttons |= input_buttons::GRAB;
@@ -747,18 +836,36 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         let mut context_save_eid: Option<u32> = None;
         let mut context_layout_dirty = false;
         if context_radial.open && !ui.state.open {
-            // Open without a pose (aim missing at toggle) — freeze now if possible.
+            // Open without a pose (aim missing at toggle) — freeze on smooth beam if possible.
             if context_board.is_none() {
-                if let Some((aim_pos, aim_orient)) = owner_aim {
-                    let (c, o, _) = freeze_context_board(
-                        aim_pos,
-                        aim_orient,
-                        head_orient,
-                        UI_CANVAS_W as f32,
-                        UI_CANVAS_H as f32,
-                    );
-                    context_board = Some((c, o));
-                    context_leave_miss = 0;
+                let late_hand = match context_radial.owner {
+                    Some(h) => Some(h),
+                    // Prefer right then left (locate_ui_aim).
+                    None if aim_right_pose.is_some() => Some(HandSide::Right),
+                    None if aim_left_pose.is_some() => Some(HandSide::Left),
+                    None => None,
+                };
+                if let Some(hand) = late_hand {
+                    let raw = match hand {
+                        HandSide::Left => aim_left_pose,
+                        HandSide::Right => aim_right_pose,
+                    };
+                    if let Some(raw) = raw {
+                        let (board, snapped) =
+                            snap_and_freeze_context(&mut laser, hand, raw, head_orient);
+                        match hand {
+                            HandSide::Left => smooth_left = Some(snapped),
+                            HandSide::Right => smooth_right = Some(snapped),
+                        }
+                        context_board = Some(board);
+                        context_leave_miss = 0;
+                        smooth_aim_pose = smooth_right.or(smooth_left);
+                        smooth_owner_aim = match context_radial.owner {
+                            Some(HandSide::Left) => smooth_left,
+                            Some(HandSide::Right) => smooth_right,
+                            None => smooth_aim_pose,
+                        };
+                    }
                 }
             }
             let save_ok = held_grab.is_some_and(|eid| {
@@ -776,7 +883,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             };
             let mut leave_close = false;
             if let (Some((board_center, board_orient)), Some((aim_pos, aim_orient))) =
-                (context_board, owner_aim)
+                (context_board, smooth_owner_aim)
             {
                 let ray = pose_to_ray(aim_pos, aim_orient);
                 match classify_context_board_ray(
@@ -801,7 +908,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                     }
                 }
             }
-            // owner_aim None: tracking gap — keep last pointer, do not count as leave.
+            // smooth_owner_aim None: tracking gap — keep last pointer, do not count as leave.
             if leave_close {
                 context_radial.close();
                 context_board = None;
@@ -857,13 +964,13 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             }
         }
 
-        // x00ea L0 + x00ee: DashState.laser SoT; gate draw on Primary (≠ Grab≈0.7).
+        // x00ea L0 + x00ee + x00f5: gate draw on Primary; aim uses smoothed orient.
         let laser_draw = {
             let spatial_laser_cfg = ui.state.laser;
             let laser_aim = if context_radial.open {
-                owner_aim
+                smooth_owner_aim
             } else {
-                aim_pose
+                smooth_aim_pose
             };
             let laser_primary = match (context_radial.open, context_radial.owner) {
                 (true, Some(HandSide::Left)) => trigger_l,
@@ -902,7 +1009,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         };
 
         if ui.state.open {
-            if let Some((aim_pos, aim_orient)) = aim_pose {
+            if let Some((aim_pos, aim_orient)) = smooth_aim_pose {
                 let ray = pose_to_ray(aim_pos, aim_orient);
                 if let Some((px, py)) = ray_hit_dash_quad(
                     head_pos,
@@ -1122,7 +1229,7 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
 
         // Select click after present path (CPU UI).
         if select_down_for_ui && !select_was_down {
-            if let Some((aim_pos, aim_orient)) = aim_pose {
+            if let Some((aim_pos, aim_orient)) = smooth_aim_pose {
                 let ray = pose_to_ray(aim_pos, aim_orient);
                 if let Some((px, py)) = ray_hit_dash_quad(
                     head_pos,
@@ -1413,13 +1520,36 @@ fn locate_aim(aim: &xr::Space, stage: &xr::Space, time: xr::Time) -> Option<(Vec
     }
 }
 
-fn locate_ui_aim(
-    aim_right: &xr::Space,
-    aim_left: &xr::Space,
-    stage: &xr::Space,
-    time: xr::Time,
-) -> Option<(Vec3, Quat)> {
-    locate_aim(aim_right, stage, time).or_else(|| locate_aim(aim_left, stage, time))
+/// Instantly align smoothed aim with raw controller forward (Context open / reacquire).
+fn snap_hand_aim(raw: (Vec3, Quat), state: &mut HandLaserState) -> (Vec3, Quat) {
+    let (pos, orient) = raw;
+    let dir = pose_to_ray(pos, orient).dir;
+    state.snap_direction([dir.x, dir.y, dir.z]);
+    let sm = Vec3::new(
+        state.smoothed_dir[0],
+        state.smoothed_dir[1],
+        state.smoothed_dir[2],
+    );
+    (pos, aim_orient_from_smoothed_dir(orient, sm))
+}
+
+/// Snap aiming hand → freeze Context board on visible beam.
+/// Returns `(board_center_orient, snapped_aim_pose)` for caller to store in `smooth_*`.
+fn snap_and_freeze_context(
+    laser: &mut XrLaserHands,
+    hand: HandSide,
+    raw: (Vec3, Quat),
+    head_orient: Quat,
+) -> ((Vec3, Quat), (Vec3, Quat)) {
+    let snapped = laser.snap_hand(hand, raw);
+    let (c, o, _) = freeze_context_board(
+        snapped.0,
+        snapped.1,
+        head_orient,
+        UI_CANVAS_W as f32,
+        UI_CANVAS_H as f32,
+    );
+    ((c, o), snapped)
 }
 
 #[allow(clippy::too_many_arguments)] // OpenXR profile bindings need each Action handle.

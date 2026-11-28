@@ -3202,7 +3202,7 @@ fn rebuild_settings(tree: &mut LayoutTree, state: &DashState, cx: f32, cy0: f32,
     );
     tree.push_label(
         Rect::new(cx + 24.0, laser_y + 22.0, cw - 48.0, 16.0),
-        "XR: ShowPrimaryMin now. Smooth/Stick → Desktop Lens (XR feel → L2).",
+        "XR: ShowPrimaryMin + Smooth/Modulate. Stick → Desktop Lens (XR Stick → later).",
         MUTED,
         0.95,
     );

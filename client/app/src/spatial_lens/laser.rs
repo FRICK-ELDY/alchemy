@@ -1,11 +1,12 @@
 //! Resonite-style interaction laser state (x00bd Stickiness / press-lock; x00ea Primary gate;
-//! x00ee Settings ↔ prefs).
+//! x00ee Settings ↔ prefs; x00f5 XR smooth wiring).
 //!
 //! Guarantees: angle-modulated smooth + sticky UV lock without heap alloc;
 //! Primary visibility gate (`laser_show_primary_min`, default 0.1) separate from Grab≈0.7;
-//! Settings-exposed fields + clamp/step for L1 prefs UI.
+//! Settings-exposed fields + clamp/step for L1 prefs UI;
+//! XR session applies `update_smoothed_direction` to world/UI beam aim (x00f5).
 //! Non-guarantees: bezier laser draw; haptics; double-click;
-//! Desktop beam overlay when `show_lasers_in_desktop_mode` (→ L3); XR smooth wiring (→ L2).
+//! Desktop beam overlay when `show_lasers_in_desktop_mode` (→ L3); XR Stickiness.
 //! Inspector POS scrub UV is **not** driven by this module (Desktop uses panel hit /
 //! `last_uv`; press-lock here stays for Hierarchy/click stickiness · x00f2).
 
@@ -313,6 +314,35 @@ mod tests {
         assert!(d[1] > 0.0);
         let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
         assert!((len - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn modulate_large_angle_boosts_toward_raw() {
+        let raw = [0.0, 1.0, 0.0];
+        let dt = 1.0 / 90.0;
+        let mut slow = HandLaserState::default();
+        let mut fast = HandLaserState::default();
+        let base = InteractionLaserConfig {
+            laser_smooth_speed: 4.0,
+            modulate_start_angle_deg: 1.0,
+            modulate_end_angle_deg: 10.0,
+            modulate_exponent: 1.0,
+            modulate_speed_multiplier: 1.0,
+            ..InteractionLaserConfig::default()
+        };
+        let boosted = InteractionLaserConfig {
+            modulate_speed_multiplier: 16.0,
+            ..base
+        };
+        let d_slow = slow.update_smoothed_direction(raw, &base, dt);
+        let d_fast = fast.update_smoothed_direction(raw, &boosted, dt);
+        // Large 90° step → boost should pull closer to raw Y than unboosted.
+        assert!(
+            d_fast[1] > d_slow[1],
+            "boosted y={} slow y={}",
+            d_fast[1],
+            d_slow[1]
+        );
     }
 
     #[test]

@@ -111,6 +111,37 @@ pub fn pose_to_ray(pos: Vec3, orient: Quat) -> Ray {
     }
 }
 
+/// Align `raw_orient` so local -Z matches `smoothed_dir`, preserving twist (x00f5 L2).
+///
+/// Uses the shortest arc from the raw forward to the smoothed unit direction.
+/// Degenerate / near-zero `smoothed_dir` returns `raw_orient` unchanged.
+/// Near-opposite (`dot ≈ -1`) uses a stable perpendicular 180° flip (avoids
+/// `from_rotation_arc` axis jitter).
+pub fn aim_orient_from_smoothed_dir(raw_orient: Quat, smoothed_dir: Vec3) -> Quat {
+    let target = smoothed_dir.normalize_or_zero();
+    if target.length_squared() < 1e-12 {
+        return raw_orient;
+    }
+    let raw_fwd = (raw_orient * Vec3::NEG_Z).normalize_or_zero();
+    if raw_fwd.length_squared() < 1e-12 {
+        return Quat::from_rotation_arc(Vec3::NEG_Z, target) * raw_orient;
+    }
+    let dot = raw_fwd.dot(target);
+    if dot < -0.999_999 {
+        let helper = if raw_fwd.x.abs() < 0.9 {
+            Vec3::X
+        } else {
+            Vec3::Y
+        };
+        let axis = raw_fwd.cross(helper).normalize_or_zero();
+        if axis.length_squared() < 1e-12 {
+            return Quat::from_rotation_arc(Vec3::NEG_Z, target) * raw_orient;
+        }
+        return Quat::from_axis_angle(axis, std::f32::consts::PI) * raw_orient;
+    }
+    Quat::from_rotation_arc(raw_fwd, target) * raw_orient
+}
+
 pub fn openxr_pose_to_isometry(pose: openxr::Posef) -> (Vec3, Quat) {
     let p = pose.position;
     let o = pose.orientation;
@@ -311,6 +342,66 @@ mod tests {
             (tip - Vec3::new(1.0, 2.0, 1.0)).length() < 1e-4,
             "tip={tip:?}"
         );
+    }
+
+    #[test]
+    fn aim_orient_from_smoothed_dir_points_neg_z() {
+        let raw = Quat::from_rotation_y(0.4);
+        let target = Vec3::new(0.2, 0.5, -0.8).normalize();
+        let aligned = aim_orient_from_smoothed_dir(raw, target);
+        assert!((aligned.length() - 1.0).abs() < 1e-5);
+        let fwd = (aligned * Vec3::NEG_Z).normalize();
+        assert!(
+            (fwd - target).length() < 1e-4,
+            "fwd={fwd:?} target={target:?}"
+        );
+    }
+
+    #[test]
+    fn aim_orient_from_smoothed_dir_zero_keeps_raw() {
+        let raw = Quat::from_rotation_x(0.3);
+        let aligned = aim_orient_from_smoothed_dir(raw, Vec3::ZERO);
+        assert!((aligned.dot(raw) - 1.0).abs() < 1e-5 || (aligned.dot(raw) + 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn aim_orient_near_opposite_stays_unit_and_points_target() {
+        let raw = Quat::IDENTITY; // -Z
+        let target = Vec3::Z; // opposite
+        let aligned = aim_orient_from_smoothed_dir(raw, target);
+        assert!((aligned.length() - 1.0).abs() < 1e-4);
+        let fwd = (aligned * Vec3::NEG_Z).normalize();
+        assert!((fwd - target).length() < 1e-3, "fwd={fwd:?}");
+        // Second call must not jitter the forward (stable axis).
+        let again = aim_orient_from_smoothed_dir(raw, target);
+        let fwd2 = (again * Vec3::NEG_Z).normalize();
+        assert!((fwd - fwd2).length() < 1e-5);
+    }
+
+    #[test]
+    fn aim_orient_pose_to_ray_matches_smoothed_and_keeps_twist() {
+        let pos = Vec3::new(1.0, 2.0, 3.0);
+        let raw = Quat::from_euler(glam::EulerRot::YXZ, 0.35, -0.2, 0.55);
+        let raw_up = (raw * Vec3::Y).normalize();
+        let target = Vec3::new(0.15, 0.4, -0.9).normalize();
+        let aligned = aim_orient_from_smoothed_dir(raw, target);
+        let ray = pose_to_ray(pos, aligned);
+        assert_eq!(ray.origin, pos);
+        assert!(
+            (ray.dir - target).length() < 1e-4,
+            "ray.dir={:?} target={target:?}",
+            ray.dir
+        );
+        // Twist: local +Y after align should stay near the raw up projected off target.
+        let aligned_up = (aligned * Vec3::Y).normalize();
+        let raw_up_rej = (raw_up - target * raw_up.dot(target)).normalize_or_zero();
+        let aligned_up_rej = (aligned_up - target * aligned_up.dot(target)).normalize_or_zero();
+        if raw_up_rej.length_squared() > 1e-6 && aligned_up_rej.length_squared() > 1e-6 {
+            assert!(
+                raw_up_rej.dot(aligned_up_rej) > 0.98,
+                "twist drifted: raw_up_rej={raw_up_rej:?} aligned_up_rej={aligned_up_rej:?}"
+            );
+        }
     }
 
     #[test]
