@@ -1,6 +1,6 @@
 //! Uber-SDF wgpu pipeline for Spatial Lens panels (x00ba / x00ed).
 //!
-//! Guarantees: naga-valid WGSL; upload headers/prims; cached bind group; α without depth write;
+//! Guarantees: naga-valid WGSL; upload headers/prims; cached bind group; premul α without depth write;
 //! Tier-1 Static MSDF atlas bind (texture + sampler).
 //! Non-guarantees: XR CompositionLayerQuad; multi-eye UBO split; CJK dynamic atlas.
 
@@ -138,7 +138,8 @@ impl SpatialLensGpu {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    // Uber-SDF outputs premultiplied RGBA (over_premul / to_premul in WGSL).
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -149,7 +150,7 @@ impl SpatialLensGpu {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                // α blend: do not punch holes in world geometry behind soft edges.
+                // Premul α blend: do not punch holes in world geometry behind soft edges.
                 depth_write_enabled: false,
                 depth_compare: wgpu::CompareFunction::LessEqual,
                 stencil: wgpu::StencilState::default(),
@@ -418,9 +419,12 @@ mod tests {
         assert!(UBER_SDF_WGSL.contains("sample_direct_number"));
         assert!(UBER_SDF_WGSL.contains("u64_div10"));
         assert!(UBER_SDF_WGSL.contains("payload.y"));
-        // G0 glass: glow payload + LOD2 ShellFill + inner gradient.
+        // G0 glass: glow payload + LOD2 ShellFill + inner gradient (y-up → top brighter).
         assert!(UBER_SDF_WGSL.contains("payload.z"));
-        assert!(UBER_SDF_WGSL.contains("grad"));
+        assert!(
+            UBER_SDF_WGSL.contains("mix(0.94, 1.06, clamp(local_uv.y, 0.0, 1.0))"),
+            "G0 vertical gradient must brighten toward board top (y-up)"
+        );
         let lod2 = crate::spatial_lens::glass::lod2_wgsl_vec4_literal();
         assert!(
             UBER_SDF_WGSL.contains(&lod2),
@@ -431,6 +435,20 @@ mod tests {
             UBER_SDF_WGSL.contains(&glow_stmt),
             "uber_sdf soft-edge stmt must match glass::shell_glow_extent_wgsl_stmt `{glow_stmt}`"
         );
+        // Premultiplied α path (pipeline uses PREMULTIPLIED_ALPHA_BLENDING).
+        assert!(UBER_SDF_WGSL.contains("fn to_premul("));
+        assert!(UBER_SDF_WGSL.contains("fn over_premul("));
+        assert!(
+            UBER_SDF_WGSL.contains("return to_premul(lod2)"),
+            "LOD2 must return premul (not straight RGBA)"
+        );
+        // RoundedBox: fill/border/glow already premul; do not to_premul again (cov²).
+        assert!(UBER_SDF_WGSL.contains("let fill_a = fill_g.a * inside;"));
+        assert!(UBER_SDF_WGSL.contains("over_premul(color, c)"));
+        assert!(
+            !UBER_SDF_WGSL.contains("to_premul(c)"),
+            "RoundedBox must not to_premul after coverage-scaled RGB"
+        );
         // T1 Static MSDF.
         assert!(UBER_SDF_WGSL.contains("sample_msdf"));
         assert!(UBER_SDF_WGSL.contains("msdf_atlas"));
@@ -438,6 +456,19 @@ mod tests {
         assert!(UBER_SDF_WGSL.contains("@binding(4)"));
         assert!(UBER_SDF_WGSL.contains("kind == 1u"));
         assert!(UBER_SDF_WGSL.contains("direct_number_code_uv"));
+        // Board y-up vs atlas v0=glyph-top: flip V at sample time (bake untouched).
+        let sample_msdf_rect_fn = {
+            let start = UBER_SDF_WGSL
+                .find("fn sample_msdf_rect(")
+                .expect("sample_msdf_rect fn");
+            let rest = &UBER_SDF_WGSL[start..];
+            let end = rest.find("\nfn ").unwrap_or(rest.len());
+            &rest[..end]
+        };
+        assert!(
+            sample_msdf_rect_fn.contains("vec2(local_uv.x, 1.0 - local_uv.y)"),
+            "sample_msdf_rect must flip V for board y-up"
+        );
         // Derivative-uniform sampling inside `sample_msdf` only (RoundedBox may use fwidth later).
         assert!(UBER_SDF_WGSL.contains("textureSampleLevel"));
         assert!(
