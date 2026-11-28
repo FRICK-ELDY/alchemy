@@ -264,19 +264,22 @@ pub enum CursorContextKind {
 }
 
 /// Resonite準拠 Interaction Lasers & Cursor 設定 (settings.json にシリアライズ保存)
+///
+/// Alchemy 現行 Default（x00f5 体感チューニング）: Smooth 5 / Start 2° / End 45° /
+/// Exp 0.75 / Mul 8 / Stick 0.2。旧ドキュメント例示の 12 / 1.5° / 18° / 1.8 / 0.5 は履歴。
 #[derive(Clone, Copy, Debug)]
 pub struct InteractionLaserConfig {
-    /// 基本スムージング速度 (低いほど手ブレを吸収、高いほど機敏: 推奨 12.0)
+    /// 基本スムージング速度 (低いほど手ブレを吸収、高いほど機敏: Alchemy 既定 5.0)
     pub laser_smooth_speed: f32,
-    /// 加速変調を開始する偏角 (度: 推奨 1.5°)
+    /// 加速変調を開始する偏角 (度: Alchemy 既定 2.0°)
     pub modulate_start_angle_deg: f32,
-    /// 加速変調が最大に達する偏角 (度: 推奨 18.0°)
+    /// 加速変調が最大に達する偏角 (度: Alchemy 既定 45.0°)
     pub modulate_end_angle_deg: f32,
-    /// 変調カーブの指数 (推奨 1.8)
+    /// 変調カーブの指数 (Alchemy 既定 0.75)
     pub modulate_exponent: f32,
-    /// 最大偏角時のスムージング速度倍率 (推奨 8.0倍)
+    /// 最大偏角時のスムージング速度倍率 (Alchemy 既定 8.0倍)
     pub modulate_speed_multiplier: f32,
-    /// インタラクティブ要素への磁気吸着力 (0.0=吸着なし 〜 1.0=強吸着: 推奨 0.5)
+    /// インタラクティブ要素への磁気吸着力 (0.0=吸着なし 〜 1.0=強吸着: Alchemy 既定 0.2)
     pub laser_stickiness: f32,
     /// デスクトップ一人称モードでもレーザーを描画するか
     pub show_lasers_in_desktop_mode: bool,
@@ -294,12 +297,12 @@ pub struct InteractionLaserConfig {
 impl Default for InteractionLaserConfig {
     fn default() -> Self {
         Self {
-            laser_smooth_speed: 12.0,
-            modulate_start_angle_deg: 1.5,
-            modulate_end_angle_deg: 18.0,
-            modulate_exponent: 1.8,
+            laser_smooth_speed: 5.0,
+            modulate_start_angle_deg: 2.0,
+            modulate_end_angle_deg: 45.0,
+            modulate_exponent: 0.75,
             modulate_speed_multiplier: 8.0,
-            laser_stickiness: 0.5,
+            laser_stickiness: 0.2,
             show_lasers_in_desktop_mode: false,
             double_click_interval_sec: 0.35,
             base_cursor_size: 1.0,

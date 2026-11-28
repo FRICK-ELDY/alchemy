@@ -17,6 +17,8 @@
 | Context open／re-anchor は当該手を `snap_direction` してから **smooth 向きで freeze**（leave／draw と同一レイ） | XR Stickiness / press-lock 配線 |
 | トラッキング再取得・hotswitch、および連続 N フレーム `!should_render` 後の復帰で `snap_direction`（短い空フレームは smooth 維持） | 新規クレート；プロトコル変更 |
 | Primary 表示ゲート（L0）・Grab/UI 二値しきい値は不変；既存 `update_smoothed_direction` 再利用 | |
+| Settings **Reset defaults**（`InteractionLaserConfig::default` へ復帰・永続） | |
+| Alchemy Laser Default 体感チューニング（Smooth 5 / Start 2° / End 45° / Exp 0.75 / Mul 8 / Stick 0.2；旧例示 12/1.5/18/1.8/0.5 から変更） | 既存 `laser.json` の自動移行（明示 Reset まで旧値維持） |
 
 ## 完了条件
 
@@ -29,8 +31,8 @@
 
 - `client/app/src/surface/xr/input.rs` — `aim_orient_from_smoothed_dir`
 - `client/app/src/surface/xr/wgpu_session.rs` — 左右 `HandLaserState`・smooth 適用
-- `client/app/src/spatial_lens/laser.rs` — コメント・modulate テスト
-- `client/app/src/system_ui/dash.rs` — Settings Laser hint
-- [feel_edit_experience.md](../feel_edit_experience.md) / [README.md](../README.md)
+- `client/app/src/spatial_lens/laser.rs` — smooth 本線・Default チューニング・Reset・modulate テスト
+- `client/app/src/system_ui/{dash,layout,facet,mod}.rs` — Settings Laser hint・Reset defaults
+- [feel_edit_experience.md](../feel_edit_experience.md) / [README.md](../README.md) / [alchemy_zero_base_spatial_ui_lens_uix_architecture.md](../alchemy_zero_base_spatial_ui_lens_uix_architecture.md)
 
 ← [目次](../README.md)
