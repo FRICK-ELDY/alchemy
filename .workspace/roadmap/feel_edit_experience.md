@@ -7,7 +7,7 @@
 * **拡張ギャップ（ヒッチ・IME）**: [memo/alchemy-expansion.md](memo/alchemy-expansion.md)（**E1 / E2** — 本線番号と非共有）
 * **アバター見た目・ダンス**: [memo/avatar-animation-ux.md](memo/avatar-animation-ux.md)（本線番号と非共有）
 * **既存 Facet 最小**: [slices/x000f-dash-facet-minimal.md](slices/x000f-dash-facet-minimal.md)（語彙のみ。並べ替え・ユーザー追加は非保証）
-* **空きスライス ID**: **`x00ec`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
+* **空きスライス ID**: **`x00ed`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
 
 ### 番号規約
 
@@ -58,7 +58,7 @@
 | Inspector（x00bc） | 数値表示まで | スクラブ → `…/edit` Commit は非保証 |
 | XR レーザー | **L0 done**（Primary ≥ 0.1 で表示） | Settings 未露出（→ L1）・ShowInDesktop 未 |
 | `InteractionLaserConfig` | 変調＋stickiness はコードあり | Settings 未露出・`ShowInDesktop` 未 |
-| Dash | CPU Canvas blit（仮） | ガラス風本番見た目は未 |
+| Dash | CPU Canvas blit（仮）＋G0 色トークン共有 | 板経路の角丸・glow は Lens 済み；Dash 全板移行は U0 |
 | Facet | `FacetId` / Pinned Exit のみ | グリッド装着・ユーザー追加は非保証 |
 | 文字 | DirectNumber ＋ Dash 5×7 ASCII | MSDF / CJK / 文言カタログは未 |
 
@@ -71,7 +71,7 @@
 ```text
 L0  Primary レーザー表示ゲート（独立・即効）
 F0  TELEPORT GPU → Depth Bucket → bitmask edge → PendingLocalOps 実操作接続
-G0  ガラス風マテリアル（ブラーなし）＋公式 Dash を板経路へ寄せる布石
+G0  軽量ガラス語彙（シェル＋Card/Control・ブラーなし）＋板経路布石
 T1  Static MSDF（ASCII / 数字 / アイコン）
 L1  Settings ↔ InteractionLaserConfig（Resonite LaserSettings 写像）
 F1  Inspector Commit / SoftLease 見える化 / ドラッグ揮発↔Commit
@@ -88,7 +88,7 @@ E1  ヒッチ根絶（スキニング / Async PSO / LOD builder）
 Fc6  Settings 行 → Facet 化
 ```
 
-**次の着手:** [x00eb](slices/x00eb-teleport-gpu-snap.md) F0-1 **done**。次は **`x00ec` = F0-2**（Depth Bucket 階層伝播）を第一候補とする（L1 / G0 等と直交し並行可）。
+**次の着手:** [x00ec](slices/x00ec-glass-material-g0.md) G0 **done**。[x00eb](slices/x00eb-teleport-gpu-snap.md) F0-1 **done**。次候補 **`x00ed` = F0-2**（Depth Bucket 階層伝播；L1 等と直交し並行可）。
 
 ---
 
@@ -149,14 +149,93 @@ Fc6  Settings 行 → Facet 化
 
 ### 4.4 G — Glass（公式ダッシュ見た目）
 
-添付コンセプト（半透明・縁ハイライト・カードレイアウト）を本番目標とする。現行 Dash は CPU Canvas blit（仮）。
+添付コンセプト（半透明・縁ハイライト・カードレイアウト）を本番目標とする。現行 Dash は CPU Canvas blit（仮）。最終形は **1 パネル＝1 板＋`GpuUiPrim`**（Spatial Lens / Uber-SDF）。フルスクリーン grab-pass ブラーを第一本番にしない。
+
+参照: Lens 正本 §5 危険② · [`GpuUiPrim` / `rounded_box_payload`](../../client/app/src/spatial_lens/prim.rs) · [`uber_sdf.wgsl`](../../client/app/src/spatial_lens/shaders/uber_sdf.wgsl) · 現行色定数 [`dash.rs`](../../client/app/src/system_ui/dash.rs)
 
 | ID | 内容 | 注意 |
 |:---|:---|:---|
-| **G0** | 「ガラスっぽく見える」安価版：半透明＋縁 glow＋内側グラデ。**背景ブラーなし** | Lens 正本 §5 危険②。標準 α≈0.92 ダークスモーク |
+| **G0** | 軽量ガラス語彙の契約＋実装：半透明＋縁 glow＋内側グラデ。**背景ブラーなし**。シェル板だけでなく Card / Chrome / Control / Field も同じ語彙 | [x00ec](slices/x00ec-glass-material-g0.md) **done**。標準 α≈0.92。トークン・payload・シェーダ式は本節が正本 |
 | **G1** | アクティブ最前面板だけの任意 blur / downsample | VR 90Hz が保てるときだけ。本線初期にしない |
 
-公式シェルは最終的に **1 パネル＝1 板＋`GpuUiPrim`**（Spatial Lens 系）へ寄せる。フルスクリーン grab-pass ブラーを第一本番にしない。
+#### G0 保証する / しない
+
+| 保証する | 保証しない |
+|:---|:---|
+| 役割トークン（下表）と RoundedBox payload 意味（角丸・縁・glow） | 背景ブラー / grab-pass / downsample glass（→ G1） |
+| Uber-SDF 1 パスでの内側縦グラデ＋縁 soft glow | Dash 全コンテンツの板移行完了（→ U0） |
+| Desktop / XR / 将来 Web で **同一トークン＋同一 WGSL** | DOM/CSS `backdrop-filter`・プラットフォーム別マテリアル |
+| LOD2 板色を `ShellFill` 系に揃えること | MSDF / CJK（→ T）・Facet 並べ替え（→ Fc） |
+
+#### 役割トークン（既存 `dash.rs` 色を基準に正規化）
+
+実装時は 1 箇所の Rust 定数（例: `spatial_lens` または薄い `system_ui/glass.rs`）へ落とす。散在リテラルを増やさない。
+
+| 役割 | 用途 | 基準色（現行） | α / 備考 |
+|:---|:---|:---|:---|
+| `ShellFill` | パネル外枠板 | `BG` `(0.06, 0.07, 0.09)` | **0.92**（危険②標準） |
+| `ShellBorder` | 外枠縁ハイライト | 明度を上げたニュートラル（新規定数可） | 低 α。glow のベース色 |
+| `ChromeFill` | 上下バー | `BAR` `(0.10, 0.11, 0.14)` | ≤0.96、ほぼ不透明寄り |
+| `CardFill` | カード／パネル内面 | ≈`(0.11–0.13, …)` 系 | Shell よりわずかに明るく・α 高め可 |
+| `ControlIdle` | ボタン／タブオフ | `BTN` / `CLOSE_BTN` | Depth Write 対象（不透明寄り） |
+| `ControlHot` | ホバー | `ICON_HOT` | |
+| `FieldIdle` / `FieldFocus` | 入力欄 | `FIELD` / `FIELD_FOCUS` | |
+| `Accent` / `Danger` / `Text` / `Muted` | 意味色・文字 | 現行どおり | 文字は α=1 |
+
+コンテンツ固有カード色（`OFFICIAL_CARD` / `FED_CARD` / `CUSTOM_CARD` 等）は **Accent 系オーバーレイ**として残す。ガラス基材（α・角丸・縁・glow）は上表の共通トークンに乗せる。
+
+#### RoundedBox payload（64B 契約を壊さない）
+
+既存 `rounded_box_payload(corner_radius, border_thickness, glow)`:
+
+```text
+payload = [corner_radius, border_thickness, glow, 0]
+```
+
+| フィールド | 意味 | 標準値 |
+|:---|:---|:---|
+| `corner_radius` | px | Shell 12–16 / Card 8 / Control 6 |
+| `border_thickness` | px | Shell 1.5 / Card 1 / Control 1 |
+| `glow` | 縁外側の安価 soft edge 強度（0=OFF） | 通常 0–0.25。**アクティブ最前面板の Shell のみ** ≤1.0 |
+| `payload.w` | 予約 | **当面 0**。内側縦グラデは UV 固定式（パラメータを増やさない＝軽さ優先） |
+
+実装（[x00ec](slices/x00ec-glass-material-g0.md)）: `payload.z` glow を `uber_sdf.wgsl` が参照。Shell prim は **`shell_rect_inset`（inset = `border_t + 6×glow` の active 到達幅で固定）**し、clip＝板全面でも外側 soft glow が落ちない。hover で glow 強度だけ変わり、シェル枠はジャンプしない。
+
+**active glow:** レーザー／ホバーが乗った最前面板の Shell のみ ≤1.0（`hovered_binding != 0`）。単一 Lens が visible なだけでは idle（0.20）。選択行はシェル glow を上げない。
+
+#### シェーダ見た目（ブラーなし・1 パス）
+
+`fs_uber_sdf` RoundedBox 分岐の仕様:
+
+1. 既存 SDF fill + border
+2. **内側グラデ**: prim 局所 `local_uv.y` で fill RGB を ±数 % だけ混ぜる（追加テクスチャサンプルなし）
+3. **縁 glow**: `glow > 0` のとき `smoothstep` で外側に `ShellBorder` / border 色を薄く足すだけ（CPU 側インセット前提）
+4. **LOD2**（`lod_level >= 2`）: 中身 prim を描かず板色のみ。WGSL リテラルは `glass::LOD2_SHELL` / `lod2_wgsl_vec4_literal()` と一致させる（gpu テストで固定）
+
+**禁止（G0）:** フルスクリーン／パネル単位の背景ブラー、2 パス以上の glass、プラットフォーム分岐マテリアル、CPU Canvas 側だけの別ガラス表現を本番とすること。
+
+#### プラットフォーム統一（Desktop / XR / Web）
+
+| 規則 | 内容 |
+|:---|:---|
+| **単一 SSoT** | トークン表は本節。実装定数は 1 モジュール。Web 到着時も同じ定数＋同じ WGSL |
+| **板経路が本保証** | 角丸・glow・内側グラデは Uber-SDF 板経路でのみ本保証 |
+| **CPU Dash 過渡** | U0 完了まで Desktop/XR の CPU Canvas は **同じ RGB/α を写す**（見た目近似）。角丸・glow は非保証 |
+| **Web** | surface 未実装でもマテリアル分岐を作らない。CSS glass / `backdrop-filter` は採用しない |
+
+```text
+DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
+                      ↓                ↓
+              Desktop / XR（今）    Web（将来・同一）
+```
+
+#### G0 / U0 / G1 境界
+
+| ID | 保証 | 非保証 |
+|:---|:---|:---|
+| **G0** | トークン＋RoundedBox 見た目（グラデ・glow・α）の契約と実装 | Dash 全板移行完了、blur |
+| **U0** | 公式 Dash を 1 板＋`GpuUiPrim` へ寄せる配線（G0 と一体でも可） | Facet 並べ替え・CustomUIX |
+| **G1** | アクティブ 1 枚の任意 blur（実測後） | 本線初期 |
 
 ### 4.5 Fc — Facet 土台（UIX より先）
 
@@ -246,3 +325,7 @@ Fc6  Settings 行 → Facet 化
 | 2026-11-28 | 初版。品質本線クローズ後の体験本線として F/L/T/G/Fc/U/E を固定。次着手候補 L0 / F0-1 |
 | 2026-11-28 | x00ea L0 発行・done。次着手候補 x00eb F0-1 |
 | 2026-11-28 | x00eb F0-1 TELEPORT GPU snap done。次着手候補 x00ec F0-2 |
+| 2026-11-28 | G0 軽量ガラス・マテリアル契約を §4.4 に固定（トークン・payload・シェーダ・Win/Web 統一・G0/U0/G1）。実装スライスは未発行 |
+| 2026-11-28 | [x00ec](slices/x00ec-glass-material-g0.md) G0 done（glass トークン・Uber-SDF glow/グラデ・Dash 過渡色）。次候補 x00ed F0-2 |
+| 2026-11-28 | G0 レビュー修正: Shell `glow_pad` インセット、active＝hover のみ、LOD2 リテラル同期、GlassColor packed 導出、正本陳腐記述削除 |
+| 2026-11-28 | G0: inset=`border_t+6×glow`（active 固定）・`shell_glow_extent_wgsl_expr` 同期・hover でシェル枠非ジャンプ |
