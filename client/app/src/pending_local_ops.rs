@@ -9,6 +9,8 @@
 //! (translation distance only — same as owned_prediction).
 //! Arena `TELEPORT_THIS_TICK` → Epoch GPU snap is x00eb (this module still snaps
 //! pending entries on `teleport=true` reconcile).
+//! Grab / edit live path mirrors via [`crate::scene::SharedState`] (x00f1 F0-4);
+//! does not replace Grab-specific reject grace on [`crate::owned_prediction`].
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};

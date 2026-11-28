@@ -44,7 +44,8 @@ use alchemy_shared_sim::sim_pages::{
 use alchemy_shared_sim::spatial::SceneBounds;
 use alchemy_shared_sim::xpbd::{self, XpbdWorld};
 use alchemy_shared_sim::{
-    classify_scene_entry, publish_arena_then_rotate, scene_entry_color_rgba, seed_arena_from_sheet,
+    classify_scene_entry, publish_arena_then_rotate, recompute_local_from_world,
+    resolve_hierarchy_depth_bucket, scene_entry_color_rgba, seed_arena_from_sheet,
     stamp_teleport_flags_from_arena_work, sync_dirty_sheet_to_arena_work, ColliderShape,
     EntityKind, EpochSheet, EpochSnapshotPair, FlatTopology, FrameBridge, NodeHandle, PendingPatch,
     ReadinessMask, SlotGraph, WorldTransformf64, PHYS_BALL_RADIUS,
@@ -146,6 +147,16 @@ pub struct PhysicsWorld {
     pending_flags: Vec<(u32, u32)>,
     /// Rows that need Arena `write_teleport` after Carry-Over (x00eb; reparent / warp).
     pending_teleport_rows: Vec<u32>,
+    /// Local poses parallel to sheet rows (x00ef F0-2). Roots: `local == world`.
+    /// Children: Step 3 composes world pos/scale = parent ⊕ local (translation-first).
+    /// Parented Grab/XPBD/Intent write **world** then dirty→local recompute (not kinematic-only).
+    local_transforms: Vec<WorldTransformf64>,
+    /// Reused by [`SimArena::take_enabled_rising_edges_into`] (x00f0; avoid per-tick alloc).
+    enabled_rising_scratch: Vec<u32>,
+    /// Reused dirty-row snapshot + mask for Step 3 depth resolve (x00ef).
+    dirty_rows_scratch: Vec<u32>,
+    dirty_mask_scratch: Vec<bool>,
+    hierarchy_teleport_scratch: Vec<u32>,
     loco_mode: LocoMode,
     move_speed: f32,
     grabs: [Option<ActiveGrab>; USER_ROOT_SLOTS_MAX],
@@ -511,6 +522,11 @@ impl PhysicsWorld {
             pending_colors: Vec::new(),
             pending_flags: Vec::new(),
             pending_teleport_rows: Vec::new(),
+            local_transforms: Vec::new(),
+            enabled_rising_scratch: Vec::new(),
+            dirty_rows_scratch: Vec::new(),
+            dirty_mask_scratch: Vec::new(),
+            hierarchy_teleport_scratch: Vec::new(),
             loco_mode,
             move_speed: speed,
             grabs: [None; USER_ROOT_SLOTS_MAX],
@@ -527,6 +543,8 @@ impl PhysicsWorld {
             barrier_ticks: 0,
             publishes: 0,
         };
+        // x00ef: seed locals from boot topo + world (roots local==world; children A).
+        host.refresh_locals_preserve_world();
         // Initial Ring3 faces: seed already matched curr on all Arena faces; publish
         // owned sheets then rotate so leave-clear / dirty rings start from a clean barrier.
         publish_arena_then_rotate(
@@ -1052,10 +1070,12 @@ impl PhysicsWorld {
         let n = self.world.curr.len();
         let cur = self.topo.parent_of.len();
         if cur == n {
+            self.ensure_locals_len(n);
             return;
         }
         if cur == 0 {
             self.topo = FlatTopology::flat_roots(n);
+            self.ensure_locals_len(n);
             return;
         }
         if cur < n {
@@ -1063,6 +1083,7 @@ impl PhysicsWorld {
             if let Err(e) = self.topo.rebuild() {
                 log::warn!("topo rebuild after grow failed: {e:?}");
             }
+            self.ensure_locals_len(n);
             return;
         }
         // Sheet shorter (tombstones / freelist): truncate only; keep remaining links.
@@ -1070,6 +1091,87 @@ impl PhysicsWorld {
         if let Err(e) = self.topo.rebuild() {
             log::warn!("topo rebuild after shrink failed: {e:?}");
         }
+        self.ensure_locals_len(n);
+    }
+
+    /// Keep `local_transforms` parallel to sheet length (x00ef). New rows copy world.
+    fn ensure_locals_len(&mut self, n: usize) {
+        let cur = self.local_transforms.len();
+        if cur < n {
+            self.local_transforms.reserve(n - cur);
+            for i in cur..n {
+                let xf = if i < self.world.curr.world_transforms.len() {
+                    self.world.curr.world_transforms[i]
+                } else {
+                    WorldTransformf64::identity_at([0.0, 0.0, 0.0])
+                };
+                self.local_transforms.push(xf);
+            }
+        } else if cur > n {
+            self.local_transforms.truncate(n);
+        }
+    }
+
+    /// Contract A: keep current world poses, rebuild locals from `topo` (x00ef).
+    fn refresh_locals_preserve_world(&mut self) {
+        let n = self.world.curr.len().min(self.topo.parent_of.len());
+        self.ensure_locals_len(n);
+        for i in 0..n {
+            let world = self.world.curr.world_transforms[i];
+            let parent = self.topo.parent_of[i];
+            if parent == u32::MAX {
+                self.local_transforms[i] = world;
+            } else if (parent as usize) < self.world.curr.world_transforms.len() {
+                let (local, needs_tp) = recompute_local_from_world(
+                    &self.world.curr.world_transforms[parent as usize],
+                    &world,
+                );
+                self.local_transforms[i] = local;
+                if needs_tp {
+                    self.queue_teleport_row(i as u32);
+                }
+            } else {
+                self.local_transforms[i] = world;
+            }
+        }
+    }
+
+    /// Ring2 Step 3 (x00ef): one depth-bucket pass —
+    /// finalize ancestors → dirty parented invert against **finalized** parent →
+    /// compose pos/scale. Avoids G-move + idle-P + dirty-C absolute drift.
+    fn step3_hierarchy_resolve(&mut self) {
+        let n = self.world.curr.len();
+        if n == 0 || self.topo.parent_of.len() != n {
+            return;
+        }
+        self.ensure_locals_len(n);
+        self.dirty_rows_scratch.clear();
+        self.dirty_rows_scratch
+            .extend(self.world.curr.iter_dirty_rows());
+        self.dirty_mask_scratch.clear();
+        self.dirty_mask_scratch.resize(n, false);
+        for &row in &self.dirty_rows_scratch {
+            let i = row as usize;
+            if i < n {
+                self.dirty_mask_scratch[i] = true;
+            }
+        }
+        if let Err(e) = resolve_hierarchy_depth_bucket(
+            &self.topo,
+            &mut self.local_transforms,
+            &mut self.world.curr,
+            &self.dirty_mask_scratch,
+            &mut self.hierarchy_teleport_scratch,
+        ) {
+            log::warn!("depth-bucket hierarchy resolve failed: {e:?}");
+            return;
+        }
+        // Index loop keeps `hierarchy_teleport_scratch` capacity (avoid per-tick realloc).
+        for i in 0..self.hierarchy_teleport_scratch.len() {
+            let row = self.hierarchy_teleport_scratch[i];
+            self.queue_teleport_row(row);
+        }
+        self.hierarchy_teleport_scratch.clear();
     }
 
     /// Queue a creative reparent for the next tick boundary (entity ids → rows).
@@ -1202,11 +1304,13 @@ impl PhysicsWorld {
         }
 
         // 2) Reparent bake (FrameBridge restores topo on bake Err; we still abandon pending).
+        let mut reparented = false;
         if self.frame_bridge.parents_dirty {
             match self.frame_bridge.apply_reparent(&mut self.topo) {
                 Ok(()) => {
                     self.frame_bridge.parents_dirty = false;
                     touched = true;
+                    reparented = true;
                 }
                 Err(_) => {
                     restore_live_asset_atoms(&mut self.world.curr, &atom_backup, epoch_before);
@@ -1217,6 +1321,10 @@ impl PhysicsWorld {
                     return Err("reparent bake failed");
                 }
             }
+        }
+        // x00ef F0-2 contract A: world poses stay; rebuild locals under new parents.
+        if reparented {
+            self.refresh_locals_preserve_world();
         }
 
         // 3) Tape-external mirrors — only after patches + reparent both succeeded.
@@ -1293,14 +1401,34 @@ impl PhysicsWorld {
         // Re-run sleep against tick-start pose (step's update_sleeping saw Verlet prev).
         self.copy_positions_into_prev(&start);
         xpbd::update_sleeping(&mut self.world);
+        // x00ef Step 3: depth-ordered ancestor finalize + dirty invert + compose.
+        // frame_delta is written **after** so parent-follow displacement is included.
+        self.step3_hierarchy_resolve();
         self.write_frame_deltas_from(&start);
+        // x00f0 Step 1: enabled 0→1 (after delta write so zero sticks; TELEPORT after Carry-Over).
+        self.enabled_rising_scratch.clear();
+        self.arena
+            .take_enabled_rising_edges_into(&mut self.enabled_rising_scratch);
+        for &slot in &self.enabled_rising_scratch {
+            let i = slot as usize;
+            if i < self.world.curr.world_transforms.len() {
+                self.world.curr.world_transforms[i].frame_delta_xyz = [0.0, 0.0, 0.0];
+                if i < self.world.prev.world_transforms.len() {
+                    self.world.prev.world_transforms[i].position =
+                        self.world.curr.world_transforms[i].position;
+                }
+                self.world.curr.mark_dirty(slot);
+            }
+        }
+        let enabled_rising_nonempty = !self.enabled_rising_scratch.is_empty();
         // Include `publish_dirty`: Intent/kinematic edits happen before `step_dt`, so
         // start==curr would otherwise skip and leave snapshot consumers on a stale face.
         let moved = self.publish_dirty
             || self.poses_differ(&start)
             || !self.ground_scratch.is_empty()
             || !self.sanitize_scratch.is_empty()
-            || self.has_active_grab();
+            || self.has_active_grab()
+            || enabled_rising_nonempty;
         if moved {
             // x00dc: Carry-Over → sync sheet dirty into Arena Work → publish **sheet**
             // SSoT (start / curr) as-is → rotate. Arena f32 poses are never overlaid onto
@@ -1315,7 +1443,8 @@ impl PhysicsWorld {
             // Grow Arena to sheet first — pending rows from same-tick spawn+reparent
             // are past the pre-sync slot_count and would be silently dropped (x00eb review).
             sync_dirty_sheet_to_arena_work(&mut self.arena, &self.world.curr);
-            // After Carry-Over cleared Work TELEPORT: re-assert snap for queued reparents.
+            // After Carry-Over cleared Work TELEPORT: re-assert snap for queued reparents
+            // and enabled rising edges (x00eb / x00f0).
             for row in std::mem::take(&mut self.pending_teleport_rows) {
                 if (row as usize) < self.arena.slot_count() {
                     self.arena.write_teleport(row, true);
@@ -1324,6 +1453,11 @@ impl PhysicsWorld {
                         "pending_teleport_rows row {row} oob after sync (arena={}); drop",
                         self.arena.slot_count()
                     );
+                }
+            }
+            for &slot in &self.enabled_rising_scratch {
+                if (slot as usize) < self.arena.slot_count() {
+                    self.arena.write_teleport(slot, true);
                 }
             }
             let mut curr_pub = self.world.curr.clone();
@@ -2516,6 +2650,126 @@ mod tests {
         assert!(
             !curr2.world_transforms[child_row as usize].is_teleport(),
             "teleport lifetime is one publish epoch"
+        );
+    }
+
+    #[test]
+    fn reparent_preserves_world_and_parent_move_follows_child() {
+        // x00ef F0-2: contract A + Step 3 depth-bucket follow.
+        let mut world = test_world();
+        world.ensure_topo_len();
+        let child = *world.meshes.first().expect("mesh");
+        let parent = world.boxes.entity_ids[0];
+        let child_row = world.entity_rows.get(&child).unwrap().row_id as usize;
+        let parent_row = world.entity_rows.get(&parent).unwrap().row_id as usize;
+        // Kinematic so XPBD does not fight hierarchy this tick.
+        world.world.curr.world_transforms[child_row].inv_mass = 0.0;
+        world.world.curr.world_transforms[parent_row].inv_mass = 0.0;
+        let child_before = world.world.curr.world_transforms[child_row].position;
+        world
+            .queue_live_reparent(child, parent)
+            .expect("queue reparent");
+        world.step();
+        let child_after_reparent = world.world.curr.world_transforms[child_row].position;
+        assert!(
+            (child_after_reparent[0] - child_before[0]).abs() < 1e-5
+                && (child_after_reparent[1] - child_before[1]).abs() < 1e-5
+                && (child_after_reparent[2] - child_before[2]).abs() < 1e-5,
+            "contract A: world pose preserved on reparent; before={child_before:?} after={child_after_reparent:?}"
+        );
+        assert_ne!(
+            world.topo.parent_of[child_row],
+            u32::MAX,
+            "child must be parented"
+        );
+        let parent_pos = world.world.curr.world_transforms[parent_row].position;
+        world.world.curr.world_transforms[parent_row].position =
+            [parent_pos[0] + 3.0, parent_pos[1], parent_pos[2]];
+        world.publish_dirty = true;
+        world.step();
+        let child_after_move = world.world.curr.world_transforms[child_row].position;
+        assert!(
+            (child_after_move[0] - (child_after_reparent[0] + 3.0)).abs() < 1e-4
+                && (child_after_move[1] - child_after_reparent[1]).abs() < 1e-4
+                && (child_after_move[2] - child_after_reparent[2]).abs() < 1e-4,
+            "parent +3x must drag child; before={child_after_reparent:?} after={child_after_move:?}"
+        );
+    }
+
+    #[test]
+    fn parented_dirty_world_write_survives_step3() {
+        // x00ef review: Grab/Intent-like world write on a parented row must not be
+        // overwritten by stale local; dirty → local recompute then propagate.
+        let mut world = test_world();
+        world.ensure_topo_len();
+        let child = *world.meshes.first().expect("mesh");
+        let parent = world.boxes.entity_ids[0];
+        let child_row = world.entity_rows.get(&child).unwrap().row_id as usize;
+        let parent_row = world.entity_rows.get(&parent).unwrap().row_id as usize;
+        world.world.curr.world_transforms[child_row].inv_mass = 0.0;
+        world.world.curr.world_transforms[parent_row].inv_mass = 0.0;
+        world
+            .queue_live_reparent(child, parent)
+            .expect("queue reparent");
+        world.step();
+        let aim = [7.5, 3.25, -1.0];
+        world.world.curr.world_transforms[child_row].position = aim;
+        world.world.curr.mark_dirty(child_row as u32);
+        world.publish_dirty = true;
+        world.step();
+        let got = world.world.curr.world_transforms[child_row].position;
+        assert!(
+            (got[0] - aim[0]).abs() < 1e-4
+                && (got[1] - aim[1]).abs() < 1e-4
+                && (got[2] - aim[2]).abs() < 1e-4,
+            "parented world write must survive Step 3; got={got:?} aim={aim:?}"
+        );
+        assert_eq!(
+            world.world.curr.world_transforms[child_row].inv_mass, 0.0,
+            "propagate must not clobber inv_mass from local"
+        );
+    }
+
+    #[test]
+    fn dirty_child_keeps_world_when_grandparent_moves() {
+        // x00ef review: G dirty + P idle + C dirty absolute — invert must use P_new.
+        let mut world = test_world();
+        world.ensure_topo_len();
+        assert!(world.boxes.len() >= 2, "need two boxes as G/P");
+        let g = world.boxes.entity_ids[0];
+        let p = world.boxes.entity_ids[1];
+        let c = *world.meshes.first().expect("mesh");
+        let g_row = world.entity_rows.get(&g).unwrap().row_id as usize;
+        let p_row = world.entity_rows.get(&p).unwrap().row_id as usize;
+        let c_row = world.entity_rows.get(&c).unwrap().row_id as usize;
+        for row in [g_row, p_row, c_row] {
+            world.world.curr.world_transforms[row].inv_mass = 0.0;
+        }
+        world.queue_live_reparent(p, g).expect("P under G");
+        world.step();
+        world.queue_live_reparent(c, p).expect("C under P");
+        world.step();
+        world.world.curr.world_transforms[g_row].position = [0.0, 0.0, 0.0];
+        world.world.curr.world_transforms[p_row].position = [1.0, 0.0, 0.0];
+        world.world.curr.world_transforms[c_row].position = [5.0, 0.0, 0.0];
+        world.refresh_locals_preserve_world();
+        // Same tick: G → 10, C insists on world 5; P not dirty.
+        world.world.curr.world_transforms[g_row].position = [10.0, 0.0, 0.0];
+        world.world.curr.mark_dirty(g_row as u32);
+        world.world.curr.world_transforms[c_row].position = [5.0, 0.0, 0.0];
+        world.world.curr.mark_dirty(c_row as u32);
+        world.step3_hierarchy_resolve();
+        let p_got = world.world.curr.world_transforms[p_row].position;
+        let c_got = world.world.curr.world_transforms[c_row].position;
+        assert!(
+            (p_got[0] - 11.0).abs() < 1e-5,
+            "idle P must follow G; got={p_got:?}"
+        );
+        assert!(
+            (c_got[0] - 5.0).abs() < 1e-5
+                && (c_got[1] - 0.0).abs() < 1e-5
+                && (c_got[2] - 0.0).abs() < 1e-5,
+            "dirty C absolute must not pick up ancestor delta; got={c_got:?}"
         );
     }
 

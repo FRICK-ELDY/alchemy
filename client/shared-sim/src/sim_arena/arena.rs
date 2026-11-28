@@ -237,6 +237,8 @@ pub struct SimArena {
     attached_masks: Vec<u64>,
     /// Resonite-style enabled mask (60Hz execution). Not face-rotated.
     enabled_masks: Vec<u64>,
+    /// Previous-tick enabled masks for Step 1 edge Observer (x00f0 F0-3).
+    prev_enabled_masks: Vec<u64>,
     scale_x: Vec<f32>,
     scale_y: Vec<f32>,
     scale_z: Vec<f32>,
@@ -269,6 +271,7 @@ impl SimArena {
             parent_slot: vec![PARENT_ABSENT; slot_count],
             attached_masks: vec![0; slot_count],
             enabled_masks: vec![0; slot_count],
+            prev_enabled_masks: vec![0; slot_count],
             scale_x: vec![1.0; slot_count],
             scale_y: vec![1.0; slot_count],
             scale_z: vec![1.0; slot_count],
@@ -293,6 +296,7 @@ impl SimArena {
         self.parent_slot.resize(slot_count, PARENT_ABSENT);
         self.attached_masks.resize(slot_count, 0);
         self.enabled_masks.resize(slot_count, 0);
+        self.prev_enabled_masks.resize(slot_count, 0);
         self.scale_x.resize(slot_count, 1.0);
         self.scale_y.resize(slot_count, 1.0);
         self.scale_z.resize(slot_count, 1.0);
@@ -488,6 +492,31 @@ impl SimArena {
             0
         } else {
             self.enabled_masks[i]
+        }
+    }
+
+    /// Step 1 bitmask edge Observer (x00f0 F0-3): detect enabled `0 → 1` rising edges.
+    ///
+    /// Clears and fills `out` (caller-owned reuse buffer — 60Hz hot path). Updates
+    /// the internal prev snapshot. Does **not** set [`STATE_TELEPORT_THIS_TICK`] —
+    /// caller must `write_teleport` **after** [`Self::carry_over`]. Physical grab
+    /// SSoT remains `holder_slot` / Epoch (SoftLease is unrelated).
+    pub fn take_enabled_rising_edges_into(&mut self, out: &mut Vec<LocalSlotId>) {
+        out.clear();
+        let n = self.slot_count();
+        if self.prev_enabled_masks.len() < n {
+            self.prev_enabled_masks.resize(n, 0);
+        } else if self.prev_enabled_masks.len() > n {
+            self.prev_enabled_masks.truncate(n);
+        }
+        for i in 0..n {
+            let curr = self.enabled_masks[i];
+            let prev = self.prev_enabled_masks[i];
+            let just_on = (curr ^ prev) & curr;
+            if just_on != 0 {
+                out.push(i as LocalSlotId);
+            }
+            self.prev_enabled_masks[i] = curr;
         }
     }
 
@@ -688,6 +717,7 @@ impl SimArena {
         self.parent_slot.len() == n
             && self.attached_masks.len() == n
             && self.enabled_masks.len() == n
+            && self.prev_enabled_masks.len() == n
             && self.scale_x.len() == n
             && self.scale_y.len() == n
             && self.scale_z.len() == n
@@ -1320,6 +1350,41 @@ mod tests {
         assert!(arena.slot_count() >= 6);
         assert_eq!(arena.parent(5), None);
         assert!(arena.work().is_teleport(5));
+    }
+
+    #[test]
+    fn enabled_rising_edge_detected_once() {
+        // x00f0 F0-3: just_enabled = (curr ^ prev) & curr
+        let mut arena = SimArena::with_slots(1);
+        let mut rising = Vec::new();
+        arena.apply_patches(&[SimPatch::AllocateSlot {
+            slot: 0,
+            parent: None,
+        }]);
+        arena.take_enabled_rising_edges_into(&mut rising);
+        assert!(rising.is_empty());
+        arena.apply_patches(&[SimPatch::SetEnabledBits {
+            slot: 0,
+            add: 0b1,
+            remove: 0,
+        }]);
+        arena.take_enabled_rising_edges_into(&mut rising);
+        assert_eq!(rising, vec![0]);
+        arena.take_enabled_rising_edges_into(&mut rising);
+        assert!(rising.is_empty(), "second observe must not re-fire");
+        arena.apply_patches(&[SimPatch::SetEnabledBits {
+            slot: 0,
+            add: 0,
+            remove: 0b1,
+        }]);
+        arena.take_enabled_rising_edges_into(&mut rising);
+        arena.apply_patches(&[SimPatch::SetEnabledBits {
+            slot: 0,
+            add: 0b1,
+            remove: 0,
+        }]);
+        arena.take_enabled_rising_edges_into(&mut rising);
+        assert_eq!(rising, vec![0]);
     }
 
     #[test]

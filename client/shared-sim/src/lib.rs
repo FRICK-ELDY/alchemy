@@ -59,7 +59,10 @@ pub use tape::{
     ColliderShape, EpochSheet, NodeHandle, PendingPatch, ReadinessMask, WorldTransformf64,
     XpbdConstraintRow,
 };
-pub use topology::FlatTopology;
+pub use topology::{
+    propagate_world_transforms, recompute_local_from_world, resolve_hierarchy_depth_bucket,
+    FlatTopology, TopologyError,
+};
 
 pub use ids::{
     entity_id_from_stable_embed, entity_id_from_wire, local_from_entity_id, stable_from_entity_id,

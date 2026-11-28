@@ -856,6 +856,8 @@ impl SharedState {
 
     /// Begin local Grab hold in the prediction tracker (Desktop Grab start).
     /// `false` if pending reject — Desktop must not set `held_grab` / Intent GRAB.
+    ///
+    /// x00f1: also mirrors into [`Self::pending_local`] (Published 非汚染の一般器).
     pub fn begin_held_grab(
         &self,
         entity_id: u32,
@@ -864,13 +866,23 @@ impl SharedState {
         let Ok(mut owned) = self.owned_prediction.lock() else {
             return false;
         };
-        owned.begin_held(entity_id, pose)
+        if !owned.begin_held(entity_id, pose) {
+            return false;
+        }
+        drop(owned);
+        self.pending_local.push_pose(entity_id, pose);
+        true
     }
 
     /// Drop prediction hold immediately (button release / dash). Keeps pending reject latch.
     pub fn clear_held_grab_prediction(&self) {
-        if let Ok(mut owned) = self.owned_prediction.lock() {
+        let cleared_id = self.owned_prediction.lock().ok().and_then(|mut owned| {
+            let id = owned.held_entity;
             owned.set_held(None);
+            id
+        });
+        if let Some(id) = cleared_id {
+            self.pending_local.clear(id);
         }
     }
 
@@ -879,6 +891,7 @@ impl SharedState {
     ///
     /// Lock order: `owned_prediction` only (never acquire `world` under this lock).
     /// While `grab_rejected` is pending, updates are ignored (no hold resurrection).
+    /// x00f1: mirrors pose into [`Self::pending_local`].
     pub fn predict_held_grab(
         &self,
         held_entity: Option<u32>,
@@ -891,8 +904,21 @@ impl SharedState {
             return;
         }
         match (held_entity, predicted_held) {
-            (Some(id), Some(pose)) => owned.predict_held(id, pose),
-            (None, _) => owned.set_held(None),
+            (Some(id), Some(pose)) => {
+                // Only mirror when owned actually accepted the pose (x00f1 review).
+                if owned.predict_held(id, pose) {
+                    drop(owned);
+                    self.pending_local.push_pose(id, pose);
+                }
+            }
+            (None, _) => {
+                let prev = owned.held_entity;
+                owned.set_held(None);
+                drop(owned);
+                if let Some(id) = prev {
+                    self.pending_local.clear(id);
+                }
+            }
             (Some(_), None) => {}
         }
     }
@@ -900,6 +926,7 @@ impl SharedState {
     /// Reconcile held Grab against one kinematic authority sample (Applied Frame).
     ///
     /// Missing `held_id` in `authority` → force reject (despawn / gap).
+    /// x00f1: keeps [`Self::pending_local`] in sync (Snap/reject clears; Keep/Blend updates).
     pub fn reconcile_held_on_authority(
         &self,
         authority: &std::collections::HashMap<u32, crate::epoch_mirror::KinematicPose>,
@@ -912,12 +939,24 @@ impl SharedState {
         };
         let Some(p) = authority.get(&id).copied() else {
             owned.force_reject();
+            drop(owned);
+            self.pending_local.clear(id);
             return;
         };
         let auth = crate::owned_prediction::PredictionPose::xyz_quat(
             p.x, p.y, p.z, p.qx, p.qy, p.qz, p.qw,
         );
-        let _ = owned.reconcile_held(auth);
+        let result = owned.reconcile_held(auth);
+        drop(owned);
+        match result {
+            Some((_, crate::owned_prediction::ReconcileMode::Snap)) => {
+                self.pending_local.clear(id);
+            }
+            Some((pose, _)) => {
+                self.pending_local.push_pose(id, pose);
+            }
+            None => {}
+        }
     }
 
     /// Wire Curr for a specific `user_root` id (unset → default eye). Not for draw/Grab/view.
