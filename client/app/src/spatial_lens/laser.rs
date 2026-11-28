@@ -5,10 +5,12 @@
 //! Primary visibility gate (`laser_show_primary_min`, default 0.1) separate from Grab≈0.7;
 //! Settings-exposed fields + clamp/step for L1 prefs UI;
 //! XR session applies `update_smoothed_direction` to world/UI beam aim (x00f5);
-//! Default baseline (x00f5 retune): Smooth 5 / Start 2° / End 45° / Exp 0.75 / Mul 8 /
-//! Stick 0.2（旧例示 12 / 1.5° / 18° / 1.8 / 0.5 から変更。Reset 先もこの値）.
+//! Default baseline（Alchemy XR/Dash 体感）: Smooth **0**（生向きパススルー）/
+//! Start 0° / End 18° / Exp 1.8 / Mul 8 / Stick 0（Reset 先もこの値）。
+//! `SmoothSpeed <= 0` → raw パススルー。レゾマガの「全フィールド 0」は Resonite 出荷既定と
+//! みなさない（不正確の可能性）。Resonite 実機プリセットは未ピン止め。
 //! Non-guarantees: bezier laser draw; haptics; double-click;
-//! Desktop beam overlay when `show_lasers_in_desktop_mode` (→ L3); XR Stickiness.
+//! Desktop beam overlay when `show_lasers_in_desktop_mode` (→ L3); XR Stickiness 本配線.
 //! Inspector POS scrub UV is **not** driven by this module (Desktop uses panel hit /
 //! `last_uv`; press-lock here stays for Hierarchy/click stickiness · x00f2).
 
@@ -93,13 +95,16 @@ pub struct InteractionLaserConfig {
 
 impl Default for InteractionLaserConfig {
     fn default() -> Self {
+        // Alchemy XR/Dash: SmoothSpeed=0 → raw passthrough (snappy UI hit/beam).
+        // Not claimed as Resonite shipped Settings presets (レゾマガの全0は信じない).
+        // End/Exp/Mul remain for when the user raises SmoothSpeed (tremor filter + flick).
         Self {
-            laser_smooth_speed: 5.0,
-            modulate_start_angle_deg: 2.0,
-            modulate_end_angle_deg: 45.0,
-            modulate_exponent: 0.75,
+            laser_smooth_speed: 0.0,
+            modulate_start_angle_deg: 0.0,
+            modulate_end_angle_deg: 18.0,
+            modulate_exponent: 1.8,
             modulate_speed_multiplier: 8.0,
-            laser_stickiness: 0.2,
+            laser_stickiness: 0.0,
             laser_show_primary_min: 0.1,
             show_lasers_in_desktop_mode: false,
         }
@@ -233,12 +238,26 @@ impl HandLaserState {
     }
 
     /// Angle-modulated smoothing (architecture §4.4).
+    ///
+    /// `laser_smooth_speed <= 0` snaps to `raw_dir` (Alchemy: no aim lag / passthrough).
     pub fn update_smoothed_direction(
         &mut self,
         raw_dir: [f32; 3],
         cfg: &InteractionLaserConfig,
         dt: f32,
     ) -> [f32; 3] {
+        if cfg.laser_smooth_speed <= 0.0 {
+            // Passthrough only — do not clear stickiness / press-lock (unlike `snap_direction`).
+            let len_sq = raw_dir[0] * raw_dir[0] + raw_dir[1] * raw_dir[1] + raw_dir[2] * raw_dir[2];
+            if len_sq < 1e-12 {
+                self.smoothed_dir = [0.0, 0.0, -1.0];
+            } else {
+                let inv = 1.0 / len_sq.sqrt();
+                self.smoothed_dir = [raw_dir[0] * inv, raw_dir[1] * inv, raw_dir[2] * inv];
+            }
+            return self.smoothed_dir;
+        }
+
         let dot = (self.smoothed_dir[0] * raw_dir[0]
             + self.smoothed_dir[1] * raw_dir[1]
             + self.smoothed_dir[2] * raw_dir[2])
@@ -446,14 +465,25 @@ mod tests {
     #[test]
     fn defaults_match_alchemy_laser_baseline() {
         let d = InteractionLaserConfig::default();
-        assert!((d.laser_smooth_speed - 5.0).abs() < 1e-5);
-        assert!((d.modulate_start_angle_deg - 2.0).abs() < 1e-5);
-        assert!((d.modulate_end_angle_deg - 45.0).abs() < 1e-5);
-        assert!((d.modulate_exponent - 0.75).abs() < 1e-5);
+        assert!((d.laser_smooth_speed - 0.0).abs() < 1e-5);
+        assert!((d.modulate_start_angle_deg - 0.0).abs() < 1e-5);
+        assert!((d.modulate_end_angle_deg - 18.0).abs() < 1e-5);
+        assert!((d.modulate_exponent - 1.8).abs() < 1e-5);
         assert!((d.modulate_speed_multiplier - 8.0).abs() < 1e-5);
-        assert!((d.laser_stickiness - 0.2).abs() < 1e-5);
+        assert!((d.laser_stickiness - 0.0).abs() < 1e-5);
         assert!((d.laser_show_primary_min - 0.1).abs() < 1e-5);
         assert!(!d.show_lasers_in_desktop_mode);
+    }
+
+    #[test]
+    fn smooth_speed_zero_passthrough_raw() {
+        let mut h = HandLaserState::default();
+        h.smoothed_dir = [1.0, 0.0, 0.0];
+        let cfg = InteractionLaserConfig::default();
+        assert!(cfg.laser_smooth_speed <= 0.0);
+        let d = h.update_smoothed_direction([0.0, 1.0, 0.0], &cfg, 1.0 / 90.0);
+        assert!((d[1] - 1.0).abs() < 1e-4);
+        assert!(d[0].abs() < 1e-4);
     }
 
     #[test]

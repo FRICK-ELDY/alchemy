@@ -178,6 +178,7 @@ impl DesktopGpu {
             highlight_entity,
         );
 
+        // Personal Lens only on Desktop (x00f6: Dash plate is XR — Desktop keeps fullscreen overlay).
         if lens.visible {
             self.spatial_lens.upload(
                 &self.scene.device,
@@ -770,6 +771,7 @@ impl App {
     }
 
     /// Pack Hierarchy/Inspector prims + Stickiness hover (x00bb–x00bd).
+    /// Desktop Dash stays fullscreen CPU overlay (x00f6 plate path is XR-only until U0.1).
     fn tick_spatial_lens(&mut self) {
         if !self.spatial_lens.visible {
             if let Some(prev) = self.spatial_lens.scrub.take() {

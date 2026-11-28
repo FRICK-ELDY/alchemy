@@ -24,7 +24,7 @@ use super::input::{
     aim_orient_from_smoothed_dir, classify_context_board_ray, context_board_model_at,
     dash_quad_model, freeze_context_board, laser_length, laser_length_context_board,
     laser_length_world, laser_model, openxr_pose_to_isometry, pose_to_ray, ray_hit_dash_quad,
-    ContextBoardRayHit, Ray,
+    ContextBoardRayHit, Ray, QUAD_DISTANCE,
 };
 use super::loco::{combine_turn_axes, intent_from_sticks, stage_move_to_world, STICK_DEADZONE};
 use super::math::{projection_from_fov_default, view_from_pose};
@@ -34,8 +34,11 @@ use super::wgpu_overlays::{GpuController, XrOverlays};
 use crate::context_radial::{self, ContextEvent, ContextItemId, ContextRadialState, HandSide};
 use crate::mesh::CpuMesh;
 use crate::scene::{create_depth_view, MoveIntent, SceneGpu, SharedState, BOX_HALF_EXTENT};
-use crate::spatial_lens::{HandLaserState, InteractionLaserConfig};
-use crate::system_ui::{InventoryPeerRequest, LayoutTree, SystemUi, UiAction};
+use crate::spatial_lens::{
+    dash_board_world_matrix, pack_official_dash, GpuPanelHeader, GpuUiPrim, HandLaserState,
+    InteractionLaserConfig, SpatialLensGpu,
+};
+use crate::system_ui::{official_dash_view, InventoryPeerRequest, LayoutTree, SystemUi, UiAction};
 use crate::turn::{update_turn_yaw, TURN_DEADZONE};
 use crate::world_hit::ray_hit_grabbable_boxes_with_extents;
 
@@ -283,8 +286,13 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
         UI_CANVAS_W,
         UI_CANVAS_H,
     )?;
+    let mut spatial_lens = SpatialLensGpu::new(bridge.device(), bridge.queue(), wgpu_format)?;
+    let mut dash_headers: Vec<GpuPanelHeader> = Vec::new();
+    let mut dash_prims: Vec<GpuUiPrim> = Vec::new();
 
     let mut ui = SystemUi::new();
+    // x00f6: XR Dash uses Uber-SDF plate for Shell/Chrome; CPU suppresses bar/tab fills+labels.
+    ui.state.plate_chrome = true;
     ui.state.home_session_actions_enabled = false;
     ui.state.home_room_id = shared.get_room_id().to_string();
     // Match Desktop: hotswitch row only after READY (`xr_session_started`).
@@ -1029,6 +1037,18 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
             ui.clear_pointer();
         }
 
+        // Official Dash plate (x00f6): same pose as CPU content quad (no baked scale).
+        dash_headers.clear();
+        dash_prims.clear();
+        let dash_shell_active =
+            ui.state.open && (ui.state.hover.is_some() || ui.state.pressed.is_some());
+        if ui.state.open {
+            let board = dash_board_world_matrix(head_pos, head_orient, QUAD_DISTANCE);
+            let view = official_dash_view(&ui.state, board, dash_shell_active);
+            pack_official_dash(&view, 0, &mut dash_headers, &mut dash_prims);
+            spatial_lens.upload(bridge.device(), bridge.queue(), &dash_headers, &dash_prims);
+        }
+
         let dash_ui_model = if ui.state.open {
             ui.prepare_cpu_canvas();
             if let Some((pixels, cw, ch)) = ui.canvas_rgba() {
@@ -1171,6 +1191,18 @@ pub fn run_session(mesh: CpuMesh, shared: Arc<SharedState>) -> Result<()> {
                     }
                 },
             );
+            // Dash Shell/Chrome Uber-SDF board under content texture (x00f6).
+            // Pose is stage-space (same as `dash_quad_model`); use `view_stage` not floor-warped world.
+            if ui.state.open && !dash_headers.is_empty() {
+                spatial_lens.draw(
+                    &mut encoder,
+                    bridge.queue(),
+                    &eyes[eye],
+                    depths[eye],
+                    view_stage,
+                    proj,
+                );
+            }
             if let Some(model) = dash_ui_model {
                 overlays.draw_dash(
                     &mut encoder,

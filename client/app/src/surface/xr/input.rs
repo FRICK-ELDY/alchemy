@@ -12,9 +12,10 @@ pub use crate::world_hit::Ray;
 use crate::world_hit::MAX_HIT_DISTANCE as LASER_MAX_LENGTH;
 
 /// Head-locked dash quad in view/local space (meters). Centered, facing -Z of head.
-pub const QUAD_WIDTH: f32 = 1.2;
-pub const QUAD_HEIGHT: f32 = 0.675; // 16:9
-pub const QUAD_DISTANCE: f32 = 1.4;
+/// SSoT: [`crate::spatial_lens::DASH_WIDTH_M`] / `DASH_HEIGHT_M` / `DASH_DISTANCE_M`.
+pub const QUAD_WIDTH: f32 = crate::spatial_lens::DASH_WIDTH_M;
+pub const QUAD_HEIGHT: f32 = crate::spatial_lens::DASH_HEIGHT_M;
+pub const QUAD_DISTANCE: f32 = crate::spatial_lens::DASH_DISTANCE_M;
 
 /// Stop the beam this far short of the dash plane so the tip sits in front (same projection as UI).
 pub const LASER_TIP_GAP: f32 = 0.02;

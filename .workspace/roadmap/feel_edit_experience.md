@@ -7,7 +7,7 @@
 * **拡張ギャップ（ヒッチ・IME）**: [memo/alchemy-expansion.md](memo/alchemy-expansion.md)（**E1 / E2** — 本線番号と非共有）
 * **アバター見た目・ダンス**: [memo/avatar-animation-ux.md](memo/avatar-animation-ux.md)（本線番号と非共有）
 * **既存 Facet 最小**: [slices/x000f-dash-facet-minimal.md](slices/x000f-dash-facet-minimal.md)（公式語彙のみ。**Fc 拡張は deferred** — §4.5）
-* **空きスライス ID**: **`x00f6`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
+* **空きスライス ID**: **`x00f7`** 以降（発行時は [README.md](README.md) と当該 `slices/` を更新）
 
 ### 番号規約
 
@@ -59,7 +59,7 @@
 | Inspector（x00bc / [x00f2](slices/x00f2-inspector-setfield-commit.md) / [x00f3](slices/x00f3-soft-lease-visibility.md) / [x00f4](slices/x00f4-drag-volatile-commit.md)） | Desktop POS 2D スクラブ → 多軸 1 Commit；SoftLease chrome | XR スクラブ・ネット揮発・Presence 名は非保証 |
 | XR レーザー | **L0+L1+L2 done**（Primary＋Settings＋XR smooth） | ShowInDesktop 可視化ビームは → L3；XR Stickiness は非保証 |
 | `InteractionLaserConfig` | Settings 露出＋`laser.json` 永続（[x00ee](slices/x00ee-laser-settings-l1.md)） | Desktop ビーム描画本体（→ L3） |
-| Dash | CPU Canvas blit（仮）＋G0 色トークン共有 | 板経路の角丸・glow は Lens 済み；Dash 全板移行は U0 |
+| Dash | **U0 done**（[x00f6](slices/x00f6-dash-plate-u0.md) Shell/Chrome 板）＋本文 CPU 過渡 | 本文全 prim 化は → U0.1 |
 | Facet | 公式 `FacetId` / Pinned Exit のみ（[x000f](slices/x000f-dash-facet-minimal.md)） | **Fc 拡張は deferred**（§4.5）。グリッド装着・ユーザー追加は当面やらない |
 | 文字 | DirectNumber ＋ Lens Static MSDF（[x00ed](slices/x00ed-static-msdf-t1.md)）＋ Dash 5×7 | CJK / 文言カタログは未（→ T2） |
 
@@ -77,8 +77,9 @@ T1  Static MSDF（ASCII / 数字 / アイコン）
 L1  Settings ↔ InteractionLaserConfig（Resonite LaserSettings 写像）
 F1  Inspector Commit / SoftLease 見える化 / ドラッグ揮発↔Commit
 L2  XR ビームへ角度変調スムージング本配線
-T2 / E2-1  CJK オンデマンド atlas ＋ XR IME（依存は人承認）
-U0 / U1  公式 Dash 板経路 ＋ 公式 UI データ駆動
+U0  公式 Dash 板経路（シェル＋Chrome）← **done**
+U0.1 / T2  Facet 本文 prim 化 / CJK＋IME（人承認）← **次**
+U1  公式 UI データ駆動
 F2  AvatarRig host 配線 / アバター見た目 A / 剛体は別決
 U2  CustomUIX（ユーザー中身 — 信頼境界が要る・後段）
 G1  アクティブ板だけの任意 blur（実測後）
@@ -87,7 +88,7 @@ E1  ヒッチ根絶（スキニング / Async PSO / LOD builder）
 Fc0–Fc6  枠のみ・deferred（§4.5）。本線フローに入れない
 ```
 
-**次の着手:** **T2 / E2-1**（CJK オンデマンド atlas ＋ XR IME・依存は人承認）または **U0**（公式 Dash 板経路）。F0 / F1 / L0 / L1 / L2 / T1 / G0 **done**。後続（未発行）: Inspector ネット揮発スクラブ / Grab 離し姿勢 Commit。**Fc 拡張は deferred**（枠は §4.5）。
+**次の着手:** **U0.1**（Facet 本文 prim 化）または **T2 / E2-1**（人承認）。F0 / F1 / L0 / L1 / L2 / T1 / G0 / **[x00f6](slices/x00f6-dash-plate-u0.md) U0** **done**。後続（未発行）: Inspector ネット揮発スクラブ / Grab 離し姿勢 Commit。**Fc 拡張は deferred**（枠は §4.5）。
 
 ---
 
@@ -149,18 +150,20 @@ Fc0–Fc6  枠のみ・deferred（§4.5）。本線フローに入れない
 | ShowInDesktop | `show_lasers_in_desktop_mode`（**追加**） |
 | （Alchemy）表示しきい値 | `laser_show_primary_min`（既定 0.1）（**追加**） |
 
-**Alchemy Laser Default（x00f5 体感チューニング・Settings Reset 先）**
+**Alchemy Laser Default（Settings Reset 先・XR/Dash 体感）**
 
-| 項目 | 現行既定 | 旧例示（〜L1 ドキュメント） |
-|:---|---:|---:|
-| `laser_smooth_speed` | **5.0** | 12.0 |
-| `modulate_start_angle_deg` | **2.0** | 1.5 |
-| `modulate_end_angle_deg` | **45.0** | 18.0 |
-| `modulate_exponent` | **0.75** | 1.8 |
-| `modulate_speed_multiplier` | **8.0** | 8.0 |
-| `laser_stickiness` | **0.2** | 0.5 |
+| 項目 | 現行既定 | 備考 |
+|:---|---:|:---|
+| `laser_smooth_speed` | **0.0** | `≤0` → raw パススルー（Dash 反応を優先した Alchemy 選択） |
+| `modulate_start_angle_deg` | **0.0** | Smooth＞0 時の変調開始 |
+| `modulate_end_angle_deg` | **18.0** | Smooth＞0 時の catch-up カーブ |
+| `modulate_exponent` | **1.8** | 同上 |
+| `modulate_speed_multiplier` | **8.0** | 同上 |
+| `laser_stickiness` | **0.0** | 吸着オフ（上げると UI 吸い付き） |
 
-新規 boot・欠損 `laser.json`・**Reset defaults** は現行既定へ。既存 `laser.json` は上書きしない（明示 Reset まで旧値維持）。
+**Resonite との関係:** パラメータ名は LaserSettings 写像のまま。レゾマガの「全フィールド既定 0」は **Resonite 出荷プリセットとみなさない**（不正確の可能性）。実機 Settings の数値は未ピン止め。Alchemy の 0 既定は **本プロジェクトで反応が早まった** Empiric 採用。
+
+新規 boot・欠損 `laser.json`・**Reset defaults** は現行既定へ。既存 `laser.json`（例: x00f5 の 5/2°/45°）は上書きしない（明示 Reset まで旧値維持）。
 
 ### 4.3 T — Text / 多言語（描画とカタログを分離）
 
@@ -185,6 +188,7 @@ Fc0–Fc6  枠のみ・deferred（§4.5）。本線フローに入れない
 | ID | 内容 | 注意 |
 |:---|:---|:---|
 | **G0** | 軽量ガラス語彙の契約＋実装：半透明＋縁 glow＋内側グラデ。**背景ブラーなし**。シェル板だけでなく Card / Chrome / Control / Field も同じ語彙 | [x00ec](slices/x00ec-glass-material-g0.md) **done**。標準 α≈0.92。トークン・payload・シェーダ式は本節が正本 |
+| **U0** | 公式 Dash＝1 板＋Shell/Chrome prim | [x00f6](slices/x00f6-dash-plate-u0.md) **done**。本文 → U0.1 |
 | **G1** | アクティブ最前面板だけの任意 blur / downsample | VR 90Hz が保てるときだけ。本線初期にしない |
 
 #### G0 保証する / しない
@@ -192,7 +196,7 @@ Fc0–Fc6  枠のみ・deferred（§4.5）。本線フローに入れない
 | 保証する | 保証しない |
 |:---|:---|
 | 役割トークン（下表）と RoundedBox payload 意味（角丸・縁・glow） | 背景ブラー / grab-pass / downsample glass（→ G1） |
-| Uber-SDF 1 パスでの内側縦グラデ＋縁 soft glow | Dash 全コンテンツの板移行完了（→ U0） |
+| Uber-SDF 1 パスでの内側縦グラデ＋縁 soft glow | Dash 板配線・本文 prim 化（→ [x00f6](slices/x00f6-dash-plate-u0.md) U0 / U0.1） |
 | Desktop / XR / 将来 Web で **同一トークン＋同一 WGSL** | DOM/CSS `backdrop-filter`・プラットフォーム別マテリアル |
 | LOD2 板色を `ShellFill` 系に揃えること | MSDF / CJK（→ T）・Facet 並べ替え（→ Fc・**deferred**） |
 
@@ -263,7 +267,7 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 | ID | 保証 | 非保証 |
 |:---|:---|:---|
 | **G0** | トークン＋RoundedBox 見た目（グラデ・glow・α）の契約と実装 | Dash 全板移行完了、blur |
-| **U0** | 公式 Dash を 1 板＋`GpuUiPrim` へ寄せる配線（G0 と一体でも可） | Facet 拡張（deferred）・CustomUIX |
+| **U0** | 公式 Dash＝1 板＋Shell/Chrome prim（[x00f6](slices/x00f6-dash-plate-u0.md) **done**） | Facet 本文全移行・CustomUIX・Fc |
 | **G1** | アクティブ 1 枚の任意 blur（実測後） | 本線初期 |
 
 ### 4.5 Fc — Facet 土台（**deferred・枠のみ**）
@@ -300,7 +304,8 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 
 | ID | 内容 |
 |:---|:---|
-| **U0** | 公式 Dash を板＋`GpuUiPrim` 経路へ（G0 と一体でも可） |
+| **U0** | 公式 Dash を板＋`GpuUiPrim` 経路へ（[x00f6](slices/x00f6-dash-plate-u0.md) **done**・シェル＋Chrome） |
+| **U0.1** | 公式 Facet 本文の Card／Control／Msdf 段階移行（CPU content blit 縮小） |
 | **U1** | 公式 UI のデータ駆動（コードハードコードから剥がす） |
 | **U2** | ユーザー CustomUIX（Scene Store 疎データで共同編集可能な中身） |
 | **U3** | ワールド制御盤の本格結線（Dual-AST は別本線。Facet 拡張とは独立） |
@@ -330,11 +335,12 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 5. セキュリティ境界（Room Token / ManifestSeal / actor_id / AEAD）を弱めない。
 6. 発行したら [README.md](README.md) 目次・本節「次の着手」・必要なら品質本線の「次の着手」一文を更新する。
 
-### 推奨次スライス案（未発行）
+### 推奨次スライス案
 
-| 候補 ID | slug 案 | Wave | DoD 要約 |
+| 候補 ID | slug | Wave | 状態 / DoD 要約 |
 |:---|:---|:---|:---|
-| **x00f6** | （未定） | **T2 / E2-1** または **U0** | CJK atlas＋IME（人承認）／公式 Dash 板経路。次空きは `x00f6` |
+| **x00f6** | [dash-plate-u0](slices/x00f6-dash-plate-u0.md) | **U0** | **done** — Dash＝1 板＋Shell/Chrome prim |
+| **x00f7+** | （未定） | **U0.1** / **T2** / **U1** | 本文 prim 化／CJK＋IME（人承認）／データ駆動 |
 
 ---
 
@@ -388,3 +394,7 @@ DashGlassTokens → RoundedBox pack → uber_sdf.wgsl
 | 2026-11-28 | x00f5 追随: `snap_and_freeze_context` 集約・`!should_render` でも had クリア・§4.2 L2 表をスライスに揃える |
 | 2026-11-28 | x00f5 追随: empty は連続 N のみ snap・`XrLaserHands` に smooth state 集約 |
 | 2026-11-28 | Laser Default を XR 体感寄せ（5/2°/45°/0.75/8/0.2）＋ Settings Reset；旧 12/18 例示との差を §4.2 表で明示 |
+| 2026-11-28 | Laser Default を Smooth/Start/Stick **0**（`≤0` raw パススルー）。x00f5=5 より Dash 反応が速い Empiric。レゾマガ全0＝Resonite 既定とは書かない |
+| 2026-11-28 | [x00f6](slices/x00f6-dash-plate-u0.md) **U0 ready** 発行（Dash＝1 板＋Shell/Chrome prim。本文全移行は U0.1）。次着手 U0 実装。空き `x00f7` |
+| 2026-11-28 | [x00f6](slices/x00f6-dash-plate-u0.md) **U0 done**（`pack_official_dash`・XR のみ板＋`plate_chrome`／Desktop は fullscreen overlay）。次 U0.1 または T2 |
+| 2026-11-28 | x00f6 レビュー追随: Desktop は fullscreen ディム維持（板非載）・XR のみ `plate_chrome`・タブ MSDF 正／CPU ラベル抑制・Close 装飾撤去・`QUAD_*=DASH_*` |

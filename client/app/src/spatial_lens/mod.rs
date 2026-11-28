@@ -1,14 +1,16 @@
-//! Spatial Lens — Resonite-like spatial inspector without UIX-as-slots (x00ba–x00bd / x00ed / x00f2–x00f4).
+//! Spatial Lens — Resonite-like spatial inspector without UIX-as-slots (x00ba–x00bd / x00ed / x00f2–x00f6).
 //!
 //! Guarantees: 1 panel = 1 board; GpuUiPrim packing; Uber-SDF draw; Hierarchy/Inspector
 //! extract from Epoch; panel OBB→UV hit + Stickiness; G0 glass tokens (x00ec);
 //! Tier-1 Static MSDF atlas + MsdfGlyph (x00ed); Inspector POS scrub → SetField Commit (x00f2);
-//! SoftLease chrome (`LK` + holder · x00f3); multi-axis draft + 1 proposal (x00f4).
+//! SoftLease chrome (`LK` + holder · x00f3); multi-axis draft + 1 proposal (x00f4);
+//! official Dash Shell/Chrome board pack (x00f6 U0).
 //! Non-guarantees: WorldRoot CRDT sync; Tear-Off; CJK atlas; CustomUIX flex; scene UI entities;
-//! background blur (G1); full Dash board migration (U0); Zenoh volatile scrub; Grab release Commit.
+//! background blur (G1); Facet body full prim migration (U0.1); Zenoh volatile scrub; Grab release Commit.
 
 #![forbid(unsafe_code)]
 
+pub mod dash_board;
 pub mod extract;
 pub mod glass;
 pub mod gpu;
@@ -19,6 +21,10 @@ pub mod msdf;
 pub mod prim;
 pub mod shaders;
 
+pub use dash_board::{
+    dash_board_world_matrix, pack_official_dash, OfficialDashTab, OfficialDashView, DASH_BOTTOM_H,
+    DASH_DISTANCE_M, DASH_HEIGHT_M, DASH_TOP_H, DASH_WIDTH_M,
+};
 pub use extract::{
     decode_hierarchy_binding, decode_inspector_pos_binding, pack_personal_lens,
     place_in_front_of_eye, row_is_live, scrub_selected_row, SpatialLensState,
